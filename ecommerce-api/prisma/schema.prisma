@@ -1,0 +1,173 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  SHOPPER
+  SUPPLIER
+  ADMIN
+}
+
+enum SupplierType {
+  PHYSICAL
+  ONLINE
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  role      Role     @default(SHOPPER)
+  name      String?
+  phone     String?
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supplier  Supplier?
+  orders    Order[]
+}
+
+model Supplier {
+  id            String       @id @default(cuid())
+  name          String
+  contactEmail  String?
+  whatsappPhone String?
+  status        String       @default("ACTIVE")
+  type          SupplierType @default(PHYSICAL)
+
+  // ONLINE API config
+  apiBaseUrl    String?
+  apiAuthType   String?      // "BEARER" | "BASIC"
+  apiKey        String?
+
+  // payout override for PHYSICAL (% to supplier, default 70); store as integer percent (e.g., 70)
+  payoutPctInt  Int?
+
+  user          User?        @relation(fields: [userId], references: [id])
+  userId        String?      @unique
+
+  products        Product[]
+  purchaseOrders  PurchaseOrder[]
+  // back-rel for OrderItem.supplierRel (explicit relation)
+  orderItems      OrderItem[]
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  parentId  String?
+  parent    Category? @relation("CategoryToCategory", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryToCategory")
+  products  Product[]
+}
+
+model Product {
+  id                    String        @id @default(cuid())
+  title                 String
+  description           String
+  // price in minor units (kobo/cent)
+  priceMinor            Int
+  sku                   String        @unique
+  stock                 Int           @default(0)
+  vatFlag               Boolean       @default(true)
+  status                String        @default("PUBLISHED")
+
+  // SQLite doesn't support primitive lists; use JSON array of strings
+  imagesJson            Json?
+
+  supplier              Supplier      @relation(fields: [supplierId], references: [id])
+  supplierId            String
+
+  category              Category      @relation(fields: [categoryId], references: [id])
+  categoryId            String
+
+  // commission percent for ONLINE as integer (e.g., 30 = 30%)
+  commissionPctInt      Int?
+
+  supplierTypeOverride  SupplierType?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  orderItems            OrderItem[]
+}
+
+model Order {
+  id         String      @id @default(cuid())
+  user       User        @relation(fields: [userId], references: [id])
+  userId     String
+
+  // totals in minor units
+  totalMinor    Int
+  taxMinor      Int
+  shippingMinor Int
+
+  status     String      @default("PROCESSING") // PROCESSING | PAID | CANCELLED | REFUNDED
+  paymentRef String?
+  createdAt  DateTime    @default(now())
+
+  items      OrderItem[]
+  // back-rel for PurchaseOrder.order
+  purchaseOrders PurchaseOrder[]
+}
+
+model OrderItem {
+  id         String   @id @default(cuid())
+  order      Order    @relation(fields: [orderId], references: [id])
+  orderId    String
+
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  String
+
+  // keep a foreign key to supplier; define explicit relation name
+  supplierRel Supplier @relation(fields: [supplierId], references: [id])
+  supplierId  String
+
+  qty        Int
+  unitPriceMinor  Int   // snapshot price in minor units at time of order
+
+  // back-rel for PurchaseOrderItem.orderItem
+  purchaseOrderItems PurchaseOrderItem[]
+}
+
+model PurchaseOrder {
+  id             String      @id @default(cuid())
+  order          Order       @relation(fields: [orderId], references: [id])
+  orderId        String
+
+  supplier       Supplier    @relation(fields: [supplierId], references: [id])
+  supplierId     String
+
+  // monetary fields in minor units
+  subtotalMinor       Int
+  platformFeeMinor    Int
+  supplierAmountMinor Int
+
+  // payout percentage used, integer (e.g., 70)
+  payoutPctInt   Int
+
+  status         String      @default("PENDING") // PENDING|DISPATCHED|DELIVERED|CANCELLED|FAILED_PURCHASE
+  whatsappMsgId  String?
+  createdAt      DateTime    @default(now())
+
+  items          PurchaseOrderItem[]
+}
+
+model PurchaseOrderItem {
+  id               String        @id @default(cuid())
+  purchaseOrder    PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderId  String
+
+  orderItem        OrderItem     @relation(fields: [orderItemId], references: [id])
+  orderItemId      String
+
+  // ONLINE tracking
+  externalStatus   String?       // PLACED|PAID|FAILED
+  externalRef      String?
+  receiptUrl       String?
+}
