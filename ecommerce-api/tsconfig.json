@@ -1,4 +1,3 @@
-// ecommerce-api/tsconfig.json
 {
   "compilerOptions": {
     "target": "ES2022",
