@@ -1,78 +1,89 @@
+// src/routes/orders.ts
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
-import { auth } from '../middleware/auth.js';
-import { requireRole } from '../middleware/roles.js';
-import { toMinor } from '../lib/money.js';
+import { authMiddleware, AuthedRequest } from '../lib/authMiddleware.js';
+import type { Prisma } from '@prisma/client';
+
 
 const router = Router();
 
-const orderSchema = z.object({
-  items: z.array(z.object({ productId: z.string(), qty: z.number().int().positive() })),
-  shipping: z.coerce.number().nonnegative().default(0),
-  tax: z.coerce.number().nonnegative().default(0)
+const CreateOrderSchema = z.object({
+  items: z.array(
+    z.object({
+      productId: z.string(),
+      qty: z.number().int().positive(),
+    })
+  ),
+  tax: z.number().nonnegative().default(0),
+  shipping: z.number().nonnegative().default(0),
+});
+type CreateOrderInput = z.infer<typeof CreateOrderSchema>;
+
+type ProductRow = Prisma.ProductGetPayload<{
+  select: { id: true; price: true; supplierId: true };
+}>;
+
+router.post('/', authMiddleware, async (req: AuthedRequest, res, next) => {
+  try {
+    const { items, tax, shipping }: CreateOrderInput = CreateOrderSchema.parse(req.body);
+    if (items.length === 0) return res.status(400).json({ error: 'No items' });
+
+    const products: ProductRow[] = await prisma.product.findMany({
+      where: { id: { in: items.map((i) => i.productId) } },
+      select: { id: true, price: true, supplierId: true },
+    });
+
+    const prodById = new Map<string, ProductRow>(products.map((p) => [p.id, p]));
+
+// Compute totals in major units (numbers are fine; Prisma will cast to Decimal)
+let subtotal = 0;
+for (const it of items) {
+  const p = prodById.get(it.productId);
+  if (!p) return res.status(400).json({ error: `Unknown product: ${it.productId}` });
+  subtotal += Number(p.price) * it.qty;
+}
+const total = subtotal + tax + shipping;
+
+const order = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+  const created = await tx.order.create({
+    data: {
+      user: { connect: { id: req.user!.id } },
+      status: 'PENDING',
+      total,            // Prisma Decimal column (number/string/Decimal all OK)
+      tax,
+      shipping,
+      items: {
+        create: items.map((it): Prisma.OrderItemCreateWithoutOrderInput => {
+          const p = prodById.get(it.productId)!;
+          return {
+            qty: it.qty,
+            unitPrice: p.price,                 // ✅ Decimal from Product
+            product: { connect: { id: p.id } }, // relation (checked create)
+            // If your relation is named `supplier` use that; if it's `supplierRel`, keep as is:
+            supplierRel: { connect: { id: p.supplierId } },
+            // supplierRel: { connect: { id: p.supplierId } }, // ← use this instead if that’s your field name
+          };
+        }),
+      },
+    },
+    include: {
+      items: { include: { product: { include: { supplier: true } } } },
+      // purchaseOrders: { include: { items: true, supplier: true } }, // add if you create POs synchronously
+    },
+  });
+  return created;
 });
 
-router.post('/', auth(), requireRole('SHOPPER', 'ADMIN'), async (req: any, res) => {
-  const { items, shipping, tax } = orderSchema.parse(req.body);
+// Respond with computed totals for UI convenience
+res.json({
+  ...order,
+  computedTotals: { subtotal, tax, shipping, total },
+});
 
-  const products = await prisma.product.findMany({
-    where: { id: { in: items.map((i: any) => i.productId) } },
-    include: { supplier: true }
-  });
-  if (products.length !== items.length) {
-    return res.status(400).json({ error: 'Invalid product(s)' });
+  } catch (e) {
+    next(e);
   }
-
-  // stock check
-  for (const it of items) {
-    const p = products.find((p: any) => p.id === it.productId)!;
-    if (p.stock < it.qty) {
-      return res.status(409).json({ error: `Insufficient stock for ${p.title}` });
-    }
-  }
-
-  // totals in minor units
-  const subtotalMinor = items.reduce((sum: number, it: any) => {
-    const p = products.find((p: any) => p.id === it.productId)!;
-    return sum + p.priceMinor * it.qty;
-  }, 0);
-  const shippingMinor = toMinor(shipping);
-  const taxMinor = toMinor(tax);
-  const totalMinor = subtotalMinor + shippingMinor + taxMinor;
-
-  const order = await prisma.$transaction(async (tx: any) => {
-    // decrement stock per item
-    for (const it of items) {
-      await tx.product.update({
-        where: { id: it.productId },
-        data: { stock: { decrement: it.qty } }
-      });
-    }
-
-    return tx.order.create({
-      data: {
-        userId: req.user!.id,
-        totalMinor,
-        taxMinor,
-        shippingMinor,
-        items: {
-          create: items.map((it: any) => {
-            const p = products.find((p: any) => p.id === it.productId)!;
-            return {
-              productId: p.id,
-              supplierId: p.supplierId,
-              qty: it.qty,
-              unitPriceMinor: p.priceMinor
-            };
-          })
-        }
-      },
-      include: { items: true }
-    });
-  });
-
-  res.status(201).json(order);
 });
 
 export default router;

@@ -1,191 +1,241 @@
+// src/services/fulfilment.ts
 import { prisma } from '../lib/prisma.js';
+import { Decimal } from '@prisma/client/runtime/library';
 import { waSendText } from '../lib/whatsapp.js';
-import { placeOnlineOrder, payOnlineOrder, getReceipt } from './supplierGateway.js';
-import { pctOf, toMajor } from '../lib/money.js';
+import {
+  callSupplierPlaceOrder,
+  callSupplierPay,
+  callSupplierReceipt,
+  type SupplierResponse,
+} from './supplierGateway.js';
 
-const DEFAULT_PHYSICAL_PAYOUT_PCT = 70; // %
+const DEFAULT_PHYSICAL_PAYOUT = 70; // percent
 
+// ---------- helpers ----------
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+/** Pull a supplier reference from a response payload (id | orderId | reference). */
+function extractSupplierRef(data: unknown): string | undefined {
+  if (!isRecord(data)) return undefined;
+  const candidates = ['id', 'orderId', 'reference'] as const;
+  for (const k of candidates) {
+    const v = data[k];
+    if (typeof v === 'string' && v.trim()) return v;
+    if (typeof v === 'number') return String(v);
+  }
+  return undefined;
+}
+
+/** Pull a receipt URL from a response payload (url | link). */
+function extractReceiptUrl(data: unknown): string | undefined {
+  if (!isRecord(data)) return undefined;
+  const candidates = ['url', 'link'] as const;
+  for (const k of candidates) {
+    const v = data[k];
+    if (typeof v === 'string' && v.startsWith('http')) return v;
+  }
+  return undefined;
+}
+
+// ---------- main ----------
 export async function handlePaidOrder(orderId: string) {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
     include: {
       items: { include: { product: { include: { supplier: true } } } },
-      user: true
-    }
+      user: true,
+    },
   });
-  if (!order) throw new Error('Order not found');
+  if (!order) return;
 
-  // group items by supplier
-  const bySupplier = new Map<string, any[]>();
+  // Group order items by supplier
+  type Item = (typeof order.items)[number];
+  const bySupplier = new Map<string, Item[]>();
   for (const it of order.items) {
-    const sid = it.product.supplierId;
-    if (!bySupplier.has(sid)) bySupplier.set(sid, []);
-    bySupplier.get(sid)!.push(it);
+    const arr = bySupplier.get(it.supplierId) ?? [];
+    arr.push(it);
+    bySupplier.set(it.supplierId, arr);
   }
 
-  const poIds: string[] = [];
-
-  for (const [supplierId, items] of bySupplier.entries()) {
+  // Process per-supplier
+  for (const [supplierId, items] of bySupplier) {
     const supplier = items[0].product.supplier;
-    const effType = items[0].product.supplierTypeOverride ?? supplier.type; // PHYSICAL | ONLINE
 
-    let subtotalMinor = 0;
-    let platformFeeMinor = 0;
-    let supplierAmountMinor = 0;
-    let payoutPctInt = 0;
+    // ---- Money math (Decimal) ----
+    const subtotal = items.reduce<Decimal>((sum, it) => {
+      const unit = new Decimal(it.unitPrice.toString());
+      const line = unit.mul(it.qty);
+      return sum.plus(line) as Decimal;
+    }, new Decimal(0));
 
-    // compute per-supplier money
-    for (const it of items) {
-      const line = it.unitPriceMinor * it.qty;
+    let platformFee = new Decimal(0);
+    let supplierAmount = new Decimal(0);
+    const payoutPct = supplier.payoutPctInt ?? DEFAULT_PHYSICAL_PAYOUT;
 
-      if (effType === 'PHYSICAL') {
-        const payPct = supplier.payoutPctInt ?? DEFAULT_PHYSICAL_PAYOUT_PCT;
-        const supplierCut = pctOf(line, payPct);
-        subtotalMinor += line;
-        supplierAmountMinor += supplierCut;
-        platformFeeMinor += line - supplierCut;
-        payoutPctInt = payPct;
-      } else {
-        const commissionPctInt = it.product.commissionPctInt ?? 30; // default 30%
-        const fee = pctOf(line, commissionPctInt);
-        subtotalMinor += line;
-        platformFeeMinor += fee;
-        supplierAmountMinor += line - fee;
-        payoutPctInt = 100 - commissionPctInt;
-      }
+    if (supplier.type === 'PHYSICAL') {
+      supplierAmount = subtotal.mul(payoutPct);
+      platformFee = subtotal.minus(supplierAmount);
+    } else {
+      // ONLINE: commission per product (default 30%)
+      const totalPlatform = items.reduce<Decimal>((sum, it) => {
+        const commPct = new Decimal(it.product.commissionPctInt ?? 30);
+        const unit = new Decimal(it.unitPrice.toString());
+        const line = unit.mul(it.qty);
+        const fee = line.mul(commPct);
+        return sum.plus(fee) as Decimal;
+      }, new Decimal(0));
+      platformFee = totalPlatform;
+      supplierAmount = subtotal.minus(platformFee);
     }
 
-    // create PurchaseOrder (+ include items so we can reference POI ids)
-    let po: any = await prisma.purchaseOrder.create({
+    // ---- Create Purchase Order ----
+    const po = await prisma.purchaseOrder.create({
       data: {
         orderId: order.id,
         supplierId,
-        subtotalMinor,
-        platformFeeMinor,
-        supplierAmountMinor,
-        payoutPctInt,
-        items: { create: items.map((it: any) => ({ orderItemId: it.id })) }
+        subtotal: subtotal.toNumber(),
+        platformFee: platformFee.toNumber(),
+        supplierAmount: supplierAmount.toNumber(),
+        payoutPctInt: payoutPct,
+        status: 'CREATED',
+        items: { create: items.map((it) => ({ orderItemId: it.id })) },
       },
-      include: { items: true }
+      include: { items: true },
     });
 
-    let whatsappBodyExtra = '';
+    // Fast lookup: orderItemId -> purchaseOrderItem (avoid .find() callbacks)
+    type PoItem = (typeof po.items)[number];
+    const poItemByOrderItemId = new Map<string, PoItem>();
+    for (const i of po.items as PoItem[]) {
+      poItemByOrderItemId.set(i.orderItemId, i);
+    }
 
-    // ONLINE: place + pay with supplier API, capture receipt
-    if (effType === 'ONLINE') {
-      let anyFail = false;
-      const { apiBaseUrl, apiAuthType, apiKey } = supplier;
+    if (supplier.type === 'PHYSICAL') {
+      // ---- PHYSICAL: WhatsApp notification (payout summary) ----
+      const lineItems = items
+        .map(
+          (it) =>
+            `• ${it.product.title} x${it.qty} @ ₦${new Decimal(
+              it.unitPrice.toString(),
+            )
+              .toNumber()
+              .toFixed(2)}`,
+        )
+        .join('\n');
 
-      for (const it of items) {
-        const payload = {
-          customer: {
-            name: order.user.name ?? order.user.email,
-            email: order.user.email,
-            phone: order.user.phone,
-            address: order.user.address
-          },
-          item: {
-            sku: it.product.sku,
-            title: it.product.title,
-            qty: it.qty,
-            unitPrice: Number(toMajor(it.unitPriceMinor))
-          }
-        };
+      const body =
+        `New Order PO#${po.id}\n` +
+        `Customer: ${order.user.name || order.user.email}\n` +
+        `Address: ${order.user.address || 'N/A'}\n` +
+        `Items:\n${lineItems}\n` +
+        `Subtotal: ₦${subtotal.toFixed(2)}\n` +
+        `Payout (${payoutPct}%): ₦${supplierAmount.toFixed(2)}\n`;
 
-        let placedRef: string | undefined;
-
-        if (!apiBaseUrl) {
-          anyFail = true;
-          const poi = po.items.find((x: any) => x.orderItemId === it.id)!;
-          await prisma.purchaseOrderItem.update({
-            where: { id: poi.id },
-            data: { externalStatus: 'FAILED', externalRef: 'NO_API_CONFIG' }
+      if (supplier.whatsappPhone) {
+        const msgId = await waSendText(supplier.whatsappPhone, body);
+        if (msgId) {
+          await prisma.purchaseOrder.update({
+            where: { id: po.id },
+            data: { whatsappMsgId: msgId },
           });
-        } else {
-          // 1) Place
-          const placed = await placeOnlineOrder(apiBaseUrl, apiAuthType as any, apiKey ?? undefined, payload);
-          const placedData: any = placed.data ?? {};
-          if (!placed.ok) {
-            anyFail = true;
-            const poi = po.items.find((x: any) => x.orderItemId === it.id)!;
+        }
+      }
+    } else {
+      // ---- ONLINE: place -> pay -> receipt (per item) ----
+      for (const it of items) {
+        // place
+        const placed: SupplierResponse<unknown> = await callSupplierPlaceOrder(
+          supplier,
+          {
+            productId: it.productId,
+            qty: it.qty,
+            price: new Decimal(it.unitPrice.toString()).toNumber(),
+          },
+        );
+        const placedRef = extractSupplierRef(placed.data);
+
+        if (placed.ok && placedRef) {
+          const poi = poItemByOrderItemId.get(it.id);
+          if (poi) {
             await prisma.purchaseOrderItem.update({
               where: { id: poi.id },
-              data: { externalStatus: 'FAILED', externalRef: 'PLACE_FAILED' }
+              data: { externalRef: placedRef, externalStatus: 'PLACED' },
             });
-            continue;
           }
-          placedRef = placedData.id ?? placedData.orderId ?? placedData.reference;
-          const poi = po.items.find((x: any) => x.orderItemId === it.id)!;
-          await prisma.purchaseOrderItem.update({
-            where: { id: poi.id },
-            data: { externalStatus: 'PLACED', externalRef: placedRef }
-          });
+        }
 
-          // 2) Pay supplier
-          const amountMajor = Number(toMajor(it.unitPriceMinor * it.qty));
-          const paid = await payOnlineOrder(apiBaseUrl, apiAuthType as any, apiKey ?? undefined, placedRef!, amountMajor);
-          if (!paid.ok) {
-            anyFail = true;
-            await prisma.purchaseOrderItem.update({ where: { id: poi.id }, data: { externalStatus: 'FAILED' } });
-            continue;
+        // pay
+        const amount = new Decimal(it.unitPrice.toString())
+          .mul(it.qty)
+          .toNumber();
+        const paid: SupplierResponse<unknown> = await callSupplierPay(
+          supplier,
+          { reference: placedRef, amount },
+        );
+
+        if (paid.ok) {
+          const poi = poItemByOrderItemId.get(it.id);
+          if (poi) {
+            await prisma.purchaseOrderItem.update({
+              where: { id: poi.id },
+              data: { externalStatus: 'PAID' },
+            });
           }
-          await prisma.purchaseOrderItem.update({ where: { id: poi.id }, data: { externalStatus: 'PAID' } });
+        }
 
-          // 3) Receipt
-          const rec = await getReceipt(apiBaseUrl, apiAuthType as any, apiKey ?? undefined, placedRef!);
-          if (rec.ok && rec.url) {
-            await prisma.purchaseOrderItem.update({ where: { id: poi.id }, data: { receiptUrl: rec.url } });
+        // receipt
+        const receipt: SupplierResponse<unknown> = await callSupplierReceipt(
+          supplier,
+          { reference: placedRef },
+        );
+        const receiptUrl = extractReceiptUrl(receipt.data);
+
+        if (receipt.ok && receiptUrl) {
+          const poi = poItemByOrderItemId.get(it.id);
+          if (poi) {
+            await prisma.purchaseOrderItem.update({
+              where: { id: poi.id },
+              data: { receiptUrl },
+            });
           }
         }
       }
 
-      if (anyFail) {
-        po = await prisma.purchaseOrder.update({ where: { id: po.id }, data: { status: 'FAILED_PURCHASE' } });
-      }
+      // WhatsApp summary including receipt links
+      const lines = await prisma.purchaseOrderItem.findMany({
+        where: { purchaseOrderId: po.id },
+      });
 
-      const lines = await prisma.purchaseOrderItem.findMany({ where: { purchaseOrderId: po.id } });
-      whatsappBodyExtra =
-        '\nExternal purchase refs:\n' +
-        lines
-          .map((l: any) => `• ${l.orderItemId} — ${l.externalStatus ?? 'N/A'} ${l.externalRef ?? ''} ${l.receiptUrl ? `(${l.receiptUrl})` : ''}`)
-          .join('\n');
-    }
+      type PurchaseOrderItemRow = (typeof lines)[number];
+      const lineText = lines
+        .map((l: PurchaseOrderItemRow) => {
+          const status = l.externalStatus ?? 'N/A';
+          const ref = l.externalRef ?? '';
+          const receipt = l.receiptUrl ? `(${l.receiptUrl})` : '';
+          return `• ${l.orderItemId} — ${status} ${ref} ${receipt}`;
+        })
+        .join('\n');
 
-    // WhatsApp body
-    const lineItems = items
-      .map((it: any) => `• ${it.product.title} x${it.qty} @ ₦${toMajor(it.unitPriceMinor)}`)
-      .join('\n');
+      const msg =
+        `ONLINE Order PO#${po.id}\n` +
+        `Customer: ${order.user.name || order.user.email}\n` +
+        `Address: ${order.user.address || 'N/A'}\n` +
+        `${lineText}\n` +
+        `Subtotal: ₦${subtotal.toFixed(2)} | Platform Fee: ₦${platformFee.toFixed(
+          2,
+        )} | Supplier: ₦${supplierAmount.toFixed(2)}`;
 
-    const body =
-`PURCHASE ORDER #${po.id} (${effType})
-Order #${order.id}
-
-Customer:
-- ${order.user.name ?? order.user.email}
-- ${order.user.phone ?? '' }
-- ${order.user.address ?? '' }
-
-Items:
-${lineItems}
-
-Subtotal: ₦${toMajor(subtotalMinor)}
-Platform fee: ₦${toMajor(platformFeeMinor)}
-Supplier payout: ₦${toMajor(supplierAmountMinor)} (${payoutPctInt}%)
-${whatsappBodyExtra}
-
-Please fulfil and update status in your dashboard.`;
-
-    try {
       if (supplier.whatsappPhone) {
-        const msgId = await waSendText(supplier.whatsappPhone, body);
-        await prisma.purchaseOrder.update({ where: { id: po.id }, data: { whatsappMsgId: msgId ?? undefined } });
+        const msgId = await waSendText(supplier.whatsappPhone, msg);
+        if (msgId) {
+          await prisma.purchaseOrder.update({
+            where: { id: po.id },
+            data: { whatsappMsgId: msgId },
+          });
+        }
       }
-    } catch (err) {
-      console.error('WhatsApp send failed:', err);
     }
-
-    poIds.push(po.id);
   }
-
-  return poIds;
 }

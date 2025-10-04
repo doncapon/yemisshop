@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { verifyJwt } from '../lib/jwt.js';
+import { verifyJwt, Role } from '../lib/jwt.js';
 
 export type AuthedRequest = Request & { user?: { id: string; role: string } };
 
@@ -11,8 +11,9 @@ export function auth(required = true) {
       return res.status(401).json({ error: 'Missing Authorization header' });
     }
     const token = header.replace(/^Bearer\s+/i, '');
+    console.log(token)
     try {
-      const payload = verifyJwt<{ id: string; role: string }>(token);
+      const payload = verifyJwt(token);
       req.user = payload;
       next();
     } catch {

@@ -19,7 +19,7 @@ export default function Login() {
     try {
       const res = await api.post('/api/auth/login', { email, password });
       const { token } = res.data as { token: string };
-
+        console.log("Token: " + token)
       // TODO: replace heuristic with real role from /api/auth/me if available
       const role =
         email.startsWith('admin')

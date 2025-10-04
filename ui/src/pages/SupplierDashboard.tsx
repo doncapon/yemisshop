@@ -14,7 +14,7 @@ export default function SupplierDashboard() {
         <li key={p.id} className="border p-2 flex justify-between">
         <div>
         <div className="font-medium">{p.title}</div>
-        <div className="text-sm opacity-70">₦{(p.priceMinor/100).toFixed(2)}</div>
+        <div className="text-sm opacity-70">₦{(p.price).toFixed(2)}</div>
         </div>
         <span className="opacity-70">{p.status}</span>
         </li>
