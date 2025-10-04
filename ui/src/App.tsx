@@ -15,35 +15,38 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar />
-      <main className="container mx-auto p-4 flex-1">
-        <Routes>
-          <Route path="/" element={<Catalog />} />
-          <Route path="/product/:id" element={<ProductDetail />} />
-          <Route path="/cart" element={<Cart />} />
-          <Route path="/checkout" element={<Checkout />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
+      {/* Page margins + centered main content */}
+      <main className="w-full px-4 md:px-8 flex-1">
+        <div className="max-w-7xl mx-auto"> {/* 👈 centered container */}
+          <Routes>
+            <Route path="/" element={<Catalog />} />
+            <Route path="/product/:id" element={<ProductDetail />} />
+            <Route path="/cart" element={<Cart />} />
+            <Route path="/checkout" element={<Checkout />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
 
-          <Route
-            path="/admin/*"
-            element={
-              <ProtectedRoute roles={['ADMIN']}>
-                <AdminDashboard />
-              </ProtectedRoute>
-            }
-          />
+            <Route
+              path="/admin/*"
+              element={
+                <ProtectedRoute roles={['ADMIN']}>
+                  <AdminDashboard />
+                </ProtectedRoute>
+              }
+            />
 
-          <Route
-            path="/supplier/*"
-            element={
-              <ProtectedRoute roles={['SUPPLIER']}>
-                <SupplierDashboard />
-              </ProtectedRoute>
-            }
-          />
+            <Route
+              path="/supplier/*"
+              element={
+                <ProtectedRoute roles={['SUPPLIER']}>
+                  <SupplierDashboard />
+                </ProtectedRoute>
+              }
+            />
 
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </div>
       </main>
     </div>
   );

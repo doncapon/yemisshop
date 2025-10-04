@@ -67,27 +67,30 @@ model Category {
   products  Product[]
   createdAt DateTime @default(now())
 }
+// prisma/schema.prisma  (only the changed model shown)
 
 model Product {
   id          String       @id @default(cuid())
   title       String
   description String
-  price       Decimal      @db.Decimal(10, 2)   // money as Decimal
+  price       Decimal      @db.Decimal(10, 2)
   sku         String
   stock       Int
   vatFlag     Boolean      @default(true)
   status      String       @default("PUBLISHED")
-  imagesJson      String[]                           // text[] in Postgres
+  imagesJson  String[]
 
   supplier    Supplier     @relation(fields: [supplierId], references: [id])
   supplierId  String
   supplierTypeOverride SupplierType?
-  commissionPctInt     Int?                      // optional platform % for ONLINE
+  commissionPctInt     Int?
 
-  categoryId  String
-  category    Category     @relation(fields: [categoryId], references: [id])
+  categoryId   String
+  category     Category     @relation(fields: [categoryId], references: [id])
 
-  // Back relation for OrderItem.product
+  /// NEW: denormalized name for convenience in responses/filtering
+  categoryName String?      // <- add this
+
   orderItems  OrderItem[]
 
   createdAt   DateTime @default(now())
