@@ -18,6 +18,7 @@ function toProductDTO(p: any) {
     supplierTypeOverride: p.supplierTypeOverride,
     commissionPctInt: p.commissionPctInt ?? null,
     categoryId: p.categoryId,
+    categoryName: p.categoryName
   };
 }
 

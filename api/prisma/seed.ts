@@ -87,10 +87,16 @@ async function main() {
   });
 
   // Category
-  const cat = await prisma.category.upsert({
+  const catElectronics = await prisma.category.upsert({
     where: { name: 'Electronics' },
     update: {},
     create: { name: 'Electronics' },
+  });
+
+  const catKitchen = await prisma.category.upsert({
+    where: { name: 'Kitchen' },
+    update: {},
+    create: { name: 'Kitchen' },
   });
 
   // Products (use price as major units; Decimal is accepted as number/string)
@@ -105,7 +111,8 @@ async function main() {
       vatFlag: true,
       status: 'PUBLISHED',
       imagesJson: ['https://picsum.photos/seed/a/400/300'],
-      categoryId: cat.id,
+      categoryId: catElectronics.id,
+      categoryName: catElectronics.name,
       supplierId: physical.id,
     },
     create: {
@@ -118,7 +125,9 @@ async function main() {
       vatFlag: true,
       status: 'PUBLISHED',
       imagesJson: ['https://picsum.photos/seed/a/400/300'],
-      categoryId: cat.id,
+      categoryId: catElectronics.id,
+      categoryName: catElectronics.name,
+
       supplierId: physical.id,
     },
   });
@@ -130,11 +139,12 @@ async function main() {
       description: 'Instant code (ONLINE route)',
       price: 5000.0,
       sku: 'GC-005',
-      stock: 999,
+      stock: 100,
       vatFlag: true,
       status: 'PUBLISHED',
       imagesJson: ['https://picsum.photos/seed/b/400/300'],
-      categoryId: cat.id,
+      categoryId: catElectronics.id,
+      categoryName: catElectronics.name,
       supplierId: online.id,
       supplierTypeOverride: 'ONLINE',
       commissionPctInt: 30,
@@ -145,12 +155,52 @@ async function main() {
       description: 'Instant code (ONLINE route)',
       price: 5000.0,
       sku: 'GC-005',
-      stock: 999,
+      stock: 100,
       vatFlag: true,
       status: 'PUBLISHED',
       imagesJson: ['https://picsum.photos/seed/b/400/300'],
-      categoryId: cat.id,
+      categoryId: catElectronics.id,
       supplierId: online.id,
+      categoryName: catElectronics.name,
+
+      supplierTypeOverride: 'ONLINE',
+      commissionPctInt: 30,
+    },
+  });
+
+
+  // p3
+   await prisma.product.upsert({
+    where: { id: 'p3' },
+    update: {
+      title: 'Frying Pan',
+      description: 'Instant code (ONLINE route)',
+      price: 2510.0,
+      sku: 'GC-005',
+      stock: 90,
+      vatFlag: true,
+      status: 'PUBLISHED',
+      imagesJson: ['https://picsum.photos/seed/b/400/300'],
+      categoryId: catKitchen.id,
+      categoryName: catKitchen.name,
+      supplierId: online.id,
+      supplierTypeOverride: 'ONLINE',
+      commissionPctInt: 30,
+    },
+    create: {
+      id: 'p3',
+      title: 'Frying Pan',
+      description: 'Instant code (ONLINE route)',
+      price: 2510.0,
+      sku: 'GC-005',
+      stock: 90,
+      vatFlag: true,
+      status: 'PUBLISHED',
+      imagesJson: ['https://picsum.photos/seed/b/400/300'],
+      categoryId: catKitchen.id,
+      supplierId: online.id,
+      categoryName: catKitchen.name,
+
       supplierTypeOverride: 'ONLINE',
       commissionPctInt: 30,
     },

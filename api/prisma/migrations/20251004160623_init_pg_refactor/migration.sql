@@ -57,6 +57,7 @@ CREATE TABLE "Product" (
     "supplierTypeOverride" "SupplierType",
     "commissionPctInt" INTEGER,
     "categoryId" TEXT NOT NULL,
+    "categoryName" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Product_pkey" PRIMARY KEY ("id")
