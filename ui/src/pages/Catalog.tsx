@@ -2,14 +2,14 @@ import { useQuery } from '@tanstack/react-query'
 import api from '../api/client'
 import { Link } from 'react-router-dom'
 
-
 type Product = {
-id: string
-title: string
-description: string
-priceMinor: number
-imagesJson: string[] | null
-}
+  id: string;
+  title: string;
+  description: string;
+  price: number;        // <- was price
+  imagesJson: string[];     // <- was imagesJson
+};
+
 
 
 export default function Catalog() {
@@ -32,10 +32,10 @@ export default function Catalog() {
     <img src={p.imagesJson[0]} alt={p.title} className="w-full h-40 object-cover mb-2" />
     )}
     <h3 className="font-medium">{p.title}</h3>
-    <p className="text-sm opacity-70">₦{(p.priceMinor / 100).toFixed(2)}</p>
+    <p className="text-sm opacity-70">₦{p.price.toFixed(2)}</p>
     </Link>
     </article>
     ))}
     </div>
-  )
+  )  
 }

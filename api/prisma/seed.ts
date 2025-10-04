@@ -11,11 +11,11 @@ async function main() {
       email: 'admin@example.com',
       password: await bcrypt.hash('Admin123!', 10),
       role: 'ADMIN',
-      name: 'Admin'
-    }
+      name: 'Admin',
+    },
   });
 
-  // Supplier user
+  // Supplier user (owner of the physical supplier)
   const supplierUser = await prisma.user.upsert({
     where: { email: 'supplier@example.com' },
     update: {},
@@ -23,8 +23,8 @@ async function main() {
       email: 'supplier@example.com',
       password: await bcrypt.hash('Supplier123!', 10),
       role: 'SUPPLIER',
-      name: 'Acme Owner'
-    }
+      name: 'Acme Owner',
+    },
   });
 
   // Shopper
@@ -37,77 +37,131 @@ async function main() {
       role: 'SHOPPER',
       name: 'Jane Shopper',
       phone: '+2348012345678',
-      address: '12 Palm Street, Lagos'
-    }
+      address: '12 Palm Street, Lagos',
+    },
   });
 
   // Suppliers
-  const physical = await prisma.supplier.create({
-    data: {
+  // PHYSICAL: upsert by userId (unique)
+  const physical = await prisma.supplier.upsert({
+    where: { userId: supplierUser.id }, // ✅ unique selector
+    update: {
       name: 'MarketHub PHYSICAL',
       whatsappPhone: '+447916244852',
       type: 'PHYSICAL',
-      payoutPctInt: 70,            // integer percent
-      userId: supplierUser.id
-    }
+      payoutPctInt: 70,
+      status: 'ACTIVE',
+    },
+    create: {
+      name: 'MarketHub PHYSICAL',
+      whatsappPhone: '+447916244852',
+      type: 'PHYSICAL',
+      payoutPctInt: 70,
+      status: 'ACTIVE',
+      userId: supplierUser.id,
+    },
   });
 
-  const online = await prisma.supplier.create({
-    data: {
+  // ONLINE: upsert by a fixed id (we control it)
+  const online = await prisma.supplier.upsert({
+    where: { id: 'supplier-online' }, // ✅ fixed id acts as unique
+    update: {
       name: 'DropShip ONLINE',
       whatsappPhone: '+447916244852',
       type: 'ONLINE',
       apiBaseUrl: 'https://supplier.example.com/api',
       apiAuthType: 'BEARER',
-      apiKey: 'demo-api-key'
-    }
+      apiKey: 'demo-api-key',
+      status: 'ACTIVE',
+    },
+    create: {
+      id: 'supplier-online',
+      name: 'DropShip ONLINE',
+      whatsappPhone: '+447916244852',
+      type: 'ONLINE',
+      apiBaseUrl: 'https://supplier.example.com/api',
+      apiAuthType: 'BEARER',
+      apiKey: 'demo-api-key',
+      status: 'ACTIVE',
+    },
   });
 
-  // Category (use upsert to avoid unique conflicts if you re-run seed)
+  // Category
   const cat = await prisma.category.upsert({
     where: { name: 'Electronics' },
     update: {},
-    create: { name: 'Electronics' }
+    create: { name: 'Electronics' },
   });
 
-  // Products (use new fields: priceMinor, imagesJson, commissionPctInt)
-  await prisma.product.createMany({
-    data: [
-      {
-        id: 'p1',
-        title: 'Wireless Headphones',
-        description: 'Over-ear, noise cancelling.',
-        priceMinor: 999900, // ₦9,999.00 stored as minor units
-        sku: 'WH-001',
-        stock: 25,
-        vatFlag: true,
-        status: 'PUBLISHED',
-        imagesJson: ['https://picsum.photos/seed/a/400/300'] as any, // Json field
-        categoryId: cat.id,
-        supplierId: physical.id
-      },
-      {
-        id: 'p2',
-        title: 'Online Gift Card',
-        description: 'Instant code (ONLINE route)',
-        priceMinor: 500000, // ₦5,000.00
-        sku: 'GC-005',
-        stock: 999,
-        vatFlag: true,
-        status: 'PUBLISHED',
-        imagesJson: ['https://picsum.photos/seed/b/400/300'] as any,
-        categoryId: cat.id,
-        supplierId: online.id,
-        supplierTypeOverride: 'ONLINE',
-        commissionPctInt: 30
-      }
-    ]
+  // Products (use price as major units; Decimal is accepted as number/string)
+  await prisma.product.upsert({
+    where: { id: 'p1' },
+    update: {
+      title: 'Wireless Headphones',
+      description: 'Over-ear, noise cancelling.',
+      price: 9999.0,
+      sku: 'WH-001',
+      stock: 25,
+      vatFlag: true,
+      status: 'PUBLISHED',
+      imagesJson: ['https://picsum.photos/seed/a/400/300'],
+      categoryId: cat.id,
+      supplierId: physical.id,
+    },
+    create: {
+      id: 'p1',
+      title: 'Wireless Headphones',
+      description: 'Over-ear, noise cancelling.',
+      price: 9999.0,
+      sku: 'WH-001',
+      stock: 25,
+      vatFlag: true,
+      status: 'PUBLISHED',
+      imagesJson: ['https://picsum.photos/seed/a/400/300'],
+      categoryId: cat.id,
+      supplierId: physical.id,
+    },
+  });
+
+  await prisma.product.upsert({
+    where: { id: 'p2' },
+    update: {
+      title: 'Online Gift Card',
+      description: 'Instant code (ONLINE route)',
+      price: 5000.0,
+      sku: 'GC-005',
+      stock: 999,
+      vatFlag: true,
+      status: 'PUBLISHED',
+      imagesJson: ['https://picsum.photos/seed/b/400/300'],
+      categoryId: cat.id,
+      supplierId: online.id,
+      supplierTypeOverride: 'ONLINE',
+      commissionPctInt: 30,
+    },
+    create: {
+      id: 'p2',
+      title: 'Online Gift Card',
+      description: 'Instant code (ONLINE route)',
+      price: 5000.0,
+      sku: 'GC-005',
+      stock: 999,
+      vatFlag: true,
+      status: 'PUBLISHED',
+      imagesJson: ['https://picsum.photos/seed/b/400/300'],
+      categoryId: cat.id,
+      supplierId: online.id,
+      supplierTypeOverride: 'ONLINE',
+      commissionPctInt: 30,
+    },
   });
 
   console.log('Seed OK:', {
     admin: admin.email,
     supplier: supplierUser.email,
-    shopper: shopper.email
+    shopper: shopper.email,
+    physicalSupplier: physical.id,
+    onlineSupplier: online.id,
   });
 }
 

@@ -7,7 +7,7 @@ export default function Checkout() {
   const nav = useNavigate();
 
   const raw = localStorage.getItem('cart');
-  const cart: Array<{ productId: string; title: string; priceMinor: number; qty: number }> =
+  const cart: Array<{ productId: string; title: string; price: number; qty: number }> =
     raw ? JSON.parse(raw) : [];
 
   const createOrder = useMutation({
@@ -28,7 +28,7 @@ export default function Checkout() {
     return <p>Your cart is empty.</p>;
   }
 
-  const totalMinor = cart.reduce((sum, it) => sum + it.priceMinor * it.qty, 0);
+  const total = cart.reduce((sum, it) => sum + it.price * it.qty, 0);
 
   return (
     <div>
@@ -40,14 +40,14 @@ export default function Checkout() {
             <span>
               {it.title} × {it.qty}
             </span>
-            <span>₦{(it.priceMinor * it.qty / 100).toFixed(2)}</span>
+            <span>₦{(it.price * it.qty).toFixed(2)}</span>
           </li>
         ))}
       </ul>
 
       <div className="mt-4 flex justify-between font-medium">
         <span>Total</span>
-        <span>₦{(totalMinor / 100).toFixed(2)}</span>
+        <span>₦{(total).toFixed(2)}</span>
       </div>
 
       <button
