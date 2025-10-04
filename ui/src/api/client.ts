@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { useAuthStore } from '../store/auth'
+import { useAuthStore } from '../store/auth.ts'
 
 
 const api = axios.create({

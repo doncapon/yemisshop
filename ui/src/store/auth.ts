@@ -5,11 +5,11 @@ export type Role = 'ADMIN' | 'SUPPLIER' | 'SHOPPER'
 
 
 interface AuthState {
-token: string | null
-role: Role | null
-userEmail: string | null
-setAuth: (token: string, role: Role, userEmail: string) => void
-clear: () => void
+  token: string | null
+  role: Role | null
+  userEmail: string | null
+  setAuth: (token: string, role: Role, userEmail: string) => void
+  clear: () => void
 }
 
 
