@@ -10,6 +10,7 @@ import Register from './pages/Register.tsx';
 import AdminDashboard from './pages/AdminDashboard.tsx';
 import SupplierDashboard from './pages/SupplierDashboard.tsx';
 import ProtectedRoute from './components/ProtectedRoute.tsx';
+import Verify from './pages/Verify.tsx';
 
 export default function App() {
   return (
@@ -25,6 +26,8 @@ export default function App() {
             <Route path="/checkout" element={<Checkout />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
+            <Route path="/verify" element={<Verify />} />
+
 
             <Route
               path="/admin/*"

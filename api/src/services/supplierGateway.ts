@@ -1,9 +1,9 @@
 // src/services/supplierGateway.ts
-import type { Supplier } from '@prisma/client';
 import fetch, { type RequestInit } from 'node-fetch';
 
 /**
- * You can tweak these if a supplier uses different paths.
+ * Default endpoint paths for suppliers that expose simple REST APIs.
+ * You can override any of these per call via the `opts.pathOverride` param.
  */
 const ENDPOINTS = {
   placeOrder: '/orders',
@@ -11,122 +11,110 @@ const ENDPOINTS = {
   receipt: '/receipts', // GET /receipts/:reference
 } as const;
 
-/**
- * Raw payload shapes we send to supplier APIs.
- * Adjust these if your suppliers need different fields.
- */
+type SupplierLike = {
+  id: string;
+  name: string;
+  type: 'PHYSICAL' | 'ONLINE';
+  apiBaseUrl: string | null;
+  apiAuthType: string | null; // e.g. "BEARER"
+  apiKey: string | null;
+  whatsappPhone: string | null;
+};
+
+/** Outbound payloads to supplier APIs (adjust if a supplier needs a different shape). */
 type PlaceOrderPayload = {
   productId: string;
   qty: number;
-  /** Price per unit (major currency units, e.g. NGN) */
+  /** Unit price in major units (e.g., NGN). */
   price: number;
 };
 type PayPayload = {
   reference: string | undefined;
-  /** Total amount for this order line (major units) */
+  /** Total amount for the order line (major units). */
   amount: number;
 };
 type ReceiptPayload = {
   reference: string | undefined;
 };
 
-/**
- * A normalized response shape we return to our app.
- */
+/** Normalized response returned to our app from any supplier call. */
 export type SupplierResponse<T = unknown> = {
   ok: boolean;
-  status: number;
+  status: number;      // 0 if network/timeout error
   data?: T;
   error?: string;
 };
 
-/**
- * Ensure we have a usable base URL and return a normalized origin path.
- */
+/** Ensure a usable base URL (drops trailing slash, keeps origin+pathname). */
 function normalizeBaseUrl(url?: string | null): string | null {
   if (!url) return null;
   try {
     const u = new URL(url);
-    // ensure no trailing slash duplication later
     return `${u.origin}${u.pathname.replace(/\/$/, '')}`;
   } catch {
     return null;
   }
 }
 
-/**
- * Compose a URL like `${base}${path}` (both may or may not have slashes).
- */
+/** Join base and path safely (handles leading/trailing slashes). */
 function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/$/, '')}/${path.replace(/^\//, '')}`;
 }
 
-/**
- * Build headers based on supplier auth type.
- * Supports: BEARER (apiKey), NONE/default.
- */
-function buildAuthHeaders(supplier: Supplier): Record<string, string> {
+/** Build auth headers from supplier config. Supports BEARER api key. */
+function buildAuthHeaders(supplier: SupplierLike): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
   };
-
   if ((supplier.apiAuthType || '').toUpperCase() === 'BEARER' && supplier.apiKey) {
     headers.Authorization = `Bearer ${supplier.apiKey}`;
   }
-
   return headers;
 }
 
-/**
- * Execute a fetch with timeout and safe JSON parsing.
- */
+/** Fetch wrapper with timeout + robust JSON parsing. */
 async function doSupplierFetch<T = unknown>(
-  supplier: Supplier,
   url: string,
   init: RequestInit & { timeoutMs?: number } = {}
 ): Promise<SupplierResponse<T>> {
-  const timeoutMs = init.timeoutMs ?? 15000; // 15s default
+  const timeoutMs = init.timeoutMs ?? 15_000;
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
 
   try {
-    const res = await fetch(url, {
-      ...init,
-      signal: ctrl.signal,
-    });
+    const res = await fetch(url, { ...init, signal: ctrl.signal });
 
+    const raw = await res.text();
     let data: unknown = undefined;
-    const text = await res.text();
     try {
-      data = text ? JSON.parse(text) : undefined;
+      data = raw ? JSON.parse(raw) : undefined;
     } catch {
-      // not JSON
-      data = text as unknown;
+      // non-JSON response; keep raw text
+      data = raw;
     }
 
     if (!res.ok) {
       const msg =
-        (data as any)?.error ||
-        (data as any)?.message ||
+        (data as any)?.error ??
+        (data as any)?.message ??
         `Supplier responded ${res.status} ${res.statusText}`;
       return { ok: false, status: res.status, error: String(msg), data: data as T };
     }
 
     return { ok: true, status: res.status, data: data as T };
   } catch (err: any) {
-    const reason = err?.name === 'AbortError' ? `timeout after ${timeoutMs}ms` : err?.message || 'request failed';
+    const reason =
+      err?.name === 'AbortError' ? `timeout after ${timeoutMs}ms` : err?.message || 'request failed';
     return { ok: false, status: 0, error: `Supplier request error: ${reason}` };
   } finally {
-    clearTimeout(t);
+    clearTimeout(timer);
   }
 }
 
-/**
- * Place an order at the ONLINE supplier.
- */
+/** Place an order with an ONLINE supplier. */
 export async function callSupplierPlaceOrder<T = any>(
-  supplier: Supplier,
+  supplier: SupplierLike,
   payload: PlaceOrderPayload,
   opts?: { pathOverride?: string; timeoutMs?: number }
 ): Promise<SupplierResponse<T>> {
@@ -136,24 +124,21 @@ export async function callSupplierPlaceOrder<T = any>(
   const url = joinUrl(base, opts?.pathOverride ?? ENDPOINTS.placeOrder);
   const headers = buildAuthHeaders(supplier);
 
-  return doSupplierFetch<T>(supplier, url, {
+  return doSupplierFetch<T>(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
       productId: payload.productId,
       quantity: payload.qty,
       unitPrice: payload.price,
-      // You can add customer/shipping metadata here if the supplier needs it
     }),
     timeoutMs: opts?.timeoutMs,
   });
 }
 
-/**
- * Pay for the previously placed order at the ONLINE supplier.
- */
+/** Pay for a previously placed supplier order. */
 export async function callSupplierPay<T = any>(
-  supplier: Supplier,
+  supplier: SupplierLike,
   payload: PayPayload,
   opts?: { pathOverride?: string; timeoutMs?: number }
 ): Promise<SupplierResponse<T>> {
@@ -163,23 +148,21 @@ export async function callSupplierPay<T = any>(
   const url = joinUrl(base, opts?.pathOverride ?? ENDPOINTS.pay);
   const headers = buildAuthHeaders(supplier);
 
-  return doSupplierFetch<T>(supplier, url, {
+  return doSupplierFetch<T>(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
       reference: payload.reference,
       amount: payload.amount,
-      currency: 'NGN', // set to your currency; adjust if supplier requires a code
+      currency: 'NGN',
     }),
     timeoutMs: opts?.timeoutMs,
   });
 }
 
-/**
- * Retrieve a receipt for a placed/paid supplier order.
- */
+/** Retrieve a receipt for a placed/paid supplier order. */
 export async function callSupplierReceipt<T = any>(
-  supplier: Supplier,
+  supplier: SupplierLike,
   payload: ReceiptPayload,
   opts?: { pathOverride?: string; timeoutMs?: number }
 ): Promise<SupplierResponse<T>> {
@@ -191,7 +174,7 @@ export async function callSupplierReceipt<T = any>(
   const url = joinUrl(base, path);
   const headers = buildAuthHeaders(supplier);
 
-  return doSupplierFetch<T>(supplier, url, {
+  return doSupplierFetch<T>(url, {
     method: 'GET',
     headers,
     timeoutMs: opts?.timeoutMs,
