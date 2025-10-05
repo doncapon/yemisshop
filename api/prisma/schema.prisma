@@ -14,6 +14,30 @@ enum SupplierType {
   ONLINE
 }
 
+/**
+ * ---------------- Address ----------------
+ */
+model Address {
+  id          String  @id @default(cuid())
+  houseNumber String?
+  streetName  String?
+  postCode    String?
+  town        String?
+  city        String?
+  state       String?
+  country     String?
+
+  // Back-relations (MUST use the same relation names)
+  userPrimary  User? @relation("UserPrimaryAddress")
+  userShipping User? @relation("UserShippingAddress")
+
+  // Back-relation for orders’ shipping address
+  ordersAsShipping Order[] @relation("OrderShippingAddress")
+}
+
+/**
+ * ---------------- User ----------------
+ */
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -21,17 +45,42 @@ model User {
   role      String   // "ADMIN" | "SUPPLIER" | "SHOPPER"
   name      String?
   phone     String?
-  address   String?
+  addressId         String?   @unique
+  address           Address?  @relation("UserPrimaryAddress", fields: [addressId], references: [id])
+  shippingAddressId String?   @unique
+  shippingAddress   Address?  @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
 
-  // 1:1 optional (a supplier can be owned by a user)
+  // ✅ NEW verification fields
+  status                     String    @default("PENDING") // PENDING | PARTIAL | VERIFIED
+  emailVerifiedAt            DateTime?
+  emailVerifyTokenExpiresAt  DateTime?
+  phoneVerifiedAt            DateTime?
+  phoneOtpHash               String?   // store hashed OTP
+
   supplier  Supplier?
-
-  // 1:many
   orders    Order[]
-
   createdAt DateTime @default(now())
+
+  phoneVerified        Boolean  @default(false)
+  emailVerified        Boolean  @default(false)
+
+  // Phone OTP
+  phoneOtpCode         String?    // e.g. "109132"
+  phoneOtpExpiresAt    DateTime?
+  phoneOtpLastSentAt   DateTime?
+  phoneOtpSendCountDay Int       @default(0) // rate cap per day (reset nightly or track with date)
+
+  // Email verification token (if you do links)
+  emailVerifyToken       String?
+  emailVerifyExpiresAt   DateTime?
+  emailVerifyLastSentAt  DateTime?
+  emailVerifySendCountDay Int     @default(0)
 }
 
+
+/**
+ * ---------------- Supplier / Category / Product (unchanged aside from context) ----------------
+ */
 model Supplier {
   id            String       @id @default(cuid())
   name          String       @unique
@@ -40,133 +89,127 @@ model Supplier {
   type          SupplierType
   status        String       @default("ACTIVE")
 
-  // Online supplier API creds (optional)
-  apiBaseUrl    String?
-  apiAuthType   String?      // e.g., "BEARER"
-  apiKey        String?
+  apiBaseUrl   String?
+  apiAuthType  String?
+  apiKey       String?
+  payoutPctInt Int?
 
-  // Default payout percentage for PHYSICAL suppliers (e.g., 70 = 70%)
-  payoutPctInt  Int?
+  userId String? @unique
+  user   User?   @relation(fields: [userId], references: [id])
 
-  // Owning user (optional)
-  userId        String?      @unique
-  user          User?        @relation(fields: [userId], references: [id])
-
-  // Relations
   products       Product[]
   purchaseOrders PurchaseOrder[]
-  // Back relation to OrderItem.supplierRel (named relation)
-  orderItems     OrderItem[] @relation("OrderItemSupplierRel")
+  orderItems     OrderItem[]     @relation("OrderItemSupplierRel")
 
-  createdAt     DateTime @default(now())
+  createdAt DateTime @default(now())
 }
 
 model Category {
-  id        String   @id @default(cuid())
-  name      String   @unique
+  id        String    @id @default(cuid())
+  name      String    @unique
   products  Product[]
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 }
-// prisma/schema.prisma  (only the changed model shown)
 
 model Product {
-  id          String       @id @default(cuid())
+  id          String   @id @default(cuid())
   title       String
   description String
-  price       Decimal      @db.Decimal(10, 2)
+  price       Decimal  @db.Decimal(10, 2)
   sku         String
   stock       Int
-  vatFlag     Boolean      @default(true)
-  status      String       @default("PUBLISHED")
+  vatFlag     Boolean  @default(true)
+  status      String   @default("PUBLISHED")
   imagesJson  String[]
 
-  supplier    Supplier     @relation(fields: [supplierId], references: [id])
-  supplierId  String
+  supplier             Supplier      @relation(fields: [supplierId], references: [id])
+  supplierId           String
   supplierTypeOverride SupplierType?
   commissionPctInt     Int?
 
   categoryId   String
-  category     Category     @relation(fields: [categoryId], references: [id])
+  category     Category @relation(fields: [categoryId], references: [id])
+  categoryName String?
 
-  /// NEW: denormalized name for convenience in responses/filtering
-  categoryName String?      // <- add this
+  orderItems OrderItem[]
 
-  orderItems  OrderItem[]
-
-  createdAt   DateTime @default(now())
+  createdAt DateTime @default(now())
 }
 
+/**
+ * ---------------- Order ----------------
+ */
 model Order {
-  id         String     @id @default(cuid())
+  id String @id @default(cuid())
 
-  user       User       @relation(fields: [userId], references: [id])
-  userId     String
+  user   User   @relation(fields: [userId], references: [id])
+  userId String
 
-  total      Decimal    @db.Decimal(10, 2)
-  tax        Decimal    @db.Decimal(10, 2)
-  shipping   Decimal    @db.Decimal(10, 2)
-  status     String     @default("PENDING")
-  createdAt  DateTime   @default(now())
+  // New required relation to Address for shipping
+  shippingAddressId String
+  shippingAddress   Address @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id], onDelete: Restrict)
 
-  // Back relation for OrderItem.order
-  items      OrderItem[]
+  total     Decimal  @db.Decimal(10, 2)
+  tax       Decimal  @db.Decimal(10, 2)
+  shipping  Decimal  @db.Decimal(10, 2)
+  status    String   @default("PENDING")
+  createdAt DateTime @default(now())
 
-  // Back relation for PurchaseOrder.order
+  items          OrderItem[]
   purchaseOrders PurchaseOrder[]
 }
 
+/**
+ * ---------------- OrderItem / PurchaseOrder ----------------
+ */
 model OrderItem {
-  id          String    @id @default(cuid())
+  id String @id @default(cuid())
 
-  order       Order     @relation(fields: [orderId], references: [id])
-  orderId     String
+  order   Order  @relation(fields: [orderId], references: [id])
+  orderId String
 
-  product     Product   @relation(fields: [productId], references: [id])
-  productId   String
+  product   Product @relation(fields: [productId], references: [id])
+  productId String
 
-  // keep a direct link to supplier for ease of fulfilment
-  supplierRel Supplier  @relation("OrderItemSupplierRel", fields: [supplierId], references: [id])
+  supplierRel Supplier @relation("OrderItemSupplierRel", fields: [supplierId], references: [id])
   supplierId  String
 
-  qty         Int
-  unitPrice   Decimal   @db.Decimal(10, 2)  // price snapshot
+  qty       Int
+  unitPrice Decimal @db.Decimal(10, 2)
 
-  // Back relation for PurchaseOrderItem.orderItem
   purchaseOrderItems PurchaseOrderItem[]
 }
 
 model PurchaseOrder {
-  id                 String       @id @default(cuid())
+  id String @id @default(cuid())
 
-  order              Order        @relation(fields: [orderId], references: [id])
-  orderId            String
+  order   Order  @relation(fields: [orderId], references: [id])
+  orderId String
 
-  supplier           Supplier     @relation(fields: [supplierId], references: [id])
-  supplierId         String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  supplierId String
 
-  subtotal           Decimal      @db.Decimal(10, 2)
-  platformFee        Decimal      @db.Decimal(10, 2)
-  supplierAmount     Decimal      @db.Decimal(10, 2)
-  payoutPctInt       Int
-  status             String       @default("CREATED")
-  whatsappMsgId      String?
-  createdAt          DateTime     @default(now())
+  subtotal       Decimal  @db.Decimal(10, 2)
+  platformFee    Decimal  @db.Decimal(10, 2)
+  supplierAmount Decimal  @db.Decimal(10, 2)
+  payoutPctInt   Int
+  status         String   @default("CREATED")
+  whatsappMsgId  String?
+  createdAt      DateTime @default(now())
 
-  // Back relation for PurchaseOrderItem.purchaseOrder
-  items              PurchaseOrderItem[]
+  items PurchaseOrderItem[]
 }
 
 model PurchaseOrderItem {
-  id               String         @id @default(cuid())
+  id String @id @default(cuid())
 
-  purchaseOrder    PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id])
-  purchaseOrderId  String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderId String
 
-  orderItem        OrderItem      @relation(fields: [orderItemId], references: [id])
-  orderItemId      String
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
+  orderItemId String
 
-  // For ONLINE suppliers
-  externalRef      String?
-  externalStatus   String?
-  receiptUrl       String?
+  externalRef    String?
+  externalStatus String?
+  receiptUrl     String?
 }

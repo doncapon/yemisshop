@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { verifyJwt, Role } from '../lib/jwt.js';
+import { verifyJwt} from '../lib/jwt.js';
 
 export type AuthedRequest = Request & { user?: { id: string; role: string } };
 

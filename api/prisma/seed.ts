@@ -36,8 +36,7 @@ async function main() {
       password: await bcrypt.hash('Shopper123!', 10),
       role: 'SHOPPER',
       name: 'Jane Shopper',
-      phone: '+2348012345678',
-      address: '12 Palm Street, Lagos',
+      phone: '+2348012345678'
     },
   });
 
@@ -153,7 +152,7 @@ async function main() {
       id: 'p2',
       title: 'Online Gift Card',
       description: 'Instant code (ONLINE route)',
-      price: 5000.0,
+      price: 5000.51,
       sku: 'GC-005',
       stock: 100,
       vatFlag: true,
@@ -170,7 +169,7 @@ async function main() {
 
 
   // p3
-   await prisma.product.upsert({
+  await prisma.product.upsert({
     where: { id: 'p3' },
     update: {
       title: 'Frying Pan',
@@ -205,6 +204,41 @@ async function main() {
       commissionPctInt: 30,
     },
   });
+
+
+  // prisma/seed.ts (snippet)
+  const addr = await prisma.address.create({
+    data: {
+      houseNumber: '12',
+      streetName: 'Palm Street',
+      postCode: '100001',
+      town: 'Ikeja',
+      city: 'Lagos',
+      state: 'Lagos',
+      country: 'NG',
+    },
+  });
+
+  const ship = await prisma.address.create({
+    data: {
+      houseNumber: '3B',
+      streetName: 'Market Rd',
+      postCode: '100002',
+      town: 'Yaba',
+      city: 'Lagos',
+      state: 'Lagos',
+      country: 'NG',
+    },
+  });
+
+  await prisma.user.update({
+    where: { email: 'shopper@example.com' },
+    data: {
+      address: { connect: { id: addr.id } },
+      shippingAddress: { connect: { id: ship.id } },
+    },
+  });
+
 
   console.log('Seed OK:', {
     admin: admin.email,

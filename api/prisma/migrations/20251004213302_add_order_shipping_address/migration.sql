@@ -2,6 +2,20 @@
 CREATE TYPE "SupplierType" AS ENUM ('PHYSICAL', 'ONLINE');
 
 -- CreateTable
+CREATE TABLE "Address" (
+    "id" TEXT NOT NULL,
+    "houseNumber" TEXT,
+    "streetName" TEXT,
+    "postCode" TEXT,
+    "town" TEXT,
+    "city" TEXT,
+    "state" TEXT,
+    "country" TEXT,
+
+    CONSTRAINT "Address_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "User" (
     "id" TEXT NOT NULL,
     "email" TEXT NOT NULL,
@@ -9,7 +23,8 @@ CREATE TABLE "User" (
     "role" TEXT NOT NULL,
     "name" TEXT,
     "phone" TEXT,
-    "address" TEXT,
+    "addressId" TEXT,
+    "shippingAddressId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
@@ -67,6 +82,7 @@ CREATE TABLE "Product" (
 CREATE TABLE "Order" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
+    "shippingAddressId" TEXT NOT NULL,
     "total" DECIMAL(10,2) NOT NULL,
     "tax" DECIMAL(10,2) NOT NULL,
     "shipping" DECIMAL(10,2) NOT NULL,
@@ -120,6 +136,12 @@ CREATE TABLE "PurchaseOrderItem" (
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "User_addressId_key" ON "User"("addressId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "User_shippingAddressId_key" ON "User"("shippingAddressId");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Supplier_name_key" ON "Supplier"("name");
 
 -- CreateIndex
@@ -127,6 +149,12 @@ CREATE UNIQUE INDEX "Supplier_userId_key" ON "Supplier"("userId");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Category_name_key" ON "Category"("name");
+
+-- AddForeignKey
+ALTER TABLE "User" ADD CONSTRAINT "User_addressId_fkey" FOREIGN KEY ("addressId") REFERENCES "Address"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "User" ADD CONSTRAINT "User_shippingAddressId_fkey" FOREIGN KEY ("shippingAddressId") REFERENCES "Address"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Supplier" ADD CONSTRAINT "Supplier_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -139,6 +167,9 @@ ALTER TABLE "Product" ADD CONSTRAINT "Product_categoryId_fkey" FOREIGN KEY ("cat
 
 -- AddForeignKey
 ALTER TABLE "Order" ADD CONSTRAINT "Order_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Order" ADD CONSTRAINT "Order_shippingAddressId_fkey" FOREIGN KEY ("shippingAddressId") REFERENCES "Address"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

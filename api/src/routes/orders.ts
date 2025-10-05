@@ -1,10 +1,13 @@
 // src/routes/orders.ts
-import { Router } from 'express';
+import { Router, type NextFunction, type Response, type Request } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
-import { authMiddleware, AuthedRequest } from '../lib/authMiddleware.js';
-import type { Prisma } from '@prisma/client';
+import { authMiddleware } from '../lib/authMiddleware.js';
+import type { Decimal } from '@prisma/client/runtime/library';
 
+type AuthedRequest = Request & {
+  user?: { id: string; email?: string; role?: string };
+};
 
 const router = Router();
 
@@ -18,72 +21,77 @@ const CreateOrderSchema = z.object({
   tax: z.number().nonnegative().default(0),
   shipping: z.number().nonnegative().default(0),
 });
-type CreateOrderInput = z.infer<typeof CreateOrderSchema>;
 
-type ProductRow = Prisma.ProductGetPayload<{
-  select: { id: true; price: true; supplierId: true };
-}>;
+type ProductRow = {
+  id: string;
+  supplierId: string;
+  // Prisma can return Decimal|number|string depending on driver/config;
+  // accept a union and normalize with Number(...) when using.
+  price: Decimal | number | string;
+};
 
-router.post('/', authMiddleware, async (req: AuthedRequest, res, next) => {
-  try {
-    const { items, tax, shipping }: CreateOrderInput = CreateOrderSchema.parse(req.body);
-    if (items.length === 0) return res.status(400).json({ error: 'No items' });
+router.post(
+  '/',
+  authMiddleware,
+  async (req: AuthedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { items, tax, shipping } = CreateOrderSchema.parse(req.body);
+      if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+      if (items.length === 0) return res.status(400).json({ error: 'No items' });
 
-    const products: ProductRow[] = await prisma.product.findMany({
-      where: { id: { in: items.map((i) => i.productId) } },
-      select: { id: true, price: true, supplierId: true },
-    });
+      // Fetch needed product fields
+      const products: ProductRow[] = await prisma.product.findMany({
+        where: { id: { in: items.map((i) => i.productId) } },
+        select: { id: true, supplierId: true, price: true },
+      });
 
-    const prodById = new Map<string, ProductRow>(products.map((p) => [p.id, p]));
+      // Fast lookup
+      const prodById = new Map<string, ProductRow>(products.map((p) => [p.id, p]));
 
-// Compute totals in major units (numbers are fine; Prisma will cast to Decimal)
-let subtotal = 0;
-for (const it of items) {
-  const p = prodById.get(it.productId);
-  if (!p) return res.status(400).json({ error: `Unknown product: ${it.productId}` });
-  subtotal += Number(p.price) * it.qty;
-}
-const total = subtotal + tax + shipping;
+      // Totals (major units)
+      let subtotal = 0;
+      for (const it of items) {
+        const p = prodById.get(it.productId);
+        if (!p) return res.status(400).json({ error: `Unknown product: ${it.productId}` });
+        const priceNum = Number(p.price as any);
+        subtotal += priceNum * it.qty;
+      }
+      const total = subtotal + tax + shipping;
 
-const order = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-  const created = await tx.order.create({
-    data: {
-      user: { connect: { id: req.user!.id } },
-      status: 'PENDING',
-      total,            // Prisma Decimal column (number/string/Decimal all OK)
-      tax,
-      shipping,
-      items: {
-        create: items.map((it): Prisma.OrderItemCreateWithoutOrderInput => {
-          const p = prodById.get(it.productId)!;
-          return {
-            qty: it.qty,
-            unitPrice: p.price,                 // ✅ Decimal from Product
-            product: { connect: { id: p.id } }, // relation (checked create)
-            // If your relation is named `supplier` use that; if it's `supplierRel`, keep as is:
-            supplierRel: { connect: { id: p.supplierId } },
-            // supplierRel: { connect: { id: p.supplierId } }, // ← use this instead if that’s your field name
-          };
-        }),
-      },
-    },
-    include: {
-      items: { include: { product: { include: { supplier: true } } } },
-      // purchaseOrders: { include: { items: true, supplier: true } }, // add if you create POs synchronously
-    },
-  });
-  return created;
-});
+      // Create order + items
+      const created = await prisma.order.create({
+        data: {
+          user: { connect: { id: req.user.id } },
+          status: 'PENDING',
+          total,    // Prisma will coerce number -> Decimal
+          tax,
+          shipping,
+          items: {
+            create: items.map((it) => {
+              const p = prodById.get(it.productId)!;
+              return {
+                product: { connect: { id: p.id } },
+                supplierRel: { connect: { id: p.supplierId } },
+                qty: it.qty,
+                // snapshot product price exactly; Prisma accepts Decimal|number|string
+                unitPrice: p.price as any,
+              };
+            }),
+          },
+        },
+        include: {
+          items: { include: { product: { include: { supplier: true } } } },
+        },
+      });
 
-// Respond with computed totals for UI convenience
-res.json({
-  ...order,
-  computedTotals: { subtotal, tax, shipping, total },
-});
-
-  } catch (e) {
-    next(e);
+      res.json({
+        ...created,
+        computedTotals: { subtotal, tax, shipping, total },
+      });
+    } catch (e) {
+      next(e);
+    }
   }
-});
+);
 
 export default router;
