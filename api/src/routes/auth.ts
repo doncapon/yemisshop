@@ -6,7 +6,7 @@ import crypto from 'crypto';
 
 import { prisma } from '../lib/prisma.js';
 import { randomOtp, randomToken, hash } from '../lib/crypto.js';
-import { sendVerifyEmail } from '../lib/email.js';
+import { sendVerifyEmail,sendResetorForgotPasswordEmail } from '../lib/email.js';
 import { sendSmsOtp } from '../lib/sms.js';
 import { signJwt } from '../lib/jwt.js';
 import { authMiddleware } from '../lib/authMiddleware.js';
@@ -40,9 +40,9 @@ const VerifyPhoneSchema = z.object({
 // Small helper so async handlers match Express’ RequestHandler type
 const wrap =
   (fn: (req: Request, res: Response, next: NextFunction) => Promise<any>): RequestHandler =>
-  (req, res, next) => {
-    fn(req, res, next).catch(next);
-  };
+    (req, res, next) => {
+      fn(req, res, next).catch(next);
+    };
 
 // ---------------- Router ----------------
 
@@ -121,24 +121,34 @@ router.post(
   '/login',
   wrap(async (req, res) => {
     const { email, password } = LoginSchema.parse(req.body);
+    // inside router.post('/login'...)
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
 
-    // Block login if not fully verified (adjust to your policy)
-    const fullyVerified = Boolean(user.emailVerifiedAt) && Boolean(user.phoneVerifiedAt);
-    if (!fullyVerified) {
-      return res.status(403).json({
-        error: 'Account not fully verified',
-        emailVerified: Boolean(user.emailVerifiedAt),
-        phoneVerified: Boolean(user.phoneVerifiedAt),
-      });
-    }
+    const token = signJwt({ id: user.id, role: user.role, email: user.email }, '2h');
 
-    const token = signJwt({ id: user.id, role: user.role, email: user.email });
-    res.json({ token, user: { id: user.id, email: user.email, role: user.role } });
+    const emailVerified = !!user.emailVerifiedAt;
+    const phoneVerified = !!user.phoneVerifiedAt;
+
+    // Always return 200 + token. Client decides where to go.
+    return res.json({
+      token,
+      profile: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        status: user.status,                // 'PENDING' | 'PARTIAL' | 'VERIFIED'
+        emailVerified,
+        phoneVerified,
+        emailVerifyLastSentAt: user.emailVerifyLastSentAt,
+        phoneOtpLastSentAt: user.phoneOtpLastSentAt,
+      },
+      needsVerification: !(emailVerified && phoneVerified),
+    });
+
   })
 );
 
@@ -342,5 +352,123 @@ router.post(
     });
   })
 );
+
+router.get(
+  '/me',
+  authMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req as any).user?.id as string | undefined; // claims set by authMiddleware
+      if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          status: true,
+          name: true,
+          phone: true,
+          emailVerifiedAt: true,
+          phoneVerifiedAt: true,
+          // If you store resend throttling fields and want to expose them:
+          emailVerifyLastSentAt: true,
+          phoneOtpLastSentAt: true,
+        },
+      });
+
+      if (!user) return res.status(404).json({ error: 'User not found' });
+
+      res.json({
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        status: user.status, // e.g. PENDING | PARTIAL | VERIFIED
+        name: user.name,
+        phone: user.phone,
+        emailVerified: !!user.emailVerifiedAt,
+        phoneVerified: !!user.phoneVerifiedAt,
+        // Optionally surface last-sent timestamps if your UI uses them:
+        emailVerifyLastSentAt: user.emailVerifyLastSentAt,
+        phoneOtpLastSentAt: user.phoneOtpLastSentAt,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// 1) Request reset
+const ForgotSchema = z.object({ email: z.string().email() });
+
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { email } = ForgotSchema.parse(req.body);
+    const user = await prisma.user.findUnique({ where: { email } });
+
+    // Always respond 200 to avoid user enumeration.
+    if (!user) return res.json({ ok: true });
+
+    const token = crypto.randomBytes(24).toString('hex');
+    const expires = new Date(Date.now() + 60 * 60 * 1000); // 60 mins
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { resetPasswordToken: token, resetPasswordExpiresAt: expires },
+    });
+
+    const appUrl = process.env.APP_URL || 'http://localhost:5173';
+    const resetUrl = `${appUrl}/reset-password?token=${encodeURIComponent(token)}`;
+
+    // Reuse your email transport
+    await sendResetorForgotPasswordEmail(
+      user.email,
+      resetUrl,
+      'Reset your YemiShop password', // subject override if your helper supports it
+      `Click the link to reset your password:`
+    );
+
+    res.json({ ok: true });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 2) Perform reset
+const ResetSchema = z.object({
+  token: z.string().min(10),
+  password: z.string().min(8),
+});
+
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { token, password } = ResetSchema.parse(req.body);
+
+    const user = await prisma.user.findFirst({
+      where: {
+        resetPasswordToken: token,
+        resetPasswordExpiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!user) return res.status(400).json({ error: 'Invalid or expired token' });
+
+    const hash = await bcrypt.hash(password, 10);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: hash,
+        resetPasswordToken: null,
+        resetPasswordExpiresAt: null,
+      },
+    });
+
+    res.json({ ok: true, message: 'Password updated' });
+  } catch (e) {
+    next(e);
+  }
+});
 
 export default router;

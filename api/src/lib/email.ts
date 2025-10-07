@@ -27,3 +27,13 @@ export async function sendVerifyEmail(to: string, verifyUrl: string) {
     html,
   });
 }
+
+export async function sendResetorForgotPasswordEmail(to: string, verifyUrl: string, subject: string, html: string) {
+  html += " " + verifyUrl;
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || 'no-reply@yemisshop.local',
+    to,
+    subject: subject,
+    html,
+  });
+}
