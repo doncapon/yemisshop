@@ -1,2 +1,70 @@
-/* src/index.css */
 @import "tailwindcss";
+
+/* ---- Brand tokens (Tailwind v4) ---- */
+@theme {
+  /* Primary (deep blue) */
+  --color-primary-50:  #EFF6FF;
+  --color-primary-100: #DBEAFE;
+  --color-primary-200: #BFDBFE;
+  --color-primary-300: #93C5FD;
+  --color-primary-400: #60A5FA;
+  --color-primary-500: #3B82F6;
+  --color-primary-600: #2563EB;
+  --color-primary-700: #1D4ED8;
+  --color-primary-800: #1E40AF;
+  --color-primary-900: #1E3A8A;
+  --color-primary-950: #172554;
+
+  /* Accent (orange) */
+  --color-accent-50:  #FFF7ED;
+  --color-accent-100: #FFEDD5;
+  --color-accent-200: #FED7AA;
+  --color-accent-300: #FDBA74;
+  --color-accent-400: #FB923C;
+  --color-accent-500: #F97316;
+  --color-accent-600: #EA580C;
+  --color-accent-700: #C2410C;
+  --color-accent-800: #9A3412;
+  --color-accent-900: #7C2D12;
+  --color-accent-950: #431407;
+
+  /* Surfaces & text */
+  --color-surface:       #FFFFFF;
+  --color-surface-soft:  #F9FAFB;
+  --color-surface-alt:   #F3F4F6;
+  --color-surface-ring:  #E5E7EB;
+
+  --color-ink:           #111827;
+  --color-ink-soft:      #6B7280;
+  --color-ink-invert:    #FFFFFF;
+
+  /* Status */
+  --color-success: #16A34A;
+  --color-danger:  #DC2626;
+  --color-warning: #F59E0B;
+  --color-info:    #0EA5E9;
+
+  --color-text:        #0f172a; /* slate-900 */
+  --color-text-muted:  #475569; /* slate-600 */
+  --color-border:      #e2e8f0; /* slate-200 */
+  --color-bg:          #ffffff;
+  --color-bg-soft:     #f8fafc; /* slate-50 */
+
+  /* Optional radii & shadows */
+  --radius-xl: 0.9rem;
+  --radius-2xl: 1.25rem;
+}
+
+/* Dark mode overrides */
+:root.dark {
+  --color-surface:      #0B0F1A;
+  --color-surface-soft: #0B0F1A;
+  --color-surface-alt:  #0F172A;
+  --color-ink:          #FFFFFF;
+  --color-ink-soft:     #94A3B8;
+}
+
+/* Optional: gradient helper */
+.bg-hero-radial {
+  background-image: radial-gradient(1200px 400px at 50% -100px, rgba(59,130,246,0.18), transparent 60%);
+}

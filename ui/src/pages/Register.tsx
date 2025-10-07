@@ -48,6 +48,7 @@ export default function Register() {
     password: '',
     confirmPassword: '',
     role: 'SHOPPER' as Role,
+    dateOfBirth: '', // NEW (YYYY-MM-DD)
   });
   const [firstName, setFirstName] = useState('');
   const [middleName, setMiddleName] = useState(''); // optional
@@ -62,13 +63,14 @@ export default function Register() {
       (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         setForm((f) => ({ ...f, [key]: e.target.value }));
       };
+
   const validate = () => {
     if (!firstName.trim()) return 'Please enter your first name';
     if (!lastName.trim()) return 'Please enter your last name';
     if (!form.email.trim()) return 'Please enter your email';
     if (!/^\S+@\S+\.\S+$/.test(form.email)) return 'Please enter a valid email';
 
-    // 👇 Password complexity: 8+ chars, at least one letter, one number, one special char
+    // Password complexity: 8+ chars, at least one letter, one number, one special char
     const pwd = form.password ?? '';
     const hasMinLen = pwd.length >= 8;
     const hasLetter = /[A-Za-z]/.test(pwd);
@@ -84,9 +86,16 @@ export default function Register() {
     if (localDigits && localDigits.length < 6) return 'Please enter a valid phone number';
     if (!COUNTRIES.some((c) => c.dial === form.countryDial)) return 'Please select a valid country code';
 
+    if (form.dateOfBirth) {
+      const dob = new Date(form.dateOfBirth + 'T00:00:00');
+      if (Number.isNaN(+dob)) return 'Please select a valid date of birth';
+      const today = new Date();
+      const age = Math.floor((+today - +dob) / (365.25 * 24 * 3600 * 1000));
+      if (age < 13) return 'You must be at least 13 years old to register';
+    }
+
     return null;
   };
-
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -97,24 +106,36 @@ export default function Register() {
 
     try {
       setSubmitting(true);
+
       const phone =
         form.localPhone.trim()
           ? `+${form.countryDial}${form.localPhone.replace(/\D/g, '')}`
           : null;
 
-      await api.post('/api/auth/register', {
+      // Build ONE payload and send ONE request
+      const payload = {
         email: form.email.trim().toLowerCase(),
         firstName,
-        middleName: middleName || undefined, // optional
+        middleName: middleName || undefined,
         lastName,
         phone,
         password: form.password,
         role: form.role,
         dialCode: form.countryDial,
-        localPhone: form.localPhone
-      });
+        localPhone: form.localPhone,
+        dateOfBirth: form.dateOfBirth ? new Date(form.dateOfBirth).toISOString() : undefined, // NEW
+      };
 
-      nav('/verify', { replace: true });
+      const res = await api.post('/api/auth/register', payload);
+
+      // Save temporary token for resend endpoints (if backend returns it)
+      if (res.data?.tempToken) {
+        localStorage.setItem('verifyToken', res.data.tempToken);
+      }
+
+      // Redirect to /verify with email for convenience
+      const q = new URLSearchParams({ e: payload.email }).toString();
+      nav(`/verify?${q}`);
     } catch (e: any) {
       setErr(e?.response?.data?.error || 'Registration failed');
     } finally {
@@ -142,7 +163,7 @@ export default function Register() {
             <label className="block text-sm">First name</label>
             <input
               value={firstName}
-              onChange={(e)=>setFirstName(e.target.value)}
+              onChange={(e) => setFirstName(e.target.value)}
               className="border p-2 w-full rounded"
               placeholder="Jane"
             />
@@ -153,7 +174,7 @@ export default function Register() {
             </label>
             <input
               value={middleName}
-              onChange={(e)=>setMiddleName(e.target.value)}
+              onChange={(e) => setMiddleName(e.target.value)}
               className="border p-2 w-full rounded"
               placeholder="A."
             />
@@ -161,7 +182,8 @@ export default function Register() {
           <div className="space-y-1">
             <label className="block text-sm">Last name</label>
             <input
-              value={lastName}onChange={(e)=>setLastName(e.target.value)}
+              value={lastName}
+              onChange={(e) => setLastName(e.target.value)}
               className="border p-2 w-full rounded"
               placeholder="Doe"
             />
@@ -180,11 +202,19 @@ export default function Register() {
           />
         </div>
 
+        <div className="space-y-1 text-left">
+          <label className="block text-sm">Date of birth</label>
+          <input
+            type="date"
+            value={form.dateOfBirth}
+            onChange={onChange('dateOfBirth')}
+            className="border p-2 w-full rounded"
+          />
+        </div>
+
         {/* Phone */}
         <div className="space-y-1 text-left">
-          <label className="block text-sm">
-            Phone
-          </label>
+          <label className="block text-sm">Phone</label>
           <div className="flex gap-2">
             <select
               value={form.countryDial}

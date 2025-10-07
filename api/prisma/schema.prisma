@@ -45,6 +45,9 @@ model User {
   role      String   // "ADMIN" | "SUPPLIER" | "SHOPPER"
   name      String?
   phone     String?
+
+  dateOfBirth DateTime? 
+
   addressId         String?   @unique
   address           Address?  @relation("UserPrimaryAddress", fields: [addressId], references: [id])
   shippingAddressId String?   @unique
@@ -75,6 +78,9 @@ model User {
   emailVerifyExpiresAt   DateTime?
   emailVerifyLastSentAt  DateTime?
   emailVerifySendCountDay Int     @default(0)
+  
+  resetPasswordToken       String?
+  resetPasswordExpiresAt   DateTime?
 }
 
 
