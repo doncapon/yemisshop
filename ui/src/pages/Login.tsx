@@ -8,13 +8,15 @@ type MeResponse = {
   id: string;
   email: string;
   role: 'ADMIN' | 'SUPPLIER' | 'SHOPPER';
+  firstName: string;
+  lastName: string;
   emailVerified: boolean;
   phoneVerified: boolean;
 };
 
 export default function Login() {
-  const [email, setEmail] = useState('shopper@example.com');
-  const [password, setPassword] = useState('Shopper123!');
+  const [email, setEmail] = useState('olusegun.akintimehin@gmail.com');
+  const [password, setPassword] = useState('Emmanuel1987#');
   const [err, setErr] = useState<string | null>(null);
 
   // shown only when not-verified
@@ -52,7 +54,7 @@ export default function Login() {
       // 3) If fully verified, persist auth + go on
       if (profile.emailVerified && profile.phoneVerified) {
         setAuth(token, profile.role, profile.email);
-        const to = loc.state?.from?.pathname || '/';
+        const to = loc.state?.from?.pathname || '/dashboard';
         nav(to);
         return;
       }
@@ -159,6 +161,11 @@ export default function Login() {
       <button type="submit" className="border px-4 py-2">
         Login
       </button>
+
+      <div className="text-sm mt-2">
+        <a className="underline" href="/forgot-password">Forgot your password?</a>
+      </div>
+
     </form>
   );
 }

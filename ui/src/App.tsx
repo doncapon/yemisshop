@@ -11,13 +11,20 @@ import AdminDashboard from './pages/AdminDashboard.tsx';
 import SupplierDashboard from './pages/SupplierDashboard.tsx';
 import ProtectedRoute from './components/ProtectedRoute.tsx';
 import Verify from './pages/Verify.tsx';
+import Profile from './pages/Profile.tsx';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
+import UserPersonalisedPage from './pages/UserPersonalisedPage.tsx';
+import Footer from './components/Footer.tsx';
 
 export default function App() {
+  function Orders() { return <div className="max-w-4xl mx-auto p-6">Purchase history coming soon…</div>; }
+
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar />
       {/* Page margins + centered main content */}
-      <main className="w-full px-4 md:px-8 flex-1">
+      <main className="w-full px-4 md:px-8 flex-1 bg-primary-700">
         <div className="max-w-7xl mx-auto"> {/* 👈 centered container */}
           <Routes>
             <Route path="/" element={<Catalog />} />
@@ -27,13 +34,24 @@ export default function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/verify" element={<Verify />} />
-
-
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/orders" element={<Orders />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route
               path="/admin/*"
               element={
                 <ProtectedRoute roles={['ADMIN']}>
                   <AdminDashboard />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute roles={['SHOPPER']}>
+                  <UserPersonalisedPage />
                 </ProtectedRoute>
               }
             />
@@ -51,6 +69,7 @@ export default function App() {
           </Routes>
         </div>
       </main>
+      <Footer />
     </div>
   );
 }

@@ -37,12 +37,12 @@ export default function Checkout() {
   const total = cart.reduce((sum, it) => sum + it.totalPrice, 0);
 
   return (
-    <div>
+    <div className='pt-8 pb-15'>
       <h1 className="text-xl mb-4">Checkout</h1>
 
       <ul className="space-y-2">
         {cart.map((it) => (
-          <li key={it.productId} className="flex justify-between border p-2 rounded">
+          <li key={it.productId} className="flex justify-between border p-2 rounded bg-zinc-400">
             <span>
               {it.title} × {it.qty}
             </span>
@@ -51,7 +51,7 @@ export default function Checkout() {
         ))}
       </ul>
 
-      <div className="mt-4 flex justify-between font-medium">
+      <div className="w-90 mt-4 flex gap-x-42 font-semibold text-lg bg-zinc-100">
         <span>Total</span>
         <span>{ngn.format(total)}</span>
       </div>
@@ -59,7 +59,7 @@ export default function Checkout() {
       <button
         disabled={createOrder.isPending}
         onClick={() => createOrder.mutate()}
-        className="border px-4 py-2 mt-4"
+        className="border px-4 py-2 mt-4  bg-accent-500 px-4 py-2 text-white hover:bg-accent-600 transition"
       >
         {createOrder.isPending ? 'Placing…' : 'Place Order'}
       </button>

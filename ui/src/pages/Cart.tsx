@@ -105,7 +105,7 @@ export default function Cart() {
   };
 
   return (
-    <div>
+    <div className='pb-15 pt-8'>
       <h1 className="text-xl mb-4">Your Cart</h1>
 
       {cart.length === 0 ? (
@@ -121,7 +121,7 @@ export default function Cart() {
             {cart.map((it) => (
               <li
                 key={it.productId}
-                className="border rounded p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                className="border rounded p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-100"
               >
                 <div className="min-w-0">
                   <div className="font-medium truncate">{it.title}</div>
@@ -132,7 +132,7 @@ export default function Cart() {
                   <div className="flex items-center gap-1">
                     <button
                       aria-label="Decrease quantity"
-                      className="px-2 py-1 border rounded"
+                      className="px-2 py-1 border rounded text-accent-300"
                       onClick={() => dec(it.productId)}
                     >
                       −
@@ -143,18 +143,18 @@ export default function Cart() {
                       step={1}
                       value={it.qty}
                       onChange={(e) => updateQty(it.productId, Number(e.target.value))}
-                      className="w-16 text-center border rounded py-1"
+                      className="w-16 text-center border rounded py-1 text-accent-500"
                     />
                     <button
                       aria-label="Increase quantity"
-                      className="px-2 py-1 border rounded"
+                      className="px-2 py-1 border rounded text-accent-300"
                       onClick={() => inc(it.productId)}
                     >
                       +
                     </button>
                   </div>
 
-                  <div className="w-28 text-right font-medium">
+                  <div className="w-28 text-right font-medium ">
                     {ngn.format(Number(it.totalPrice) || 0)}
                   </div>
 
@@ -169,13 +169,13 @@ export default function Cart() {
             ))}
           </ul>
 
-          <div className="mt-4 flex gap-x-12 font-semibold text-lg">
+          <div className="w-90 mt-4 flex gap-x-42 font-semibold text-lg bg-zinc-100">
             <span>Total : </span>
             <span>{ngn.format(total)}</span>
           </div>
 
 
-          <Link to="/checkout" className="inline-block mt-4 underline">
+          <Link to="/checkout" className="inline-block mt-4  bg-accent-500 px-4 py-2 text-white hover:bg-accent-600 transition">
             Proceed to Checkout
           </Link>
         </>
