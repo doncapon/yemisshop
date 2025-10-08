@@ -21,11 +21,31 @@ CREATE TABLE "User" (
     "email" TEXT NOT NULL,
     "password" TEXT NOT NULL,
     "role" TEXT NOT NULL,
-    "name" TEXT,
+    "firstName" TEXT NOT NULL,
+    "middleName" TEXT,
+    "lastName" TEXT NOT NULL,
     "phone" TEXT,
+    "dateOfBirth" TIMESTAMP(3),
     "addressId" TEXT,
     "shippingAddressId" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
+    "emailVerifiedAt" TIMESTAMP(3),
+    "emailVerifyTokenExpiresAt" TIMESTAMP(3),
+    "phoneVerifiedAt" TIMESTAMP(3),
+    "phoneOtpHash" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "phoneVerified" BOOLEAN NOT NULL DEFAULT false,
+    "emailVerified" BOOLEAN NOT NULL DEFAULT false,
+    "phoneOtpCode" TEXT,
+    "phoneOtpExpiresAt" TIMESTAMP(3),
+    "phoneOtpLastSentAt" TIMESTAMP(3),
+    "phoneOtpSendCountDay" INTEGER NOT NULL DEFAULT 0,
+    "emailVerifyToken" TEXT,
+    "emailVerifyExpiresAt" TIMESTAMP(3),
+    "emailVerifyLastSentAt" TIMESTAMP(3),
+    "emailVerifySendCountDay" INTEGER NOT NULL DEFAULT 0,
+    "resetPasswordToken" TEXT,
+    "resetPasswordExpiresAt" TIMESTAMP(3),
 
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
 );
@@ -93,6 +113,23 @@ CREATE TABLE "Order" (
 );
 
 -- CreateTable
+CREATE TABLE "Payment" (
+    "id" TEXT NOT NULL,
+    "orderId" TEXT NOT NULL,
+    "provider" TEXT NOT NULL DEFAULT 'PAYSTACK',
+    "reference" TEXT NOT NULL,
+    "amount" DECIMAL(10,2) NOT NULL,
+    "currency" TEXT NOT NULL DEFAULT 'NGN',
+    "status" TEXT NOT NULL,
+    "channel" TEXT,
+    "providerRef" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "Payment_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "OrderItem" (
     "id" TEXT NOT NULL,
     "orderId" TEXT NOT NULL,
@@ -150,6 +187,15 @@ CREATE UNIQUE INDEX "Supplier_userId_key" ON "Supplier"("userId");
 -- CreateIndex
 CREATE UNIQUE INDEX "Category_name_key" ON "Category"("name");
 
+-- CreateIndex
+CREATE UNIQUE INDEX "Payment_reference_key" ON "Payment"("reference");
+
+-- CreateIndex
+CREATE INDEX "Payment_orderId_idx" ON "Payment"("orderId");
+
+-- CreateIndex
+CREATE INDEX "Payment_provider_status_createdAt_idx" ON "Payment"("provider", "status", "createdAt");
+
 -- AddForeignKey
 ALTER TABLE "User" ADD CONSTRAINT "User_addressId_fkey" FOREIGN KEY ("addressId") REFERENCES "Address"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
@@ -170,6 +216,9 @@ ALTER TABLE "Order" ADD CONSTRAINT "Order_userId_fkey" FOREIGN KEY ("userId") RE
 
 -- AddForeignKey
 ALTER TABLE "Order" ADD CONSTRAINT "Order_shippingAddressId_fkey" FOREIGN KEY ("shippingAddressId") REFERENCES "Address"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Payment" ADD CONSTRAINT "Payment_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

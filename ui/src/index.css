@@ -44,7 +44,7 @@
   --color-warning: #F59E0B;
   --color-info:    #0EA5E9;
 
-  --color-text:        #0f172a; /* slate-900 */
+  --color-text:        white /*#0f172a; /* slate-900 */
   --color-text-muted:  #475569; /* slate-600 */
   --color-border:      #e2e8f0; /* slate-200 */
   --color-bg:          #ffffff;

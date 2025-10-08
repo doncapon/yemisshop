@@ -42,6 +42,7 @@ export default function Login() {
 
     try {
       // 1) Login to get a token
+
       const res = await api.post('/api/auth/login', { email, password });
       const { token } = res.data as { token: string };
 
@@ -50,7 +51,6 @@ export default function Login() {
         headers: { Authorization: `Bearer ${token}` },
       });
       const profile = meRes.data;
-
       // 3) If fully verified, persist auth + go on
       if (profile.emailVerified && profile.phoneVerified) {
         setAuth(token, profile.role, profile.email);

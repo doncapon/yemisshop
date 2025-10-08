@@ -23,8 +23,9 @@ type PriceBucket = { label: string; min: number; max?: number };
 const PRICE_BUCKETS: PriceBucket[] = [
   { label: '₦1,000 – ₦4,999', min: 1000, max: 4999 },
   { label: '₦5,000 – ₦9,999', min: 5000, max: 9999 },
-  { label: '₦10,000 – ₦499,999', min: 10000, max: 499999 },
-  { label: '₦500,000+', min: 500000 },
+  { label: '₦10,000 – ₦49,999', min: 10000, max: 49999 },
+  { label: '₦50,000 – ₦99,999', min: 50000, max: 99999 },
+  { label: '₦100,000+', min:100000 },
 ];
 
 function inBucket(price: number, b: PriceBucket) {
@@ -240,10 +241,7 @@ export default function Catalog() {
                         />
                       )}
                       <h3 className="font-medium text-accent-600">{p.title}</h3>
-                      {p.categoryName && (
-                        <p className="text-xs opacity-60">Category: {p.categoryName}</p>
-                      )}
-                      <p className="text-sm opacity-80">{p.description}</p>
+                      
                       <p className="text-sm mt-1 font-semibold">
                         {ngn.format(Number(p.price) || 0)}
                       </p>

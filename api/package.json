@@ -13,6 +13,7 @@
   "dependencies": {
     "@prisma/client": "^6.16.3",
     "@types/bcryptjs": "^3.0.0",
+    "axios": "^1.12.2",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -22,6 +23,7 @@
     "morgan": "^1.10.0",
     "node-fetch": "^3.3.2",
     "nodemailer": "^7.0.6",
+    "ts-node": "^10.9.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
