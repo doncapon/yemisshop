@@ -62,7 +62,6 @@ router.post(
     const passwordHash = await bcrypt.hash(body.password, 10);
 
     // Compose display name & phone
-    const name = [body.firstName, body.middleName, body.lastName].filter(Boolean).join(' ');
     const phone = body.dialCode && body.localPhone ? `${body.dialCode}${body.localPhone}` : null;
 
     const user = await prisma.user.create({
@@ -70,7 +69,9 @@ router.post(
         email: body.email,
         password: passwordHash,
         role: 'SHOPPER',
-        name,
+        firstName: body.firstName,
+        middleName: body.middleName,
+        lastName: body.lastName,
         phone,
         status: 'PENDING',
       },
@@ -367,14 +368,18 @@ router.get(
           id: true,
           email: true,
           role: true,
+          firstName: true,
+          middleName: true,
+          lastName: true,
           status: true,
-          name: true,
           phone: true,
           emailVerifiedAt: true,
           phoneVerifiedAt: true,
           // If you store resend throttling fields and want to expose them:
           emailVerifyLastSentAt: true,
           phoneOtpLastSentAt: true,
+          address: true,
+          shippingAddress: true,
         },
       });
 
@@ -385,13 +390,17 @@ router.get(
         email: user.email,
         role: user.role,
         status: user.status, // e.g. PENDING | PARTIAL | VERIFIED
-        name: user.name,
         phone: user.phone,
+        firstName: user.firstName,
+        middleName: user.middleName,
+        lastName: user.lastName,
         emailVerified: !!user.emailVerifiedAt,
         phoneVerified: !!user.phoneVerifiedAt,
         // Optionally surface last-sent timestamps if your UI uses them:
         emailVerifyLastSentAt: user.emailVerifyLastSentAt,
         phoneOtpLastSentAt: user.phoneOtpLastSentAt,
+        address: user.address,
+        shippingAddress: user.shippingAddress
       });
     } catch (err) {
       next(err);

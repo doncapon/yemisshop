@@ -37,6 +37,7 @@ export default function Navbar() {
 
   // Local names fetched from /api/auth/me
   const [firstName, setFirstName] = useState<string | null>(null);
+  const [middleName, setMiddleName] = useState<string | null>(null);
   const [lastName, setLastName] = useState<string | null>(null);
 
   // Fetch first/last name from the backend whenever we have a token
@@ -46,13 +47,13 @@ export default function Navbar() {
       if (!token) {
         setFirstName(null);
         setLastName(null);
+        setMiddleName(null);
         return;
       }
       try {
         const { data } = await api.get<MeResponse>('/api/auth/me', {
           headers: { Authorization: `Bearer ${token}` },
         });
-
         // Prefer explicit first/last; if missing, try splitting combined name
         let f = data.firstName?.trim() || '';
         let l = data.lastName?.trim() || '';
@@ -80,9 +81,13 @@ export default function Navbar() {
 
   const displayName = useMemo(() => {
     const f = firstName?.trim();
+    const m = middleName != undefined? middleName?.trim()[0] + "." : "";
     const l = lastName?.trim();
-    if(f && l) return f + " " + l;
-  }, [firstName, lastName]);
+
+    const mr = (m != '.' && m != undefined )? m : '';
+
+    if(f && l) return f + " " +mr+" "+ l;
+  }, [firstName, lastName, middleName]);
 
   const initials = useMemo(() => {
     const f = (firstName?.trim()?.[0] || '').toUpperCase();
@@ -117,7 +122,7 @@ export default function Navbar() {
             </>
           ) : (
             <div className="relative" ref={menuRef}>
-              <button
+             <button
                 onClick={() => setOpen((v) => !v)}
                 className="w-9 h-9 rounded-full grid place-items-center border bg-black text-white font-semibold"
                 aria-label="User menu"

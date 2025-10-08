@@ -37,3 +37,19 @@ export async function sendResetorForgotPasswordEmail(to: string, verifyUrl: stri
     html,
   });
 }
+
+export function paymentLinkEmail(orderId: string, link: string) {
+  return {
+    subject: `Pay for YemiShop Order ${orderId}`,
+    html: `
+      <div style="font-family:sans-serif;max-width:640px;margin:auto">
+        <h2>Complete your payment</h2>
+        <p>Please click the button below to pay for your order <b>${orderId}</b>.</p>
+        <p><a href="${link}" style="display:inline-block;padding:10px 16px;background:#1d4ed8;color:#fff;border-radius:8px;text-decoration:none">Pay now</a></p>
+        <p>Or copy this link: <br /><a href="${link}">${link}</a></p>
+        <p>Thank you for shopping with YemiShop.</p>
+      </div>
+    `,
+  };
+}
+

@@ -43,16 +43,16 @@ const COUNTRIES: Country[] = [
 export default function Register() {
   const [form, setForm] = useState({
     email: '',
+    firstName: '',
+    middleName: '', // optional
+    lastName: '',
     countryDial: '234',
     localPhone: '',
     password: '',
     confirmPassword: '',
     role: 'SHOPPER' as Role,
-    dateOfBirth: '', // NEW (YYYY-MM-DD)
+    dateOfBirth: '', // YYYY-MM-DD
   });
-  const [firstName, setFirstName] = useState('');
-  const [middleName, setMiddleName] = useState(''); // optional
-  const [lastName, setLastName] = useState('');
 
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -60,17 +60,16 @@ export default function Register() {
 
   const onChange =
     (key: keyof typeof form) =>
-      (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-        setForm((f) => ({ ...f, [key]: e.target.value }));
-      };
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+      setForm((f) => ({ ...f, [key]: e.target.value }));
+    };
 
   const validate = () => {
-    if (!firstName.trim()) return 'Please enter your first name';
-    if (!lastName.trim()) return 'Please enter your last name';
+    if (!form.firstName.trim()) return 'Please enter your first name';
+    if (!form.lastName.trim()) return 'Please enter your last name';
     if (!form.email.trim()) return 'Please enter your email';
     if (!/^\S+@\S+\.\S+$/.test(form.email)) return 'Please enter a valid email';
 
-    // Password complexity: 8+ chars, at least one letter, one number, one special char
     const pwd = form.password ?? '';
     const hasMinLen = pwd.length >= 8;
     const hasLetter = /[A-Za-z]/.test(pwd);
@@ -112,28 +111,25 @@ export default function Register() {
           ? `+${form.countryDial}${form.localPhone.replace(/\D/g, '')}`
           : null;
 
-      // Build ONE payload and send ONE request
       const payload = {
         email: form.email.trim().toLowerCase(),
-        firstName,
-        middleName: middleName || undefined,
-        lastName,
+        firstName: form.firstName,
+        middleName: form.middleName || undefined,
+        lastName: form.lastName,
         phone,
         password: form.password,
         role: form.role,
         dialCode: form.countryDial,
         localPhone: form.localPhone,
-        dateOfBirth: form.dateOfBirth ? new Date(form.dateOfBirth).toISOString() : undefined, // NEW
+        dateOfBirth: form.dateOfBirth ? new Date(form.dateOfBirth).toISOString() : undefined,
       };
 
       const res = await api.post('/api/auth/register', payload);
 
-      // Save temporary token for resend endpoints (if backend returns it)
       if (res.data?.tempToken) {
         localStorage.setItem('verifyToken', res.data.tempToken);
       }
 
-      // Redirect to /verify with email for convenience
       const q = new URLSearchParams({ e: payload.email }).toString();
       nav(`/verify?${q}`);
     } catch (e: any) {
@@ -162,8 +158,8 @@ export default function Register() {
           <div className="space-y-1">
             <label className="block text-sm">First name</label>
             <input
-              value={firstName}
-              onChange={(e) => setFirstName(e.target.value)}
+              value={form.firstName}
+              onChange={onChange('firstName')}
               className="border p-2 w-full rounded"
               placeholder="Jane"
             />
@@ -173,17 +169,17 @@ export default function Register() {
               Middle name <span className="opacity-60">(optional)</span>
             </label>
             <input
-              value={middleName}
-              onChange={(e) => setMiddleName(e.target.value)}
+              value={form.middleName}
+              onChange={onChange('middleName')}
               className="border p-2 w-full rounded"
-              placeholder="A."
+              placeholder="Amy"
             />
           </div>
           <div className="space-y-1">
             <label className="block text-sm">Last name</label>
             <input
-              value={lastName}
-              onChange={(e) => setLastName(e.target.value)}
+              value={form.lastName}
+              onChange={onChange('lastName')}
               className="border p-2 w-full rounded"
               placeholder="Doe"
             />
@@ -202,6 +198,7 @@ export default function Register() {
           />
         </div>
 
+        {/* DOB */}
         <div className="space-y-1 text-left">
           <label className="block text-sm">Date of birth</label>
           <input

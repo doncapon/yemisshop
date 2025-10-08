@@ -1,164 +1,121 @@
-// src/routes/profile.ts
-import { Router, type Request, type Response, type NextFunction } from 'express';
+// api/src/routes/profile.ts
+import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { authMiddleware } from '../lib/authMiddleware.js';
+import { authMiddleware, type AuthedRequest } from '../lib/authMiddleware.js';
 
 const router = Router();
 
-// Small helper so TypeScript is happy when reading req.user
-function requireUserId(req: Request, res: Response): string | undefined {
-  const u = (req as any).user as { id: string } | undefined;
-  if (!u?.id) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return undefined;
-  }
-  return u.id;
-}
-
-/**
- * Shape we return to the client (kept close to your Profile page needs)
- */
-function toProfileDTO(u: any) {
-  return {
-    id: u.id,
-    email: u.email,
-    role: u.role,
-    status: u.status ?? 'PENDING',
-    name: u.name ?? null,
-    phone: u.phone ?? null,
-    dateOfBirth: u.dateOfBirth ? u.dateOfBirth.toISOString() : null,
-    address: u.address ?? null,
-    shippingAddress: u.shippingAddress ?? null, // if present in your schema
-
-    // Booleans derived from *_VerifiedAt timestamps (adjust if you use other flags)
-    emailVerified: Boolean(u.emailVerifiedAt),
-    phoneVerified: Boolean(u.phoneVerifiedAt),
-
-    // If you later add bank fields/table, include here
-    bank: null as any, // keep interface stable for now
-  };
-}
-
-/**
- * GET /api/profile
- * Returns the current user's profile snapshot.
- */
-router.get(
-  '/',
-  authMiddleware,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = requireUserId(req, res);
-      if (!userId) return;
-
-      const u = await prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          id: true,
-          email: true,
-          role: true,
-          status: true,
-          name: true,
-          phone: true,
-          dateOfBirth: true,
-          address: true,
-          // include only if this column exists in your schema
-          // @ts-ignore
-          shippingAddress: true,
-
-          emailVerifiedAt: true,
-          phoneVerifiedAt: true,
-        },
-      });
-
-      if (!u) return res.status(404).json({ error: 'User not found' });
-      return res.json(toProfileDTO(u));
-    } catch (e) {
-      next(e);
-    }
-  }
-);
-
-/**
- * PUT /api/profile
- * Update a subset of editable fields.
- * - dateOfBirth is ISO date string (YYYY-MM-DD or full ISO)
- */
-const UpdateProfileSchema = z.object({
-  phone: z.string().trim().min(3).max(40).nullable().optional(),
-  dateOfBirth: z
-    .string()
-    .trim()
-    .nullable()
-    .optional()
-    .refine(
-      (v) => v == null || !Number.isNaN(+new Date(v)),
-      'dateOfBirth must be a valid date string'
-    ),
-  address: z.string().trim().nullable().optional(),
-  shippingAddress: z.string().trim().nullable().optional(), // if present
-  // If you later add bank fields/table, extend here
-  // bank: z.object({ bankName: z.string().nullable().optional(), ... }).optional()
+const addressSchema = z.object({
+  houseNumber: z.string().min(1),
+  streetName:  z.string().min(1),
+  postCode:    z.string().optional().default(''),
+  town:        z.string().optional().default(''),
+  city:        z.string().min(1),
+  state:       z.string().min(1),
+  country:     z.string().min(1),
 });
 
-router.put(
-  '/',
-  authMiddleware,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = requireUserId(req, res);
-      if (!userId) return;
+/**
+ * GET /api/profile/me
+ * (You said you already have this; keeping here for completeness)
+ */
+router.get('/me', authMiddleware, async (req: AuthedRequest, res) => {
+  const userId = req.user!.id;
 
-      const { phone, dateOfBirth, address, shippingAddress } =
-        UpdateProfileSchema.parse(req.body);
-
-      const data: Record<string, any> = {
-        phone: phone ?? null,
-        address: address ?? null,
-      };
-
-      // Only include shippingAddress if your schema has it.
-      // If your User model does not have this column yet, remove this line.
-      (data as any).shippingAddress = shippingAddress ?? null;
-
-      if (dateOfBirth === undefined) {
-        // untouched
-      } else if (dateOfBirth === null || dateOfBirth === '') {
-        data.dateOfBirth = null;
-      } else {
-        // Accept both 'YYYY-MM-DD' and full ISO
-        const d = new Date(dateOfBirth);
-        if (Number.isNaN(+d)) {
-          return res.status(400).json({ error: 'Invalid dateOfBirth' });
-        }
-        data.dateOfBirth = d;
-      }
-
-      const u = await prisma.user.update({
-        where: { id: userId },
-        data,
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      firstName: true,
+      middleName: true,
+      lastName: true,
+      phone: true,
+      status: true,
+      emailVerifiedAt: true,
+      phoneVerifiedAt: true,
+      dateOfBirth: true,
+      // NOTE: field names below match what your Checkout expects:
+      address: {
         select: {
-          id: true,
-          email: true,
-          role: true,
-          status: true,
-          name: true,
-          phone: true,
-          dateOfBirth: true,
-          address: true,
-          // @ts-ignore
-          shippingAddress: true,
-          emailVerifiedAt: true,
-          phoneVerifiedAt: true,
-        },
-      });
+          id: true, houseNumber: true, streetName: true, postCode: true,
+          town: true, city: true, state: true, country: true
+        }
+      },
+      shippingAddress: {
+        select: {
+          id: true, houseNumber: true, streetName: true, postCode: true,
+          town: true, city: true, state: true, country: true
+        }
+      },
+      createdAt: true,
+    },
+  });
 
-      return res.json(toProfileDTO(u));
-    } catch (e) {
-      next(e);
-    }
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  // Frontend expects { address, shippingAddress }
+  res.json({
+    address: user.address,
+    shippingAddress: user.shippingAddress,
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    firstName: user.firstName,
+    lastName: user.lastName,
+  });
+});
+
+/**
+ * POST /api/profile/address
+ * Save (upsert) HOME address and attach to user
+ */
+router.post('/address', authMiddleware, async (req: AuthedRequest, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const data = addressSchema.parse(req.body);
+
+    const saved = await prisma.$transaction(async (tx: { address: { create: (arg0: { data: { houseNumber: string; streetName: string; postCode: string; town: string; city: string; state: string; country: string; }; }) => any; }; user: { update: (arg0: { where: { id: string; }; data: { addressId: any; }; }) => any; }; }) => {
+      // create a new address
+      const addr = await tx.address.create({ data });
+      // attach to user
+      await tx.user.update({
+        where: { id: userId },
+        data: { addressId: addr.id },
+      });
+      return addr;
+    });
+
+    res.json(saved);
+  } catch (e) {
+    next(e);
   }
-);
+});
+
+/**
+ * POST /api/profile/shipping
+ * Save (upsert) SHIPPING address and attach to user
+ */
+router.post('/shipping', authMiddleware, async (req: AuthedRequest, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const data = addressSchema.parse(req.body);
+
+    const saved = await prisma.$transaction(async (tx: { address: { create: (arg0: { data: { houseNumber: string; streetName: string; postCode: string; town: string; city: string; state: string; country: string; }; }) => any; }; user: { update: (arg0: { where: { id: string; }; data: { shippingAddressId: any; }; }) => any; }; }) => {
+      const addr = await tx.address.create({ data });
+      await tx.user.update({
+        where: { id: userId },
+        data: { shippingAddressId: addr.id },
+      });
+      return addr;
+    });
+
+    res.json(saved);
+  } catch (e) {
+    next(e);
+  }
+});
 
 export default router;

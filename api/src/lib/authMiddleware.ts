@@ -20,6 +20,11 @@ export type AuthedUser = {
   role?: Role;
 };
 
+
+export type AuthedRequest = Request & {
+  user?: { id: string; email?: string; role?: Role };
+};
+
 // ---- Global Express augmentation (so req.user is known everywhere) ----------
 
 declare global {

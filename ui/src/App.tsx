@@ -16,6 +16,8 @@ import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import UserPersonalisedPage from './pages/UserPersonalisedPage.tsx';
 import Footer from './components/Footer.tsx';
+import Payment from './pages/Payment.tsx';
+import PaymentCallback from './pages/PaymentCallback.tsx';
 
 export default function App() {
   function Orders() { return <div className="max-w-4xl mx-auto p-6">Purchase history coming soon…</div>; }
@@ -30,7 +32,6 @@ export default function App() {
             <Route path="/" element={<Catalog />} />
             <Route path="/product/:id" element={<ProductDetail />} />
             <Route path="/cart" element={<Cart />} />
-            <Route path="/checkout" element={<Checkout />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/verify" element={<Verify />} />
@@ -38,6 +39,18 @@ export default function App() {
             <Route path="/orders" element={<Orders />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/payment" element={<Payment />} />
+            <Route path="/payment-callback" element={<PaymentCallback />} />
+
+            <Route
+              path="/checkout"
+              element={
+                <ProtectedRoute roles={['SHOPPER', 'ADMIN', 'SUPPLIER']}>
+                  <Checkout />
+                </ProtectedRoute>
+              }
+            />
+
             <Route
               path="/admin/*"
               element={

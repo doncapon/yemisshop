@@ -39,50 +39,51 @@ model Address {
  * ---------------- User ----------------
  */
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  password  String
-  role      String   // "ADMIN" | "SUPPLIER" | "SHOPPER"
-  name      String?
-  phone     String?
+  id       String  @id @default(cuid())
+  email    String  @unique
+  password String
+  role     String // "ADMIN" | "SUPPLIER" | "SHOPPER"
+  firstName  String
+  middleName String?  // optional
+  lastName   String
+  phone    String?
 
-  dateOfBirth DateTime? 
+  dateOfBirth DateTime?
 
-  addressId         String?   @unique
-  address           Address?  @relation("UserPrimaryAddress", fields: [addressId], references: [id])
-  shippingAddressId String?   @unique
-  shippingAddress   Address?  @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
+  addressId         String?  @unique
+  address           Address? @relation("UserPrimaryAddress", fields: [addressId], references: [id])
+  shippingAddressId String?  @unique
+  shippingAddress   Address? @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
 
   // ✅ NEW verification fields
-  status                     String    @default("PENDING") // PENDING | PARTIAL | VERIFIED
-  emailVerifiedAt            DateTime?
-  emailVerifyTokenExpiresAt  DateTime?
-  phoneVerifiedAt            DateTime?
-  phoneOtpHash               String?   // store hashed OTP
+  status                    String    @default("PENDING") // PENDING | PARTIAL | VERIFIED
+  emailVerifiedAt           DateTime?
+  emailVerifyTokenExpiresAt DateTime?
+  phoneVerifiedAt           DateTime?
+  phoneOtpHash              String? // store hashed OTP
 
   supplier  Supplier?
   orders    Order[]
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
-  phoneVerified        Boolean  @default(false)
-  emailVerified        Boolean  @default(false)
+  phoneVerified Boolean @default(false)
+  emailVerified Boolean @default(false)
 
   // Phone OTP
-  phoneOtpCode         String?    // e.g. "109132"
+  phoneOtpCode         String? // e.g. "109132"
   phoneOtpExpiresAt    DateTime?
   phoneOtpLastSentAt   DateTime?
   phoneOtpSendCountDay Int       @default(0) // rate cap per day (reset nightly or track with date)
 
   // Email verification token (if you do links)
-  emailVerifyToken       String?
-  emailVerifyExpiresAt   DateTime?
-  emailVerifyLastSentAt  DateTime?
-  emailVerifySendCountDay Int     @default(0)
-  
-  resetPasswordToken       String?
-  resetPasswordExpiresAt   DateTime?
-}
+  emailVerifyToken        String?
+  emailVerifyExpiresAt    DateTime?
+  emailVerifyLastSentAt   DateTime?
+  emailVerifySendCountDay Int       @default(0)
 
+  resetPasswordToken     String?
+  resetPasswordExpiresAt DateTime?
+}
 
 /**
  * ---------------- Supplier / Category / Product (unchanged aside from context) ----------------
@@ -142,27 +143,47 @@ model Product {
   createdAt DateTime @default(now())
 }
 
-/**
- * ---------------- Order ----------------
- */
 model Order {
   id String @id @default(cuid())
 
   user   User   @relation(fields: [userId], references: [id])
   userId String
 
-  // New required relation to Address for shipping
+  // required relation to Address for shipping
   shippingAddressId String
   shippingAddress   Address @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id], onDelete: Restrict)
 
-  total     Decimal  @db.Decimal(10, 2)
-  tax       Decimal  @db.Decimal(10, 2)
-  shipping  Decimal  @db.Decimal(10, 2)
-  status    String   @default("PENDING")
+  total    Decimal @db.Decimal(10, 2)
+  tax      Decimal @db.Decimal(10, 2)
+  shipping Decimal @db.Decimal(10, 2)
+  status   String  @default("PENDING")
+
   createdAt DateTime @default(now())
 
   items          OrderItem[]
   purchaseOrders PurchaseOrder[]
+  payments       Payment[]
+}
+
+model Payment {
+  id      String @id @default(cuid())
+  order   Order  @relation(fields: [orderId], references: [id])
+  orderId String
+
+  provider    String  @default("PAYSTACK")
+  reference   String  @unique // unique ref per attempt
+  amount      Decimal @db.Decimal(10, 2)
+  currency    String  @default("NGN")
+  status      String // PENDING | PAID | FAILED | CANCELED
+  channel     String? // card | bank_transfer | etc.
+  providerRef String? // Paystack’s transaction id/reference
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // indexes
+  @@index([orderId])
+  @@index([provider, status, createdAt])
 }
 
 /**

@@ -1,0 +1,141 @@
+// src/pages/Payment.tsx
+import { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import api from '../api/client';
+import { useAuthStore } from '../store/auth';
+
+type InitResp = {
+  reference: string;
+  amount: number;           // in kobo or naira? match your backend contract
+  currency: string;         // "NGN"
+  mode: 'trial' | 'paystack';
+  authorization_url?: string;
+  bank?: {
+    bank_name: string;
+    account_name: string;
+    account_number: string;
+  };
+  // Optional: expiresAt, note, etc.
+};
+
+export default function Payment() {
+  const nav = useNavigate();
+  const token = useAuthStore((s) => s.token);
+  const loc = useLocation();
+  const orderId = new URLSearchParams(loc.search).get('orderId') || '';
+
+  const [loading, setLoading] = useState(false);
+  const [init, setInit] = useState<InitResp | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!orderId) return;
+    if (!token) {
+      setErr('You must be logged in to pay.');
+      return;
+    }
+    (async () => {
+      setLoading(true);
+      setErr(null);
+      try {
+        const { data } = await api.post<InitResp>(
+          '/api/payments/init',
+          { orderId, channel: 'card' },      // bank_transfer, card
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        console.log( data)
+
+        setInit(data);
+      } catch (e: any) {
+        setErr(e?.response?.data?.error || 'Failed to init payment');
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [orderId, token]);
+
+  const markPaidManual = async () => {
+    if (!init) return;
+    setLoading(true);
+    setErr(null);
+    try {
+      await api.post(
+        '/api/payments/verify',
+        { reference: init.reference, orderId },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      // success
+      alert('Payment verified. Thank you!');
+      // clear cart now that it’s paid (if you want):
+      localStorage.removeItem('cart');
+      nav('/orders');
+    } catch (e: any) {
+      setErr(e?.response?.data?.error || 'Verification failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!orderId) {
+    return <div className="max-w-md mx-auto p-6">Missing order ID.</div>;
+  }
+
+  return (
+    <div className="max-w-lg mx-auto p-6 space-y-4">
+      <h1 className="text-2xl font-semibold">Payment</h1>
+      {err && <div className="p-2 rounded bg-red-50 text-red-700">{err}</div>}
+      {loading && <div className="text-sm opacity-70">Loading…</div>}
+
+      {!loading && init && (
+        <div className="space-y-4">
+          <div className="border rounded p-4 bg-white">
+            <h2 className="font-medium mb-2">Bank Transfer Details</h2>
+            {init.mode === 'trial' && (
+              <p className="text-sm mb-2">
+                Trial mode: use the demo bank details below and click “I’ve transferred” to continue.
+              </p>
+            )}
+            {init.bank ? (
+              <ul className="text-sm space-y-1">
+                <li><b>Bank:</b> {init.bank.bank_name}</li>
+                <li><b>Account Name:</b> {init.bank.account_name}</li>
+                <li><b>Account Number:</b> {init.bank.account_number}</li>
+              </ul>
+            ) : 
+              init.authorization_url? window.location.href = init.authorization_url
+                   : 
+                   (
+                 <p className="text-sm">
+                Bank details will be shown here. If you don’t see them, confirm your backend mode and keys.
+              </p>)          
+            }
+            <div className="mt-3 text-sm">
+              <b>Amount:</b> {init.currency} {Number(init.amount).toLocaleString()}
+            </div>
+            <div className="mt-1 text-xs opacity-70">
+              Use your order reference in transfer notes if possible:<br />
+              <code>{init.reference}</code>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              className="rounded-md border bg-accent-500 px-4 py-2 text-white hover:bg-accent-600 transition disabled:opacity-50"
+              disabled={loading}
+              onClick={markPaidManual}
+              title="I have completed the bank transfer"
+            >
+              I’ve transferred
+            </button>
+            <button
+              className="rounded-md border px-4 py-2"
+              onClick={() => nav('/cart')}
+            >
+              Back to cart
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
