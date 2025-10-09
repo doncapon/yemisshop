@@ -39,14 +39,14 @@ model Address {
  * ---------------- User ----------------
  */
 model User {
-  id       String  @id @default(cuid())
-  email    String  @unique
-  password String
-  role     String // "ADMIN" | "SUPPLIER" | "SHOPPER"
+  id         String  @id @default(cuid())
+  email      String  @unique
+  password   String
+  role       String // "ADMIN" | "SUPPLIER" | "SHOPPER"
   firstName  String
-  middleName String?  // optional
+  middleName String? // optional
   lastName   String
-  phone    String?
+  phone      String?
 
   dateOfBirth DateTime?
 
@@ -83,6 +83,8 @@ model User {
 
   resetPasswordToken     String?
   resetPasswordExpiresAt DateTime?
+  Favorite               Favorite[]
+  Wishlist               Wishlist[]
 }
 
 /**
@@ -140,7 +142,9 @@ model Product {
 
   orderItems OrderItem[]
 
-  createdAt DateTime @default(now())
+  createdAt DateTime   @default(now())
+  Favorite  Favorite[]
+  Wishlist  Wishlist[]
 }
 
 model Order {
@@ -239,4 +243,35 @@ model PurchaseOrderItem {
   externalRef    String?
   externalStatus String?
   receiptUrl     String?
+}
+
+model Favorite {
+  id String @id @default(cuid())
+
+  userId    String
+  productId String
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  // prevent the same product being favorited twice by the same user
+  @@unique([userId, productId])
+  // fast lookups
+  @@index([userId])
+  @@index([productId])
+}
+
+model Wishlist {
+  userId    String
+  productId String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  // Composite primary key (prevents duplicates)
+  @@id([userId, productId])
+  // Optional: add indexes to speed up lookups
+  @@index([userId])
+  @@index([productId])
 }

@@ -42,7 +42,6 @@ export default function Login() {
 
     try {
       // 1) Login to get a token
-
       const res = await api.post('/api/auth/login', { email, password });
       const { token } = res.data as { token: string };
 
@@ -51,6 +50,7 @@ export default function Login() {
         headers: { Authorization: `Bearer ${token}` },
       });
       const profile = meRes.data;
+
       // 3) If fully verified, persist auth + go on
       if (profile.emailVerified && profile.phoneVerified) {
         setAuth(token, profile.role, profile.email);
@@ -98,74 +98,152 @@ export default function Login() {
     }
   };
 
-  // UI: If not verified, render the verification panel instead of the login form
+  // ======= STYLED VERIFY PANEL (if not verified) =======
   if (pendingToken && me && (!me.emailVerified || !me.phoneVerified)) {
     return (
-      <div className="max-w-md mx-auto space-y-4">
-        <h1 className="text-xl font-semibold">Verify your account</h1>
-        {err && <p className="text-sm p-2 border rounded">{err}</p>}
+      <div className="min-h-[88vh] bg-gradient-to-b from-primary-50 to-surface-soft grid place-items-center px-4">
+        <div className="w-full max-w-lg bg-white rounded-2xl shadow-sm border p-6">
+          <div className="flex items-center gap-3">
+            <div className="size-10 rounded-full grid place-items-center bg-primary-100 text-primary-700 font-semibold">
+              ✓
+            </div>
+            <h1 className="text-xl font-semibold">Verify your account</h1>
+          </div>
 
-        {!me.emailVerified && (
-          <div className="space-y-2">
-            <p>
-              We sent a verification link to <b>{me.email}</b>. Please click that link.
+          {err && (
+            <p className="mt-4 text-sm p-3 rounded-md border border-warning/20 bg-warning/10 text-warning">
+              {err}
             </p>
-            <button className="underline" onClick={resendEmail}>
-              Resend verification email
-            </button>
-          </div>
-        )}
+          )}
 
-        {!me.phoneVerified && (
-          <div className="space-y-2">
-            <p>We also sent an OTP to your phone (if provided).</p>
+          {!me.emailVerified && (
+            <div className="mt-6 space-y-2">
+              <p className="text-sm text-ink-soft">
+                We sent a verification link to <b className="text-ink">{me.email}</b>. Please click that link.
+              </p>
+              <button
+                className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-black/5"
+                onClick={resendEmail}
+              >
+                Resend verification email
+              </button>
+            </div>
+          )}
+
+          {!me.phoneVerified && (
+            <div className="mt-6 space-y-2">
+              <p className="text-sm text-ink-soft">
+                We also sent an OTP to your phone (if provided).
+              </p>
+              <button
+                className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm hover:bg-black/5 disabled:opacity-50"
+                onClick={resendOtp}
+                disabled={cooldown > 0}
+                title={cooldown > 0 ? `Retry in ${cooldown}s` : 'Resend OTP'}
+              >
+                {cooldown > 0 ? `Resend OTP in ${cooldown}s` : 'Resend OTP'}
+              </button>
+            </div>
+          )}
+
+          <div className="mt-8 flex items-center justify-between">
+            <p className="text-xs text-ink-soft">
+              Once both verifications are complete, please log in again.
+            </p>
             <button
-              className="underline disabled:opacity-50"
-              onClick={resendOtp}
-              disabled={cooldown > 0}
-              title={cooldown > 0 ? `Retry in ${cooldown}s` : 'Resend OTP'}
+              className="text-sm underline"
+              onClick={() => {
+                setPendingToken(null);
+                setMe(null);
+              }}
             >
-              {cooldown > 0 ? `Resend OTP in ${cooldown}s` : 'Resend OTP'}
+              Back to login
             </button>
           </div>
-        )}
-
-        <p className="text-sm opacity-70">
-          Once both verifications are complete, please log in again.
-        </p>
-        <button className="border px-4 py-2" onClick={() => { setPendingToken(null); setMe(null); }}>
-          Back to login
-        </button>
+        </div>
       </div>
     );
   }
 
-  // Default login form
+  // ======= STYLED LOGIN CARD =======
   return (
-    <form onSubmit={submit} className="max-w-sm space-y-3">
-      <h1 className="text-xl font-semibold">Login</h1>
-      {err && <p className="text-red-600">{err}</p>}
-      <input
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        placeholder="Email"
-        className="border p-2 w-full"
-      />
-      <input
-        value={password}
-        type="password"
-        onChange={(e) => setPassword(e.target.value)}
-        placeholder="Password"
-        className="border p-2 w-full"
-      />
-      <button type="submit" className="border px-4 py-2">
-        Login
-      </button>
+    <div className="min-h-[88vh] bg-hero-radial bg-bg-soft grid place-items-center px-4">
+      <div className="w-full max-w-md">
+        <div className="mb-6 text-center">
+          <div className="inline-flex items-center gap-2 rounded-full bg-primary-100 text-primary-700 px-3 py-1 text-xs font-medium border border-primary-200">
+            Welcome back
+          </div>
+          <h1 className="mt-3 text-2xl font-semibold text-ink">
+            Sign in to your account
+          </h1>
+          <p className="mt-1 text-sm text-ink-soft">
+            Access your cart, orders and personalised dashboard.
+          </p>
+        </div>
 
-      <div className="text-sm mt-2">
-        <a className="underline" href="/forgot-password">Forgot your password?</a>
+        <form
+          onSubmit={submit}
+          className="rounded-2xl border bg-white shadow-sm p-6 space-y-4"
+        >
+          {err && (
+            <div className="text-sm rounded-md border border-danger/20 bg-danger/10 text-danger px-3 py-2">
+              {err}
+            </div>
+          )}
+
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-ink">Email</label>
+            <input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink placeholder:text-ink-soft
+                         focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <label className="block text-sm font-medium text-ink">Password</label>
+              <a className="text-xs text-primary-700 hover:underline" href="/forgot-password">
+                Forgot password?
+              </a>
+            </div>
+            <input
+              value={password}
+              type="password"
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink placeholder:text-ink-soft
+                         focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+            />
+          </div>
+
+          <button
+            type="submit"
+            className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary-600 text-white
+                       px-4 py-2.5 font-medium hover:bg-primary-700 active:bg-primary-800
+                       focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
+          >
+            Login
+          </button>
+
+          <div className="pt-2 text-center text-sm text-ink-soft">
+            Don’t have an account?{' '}
+            <a className="text-primary-700 hover:underline" href="/register">
+              Create one
+            </a>
+          </div>
+        </form>
+
+        {/* Subtle footer note */}
+        <p className="mt-4 text-center text-xs text-ink-soft">
+          Secured by industry-standard encryption • Need help?{' '}
+          <a className="text-primary-700 hover:underline" href="/support">
+            Contact support
+          </a>
+        </p>
       </div>
-
-    </form>
+    </div>
   );
 }

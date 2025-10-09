@@ -87,4 +87,40 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
+
+router.get('/:id/similar', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const me = await prisma.product.findUnique({ where: { id } });
+    if (!me) return res.status(404).json({ error: 'Product not found' });
+
+    const byCat = await prisma.product.findMany({
+      where: { id: { not: id }, categoryId: me.categoryId ?? undefined },
+      take: 12,
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Fallback by price window if category is empty
+    let results = byCat;
+    if (results.length < 6) {
+      const price = Number(me.price) || 0;
+      const window = { min: Math.max(0, price * 0.6), max: price * 1.4 };
+      const byPrice = await prisma.product.findMany({
+        where: {
+          id: { not: id },
+          price: { gte: window.min, lte: window.max },
+        },
+        take: 12,
+        orderBy: { createdAt: 'desc' },
+      });
+      // merge unique
+      const seen = new Set(results.map((r: { id: any; }) => r.id));
+      for (const p of byPrice) if (!seen.has(p.id)) results.push(p);
+    }
+
+    res.json(results.slice(0, 12));
+  } catch (e) { next(e); }
+});
+
+
 export default router;
