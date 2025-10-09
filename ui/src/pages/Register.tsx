@@ -140,151 +140,184 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-[80vh] w-full grid place-items-center px-4">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-xl mx-auto space-y-5 text-center border rounded-2xl p-6 shadow-sm"
-      >
-        <h1 className="text-2xl font-semibold">Create your account</h1>
-
-        {err && (
-          <div className="text-sm text-red-600 border border-red-200 bg-red-50 p-2 rounded">
-            {err}
+    <div className="min-h-[88vh] bg-hero-radial bg-bg-soft grid place-items-center px-4">
+      <div className="w-full max-w-2xl">
+        {/* Header */}
+        <div className="mb-6 text-center">
+          <div className="inline-flex items-center gap-2 rounded-full bg-primary-100 text-primary-700 px-3 py-1 text-xs font-medium border border-primary-200">
+            Join YemiShop
           </div>
-        )}
-
-        {/* Name fields */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
-          <div className="space-y-1">
-            <label className="block text-sm">First name</label>
-            <input
-              value={form.firstName}
-              onChange={onChange('firstName')}
-              className="border p-2 w-full rounded"
-              placeholder="Jane"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="block text-sm">
-              Middle name <span className="opacity-60">(optional)</span>
-            </label>
-            <input
-              value={form.middleName}
-              onChange={onChange('middleName')}
-              className="border p-2 w-full rounded"
-              placeholder="Amy"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="block text-sm">Last name</label>
-            <input
-              value={form.lastName}
-              onChange={onChange('lastName')}
-              className="border p-2 w-full rounded"
-              placeholder="Doe"
-            />
-          </div>
-        </div>
-
-        {/* Email */}
-        <div className="space-y-1 text-left">
-          <label className="block text-sm">Email</label>
-          <input
-            value={form.email}
-            onChange={onChange('email')}
-            type="email"
-            placeholder="you@example.com"
-            className="border p-2 w-full rounded"
-          />
-        </div>
-
-        {/* DOB */}
-        <div className="space-y-1 text-left">
-          <label className="block text-sm">Date of birth</label>
-          <input
-            type="date"
-            value={form.dateOfBirth}
-            onChange={onChange('dateOfBirth')}
-            className="border p-2 w-full rounded"
-          />
-        </div>
-
-        {/* Phone */}
-        <div className="space-y-1 text-left">
-          <label className="block text-sm">Phone</label>
-          <div className="flex gap-2">
-            <select
-              value={form.countryDial}
-              onChange={onChange('countryDial')}
-              className="border p-2 rounded bg-white w-44"
-              aria-label="Country code"
-            >
-              {COUNTRIES.map((c) => (
-                <option key={c.code} value={c.dial}>
-                  {c.name} (+{c.dial})
-                </option>
-              ))}
-            </select>
-            <input
-              value={form.localPhone}
-              onChange={onChange('localPhone')}
-              inputMode="tel"
-              placeholder="Local number"
-              className="border p-2 rounded flex-1"
-            />
-          </div>
-          <p className="text-xs opacity-70 text-center">
-            We’ll format this as +{form.countryDial}{' '}
-            {form.localPhone.replace(/\D/g, '')}
+          <h1 className="mt-3 text-2xl font-semibold text-ink">Create your account</h1>
+          <p className="mt-1 text-sm text-ink-soft">
+            Shop smarter with saved addresses, order tracking, and personalised picks.
           </p>
         </div>
 
-        {/* Password + Confirm */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
-          <div className="space-y-1">
-            <label className="block text-sm">Password</label>
-            <input
-              value={form.password}
-              onChange={onChange('password')}
-              type="password"
-              placeholder="At least 8 characters"
-              className="border p-2 w-full rounded"
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="block text-sm">Confirm password</label>
-            <input
-              value={form.confirmPassword}
-              onChange={onChange('confirmPassword')}
-              type="password"
-              placeholder="Re-enter password"
-              className="border p-2 w-full rounded"
-            />
-          </div>
-        </div>
-
-        {/* Role (disabled) */}
-        <div className="space-y-1 text-left">
-          <label className="block text-sm">Role</label>
-          <input
-            value="SHOPPER"
-            disabled
-            className="border p-2 w-full rounded bg-gray-100 text-gray-700"
-            title="Role is fixed for self-registration"
-          />
-          <p className="text-xs opacity-70 text-center">
-            Supplier/Admin roles are assigned by an administrator later.
-          </p>
-        </div>
-
-        <button
-          type="submit"
-          disabled={submitting}
-          className="border px-5 py-2 rounded disabled:opacity-50"
+        {/* Card */}
+        <form
+          onSubmit={submit}
+          className="rounded-2xl border bg-white shadow-sm p-6 md:p-8 space-y-6"
         >
-          {submitting ? 'Creating account…' : 'Register'}
-        </button>
-      </form>
+          {err && (
+            <div className="text-sm rounded-md border border-danger/20 bg-danger/10 text-danger px-3 py-2">
+              {err}
+            </div>
+          )}
+
+          {/* Name grid */}
+          <div>
+            <label className="block text-sm font-medium text-ink mb-2">Your name</label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <input
+                value={form.firstName}
+                onChange={onChange('firstName')}
+                className="rounded-lg border border-border bg-surface px-3 py-2.5 placeholder:text-ink-soft
+                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+                placeholder="First name"
+              />
+              <input
+                value={form.middleName}
+                onChange={onChange('middleName')}
+                className="rounded-lg border border-border bg-surface px-3 py-2.5 placeholder:text-ink-soft
+                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+                placeholder="Middle (optional)"
+              />
+              <input
+                value={form.lastName}
+                onChange={onChange('lastName')}
+                className="rounded-lg border border-border bg-surface px-3 py-2.5 placeholder:text-ink-soft
+                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+                placeholder="Last name"
+              />
+            </div>
+          </div>
+
+          {/* Email & DOB */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-ink mb-1">Email</label>
+              <input
+                type="email"
+                value={form.email}
+                onChange={onChange('email')}
+                placeholder="you@example.com"
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink placeholder:text-ink-soft
+                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-ink mb-1">Date of birth</label>
+              <input
+                type="date"
+                value={form.dateOfBirth}
+                onChange={onChange('dateOfBirth')}
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink
+                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+              />
+              <p className="mt-1 text-xs text-ink-soft">Must be 13+ years old.</p>
+            </div>
+          </div>
+
+          {/* Phone */}
+          <div>
+            <label className="block text-sm font-medium text-ink mb-1">Phone</label>
+            <div className="flex gap-2">
+              <select
+                value={form.countryDial}
+                onChange={onChange('countryDial')}
+                className="rounded-lg border border-border bg-white px-3 py-2.5 w-44
+                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+                aria-label="Country code"
+              >
+                {COUNTRIES.map((c) => (
+                  <option key={c.code} value={c.dial}>
+                    {c.name} (+{c.dial})
+                  </option>
+                ))}
+              </select>
+              <input
+                value={form.localPhone}
+                onChange={onChange('localPhone')}
+                inputMode="tel"
+                placeholder="Local number"
+                className="flex-1 rounded-lg border border-border bg-surface px-3 py-2.5 placeholder:text-ink-soft
+                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+              />
+            </div>
+            <p className="mt-1 text-xs text-ink-soft text-center">
+              Will format as +{form.countryDial} {form.localPhone.replace(/\D/g, '')}
+            </p>
+          </div>
+
+          {/* Passwords */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-ink mb-1">Password</label>
+              <input
+                type="password"
+                value={form.password}
+                onChange={onChange('password')}
+                placeholder="At least 8 characters"
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink placeholder:text-ink-soft
+                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+              />
+              <p className="mt-1 text-[11px] text-ink-soft">
+                Include a letter, number, and special character.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-ink mb-1">Confirm password</label>
+              <input
+                type="password"
+                value={form.confirmPassword}
+                onChange={onChange('confirmPassword')}
+                placeholder="Re-enter password"
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink placeholder:text-ink-soft
+                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+              />
+            </div>
+          </div>
+
+          {/* Role (fixed) */}
+          <div>
+            <label className="block text-sm font-medium text-ink mb-1">Role</label>
+            <input
+              value="SHOPPER"
+              disabled
+              className="w-full rounded-lg border border-border bg-zinc-100 text-ink-soft px-3 py-2.5"
+              title="Role is fixed for self-registration"
+            />
+            <p className="mt-1 text-xs text-ink-soft">
+              Supplier/Admin roles are assigned by an administrator later.
+            </p>
+          </div>
+
+          {/* Actions */}
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary-600 text-white
+                       px-4 py-2.5 font-medium hover:bg-primary-700 active:bg-primary-800
+                       focus:outline-none focus:ring-4 focus:ring-primary-200 transition disabled:opacity-50"
+          >
+            {submitting ? 'Creating account…' : 'Create account'}
+          </button>
+
+          <p className="text-center text-xs text-ink-soft">
+            By creating an account, you agree to our{' '}
+            <a className="text-primary-700 hover:underline" href="/terms">Terms</a> and{' '}
+            <a className="text-primary-700 hover:underline" href="/privacy">Privacy Policy</a>.
+          </p>
+        </form>
+
+        {/* Bottom hint */}
+        <p className="mt-4 text-center text-sm text-ink-soft">
+          Already have an account?{' '}
+          <a className="text-primary-700 hover:underline" href="/login">
+            Sign in
+          </a>
+        </p>
+      </div>
     </div>
   );
 }

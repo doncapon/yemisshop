@@ -7,6 +7,9 @@ import profileRouter from './routes/profile.js';
 import authRouter from './routes/auth.js';
 import productsRouter from './routes/products.js';
 import ordersRouter from './routes/orders.js';
+import wishlistRouter from './routes/wishlist.js';
+import favoritesRouter from './routes/favorites.js';
+
 
 const app = express();
 
@@ -54,6 +57,14 @@ app.use('/api/products', productsRouter);
 // 6) orders
 app.use('/api/orders', ordersRouter);
 
+
+//7) wishlist
+app.use('/api/wishlist', wishlistRouter);
 app.listen(env.port, () => {
   console.log(`API on http://localhost:${env.port}`);
+
+// 7) favourites
+app.use('/api/favorites', favoritesRouter);
+
+
 });

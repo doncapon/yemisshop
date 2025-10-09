@@ -18,6 +18,7 @@ import UserPersonalisedPage from './pages/UserPersonalisedPage.tsx';
 import Footer from './components/Footer.tsx';
 import Payment from './pages/Payment.tsx';
 import PaymentCallback from './pages/PaymentCallback.tsx';
+import Wishlist from './pages/Wishlist.tsx';
 
 export default function App() {
   function Orders() { return <div className="max-w-4xl mx-auto p-6">Purchase history coming soon…</div>; }
@@ -41,6 +42,7 @@ export default function App() {
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/payment" element={<Payment />} />
             <Route path="/payment-callback" element={<PaymentCallback />} />
+            <Route path="/wishlist" element={<Wishlist />} />
 
             <Route
               path="/checkout"
