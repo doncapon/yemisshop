@@ -1,3 +1,4 @@
+// src/routes/orders.ts
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
@@ -5,6 +6,8 @@ import type { Prisma } from '@prisma/client';
 import { authMiddleware } from '../lib/authMiddleware.js';
 
 const router = Router();
+
+/* ----------------------------- Validation ----------------------------- */
 
 const AddressSchema = z.object({
   houseNumber: z.string().min(1),
@@ -21,8 +24,18 @@ const CreateOrderSchema = z.object({
   tax: z.number().nonnegative().default(0),
   shipping: z.number().nonnegative().default(0),
   sameAsHome: z.boolean().default(true),
-  homeAddress: AddressSchema.optional(),           // present if user is editing/adding home
-  shippingAddress: AddressSchema.optional(),       // present if not sameAsHome and adding/editing
+  homeAddress: AddressSchema.optional(),      // present if user is editing/adding home
+  shippingAddress: AddressSchema.optional(),  // present if not sameAsHome
+});
+
+const MineQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(10),
+  status: z.string().optional(), // comma list e.g. "PENDING,PAID"
+  from: z.string().datetime().optional(),    // ISO
+  to: z.string().datetime().optional(),      // ISO
+  sortBy: z.enum(['createdAt', 'total', 'status']).default('createdAt'),
+  sortDir: z.enum(['asc', 'desc']).default('desc'),
 });
 
 type ProductRow = {
@@ -31,9 +44,21 @@ type ProductRow = {
   price: Prisma.Decimal; // exact DB type
 };
 
+/* ------------------------------ Utilities ----------------------------- */
+
+function asNumber(n: unknown) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : 0;
+}
+
+/* -------------------------------- Routes ------------------------------ */
+
+/**
+ * CREATE ORDER
+ */
 router.post(
   '/',
-  authMiddleware, // ensure req.user is set
+  authMiddleware,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { items, tax, shipping, sameAsHome, homeAddress, shippingAddress } =
@@ -42,14 +67,13 @@ router.post(
       if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
       if (items.length === 0) return res.status(400).json({ error: 'No items' });
 
-      // Fetch products to compute totals and validate supplier/product
+      // Fetch products to compute totals and validate
       const products = await prisma.product.findMany({
-        where: { id: { in: items.map(i => i.productId) } },
+        where: { id: { in: items.map((i) => i.productId) } },
         select: { id: true, supplierId: true, price: true },
       });
-      const prodById = new Map<string, ProductRow>(
-        products.map((p: { id: any; }) => [p.id, p])
-      );
+
+      const prodById = new Map<string, ProductRow>(products.map((p: { id: any; }) => [p.id, p]));
       let subtotal = 0;
       for (const it of items) {
         const p = prodById.get(it.productId);
@@ -58,45 +82,32 @@ router.post(
       }
       const total = subtotal + tax + shipping;
 
-      // Run everything in a single transaction
+      // Transaction: ensure addresses and create order
       const created = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-        // 1) Load user (to know existing addresses)
+        // 1) User with existing address refs
         const user = await tx.user.findUnique({
           where: { id: req.user!.id },
           select: { id: true, addressId: true, shippingAddressId: true },
         });
         if (!user) throw new Error('User not found');
 
-        // 2) Ensure we have a home address id (if provided / missing)
+        // 2) Home address upsert
         let homeAddressId = user.addressId || null;
-        if (homeAddress && (!user.addressId)) {
+        if (homeAddress && !user.addressId) {
           const createdHome = await tx.address.create({ data: homeAddress });
-          await tx.user.update({
-            where: { id: user.id },
-            data: { addressId: createdHome.id },
-          });
+          await tx.user.update({ where: { id: user.id }, data: { addressId: createdHome.id } });
           homeAddressId = createdHome.id;
         } else if (homeAddress && user.addressId) {
-          // If you want to update existing home address when form is shown:
-          await tx.address.update({
-            where: { id: user.addressId },
-            data: homeAddress,
-          });
+          await tx.address.update({ where: { id: user.addressId }, data: homeAddress });
           homeAddressId = user.addressId;
         }
 
-        // 3) Determine shipping address id
+        // 3) Shipping address
         let shippingAddressId = user.shippingAddressId || null;
         if (sameAsHome) {
-          // Use home address as shipping
-          if (!homeAddressId) {
-            // If user never had home and didn’t send it, error out
-            throw new Error('Home address required when shipping is same as home.');
-          }
+          if (!homeAddressId) throw new Error('Home address required when shipping is same as home.');
           shippingAddressId = homeAddressId;
-          // You may choose NOT to overwrite user's shippingAddressId with home; most people keep it separate.
         } else {
-          // Not same as home → need a shipping address
           if (shippingAddress) {
             if (!user.shippingAddressId) {
               const createdShip = await tx.address.create({ data: shippingAddress });
@@ -106,10 +117,9 @@ router.post(
               });
               shippingAddressId = createdShip.id;
             } else {
-              // Update existing shipping
               await tx.address.update({
                 where: { id: user.shippingAddressId },
-                data: shippingAddress,
+                data: shippingAddress, // ✅ pass the address fields directly
               });
               shippingAddressId = user.shippingAddressId;
             }
@@ -118,11 +128,9 @@ router.post(
           }
         }
 
-        if (!shippingAddressId) {
-          throw new Error('Could not determine shipping address.');
-        }
+        if (!shippingAddressId) throw new Error('Could not determine shipping address.');
 
-        // 4) Create order + items (connect shippingAddress)
+        // 4) Create order + items
         const order = await tx.order.create({
           data: {
             user: { connect: { id: user.id } },
@@ -133,23 +141,18 @@ router.post(
             shippingAddress: { connect: { id: shippingAddressId } },
             items: {
               create: items.map((it) => {
-                const pr = prodById.get(it.productId);
-                if (!pr) {
-                  // Extra safety, though you already validated earlier
-                  throw new Error(`Unknown product: ${it.productId}`);
-                }
+                const pr = prodById.get(it.productId)!;
                 return {
                   product: { connect: { id: pr.id } },
                   supplierRel: { connect: { id: pr.supplierId } },
                   qty: it.qty,
-                  unitPrice: pr.price, // Prisma.Decimal → matches schema
+                  unitPrice: pr.price,
                 };
               }),
             },
-
           },
           include: {
-            items: { include: { product: { include: { supplier: true } } } },
+            items: { include: { product: { select: { id: true, title: true, imagesJson: true } } } },
             shippingAddress: true,
           },
         });
@@ -167,22 +170,158 @@ router.post(
       }
       next(e);
     }
-  }
+  },
 );
 
+/**
+ * GET MY ORDERS (paginated/filterable/sortable)
+ * Query params:
+ *   page, pageSize, status=CSV, from, to, sortBy=createdAt|total|status, sortDir=asc|desc
+ */
+router.get(
+  '/mine',
+  authMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
 
+      const q = MineQuerySchema.parse(req.query);
+      const skip = (q.page - 1) * q.pageSize;
+      const take = q.pageSize;
+
+      // Build where
+      const where: Prisma.OrderWhereInput = {
+        userId: req.user.id,
+      };
+
+      if (q.status) {
+        const statuses = q.status
+          .split(',')
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean);
+        if (statuses.length > 0) {
+          where.status = { in: statuses as any };
+        }
+      }
+
+      if (q.from || q.to) {
+        where.createdAt = {};
+        if (q.from) (where.createdAt as any).gte = new Date(q.from);
+        if (q.to) (where.createdAt as any).lte = new Date(q.to);
+      }
+
+      // Build orderBy
+      let orderBy: Prisma.OrderOrderByWithRelationInput = { createdAt: q.sortDir };
+      if (q.sortBy === 'total') orderBy = { total: q.sortDir };
+      if (q.sortBy === 'status') orderBy = { status: q.sortDir };
+
+      const [totalItems, data] = await Promise.all([
+        prisma.order.count({ where }),
+        prisma.order.findMany({
+          where,
+          orderBy,
+          skip,
+          take,
+          include: {
+            items: {
+              include: {
+                product: { select: { id: true, title: true, imagesJson: true } },
+              },
+            },
+            payments: {
+              orderBy: { createdAt: 'desc' },
+              select: {
+                id: true,
+                reference: true,
+                amount: true,
+                status: true,
+                channel: true,
+                createdAt: true,
+              },
+            },
+            shippingAddress: true,
+          },
+        }),
+      ]);
+
+      const totalPages = Math.max(1, Math.ceil(totalItems / q.pageSize));
+
+      res.json({
+        page: q.page,
+        pageSize: q.pageSize,
+        totalItems,
+        totalPages,
+        sortBy: q.sortBy,
+        sortDir: q.sortDir,
+        data,
+      });
+    } catch (e) {
+      next(e);
+    }
+  },
+);
+
+/**
+ * GET SINGLE ORDER (owner-only)
+ */
 router.get('/:id', authMiddleware, async (req, res, next) => {
   try {
     const id = req.params.id;
     const order = await prisma.order.findUnique({
       where: { id },
-      include: { items: true, payments: true, user: { select: { email: true } } },
+      include: {
+        items: {
+          include: {
+            product: { select: { id: true, title: true, imagesJson: true } },
+          },
+        },
+        payments: true,
+        user: { select: { id: true, email: true } },
+        shippingAddress: true,
+      },
     });
     if (!order) return res.status(404).json({ error: 'Not found' });
     if (order.userId !== req.user!.id) return res.status(403).json({ error: 'Forbidden' });
 
     res.json(order);
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * CANCEL ORDER (owner-only)
+ * Allowed only when status is PENDING or PARTIAL, and no successful payment exists.
+ */
+router.post('/:id/cancel', authMiddleware, async (req, res, next) => {
+  try {
+    const id = req.params.id;
+
+    const order = await prisma.order.findUnique({
+      where: { id },
+      include: { payments: true },
+    });
+    if (!order) return res.status(404).json({ error: 'Not found' });
+    if (order.userId !== req.user!.id) return res.status(403).json({ error: 'Forbidden' });
+
+    // If already terminal or fully paid, disallow
+    if (order.status === 'PAID' || order.status === 'CANCELED' || order.status === 'FAILED') {
+      return res.status(400).json({ error: `Cannot cancel order in status ${order.status}` });
+    }
+
+    // If any PAID payment exists, disallow
+    const hasPaid = order.payments?.some((p: { status: string; }) => p.status === 'PAID');
+    if (hasPaid) return res.status(400).json({ error: 'Order already has a successful payment' });
+
+    const updated = await prisma.order.update({
+      where: { id: order.id },
+      data: { status: 'CANCELED' },
+    });
+
+    res.json(updated);
+  } catch (e) {
+    next(e);
+  }
 });
 
 export default router;
