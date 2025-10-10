@@ -19,9 +19,9 @@ import Footer from './components/Footer.tsx';
 import Payment from './pages/Payment.tsx';
 import PaymentCallback from './pages/PaymentCallback.tsx';
 import Wishlist from './pages/Wishlist.tsx';
+import Orders from './pages/Orders.tsx';
 
 export default function App() {
-  function Orders() { return <div className="max-w-4xl mx-auto p-6">Purchase history coming soon…</div>; }
 
   return (
     <div className="min-h-screen flex flex-col">

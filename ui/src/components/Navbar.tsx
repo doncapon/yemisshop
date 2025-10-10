@@ -108,7 +108,7 @@ export default function Navbar() {
 
   const logout = useCallback(() => {
     clear();
-    if (localStorage.getItem('cart')) localStorage.removeItem('cart');
+    if (localStorage.getItem('cart')) {localStorage.removeItem('cart')};
     nav('/');
   }, [clear, nav]);
 
