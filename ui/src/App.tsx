@@ -20,71 +20,96 @@ import Payment from './pages/Payment.tsx';
 import PaymentCallback from './pages/PaymentCallback.tsx';
 import Wishlist from './pages/Wishlist.tsx';
 import Orders from './pages/Orders.tsx';
+import { ModalProvider } from './components/ModalProvider'; // 👈 add
+import { useAuthStore } from './store/auth';
+import { useEffect } from 'react';
+import { scheduleTokenExpiryLogout } from './utils/tokenWatcher';
 
 export default function App() {
+  const token = useAuthStore((s) => s.token);
+  const clear = useAuthStore((s) => s.clear);
+
+  useEffect(() => {
+    scheduleTokenExpiryLogout(token, () => {
+      // same as interceptor’s hardLogout but simpler from within React:
+      clear();
+      try { localStorage.clear(); sessionStorage.clear?.(); } catch { }
+      const params = new URLSearchParams();
+      params.set('reason', 'expired');
+      window.location.replace(`/login?${params.toString()}`);
+    });
+  }, [token, clear]);
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <Navbar />
-      {/* Page margins + centered main content */}
-      <main className="w-full px-4 md:px-8 flex-1 bg-primary-700">
-        <div className="max-w-7xl mx-auto"> {/* 👈 centered container */}
-          <Routes>
-            <Route path="/" element={<Catalog />} />
-            <Route path="/product/:id" element={<ProductDetail />} />
-            <Route path="/cart" element={<Cart />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
-            <Route path="/verify" element={<Verify />} />
-            <Route path="/profile" element={<Profile />} />
-            <Route path="/orders" element={<Orders />} />
-            <Route path="/forgot-password" element={<ForgotPassword />} />
-            <Route path="/reset-password" element={<ResetPassword />} />
-            <Route path="/payment" element={<Payment />} />
-            <Route path="/payment-callback" element={<PaymentCallback />} />
-            <Route path="/wishlist" element={<Wishlist />} />
+    <ModalProvider>
+      <div className="min-h-screen flex flex-col">
+        <Navbar />
+        {/* Page margins + centered main content */}
+        <main className="w-full px-4 md:px-8 flex-1 bg-primary-700">
+          <div className="max-w-7xl mx-auto">
+            <Routes>
+              <Route path="/" element={<Catalog />} />
+              <Route path="/product/:id" element={<ProductDetail />} />
+              <Route path="/cart" element={<Cart />} />
+              <Route
+                path="/login"
+                element={useAuthStore.getState().token ? <Navigate to="/" replace /> : <Login />}
+              />
+              <Route
+                path="/register"
+                element={useAuthStore.getState().token ? <Navigate to="/" replace /> : <Register />}
+              />
+              <Route path="/verify" element={<Verify />} />
+              <Route path="/profile" element={<Profile />} />
+              <Route path="/orders" element={<Orders />} />
+              <Route path="/forgot-password" element={<ForgotPassword />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
+              <Route path="/payment" element={<Payment />} />
+              <Route path="/payment-callback" element={<PaymentCallback />} />
+              <Route path="/wishlist" element={<Wishlist />} />
 
-            <Route
-              path="/checkout"
-              element={
-                <ProtectedRoute roles={['SHOPPER', 'ADMIN', 'SUPPLIER']}>
-                  <Checkout />
-                </ProtectedRoute>
-              }
-            />
+              <Route
+                path="/checkout"
+                element={
+                  <ProtectedRoute roles={['SHOPPER', 'ADMIN', 'SUPPLIER']}>
+                    <Checkout />
+                  </ProtectedRoute>
+                }
+              />
 
-            <Route
-              path="/admin/*"
-              element={
-                <ProtectedRoute roles={['ADMIN']}>
-                  <AdminDashboard />
-                </ProtectedRoute>
-              }
-            />
+              <Route
+                path="/admin/*"
+                element={
+                  <ProtectedRoute roles={['ADMIN']}>
+                    <AdminDashboard />
+                  </ProtectedRoute>
+                }
+              />
 
-            <Route
-              path="/dashboard"
-              element={
-                <ProtectedRoute roles={['SHOPPER']}>
-                  <UserPersonalisedPage />
-                </ProtectedRoute>
-              }
-            />
+              <Route
+                path="/dashboard"
+                element={
+                  <ProtectedRoute roles={['SHOPPER']}>
+                    <UserPersonalisedPage />
+                  </ProtectedRoute>
+                }
+              />
 
-            <Route
-              path="/supplier/*"
-              element={
-                <ProtectedRoute roles={['SUPPLIER']}>
-                  <SupplierDashboard />
-                </ProtectedRoute>
-              }
-            />
+              <Route
+                path="/supplier/*"
+                element={
+                  <ProtectedRoute roles={['SUPPLIER']}>
+                    <SupplierDashboard />
+                  </ProtectedRoute>
+                }
+              />
 
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </div>
-      </main>
-      <Footer />
-    </div>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </div>
+        </main>
+        <Footer />
+      </div>
+    </ModalProvider>
   );
 }

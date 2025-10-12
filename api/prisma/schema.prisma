@@ -28,15 +28,16 @@ model Address {
   country     String?
 
   // Back-relations (MUST use the same relation names)
-  userPrimary  User? @relation("UserPrimaryAddress")
-  userShipping User? @relation("UserShippingAddress")
+  userPrimary      User?     @relation("UserPrimaryAddress")
+  userShipping     User?     @relation("UserShippingAddress")
 
   // Back-relation for orders’ shipping address
-  ordersAsShipping Order[] @relation("OrderShippingAddress")
+  ordersAsShipping Order[]   @relation("OrderShippingAddress")
 }
 
 /**
  * ---------------- User ----------------
+ * Cleaned: removed duplicate verification fields and boolean flags.
  */
 model User {
   id         String  @id @default(cuid())
@@ -44,7 +45,7 @@ model User {
   password   String
   role       String // "ADMIN" | "SUPPLIER" | "SHOPPER"
   firstName  String
-  middleName String? // optional
+  middleName String?
   lastName   String
   phone      String?
 
@@ -55,40 +56,37 @@ model User {
   shippingAddressId String?  @unique
   shippingAddress   Address? @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
 
-  // ✅ NEW verification fields
+  // Verification (single source of truth)
   status                    String    @default("PENDING") // PENDING | PARTIAL | VERIFIED
   emailVerifiedAt           DateTime?
-  emailVerifyTokenExpiresAt DateTime?
   phoneVerifiedAt           DateTime?
-  phoneOtpHash              String? // store hashed OTP
+  phoneOtpHash              String?
+  phoneOtpExpiresAt         DateTime?
+  phoneOtpLastSentAt        DateTime?
+  phoneOtpSendCountDay      Int       @default(0)
 
+  emailVerifyToken          String?
+  emailVerifyTokenExpiresAt DateTime?
+  emailVerifyLastSentAt     DateTime?
+  emailVerifySendCountDay   Int       @default(0)
+
+  resetPasswordToken        String?
+  resetPasswordExpiresAt    DateTime?
+
+  // Relations
   supplier  Supplier?
   orders    Order[]
-  createdAt DateTime  @default(now())
+  Favorite  Favorite[]
+  Wishlist  Wishlist[]
 
-  phoneVerified Boolean @default(false)
-  emailVerified Boolean @default(false)
+  createdAt DateTime @default(now())
 
-  // Phone OTP
-  phoneOtpCode         String? // e.g. "109132"
-  phoneOtpExpiresAt    DateTime?
-  phoneOtpLastSentAt   DateTime?
-  phoneOtpSendCountDay Int       @default(0) // rate cap per day (reset nightly or track with date)
-
-  // Email verification token (if you do links)
-  emailVerifyToken        String?
-  emailVerifyExpiresAt    DateTime?
-  emailVerifyLastSentAt   DateTime?
-  emailVerifySendCountDay Int       @default(0)
-
-  resetPasswordToken     String?
-  resetPasswordExpiresAt DateTime?
-  Favorite               Favorite[]
-  Wishlist               Wishlist[]
+  @@index([emailVerifiedAt])
+  @@index([phoneVerifiedAt])
 }
 
 /**
- * ---------------- Supplier / Category / Product (unchanged aside from context) ----------------
+ * ---------------- Supplier / Category / Product ----------------
  */
 model Supplier {
   id            String       @id @default(cuid())
@@ -103,14 +101,16 @@ model Supplier {
   apiKey       String?
   payoutPctInt Int?
 
-  userId String? @unique
-  user   User?   @relation(fields: [userId], references: [id])
+  userId String?  @unique
+  user   User?    @relation(fields: [userId], references: [id])
 
   products       Product[]
   purchaseOrders PurchaseOrder[]
-  orderItems     OrderItem[]     @relation("OrderItemSupplierRel")
+  orderItems     OrderItem[]   @relation("OrderItemSupplierRel")
 
   createdAt DateTime @default(now())
+
+  @@index([status, createdAt])
 }
 
 model Category {
@@ -145,8 +145,15 @@ model Product {
   createdAt DateTime   @default(now())
   Favorite  Favorite[]
   Wishlist  Wishlist[]
+
+  @@index([supplierId])
+  @@index([categoryId])
+  @@index([status, createdAt])
 }
 
+/**
+ * ---------------- Order / Payment ----------------
+ */
 model Order {
   id String @id @default(cuid())
 
@@ -167,6 +174,9 @@ model Order {
   items          OrderItem[]
   purchaseOrders PurchaseOrder[]
   payments       Payment[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 
 model Payment {
@@ -185,9 +195,9 @@ model Payment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // indexes
   @@index([orderId])
   @@index([provider, status, createdAt])
+  @@index([status, createdAt])
 }
 
 /**
@@ -209,6 +219,10 @@ model OrderItem {
   unitPrice Decimal @db.Decimal(10, 2)
 
   purchaseOrderItems PurchaseOrderItem[]
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([supplierId])
 }
 
 model PurchaseOrder {
@@ -229,6 +243,9 @@ model PurchaseOrder {
   createdAt      DateTime @default(now())
 
   items PurchaseOrderItem[]
+
+  @@index([supplierId, createdAt])
+  @@index([orderId, createdAt])
 }
 
 model PurchaseOrderItem {
@@ -243,8 +260,14 @@ model PurchaseOrderItem {
   externalRef    String?
   externalStatus String?
   receiptUrl     String?
+
+  @@index([purchaseOrderId])
+  @@index([orderItemId])
 }
 
+/**
+ * ---------------- Favorite / Wishlist ----------------
+ */
 model Favorite {
   id String @id @default(cuid())
 

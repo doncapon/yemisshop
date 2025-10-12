@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../api/client';
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
+import { useModal } from '../components/ModalProvider';
 
 type Product = {
   id: string;
@@ -39,6 +40,8 @@ type SortKey = 'relevance' | 'price-asc' | 'price-desc';
 export default function Catalog() {
   const { token } = useAuthStore();
   const qc = useQueryClient();
+  const { openModal } = useModal();
+
 
   // All products
   const { data, isLoading, error } = useQuery({
@@ -82,8 +85,8 @@ export default function Catalog() {
     },
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData(['favorites', 'mine'], ctx.prev);
-      alert('Could not update wishlist. Please try again.');
-    },
+        openModal({ title: 'Wishlist', message: 'Could not update wishlist. Please try again.' });
+      },
   });
 
   // Filters
@@ -320,7 +323,8 @@ export default function Catalog() {
                           className={`text-lg ${fav ? 'text-red-600' : 'text-gray-500 hover:text-red-600'}`}
                           onClick={() => {
                             if (!token) {
-                              alert('Please login to use the wishlist.');
+                              openModal({ title: 'Wishlist', message: 'Please login to use the wishlist.' });
+
                               return;
                             }
                             toggleFav.mutate({ productId: p.id });

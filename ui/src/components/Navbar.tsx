@@ -60,13 +60,6 @@ export default function Navbar() {
         let f = data.firstName?.trim();
         let m = data.middleName?.trim();
         let l = data.lastName?.trim();
-
-        if ((!f && !l) && data.name) {
-          const parts = data.name.trim().split(/\s+/);
-          f = parts[0] || '';
-          l = parts.length > 1 ? parts[parts.length - 1] : '';
-        }
-
         if (!cancelled) {
           setFirstName(f || null);
           setMiddleName(m || null);
@@ -94,21 +87,18 @@ export default function Navbar() {
       const mid = m ? ` ${m[0].toUpperCase()}.` : '';
       return `${f}${mid} ${l}`;
     }
-    if (f) return f;
-    if (l) return l;
-    return userEmail || 'Account';
-  }, [firstName, middleName, lastName, userEmail]);
+  }, [firstName, middleName, lastName]);
 
   const initials = useMemo(() => {
     const f = (firstName?.trim()?.[0] || '').toUpperCase();
     const l = (lastName?.trim()?.[0] || '').toUpperCase();
     const init = `${f}${l}`.trim();
-    return init || (userEmail?.[0]?.toUpperCase() ?? 'U');
-  }, [firstName, lastName, userEmail]);
+    return init || ('U');
+  }, [firstName, lastName]);
 
   const logout = useCallback(() => {
     clear();
-    if (localStorage.getItem('cart')) {localStorage.removeItem('cart')};
+    if (localStorage.getItem('cart')) { localStorage.removeItem('cart') };
     nav('/');
   }, [clear, nav]);
 
@@ -150,17 +140,16 @@ export default function Navbar() {
           >
             Cart
           </NavLink>
-               {token && (
-            <NavLink
-              to="/wishlist"
-              end
-              className={({ isActive }) =>
-                `${linkBase} ${isActive ? linkActive : linkInactive}`
-              }
-            >
-              Wishlist
-            </NavLink>
-          )}
+
+          <NavLink
+            to="/wishlist"
+            end
+            className={({ isActive }) =>
+              `${linkBase} ${isActive ? linkActive : linkInactive}`
+            }
+          >
+            Wishlist
+          </NavLink>
 
           {token && (
             <NavLink
@@ -311,7 +300,7 @@ export default function Navbar() {
             >
               Cart
             </NavLink>
-              
+
             <NavLink
               to="/wishlist"
               onClick={() => setMobileOpen(false)}

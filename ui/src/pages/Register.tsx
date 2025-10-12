@@ -4,6 +4,11 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
 
 type Role = 'SHOPPER';
+type RegisterResponse = {
+  message: string;
+  tempToken?: string;
+  phoneOtpSent?: boolean;
+};
 
 type Country = { name: string; code: string; dial: string };
 const COUNTRIES: Country[] = [
@@ -64,6 +69,21 @@ export default function Register() {
       setForm((f) => ({ ...f, [key]: e.target.value }));
     };
 
+  // Specialized handler: enforce birth-year max 4 digits as user types
+  const onDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    let v = e.target.value; // expect YYYY-MM-DD or ''
+    if (v) {
+      const parts = v.split('-');
+      if (parts[0]) {
+        parts[0] = parts[0].replace(/\D/g, ''); // digits only in year
+        if (parts[0].length > 4) parts[0] = parts[0].slice(0, 4); // clamp to 4
+      }
+      // Recompose only the parts provided to avoid inserting "undefined"
+      v = parts.filter((p) => p !== undefined).join('-');
+    }
+    setForm((f) => ({ ...f, dateOfBirth: v }));
+  };
+
   const validate = () => {
     if (!form.firstName.trim()) return 'Please enter your first name';
     if (!form.lastName.trim()) return 'Please enter your last name';
@@ -85,13 +105,25 @@ export default function Register() {
     if (localDigits && localDigits.length < 6) return 'Please enter a valid phone number';
     if (!COUNTRIES.some((c) => c.dial === form.countryDial)) return 'Please select a valid country code';
 
-    if (form.dateOfBirth) {
-      const dob = new Date(form.dateOfBirth + 'T00:00:00');
-      if (Number.isNaN(+dob)) return 'Please select a valid date of birth';
-      const today = new Date();
-      const age = Math.floor((+today - +dob) / (365.25 * 24 * 3600 * 1000));
-      if (age < 13) return 'You must be at least 13 years old to register';
+    // DOB required + must be valid yyyy-mm-dd + birth year exactly 4 digits + >=18
+    if (!form.dateOfBirth) return 'Please select your date of birth';
+
+    // Must match exact "YYYY-MM-DD"
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(form.dateOfBirth)) {
+      return 'Please use a valid date (YYYY-MM-DD).';
     }
+
+    const yearStr = form.dateOfBirth.slice(0, 4);
+    if (!/^\d{4}$/.test(yearStr)) {
+      return 'Birth year must be exactly 4 digits.';
+    }
+
+    const dob = new Date(form.dateOfBirth + 'T00:00:00');
+    if (Number.isNaN(+dob)) return 'Please select a valid date of birth';
+
+    const today = new Date();
+    const years = (today.getTime() - dob.getTime()) / (365.25 * 24 * 3600 * 1000);
+    if (years < 18) return 'You must be at least 18 years old to register';
 
     return null;
   };
@@ -121,13 +153,15 @@ export default function Register() {
         role: form.role,
         dialCode: form.countryDial,
         localPhone: form.localPhone,
-        dateOfBirth: form.dateOfBirth ? new Date(form.dateOfBirth).toISOString() : undefined,
+        dateOfBirth: form.dateOfBirth
+          ? new Date(form.dateOfBirth).toISOString()
+          : undefined,
       };
 
-      const res = await api.post('/api/auth/register', payload);
+      const { data } = await api.post<RegisterResponse>('/api/auth/register', payload);
 
-      if (res.data?.tempToken) {
-        localStorage.setItem('verifyToken', res.data.tempToken);
+      if (data?.tempToken) {
+        localStorage.setItem('verifyToken', data.tempToken);
       }
 
       const q = new URLSearchParams({ e: payload.email }).toString();
@@ -210,11 +244,11 @@ export default function Register() {
               <input
                 type="date"
                 value={form.dateOfBirth}
-                onChange={onChange('dateOfBirth')}
+                onChange={onDateChange}
                 className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink
                            focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
               />
-              <p className="mt-1 text-xs text-ink-soft">Must be 13+ years old.</p>
+              <p className="mt-1 text-xs text-ink-soft">Must be 18+ years old.</p>
             </div>
           </div>
 

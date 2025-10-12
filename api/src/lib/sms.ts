@@ -1,9 +1,9 @@
 // src/lib/sms.ts
-// If you don't have Twilio, you can log OTP to console for now.
+// DEV: console OTP; real SMS later; WhatsApp guarded by envs
+import https from 'https';
 
-
-// src/lib/sms.ts
-const USE_REAL_SMS = false; // flip to true when you add Twilio later
+// Switch to true when you wire Twilio
+const USE_REAL_SMS = false;
 
 export async function sendSmsOtp(to: string, text: string) {
   if (!USE_REAL_SMS) {
@@ -11,25 +11,23 @@ export async function sendSmsOtp(to: string, text: string) {
     console.log(`\n[SMS:DEV] To: ${to}\n[SMS:DEV] Message: ${text}\n`);
     return { ok: true as const };
   }
+  // TODO: real SMS integration here
 }
 
-//// Real code for later with Twillo
-// export async function sendSmsOtp(toE164: string, code: string) {
-//   if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
-//     const twilio = require('twilio')(
-//       process.env.TWILIO_ACCOUNT_SID,
-//       process.env.TWILIO_AUTH_TOKEN
-//     );
-//     await twilio.messages.create({
-//       to: toE164,
-//       from: process.env.TWILIO_FROM!,
-//       body: `Your YemiShop verification code is ${code}`,
-//     });
-//   } else {
-//     console.log('[SMS MOCK]', toE164, 'OTP:', code);
-//   }
-// }
 export async function sendWhatsappOtp(toE164: string, code: string) {
+  // Only run if properly configured
+  if (!process.env.WABA_PHONE_NUMBER_ID || !process.env.WABA_TOKEN) {
+    console.warn('[whatsapp] Missing WABA envs; skipping send.');
+    return { ok: false, error: 'WABA not configured' };
+  }
+
+  // DEV-ONLY: relax TLS if behind corporate MITM with custom CA
+  // Prefer NODE_EXTRA_CA_CERTS to trust your corp CA instead of this.
+  const devHttpsAgent =
+    process.env.NODE_ENV !== 'production'
+      ? new https.Agent({ rejectUnauthorized: false })
+      : undefined;
+
   const res = await fetch(
     `https://graph.facebook.com/v19.0/${process.env.WABA_PHONE_NUMBER_ID}/messages`,
     {
@@ -43,14 +41,16 @@ export async function sendWhatsappOtp(toE164: string, code: string) {
         to: toE164,
         type: 'template',
         template: {
-          name: 'otp_login', // pre-approved template
+          name: 'otp_login',
           language: { code: 'en' },
-          components: [
-            { type: 'body', parameters: [{ type: 'text', text: code }] }
-          ]
-        }
+          components: [{ type: 'body', parameters: [{ type: 'text', text: code }] }],
+        },
       }),
-    }
+      // @ts-ignore – Node 18 fetch (undici) doesn't accept https.Agent directly in types,
+      // but it will pass it to the dispatcher; keep this DEV-only if you must.
+      agent: devHttpsAgent,
+    } as any
   );
+
   return { ok: res.ok, error: res.ok ? undefined : await res.text() };
 }

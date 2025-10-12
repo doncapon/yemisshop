@@ -30,22 +30,18 @@ CREATE TABLE "User" (
     "shippingAddressId" TEXT,
     "status" TEXT NOT NULL DEFAULT 'PENDING',
     "emailVerifiedAt" TIMESTAMP(3),
-    "emailVerifyTokenExpiresAt" TIMESTAMP(3),
     "phoneVerifiedAt" TIMESTAMP(3),
     "phoneOtpHash" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "phoneVerified" BOOLEAN NOT NULL DEFAULT false,
-    "emailVerified" BOOLEAN NOT NULL DEFAULT false,
-    "phoneOtpCode" TEXT,
     "phoneOtpExpiresAt" TIMESTAMP(3),
     "phoneOtpLastSentAt" TIMESTAMP(3),
     "phoneOtpSendCountDay" INTEGER NOT NULL DEFAULT 0,
     "emailVerifyToken" TEXT,
-    "emailVerifyExpiresAt" TIMESTAMP(3),
+    "emailVerifyTokenExpiresAt" TIMESTAMP(3),
     "emailVerifyLastSentAt" TIMESTAMP(3),
     "emailVerifySendCountDay" INTEGER NOT NULL DEFAULT 0,
     "resetPasswordToken" TEXT,
     "resetPasswordExpiresAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
 );
@@ -169,6 +165,24 @@ CREATE TABLE "PurchaseOrderItem" (
     CONSTRAINT "PurchaseOrderItem_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "Favorite" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "productId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "Favorite_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Wishlist" (
+    "userId" TEXT NOT NULL,
+    "productId" TEXT NOT NULL,
+
+    CONSTRAINT "Wishlist_pkey" PRIMARY KEY ("userId","productId")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 
@@ -179,13 +193,37 @@ CREATE UNIQUE INDEX "User_addressId_key" ON "User"("addressId");
 CREATE UNIQUE INDEX "User_shippingAddressId_key" ON "User"("shippingAddressId");
 
 -- CreateIndex
+CREATE INDEX "User_emailVerifiedAt_idx" ON "User"("emailVerifiedAt");
+
+-- CreateIndex
+CREATE INDEX "User_phoneVerifiedAt_idx" ON "User"("phoneVerifiedAt");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Supplier_name_key" ON "Supplier"("name");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Supplier_userId_key" ON "Supplier"("userId");
 
 -- CreateIndex
+CREATE INDEX "Supplier_status_createdAt_idx" ON "Supplier"("status", "createdAt");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Category_name_key" ON "Category"("name");
+
+-- CreateIndex
+CREATE INDEX "Product_supplierId_idx" ON "Product"("supplierId");
+
+-- CreateIndex
+CREATE INDEX "Product_categoryId_idx" ON "Product"("categoryId");
+
+-- CreateIndex
+CREATE INDEX "Product_status_createdAt_idx" ON "Product"("status", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "Order_userId_createdAt_idx" ON "Order"("userId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "Order_status_createdAt_idx" ON "Order"("status", "createdAt");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Payment_reference_key" ON "Payment"("reference");
@@ -195,6 +233,45 @@ CREATE INDEX "Payment_orderId_idx" ON "Payment"("orderId");
 
 -- CreateIndex
 CREATE INDEX "Payment_provider_status_createdAt_idx" ON "Payment"("provider", "status", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "Payment_status_createdAt_idx" ON "Payment"("status", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "OrderItem_orderId_idx" ON "OrderItem"("orderId");
+
+-- CreateIndex
+CREATE INDEX "OrderItem_productId_idx" ON "OrderItem"("productId");
+
+-- CreateIndex
+CREATE INDEX "OrderItem_supplierId_idx" ON "OrderItem"("supplierId");
+
+-- CreateIndex
+CREATE INDEX "PurchaseOrder_supplierId_createdAt_idx" ON "PurchaseOrder"("supplierId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "PurchaseOrder_orderId_createdAt_idx" ON "PurchaseOrder"("orderId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "PurchaseOrderItem_purchaseOrderId_idx" ON "PurchaseOrderItem"("purchaseOrderId");
+
+-- CreateIndex
+CREATE INDEX "PurchaseOrderItem_orderItemId_idx" ON "PurchaseOrderItem"("orderItemId");
+
+-- CreateIndex
+CREATE INDEX "Favorite_userId_idx" ON "Favorite"("userId");
+
+-- CreateIndex
+CREATE INDEX "Favorite_productId_idx" ON "Favorite"("productId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Favorite_userId_productId_key" ON "Favorite"("userId", "productId");
+
+-- CreateIndex
+CREATE INDEX "Wishlist_userId_idx" ON "Wishlist"("userId");
+
+-- CreateIndex
+CREATE INDEX "Wishlist_productId_idx" ON "Wishlist"("productId");
 
 -- AddForeignKey
 ALTER TABLE "User" ADD CONSTRAINT "User_addressId_fkey" FOREIGN KEY ("addressId") REFERENCES "Address"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -240,3 +317,15 @@ ALTER TABLE "PurchaseOrderItem" ADD CONSTRAINT "PurchaseOrderItem_purchaseOrderI
 
 -- AddForeignKey
 ALTER TABLE "PurchaseOrderItem" ADD CONSTRAINT "PurchaseOrderItem_orderItemId_fkey" FOREIGN KEY ("orderItemId") REFERENCES "OrderItem"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Favorite" ADD CONSTRAINT "Favorite_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Favorite" ADD CONSTRAINT "Favorite_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Wishlist" ADD CONSTRAINT "Wishlist_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Wishlist" ADD CONSTRAINT "Wishlist_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;

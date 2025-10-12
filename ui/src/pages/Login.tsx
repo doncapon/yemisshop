@@ -15,8 +15,8 @@ type MeResponse = {
 };
 
 export default function Login() {
-  const [email, setEmail] = useState('olusegun.akintimehin@gmail.com');
-  const [password, setPassword] = useState('Emmanuel1987#');
+  const [email, setEmail] = useState('shopper@example.com');
+  const [password, setPassword] = useState('Shopper123!');
   const [err, setErr] = useState<string | null>(null);
 
   // shown only when not-verified

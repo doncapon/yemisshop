@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
+import { useModal } from "../components/ModalProvider";
 
 type InitResp = {
   reference: string;
@@ -27,6 +28,8 @@ export default function Payment() {
   const [loading, setLoading] = useState(false);
   const [init, setInit] = useState<InitResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const {openModal} = useModal();
+
 
   useEffect(() => {
     if (!orderId) return;
@@ -65,9 +68,11 @@ export default function Payment() {
         { headers: { Authorization: `Bearer ${token}` } }
       );
       // success
-      alert('Payment verified. Thank you!');
+      openModal({title: 'Payment', message: 'Payment verified. Thank you!'});
+
       // clear cart now that it’s paid (if you want):
       localStorage.removeItem('cart');
+      
       nav('/orders');
     } catch (e: any) {
       setErr(e?.response?.data?.error || 'Verification failed');

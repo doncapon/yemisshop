@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
+import { useModal } from "../components/ModalProvider";
 
 // ---------------------- Types ----------------------
 type Role = 'ADMIN' | 'SUPPLIER' | 'SHOPPER';
@@ -207,6 +208,7 @@ export default function UserPersonalisedPage() {
 
   const resendEmail = useResendEmail();
   const resendOtp = useResendOtp();
+  const {openModal} = useModal();
 
   const [otpCooldown, setOtpCooldown] = useState(0);
 
@@ -292,7 +294,8 @@ export default function UserPersonalisedPage() {
                     try {
                       await resendEmail.mutateAsync();
                       qc.invalidateQueries({ queryKey: ['me'] });
-                      alert('Verification email sent.');
+                        openModal({title: 'Verification', message:  'Verification email sent.'});
+
                     } catch (e: any) {
                       alert(e?.response?.data?.error || 'Failed to resend email');
                     }

@@ -1,40 +1,82 @@
-import { Router } from 'express';
+import express, { Router, type Request, type Response } from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma.js';
 import { authMiddleware } from '../lib/authMiddleware.js';
-import express from 'express'
 
 const router = Router();
 
-const MODE = (process.env.PAYMENTS_MODE || 'trial').toLowerCase(); // 'trial' | 'paystack'
-const APP_URL = process.env.APP_URL;
+/* ----------------------------- Config ----------------------------- */
+
+const MODE = (process.env.PAYMENTS_MODE || 'trial').toLowerCase() as 'trial' | 'paystack';
+const APP_URL = process.env.APP_URL || 'http://localhost:5173';
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY || '';
 
-const TRIAL_BANK_NAME = process.env.TRIAL_BANK_NAME;
-const TRIAL_BANK_ACCOUNT_NAME = process.env.TRIAL_BANK_ACCOUNT_NAME;
-const TRIAL_BANK_ACCOUNT_NUMBER = process.env.TRIAL_BANK_ACCOUNT_NUMBER;
+const TRIAL_BANK_NAME = process.env.TRIAL_BANK_NAME || '';
+const TRIAL_BANK_ACCOUNT_NAME = process.env.TRIAL_BANK_ACCOUNT_NAME || '';
+const TRIAL_BANK_ACCOUNT_NUMBER = process.env.TRIAL_BANK_ACCOUNT_NUMBER || '';
+
+const PAYSTACK_INLINE_BANK = process.env.PAYSTACK_INLINE_BANK === '1'; // when true & channel==='bank_transfer', get DVA from Paystack
 
 function makeRef(orderId: string) {
-  // short, unique-enough ref for demo
   return `ys_${orderId}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-const PAYSTACK_INLINE_BANK = process.env.PAYSTACK_INLINE_BANK === '1'; // when true & channel==='bank_transfer', return bank details from Paystack
+/* --------------------------- Helpers ------------------------------ */
 
+/** Ensure Paystack customer exists, returning customer_code */
+async function ensurePaystackCustomer(email: string, fallbackEmail: string): Promise<string> {
+  // try create
+  try {
+    const r = await axios.post(
+      'https://api.paystack.co/customer',
+      { email: email || fallbackEmail },
+      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }, timeout: 15000 }
+    );
+    const code = r.data?.data?.customer_code;
+    if (code) return code;
+  } catch (err: any) {
+    // If already exists, search by email
+    if (err?.response?.status === 400) {
+      const sr = await axios.get('https://api.paystack.co/customer', {
+        params: { email },
+        headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
+        timeout: 15000,
+      });
+      const code = sr.data?.data?.[0]?.customer_code;
+      if (code) return code;
+    }
+    throw err;
+  }
+  throw new Error('Unable to resolve Paystack customer');
+}
+
+/* ----------------------------- Routes ----------------------------- */
+
+/**
+ * INITIATE PAYMENT
+ * POST /api/payments/init
+ * Body: { orderId: string, channel?: 'card' | 'bank_transfer' }
+ */
 router.post('/init', authMiddleware, async (req, res, next) => {
   try {
     const { orderId, channel } = req.body as { orderId: string; channel?: 'card' | 'bank_transfer' };
     if (!orderId) return res.status(400).json({ error: 'orderId is required' });
 
-    const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: true } });
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { user: true },
+    });
     if (!order) return res.status(404).json({ error: 'Order not found' });
     if (order.userId !== req.user!.id) return res.status(403).json({ error: 'Forbidden' });
 
     const amountNgn = Number(order.total);
+    if (!Number.isFinite(amountNgn)) return res.status(400).json({ error: 'Invalid order total' });
+
     const reference = makeRef(order.id);
 
-    // Record the Payment attempt up-front
+    // record payment attempt
     await prisma.payment.create({
       data: {
         orderId: order.id,
@@ -47,56 +89,49 @@ router.post('/init', authMiddleware, async (req, res, next) => {
       },
     });
 
-    // 1) Trial: return static bank details for UI to render
+    // Trial mode: return static bank details
     if (MODE === 'trial') {
+      if (!TRIAL_BANK_NAME || !TRIAL_BANK_ACCOUNT_NAME || !TRIAL_BANK_ACCOUNT_NUMBER) {
+        return res.status(500).json({ error: 'Trial bank details not configured' });
+      }
       return res.json({
         mode: 'trial',
         amount: amountNgn,
         currency: 'NGN',
         reference,
-         bank: {
+        bank: {
           bank_name: TRIAL_BANK_NAME,
           account_name: TRIAL_BANK_ACCOUNT_NAME,
           account_number: TRIAL_BANK_ACCOUNT_NUMBER,
         },
-        instructions: 'Transfer the exact amount. Include the reference in narration. Click “I have paid” to verify.',
+        instructions:
+          'Transfer the exact amount. Include the reference in narration. Click “I have paid” to verify.',
       });
     }
 
-    // 2) Paystack: either hosted checkout (redirect) or INLINE bank details
+    // Paystack mode sanity
     if (!PAYSTACK_SECRET) return res.status(500).json({ error: 'PAYSTACK_SECRET_KEY not configured' });
 
-    // 2a) INLINE bank details via Paystack Dedicated Virtual Account
+    // Inline bank: create DVA (Dedicated Virtual Account)
     if (channel === 'bank_transfer' && PAYSTACK_INLINE_BANK) {
-      // Ensure Paystack Customer exists
-      const customerRes = await axios.post(
-        'https://api.paystack.co/customer',
-        { email: order.user.email || `noemail+${order.userId}@yemishop.local` },
-        { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }, timeout: 15000 }
-      ).catch(async (err) => {
-        // ignore 400 "Customer already exists" by fetching customer
-        if (err?.response?.status === 400) {
-          return axios.get(
-            `https://api.paystack.co/customer/${encodeURIComponent(order.user.email)}`,
-            { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }, timeout: 15000 }
-          );
-        }
-        throw err;
-      });
-      const customer = customerRes.data?.data;
-      const customerCode = customer?.customer_code;
-      // Request Dedicated Virtual Account for this customer
+      const customerCode = await ensurePaystackCustomer(
+        order.user.email || '',
+        `noemail+${order.userId}@yemishop.local`
+      );
+
       const dvaRes = await axios.post(
         'https://api.paystack.co/dedicated_account',
-        {
-          customer: customerCode,
-          preferred_bank: '', // or leave empty; depends on your Paystack config/KYC
-        },
+        { customer: customerCode },
         { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }, timeout: 15000 }
       );
 
       const acct = dvaRes.data?.data;
-      if (!acct?.account_number) {
+      // Different accounts of Paystack sometimes differ in shape — support both.
+      const bank_name = acct?.bank?.name ?? acct?.bank_name;
+      const account_name = acct?.account_name;
+      const account_number = acct?.account_number;
+
+      if (!account_number || !account_name || !bank_name) {
         return res.status(502).json({ error: 'Failed to get bank account from Paystack' });
       }
 
@@ -105,19 +140,16 @@ router.post('/init', authMiddleware, async (req, res, next) => {
         amount: amountNgn,
         currency: 'NGN',
         reference,
-         bank: {
-          bank_name: TRIAL_BANK_NAME,
-          account_name: TRIAL_BANK_ACCOUNT_NAME,
-          account_number: TRIAL_BANK_ACCOUNT_NUMBER,
-        },
+        bank: { bank_name, account_name, account_number },
         instructions: 'Transfer the exact amount to the account below. Click “I have paid” to verify.',
       });
     }
 
-    // 2b) Hosted checkout: redirect user to Paystack page (shows bank details itself if channel=bank_transfer)
-    const payload: any = {
+    // Hosted checkout
+    const amountKobo = Math.round(amountNgn * 100);
+    const payload: Record<string, unknown> = {
       email: order.user.email || 'noemail@yemishop.local',
-      amount: Math.round(amountNgn * 100),
+      amount: amountKobo,
       currency: 'NGN',
       reference,
       callback_url: `${APP_URL}/payment-callback?orderId=${order.id}&reference=${encodeURIComponent(reference)}`,
@@ -137,56 +169,67 @@ router.post('/init', authMiddleware, async (req, res, next) => {
   }
 });
 
-
-// VERIFY (manual verify, e.g. after redirect or "I have paid" click)
+/**
+ * VERIFY PAYMENT (manual verify or after redirect)
+ * POST /api/payments/verify
+ * Body: { orderId: string, reference: string }
+ */
 router.post('/verify', authMiddleware, async (req, res, next) => {
   try {
     const { reference, orderId } = req.body as { reference: string; orderId: string };
+    if (!reference || !orderId) return res.status(400).json({ error: 'reference and orderId are required' });
 
     const payment = await prisma.payment.findUnique({ where: { reference } });
     if (!payment) return res.status(404).json({ error: 'Payment not found' });
 
-    // Optional: enforce owner
     const order = await prisma.order.findUnique({ where: { id: payment.orderId } });
-    if (!order || order.userId !== req.user!.id) {
-      return res.status(403).json({ error: 'Forbidden' });
+    if (!order || order.userId !== req.user!.id) return res.status(403).json({ error: 'Forbidden' });
+
+    if (MODE === 'trial') {
+      // In trial we can't truly verify with provider; treat as pending unless you want to auto-approve here.
+      return res.status(400).json({ error: 'Trial mode does not verify with provider' });
     }
 
     const { data } = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
       headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
+      timeout: 15000,
     });
 
-    const status = data?.data?.status; // 'success', 'failed'
+    const status = data?.data?.status; // 'success' | 'failed' | etc.
+    const providerRef = data?.data?.reference ?? null;
+
     if (status !== 'success') {
       await prisma.payment.update({
         where: { reference },
-        data: { status: 'FAILED', providerRef: data?.data?.reference ?? null },
+        data: { status: 'FAILED', providerRef },
       });
       return res.status(400).json({ error: 'Payment not successful yet' });
     }
 
+    // Idempotent: if already paid, just return ok
+    if (payment.status === 'PAID' || order.status === 'PAID') {
+      return res.json({ ok: true, status: 'PAID' });
+    }
+
     await prisma.$transaction([
-      prisma.payment.update({
-        where: { reference },
-        data: { status: 'PAID', providerRef: data?.data?.reference ?? null },
-      }),
-      prisma.order.update({
-        where: { id: payment.orderId },
-        data: { status: 'PAID' },
-      }),
+      prisma.payment.update({ where: { reference }, data: { status: 'PAID', providerRef } }),
+      prisma.order.update({ where: { id: payment.orderId }, data: { status: 'PAID' } }),
     ]);
 
-    res.json({ ok: true , status: 'PAID'});
+    res.json({ ok: true, status: 'PAID' });
   } catch (e) {
     next(e);
   }
 });
 
-// WEBHOOK (recommended): configure this URL in Paystack dashboard
-// Verify x-paystack-signature (HMAC SHA512 of raw body with your secret)
-router.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
+/**
+ * WEBHOOK HANDLER (exported)
+ * Mount with express.raw at app level before express.json()
+ */
+export async function paystackWebhookHandler(req: Request, res: Response) {
   const signature = req.headers['x-paystack-signature'] as string | undefined;
   if (!signature) return res.status(400).end('No signature');
+  if (!PAYSTACK_SECRET) return res.status(500).end('Missing secret');
 
   const computed = crypto.createHmac('sha512', PAYSTACK_SECRET).update(req.body).digest('hex');
   if (computed !== signature) return res.status(400).end('Invalid signature');
@@ -194,7 +237,7 @@ router.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   try {
     const evt = JSON.parse(req.body.toString('utf8'));
     if (evt?.event === 'charge.success') {
-      const reference = evt?.data?.reference;
+      const reference = evt?.data?.reference as string | undefined;
       if (reference) {
         const payment = await prisma.payment.findUnique({ where: { reference } });
         if (payment && payment.status !== 'PAID') {
@@ -211,24 +254,32 @@ router.post('/webhook', express.raw({ type: '*/*' }), async (req, res) => {
         }
       }
     }
-  } catch (e) {
-    // swallow – webhook must reply 200 for Paystack to stop retries if success
+  } catch (_) {
+    // Intentionally swallow: webhook must return 200 to stop retries when appropriate.
   }
   res.sendStatus(200);
-});
+}
 
-// SHAREABLE PAYMENT LINK (for paying on behalf / sending to others)
-import jwt from 'jsonwebtoken';
-
-// Create a share token
+/**
+ * SHAREABLE PAYMENT LINK
+ * POST /api/payments/link
+ * Body: { orderId: string }
+ */
 router.post('/link', authMiddleware, async (req, res, next) => {
   try {
     const { orderId } = req.body as { orderId: string };
+    if (!orderId) return res.status(400).json({ error: 'orderId is required' });
+
     const order = await prisma.order.findUnique({ where: { id: orderId } });
     if (!order || order.userId !== req.user!.id) {
       return res.status(404).json({ error: 'Order not found' });
     }
-    const token = jwt.sign({ oid: orderId }, process.env.JWT_SECRET!, { expiresIn: '2d' });
+
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({ error: 'JWT_SECRET not configured' });
+    }
+
+    const token = jwt.sign({ oid: orderId }, process.env.JWT_SECRET, { expiresIn: '2d' });
     const url = `${APP_URL}/payment?orderId=${orderId}&share=${encodeURIComponent(token)}`;
     res.json({ shareUrl: url });
   } catch (e) {
