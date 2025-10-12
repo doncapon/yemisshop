@@ -489,4 +489,25 @@ router.post('/reset-password', async (req, res, next) => {
   }
 });
 
+// api/src/routes/auth.ts (add near other routes)
+router.get('/reset-token/validate', async (req, res, next) => {
+  try {
+    const token = String(req.query.token || '');
+    if (!token) return res.json({ ok: false });
+
+    const user = await prisma.user.findFirst({
+      where: {
+        resetPasswordToken: token,
+        resetPasswordExpiresAt: { gt: new Date() },
+      },
+      select: { id: true },
+    });
+
+    return res.json({ ok: !!user });
+  } catch (e) {
+    next(e);
+  }
+});
+
+
 export default router;
