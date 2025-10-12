@@ -29,7 +29,7 @@ function useClickAway<T extends HTMLElement>(onAway: () => void) {
 }
 
 export default function Navbar() {
-  const { token, role, userEmail, clear } = useAuthStore();
+  const { token, role, email, clear } = useAuthStore();
   const nav = useNavigate();
 
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -226,7 +226,7 @@ export default function Navbar() {
                     <div className="text-sm font-medium truncate text-ink">
                       {displayName}
                     </div>
-                    <div className="text-xs opacity-70 truncate">{userEmail}</div>
+                    <div className="text-xs opacity-70 truncate">{email}</div>
                   </div>
                   <nav className="py-1 text-sm">
                     <button

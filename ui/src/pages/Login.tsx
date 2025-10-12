@@ -7,9 +7,9 @@ import { useAuthStore } from '../store/auth';
 type MeResponse = {
   id: string;
   email: string;
-  role: 'ADMIN' | 'SUPPLIER' | 'SHOPPER';
-  firstName: string;
-  lastName: string;
+  role: 'ADMIN' | 'SUPPLIER' | 'SHOPPER';  
+  firstName?: string | null;
+  lastName?: string | null;    
   emailVerified: boolean;
   phoneVerified: boolean;
 };
@@ -27,6 +27,7 @@ export default function Login() {
   const nav = useNavigate();
   const loc = useLocation() as any;
   const setAuth = useAuthStore((s) => s.setAuth);
+  const setToken = useAuthStore((s) => s.setToken);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -34,38 +35,44 @@ export default function Login() {
     return () => clearInterval(t);
   }, [cooldown]);
 
+
   const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr(null);
-    setPendingToken(null);
-    setMe(null);
+  e.preventDefault();
+  setErr(null);
+  setPendingToken(null);
+  setMe(null);
 
-    try {
-      // 1) Login to get a token
-      const res = await api.post('/api/auth/login', { email, password });
-      const { token } = res.data as { token: string };
+  try {
+    // 1) Login -> token + profile (role included)
+    const res = await api.post('/api/auth/login', { email, password });
+    const { token, profile } = res.data as {
+      token: string;
+      profile: {id: string;  role: 'ADMIN' | 'SUPPLIER' | 'SHOPPER'; email: string; emailVerified: boolean; phoneVerified: boolean; }
+    };
 
-      // 2) Ask backend who I am / verification flags
-      const meRes = await api.get<MeResponse>('/api/auth/me', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const profile = meRes.data;
+    // 2) Save token+role right away (no race)
+    setAuth(token, profile.role, profile.email);
 
-      // 3) If fully verified, persist auth + go on
-      if (profile.emailVerified && profile.phoneVerified) {
-        setAuth(token, profile.role, profile.email);
-        const to = loc.state?.from?.pathname || '/dashboard';
-        nav(to);
-        return;
-      }
-
-      // 4) Otherwise, show verification UI with resend actions
-      setPendingToken(token);
-      setMe(profile);
-    } catch (e: any) {
-      setErr(e?.response?.data?.error || 'Login failed');
+    // 3) If fully verified -> go to intended page (or role-specific default)
+    if (profile.emailVerified && profile.phoneVerified) {
+      const wanted =
+        (loc.state as any)?.from?.pathname ||
+        (profile.role === 'ADMIN' ? '/admin'
+         : profile.role === 'SUPPLIER' ? '/supplier'
+         : '/dashboard');
+      nav(wanted, { replace: true });
+      return;
     }
-  };
+
+    // 4) Not fully verified? Show the verification panel
+    setPendingToken(token);
+    setMe(profile);
+  } catch (e: any) {
+    setToken(null); // clear any partial state
+    setErr(e?.response?.data?.error || 'Login failed');
+  }
+};
+
 
   const resendEmail = async () => {
     if (!pendingToken) return;
