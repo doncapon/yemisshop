@@ -300,13 +300,13 @@ export default function Orders() {
     const s = status.toUpperCase();
     const style =
       s === 'PAID'
-        ? 'bg-green-600/10 text-green-700 border-green-600/20'
+        ? 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20'
         : s === 'PENDING'
-        ? 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20'
+        ? 'bg-amber-500/10 text-amber-700 border-amber-600/20'
         : s === 'FAILED' || s === 'CANCELED'
-        ? 'bg-red-500/10 text-red-700 border-red-600/20'
+        ? 'bg-rose-500/10 text-rose-700 border-rose-600/20'
         : s === 'DELIVERED' || s === 'SHIPPED' || s === 'PROCESSING'
-        ? 'bg-blue-600/10 text-blue-700 border-blue-600/20'
+        ? 'bg-sky-600/10 text-sky-700 border-sky-600/20'
         : 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
     return (
       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${style}`}>
@@ -322,16 +322,24 @@ export default function Orders() {
     const status = paid ? 'PAID' : (last?.status || 'PENDING');
     const style =
       status === 'PAID'
-        ? 'bg-green-600/10 text-green-700 border-green-600/20'
+        ? 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20'
         : status === 'FAILED' || status === 'CANCELED'
-        ? 'bg-red-500/10 text-red-700 border-red-600/20'
-        : 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20';
+        ? 'bg-rose-500/10 text-rose-700 border-rose-600/20'
+        : 'bg-amber-500/10 text-amber-700 border-amber-600/20';
 
     return (
       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${style}`}>
         {status}
       </span>
     );
+  };
+
+  // Clear all filters helper (for the toolbar)
+  const clearAll = () => {
+    setQ('');
+    setStatusFilter('');
+    setFromDate('');
+    setToDate('');
   };
 
   return (
@@ -352,66 +360,152 @@ export default function Orders() {
         </div>
       </div>
 
-      {/* Controls */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
-        <div className="flex items-center gap-2">
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search orders (id, status, product)…"
-            className="border rounded px-3 py-2 w-full"
-          />
-        </div>
+      {/* ---------------- FANCY FILTER TOOLBAR (less blue, more life) ---------------- */}
+      <div className="
+          rounded-2xl border shadow-sm
+          bg-gradient-to-r from-white via-white to-amber-50
+          p-3 md:p-4
+        ">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          {/* Left cluster – search + status */}
+          <div className="flex flex-1 flex-col md:flex-row md:items-center gap-3">
+            {/* Search */}
+            <div className="relative flex-1 min-w-[220px]">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                {/* magnifier */}
+                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
+                  <path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16a6.471 6.471 0 0 0 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                </svg>
+              </span>
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search orders (id, status, product)…"
+                className="
+                  w-full rounded-xl border px-9 py-2.5 bg-white
+                  focus:outline-none focus:ring-4 focus:ring-amber-100 focus:border-amber-400
+                "
+              />
+            </div>
 
-        <div className="flex items-center gap-2">
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="border rounded px-3 py-2 w-full bg-white"
-          >
-            <option value="">All statuses</option>
-            {uniqueStatuses.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </div>
+            {/* Status */}
+            <div className="relative w-full md:w-[240px]">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                {/* status icon */}
+                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
+                  <path fill="currentColor" d="M12 2L2 7l10 5l10-5zm0 7.09L5.26 7L12 3.91L18.74 7zm0 3.41L2 8l10 5l10-5l-10 5zm0 2.5L2 10.5l10 5l10-5z"/>
+                </svg>
+              </span>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="
+                  w-full appearance-none rounded-xl border px-9 py-2.5 bg-white
+                  focus:outline-none focus:ring-4 focus:ring-emerald-100 focus:border-emerald-400
+                "
+              >
+                <option value="">All statuses</option>
+                {uniqueStatuses.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+                {/* chevron */}
+                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-50">
+                  <path fill="currentColor" d="M7 10l5 5l5-5z"/>
+                </svg>
+              </span>
+            </div>
+          </div>
 
-        <div className="flex items-center gap-2">
-          <input
-            type="date"
-            value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
-            className="border rounded px-3 py-2 w-full bg-white"
-            aria-label="From date"
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <input
-            type="date"
-            value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
-            className="border rounded px-3 py-2 w-full bg-white"
-            aria-label="To date"
-          />
-        </div>
+          {/* Right cluster – date range + page size + clear */}
+          <div className="flex flex-col md:flex-row md:items-center gap-3">
+            {/* From */}
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                {/* calendar */}
+                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
+                  <path fill="currentColor" d="M7 10h5v5H7z"/><path fill="currentColor" d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2m0 14H5V9h14z"/>
+                </svg>
+              </span>
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="
+                  rounded-xl border px-9 py-2.5 bg-white
+                  focus:outline-none focus:ring-4 focus:ring-sky-100 focus:border-sky-400
+                "
+                aria-label="From date"
+              />
+            </div>
 
-        <div className="flex lg:col-span-4 justify-end">
-          <div className="flex items-center gap-2">
-            <span className="text-sm opacity-70">Per page</span>
-            <select
-              value={pageSize}
-              onChange={(e) => setPageSize(Number(e.target.value) as any)}
-              className="border rounded px-2 py-2 bg-white"
-            >
-              <option value={10}>10</option>
-              <option value={20}>20</option>
-              <option value={50}>50</option>
-            </select>
+            {/* To */}
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                {/* calendar */}
+                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
+                  <path fill="currentColor" d="M7 10h5v5H7z"/><path fill="currentColor" d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2m0 14H5V9h14z"/>
+                </svg>
+              </span>
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="
+                  rounded-xl border px-9 py-2.5 bg-white
+                  focus:outline-none focus:ring-4 focus:ring-sky-100 focus:border-sky-400
+                "
+                aria-label="To date"
+              />
+            </div>
+
+            {/* Page size */}
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
+                {/* rows icon */}
+                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
+                  <path fill="currentColor" d="M3 5h18v2H3zm0 6h18v2H3zm0 6h18v2H3z"/>
+                </svg>
+              </span>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value) as any)}
+                className="
+                  appearance-none rounded-xl border px-9 py-2.5 bg-white
+                  focus:outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400
+                "
+              >
+                <option value={10}>10 / page</option>
+                <option value={20}>20 / page</option>
+                <option value={50}>50 / page</option>
+              </select>
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-50">
+                  <path fill="currentColor" d="M7 10l5 5l5-5z"/>
+                </svg>
+              </span>
+            </div>
+
+            {/* Clear filters */}
+            {(q || statusFilter || fromDate || toDate) ? (
+              <button
+                className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 bg-white hover:bg-black/5 transition"
+                onClick={clearAll}
+                title="Clear filters"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                </svg>
+                Clear
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
+      {/* ---------------- END TOOLBAR ---------------- */}
 
       {/* Table */}
       <div className="overflow-x-auto border rounded-lg bg-white">
@@ -645,22 +739,22 @@ export default function Orders() {
                                   <span>Total</span>
                                   <span>{ngn.format(toNumber(o.total))}</span>
                                 </div>
-                              </div>
 
-                              {/* Only show Pay button if NOT fully paid */}
-                              {!isOrderFullyPaid(o) && (
-                                <div className="mt-4">
-                                  <button
-                                    className="rounded-md border bg-primary-600 px-3 py-2 text-white hover:bg-primary-700 transition"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      nav(`/payment?orderId=${o.id}`);
-                                    }}
-                                  >
-                                    Pay for this order
-                                  </button>
-                                </div>
-                              )}
+                                {/* Pay button if NOT fully paid */}
+                                {!isOrderFullyPaid(o) && (
+                                  <div className="pt-3">
+                                    <button
+                                      className="rounded-md border bg-primary-600 px-3 py-2 text-white hover:bg-primary-700 transition"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        nav(`/payment?orderId=${o.id}`);
+                                      }}
+                                    >
+                                      Pay for this order
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </div>
 

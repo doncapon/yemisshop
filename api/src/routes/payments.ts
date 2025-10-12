@@ -56,6 +56,28 @@ async function ensurePaystackCustomer(email: string, fallbackEmail: string): Pro
 /* ----------------------------- Routes ----------------------------- */
 
 /**
+ * GET /api/payments/summary
+ * Returns total amount successfully paid by the current user (major units, NGN).
+ * Response: { totalPaid: number, currency: 'NGN' }
+ */
+router.get('/summary', authMiddleware, async (req, res, next) => {
+  try {
+    // Sum all PAID payments for orders owned by this user (no limit)
+    const agg = await prisma.payment.aggregate({
+      _sum: { amount: true },
+      where: {
+        status: 'PAID',
+        order: { userId: req.user!.id },
+      },
+    });
+
+    const totalPaid = Number(agg._sum.amount || 0);
+    res.json({ totalPaid, currency: 'NGN' });
+  } catch (e) {
+    next(e);
+  }
+});
+/**
  * INITIATE PAYMENT
  * POST /api/payments/init
  * Body: { orderId: string, channel?: 'card' | 'bank_transfer' }
