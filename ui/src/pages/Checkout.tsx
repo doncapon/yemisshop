@@ -210,6 +210,8 @@ export default function Checkout() {
       return res.data as { id: string };
     },
     onSuccess: (order) => {
+       // clear cart now that it’s paid (if you want):
+      localStorage.removeItem('cart');
       nav(`/payment?orderId=${order.id}`, {
         state: {
           orderId: order.id,
@@ -460,7 +462,7 @@ export default function Checkout() {
                 onClick={() => createOrder.mutate()}
                 className="mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50"
               >
-                {createOrder.isPending ? 'Processing…' : 'Go to payment'}
+                {createOrder.isPending ? 'Processing…' : 'Place order & Go to payment'}
               </button>
 
               {createOrder.isError && (

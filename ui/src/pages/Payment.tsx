@@ -69,9 +69,6 @@ export default function Payment() {
       );
       // success
       openModal({title: 'Payment', message: 'Payment verified. Thank you!'});
-
-      // clear cart now that it’s paid (if you want):
-      localStorage.removeItem('cart');
       
       nav('/orders');
     } catch (e: any) {

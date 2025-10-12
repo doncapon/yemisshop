@@ -1,3 +1,4 @@
+// src/pages/Orders.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
@@ -22,7 +23,15 @@ type Payment = {
 type Order = {
   id: string;
   createdAt: string;
-  status: 'PENDING' | 'PAID' | 'FAILED' | 'CANCELED' | 'PROCESSING' | 'SHIPPED' | 'DELIVERED' | string;
+  status:
+  | 'PENDING'
+  | 'PAID'
+  | 'FAILED'
+  | 'CANCELED'
+  | 'PROCESSING'
+  | 'SHIPPED'
+  | 'DELIVERED'
+  | string;
   total: number | string;
   tax?: number | string;
   shipping?: number | string;
@@ -61,12 +70,13 @@ function formatDate(s: string) {
   });
 }
 
-type SortKey = 'createdAt' | 'id' | 'status' | 'items' | 'total';
+type SortKey = 'createdAt' | 'id' | 'items' | 'total';
 type SortDir = 'asc' | 'desc';
 
 export default function Orders() {
   const nav = useNavigate();
   const token = useAuthStore((s) => s.token);
+  const isOrderFullyPaid = (o: Order) => (o.status || '').toUpperCase() === 'PAID';
 
   // redirect to login if needed
   useEffect(() => {
@@ -78,13 +88,27 @@ export default function Orders() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // controls
+  // table/filters
   const [q, setQ] = useState(''); // text filter
   const [statusFilter, setStatusFilter] = useState<string>(''); // "" = all
-  const [sortKey, setSortKey] = useState<SortKey>('createdAt');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<10 | 20 | 50>(10);
+
+  // date range filter
+  const [fromDate, setFromDate] = useState<string>(''); // yyyy-mm-dd
+  const [toDate, setToDate] = useState<string>(''); // yyyy-mm-dd
+
+  // expansion (only one open at a time)
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // sorting: keep per-column dir; only one active sort key
+  const [sortKey, setSortKey] = useState<SortKey>('createdAt');
+  const [sortDirs, setSortDirs] = useState<Record<SortKey, SortDir>>({
+    createdAt: 'desc', // default newest first
+    id: 'asc',
+    items: 'asc',
+    total: 'asc',
+  });
 
   // load orders
   useEffect(() => {
@@ -94,12 +118,11 @@ export default function Orders() {
       setLoading(true);
       setErr(null);
       try {
-        // this endpoint should include items + payments for a nice table
-        const {data} = await api.get('/api/orders/mine', {
+        const { data } = await api.get('/api/orders/mine', {
           headers: { Authorization: `Bearer ${token}` },
         });
-        console.log(mounted)
-        if (mounted) setOrders(data.data ?? []);
+        const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+        if (mounted) setOrders(list);
       } catch (e: any) {
         if (mounted) setErr(e?.response?.data?.error || 'Failed to load orders');
       } finally {
@@ -122,8 +145,23 @@ export default function Orders() {
     const query = q.trim().toLowerCase();
 
     return orders.filter((o) => {
+      // status filter
       const matchStatus = !statusFilter || o.status === statusFilter;
-      if (!query) return matchStatus;
+      if (!matchStatus) return false;
+
+      // date range filter
+      const ts = +new Date(o.createdAt);
+      if (fromDate) {
+        const fromTs = +new Date(fromDate + 'T00:00:00');
+        if (ts < fromTs) return false;
+      }
+      if (toDate) {
+        // include whole "to" day
+        const toTs = +new Date(toDate + 'T23:59:59.999');
+        if (ts > toTs) return false;
+      }
+
+      if (!query) return true;
 
       const idStr = o.id.toLowerCase();
       const statusStr = o.status.toLowerCase();
@@ -136,12 +174,12 @@ export default function Orders() {
         statusStr.includes(query) ||
         itemsTxt.includes(query);
 
-      return matchStatus && hit;
+      return hit;
     });
-  }, [orders, q, statusFilter]);
+  }, [orders, q, statusFilter, fromDate, toDate]);
 
   const sorted = useMemo(() => {
-    const dir = sortDir === 'asc' ? 1 : -1;
+    const dir = sortDirs[sortKey] === 'asc' ? 1 : -1;
 
     const arr = [...filtered].sort((a, b) => {
       switch (sortKey) {
@@ -153,12 +191,9 @@ export default function Orders() {
         case 'id': {
           return a.id.localeCompare(b.id) * dir;
         }
-        case 'status': {
-          return a.status.localeCompare(b.status) * dir;
-        }
         case 'items': {
-          const aa = (a.items?.reduce((s, x) => s + (x.qty || 0), 0) ?? 0);
-          const bb = (b.items?.reduce((s, x) => s + (x.qty || 0), 0) ?? 0);
+          const aa = a.items?.reduce((s, x) => s + (x.qty || 0), 0) ?? 0;
+          const bb = b.items?.reduce((s, x) => s + (x.qty || 0), 0) ?? 0;
           return (aa - bb) * dir;
         }
         case 'total': {
@@ -172,31 +207,46 @@ export default function Orders() {
     });
 
     return arr;
-  }, [filtered, sortKey, sortDir]);
+  }, [filtered, sortKey, sortDirs]);
 
-  // clamp page when filters change
-  useEffect(() => setPage(1), [q, statusFilter, sortKey, sortDir, pageSize]);
+  // clamp page when inputs change
+  useEffect(
+    () => setPage(1),
+    [q, statusFilter, fromDate, toDate, pageSize, sortKey, sortDirs],
+  );
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const currentPage = Math.min(page, totalPages);
   const start = (currentPage - 1) * pageSize;
   const pageItems = sorted.slice(start, start + pageSize);
 
+  // sorting UI helpers
   function toggleSort(col: SortKey) {
-    setSortKey((prevKey) => {
-      if (prevKey !== col) {
-        setSortDir('asc'); // new column -> start asc
-        return col;
-      }
-      // same column -> flip
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-      return prevKey;
+    // collapse any open detail row when sorting
+    setExpandedId(null);
+
+    setSortKey(col);
+    setSortDirs((prev) => {
+      const next: Record<SortKey, SortDir> = {
+        createdAt: 'asc',
+        id: 'asc',
+        items: 'asc',
+        total: 'asc',
+      };
+      // clicked column toggles; others reset to asc
+      next[col] = prev[col] === 'asc' ? 'desc' : 'asc';
+      return next;
     });
   }
 
   function sortIcon(col: SortKey) {
-    if (col !== sortKey) return '↕';
-    return sortDir === 'asc' ? '▲' : '▼';
+    const dir = sortDirs[col];
+    return dir === 'asc' ? '▲' : '▼';
+  }
+
+  // expansion toggle (single open)
+  function toggleExpand(id: string) {
+    setExpandedId((curr) => (curr === id ? null : id));
   }
 
   // UI helpers
@@ -221,7 +271,6 @@ export default function Orders() {
 
   const PaymentBadge = ({ payments }: { payments?: Payment[] }) => {
     if (!payments || !payments.length) return <span className="text-xs opacity-60">—</span>;
-    // show the latest payment status (or any PAID)
     const paid = payments.find((p) => p.status === 'PAID');
     const last = payments[payments.length - 1];
     const status = paid ? 'PAID' : (last?.status || 'PENDING');
@@ -244,9 +293,7 @@ export default function Orders() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-primary-700">Your Orders</h1>
-          <p className="text-sm opacity-70">
-            Track purchases, payment status and totals.
-          </p>
+          <p className="text-sm opacity-70">Track purchases, payment status and totals.</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -260,7 +307,7 @@ export default function Orders() {
       </div>
 
       {/* Controls */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
         <div className="flex items-center gap-2">
           <input
             value={q}
@@ -269,6 +316,7 @@ export default function Orders() {
             className="border rounded px-3 py-2 w-full"
           />
         </div>
+
         <div className="flex items-center gap-2">
           <select
             value={statusFilter}
@@ -283,17 +331,39 @@ export default function Orders() {
             ))}
           </select>
         </div>
-        <div className="flex items-center justify-end gap-2">
-          <span className="text-sm opacity-70">Per page</span>
-          <select
-            value={pageSize}
-            onChange={(e) => setPageSize(Number(e.target.value) as any)}
-            className="border rounded px-2 py-2 bg-white"
-          >
-            <option value={10}>10</option>
-            <option value={20}>20</option>
-            <option value={50}>50</option>
-          </select>
+
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            className="border rounded px-3 py-2 w-full bg-white"
+            aria-label="From date"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            className="border rounded px-3 py-2 w-full bg-white"
+            aria-label="To date"
+          />
+        </div>
+
+        <div className="flex lg:col-span-4 justify-end">
+          <div className="flex items-center gap-2">
+            <span className="text-sm opacity-70">Per page</span>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value) as any)}
+              className="border rounded px-2 py-2 bg-white"
+            >
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={50}>50</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -302,6 +372,7 @@ export default function Orders() {
         <table className="min-w-full text-sm">
           <thead className="bg-primary-600/90 text-white">
             <tr>
+              {/* DATE (sortable) */}
               <th
                 className="text-left px-3 py-3 cursor-pointer select-none"
                 onClick={() => toggleSort('createdAt')}
@@ -311,6 +382,8 @@ export default function Orders() {
                   Date {sortIcon('createdAt')}
                 </span>
               </th>
+
+              {/* ORDER ID (sortable) */}
               <th
                 className="text-left px-3 py-3 cursor-pointer select-none"
                 onClick={() => toggleSort('id')}
@@ -320,18 +393,14 @@ export default function Orders() {
                   Order {sortIcon('id')}
                 </span>
               </th>
-              <th
-                className="text-left px-3 py-3 cursor-pointer select-none"
-                onClick={() => toggleSort('status')}
-                title="Sort by status"
-              >
-                <span className="inline-flex items-center gap-2">
-                  Status {sortIcon('status')}
-                </span>
-              </th>
-              <th className="text-left px-3 py-3">
-                Payment
-              </th>
+
+              {/* STATUS (not sortable) */}
+              <th className="text-left px-3 py-3">Status</th>
+
+              {/* PAYMENT (not sortable) */}
+              <th className="text-left px-3 py-3">Payment</th>
+
+              {/* ITEMS (sortable) */}
               <th
                 className="text-left px-3 py-3 cursor-pointer select-none"
                 onClick={() => toggleSort('items')}
@@ -341,6 +410,8 @@ export default function Orders() {
                   Items {sortIcon('items')}
                 </span>
               </th>
+
+              {/* TOTAL (sortable) */}
               <th
                 className="text-left px-3 py-3 cursor-pointer select-none"
                 onClick={() => toggleSort('total')}
@@ -350,6 +421,7 @@ export default function Orders() {
                   Total {sortIcon('total')}
                 </span>
               </th>
+
               <th className="text-right px-3 py-3">Actions</th>
             </tr>
           </thead>
@@ -378,6 +450,7 @@ export default function Orders() {
             )}
 
             {pageItems.map((o) => {
+              const isOpen = expandedId === o.id;
               const itemCount = o.items?.reduce((s, it) => s + (it.qty || 0), 0) ?? 0;
               const total = ngn.format(toNumber(o.total));
               const city = o.shippingAddress?.city || '';
@@ -385,48 +458,179 @@ export default function Orders() {
               const country = o.shippingAddress?.country || '';
 
               return (
-                <tr key={o.id} className="border-t hover:bg-black/5">
-                  <td className="px-3 py-3 align-top">{formatDate(o.createdAt)}</td>
-                  <td className="px-3 py-3 align-top">
-                    <div className="font-medium">{shortId(o.id)}</div>
-                    <div className="text-xs opacity-70">
-                      {city || state || country ? [city, state, country].filter(Boolean).join(', ') : '—'}
-                    </div>
-                  </td>
-                  <td className="px-3 py-3 align-top">
-                    <StatusBadge status={o.status} />
-                  </td>
-                  <td className="px-3 py-3 align-top">
-                    <PaymentBadge payments={o.payments} />
-                  </td>
-                  <td className="px-3 py-3 align-top">
-                    <div className="font-medium">{itemCount}</div>
-                    {!!o.items?.length && (
-                      <div className="text-xs opacity-70 line-clamp-2">
-                        {o.items
-                          .slice(0, 3)
-                          .map((it) => it.product?.title)
-                          .filter(Boolean)
-                          .join(', ')}
-                        {o.items.length > 3 ? '…' : ''}
+                <>
+                  <tr key={o.id} className={`border-t hover:bg-black/5 ${isOpen ? 'bg-black/5' : ''}`} onClick={() => toggleExpand(o.id)}>
+                    <td className="px-3 py-3 align-top">{formatDate(o.createdAt)}</td>
+                    <td className="px-3 py-3 align-top">
+                      <div className="font-medium">{shortId(o.id)}</div>
+                      <div className="text-xs opacity-70">
+                        {city || state || country
+                          ? [city, state, country].filter(Boolean).join(', ')
+                          : '—'}
                       </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-3 align-top">{total}</td>
-                  <td className="px-3 py-3 align-top text-right">
-                    <div className="inline-flex items-center gap-2">
-                      <button
-                        className="rounded-md border bg-accent-500 px-3 py-1.5 text-white hover:bg-accent-600 transition"
-                        onClick={() => nav(`/orders/${o.id}`)}
-                      >
-                        View
-                      </button>
-                      {/* Example extra actions (wire up if your API supports) */}
-                      {/* <button className="rounded-md border px-3 py-1.5" onClick={() => cancel(o.id)}>Cancel</button> */}
-                      {/* <button className="rounded-md border px-3 py-1.5" onClick={() => nav(`/payment?orderId=${o.id}`)}>Pay</button> */}
-                    </div>
-                  </td>
-                </tr>
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                      <StatusBadge status={o.status} />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                      <PaymentBadge payments={o.payments} />
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                      <div className="font-medium">{itemCount}</div>
+                      {!!o.items?.length && (
+                        <div className="text-xs opacity-70 line-clamp-2">
+                          {o.items
+                            .slice(0, 3)
+                            .map((it) => it.product?.title)
+                            .filter(Boolean)
+                            .join(', ')}
+                          {o.items.length > 3 ? '…' : ''}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 align-top">{total}</td>
+                    <td className="px-3 py-3 align-top text-right">
+                      <div className="inline-flex items-center gap-2">
+                        {!isOrderFullyPaid(o) && (
+                          <button
+                            className="rounded-md border bg-primary-600 px-3 py-1.5 text-white hover:bg-primary-700 transition"
+                            onClick={() => nav(`/payment?orderId=${o.id}`)}
+                            title="Pay for this order"
+                          >
+                            Pay
+                          </button>
+                        )}
+                        <button
+                          className="rounded-md border bg-accent-500 px-3 py-1.5 text-white hover:bg-accent-600 transition">
+                          {isOpen ? 'Hide' : 'View'}
+                        </button>
+                      </div>
+                    </td>
+
+                  </tr>
+
+                  {/* Expanded area */}
+                  {isOpen && (
+                    <tr className="bg-black/[0.03]">
+                      <td colSpan={7} className="px-3 py-3">
+                        <div className="rounded-lg border bg-white">
+                          {/* Header row with Close button */}
+                          <div className="p-4 border-b flex items-start justify-between gap-4">
+                            <div className="grid md:grid-cols-3 gap-4 w-full">
+                              <div>
+                                <div className="text-xs opacity-70">Order ID</div>
+                                <div className="font-mono text-sm">{o.id}</div>
+                              </div>
+                              <div>
+                                <div className="text-xs opacity-70">Created</div>
+                                <div className="text-sm">{formatDate(o.createdAt)}</div>
+                              </div>
+                              <div>
+                                <div className="text-xs opacity-70">Status</div>
+                                <StatusBadge status={o.status} />
+                              </div>
+                            </div>
+                            <button
+                              className="h-9 shrink-0 rounded-md border px-3 text-sm hover:bg-black/5 transition"
+                              onClick={() => setExpandedId(null)}
+                              aria-label="Close view"
+                              title="Close view"
+                            >
+                              Close view
+                            </button>
+                          </div>
+
+                          <div className="grid md:grid-cols-2 gap-4 p-4 border-b">
+                            <div>
+                              <div className="text-sm font-semibold mb-2">Items</div>
+                              <div className="divide-y">
+                                {(o.items ?? []).map((it) => (
+                                  <div key={it.id} className="py-2 flex items-center justify-between">
+                                    <div className="min-w-0">
+                                      <div className="text-sm font-medium truncate">
+                                        {it.product?.title || 'Untitled'}
+                                      </div>
+                                      <div className="text-xs opacity-70">Qty: {it.qty}</div>
+                                    </div>
+                                    <div className="text-sm font-medium">
+                                      {ngn.format(toNumber(it.unitPrice) * (it.qty || 0))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="text-sm font-semibold mb-2">Summary</div>
+                              <div className="space-y-1 text-sm">
+                                <div className="flex justify-between">
+                                  <span>Subtotal</span>
+                                  <span>{ngn.format(toNumber(o.total) - toNumber(o.tax) - toNumber(o.shipping))}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span>Tax</span>
+                                  <span>{ngn.format(toNumber(o.tax))}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span>Shipping</span>
+                                  <span>{ngn.format(toNumber(o.shipping))}</span>
+                                </div>
+                                <div className="border-t pt-2 flex justify-between font-semibold">
+                                  <span>Total</span>
+                                  <span>{ngn.format(toNumber(o.total))}</span>
+                                </div>
+                              </div>
+
+                              {/* Only show Pay button if NOT fully paid */}
+                              {!isOrderFullyPaid(o) && (
+                                <div className="mt-4">
+                                  <button
+                                    className="rounded-md border bg-primary-600 px-3 py-2 text-white hover:bg-primary-700 transition"
+                                    onClick={() => nav(`/payment?orderId=${o.id}`)}
+                                  >
+                                    Pay for this order
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="p-4">
+                            <div className="text-sm font-semibold mb-2">Payments</div>
+                            {(() => {
+                              const payments = o.payments ?? [];
+                              if (payments.length === 0) {
+                                return <div className="text-sm opacity-70">No payments yet.</div>;
+                              }
+                              // pick exactly ONE to show: prefer any PAID, else show latest
+                              const paid = payments.find((p) => p.status === 'PAID');
+                              const display = paid ?? payments[payments.length - 1];
+
+                              return (
+                                <div className="grid md:grid-cols-2 gap-3">
+                                  <div key={display.id} className="rounded-md border p-3 bg-white/70">
+                                    <div className="flex items-center justify-between">
+                                      <div className="text-sm font-medium">
+                                        Ref: <span className="font-mono">{display.reference || '—'}</span>
+                                      </div>
+                                      <PaymentBadge payments={[display]} />
+                                    </div>
+                                    <div className="mt-1 text-xs opacity-70">
+                                      {display.provider || 'PAYSTACK'} • {display.channel || '—'}
+                                    </div>
+                                    <div className="mt-1 text-xs opacity-70">
+                                      {display.createdAt ? formatDate(display.createdAt) : '—'}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
               );
             })}
           </tbody>

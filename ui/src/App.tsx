@@ -24,6 +24,7 @@ import { ModalProvider } from './components/ModalProvider'; // 👈 add
 import { useAuthStore } from './store/auth';
 import { useEffect } from 'react';
 import { scheduleTokenExpiryLogout } from './utils/tokenWatcher';
+import ResetGuard from './routes/ResetGuard.tsx';
 
 export default function App() {
   const token = useAuthStore((s) => s.token);
@@ -63,7 +64,6 @@ export default function App() {
               <Route path="/profile" element={<Profile />} />
               <Route path="/orders" element={<Orders />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
-              <Route path="/reset-password" element={<ResetPassword />} />
               <Route path="/payment" element={<Payment />} />
               <Route path="/payment-callback" element={<PaymentCallback />} />
               <Route path="/wishlist" element={<Wishlist />} />
@@ -74,6 +74,15 @@ export default function App() {
                   <ProtectedRoute roles={['SHOPPER', 'ADMIN', 'SUPPLIER']}>
                     <Checkout />
                   </ProtectedRoute>
+                }
+              />
+
+              <Route
+                path="/reset-password"
+                element={
+                  <ResetGuard validateWithApi>
+                    <ResetPassword />
+                  </ResetGuard>
                 }
               />
 
