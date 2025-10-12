@@ -37,13 +37,19 @@ const MineQuerySchema = z.object({
   to: z.string().datetime().optional(),      // ISO
   sortBy: z.enum(['createdAt', 'total', 'status']).default('createdAt'),
   sortDir: z.enum(['asc', 'desc']).default('desc'),
+  limit: z.coerce.number().int().min(1).max(100).optional(), // 👈 NEW
 });
+
 
 type ProductRow = {
   id: string;
   supplierId: string;
   price: Prisma.Decimal; // exact DB type
 };
+
+type Role = 'ADMIN' | 'SUPPLIER' | 'SHOPPER';
+type AuthedRequest = Request & { user: { id: string; role: Role; email?: string } };
+
 
 /* -------------------------------- Routes ------------------------------ */
 
@@ -180,13 +186,9 @@ router.get(
       if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
 
       const q = MineQuerySchema.parse(req.query);
-      const skip = (q.page - 1) * q.pageSize;
-      const take = q.pageSize;
 
       // Build where
-      const where: Prisma.OrderWhereInput = {
-        userId: req.user.id,
-      };
+      const where: Prisma.OrderWhereInput = { userId: req.user.id };
 
       if (q.status) {
         const statuses = q.status
@@ -204,10 +206,44 @@ router.get(
         if (q.to) (where.createdAt as any).lte = new Date(q.to);
       }
 
-      // Build orderBy
+      // Sort
       let orderBy: Prisma.OrderOrderByWithRelationInput = { createdAt: q.sortDir };
       if (q.sortBy === 'total') orderBy = { total: q.sortDir };
       if (q.sortBy === 'status') orderBy = { status: q.sortDir };
+
+      // If limit is provided, return the most recent N (no pagination wrapper)
+      if (q.limit) {
+        const data = await prisma.order.findMany({
+          where,
+          orderBy,
+          take: q.limit,
+          skip: 0,
+          include: {
+            items: {
+              include: {
+                product: { select: { id: true, title: true, imagesJson: true } },
+              },
+            },
+            payments: {
+              orderBy: { createdAt: 'desc' },
+              select: {
+                id: true,
+                reference: true,
+                amount: true,
+                status: true,
+                channel: true,
+                createdAt: true,
+              },
+            },
+            shippingAddress: true,
+          },
+        });
+        return res.json(data); // <- just the array for convenience
+      }
+
+      // Otherwise do full pagination
+      const skip = (q.page - 1) * q.pageSize;
+      const take = q.pageSize;
 
       const [totalItems, data] = await Promise.all([
         prisma.order.count({ where }),
@@ -254,6 +290,41 @@ router.get(
     }
   },
 );
+
+
+
+router.get('/summary', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as AuthedRequest).user;
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const userId = user.id;
+    const role = user.role;
+    const scope = String(req.query.scope || 'mine'); // 'mine' | 'all'
+
+    const where: Record<string, any> = {};
+    if (!(role === 'ADMIN' && scope === 'all')) {
+      where.userId = userId;
+    }
+
+    const grouped = await prisma.order.groupBy({
+      where,
+      by: ['status'],
+      _count: { _all: true },
+    });
+
+    const byStatus: Record<string, number> = {};
+    for (const g of grouped) {
+      const key = (g.status ?? 'UNKNOWN').toString().toUpperCase();
+      byStatus[key] = (byStatus[key] || 0) + g._count._all;
+    }
+
+    const total = await prisma.order.count({ where });
+    res.json({ total, byStatus });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * GET SINGLE ORDER (owner-only)

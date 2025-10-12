@@ -1,6 +1,6 @@
 // src/pages/Orders.tsx
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
 
@@ -24,14 +24,14 @@ type Order = {
   id: string;
   createdAt: string;
   status:
-  | 'PENDING'
-  | 'PAID'
-  | 'FAILED'
-  | 'CANCELED'
-  | 'PROCESSING'
-  | 'SHIPPED'
-  | 'DELIVERED'
-  | string;
+    | 'PENDING'
+    | 'PAID'
+    | 'FAILED'
+    | 'CANCELED'
+    | 'PROCESSING'
+    | 'SHIPPED'
+    | 'DELIVERED'
+    | string;
   total: number | string;
   tax?: number | string;
   shipping?: number | string;
@@ -78,6 +78,10 @@ export default function Orders() {
   const token = useAuthStore((s) => s.token);
   const isOrderFullyPaid = (o: Order) => (o.status || '').toUpperCase() === 'PAID';
 
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const openId = params.get('open');
+
   // redirect to login if needed
   useEffect(() => {
     if (!token) nav('/login', { state: { from: { pathname: '/orders' } } });
@@ -110,7 +114,7 @@ export default function Orders() {
     total: 'asc',
   });
 
-  // load orders
+  // load orders (unchanged)
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -249,6 +253,48 @@ export default function Orders() {
     setExpandedId((curr) => (curr === id ? null : id));
   }
 
+  // ---- NEW: auto-open an order when coming from ?open=<id> ----
+  const [autoOpenDone, setAutoOpenDone] = useState(false);
+  useEffect(() => {
+    if (!openId || autoOpenDone || !orders.length) return;
+
+    // If current filters would hide it, relax filters; effect will re-run.
+    const presentInFiltered = filtered.some((o) => o.id === openId);
+    if (!presentInFiltered && (q || statusFilter || fromDate || toDate)) {
+      setQ('');
+      setStatusFilter('');
+      setFromDate('');
+      setToDate('');
+      return; // wait for next render
+    }
+
+    // Find its position in the sorted list and jump to that page
+    const idx = sorted.findIndex((o) => o.id === openId);
+    if (idx >= 0) {
+      const newPage = Math.floor(idx / pageSize) + 1;
+      setPage(newPage);
+      setExpandedId(openId);
+      setAutoOpenDone(true);
+
+      // Scroll into view after paint
+      setTimeout(() => {
+        const el = document.getElementById(`order-${openId}`);
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 0);
+    }
+  }, [
+    openId,
+    autoOpenDone,
+    orders.length,
+    filtered,
+    sorted,
+    pageSize,
+    q,
+    statusFilter,
+    fromDate,
+    toDate,
+  ]);
+
   // UI helpers
   const StatusBadge = ({ status }: { status: string }) => {
     const s = status.toUpperCase();
@@ -256,12 +302,12 @@ export default function Orders() {
       s === 'PAID'
         ? 'bg-green-600/10 text-green-700 border-green-600/20'
         : s === 'PENDING'
-          ? 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20'
-          : s === 'FAILED' || s === 'CANCELED'
-            ? 'bg-red-500/10 text-red-700 border-red-600/20'
-            : s === 'DELIVERED' || s === 'SHIPPED' || s === 'PROCESSING'
-              ? 'bg-blue-600/10 text-blue-700 border-blue-600/20'
-              : 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
+        ? 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20'
+        : s === 'FAILED' || s === 'CANCELED'
+        ? 'bg-red-500/10 text-red-700 border-red-600/20'
+        : s === 'DELIVERED' || s === 'SHIPPED' || s === 'PROCESSING'
+        ? 'bg-blue-600/10 text-blue-700 border-blue-600/20'
+        : 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
     return (
       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${style}`}>
         {status}
@@ -278,8 +324,8 @@ export default function Orders() {
       status === 'PAID'
         ? 'bg-green-600/10 text-green-700 border-green-600/20'
         : status === 'FAILED' || status === 'CANCELED'
-          ? 'bg-red-500/10 text-red-700 border-red-600/20'
-          : 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20';
+        ? 'bg-red-500/10 text-red-700 border-red-600/20'
+        : 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20';
 
     return (
       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${style}`}>
@@ -451,7 +497,8 @@ export default function Orders() {
 
             {pageItems.map((o) => {
               const isOpen = expandedId === o.id;
-              const itemCount = o.items?.reduce((s, it) => s + (it.qty || 0), 0) ?? 0;
+              const itemCount =
+                o.items?.reduce((s, it) => s + (it.qty || 0), 0) ?? 0;
               const total = ngn.format(toNumber(o.total));
               const city = o.shippingAddress?.city || '';
               const state = o.shippingAddress?.state || '';
@@ -459,7 +506,12 @@ export default function Orders() {
 
               return (
                 <>
-                  <tr key={o.id} className={`border-t hover:bg-black/5 ${isOpen ? 'bg-black/5' : ''}`} onClick={() => toggleExpand(o.id)}>
+                  <tr
+                    key={o.id}
+                    id={`order-${o.id}`}
+                    className={`border-t hover:bg-black/5 ${isOpen ? 'bg-black/5' : ''}`}
+                    onClick={() => toggleExpand(o.id)}
+                  >
                     <td className="px-3 py-3 align-top">{formatDate(o.createdAt)}</td>
                     <td className="px-3 py-3 align-top">
                       <div className="font-medium">{shortId(o.id)}</div>
@@ -494,19 +546,26 @@ export default function Orders() {
                         {!isOrderFullyPaid(o) && (
                           <button
                             className="rounded-md border bg-primary-600 px-3 py-1.5 text-white hover:bg-primary-700 transition"
-                            onClick={() => nav(`/payment?orderId=${o.id}`)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              nav(`/payment?orderId=${o.id}`);
+                            }}
                             title="Pay for this order"
                           >
                             Pay
                           </button>
                         )}
                         <button
-                          className="rounded-md border bg-accent-500 px-3 py-1.5 text-white hover:bg-accent-600 transition">
+                          className="rounded-md border bg-accent-500 px-3 py-1.5 text-white hover:bg-accent-600 transition"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleExpand(o.id);
+                          }}
+                        >
                           {isOpen ? 'Hide' : 'View'}
                         </button>
                       </div>
                     </td>
-
                   </tr>
 
                   {/* Expanded area */}
@@ -532,7 +591,10 @@ export default function Orders() {
                             </div>
                             <button
                               className="h-9 shrink-0 rounded-md border px-3 text-sm hover:bg-black/5 transition"
-                              onClick={() => setExpandedId(null)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedId(null);
+                              }}
                               aria-label="Close view"
                               title="Close view"
                             >
@@ -565,7 +627,11 @@ export default function Orders() {
                               <div className="space-y-1 text-sm">
                                 <div className="flex justify-between">
                                   <span>Subtotal</span>
-                                  <span>{ngn.format(toNumber(o.total) - toNumber(o.tax) - toNumber(o.shipping))}</span>
+                                  <span>
+                                    {ngn.format(
+                                      toNumber(o.total) - toNumber(o.tax) - toNumber(o.shipping),
+                                    )}
+                                  </span>
                                 </div>
                                 <div className="flex justify-between">
                                   <span>Tax</span>
@@ -586,7 +652,10 @@ export default function Orders() {
                                 <div className="mt-4">
                                   <button
                                     className="rounded-md border bg-primary-600 px-3 py-2 text-white hover:bg-primary-700 transition"
-                                    onClick={() => nav(`/payment?orderId=${o.id}`)}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      nav(`/payment?orderId=${o.id}`);
+                                    }}
                                   >
                                     Pay for this order
                                   </button>
