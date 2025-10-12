@@ -6,7 +6,7 @@ import api from '../api/client';
 import { useAuthStore } from '../store/auth';
 import { useModal } from "../components/ModalProvider";
 
-// ---------------------- Types ----------------------
+/* ---------------------- Types ---------------------- */
 type Role = 'ADMIN' | 'SUPPLIER' | 'SHOPPER';
 
 type MeResponse = {
@@ -23,13 +23,15 @@ type MeResponse = {
   phoneVerified?: boolean;
   dob?: string | null;
 
+  // Address snapshots (optional)
   address?: Address | null;
   shippingAddress?: Address | null;
 
+  // Preferences
   language?: string | null;
   theme?: 'light' | 'dark' | 'system';
   currency?: string | null;
-  productInterests?: string[];
+  productInterests?: string[]; // tags
   notificationPrefs?: {
     email?: boolean;
     sms?: boolean;
@@ -51,10 +53,10 @@ type OrderLite = {
   id: string;
   createdAt: string;
   status: 'PENDING' | 'PAID' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED' | 'FAILED' | 'PROCESSING';
-  total: number;
+  total: number; // major units
   items: Array<{
-    product: any;
-    id: string;
+    product: any;       // should include at least { id, imagesJson? }
+    id: string;         // item id (fallback)
     title: string;
     quantity: number;
     image?: string | null;
@@ -67,66 +69,39 @@ type OrdersSummary = {
   byStatus: Record<string, number>;
 };
 
-type PaymentTx = {
-  id: string;
-  reference?: string | null;
-  amount: number;                    // in major units
-  status: 'PENDING' | 'PAID' | 'FAILED' | 'CANCELED' | string;
-  channel?: string | null;           // e.g., card, bank_transfer
-  provider?: string | null;          // e.g., PAYSTACK, STRIPE
+type RecentTransaction = {
+  orderId: string;
   createdAt: string;
-  orderId?: string | null;
+  total: number;
+  orderStatus: string;
+  payment?: {
+    id: string;
+    reference: string | null;
+    status: string;
+    channel: string | null;
+    provider: string | null;
+    createdAt: string;
+  };
 };
 
-// Cart merge types/helpers (unchanged except shown for completeness)
-type LocalCartItem = { productId: string; qty: number; unitPrice?: number; price?: number; title?: string; image?: string | null; };
+type LocalCartItem = { productId: string; qty: number };
 
-function mergeIntoLocalCart(incoming: LocalCartItem[]) {
+/* ---------------------- Local cart merge ---------------------- */
+function mergeIntoLocalCart(items: LocalCartItem[]) {
   try {
     const key = 'cart';
-    const current: any[] = JSON.parse(localStorage.getItem(key) || '[]');
-
-    const byId = new Map<string, any>();
-    for (const it of current) {
-      if (!it || !it.productId) continue;
-      byId.set(it.productId, { ...it });
-    }
-
-    for (const inc of incoming) {
-      if (!inc || !inc.productId) continue;
-      const existing = byId.get(inc.productId);
-
-      if (existing) {
-        existing.qty = (Number(existing.qty) || 0) + (Number(inc.qty) || 0);
-
-        if ((existing.unitPrice == null || isNaN(existing.unitPrice)) && inc.unitPrice != null) {
-          existing.unitPrice = inc.unitPrice;
-        }
-        if ((existing.price == null || isNaN(existing.price)) && inc.price != null) {
-          existing.price = inc.price;
-        }
-        if (!existing.title && inc.title) existing.title = inc.title;
-        if (!existing.image && inc.image) existing.image = inc.image;
-
-        byId.set(inc.productId, existing);
-      } else {
-        byId.set(inc.productId, {
-          productId: inc.productId,
-          qty: Number(inc.qty) || 1,
-          unitPrice: inc.unitPrice ?? inc.price,
-          price: inc.price ?? inc.unitPrice,
-          title: inc.title,
-          image: inc.image ?? null,
-        });
-      }
-    }
-
-    const merged = Array.from(byId.values());
+    const curr: LocalCartItem[] = JSON.parse(localStorage.getItem(key) || '[]');
+    const byId = new Map<string, number>();
+    for (const it of curr) byId.set(it.productId, (byId.get(it.productId) || 0) + (it.qty || 0));
+    for (const it of items) byId.set(it.productId, (byId.get(it.productId) || 0) + (it.qty || 0));
+    const merged: LocalCartItem[] = Array.from(byId.entries()).map(([productId, qty]) => ({ productId, qty }));
     localStorage.setItem(key, JSON.stringify(merged));
-  } catch { /* noop */ }
+  } catch {
+    /* best-effort */
+  }
 }
 
-// ---------------------- Utils ----------------------
+/* ---------------------- Utils ---------------------- */
 const ngn = new Intl.NumberFormat('en-NG', {
   style: 'currency',
   currency: 'NGN',
@@ -136,6 +111,13 @@ const ngn = new Intl.NumberFormat('en-NG', {
 const dateFmt = (iso?: string | null) =>
   iso ? new Date(iso).toLocaleDateString() : '—';
 
+function dateTimeFmt(iso?: string | null) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(+d)) return '—';
+  return d.toLocaleString();
+}
+
 function initialsFrom(first?: string | null, last?: string | null, fallback?: string) {
   const a = (first || '').trim();
   const b = (last || '').trim();
@@ -143,12 +125,7 @@ function initialsFrom(first?: string | null, last?: string | null, fallback?: st
   return (fallback?.[0] || 'U').toUpperCase();
 }
 
-function toNumber(v: unknown) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
-// ---------------------- Data hooks ----------------------
+/* ---------------------- Data hooks ---------------------- */
 function useMe() {
   const token = useAuthStore((s) => s.token);
   return useQuery({
@@ -188,7 +165,7 @@ function useOrdersSummary() {
           headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         });
         if (res?.data?.total != null) return res.data;
-      } catch { }
+      } catch { /* fall through */ }
       try {
         const res = await api.get<OrderLite[]>('/api/orders/mine?limit=1000', {
           headers: token ? { Authorization: `Bearer ${token}` } : undefined,
@@ -209,30 +186,16 @@ function useOrdersSummary() {
   });
 }
 
-// ✅ NEW: recent payments
-function useRecentPayments(limit = 5) {
+/** NEW: order-centric recent transactions */
+function useRecentTransactions(limit = 5) {
   const token = useAuthStore((s) => s.token);
   return useQuery({
-    queryKey: ['payments', 'recent', limit],
-    queryFn: async (): Promise<PaymentTx[]> => {
-      // Prefer a scoped “mine” endpoint; fall back to generic if needed.
-      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-
-      const tryPaths = [
-        `/api/payments/mine?limit=${limit}`,
-        `/api/payments?limit=${limit}`
-      ];
-
-      for (const path of tryPaths) {
-        try {
-          const res = await api.get<any>(path, { headers });
-          const data = Array.isArray(res.data?.data) ? res.data.data : (Array.isArray(res.data) ? res.data : []);
-          if (data.length) return data as PaymentTx[];
-        } catch {
-          // try next path
-        }
-      }
-      return [];
+    queryKey: ['payments', 'recent-orders', limit],
+    queryFn: async () => {
+      const res = await api.get<RecentTransaction[]>(`/api/payments/recent?limit=${limit}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      return res.data;
     },
     enabled: !!token,
     retry: 1,
@@ -267,7 +230,7 @@ function useResendOtp() {
   });
 }
 
-// ---------------------- UI Primitives ----------------------
+/* ---------------------- UI primitives ---------------------- */
 function Section(props: { title: string; children: React.ReactNode; right?: React.ReactNode }) {
   return (
     <section className="bg-white border rounded-2xl p-5 shadow-sm">
@@ -308,23 +271,22 @@ function StatusPill({ label, count }: { label: string; count: number }) {
   );
 }
 
-// ✅ NEW: payment status badge
-function PaymentStatusBadge({ status }: { status: string }) {
-  const s = status?.toUpperCase();
+function PaymentBadgeInline({ status }: { status: string | undefined }) {
+  const s = (status || 'PENDING').toUpperCase();
   const tone =
     s === 'PAID'
-      ? 'bg-green-50 text-green-700 border-green-200'
-      : s === 'FAILED' || s === 'CANCELED'
-        ? 'bg-rose-50 text-rose-700 border-rose-200'
-        : 'bg-amber-50 text-amber-700 border-amber-200'; // pending, others
+      ? 'bg-green-600/10 text-green-700 border-green-600/20'
+      : s === 'FAILED' || s === 'CANCELLED'
+        ? 'bg-red-500/10 text-red-700 border-red-600/20'
+        : 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20';
   return (
-    <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full border ${tone}`}>
-      {s || '—'}
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${tone}`}>
+      {s}
     </span>
   );
 }
 
-// ---------------------- Page ----------------------
+/* ---------------------- Page ---------------------- */
 export default function UserPersonalisedPage() {
   const nav = useNavigate();
   const { token, clear } = useAuthStore();
@@ -333,7 +295,7 @@ export default function UserPersonalisedPage() {
   const meQ = useMe();
   const ordersQ = useRecentOrders(5);
   const ordersSummaryQ = useOrdersSummary();
-  const paymentsQ = useRecentPayments(5); // ✅ use payments
+  const transactionsQ = useRecentTransactions(5);
 
   const resendEmail = useResendEmail();
   const resendOtp = useResendOtp();
@@ -345,27 +307,17 @@ export default function UserPersonalisedPage() {
   async function buyAgain(orderId: string) {
     try {
       setRebuyingId(orderId);
-
       const res = await api.get(`/api/orders/${orderId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
 
       const items = Array.isArray(res.data?.items) ? res.data.items : [];
-      const toCart = items.map((it: any) => {
-        const productId = it.product?.id ?? it.productId ?? it.id;
-        const unitPrice = toNumber(it.unitPrice);
-        return {
-          productId,
-          qty: it.qty ?? it.quantity ?? 1,
-          unitPrice,
-          price: unitPrice,
-          title: it.product?.title ?? it.title,
-          image: it.product?.imagesJson?.[0] ?? it.image ?? null,
-        } as LocalCartItem;
-      });
+      const toCart = items.map((it: any) => ({
+        productId: it.product?.id ?? it.productId ?? it.id,
+        qty: it.qty ?? it.quantity ?? 1,
+      }));
 
       if (toCart.length > 0) mergeIntoLocalCart(toCart);
-
       nav('/cart');
     } catch (e: any) {
       alert(e?.response?.data?.error || 'Could not add items to cart');
@@ -397,6 +349,7 @@ export default function UserPersonalisedPage() {
     </span>
   );
 
+  // derive ordered status counts for display
   const statusOrder = ['PENDING', 'PROCESSING', 'PAID', 'SHIPPED', 'DELIVERED', 'FAILED', 'CANCELLED'];
   const byStatusEntries = useMemo(() => {
     const map = ordersSummaryQ.data?.byStatus || {};
@@ -440,13 +393,14 @@ export default function UserPersonalisedPage() {
             </div>
           </div>
 
-          <div className="mt-4 flex items-center gap-2 text-sm">
-            <Link className="underline" to="/profile">Manage details</Link>
-            <span className="opacity-20">•</span>
-            <Link className="underline" to="/orders">Order history</Link>
-            <span className="opacity-20">•</span>
-            <Link className="underline" to="/settings">Preferences</Link>
-          </div>
+            {/* Quick toggles */}
+            <div className="mt-4 flex items-center gap-2 text-sm">
+              <Link className="underline" to="/profile">Manage details</Link>
+              <span className="opacity-20">•</span>
+              <Link className="underline" to="/orders">Order history</Link>
+              <span className="opacity-20">•</span>
+              <Link className="underline" to="/settings">Preferences</Link>
+            </div>
         </Section>
 
         <Section title="Verification">
@@ -456,11 +410,12 @@ export default function UserPersonalisedPage() {
               {!me?.emailVerified && (
                 <button
                   className="underline"
-                  disabled={useResendEmail().isPending}
+                  disabled={resendEmail.isPending}
                   onClick={async () => {
                     try {
-                      await useResendEmail().mutateAsync();
-                      useQueryClient().invalidateQueries({ queryKey: ['me'] });
+                      await resendEmail.mutateAsync();
+                      qc.invalidateQueries({ queryKey: ['me'] });
+                      openModal({ title: 'Verification', message: 'Verification email sent.' });
                     } catch (e: any) {
                       alert(e?.response?.data?.error || 'Failed to resend email');
                     }
@@ -472,6 +427,26 @@ export default function UserPersonalisedPage() {
             </div>
             <div className="flex items-center justify-between">
               <span>Phone {me?.phoneVerified ? verifiedBadge : notVerifiedBadge}</span>
+              {!me?.phoneVerified && (
+                <button
+                  className="underline disabled:opacity-50"
+                  disabled={resendOtp.isPending || otpCooldown > 0}
+                  title={otpCooldown > 0 ? `Retry in ${otpCooldown}s` : 'Resend OTP'}
+                  onClick={async () => {
+                    try {
+                      const resp = await resendOtp.mutateAsync();
+                      setOtpCooldown(resp?.nextResendAfterSec ?? 60);
+                      alert('OTP sent to your phone.');
+                    } catch (e: any) {
+                      const retryAfter = e?.response?.data?.retryAfterSec;
+                      if (retryAfter) setOtpCooldown(retryAfter);
+                      alert(e?.response?.data?.error || 'Failed to resend OTP');
+                    }
+                  }}
+                >
+                  {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : 'Resend OTP'}
+                </button>
+              )}
             </div>
           </div>
         </Section>
@@ -603,59 +578,54 @@ export default function UserPersonalisedPage() {
           )}
         </Section>
 
-        {/* ✅ Recent Payments / Transactions */}
-        <Section title="Payments">
-          {paymentsQ.isLoading ? (
+        {/* Recent transactions – order-centric */}
+        <Section title="Recent transactions" right={<Link className="text-sm underline" to="/orders">All orders</Link>}>
+          {transactionsQ.isLoading ? (
             <div className="text-sm opacity-70">Loading transactions…</div>
-          ) : paymentsQ.isError ? (
+          ) : transactionsQ.isError ? (
             <div className="text-sm opacity-70">Couldn’t load transactions.</div>
-          ) : paymentsQ.data && paymentsQ.data.length > 0 ? (
-            <>
-              <h3 className="text-sm font-medium mb-2">Recent transactions</h3>
-              <ul className="text-sm space-y-2">
-                {paymentsQ.data.map((p) => (
-                  <li key={p.id} className="flex flex-wrap items-center gap-2 justify-between border rounded p-2">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="text-xs opacity-70 w-28">{dateFmt(p.createdAt)}</div>
-                      <PaymentStatusBadge status={p.status} />
-                      <div className="font-medium">{ngn.format(p.amount ?? 0)}</div>
-                      <div className="text-xs opacity-70 truncate max-w-[180px]">
-                        Ref: <span className="font-mono">{p.reference || '—'}</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <div className="text-xs opacity-70">
-                        {(p.provider || 'PAYMENT')}{p.channel ? ` • ${p.channel}` : ''}
-                      </div>
-                      {p.orderId && (
-                        <Link to={`/orders?open=${p.orderId}`} className="text-xs underline">
-                          View order
-                        </Link>
+          ) : transactionsQ.data && transactionsQ.data.length > 0 ? (
+            <div className="grid gap-3">
+              {transactionsQ.data.map((t) => (
+                <div key={t.orderId} className="border rounded p-3 flex items-center gap-3">
+                  <div className="text-xs w-36">
+                    <div className="opacity-70">{dateTimeFmt(t.createdAt)}</div>
+                    <div className="font-medium">{t.orderStatus}</div>
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-sm font-semibold">{ngn.format(t.total)}</div>
+                    <div className="text-xs opacity-70">
+                      {t.payment ? (
+                        <>
+                          <PaymentBadgeInline status={t.payment.status} />{' '}
+                          {t.payment.provider || '—'} • {t.payment.channel || '—'} • Ref:{' '}
+                          <span className="font-mono">{t.payment.reference || '—'}</span>
+                        </>
+                      ) : (
+                        'No payment attempts yet'
                       )}
                     </div>
-                  </li>
-                ))}
-              </ul>
-
-              <div className="mt-4 flex items-center gap-3 text-sm">
-                <Link to="/wallet" className="underline">Manage payment methods</Link>
-                <span className="opacity-20">•</span>
-                <Link to="/invoices" className="underline">Download invoices</Link>
-              </div>
-            </>
+                  </div>
+                  <div className="ml-auto flex items-center gap-2">
+                    <Link to={`/orders?open=${t.orderId}`} className="text-sm underline">Details</Link>
+                    {t.orderStatus !== 'PAID' && (
+                      <Link
+                        to={`/payment?orderId=${t.orderId}`}
+                        className="text-sm border rounded px-2 py-1"
+                      >
+                        Pay now
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : (
-            <>
-              <div className="text-sm opacity-70">No recent transactions.</div>
-              <div className="mt-4 flex items-center gap-3 text-sm">
-                <Link to="/wallet" className="underline">Manage payment methods</Link>
-                <span className="opacity-20">•</span>
-                <Link to="/invoices" className="underline">Download invoices</Link>
-              </div>
-            </>
+            <div className="text-sm opacity-70">No recent transactions.</div>
           )}
         </Section>
 
-        {/* Personalisation */}
+        {/* Preferences */}
         <Section title="Personalisation & Preferences" right={<Link to="/settings" className="text-sm underline">Edit</Link>}>
           <div className="grid gap-2 text-sm">
             <div>Interests: {me?.productInterests?.length ? me.productInterests.join(', ') : '—'}</div>

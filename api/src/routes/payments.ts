@@ -1,3 +1,4 @@
+// src/routes/payments.ts
 import express, { Router, type Request, type Response } from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
@@ -44,8 +45,8 @@ async function ensurePaystackCustomer(email: string, fallbackEmail: string): Pro
         headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
         timeout: 15000,
       });
-      const code = sr.data?.data?.[0]?.customer_code;
-      if (code) return code;
+        const code = sr.data?.data?.[0]?.customer_code;
+        if (code) return code;
     }
     throw err;
   }
@@ -282,6 +283,162 @@ router.post('/link', authMiddleware, async (req, res, next) => {
     const token = jwt.sign({ oid: orderId }, process.env.JWT_SECRET, { expiresIn: '2d' });
     const url = `${APP_URL}/payment?orderId=${orderId}&share=${encodeURIComponent(token)}`;
     res.json({ shareUrl: url });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/* -------------------- Existing list endpoints (payment rows) -------------------- */
+
+/**
+ * GET /api/payments/mine?limit=5
+ * Returns latest N payment rows for the authenticated user (via order.userId).
+ * (Kept for compatibility; your UI can switch to /payments/recent for order-level view.)
+ */
+router.get('/mine', authMiddleware, async (req, res, next) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const take = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, limitRaw)) : 5;
+
+    const rows = await prisma.payment.findMany({
+      where: { order: { userId: req.user!.id } },
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        reference: true,
+        amount: true,
+        status: true,
+        channel: true,
+        provider: true,
+        createdAt: true,
+        orderId: true,
+      },
+    });
+
+    res.json(rows);
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * GET /api/payments
+ * Admin/system list of latest payment rows (optional filters: userId, orderId, status, limit)
+ */
+router.get('/', authMiddleware, async (req, res, next) => {
+  try {
+    // Uncomment to lock to admins only:
+    // if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
+
+    const limitRaw = Number(req.query.limit);
+    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 20;
+
+    const { userId, orderId, status } = req.query as {
+      userId?: string;
+      orderId?: string;
+      status?: string;
+    };
+
+    const where: any = {};
+    if (orderId) where.orderId = orderId;
+    if (status) where.status = status.toString().toUpperCase();
+
+    const payments = await prisma.payment.findMany({
+      where: userId ? { ...where, order: { userId } } : where,
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        reference: true,
+        amount: true,
+        status: true,
+        channel: true,
+        provider: true,
+        createdAt: true,
+        orderId: true,
+      },
+    });
+
+    res.json(payments);
+  } catch (e) {
+    next(e);
+  }
+});
+
+/* --------------- NEW: Order-level "recent transactions" --------------- */
+/**
+ * GET /api/payments/recent?limit=5
+ * Returns the user's most recent ORDERS as "transactions" — one row per order —
+ * with the order total and a representative payment (prefer PAID else latest).
+ *
+ * Response: Array<{
+ *   orderId: string;
+ *   createdAt: string;
+ *   total: number;            // order total (major unit)
+ *   orderStatus: string;
+ *   payment?: {
+ *     id: string;
+ *     reference: string | null;
+ *     status: string;
+ *     channel: string | null;
+ *     provider: string | null;
+ *     createdAt: string;
+ *   }
+ * }>
+ */
+router.get('/recent', authMiddleware, async (req, res, next) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const take = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, limitRaw)) : 5;
+
+    // Pull recent orders for the user
+    const orders = await prisma.order.findMany({
+      where: { userId: req.user!.id },
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: {
+        payments: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            reference: true,
+            status: true,
+            channel: true,
+            provider: true,
+            createdAt: true,
+          },
+          take: 5, // small window; we’ll choose best representative below
+        },
+      },
+    });
+
+    const rows = orders.map((o: { payments: any[]; id: any; createdAt: { toISOString: () => any; }; total: any; status: any; }) => {
+      // Prefer a PAID payment if any, else the latest attempt
+      const paid = o.payments.find((p: { status: string; }) => p.status === 'PAID');
+      const representative = paid ?? o.payments[0] ?? null;
+
+      return {
+        orderId: o.id,
+        createdAt: o.createdAt.toISOString?.() ?? (o as any).createdAt,
+        total: Number(o.total),
+        orderStatus: o.status,
+        payment: representative
+          ? {
+              id: representative.id,
+              reference: representative.reference,
+              status: representative.status,
+              channel: representative.channel,
+              provider: representative.provider,
+              createdAt:
+                (representative as any).createdAt?.toISOString?.() ??
+                (representative as any).createdAt,
+            }
+          : undefined,
+      };
+    });
+
+    res.json(rows);
   } catch (e) {
     next(e);
   }

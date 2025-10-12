@@ -4,19 +4,19 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
 import { useModal } from "../components/ModalProvider";
+import { markPaystackExit } from '../utils/paystackReturn';
 
 type InitResp = {
   reference: string;
-  amount: number;           // in kobo or naira? match your backend contract
-  currency: string;         // "NGN"
-  mode: 'trial' | 'paystack';
+  amount?: number; // may be present for trial/inline-bank
+  currency?: string; // "NGN"
+  mode: 'trial' | 'paystack' | 'paystack_inline_bank';
   authorization_url?: string;
   bank?: {
     bank_name: string;
     account_name: string;
     account_number: string;
   };
-  // Optional: expiresAt, note, etc.
 };
 
 export default function Payment() {
@@ -28,26 +28,25 @@ export default function Payment() {
   const [loading, setLoading] = useState(false);
   const [init, setInit] = useState<InitResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const {openModal} = useModal();
+  const { openModal } = useModal();
 
-
+  // Kick off init
   useEffect(() => {
     if (!orderId) return;
     if (!token) {
       setErr('You must be logged in to pay.');
-      return;
+      // We do not immediately navigate away to let user see the message.
     }
+
     (async () => {
       setLoading(true);
       setErr(null);
       try {
         const { data } = await api.post<InitResp>(
           '/api/payments/init',
-          { orderId, channel: 'card' },      // bank_transfer, card
-          { headers: { Authorization: `Bearer ${token}` } }
+          { orderId, channel: 'card' }, // or 'bank_transfer'
+          { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
         );
-        console.log( data)
-
         setInit(data);
       } catch (e: any) {
         setErr(e?.response?.data?.error || 'Failed to init payment');
@@ -57,6 +56,14 @@ export default function Payment() {
     })();
   }, [orderId, token]);
 
+  // If the backend returned Paystack hosted checkout, redirect safely.
+  useEffect(() => {
+    if (init?.mode === 'paystack' && init.authorization_url) {
+      markPaystackExit();
+      window.location.href = init.authorization_url;
+    }
+  }, [init?.mode, init?.authorization_url]);
+
   const markPaidManual = async () => {
     if (!init) return;
     setLoading(true);
@@ -65,11 +72,9 @@ export default function Payment() {
       await api.post(
         '/api/payments/verify',
         { reference: init.reference, orderId },
-        { headers: { Authorization: `Bearer ${token}` } }
+        { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
       );
-      // success
-      openModal({title: 'Payment', message: 'Payment verified. Thank you!'});
-      
+      openModal({ title: 'Payment', message: 'Payment verified. Thank you!' });
       nav('/orders');
     } catch (e: any) {
       setErr(e?.response?.data?.error || 'Verification failed');
@@ -82,38 +87,45 @@ export default function Payment() {
     return <div className="max-w-md mx-auto p-6">Missing order ID.</div>;
   }
 
+  // For pure Paystack hosted checkout, we immediately redirected above.
+  const isBankFlow = init?.mode === 'trial' || init?.mode === 'paystack_inline_bank';
+
   return (
     <div className="max-w-lg mx-auto p-6 space-y-4">
       <h1 className="text-2xl font-semibold">Payment</h1>
+
       {err && <div className="p-2 rounded bg-red-50 text-red-700">{err}</div>}
       {loading && <div className="text-sm opacity-70">Loading…</div>}
 
-      {!loading && init && (
+      {!loading && init && isBankFlow && (
         <div className="space-y-4">
           <div className="border rounded p-4 bg-white">
             <h2 className="font-medium mb-2">Bank Transfer Details</h2>
+
             {init.mode === 'trial' && (
               <p className="text-sm mb-2">
                 Trial mode: use the demo bank details below and click “I’ve transferred” to continue.
               </p>
             )}
+
             {init.bank ? (
               <ul className="text-sm space-y-1">
                 <li><b>Bank:</b> {init.bank.bank_name}</li>
                 <li><b>Account Name:</b> {init.bank.account_name}</li>
                 <li><b>Account Number:</b> {init.bank.account_number}</li>
               </ul>
-            ) : 
-              init.authorization_url? window.location.href = init.authorization_url
-                   : 
-                   (
-                 <p className="text-sm">
+            ) : (
+              <p className="text-sm">
                 Bank details will be shown here. If you don’t see them, confirm your backend mode and keys.
-              </p>)          
-            }
-            <div className="mt-3 text-sm">
-              <b>Amount:</b> {init.currency} {Number(init.amount).toLocaleString()}
-            </div>
+              </p>
+            )}
+
+            {Number.isFinite(init.amount) && init.currency && (
+              <div className="mt-3 text-sm">
+                <b>Amount:</b> {init.currency} {Number(init.amount).toLocaleString()}
+              </div>
+            )}
+
             <div className="mt-1 text-xs opacity-70">
               Use your order reference in transfer notes if possible:<br />
               <code>{init.reference}</code>
@@ -136,6 +148,13 @@ export default function Payment() {
               Back to cart
             </button>
           </div>
+        </div>
+      )}
+
+      {/* If init exists but it's hosted Paystack, the effect above will redirect. */}
+      {!loading && init && init.mode === 'paystack' && !init.authorization_url && (
+        <div className="text-sm opacity-70">
+          Awaiting Paystack authorization URL…
         </div>
       )}
     </div>
