@@ -46,7 +46,9 @@ api.interceptors.response.use(
     const isNetwork = !error?.response; // server down / CORS / DNS / offline
 
     // Logout conditions:
-    if (status === 401 || status === 403) {
+    if (status === 401 
+      // || status === 403
+    ) {
       hardLogout(String(status));
     } else if (isNetwork) {
       // If you ONLY want to logout when the server is down, keep this.
