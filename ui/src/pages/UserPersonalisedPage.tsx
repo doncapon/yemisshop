@@ -202,6 +202,41 @@ function useRecentTransactions(limit = 5) {
   });
 }
 
+/** NEW: total spent (sum of successful payments). Tries /api/payments/summary, falls back to orders. */
+function useTotalSpent() {
+  const token = useAuthStore((s) => s.token);
+  return useQuery({
+    queryKey: ['payments', 'totalSpent'],
+    queryFn: async () => {
+      // Try a tiny payments summary endpoint first
+      try {
+        const r = await api.get<{ totalPaid?: number; totalPaidNgn?: number }>('/api/payments/summary', {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+        const v = r.data?.totalPaid ?? r.data?.totalPaidNgn;
+        if (typeof v === 'number' && Number.isFinite(v)) return v;
+      } catch {
+        /* fall back */
+      }
+      // Fallback: sum PAID orders
+      try {
+        const res = await api.get<OrderLite[]>('/api/orders/mine?limit=1000', {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+        const list = Array.isArray(res.data) ? res.data : [];
+        const total = list
+          .filter((o) => (o.status || '').toUpperCase() === 'PAID')
+          .reduce((s, o) => s + (Number.isFinite(o.total as any) ? Number(o.total) : 0), 0);
+        return total;
+      } catch {
+        return 0;
+      }
+    },
+    enabled: !!token,
+    staleTime: 30_000,
+  });
+}
+
 function useResendEmail() {
   const token = useAuthStore((s) => s.token);
   return useMutation({
@@ -296,6 +331,7 @@ export default function UserPersonalisedPage() {
   const ordersQ = useRecentOrders(5);
   const ordersSummaryQ = useOrdersSummary();
   const transactionsQ = useRecentTransactions(5);
+  const totalSpentQ = useTotalSpent();
 
   const resendEmail = useResendEmail();
   const resendOtp = useResendOtp();
@@ -393,14 +429,14 @@ export default function UserPersonalisedPage() {
             </div>
           </div>
 
-            {/* Quick toggles */}
-            <div className="mt-4 flex items-center gap-2 text-sm">
-              <Link className="underline" to="/profile">Manage details</Link>
-              <span className="opacity-20">•</span>
-              <Link className="underline" to="/orders">Order history</Link>
-              <span className="opacity-20">•</span>
-              <Link className="underline" to="/settings">Preferences</Link>
-            </div>
+          {/* Quick toggles */}
+          <div className="mt-4 flex items-center gap-2 text-sm">
+            <Link className="underline" to="/profile">Manage details</Link>
+            <span className="opacity-20">•</span>
+            <Link className="underline" to="/orders">Order history</Link>
+            <span className="opacity-20">•</span>
+            <Link className="underline" to="/settings">Preferences</Link>
+          </div>
         </Section>
 
         <Section title="Verification">
@@ -625,40 +661,17 @@ export default function UserPersonalisedPage() {
           )}
         </Section>
 
-        {/* Preferences */}
-        <Section title="Personalisation & Preferences" right={<Link to="/settings" className="text-sm underline">Edit</Link>}>
-          <div className="grid gap-2 text-sm">
-            <div>Interests: {me?.productInterests?.length ? me.productInterests.join(', ') : '—'}</div>
-            <div>Language: {me?.language ?? '—'}</div>
-            <div>Currency: {me?.currency ?? 'NGN'}</div>
-            <div>
-              Notifications{' '}(
-              {me?.notificationPrefs
-                ? [
-                    me.notificationPrefs.email ? 'Email' : null,
-                    me.notificationPrefs.sms ? 'SMS' : null,
-                    me.notificationPrefs.push ? 'Push' : null,
-                  ]
-                    .filter(Boolean)
-                    .join(', ') || 'None'
-                : '—'}
-              )
-            </div>
-          </div>
-        </Section>
-
-        {/* Support */}
-        <Section title="Support">
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <a href="https://wa.me/2340000000000" className="border rounded p-3 hover:bg-black/5" target="_blank" rel="noreferrer">WhatsApp</a>
-            <Link to="/faq" className="border rounded p-3 hover:bg-black/5">FAQs & Returns</Link>
-          </div>
-        </Section>
-
         {/* Insights */}
         <Section title="Your insights">
           <div className="grid grid-cols-3 gap-2">
-            <Stat label="Total spent" value={ngn.format(0)} />
+            <Stat
+              label="Total spent"
+              value={
+                totalSpentQ.isLoading
+                  ? '…'
+                  : ngn.format(totalSpentQ.data ?? 0)
+              }
+            />
             <Stat label="Orders" value={String(ordersSummaryQ.data?.total ?? 0)} />
             <Stat label="Member since" value={dateFmt(me?.joinedAt)} />
           </div>
