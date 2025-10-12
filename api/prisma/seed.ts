@@ -1,5 +1,6 @@
 // prisma/seed.ts
-import { PrismaClient, Prisma } from '@prisma/client';
+import { PrismaClient, Prisma, SupplierType } from '@prisma/client';
+
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
@@ -16,9 +17,7 @@ const PRICE_BUCKETS = [
   { label: '₦10,000 – ₦99,999', min: 10000, max: 99999 },
 ] as const;
 
-/** Pick a random price across buckets, with a slight bias towards mid bucket */
 function randomPrice(): Prisma.Decimal {
-  // Weighted pick: 35% low, 40% mid, 25% high
   const r = Math.random();
   const bucket =
     r < 0.35 ? PRICE_BUCKETS[0] : r < 0.75 ? PRICE_BUCKETS[1] : PRICE_BUCKETS[2];
@@ -27,7 +26,6 @@ function randomPrice(): Prisma.Decimal {
 }
 
 function productImages(i: number): string[] {
-  // Multiple images per product
   return [
     `https://picsum.photos/seed/yemishop-${i}/800/600`,
     `https://picsum.photos/seed/yemishop-${i}-b/800/600`,
@@ -35,18 +33,101 @@ function productImages(i: number): string[] {
   ];
 }
 
+async function makeAddress(seed: {
+  houseNumber: string;
+  streetName: string;
+  city: string;
+  state: string;
+  country?: string;
+  postCode?: string;
+  town?: string;
+}) {
+  return prisma.address.create({
+    data: {
+      houseNumber: seed.houseNumber,
+      streetName: seed.streetName,
+      city: seed.city,
+      state: seed.state,
+      postCode: seed.postCode ?? '',
+      town: seed.town ?? '',
+      country: seed.country ?? 'Nigeria',
+    },
+  });
+}
+
 async function main() {
-  console.log('🧹 Clearing existing data (products, categories, suppliers, users)…');
-  await prisma.product.deleteMany({});
-  await prisma.category.deleteMany({});
-  await prisma.supplier.deleteMany({});
-  await prisma.user.deleteMany({});
+  console.log('🧹 Clearing existing data …');
+
+  // Delete in FK-safe order
+  await prisma.$transaction([
+    prisma.purchaseOrderItem.deleteMany(),
+    prisma.payment.deleteMany(),
+    prisma.orderItem.deleteMany(),
+    prisma.purchaseOrder.deleteMany(),
+    prisma.order.deleteMany(),
+    prisma.favorite.deleteMany(),
+    prisma.wishlist.deleteMany(),
+    prisma.product.deleteMany(),
+    prisma.category.deleteMany(),
+    prisma.supplier.deleteMany(),
+    prisma.user.deleteMany(),
+    prisma.address.deleteMany(),
+  ]);
 
   console.log('👥 Seeding users…');
   const adminPwd = await bcrypt.hash('Admin123!', 10);
   const supplierPwd = await bcrypt.hash('Supplier123!', 10);
   const shopperPwd = await bcrypt.hash('Shopper123!', 10);
 
+  // Create addresses first (we’ll attach to users)
+  const [adminHome, adminShip] = await Promise.all([
+    makeAddress({
+      houseNumber: '10',
+      streetName: 'Admin Crescent',
+      city: 'Ikeja',
+      state: 'Lagos',
+    }),
+    makeAddress({
+      houseNumber: '12',
+      streetName: 'Admin Crescent',
+      city: 'Ikeja',
+      state: 'Lagos',
+    }),
+  ]);
+
+  const [supplierHome, supplierShip] = await Promise.all([
+    makeAddress({
+      houseNumber: '22B',
+      streetName: 'Wholesale Ave',
+      city: 'Abeokuta',
+      state: 'Ogun',
+    }),
+    makeAddress({
+      houseNumber: '5',
+      streetName: 'Depot Road',
+      city: 'Abeokuta',
+      state: 'Ogun',
+    }),
+  ]);
+
+  const [shopperHome, shopperShip] = await Promise.all([
+    makeAddress({
+      houseNumber: '7',
+      streetName: 'Market Lane',
+      city: 'Ibadan',
+      state: 'Oyo',
+    }),
+    makeAddress({
+      houseNumber: '9',
+      streetName: 'Market Lane',
+      city: 'Ibadan',
+      state: 'Oyo',
+    }),
+  ]);
+
+  const now = new Date();
+
+  // Verified admin
   const admin = await prisma.user.create({
     data: {
       email: 'admin@example.com',
@@ -54,12 +135,16 @@ async function main() {
       role: 'ADMIN',
       firstName: 'Site',
       lastName: 'Admin',
+      phone: '+2348100000001',
       status: 'VERIFIED',
-      emailVerifiedAt: new Date(),
-      phoneVerifiedAt: new Date(),
+      emailVerifiedAt: now,
+      phoneVerifiedAt: now,
+      address: { connect: { id: adminHome.id } },
+      shippingAddress: { connect: { id: adminShip.id } },
     },
   });
 
+  // Verified supplier user
   const supplierUser = await prisma.user.create({
     data: {
       email: 'supplier@example.com',
@@ -67,11 +152,16 @@ async function main() {
       role: 'SUPPLIER',
       firstName: 'Oluchi',
       lastName: 'Supplies',
+      phone: '+2348100000002',
       status: 'VERIFIED',
-      emailVerifiedAt: new Date(),
+      emailVerifiedAt: now,
+      phoneVerifiedAt: now,
+      address: { connect: { id: supplierHome.id } },
+      shippingAddress: { connect: { id: supplierShip.id } },
     },
   });
 
+  // Verified shopper
   const shopper = await prisma.user.create({
     data: {
       email: 'shopper@example.com',
@@ -79,8 +169,12 @@ async function main() {
       role: 'SHOPPER',
       firstName: 'Yemi',
       lastName: 'Shopper',
+      phone: '+2348100000003',
       status: 'VERIFIED',
-      emailVerifiedAt: new Date(),
+      emailVerifiedAt: now,
+      phoneVerifiedAt: now,
+      address: { connect: { id: shopperHome.id } },
+      shippingAddress: { connect: { id: shopperShip.id } },
     },
   });
 
@@ -88,7 +182,7 @@ async function main() {
   const supplier = await prisma.supplier.create({
     data: {
       name: 'YemiShop Wholesale',
-      type: 'PHYSICAL',
+      type: SupplierType.PHYSICAL, // enum-safe
       status: 'ACTIVE',
       contactEmail: 'wholesale@yemishop.com',
       whatsappPhone: '+2348100000000',
@@ -115,48 +209,44 @@ async function main() {
   console.log('📦 Seeding products (60)…');
   const TOTAL_PRODUCTS = 60;
 
+  const titlePool = [
+    'Wireless Headphones',
+    'Stainless Steel Kettle',
+    'Cotton T-Shirt',
+    'Vitamin C Serum',
+    'Organic Basmati Rice (5kg)',
+    'Digital Bathroom Scale',
+    'Building Blocks Set',
+    'Football (Size 5)',
+    'Bluetooth Speaker',
+    'Bamboo Chopping Board',
+    'Running Sneakers',
+    'Moisturising Body Lotion',
+    'Granola Cereal (1kg)',
+    'Yoga Mat (Non-slip)',
+    'Remote Control Car',
+    'Smart LED Bulb',
+    'Chef’s Knife',
+    'Classic Denim Jeans',
+    'Hair Dryer',
+    'Herbal Green Tea (50 bags)',
+  ];
+
   for (let i = 1; i <= TOTAL_PRODUCTS; i++) {
     const cat = categories[(i - 1) % categories.length];
-    const titlePool = [
-      'Wireless Headphones',
-      'Stainless Steel Kettle',
-      'Cotton T-Shirt',
-      'Vitamin C Serum',
-      'Organic Basmati Rice (5kg)',
-      'Digital Bathroom Scale',
-      'Building Blocks Set',
-      'Football (Size 5)',
-      'Bluetooth Speaker',
-      'Bamboo Chopping Board',
-      'Running Sneakers',
-      'Moisturising Body Lotion',
-      'Granola Cereal (1kg)',
-      'Yoga Mat (Non-slip)',
-      'Remote Control Car',
-      'Smart LED Bulb',
-      'Chef’s Knife',
-      'Classic Denim Jeans',
-      'Hair Dryer',
-      'Herbal Green Tea (50 bags)',
-    ];
-    const title = titlePool[i % titlePool.length] + ` #${i}`;
-
-    const price = randomPrice();
-    const sku = `SKU-${String(i).padStart(5, '0')}`;
-    const stock = 20 + (i % 40);
-    const images = productImages(i);
+    const title = `${titlePool[i % titlePool.length]} #${i}`;
 
     await prisma.product.create({
       data: {
         title,
         description:
           'Quality product from YemiShop—reliable, durable and designed for everyday use. Great value at the right price.',
-        price,
-        sku,
-        stock,
+        price: randomPrice(),
+        sku: `SKU-${String(i).padStart(5, '0')}`,
+        stock: 20 + (i % 40),
         vatFlag: true,
         status: 'PUBLISHED',
-        imagesJson: images,
+        imagesJson: productImages(i),
         supplier: { connect: { id: supplier.id } },
         category: { connect: { id: cat.id } },
         categoryName: cat.name,

@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
 import { authMiddleware } from '../lib/authMiddleware.js';
+import { requireRole } from '../lib/requireRole.js';
 
 const router = Router();
 
@@ -43,13 +44,6 @@ type ProductRow = {
   supplierId: string;
   price: Prisma.Decimal; // exact DB type
 };
-
-/* ------------------------------ Utilities ----------------------------- */
-
-function asNumber(n: unknown) {
-  const v = Number(n);
-  return Number.isFinite(v) ? v : 0;
-}
 
 /* -------------------------------- Routes ------------------------------ */
 
@@ -323,5 +317,102 @@ router.post('/:id/cancel', authMiddleware, async (req, res, next) => {
     next(e);
   }
 });
+
+
+//------------- ADMIN GetOrders
+const AdminQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  status: z.string().optional(),            // "PENDING,PAID"
+  from: z.string().datetime().optional(),   // ISO
+  to: z.string().datetime().optional(),     // ISO
+  userId: z.string().optional(),            // filter by a specific user
+  email: z.string().email().optional(),     // or by user email
+  sortBy: z.enum(['createdAt', 'total', 'status']).default('createdAt'),
+  sortDir: z.enum(['asc', 'desc']).default('desc'),
+  includeUser: z.coerce.boolean().optional().default(false),
+});
+
+/** ADMIN: list all orders */
+router.get(
+  '/',
+  authMiddleware,
+  requireRole('ADMIN'),
+  async (req, res, next) => {
+    try {
+      const q = AdminQuerySchema.parse(req.query);
+      const skip = (q.page - 1) * q.pageSize;
+      const take = q.pageSize;
+
+      // Build base where
+      const where: Prisma.OrderWhereInput = {};
+
+      if (q.status) {
+        const statuses = q.status.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+        if (statuses.length) where.status = { in: statuses as any };
+      }
+
+      if (q.from || q.to) {
+        where.createdAt = {};
+        if (q.from) (where.createdAt as any).gte = new Date(q.from);
+        if (q.to) (where.createdAt as any).lte = new Date(q.to);
+      }
+
+      // Filter by user
+      if (q.userId) {
+        where.userId = q.userId;
+      } else if (q.email) {
+        // look up user by email once
+        const user = await prisma.user.findUnique({ where: { email: q.email }, select: { id: true } });
+        // If no user found by that email, return empty set
+        if (!user) return res.json({ page: q.page, pageSize: q.pageSize, totalItems: 0, totalPages: 1, data: [] });
+        where.userId = user.id;
+      }
+
+      // Sorting
+      let orderBy: Prisma.OrderOrderByWithRelationInput = { createdAt: q.sortDir };
+      if (q.sortBy === 'total') orderBy = { total: q.sortDir };
+      if (q.sortBy === 'status') orderBy = { status: q.sortDir };
+
+      const [totalItems, data] = await Promise.all([
+        prisma.order.count({ where }),
+        prisma.order.findMany({
+          where,
+          orderBy,
+          skip,
+          take,
+          include: {
+            items: {
+              include: {
+                product: { select: { id: true, title: true, imagesJson: true } },
+              },
+            },
+            payments: {
+              orderBy: { createdAt: 'desc' },
+              select: { id: true, reference: true, amount: true, status: true, channel: true, createdAt: true },
+            },
+            shippingAddress: true,
+            ...(q.includeUser ? { user: { select: { id: true, email: true, firstName: true, lastName: true } } } : {}),
+          },
+        }),
+      ]);
+
+      const totalPages = Math.max(1, Math.ceil(totalItems / q.pageSize));
+
+      res.json({
+        page: q.page,
+        pageSize: q.pageSize,
+        totalItems,
+        totalPages,
+        sortBy: q.sortBy,
+        sortDir: q.sortDir,
+        data,
+      });
+    } catch (e) {
+      next(e);
+    }
+  }
+);
+
 
 export default router;

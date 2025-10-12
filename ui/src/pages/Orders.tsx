@@ -95,11 +95,11 @@ export default function Orders() {
       setErr(null);
       try {
         // this endpoint should include items + payments for a nice table
-        const { data } = await api.get<Order[]>('/api/orders', {
+        const {data} = await api.get('/api/orders/mine', {
           headers: { Authorization: `Bearer ${token}` },
         });
         console.log(mounted)
-        if (mounted) setOrders(Array.isArray(data) ? data : []);
+        if (mounted) setOrders(data.data ?? []);
       } catch (e: any) {
         if (mounted) setErr(e?.response?.data?.error || 'Failed to load orders');
       } finally {
@@ -206,12 +206,12 @@ export default function Orders() {
       s === 'PAID'
         ? 'bg-green-600/10 text-green-700 border-green-600/20'
         : s === 'PENDING'
-        ? 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20'
-        : s === 'FAILED' || s === 'CANCELED'
-        ? 'bg-red-500/10 text-red-700 border-red-600/20'
-        : s === 'DELIVERED' || s === 'SHIPPED' || s === 'PROCESSING'
-        ? 'bg-blue-600/10 text-blue-700 border-blue-600/20'
-        : 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
+          ? 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20'
+          : s === 'FAILED' || s === 'CANCELED'
+            ? 'bg-red-500/10 text-red-700 border-red-600/20'
+            : s === 'DELIVERED' || s === 'SHIPPED' || s === 'PROCESSING'
+              ? 'bg-blue-600/10 text-blue-700 border-blue-600/20'
+              : 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
     return (
       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${style}`}>
         {status}
@@ -229,8 +229,8 @@ export default function Orders() {
       status === 'PAID'
         ? 'bg-green-600/10 text-green-700 border-green-600/20'
         : status === 'FAILED' || status === 'CANCELED'
-        ? 'bg-red-500/10 text-red-700 border-red-600/20'
-        : 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20';
+          ? 'bg-red-500/10 text-red-700 border-red-600/20'
+          : 'bg-yellow-500/10 text-yellow-700 border-yellow-600/20';
 
     return (
       <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${style}`}>

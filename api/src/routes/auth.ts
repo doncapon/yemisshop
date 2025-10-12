@@ -6,7 +6,7 @@ import crypto from 'crypto';
 
 import { prisma } from '../lib/prisma.js';
 import { randomOtp, randomToken, hash } from '../lib/crypto.js';
-import { sendVerifyEmail,sendResetorForgotPasswordEmail } from '../lib/email.js';
+import { sendVerifyEmail, sendResetorForgotPasswordEmail } from '../lib/email.js';
 import { sendSmsOtp } from '../lib/sms.js';
 import { signJwt } from '../lib/jwt.js';
 import { authMiddleware } from '../lib/authMiddleware.js';
@@ -23,8 +23,15 @@ const RegisterSchema = z.object({
   middleName: z.string().optional(),
   lastName: z.string().min(1),
   role: z.string().default('SHOPPER'),
-  dialCode: z.string().optional(),   // e.g. +234
-  localPhone: z.string().optional(), // national number w/out +234
+  dialCode: z.string().optional(),
+  localPhone: z.string().optional(),
+  dateOfBirth: z.string().date().or(z.string().datetime()).transform((s) => new Date(s))
+    .refine((d) => !Number.isNaN(+d), { message: 'Invalid date of birth' })
+    .refine((d) => {
+      const today = new Date();
+      const years = (today.getTime() - d.getTime()) / (365.25 * 24 * 3600 * 1000);
+      return years >= 18;
+    }, { message: 'You must be at least 18 years old' }),
 });
 
 const LoginSchema = z.object({
@@ -64,6 +71,7 @@ router.post(
     // Compose display name & phone
     const phone = body.dialCode && body.localPhone ? `${body.dialCode}${body.localPhone}` : null;
 
+    // then when creating:
     const user = await prisma.user.create({
       data: {
         email: body.email,
@@ -74,6 +82,7 @@ router.post(
         lastName: body.lastName,
         phone,
         status: 'PENDING',
+        dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : null, // 👈 add
       },
     });
 

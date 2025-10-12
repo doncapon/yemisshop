@@ -60,11 +60,11 @@ app.use('/api/orders', ordersRouter);
 
 //7) wishlist
 app.use('/api/wishlist', wishlistRouter);
-app.listen(env.port, () => {
-  console.log(`API on http://localhost:${env.port}`);
 
-// 7) favourites
+// 8) favourites
 app.use('/api/favorites', favoritesRouter);
 
 
+app.listen(env.port, () => {
+  console.log(`API on http://localhost:${env.port}`);
 });

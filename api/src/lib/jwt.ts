@@ -14,7 +14,7 @@ export function signJwt(
 }
 
 
-export function verifyJwt(token: string): { id: string; role: Role ; email: string} {
+export function verifyJwt(token: string): { id: string; role: Role; email: string} {
   const decoded = jwt.verify(token, SECRET);
   if (typeof decoded !== 'object' || !decoded) throw new Error('bad jwt');
 

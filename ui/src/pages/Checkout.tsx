@@ -4,6 +4,7 @@ import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
+import { useModal } from "../components/ModalProvider";
 
 type CartLine = {
   productId: string;
@@ -47,6 +48,7 @@ const ngn = new Intl.NumberFormat('en-NG', {
 
 export default function Checkout() {
   const nav = useNavigate();
+  const {openModal} = useModal();
   const token = useAuthStore((s) => s.token);
 
   // Require login for checkout
@@ -141,7 +143,8 @@ export default function Checkout() {
   const saveHome = async () => {
     const v = validateAddress(homeAddr, false);
     if (v) {
-      alert(v);
+        openModal({ title: 'checkout', message: v});
+
       return;
     }
     try {
@@ -155,7 +158,8 @@ export default function Checkout() {
         setShowShipForm(false);
       }
     } catch (e: any) {
-      alert(e?.response?.data?.error || 'Failed to save home address');
+        openModal({ title: 'checkout', message: e?.response?.data?.error || 'Failed to save home address'});
+
     } finally {
       setSavingHome(false);
     }
@@ -164,7 +168,8 @@ export default function Checkout() {
   const saveShip = async () => {
     const v = validateAddress(shipAddr, true);
     if (v) {
-      alert(v);
+      openModal({ title: 'Checkout', message: v});
+
       return;
     }
     try {
@@ -172,7 +177,8 @@ export default function Checkout() {
       await api.post('/api/profile/shipping', shipAddr, { headers: authHeader });
       setShowShipForm(false);
     } catch (e: any) {
-      alert(e?.response?.data?.error || 'Failed to save shipping address');
+      openModal({ title: 'checkout', message: e?.response?.data?.error || 'Failed to save shipping address'});
+      
     } finally {
       setSavingShip(false);
     }
@@ -336,7 +342,8 @@ export default function Checkout() {
                           setShipAddr(homeAddr);
                           setShowShipForm(false);
                         } catch (err: any) {
-                          alert(err?.response?.data?.error || 'Failed to set shipping as home');
+                          openModal({ title: 'checkout', message: err?.response?.data?.error || 'Failed to set shipping as home'});
+                          
                         } finally {
                           setSavingShip(false);
                         }

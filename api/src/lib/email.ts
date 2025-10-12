@@ -1,15 +1,33 @@
 // src/lib/email.ts
 import nodemailer from 'nodemailer';
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST!,
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: false, // true if port 465
-  auth: {
-    user: process.env.SMTP_USER!,
-    pass: process.env.SMTP_PASS!,
-  },
-});
+const isProd = process.env.NODE_ENV === 'production';
+const hasSmtpCreds =
+  !!process.env.SMTP_HOST && !!process.env.SMTP_USER && !!process.env.SMTP_PASS;
+
+let transporter: nodemailer.Transporter;
+
+if (!isProd && !hasSmtpCreds) {
+  // DEV fallback: print emails to console instead of making a TLS connection
+  transporter = nodemailer.createTransport({
+    streamTransport: true,
+    newline: 'unix',
+    buffer: true,
+  });
+  console.warn('[email] Using streamTransport (DEV). Set SMTP_* envs to send real mail.');
+} else {
+  transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST!,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: Number(process.env.SMTP_PORT) === 465, // 465 = SMTPS
+    auth: {
+      user: process.env.SMTP_USER!,
+      pass: process.env.SMTP_PASS!,
+    },
+    // DEV ONLY: relax TLS if your dev SMTP has a self-signed cert
+    tls: !isProd ? { rejectUnauthorized: false } : undefined,
+  });
+}
 
 export async function sendVerifyEmail(to: string, verifyUrl: string) {
   const html = `
@@ -20,22 +38,36 @@ export async function sendVerifyEmail(to: string, verifyUrl: string) {
       <p>If you didn’t request this, you can ignore this email.</p>
     </div>
   `;
-  await transporter.sendMail({
+
+  const info = await transporter.sendMail({
     from: process.env.SMTP_FROM || 'no-reply@yemisshop.local',
     to,
     subject: 'Verify your email',
     html,
   });
+
+  if (!hasSmtpCreds && !isProd) {
+    console.log('\n[EMAIL:DEV] (preview)\n', info.message?.toString?.() ?? info);
+  }
 }
 
-export async function sendResetorForgotPasswordEmail(to: string, verifyUrl: string, subject: string, html: string) {
-  html += " " + verifyUrl;
-  await transporter.sendMail({
+export async function sendResetorForgotPasswordEmail(
+  to: string,
+  verifyUrl: string,
+  subject: string,
+  html: string
+) {
+  const finalHtml = `${html} <br/><a href="${verifyUrl}">${verifyUrl}</a>`;
+  const info = await transporter.sendMail({
     from: process.env.SMTP_FROM || 'no-reply@yemisshop.local',
     to,
-    subject: subject,
-    html,
+    subject,
+    html: finalHtml,
   });
+
+  if (!hasSmtpCreds && !isProd) {
+    console.log('\n[EMAIL:DEV] (preview)\n', info.message?.toString?.() ?? info);
+  }
 }
 
 export function paymentLinkEmail(orderId: string, link: string) {
@@ -52,4 +84,3 @@ export function paymentLinkEmail(orderId: string, link: string) {
     `,
   };
 }
-
