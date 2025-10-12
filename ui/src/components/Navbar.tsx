@@ -99,6 +99,7 @@ export default function Navbar() {
   const logout = useCallback(() => {
     clear();
     if (localStorage.getItem('cart')) { localStorage.removeItem('cart') };
+    if (localStorage.getItem('auth')) { localStorage.removeItem('auth') };
     nav('/');
   }, [clear, nav]);
 

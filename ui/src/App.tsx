@@ -32,13 +32,12 @@ export default function App() {
 
   useEffect(() => {
     scheduleTokenExpiryLogout(token, () => {
-      // same as interceptor’s hardLogout but simpler from within React:
       clear();
       try { localStorage.clear(); sessionStorage.clear?.(); } catch { }
-      const params = new URLSearchParams();
-      params.set('reason', 'expired');
-      window.location.replace(`/login?${params.toString()}`);
+      // ✅ Clean redirect without params
+      window.location.replace('/login');
     });
+
   }, [token, clear]);
 
   return (

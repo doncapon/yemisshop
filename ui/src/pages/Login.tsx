@@ -14,6 +14,27 @@ type MeResponse = {
   phoneVerified: boolean;
 };
 
+function nukeAuthStorage() {
+  try {
+    // 1) Clear in-memory state so it won't immediately re-persist
+    useAuthStore.getState().clear?.();
+  } catch {}
+
+  try {
+    // 2) Remove the exact persisted key (Zustand persist exposes it)
+    // These optional calls are safe even if you're not using persist.
+    // @ts-ignore
+    const persist = useAuthStore.persist;
+    // @ts-ignore
+    const name = persist?.getOptions?.().name || 'auth'; // fallback if unknown
+    if (name) localStorage.removeItem(name);
+
+    // If your store saved other keys (rare), you can also force-clear:
+    // Object.keys(localStorage).forEach(k => /auth|token|zustand/i.test(k) && localStorage.removeItem(k));
+  } catch {}
+}
+
+
 export default function Login() {
   const [email, setEmail] = useState('shopper@example.com');
   const [password, setPassword] = useState('Shopper123!');
@@ -38,6 +59,7 @@ export default function Login() {
 
   const submit = async (e: React.FormEvent) => {
   e.preventDefault();
+  nukeAuthStorage();
   setErr(null);
   setPendingToken(null);
   setMe(null);
