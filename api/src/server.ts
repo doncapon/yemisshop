@@ -9,6 +9,7 @@ import productsRouter from './routes/products.js';
 import ordersRouter from './routes/orders.js';
 import wishlistRouter from './routes/wishlist.js';
 import favoritesRouter from './routes/favorites.js';
+import adminRouter from './routes/admin.js';
 
 
 const app = express();
@@ -38,6 +39,7 @@ app.use(express.json());
 /* 3) Auth & profile */
 app.use('/api/auth', authRouter);
 app.use('/api/profile', profileRouter);
+app.use('/api/admin', adminRouter);
 
 /* 4) Payments:
    - Mount normal JSON endpoints at /api/payments

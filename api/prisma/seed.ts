@@ -1,9 +1,9 @@
 // prisma/seed.ts
 import { PrismaClient, Prisma, SupplierType } from '@prisma/client';
-
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
+const now = new Date();
 
 /** Random helpers */
 function randInt(min: number, max: number) {
@@ -76,8 +76,8 @@ async function main() {
 
   console.log('👥 Seeding users…');
   const adminPwd = await bcrypt.hash('Admin123!', 10);
-  const supplierPwd = await bcrypt.hash('Supplier123!', 10);
-  const shopperPwd = await bcrypt.hash('Shopper123!', 10);
+  const superAdminPwd = await bcrypt.hash('SuperAdmin123!', 10);
+  const shopperPwd = await bcrypt.hash('Shopper123!', 10); // 👈 new
 
   // Create addresses first (we’ll attach to users)
   const [adminHome, adminShip] = await Promise.all([
@@ -95,21 +95,22 @@ async function main() {
     }),
   ]);
 
-  const [supplierHome, supplierShip] = await Promise.all([
+  const [superAdminHome, superAdminShip] = await Promise.all([
     makeAddress({
       houseNumber: '22B',
-      streetName: 'Wholesale Ave',
-      city: 'Abeokuta',
-      state: 'Ogun',
+      streetName: 'Leadership Ave',
+      city: 'Abuja',
+      state: 'FCT',
     }),
     makeAddress({
       houseNumber: '5',
-      streetName: 'Depot Road',
-      city: 'Abeokuta',
-      state: 'Ogun',
+      streetName: 'Steward Road',
+      city: 'Abuja',
+      state: 'FCT',
     }),
   ]);
 
+  // ✅ Shopper addresses
   const [shopperHome, shopperShip] = await Promise.all([
     makeAddress({
       houseNumber: '7',
@@ -125,9 +126,7 @@ async function main() {
     }),
   ]);
 
-  const now = new Date();
-
-  // Verified admin
+  // ADMIN
   const admin = await prisma.user.create({
     data: {
       email: 'admin@example.com',
@@ -139,29 +138,31 @@ async function main() {
       status: 'VERIFIED',
       emailVerifiedAt: now,
       phoneVerifiedAt: now,
+      joinedAt: now,
       address: { connect: { id: adminHome.id } },
       shippingAddress: { connect: { id: adminShip.id } },
     },
   });
 
-  // Verified supplier user
-  const supplierUser = await prisma.user.create({
+  // SUPER_ADMIN
+  const superAdmin = await prisma.user.create({
     data: {
-      email: 'supplier@example.com',
-      password: supplierPwd,
-      role: 'SUPPLIER',
-      firstName: 'Oluchi',
-      lastName: 'Supplies',
-      phone: '+2348100000002',
+      email: 'superadmin@example.com',
+      password: superAdminPwd,
+      role: 'SUPER_ADMIN',
+      firstName: 'Super',
+      lastName: 'Admin',
+      phone: '+2348100000004',
       status: 'VERIFIED',
       emailVerifiedAt: now,
       phoneVerifiedAt: now,
-      address: { connect: { id: supplierHome.id } },
-      shippingAddress: { connect: { id: supplierShip.id } },
+      joinedAt: now,
+      address: { connect: { id: superAdminHome.id } },
+      shippingAddress: { connect: { id: superAdminShip.id } },
     },
   });
 
-  // Verified shopper
+  // 👤 SHOPPER (verified)
   const shopper = await prisma.user.create({
     data: {
       email: 'shopper@example.com',
@@ -173,21 +174,22 @@ async function main() {
       status: 'VERIFIED',
       emailVerifiedAt: now,
       phoneVerifiedAt: now,
+      joinedAt: now,
       address: { connect: { id: shopperHome.id } },
       shippingAddress: { connect: { id: shopperShip.id } },
     },
   });
 
-  console.log('🏭 Seeding supplier…');
+  console.log('🏭 Seeding supplier (without user)…');
+  // Create a supplier WITHOUT linking to any user (userId is optional in your schema)
   const supplier = await prisma.supplier.create({
     data: {
       name: 'YemiShop Wholesale',
-      type: SupplierType.PHYSICAL, // enum-safe
+      type: SupplierType.PHYSICAL,
       status: 'ACTIVE',
       contactEmail: 'wholesale@yemishop.com',
       whatsappPhone: '+2348100000000',
       payoutPctInt: 70,
-      user: { connect: { id: supplierUser.id } },
     },
   });
 
@@ -206,8 +208,7 @@ async function main() {
     categoryNames.map((name) => prisma.category.create({ data: { name } }))
   );
 
-  console.log('📦 Seeding products (60)…');
-  const TOTAL_PRODUCTS = 60;
+  console.log('📦 Seeding products…');
 
   const titlePool = [
     'Wireless Headphones',
@@ -232,7 +233,11 @@ async function main() {
     'Herbal Green Tea (50 bags)',
   ];
 
-  for (let i = 1; i <= TOTAL_PRODUCTS; i++) {
+  const TOTAL_IN_STOCK = 60;
+  const TOTAL_OUT_OF_STOCK = 30;
+
+  // First 60: in stock (stock: true)
+  for (let i = 1; i <= TOTAL_IN_STOCK; i++) {
     const cat = categories[(i - 1) % categories.length];
     const title = `${titlePool[i % titlePool.length]} #${i}`;
 
@@ -243,7 +248,7 @@ async function main() {
           'Quality product from YemiShop—reliable, durable and designed for everyday use. Great value at the right price.',
         price: randomPrice(),
         sku: `SKU-${String(i).padStart(5, '0')}`,
-        stock: 20 + (i % 40),
+        stock: true, // ✅ boolean
         vatFlag: true,
         status: 'PUBLISHED',
         imagesJson: productImages(i),
@@ -254,11 +259,34 @@ async function main() {
     });
   }
 
+  // Next 30: out of stock (stock: false)
+  for (let j = TOTAL_IN_STOCK + 1; j <= TOTAL_IN_STOCK + TOTAL_OUT_OF_STOCK; j++) {
+    const cat = categories[(j - 1) % categories.length];
+    const title = `${titlePool[j % titlePool.length]} #${j}`;
+
+    await prisma.product.create({
+      data: {
+        title,
+        description:
+          'Quality product from YemiShop—reliable, durable and designed for everyday use. Great value at the right price.',
+        price: randomPrice(),
+        sku: `SKU-${String(j).padStart(5, '0')}`,
+        stock: false, // ✅ boolean
+        vatFlag: true,
+        status: 'PUBLISHED',
+        imagesJson: productImages(j),
+        supplier: { connect: { id: supplier.id } },
+        category: { connect: { id: cat.id } },
+        categoryName: cat.name,
+      },
+    });
+  }
+
   console.log('✅ Seed complete.');
   console.log('Users:');
-  console.log('  Admin:    admin@example.com / Admin123!');
-  console.log('  Supplier: supplier@example.com / Supplier123!');
-  console.log('  Shopper:  shopper@example.com / Shopper123!');
+  console.log('  Admin:        admin@example.com / Shopper123!');
+  console.log('  Super Admin:  superadmin@example.com / Shopper123!');
+  console.log('  Shopper:      shopper@example.com / Shopper123!'); // 👈 new
 }
 
 main()

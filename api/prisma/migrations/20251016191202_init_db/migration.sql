@@ -1,6 +1,9 @@
 -- CreateEnum
 CREATE TYPE "SupplierType" AS ENUM ('PHYSICAL', 'ONLINE');
 
+-- CreateEnum
+CREATE TYPE "PaymentStatus" AS ENUM ('PENDING', 'REQUIRES_ACTION', 'PAID', 'FAILED', 'CANCELED', 'REFUNDED');
+
 -- CreateTable
 CREATE TABLE "Address" (
     "id" TEXT NOT NULL,
@@ -42,6 +45,7 @@ CREATE TABLE "User" (
     "resetPasswordToken" TEXT,
     "resetPasswordExpiresAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "joinedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
 );
@@ -80,7 +84,7 @@ CREATE TABLE "Product" (
     "description" TEXT NOT NULL,
     "price" DECIMAL(10,2) NOT NULL,
     "sku" TEXT NOT NULL,
-    "stock" INTEGER NOT NULL,
+    "stock" BOOLEAN NOT NULL DEFAULT true,
     "vatFlag" BOOLEAN NOT NULL DEFAULT true,
     "status" TEXT NOT NULL DEFAULT 'PUBLISHED',
     "imagesJson" TEXT[],
@@ -112,15 +116,17 @@ CREATE TABLE "Order" (
 CREATE TABLE "Payment" (
     "id" TEXT NOT NULL,
     "orderId" TEXT NOT NULL,
-    "provider" TEXT NOT NULL DEFAULT 'PAYSTACK',
     "reference" TEXT NOT NULL,
-    "amount" DECIMAL(10,2) NOT NULL,
-    "currency" TEXT NOT NULL DEFAULT 'NGN',
-    "status" TEXT NOT NULL,
+    "amount" DECIMAL(65,30) NOT NULL,
+    "status" "PaymentStatus" NOT NULL,
+    "provider" TEXT,
     "channel" TEXT,
-    "providerRef" TEXT,
+    "attemptNo" INTEGER,
+    "initPayload" JSONB,
+    "providerPayload" JSONB,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
+    "paidAt" TIMESTAMP(3),
 
     CONSTRAINT "Payment_pkey" PRIMARY KEY ("id")
 );
@@ -183,6 +189,30 @@ CREATE TABLE "Wishlist" (
     CONSTRAINT "Wishlist_pkey" PRIMARY KEY ("userId","productId")
 );
 
+-- CreateTable
+CREATE TABLE "Otp" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "codeHash" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "consumedAt" TIMESTAMP(3),
+    "attempts" INTEGER NOT NULL DEFAULT 0,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "Otp_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "EmailVerifyToken" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "token" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "EmailVerifyToken_pkey" PRIMARY KEY ("id")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 
@@ -205,58 +235,13 @@ CREATE UNIQUE INDEX "Supplier_name_key" ON "Supplier"("name");
 CREATE UNIQUE INDEX "Supplier_userId_key" ON "Supplier"("userId");
 
 -- CreateIndex
-CREATE INDEX "Supplier_status_createdAt_idx" ON "Supplier"("status", "createdAt");
-
--- CreateIndex
 CREATE UNIQUE INDEX "Category_name_key" ON "Category"("name");
-
--- CreateIndex
-CREATE INDEX "Product_supplierId_idx" ON "Product"("supplierId");
-
--- CreateIndex
-CREATE INDEX "Product_categoryId_idx" ON "Product"("categoryId");
-
--- CreateIndex
-CREATE INDEX "Product_status_createdAt_idx" ON "Product"("status", "createdAt");
-
--- CreateIndex
-CREATE INDEX "Order_userId_createdAt_idx" ON "Order"("userId", "createdAt");
-
--- CreateIndex
-CREATE INDEX "Order_status_createdAt_idx" ON "Order"("status", "createdAt");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Payment_reference_key" ON "Payment"("reference");
 
 -- CreateIndex
-CREATE INDEX "Payment_orderId_idx" ON "Payment"("orderId");
-
--- CreateIndex
-CREATE INDEX "Payment_provider_status_createdAt_idx" ON "Payment"("provider", "status", "createdAt");
-
--- CreateIndex
-CREATE INDEX "Payment_status_createdAt_idx" ON "Payment"("status", "createdAt");
-
--- CreateIndex
-CREATE INDEX "OrderItem_orderId_idx" ON "OrderItem"("orderId");
-
--- CreateIndex
-CREATE INDEX "OrderItem_productId_idx" ON "OrderItem"("productId");
-
--- CreateIndex
-CREATE INDEX "OrderItem_supplierId_idx" ON "OrderItem"("supplierId");
-
--- CreateIndex
-CREATE INDEX "PurchaseOrder_supplierId_createdAt_idx" ON "PurchaseOrder"("supplierId", "createdAt");
-
--- CreateIndex
-CREATE INDEX "PurchaseOrder_orderId_createdAt_idx" ON "PurchaseOrder"("orderId", "createdAt");
-
--- CreateIndex
-CREATE INDEX "PurchaseOrderItem_purchaseOrderId_idx" ON "PurchaseOrderItem"("purchaseOrderId");
-
--- CreateIndex
-CREATE INDEX "PurchaseOrderItem_orderItemId_idx" ON "PurchaseOrderItem"("orderItemId");
+CREATE INDEX "Payment_status_paidAt_idx" ON "Payment"("status", "paidAt");
 
 -- CreateIndex
 CREATE INDEX "Favorite_userId_idx" ON "Favorite"("userId");
@@ -272,6 +257,12 @@ CREATE INDEX "Wishlist_userId_idx" ON "Wishlist"("userId");
 
 -- CreateIndex
 CREATE INDEX "Wishlist_productId_idx" ON "Wishlist"("productId");
+
+-- CreateIndex
+CREATE INDEX "Otp_userId_expiresAt_idx" ON "Otp"("userId", "expiresAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "EmailVerifyToken_token_key" ON "EmailVerifyToken"("token");
 
 -- AddForeignKey
 ALTER TABLE "User" ADD CONSTRAINT "User_addressId_fkey" FOREIGN KEY ("addressId") REFERENCES "Address"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -329,3 +320,9 @@ ALTER TABLE "Wishlist" ADD CONSTRAINT "Wishlist_userId_fkey" FOREIGN KEY ("userI
 
 -- AddForeignKey
 ALTER TABLE "Wishlist" ADD CONSTRAINT "Wishlist_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Otp" ADD CONSTRAINT "Otp_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "EmailVerifyToken" ADD CONSTRAINT "EmailVerifyToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;

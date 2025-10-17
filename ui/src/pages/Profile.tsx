@@ -18,7 +18,7 @@ type Address = {
 type MeResponse = {
   id: string;
   email: string;
-  role: 'ADMIN' | 'SUPPLIER' | 'SHOPPER';
+  role: 'ADMIN' | 'SUPER_ADMIN' | 'SUPER_USER' | 'SHOPPER';
   status: 'PENDING' | 'PARTIAL' | 'VERIFIED';
   firstName?: string | null;
   middleName?: string | null;
@@ -61,12 +61,25 @@ export default function Profile() {
   const [sameAsHome, setSameAsHome] = useState<boolean>(false);
   const [savingAddr, setSavingAddr] = useState<boolean>(false);
 
+  // NEW: Verification helpers
+  const [emailBusy, setEmailBusy] = useState(false);
+  const [phoneBusy, setPhoneBusy] = useState(false);
+  const [otp, setOtp] = useState('');
+  const [otpBusy, setOtpBusy] = useState(false);
+  const [otpCooldown, setOtpCooldown] = useState(0);
+
+  // Cooldown timer
+  useEffect(() => {
+    if (otpCooldown <= 0) return;
+    const t = setInterval(() => setOtpCooldown((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(t);
+  }, [otpCooldown]);
+
   // -------- Load profile (requires token) --------
   useEffect(() => {
     let cancelled = false;
 
     if (!token) {
-      // no token -> go login, return to /profile after
       nav('/login', { state: { from: { pathname: '/profile' } } });
       return;
     }
@@ -108,7 +121,6 @@ export default function Profile() {
       } catch (e: any) {
         if (cancelled) return;
         if (e?.response?.status === 401) {
-          // token invalid/expired -> force login
           nav('/login', { state: { from: { pathname: '/profile' } } });
           return;
         }
@@ -167,6 +179,61 @@ export default function Profile() {
         setShip((s) => ({ ...s, [k]: v }));
       };
 
+  // -------- Email / Phone verification handlers --------
+  const resendEmail = async () => {
+    if (!token) return nav('/login', { state: { from: { pathname: '/profile' } } });
+    setErr(null);
+    setMsg(null);
+    setEmailBusy(true);
+    try {
+      await api.post('/api/auth/resend-email', {}, { headers: { Authorization: `Bearer ${token}` } });
+      setMsg('Verification email sent.');
+    } catch (e: any) {
+      setErr(e?.response?.data?.error || 'Failed to resend verification email');
+    } finally {
+      setEmailBusy(false);
+    }
+  };
+
+  const requestOtp = async () => {
+    if (!token) return nav('/login', { state: { from: { pathname: '/profile' } } });
+    setErr(null);
+    setMsg(null);
+    setPhoneBusy(true);
+    try {
+      const { data } = await api.post('/api/auth/resend-otp', {}, { headers: { Authorization: `Bearer ${token}` } });
+      setMsg('OTP sent to your phone.');
+      setOtpCooldown(Number(data?.nextResendAfterSec ?? 60));
+    } catch (e: any) {
+      const retryAfter = Number(e?.response?.data?.retryAfterSec || 0);
+      if (retryAfter) setOtpCooldown(retryAfter);
+      setErr(e?.response?.data?.error || 'Failed to send OTP');
+    } finally {
+      setPhoneBusy(false);
+    }
+  };
+
+  const verifyOtp = async () => {
+    if (!token) return nav('/login', { state: { from: { pathname: '/profile' } } });
+    if (!otp.trim()) {
+      setErr('Enter the OTP sent to your phone.');
+      return;
+    }
+    setErr(null);
+    setMsg(null);
+    setOtpBusy(true);
+    try {
+      await api.post('/api/auth/verify-otp', { user: me, otp: otp.trim() }, { headers: { Authorization: `Bearer ${token}` } });
+      setMsg('Phone verified successfully.');
+      setMe((prev) => (prev ? { ...prev, phoneVerified: true } : prev));
+      setOtp('');
+    } catch (e: any) {
+      setErr(e?.response?.data?.error || 'Invalid OTP');
+    } finally {
+      setOtpBusy(false);
+    }
+  };
+
   // -------- Save addresses only --------
   const saveAddresses = async () => {
     if (!token) {
@@ -177,7 +244,6 @@ export default function Profile() {
     setErr(null);
     setMsg(null);
 
-    // Required fields
     const req = ['houseNumber', 'streetName', 'city', 'state', 'country'] as const;
     for (const key of req) {
       const val = (home as any)[key];
@@ -216,23 +282,23 @@ export default function Profile() {
       // Save shipping
       const payload = sameAsHome
         ? {
-          houseNumber: home.houseNumber,
-          streetName: home.streetName,
-          postCode: home.postCode || '',
-          town: home.town || '',
-          city: home.city,
-          state: home.state,
-          country: home.country,
-        }
+            houseNumber: home.houseNumber,
+            streetName: home.streetName,
+            postCode: home.postCode || '',
+            town: home.town || '',
+            city: home.city,
+            state: home.state,
+            country: home.country,
+          }
         : {
-          houseNumber: ship.houseNumber,
-          streetName: ship.streetName,
-          postCode: ship.postCode || '',
-          town: ship.town || '',
-          city: ship.city,
-          state: ship.state,
-          country: ship.country,
-        };
+            houseNumber: ship.houseNumber,
+            streetName: ship.streetName,
+            postCode: ship.postCode || '',
+            town: ship.town || '',
+            city: ship.city,
+            state: ship.state,
+            country: ship.country,
+          };
 
       await api.post('/api/profile/shipping', payload, {
         headers: { Authorization: `Bearer ${token}` },
@@ -306,20 +372,65 @@ export default function Profile() {
             </div>
           </div>
 
+          {/* EMAIL CARD (enhanced) */}
           <div className="rounded-xl border bg-white p-4">
             <div className="text-xs text-ink-soft">Email</div>
             <div className="font-medium break-all">{me.email}</div>
             <div className={`mt-2 text-sm ${me.emailVerified ? 'text-green-700' : 'text-amber-700'}`}>
               {me.emailVerified ? 'Verified' : 'Not verified'}
             </div>
+            {!me.emailVerified && (
+              <div className="mt-3">
+                <button
+                  onClick={resendEmail}
+                  disabled={emailBusy}
+                  className="text-sm underline text-primary-700 disabled:opacity-50"
+                  title="Resend verification email"
+                >
+                  {emailBusy ? 'Sending…' : 'Resend verification email'}
+                </button>
+              </div>
+            )}
           </div>
 
+          {/* PHONE CARD (enhanced) */}
           <div className="rounded-xl border bg-white p-4">
             <div className="text-xs text-ink-soft">Phone</div>
             <div className="font-medium break-words">{me.phone || '—'}</div>
             <div className={`mt-2 text-sm ${me.phoneVerified ? 'text-green-700' : 'text-amber-700'}`}>
               {me.phoneVerified ? 'Verified' : 'Not verified'}
             </div>
+
+            {!me.phoneVerified && (
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={requestOtp}
+                    disabled={phoneBusy || otpCooldown > 0}
+                    className="text-sm underline text-primary-700 disabled:opacity-50"
+                    title={otpCooldown > 0 ? `Retry in ${otpCooldown}s` : 'Send OTP'}
+                  >
+                    {phoneBusy ? 'Sending…' : otpCooldown > 0 ? `Send OTP in ${otpCooldown}s` : 'Send OTP'}
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    value={otp}
+                    onChange={(e) => setOtp(e.target.value)}
+                    placeholder="Enter OTP"
+                    className="w-full rounded-lg border border-border px-3 py-2 bg-surface placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
+                  />
+                  <button
+                    onClick={verifyOtp}
+                    disabled={otpBusy || !otp.trim()}
+                    className="rounded-md border bg-emerald-600 px-3 py-2 text-white hover:bg-emerald-700 transition disabled:opacity-50"
+                  >
+                    {otpBusy ? 'Verifying…' : 'Verify'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </section>
       )}
@@ -354,36 +465,6 @@ export default function Profile() {
             disabled
           />
         </div>
-        {me?.role ==='SUPPLIER' && (
-          <div className="rounded-xl border bg-white p-4">
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold">Bank details</h2>
-              <span className="text-[11px] rounded-full px-2 py-0.5 border bg-zinc-100 text-zinc-600 border-zinc-200">
-                Admin-managed
-              </span>
-            </div>
-            <div className="grid grid-cols-1 gap-2 mt-2">
-              <input
-                className="rounded-lg border border-border bg-zinc-100 text-ink-soft px-3 py-2.5"
-                placeholder="Bank name"
-                value={me?.bank?.bankName || ''}
-                disabled
-              />
-              <input
-                className="rounded-lg border border-border bg-zinc-100 text-ink-soft px-3 py-2.5"
-                placeholder="Account name"
-                value={me?.bank?.accountName || ''}
-                disabled
-              />
-              <input
-                className="rounded-lg border border-border bg-zinc-100 text-ink-soft px-3 py-2.5"
-                placeholder="Account number"
-                value={me?.bank?.accountNumber || ''}
-                disabled
-              />
-            </div>
-          </div>
-        )}
       </section>
 
       {/* Addresses (editable) */}

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
+import { boolean } from 'zod/v4';
 
 const router = Router();
 
@@ -32,6 +33,7 @@ router.get('/', async (_req, res, next) => {
         title: true,
         description: true,
         price: true,
+        stock: true,
         imagesJson: true,       // must be an array column (e.g. text[])
         categoryId: true,
         category: { select: { name: true } },
@@ -39,13 +41,14 @@ router.get('/', async (_req, res, next) => {
     });
 
     res.json(
-      products.map((p: { id: any; title: any; description: any; price: any; imagesJson: any; categoryId: any; category: { name: any; }; }) => ({
+      products.map((p: { id: any; title: any; description: any; price: any; imagesJson: any; categoryId: any; category: { name: any; }; stock: any;}) => ({
         id: p.id,
         title: p.title,
         description: p.description,
         price: Number(p.price),          // send number to the UI
         imagesJson: p.imagesJson ?? [],  // fallback to []
         categoryId: p.categoryId,
+        stock: p.stock,
         categoryName: p.category?.name ?? null,
       }))
     );
@@ -59,7 +62,7 @@ router.get('/:id', async (req, res, next) => {
       where: { id: req.params.id },
       select: {
         id: true, title: true, description: true, price: true,
-        imagesJson: true, categoryId: true,
+        imagesJson: true, categoryId: true, stock: true,
         category: { select: { name: true } },
       },
     });
@@ -71,6 +74,7 @@ router.get('/:id', async (req, res, next) => {
       price: Number(p.price),
       imagesJson: p.imagesJson ?? [],
       categoryId: p.categoryId,
+      stock: p.stock,
       categoryName: p.category?.name ?? null,
     });
   } catch (e) { next(e); }

@@ -3,7 +3,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
-import { authMiddleware } from '../lib/authMiddleware.js';
+import { authMiddleware } from '../middleware/auth.js';
 import { requireRole } from '../lib/requireRole.js';
 
 const router = Router();
@@ -47,7 +47,7 @@ type ProductRow = {
   price: Prisma.Decimal; // exact DB type
 };
 
-type Role = 'ADMIN' | 'SUPPLIER' | 'SHOPPER';
+type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SUPER_USER' | 'SHOPPER';
 type AuthedRequest = Request & { user: { id: string; role: Role; email?: string } };
 
 

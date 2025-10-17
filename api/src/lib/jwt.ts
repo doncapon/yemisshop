@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js'; // must expose env.jwtSecret
 
 const SECRET = env.jwtSecret; // e.g. process.env.JWT_SECRET
-export type Role = 'ADMIN' | 'SUPPLIER' | 'SHOPPER';
+export type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SUPER_USER' | 'SHOPPER';
 
 export function signJwt(
   user: { id: string; role: Role; email?: string },
@@ -13,16 +13,19 @@ export function signJwt(
   return jwt.sign({ sub: user.id, role: user.role, email: user.email }, env.jwtSecret, { expiresIn });
 }
 
+const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
 
-export function verifyJwt(token: string): { id: string; role: Role; email: string} {
-  const decoded = jwt.verify(token, SECRET);
-  if (typeof decoded !== 'object' || !decoded) throw new Error('bad jwt');
+type BaseClaims = { id: string; email: string; role: string };
+export type AccessClaims = BaseClaims & { scope: 'access' };
+export type VerifyClaims = BaseClaims & { scope: 'verify' };
 
-  // accept both legacy `id` and preferred `sub`
-  const id = (decoded as any).sub ?? (decoded as any).id;
-  const email = (decoded as any).email  as string | "";
-  const role = (decoded as any).role as Role | undefined;
+export function signAccessJwt(c: BaseClaims, ttl = '7d') {
+  return jwt.sign({ ...c, scope: 'access' } as AccessClaims, JWT_SECRET, { expiresIn: ttl });
+}
+export function signVerifyJwt(c: BaseClaims, ttl = '30m') {
+  return jwt.sign({ ...c, scope: 'verify' } as VerifyClaims, JWT_SECRET, { expiresIn: ttl });
+}
 
-  if (typeof id !== 'string' || !role) throw new Error('claims missing');
-  return { id, role, email };
+export function verifyJwt<T = any>(token: string): T {
+  return jwt.verify(token, JWT_SECRET) as T;
 }
