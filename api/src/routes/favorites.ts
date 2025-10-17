@@ -1,6 +1,6 @@
 // api/src/routes/favorites.ts
 import { prisma } from '../lib/prisma.js'
-import { authMiddleware, AuthedRequest } from '../lib/authMiddleware.js';
+import { authMiddleware, AuthedRequest } from '../middleware/auth.js';
 import { Router } from 'express';
 
 const router = Router();

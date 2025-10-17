@@ -44,9 +44,10 @@ export default function Payment() {
       try {
         const { data } = await api.post<InitResp>(
           '/api/payments/init',
-          { orderId, channel: 'card' }, // or 'bank_transfer'
+          { orderId, channel: 'bank_transfer' }, // or 'bank_transfer' / card
           { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
         );
+        console.log(data.authorization_url)
         setInit(data);
       } catch (e: any) {
         setErr(e?.response?.data?.error || 'Failed to init payment');
@@ -75,7 +76,7 @@ export default function Payment() {
         { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
       );
       openModal({ title: 'Payment', message: 'Payment verified. Thank you!' });
-      nav('/orders');
+      nav('/payment-callback');
     } catch (e: any) {
       setErr(e?.response?.data?.error || 'Verification failed');
     } finally {

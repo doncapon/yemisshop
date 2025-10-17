@@ -1,7 +1,7 @@
 // src/routes/authMe.ts
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { prisma } from '../lib/prisma.js';
-import { authMiddleware } from '../lib/authMiddleware.js';
+import { authMiddleware } from '../middleware/auth.js';
 
 const router = Router();
 

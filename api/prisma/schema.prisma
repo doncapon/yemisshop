@@ -28,27 +28,28 @@ model Address {
   country     String?
 
   // Back-relations (MUST use the same relation names)
-  userPrimary      User?     @relation("UserPrimaryAddress")
-  userShipping     User?     @relation("UserShippingAddress")
+  userPrimary  User? @relation("UserPrimaryAddress")
+  userShipping User? @relation("UserShippingAddress")
 
   // Back-relation for orders’ shipping address
-  ordersAsShipping Order[]   @relation("OrderShippingAddress")
+  ordersAsShipping Order[] @relation("OrderShippingAddress")
 }
 
 /**
  * ---------------- User ----------------
- * Cleaned: removed duplicate verification fields and boolean flags.
  */
-model User {
-  id         String  @id @default(cuid())
-  email      String  @unique
-  password   String
-  role       String // "ADMIN" | "SUPPLIER" | "SHOPPER"
-  firstName  String
-  middleName String?
-  lastName   String
-  phone      String?
+// prisma/schema.prisma
 
+model User {
+  id          String    @id @default(cuid())
+  email       String    @unique
+  password    String
+  role        String // "ADMIN" | "SUPPLIER" | "SHOPPER"
+  firstName   String
+  middleName  String?
+  lastName    String
+  phone       String?
+  otps        Otp[]
   dateOfBirth DateTime?
 
   addressId         String?  @unique
@@ -57,36 +58,39 @@ model User {
   shippingAddress   Address? @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
 
   // Verification (single source of truth)
-  status                    String    @default("PENDING") // PENDING | PARTIAL | VERIFIED
-  emailVerifiedAt           DateTime?
-  phoneVerifiedAt           DateTime?
-  phoneOtpHash              String?
-  phoneOtpExpiresAt         DateTime?
-  phoneOtpLastSentAt        DateTime?
-  phoneOtpSendCountDay      Int       @default(0)
+  status               String    @default("PENDING")
+  emailVerifiedAt      DateTime?
+  phoneVerifiedAt      DateTime?
+  
+  phoneOtpHash         String?
+  phoneOtpExpiresAt    DateTime?
+  phoneOtpLastSentAt   DateTime?
+  phoneOtpSendCountDay Int       @default(0)
 
   emailVerifyToken          String?
   emailVerifyTokenExpiresAt DateTime?
   emailVerifyLastSentAt     DateTime?
   emailVerifySendCountDay   Int       @default(0)
 
-  resetPasswordToken        String?
-  resetPasswordExpiresAt    DateTime?
+  resetPasswordToken     String?
+  resetPasswordExpiresAt DateTime?
 
   // Relations
-  supplier  Supplier?
-  orders    Order[]
-  Favorite  Favorite[]
-  Wishlist  Wishlist[]
+  supplier Supplier?
+  orders   Order[]
+  Favorite Favorite[]
+  Wishlist Wishlist[]
 
-  createdAt DateTime @default(now())
+  createdAt        DateTime           @default(now())
+  joinedAt         DateTime           @default(now()) // <-- NEW
+  EmailVerifyToken EmailVerifyToken[]
 
   @@index([emailVerifiedAt])
   @@index([phoneVerifiedAt])
 }
 
 /**
- * ---------------- Supplier / Category / Product ----------------
+ * ---------------- Supplier / Category / Product (unchanged aside from context) ----------------
  */
 model Supplier {
   id            String       @id @default(cuid())
@@ -101,16 +105,14 @@ model Supplier {
   apiKey       String?
   payoutPctInt Int?
 
-  userId String?  @unique
-  user   User?    @relation(fields: [userId], references: [id])
+  userId String? @unique
+  user   User?   @relation(fields: [userId], references: [id])
 
   products       Product[]
   purchaseOrders PurchaseOrder[]
-  orderItems     OrderItem[]   @relation("OrderItemSupplierRel")
+  orderItems     OrderItem[]     @relation("OrderItemSupplierRel")
 
   createdAt DateTime @default(now())
-
-  @@index([status, createdAt])
 }
 
 model Category {
@@ -126,7 +128,7 @@ model Product {
   description String
   price       Decimal  @db.Decimal(10, 2)
   sku         String
-  stock       Int
+  stock       Boolean  @default(true)
   vatFlag     Boolean  @default(true)
   status      String   @default("PUBLISHED")
   imagesJson  String[]
@@ -145,15 +147,8 @@ model Product {
   createdAt DateTime   @default(now())
   Favorite  Favorite[]
   Wishlist  Wishlist[]
-
-  @@index([supplierId])
-  @@index([categoryId])
-  @@index([status, createdAt])
 }
 
-/**
- * ---------------- Order / Payment ----------------
- */
 model Order {
   id String @id @default(cuid())
 
@@ -174,30 +169,37 @@ model Order {
   items          OrderItem[]
   purchaseOrders PurchaseOrder[]
   payments       Payment[]
+}
 
-  @@index([userId, createdAt])
-  @@index([status, createdAt])
+enum PaymentStatus {
+  PENDING // initialized, awaiting confirmation
+  REQUIRES_ACTION // 3-DS/OTP or extra step needed
+  PAID
+  FAILED
+  CANCELED
+  REFUNDED
 }
 
 model Payment {
-  id      String @id @default(cuid())
-  order   Order  @relation(fields: [orderId], references: [id])
-  orderId String
+  id              String        @id @default(cuid())
+  orderId         String
+  reference       String        @unique
+  amount          Decimal
+  status          PaymentStatus
+  provider        String?
+  channel         String?
+  attemptNo       Int?
+  initPayload     Json?
+  providerPayload Json?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
-  provider    String  @default("PAYSTACK")
-  reference   String  @unique // unique ref per attempt
-  amount      Decimal @db.Decimal(10, 2)
-  currency    String  @default("NGN")
-  status      String // PENDING | PAID | FAILED | CANCELED
-  channel     String? // card | bank_transfer | etc.
-  providerRef String? // Paystack’s transaction id/reference
+  // NEW:
+  paidAt DateTime? // when it actually got marked PAID
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  order Order @relation(fields: [orderId], references: [id])
 
-  @@index([orderId])
-  @@index([provider, status, createdAt])
-  @@index([status, createdAt])
+  @@index([status, paidAt]) // helpful for “today” revenue queries
 }
 
 /**
@@ -219,10 +221,6 @@ model OrderItem {
   unitPrice Decimal @db.Decimal(10, 2)
 
   purchaseOrderItems PurchaseOrderItem[]
-
-  @@index([orderId])
-  @@index([productId])
-  @@index([supplierId])
 }
 
 model PurchaseOrder {
@@ -243,9 +241,6 @@ model PurchaseOrder {
   createdAt      DateTime @default(now())
 
   items PurchaseOrderItem[]
-
-  @@index([supplierId, createdAt])
-  @@index([orderId, createdAt])
 }
 
 model PurchaseOrderItem {
@@ -260,14 +255,8 @@ model PurchaseOrderItem {
   externalRef    String?
   externalStatus String?
   receiptUrl     String?
-
-  @@index([purchaseOrderId])
-  @@index([orderItemId])
 }
 
-/**
- * ---------------- Favorite / Wishlist ----------------
- */
 model Favorite {
   id String @id @default(cuid())
 
@@ -297,4 +286,29 @@ model Wishlist {
   // Optional: add indexes to speed up lookups
   @@index([userId])
   @@index([productId])
+}
+
+// prisma/schema.prisma
+model Otp {
+  id         String    @id @default(cuid())
+  userId     String
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model EmailVerifyToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

@@ -80,7 +80,21 @@ export default function Orders() {
 
   const location = useLocation();
   const params = new URLSearchParams(location.search);
-  const openId = params.get('open');
+  const openParam = params.get('open'); // may be <id> or "latest"
+
+  // read optional navigation state from payment page
+  const navState = (location.state || {}) as any;
+  const stateOpen: string | null =
+    navState?.open ?? navState?.orderId ?? (navState?.openLatest ? 'latest' : null);
+
+  // also allow sessionStorage fallback
+  const ssOpenRaw = (() => {
+    try {
+      return sessionStorage.getItem('orders.open');
+    } catch {
+      return null;
+    }
+  })();
 
   // redirect to login if needed
   useEffect(() => {
@@ -114,7 +128,7 @@ export default function Orders() {
     total: 'asc',
   });
 
-  // load orders (unchanged)
+  // load orders
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -226,9 +240,7 @@ export default function Orders() {
 
   // sorting UI helpers
   function toggleSort(col: SortKey) {
-    // collapse any open detail row when sorting
     setExpandedId(null);
-
     setSortKey(col);
     setSortDirs((prev) => {
       const next: Record<SortKey, SortDir> = {
@@ -237,7 +249,6 @@ export default function Orders() {
         items: 'asc',
         total: 'asc',
       };
-      // clicked column toggles; others reset to asc
       next[col] = prev[col] === 'asc' ? 'desc' : 'asc';
       return next;
     });
@@ -248,51 +259,95 @@ export default function Orders() {
     return dir === 'asc' ? '▲' : '▼';
   }
 
-  // expansion toggle (single open)
   function toggleExpand(id: string) {
     setExpandedId((curr) => (curr === id ? null : id));
   }
 
-  // ---- NEW: auto-open an order when coming from ?open=<id> ----
+  // ---- Auto-open logic (supports ?open=<id>, ?open=latest, nav state, sessionStorage) ----
   const [autoOpenDone, setAutoOpenDone] = useState(false);
   useEffect(() => {
-    if (!openId || autoOpenDone || !orders.length) return;
+    if (autoOpenDone || !orders.length) return;
 
-    // If current filters would hide it, relax filters; effect will re-run.
-    const presentInFiltered = filtered.some((o) => o.id === openId);
-    if (!presentInFiltered && (q || statusFilter || fromDate || toDate)) {
-      setQ('');
-      setStatusFilter('');
-      setFromDate('');
-      setToDate('');
-      return; // wait for next render
+    // Determine requested target to open
+    // Priority: URL param > nav state > sessionStorage
+    let requested: string | null = openParam || stateOpen || ssOpenRaw || null;
+
+    // If nothing explicitly requested but we're coming "from payment",
+    // your payment page can push state { open: 'latest' } or set sessionStorage.
+    if (!requested && navState?.fromPayment) {
+      requested = 'latest';
     }
 
-    // Find its position in the sorted list and jump to that page
-    const idx = sorted.findIndex((o) => o.id === openId);
+    if (!requested) return;
+
+    // If filters would hide it, relax filters first.
+    // We’ll run again once filtered list updates.
+    const relaxFilters = () => {
+      if (q || statusFilter || fromDate || toDate) {
+        setQ('');
+        setStatusFilter('');
+        setFromDate('');
+        setToDate('');
+        return true;
+      }
+      return false;
+    };
+
+    // Resolve "latest" → most recent by createdAt from *all* orders
+    const resolveLatestId = () => {
+      if (!orders.length) return null;
+      let latest = orders[0];
+      for (const o of orders) {
+        if (+new Date(o.createdAt) > +new Date(latest.createdAt)) latest = o;
+      }
+      return latest.id;
+    };
+
+    // If "latest" requested, map it to an actual ID
+    let targetId = requested === 'latest' ? resolveLatestId() : requested;
+
+    if (!targetId) return;
+
+    // If the currently filtered list doesn't include target -> relax filters first.
+    const inFiltered = filtered.some((o) => o.id === targetId);
+    if (!inFiltered) {
+      if (relaxFilters()) return; // wait for next pass after filters clear
+    }
+
+    // Find index in current sorted array to set page, expand, scroll
+    const idx = sorted.findIndex((o) => o.id === targetId);
     if (idx >= 0) {
       const newPage = Math.floor(idx / pageSize) + 1;
       setPage(newPage);
-      setExpandedId(openId);
+      setExpandedId(targetId);
       setAutoOpenDone(true);
+
+      // clean up session flag if any
+      try {
+        if (ssOpenRaw) sessionStorage.removeItem('orders.open');
+      } catch {}
 
       // Scroll into view after paint
       setTimeout(() => {
-        const el = document.getElementById(`order-${openId}`);
+        const el = document.getElementById(`order-${targetId}`);
         el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 0);
     }
   }, [
-    openId,
     autoOpenDone,
     orders.length,
+    orders,
     filtered,
     sorted,
     pageSize,
+    openParam,
+    stateOpen,
+    ssOpenRaw,
     q,
     statusFilter,
     fromDate,
     toDate,
+    navState?.fromPayment,
   ]);
 
   // UI helpers
@@ -334,7 +389,6 @@ export default function Orders() {
     );
   };
 
-  // Clear all filters helper (for the toolbar)
   const clearAll = () => {
     setQ('');
     setStatusFilter('');
@@ -360,19 +414,12 @@ export default function Orders() {
         </div>
       </div>
 
-      {/* ---------------- FANCY FILTER TOOLBAR (less blue, more life) ---------------- */}
-      <div className="
-          rounded-2xl border shadow-sm
-          bg-gradient-to-r from-white via-white to-amber-50
-          p-3 md:p-4
-        ">
+      {/* Filters */}
+      <div className="rounded-2xl border shadow-sm bg-gradient-to-r from-white via-white to-amber-50 p-3 md:p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          {/* Left cluster – search + status */}
           <div className="flex flex-1 flex-col md:flex-row md:items-center gap-3">
-            {/* Search */}
             <div className="relative flex-1 min-w-[220px]">
               <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                {/* magnifier */}
                 <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
                   <path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16a6.471 6.471 0 0 0 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
                 </svg>
@@ -381,17 +428,12 @@ export default function Orders() {
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="Search orders (id, status, product)…"
-                className="
-                  w-full rounded-xl border px-9 py-2.5 bg-white
-                  focus:outline-none focus:ring-4 focus:ring-amber-100 focus:border-amber-400
-                "
+                className="w-full rounded-xl border px-9 py-2.5 bg-white focus:outline-none focus:ring-4 focus:ring-amber-100 focus:border-amber-400"
               />
             </div>
 
-            {/* Status */}
             <div className="relative w-full md:w-[240px]">
               <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                {/* status icon */}
                 <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
                   <path fill="currentColor" d="M12 2L2 7l10 5l10-5zm0 7.09L5.26 7L12 3.91L18.74 7zm0 3.41L2 8l10 5l10-5l-10 5zm0 2.5L2 10.5l10 5l10-5z"/>
                 </svg>
@@ -399,20 +441,14 @@ export default function Orders() {
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="
-                  w-full appearance-none rounded-xl border px-9 py-2.5 bg-white
-                  focus:outline-none focus:ring-4 focus:ring-emerald-100 focus:border-emerald-400
-                "
+                className="w-full appearance-none rounded-xl border px-9 py-2.5 bg-white focus:outline-none focus:ring-4 focus:ring-emerald-100 focus:border-emerald-400"
               >
                 <option value="">All statuses</option>
                 {uniqueStatuses.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
+                  <option key={s} value={s}>{s}</option>
                 ))}
               </select>
               <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
-                {/* chevron */}
                 <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-50">
                   <path fill="currentColor" d="M7 10l5 5l5-5z"/>
                 </svg>
@@ -420,52 +456,39 @@ export default function Orders() {
             </div>
           </div>
 
-          {/* Right cluster – date range + page size + clear */}
           <div className="flex flex-col md:flex-row md:items-center gap-3">
-            {/* From */}
             <div className="relative">
               <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                {/* calendar */}
                 <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
-                  <path fill="currentColor" d="M7 10h5v5H7z"/><path fill="currentColor" d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2m0 14H5V9h14z"/>
+                  <path fill="currentColor" d="M7 10h5v5H7z"/><path fill="currentColor" d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0 2 .9 2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2m0 14H5V9h14z"/>
                 </svg>
               </span>
               <input
                 type="date"
                 value={fromDate}
                 onChange={(e) => setFromDate(e.target.value)}
-                className="
-                  rounded-xl border px-9 py-2.5 bg-white
-                  focus:outline-none focus:ring-4 focus:ring-sky-100 focus:border-sky-400
-                "
+                className="rounded-xl border px-9 py-2.5 bg-white focus:outline-none focus:ring-4 focus:ring-sky-100 focus:border-sky-400"
                 aria-label="From date"
               />
             </div>
 
-            {/* To */}
             <div className="relative">
               <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                {/* calendar */}
                 <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
-                  <path fill="currentColor" d="M7 10h5v5H7z"/><path fill="currentColor" d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2m0 14H5V9h14z"/>
+                  <path fill="currentColor" d="M7 10h5v5H7z"/><path fill="currentColor" d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0 2 .9 2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2m0 14H5V9h14z"/>
                 </svg>
               </span>
               <input
                 type="date"
                 value={toDate}
                 onChange={(e) => setToDate(e.target.value)}
-                className="
-                  rounded-xl border px-9 py-2.5 bg-white
-                  focus:outline-none focus:ring-4 focus:ring-sky-100 focus:border-sky-400
-                "
+                className="rounded-xl border px-9 py-2.5 bg-white focus:outline-none focus:ring-4 focus:ring-sky-100 focus:border-sky-400"
                 aria-label="To date"
               />
             </div>
 
-            {/* Page size */}
             <div className="relative">
               <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                {/* rows icon */}
                 <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
                   <path fill="currentColor" d="M3 5h18v2H3zm0 6h18v2H3zm0 6h18v2H3z"/>
                 </svg>
@@ -473,10 +496,7 @@ export default function Orders() {
               <select
                 value={pageSize}
                 onChange={(e) => setPageSize(Number(e.target.value) as any)}
-                className="
-                  appearance-none rounded-xl border px-9 py-2.5 bg-white
-                  focus:outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400
-                "
+                className="appearance-none rounded-xl border px-9 py-2.5 bg-white focus:outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
               >
                 <option value={10}>10 / page</option>
                 <option value={20}>20 / page</option>
@@ -489,7 +509,6 @@ export default function Orders() {
               </span>
             </div>
 
-            {/* Clear filters */}
             {(q || statusFilter || fromDate || toDate) ? (
               <button
                 className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 bg-white hover:bg-black/5 transition"
@@ -505,63 +524,26 @@ export default function Orders() {
           </div>
         </div>
       </div>
-      {/* ---------------- END TOOLBAR ---------------- */}
 
       {/* Table */}
       <div className="overflow-x-auto border rounded-lg bg-white">
         <table className="min-w-full text-sm">
           <thead className="bg-primary-600/90 text-white">
             <tr>
-              {/* DATE (sortable) */}
-              <th
-                className="text-left px-3 py-3 cursor-pointer select-none"
-                onClick={() => toggleSort('createdAt')}
-                title="Sort by date"
-              >
-                <span className="inline-flex items-center gap-2">
-                  Date {sortIcon('createdAt')}
-                </span>
+              <th className="text-left px-3 py-3 cursor-pointer select-none" onClick={() => toggleSort('createdAt')} title="Sort by date">
+                <span className="inline-flex items-center gap-2">Date {sortIcon('createdAt')}</span>
               </th>
-
-              {/* ORDER ID (sortable) */}
-              <th
-                className="text-left px-3 py-3 cursor-pointer select-none"
-                onClick={() => toggleSort('id')}
-                title="Sort by ID"
-              >
-                <span className="inline-flex items-center gap-2">
-                  Order {sortIcon('id')}
-                </span>
+              <th className="text-left px-3 py-3 cursor-pointer select-none" onClick={() => toggleSort('id')} title="Sort by ID">
+                <span className="inline-flex items-center gap-2">Order {sortIcon('id')}</span>
               </th>
-
-              {/* STATUS (not sortable) */}
               <th className="text-left px-3 py-3">Status</th>
-
-              {/* PAYMENT (not sortable) */}
               <th className="text-left px-3 py-3">Payment</th>
-
-              {/* ITEMS (sortable) */}
-              <th
-                className="text-left px-3 py-3 cursor-pointer select-none"
-                onClick={() => toggleSort('items')}
-                title="Sort by item count"
-              >
-                <span className="inline-flex items-center gap-2">
-                  Items {sortIcon('items')}
-                </span>
+              <th className="text-left px-3 py-3 cursor-pointer select-none" onClick={() => toggleSort('items')} title="Sort by item count">
+                <span className="inline-flex items-center gap-2">Items {sortIcon('items')}</span>
               </th>
-
-              {/* TOTAL (sortable) */}
-              <th
-                className="text-left px-3 py-3 cursor-pointer select-none"
-                onClick={() => toggleSort('total')}
-                title="Sort by total"
-              >
-                <span className="inline-flex items-center gap-2">
-                  Total {sortIcon('total')}
-                </span>
+              <th className="text-left px-3 py-3 cursor-pointer select-none" onClick={() => toggleSort('total')} title="Sort by total">
+                <span className="inline-flex items-center gap-2">Total {sortIcon('total')}</span>
               </th>
-
               <th className="text-right px-3 py-3">Actions</th>
             </tr>
           </thead>
@@ -569,30 +551,23 @@ export default function Orders() {
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-sm opacity-70">
-                  Loading…
-                </td>
+                <td colSpan={7} className="px-3 py-6 text-center text-sm opacity-70">Loading…</td>
               </tr>
             )}
             {!loading && err && (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-red-600">
-                  {err}
-                </td>
+                <td colSpan={7} className="px-3 py-6 text-center text-red-600">{err}</td>
               </tr>
             )}
             {!loading && !err && pageItems.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-sm opacity-70">
-                  No orders found.
-                </td>
+                <td colSpan={7} className="px-3 py-6 text-center text-sm opacity-70">No orders found.</td>
               </tr>
             )}
 
             {pageItems.map((o) => {
               const isOpen = expandedId === o.id;
-              const itemCount =
-                o.items?.reduce((s, it) => s + (it.qty || 0), 0) ?? 0;
+              const itemCount = o.items?.reduce((s, it) => s + (it.qty || 0), 0) ?? 0;
               const total = ngn.format(toNumber(o.total));
               const city = o.shippingAddress?.city || '';
               const state = o.shippingAddress?.state || '';
@@ -615,21 +590,13 @@ export default function Orders() {
                           : '—'}
                       </div>
                     </td>
-                    <td className="px-3 py-3 align-top">
-                      <StatusBadge status={o.status} />
-                    </td>
-                    <td className="px-3 py-3 align-top">
-                      <PaymentBadge payments={o.payments} />
-                    </td>
+                    <td className="px-3 py-3 align-top"><StatusBadge status={o.status} /></td>
+                    <td className="px-3 py-3 align-top"><PaymentBadge payments={o.payments} /></td>
                     <td className="px-3 py-3 align-top">
                       <div className="font-medium">{itemCount}</div>
                       {!!o.items?.length && (
                         <div className="text-xs opacity-70 line-clamp-2">
-                          {o.items
-                            .slice(0, 3)
-                            .map((it) => it.product?.title)
-                            .filter(Boolean)
-                            .join(', ')}
+                          {o.items.slice(0, 3).map((it) => it.product?.title).filter(Boolean).join(', ')}
                           {o.items.length > 3 ? '…' : ''}
                         </div>
                       )}
@@ -662,12 +629,10 @@ export default function Orders() {
                     </td>
                   </tr>
 
-                  {/* Expanded area */}
                   {isOpen && (
                     <tr className="bg-black/[0.03]">
                       <td colSpan={7} className="px-3 py-3">
                         <div className="rounded-lg border bg-white">
-                          {/* Header row with Close button */}
                           <div className="p-4 border-b flex items-start justify-between gap-4">
                             <div className="grid md:grid-cols-3 gap-4 w-full">
                               <div>
@@ -740,7 +705,6 @@ export default function Orders() {
                                   <span>{ngn.format(toNumber(o.total))}</span>
                                 </div>
 
-                                {/* Pay button if NOT fully paid */}
                                 {!isOrderFullyPaid(o) && (
                                   <div className="pt-3">
                                     <button
@@ -765,7 +729,6 @@ export default function Orders() {
                               if (payments.length === 0) {
                                 return <div className="text-sm opacity-70">No payments yet.</div>;
                               }
-                              // pick exactly ONE to show: prefer any PAID, else show latest
                               const paid = payments.find((p) => p.status === 'PAID');
                               const display = paid ?? payments[payments.length - 1];
 

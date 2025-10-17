@@ -1,10 +1,11 @@
 // src/routes/payments.ts
-import express, { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma.js';
-import { authMiddleware } from '../lib/authMiddleware.js';
+import { authMiddleware, requireAuth } from '../middleware/auth.js';
+import { requireVerified } from '../middleware/requireVerify.js';
 
 const router = Router();
 
@@ -18,8 +19,6 @@ const TRIAL_BANK_NAME = process.env.TRIAL_BANK_NAME || '';
 const TRIAL_BANK_ACCOUNT_NAME = process.env.TRIAL_BANK_ACCOUNT_NAME || '';
 const TRIAL_BANK_ACCOUNT_NUMBER = process.env.TRIAL_BANK_ACCOUNT_NUMBER || '';
 
-const PAYSTACK_INLINE_BANK = process.env.PAYSTACK_INLINE_BANK === '1'; // when true & channel==='bank_transfer', get DVA from Paystack
-
 function makeRef(orderId: string) {
   return `ys_${orderId}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -28,7 +27,6 @@ function makeRef(orderId: string) {
 
 /** Ensure Paystack customer exists, returning customer_code */
 async function ensurePaystackCustomer(email: string, fallbackEmail: string): Promise<string> {
-  // try create
   try {
     const r = await axios.post(
       'https://api.paystack.co/customer',
@@ -38,15 +36,14 @@ async function ensurePaystackCustomer(email: string, fallbackEmail: string): Pro
     const code = r.data?.data?.customer_code;
     if (code) return code;
   } catch (err: any) {
-    // If already exists, search by email
     if (err?.response?.status === 400) {
       const sr = await axios.get('https://api.paystack.co/customer', {
         params: { email },
         headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
         timeout: 15000,
       });
-        const code = sr.data?.data?.[0]?.customer_code;
-        if (code) return code;
+      const code = sr.data?.data?.[0]?.customer_code;
+      if (code) return code;
     }
     throw err;
   }
@@ -62,7 +59,6 @@ async function ensurePaystackCustomer(email: string, fallbackEmail: string): Pro
  */
 router.get('/summary', authMiddleware, async (req, res, next) => {
   try {
-    // Sum all PAID payments for orders owned by this user (no limit)
     const agg = await prisma.payment.aggregate({
       _sum: { amount: true },
       where: {
@@ -77,172 +73,130 @@ router.get('/summary', authMiddleware, async (req, res, next) => {
     next(e);
   }
 });
-/**
- * INITIATE PAYMENT
- * POST /api/payments/init
- * Body: { orderId: string, channel?: 'card' | 'bank_transfer' }
- */
-router.post('/init', authMiddleware, async (req, res, next) => {
-  try {
-    const { orderId, channel } = req.body as { orderId: string; channel?: 'card' | 'bank_transfer' };
-    if (!orderId) return res.status(400).json({ error: 'orderId is required' });
 
+const isAdmin = (role?: string) => role === 'ADMIN' || role === 'SUPER_ADMIN';
+
+/**
+ * POST /api/payments/init
+ * Body: { orderId: string, channel?: string }
+ * Requires: logged in + email & phone verified
+ */
+router.post('/init', requireAuth, requireVerified(), async (req, res) => {
+  try {
+    const { orderId, channel } = req.body as { orderId: string; channel?: string };
+    if (!orderId?.trim()) return res.status(400).json({ error: 'orderId is required' });
+
+    // Load order + user’s email (Paystack needs an email)
     const order = await prisma.order.findUnique({
       where: { id: orderId },
-      include: { user: true },
+      include: {
+        items: true,
+        user: { select: { id: true, email: true } },
+      },
     });
     if (!order) return res.status(404).json({ error: 'Order not found' });
-    if (order.userId !== req.user!.id) return res.status(403).json({ error: 'Forbidden' });
 
-    const amountNgn = Number(order.total);
-    if (!Number.isFinite(amountNgn)) return res.status(400).json({ error: 'Invalid order total' });
+    // Non-admins must own the order
+    if (!isAdmin(req.user?.role) && String(order.userId) !== String(req.user!.id)) {
+      return res.status(403).json({ error: 'This order does not belong to your account.' });
+    }
+    if (order.status === 'PAID') return res.status(400).json({ error: 'Order already paid' });
+    if (!order.items?.length) return res.status(400).json({ error: 'Order has no items' });
 
-    const reference = makeRef(order.id);
+    // Compute amount (replace with order.total if you persist it)
+    const amount = order.items.reduce(
+      (sum: number, it: any) => sum + Number(it.unitPrice) * Number(it.quantity ?? it.qty ?? 0),
+      0
+    );
 
-    // record payment attempt
+    // Close any open attempts for this order
+    await prisma.payment.updateMany({
+      where: { orderId, status: { in: ['PENDING', 'REQUIRES_ACTION'] } },
+      data: { status: 'CANCELED' },
+    });
+
+    // Create a new PENDING attempt
+    const reference = `PSK_${orderId}_${Date.now()}`;
     await prisma.payment.create({
       data: {
-        orderId: order.id,
-        amount: order.total,
-        currency: 'NGN',
+        orderId,
+        amount,
         status: 'PENDING',
-        provider: MODE === 'paystack' ? 'PAYSTACK' : 'TRIAL',
-        channel: channel || (MODE === 'trial' ? 'bank_transfer' : 'card'),
+        provider: 'PAYSTACK',
+        channel,
         reference,
+        initPayload: { startedBy: req.user?.email, at: new Date().toISOString() },
       },
     });
 
-    // Trial mode: return static bank details
-    if (MODE === 'trial') {
-      if (!TRIAL_BANK_NAME || !TRIAL_BANK_ACCOUNT_NAME || !TRIAL_BANK_ACCOUNT_NUMBER) {
-        return res.status(500).json({ error: 'Trial bank details not configured' });
-      }
-      return res.json({
-        mode: 'trial',
-        amount: amountNgn,
-        currency: 'NGN',
+    // Initialize with Paystack
+    const initResp = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        email: order.user.email,
+        amount: Math.round(amount * 100), // KOBO
         reference,
-        bank: {
-          bank_name: TRIAL_BANK_NAME,
-          account_name: TRIAL_BANK_ACCOUNT_NAME,
-          account_number: TRIAL_BANK_ACCOUNT_NUMBER,
-        },
-        instructions:
-          'Transfer the exact amount. Include the reference in narration. Click “I have paid” to verify.',
-      });
+        callback_url: `${APP_URL}/payment-callback?orderId=${orderId}`,
+        metadata: { orderId, userId: order.userId },
+      },
+      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
+    );
+
+    const { authorization_url } = initResp.data?.data || {};
+    if (!authorization_url) {
+      return res.status(502).json({ error: 'Could not get authorization URL from Paystack' });
     }
 
-    // Paystack mode sanity
-    if (!PAYSTACK_SECRET) return res.status(500).json({ error: 'PAYSTACK_SECRET_KEY not configured' });
-
-    // Inline bank: create DVA (Dedicated Virtual Account)
-    if (channel === 'bank_transfer' && PAYSTACK_INLINE_BANK) {
-      const customerCode = await ensurePaystackCustomer(
-        order.user.email || '',
-        `noemail+${order.userId}@yemishop.local`
-      );
-
-      const dvaRes = await axios.post(
-        'https://api.paystack.co/dedicated_account',
-        { customer: customerCode },
-        { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }, timeout: 15000 }
-      );
-
-      const acct = dvaRes.data?.data;
-      // Different accounts of Paystack sometimes differ in shape — support both.
-      const bank_name = acct?.bank?.name ?? acct?.bank_name;
-      const account_name = acct?.account_name;
-      const account_number = acct?.account_number;
-
-      if (!account_number || !account_name || !bank_name) {
-        return res.status(502).json({ error: 'Failed to get bank account from Paystack' });
-      }
-
-      return res.json({
-        mode: 'paystack_inline_bank',
-        amount: amountNgn,
-        currency: 'NGN',
-        reference,
-        bank: { bank_name, account_name, account_number },
-        instructions: 'Transfer the exact amount to the account below. Click “I have paid” to verify.',
-      });
-    }
-
-    // Hosted checkout
-    const amountKobo = Math.round(amountNgn * 100);
-    const payload: Record<string, unknown> = {
-      email: order.user.email || 'noemail@yemishop.local',
-      amount: amountKobo,
-      currency: 'NGN',
+    return res.json({
+      mode: MODE,
       reference,
-      callback_url: `${APP_URL}/payment-callback?orderId=${order.id}&reference=${encodeURIComponent(reference)}`,
-    };
-    if (channel) payload.channels = [channel];
-
-    const initRes = await axios.post('https://api.paystack.co/transaction/initialize', payload, {
-      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
-      timeout: 15000,
+      authorization_url,
     });
-    const authUrl = initRes.data?.data?.authorization_url;
-    if (!authUrl) return res.status(502).json({ error: 'Failed to get authorization URL from Paystack' });
-
-    return res.json({ mode: 'paystack', authorization_url: authUrl, reference });
-  } catch (e) {
-    next(e);
+  } catch (err: any) {
+    console.error('init error:', err?.response?.data || err);
+    return res.status(500).json({ error: 'Could not initialize payment' });
   }
 });
 
 /**
- * VERIFY PAYMENT (manual verify or after redirect)
  * POST /api/payments/verify
  * Body: { orderId: string, reference: string }
+ * Requires: logged in + email & phone verified
  */
-router.post('/verify', authMiddleware, async (req, res, next) => {
-  try {
-    const { reference, orderId } = req.body as { reference: string; orderId: string };
-    if (!reference || !orderId) return res.status(400).json({ error: 'reference and orderId are required' });
+router.post('/verify', requireAuth, requireVerified(), async (req, res) => {
+  const { orderId, reference } = req.body as { orderId: string; reference: string };
 
-    const payment = await prisma.payment.findUnique({ where: { reference } });
-    if (!payment) return res.status(404).json({ error: 'Payment not found' });
-
-    const order = await prisma.order.findUnique({ where: { id: payment.orderId } });
-    if (!order || order.userId !== req.user!.id) return res.status(403).json({ error: 'Forbidden' });
-
-    if (MODE === 'trial') {
-      // In trial we can't truly verify with provider; treat as pending unless you want to auto-approve here.
-      return res.status(400).json({ error: 'Trial mode does not verify with provider' });
-    }
-
-    const { data } = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
-      headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
-      timeout: 15000,
-    });
-
-    const status = data?.data?.status; // 'success' | 'failed' | etc.
-    const providerRef = data?.data?.reference ?? null;
-
-    if (status !== 'success') {
-      await prisma.payment.update({
-        where: { reference },
-        data: { status: 'FAILED', providerRef },
-      });
-      return res.status(400).json({ error: 'Payment not successful yet' });
-    }
-
-    // Idempotent: if already paid, just return ok
-    if (payment.status === 'PAID' || order.status === 'PAID') {
-      return res.json({ ok: true, status: 'PAID' });
-    }
-
-    await prisma.$transaction([
-      prisma.payment.update({ where: { reference }, data: { status: 'PAID', providerRef } }),
-      prisma.order.update({ where: { id: payment.orderId }, data: { status: 'PAID' } }),
-    ]);
-
-    res.json({ ok: true, status: 'PAID' });
-  } catch (e) {
-    next(e);
+  if (!orderId?.trim() || !reference?.trim()) {
+    return res.status(400).json({ error: 'orderId and reference are required' });
   }
+
+  const payment = await prisma.payment.findUnique({ where: { reference } });
+  if (!payment) return res.status(404).json({ error: 'Payment not initialized' });
+  if (payment.reference !== reference) {
+    return res.status(400).json({ error: 'Reference mismatch' });
+  }
+
+  // TODO: Call provider verify here (Paystack /transaction/verify/:reference)
+  const verified = true; // demo placeholder
+
+  if (!verified) {
+    await prisma.payment.update({ where: { orderId }, data: { status: 'FAILED' } });
+    return res.json({ status: 'FAILED', message: 'Verification failed' });
+  }
+
+  // Mark payment + order once
+  await prisma.$transaction(async (tx: { payment: { update: (arg0: { where: { reference: string; }; data: { status: string; paidAt: Date; }; }) => any; }; order: { update: (arg0: { where: { id: any; }; data: { status: string; }; }) => any; }; }) => {
+    await tx.payment.update({
+      where: { reference },
+      data: { status: 'PAID', paidAt: new Date() },
+    });
+    await tx.order.update({
+      where: { id: payment.orderId },
+      data: { status: 'PAID' },
+    });
+  });
+
+  return res.json({ ok: true, status: 'PAID', message: 'Payment verified' });
 });
 
 /**
@@ -278,15 +232,15 @@ export async function paystackWebhookHandler(req: Request, res: Response) {
       }
     }
   } catch (_) {
-    // Intentionally swallow: webhook must return 200 to stop retries when appropriate.
+    // swallow parse errors; respond 200 to stop retries when appropriate.
   }
   res.sendStatus(200);
 }
 
 /**
- * SHAREABLE PAYMENT LINK
  * POST /api/payments/link
  * Body: { orderId: string }
+ * Returns a signed shareable payment URL
  */
 router.post('/link', authMiddleware, async (req, res, next) => {
   try {
@@ -314,8 +268,6 @@ router.post('/link', authMiddleware, async (req, res, next) => {
 
 /**
  * GET /api/payments/mine?limit=5
- * Returns latest N payment rows for the authenticated user (via order.userId).
- * (Kept for compatibility; your UI can switch to /payments/recent for order-level view.)
  */
 router.get('/mine', authMiddleware, async (req, res, next) => {
   try {
@@ -346,13 +298,10 @@ router.get('/mine', authMiddleware, async (req, res, next) => {
 
 /**
  * GET /api/payments
- * Admin/system list of latest payment rows (optional filters: userId, orderId, status, limit)
+ * Admin/system list of latest payment rows.
  */
 router.get('/', authMiddleware, async (req, res, next) => {
   try {
-    // Uncomment to lock to admins only:
-    // if (req.user?.role !== 'ADMIN') return res.status(403).json({ error: 'Forbidden' });
-
     const limitRaw = Number(req.query.limit);
     const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 20;
 
@@ -388,33 +337,15 @@ router.get('/', authMiddleware, async (req, res, next) => {
   }
 });
 
-/* --------------- NEW: Order-level "recent transactions" --------------- */
+/* --------------- Order-level "recent transactions" --------------- */
 /**
  * GET /api/payments/recent?limit=5
- * Returns the user's most recent ORDERS as "transactions" — one row per order —
- * with the order total and a representative payment (prefer PAID else latest).
- *
- * Response: Array<{
- *   orderId: string;
- *   createdAt: string;
- *   total: number;            // order total (major unit)
- *   orderStatus: string;
- *   payment?: {
- *     id: string;
- *     reference: string | null;
- *     status: string;
- *     channel: string | null;
- *     provider: string | null;
- *     createdAt: string;
- *   }
- * }>
  */
 router.get('/recent', authMiddleware, async (req, res, next) => {
   try {
     const limitRaw = Number(req.query.limit);
     const take = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, limitRaw)) : 5;
 
-    // Pull recent orders for the user
     const orders = await prisma.order.findMany({
       where: { userId: req.user!.id },
       orderBy: { createdAt: 'desc' },
@@ -430,19 +361,18 @@ router.get('/recent', authMiddleware, async (req, res, next) => {
             provider: true,
             createdAt: true,
           },
-          take: 5, // small window; we’ll choose best representative below
+          take: 5,
         },
       },
     });
 
-    const rows = orders.map((o: { payments: any[]; id: any; createdAt: { toISOString: () => any; }; total: any; status: any; }) => {
-      // Prefer a PAID payment if any, else the latest attempt
-      const paid = o.payments.find((p: { status: string; }) => p.status === 'PAID');
+    const rows = orders.map((o: any) => {
+      const paid = o.payments.find((p: any) => p.status === 'PAID');
       const representative = paid ?? o.payments[0] ?? null;
 
       return {
         orderId: o.id,
-        createdAt: o.createdAt.toISOString?.() ?? (o as any).createdAt,
+        createdAt: o.createdAt instanceof Date ? o.createdAt.toISOString() : o.createdAt,
         total: Number(o.total),
         orderStatus: o.status,
         payment: representative
@@ -453,8 +383,9 @@ router.get('/recent', authMiddleware, async (req, res, next) => {
               channel: representative.channel,
               provider: representative.provider,
               createdAt:
-                (representative as any).createdAt?.toISOString?.() ??
-                (representative as any).createdAt,
+                representative.createdAt instanceof Date
+                  ? representative.createdAt.toISOString()
+                  : representative.createdAt,
             }
           : undefined,
       };

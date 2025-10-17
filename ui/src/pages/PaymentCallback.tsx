@@ -1,3 +1,4 @@
+// src/pages/PaymentCallback.tsx
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
@@ -41,15 +42,13 @@ export default function PaymentCallback() {
         { orderId, reference },
         { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
       );
-      // Normalize message
+
       const info = data?.message || '';
 
       if (data?.status === 'PAID') {
         localStorage.removeItem('cart'); // optional
         setPhase('success');
         setMsg(info || 'Payment verified. Redirecting to your orders…');
-        // short delay then redirect
-        window.setTimeout(() => nav('/orders'), 1200);
         return;
       }
 
@@ -59,7 +58,7 @@ export default function PaymentCallback() {
         return;
       }
 
-      // Status is PENDING (or unknown -> treat as pending)
+      // Otherwise treat as pending
       setPhase('pending');
       setMsg(info || 'Waiting for confirmation from the payment processor…');
 
@@ -83,17 +82,15 @@ export default function PaymentCallback() {
   useEffect(() => {
     if (phase !== 'pending') return;
 
-    // guard: stop polling when out of attempts
     if (remaining <= 0) {
       setPhase('error');
       setMsg('We couldn’t confirm the payment in time. Please check your bank app or try again.');
       return;
     }
 
-    // schedule next verify
     timerRef.current = window.setTimeout(async () => {
-      setAttempt(a => a + 1);
-      setRemaining(r => r - 1);
+      setAttempt((a) => a + 1);
+      setRemaining((r) => r - 1);
       await verifyOnce();
     }, POLL_INTERVAL_MS) as unknown as number;
 
@@ -107,7 +104,6 @@ export default function PaymentCallback() {
   }, [phase, remaining, attempt]);
 
   const tryAgainNow = async () => {
-    // reset polling window
     setRemaining(POLL_MAX_ATTEMPTS);
     setAttempt(0);
     setPhase('loading');
@@ -116,70 +112,163 @@ export default function PaymentCallback() {
   };
 
   return (
-    <div className="max-w-md mx-auto p-6 text-center">
-      {/* LOADING */}
-      {phase === 'loading' && (
-        <>
-          <div className="animate-pulse text-sm opacity-70">Please wait…</div>
-          <h1 className="text-xl font-semibold mt-2">Verifying payment</h1>
-          <p className="mt-2 text-sm">{msg}</p>
-        </>
-      )}
-
-      {/* PENDING */}
-      {phase === 'pending' && (
-        <>
-          <h1 className="text-xl font-semibold text-primary-700">Almost there…</h1>
-          <p className="mt-2 text-sm">{msg}</p>
-          <div className="mt-4 text-xs opacity-70">
-            Checking again in a few seconds. Attempts left: {remaining}
+    <div className="max-w-4xl mx-auto px-4 md:px-8 py-8">
+      {/* Hero: matches dashboard header vibe */}
+      <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-sky-700 via-sky-600 to-indigo-700 text-white">
+        <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(255,255,255,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,0,0,0.15),transparent_60%)]" />
+        <div className="relative px-5 md:px-8 py-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
+                Payment Status
+              </h1>
+              <p className="text-white/80 text-sm mt-1">
+                We’re verifying your transaction and will update this page automatically.
+              </p>
+            </div>
+            {reference && (
+              <div className="hidden md:block text-right">
+                <div className="text-xs text-white/80">Reference</div>
+                <div className="text-sm font-semibold">{reference}</div>
+              </div>
+            )}
           </div>
-          <div className="mt-5 flex gap-3 justify-center">
-            <button className="rounded border px-4 py-2" onClick={tryAgainNow}>
-              Try again now
-            </button>
-            <button className="rounded border px-4 py-2" onClick={() => nav('/orders')}>
-              View orders
-            </button>
-          </div>
-          <p className="mt-4 text-xs opacity-60">
-            Tip: If your bank app shows the transfer as successful, it may take a moment for us to receive confirmation.
-          </p>
-        </>
-      )}
+        </div>
+      </div>
 
-      {/* SUCCESS */}
-      {phase === 'success' && (
-        <>
-          <h1 className="text-xl font-semibold text-green-600">Payment confirmed</h1>
-          <p className="mt-2 text-sm">{msg}</p>
-          <button className="mt-4 rounded border px-4 py-2" onClick={() => nav('/orders')}>
-            Go to orders
-          </button>
-        </>
-      )}
-
-      {/* ERROR */}
-      {phase === 'error' && (
-        <>
-          <h1 className="text-xl font-semibold text-red-600">Payment not verified</h1>
-          <p className="mt-2 text-sm">{msg}</p>
-          <div className="mt-5 flex gap-3 justify-center">
-            <button className="rounded border px-4 py-2" onClick={tryAgainNow}>
-              Try again
-            </button>
-            <button className="rounded border px-4 py-2" onClick={() => nav('/orders')}>
-              View orders
-            </button>
-            <button className="rounded border px-4 py-2" onClick={() => nav('/cart')}>
-              Back to cart
-            </button>
+      {/* Content card */}
+      <div className="mt-6 rounded-2xl border bg-white shadow-sm">
+        <div className="px-4 md:px-6 py-4 border-b flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <StatusBadge phase={phase} />
+            <div>
+              <div className="text-ink font-semibold">
+                {phase === 'loading' && 'Verifying payment'}
+                {phase === 'pending' && 'Awaiting confirmation'}
+                {phase === 'success' && 'Payment confirmed'}
+                {phase === 'error' && 'Payment not verified'}
+              </div>
+              <div className="text-xs text-ink-soft">
+                {orderId ? <>Order: <span className="font-mono">{orderId}</span></> : 'No order id provided'}
+              </div>
+            </div>
           </div>
-          <p className="mt-4 text-xs opacity-60">
-            If you paid by bank transfer, please give it a minute. If it still doesn’t reflect, keep your reference handy and contact support.
-          </p>
-        </>
-      )}
+
+          {(phase === 'pending' || phase === 'loading') && (
+            <div className="text-xs text-ink-soft">
+              {phase === 'pending' ? `Attempts left: ${remaining}` : 'Please wait…'}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 md:p-6">
+          <p className="text-sm text-ink">{msg}</p>
+
+          {/* Actions */}
+          <div className="mt-5 flex flex-wrap gap-3">
+            {phase === 'pending' && (
+              <>
+                <button
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                  onClick={tryAgainNow}
+                >
+                  Try again now
+                </button>
+                <button
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                  onClick={() => nav('/orders')}
+                >
+                  View orders
+                </button>
+                <p className="text-xs text-ink-soft mt-1 w-full">
+                  Tip: If your bank app shows the transfer as successful, it may take a moment for us to receive confirmation.
+                </p>
+              </>
+            )}
+
+            {phase === 'loading' && (
+              <div className="text-sm text-ink-soft animate-pulse">Checking payment…</div>
+            )}
+
+            {phase === 'success' && (
+              <>
+                <button
+                  className="inline-flex items-center justify-center rounded-xl bg-emerald-600 text-white px-4 py-2 hover:bg-emerald-700"
+                  onClick={() => nav('/orders')}
+                >
+                  Go to orders
+                </button>
+                <button
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                  onClick={() => nav('/')}
+                >
+                  Continue shopping
+                </button>
+              </>
+            )}
+
+            {phase === 'error' && (
+              <>
+                <button
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                  onClick={tryAgainNow}
+                >
+                  Try again
+                </button>
+                <button
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                  onClick={() => nav('/orders')}
+                >
+                  View orders
+                </button>
+                <button
+                  className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                  onClick={() => nav('/cart')}
+                >
+                  Back to cart
+                </button>
+                <p className="text-xs text-ink-soft mt-1 w-full">
+                  If you paid by bank transfer, please give it a minute. If it still doesn’t reflect, keep your reference handy and contact support.
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* Sub-info grid */}
+          <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <InfoTile label="Order ID" value={orderId || '—'} />
+            <InfoTile label="Reference" value={reference || '—'} />
+            <InfoTile
+              label="Auto-check cadence"
+              value={`${Math.floor(POLL_INTERVAL_MS / 1000)}s (${POLL_MAX_ATTEMPTS} tries)`}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- tiny presentational helpers (reused across dashboard pages) ---------- */
+
+function StatusBadge({ phase }: { phase: 'loading' | 'pending' | 'success' | 'error' }) {
+  let label = 'Loading';
+  let cls = 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
+  if (phase === 'pending') { label = 'Pending'; cls = 'bg-amber-500/10 text-amber-700 border-amber-600/20'; }
+  if (phase === 'success') { label = 'Paid'; cls = 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20'; }
+  if (phase === 'error') { label = 'Failed'; cls = 'bg-rose-500/10 text-rose-700 border-rose-600/20'; }
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
+function InfoTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border bg-white p-4">
+      <div className="text-xs text-ink-soft">{label}</div>
+      <div className="text-sm font-semibold text-ink mt-0.5 break-all">{value}</div>
     </div>
   );
 }

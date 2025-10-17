@@ -1,4 +1,3 @@
-// src/pages/Register.tsx
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
@@ -6,7 +5,7 @@ import api from '../api/client';
 type Role = 'SHOPPER';
 type RegisterResponse = {
   message: string;
-  tempToken?: string;
+  tempToken?: string;    // optional short-lived token for verify flows
   phoneOtpSent?: boolean;
 };
 
@@ -49,7 +48,7 @@ export default function Register() {
   const [form, setForm] = useState({
     email: '',
     firstName: '',
-    middleName: '', // optional
+    middleName: '',
     lastName: '',
     countryDial: '234',
     localPhone: '',
@@ -69,16 +68,15 @@ export default function Register() {
       setForm((f) => ({ ...f, [key]: e.target.value }));
     };
 
-  // Specialized handler: enforce birth-year max 4 digits as user types
+  // Enforce YYYY length on the fly
   const onDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    let v = e.target.value; // expect YYYY-MM-DD or ''
+    let v = e.target.value;
     if (v) {
       const parts = v.split('-');
       if (parts[0]) {
-        parts[0] = parts[0].replace(/\D/g, ''); // digits only in year
-        if (parts[0].length > 4) parts[0] = parts[0].slice(0, 4); // clamp to 4
+        parts[0] = parts[0].replace(/\D/g, '');
+        if (parts[0].length > 4) parts[0] = parts[0].slice(0, 4);
       }
-      // Recompose only the parts provided to avoid inserting "undefined"
       v = parts.filter((p) => p !== undefined).join('-');
     }
     setForm((f) => ({ ...f, dateOfBirth: v }));
@@ -105,18 +103,12 @@ export default function Register() {
     if (localDigits && localDigits.length < 6) return 'Please enter a valid phone number';
     if (!COUNTRIES.some((c) => c.dial === form.countryDial)) return 'Please select a valid country code';
 
-    // DOB required + must be valid yyyy-mm-dd + birth year exactly 4 digits + >=18
     if (!form.dateOfBirth) return 'Please select your date of birth';
-
-    // Must match exact "YYYY-MM-DD"
     if (!/^\d{4}-\d{2}-\d{2}$/.test(form.dateOfBirth)) {
       return 'Please use a valid date (YYYY-MM-DD).';
     }
-
     const yearStr = form.dateOfBirth.slice(0, 4);
-    if (!/^\d{4}$/.test(yearStr)) {
-      return 'Birth year must be exactly 4 digits.';
-    }
+    if (!/^\d{4}$/.test(yearStr)) return 'Birth year must be exactly 4 digits.';
 
     const dob = new Date(form.dateOfBirth + 'T00:00:00');
     if (Number.isNaN(+dob)) return 'Please select a valid date of birth';
@@ -145,212 +137,275 @@ export default function Register() {
 
       const payload = {
         email: form.email.trim().toLowerCase(),
-        firstName: form.firstName,
-        middleName: form.middleName || undefined,
-        lastName: form.lastName,
+        firstName: form.firstName.trim(),
+        middleName: form.middleName.trim() || undefined,
+        lastName: form.lastName.trim(),
         phone,
         password: form.password,
         role: form.role,
         dialCode: form.countryDial,
         localPhone: form.localPhone,
-        dateOfBirth: form.dateOfBirth
-          ? new Date(form.dateOfBirth).toISOString()
-          : undefined,
+        dateOfBirth: form.dateOfBirth ? new Date(form.dateOfBirth).toISOString() : undefined,
       };
 
       const { data } = await api.post<RegisterResponse>('/api/auth/register', payload);
 
-      if (data?.tempToken) {
-        localStorage.setItem('verifyToken', data.tempToken);
-      }
+      // Stash things the verify page can use regardless of auth
+      try {
+        localStorage.setItem('verifyEmail', payload.email);
+        if (data?.tempToken) localStorage.setItem('verifyToken', data.tempToken);
+      } catch {}
 
+      // Move them to the verify page. No need to pass the token; the page can use email-status.
       const q = new URLSearchParams({ e: payload.email }).toString();
       nav(`/verify?${q}`);
     } catch (e: any) {
+      // Surface API error (409 Email already registered, etc.)
       setErr(e?.response?.data?.error || 'Registration failed');
     } finally {
       setSubmitting(false);
     }
   };
 
+  // Simple local strength hint (visual only; validation still enforced above)
+  const pwdStrength = (() => {
+    const val = form.password ?? '';
+    let s = 0;
+    if (val.length >= 8) s++;
+    if (/[A-Z]/.test(val)) s++;
+    if (/[a-z]/.test(val)) s++;
+    if (/\d/.test(val)) s++;
+    if (/[^A-Za-z0-9]/.test(val)) s++;
+    return Math.min(s, 4); // 0..4
+  })();
+
   return (
-    <div className="min-h-[88vh] bg-hero-radial bg-bg-soft grid place-items-center px-4">
-      <div className="w-full max-w-2xl">
-        {/* Header */}
-        <div className="mb-6 text-center">
-          <div className="inline-flex items-center gap-2 rounded-full bg-primary-100 text-primary-700 px-3 py-1 text-xs font-medium border border-primary-200">
-            Join YemiShop
-          </div>
-          <h1 className="mt-3 text-2xl font-semibold text-ink">Create your account</h1>
-          <p className="mt-1 text-sm text-ink-soft">
-            Shop smarter with saved addresses, order tracking, and personalised picks.
-          </p>
-        </div>
+    <div className="min-h-[100dvh] relative overflow-hidden">
+      {/* Neon gradient / grid backdrop to match Login */}
+      <div className="absolute inset-0 bg-[radial-gradient(1200px_500px_at_10%_-10%,#a78bfa33,transparent_50%),radial-gradient(1000px_500px_at_90%_0%,#22d3ee33,transparent_50%),linear-gradient(180deg,#111827,#0b1220_40%)]" />
+      <div className="pointer-events-none absolute -top-28 -right-20 w-[28rem] h-[28rem] rounded-full blur-3xl opacity-40 bg-violet-500/40" />
+      <div className="pointer-events-none absolute -bottom-28 -left-12 w-[28rem] h-[28rem] rounded-full blur-3xl opacity-40 bg-cyan-400/40" />
+      <div className="absolute inset-0 opacity-[0.06] [mask-image:radial-gradient(60%_60%_at_50%_40%,black,transparent)]">
+        <svg className="w-full h-full" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="miniGridReg" width="32" height="32" patternUnits="userSpaceOnUse">
+              <path d="M 32 0 L 0 0 0 32" fill="none" stroke="white" strokeWidth="0.5" />
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#miniGridReg)" />
+        </svg>
+      </div>
 
-        {/* Card */}
-        <form
-          onSubmit={submit}
-          className="rounded-2xl border bg-white shadow-sm p-6 md:p-8 space-y-6"
-        >
-          {err && (
-            <div className="text-sm rounded-md border border-danger/20 bg-danger/10 text-danger px-3 py-2">
-              {err}
+      {/* Content */}
+      <div className="relative grid place-items-center min-h-[100dvh] px-4">
+        <div className="w-full max-w-2xl">
+          {/* Header */}
+          <div className="mb-6 text-center">
+            <div className="inline-flex items-center gap-2 rounded-full bg-white/15 text-white px-3 py-1 text-xs font-medium border border-white/30 backdrop-blur">
+              <span className="inline-block size-2 rounded-full bg-emerald-400 animate-pulse" />
+              Join YemiShop
             </div>
-          )}
-
-          {/* Name grid */}
-          <div>
-            <label className="block text-sm font-medium text-ink mb-2">Your name</label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <input
-                value={form.firstName}
-                onChange={onChange('firstName')}
-                className="rounded-lg border border-border bg-surface px-3 py-2.5 placeholder:text-ink-soft
-                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
-                placeholder="First name"
-              />
-              <input
-                value={form.middleName}
-                onChange={onChange('middleName')}
-                className="rounded-lg border border-border bg-surface px-3 py-2.5 placeholder:text-ink-soft
-                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
-                placeholder="Middle (optional)"
-              />
-              <input
-                value={form.lastName}
-                onChange={onChange('lastName')}
-                className="rounded-lg border border-border bg-surface px-3 py-2.5 placeholder:text-ink-soft
-                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
-                placeholder="Last name"
-              />
-            </div>
-          </div>
-
-          {/* Email & DOB */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-ink mb-1">Email</label>
-              <input
-                type="email"
-                value={form.email}
-                onChange={onChange('email')}
-                placeholder="you@example.com"
-                className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink placeholder:text-ink-soft
-                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-ink mb-1">Date of birth</label>
-              <input
-                type="date"
-                value={form.dateOfBirth}
-                onChange={onDateChange}
-                className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink
-                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
-              />
-              <p className="mt-1 text-xs text-ink-soft">Must be 18+ years old.</p>
-            </div>
-          </div>
-
-          {/* Phone */}
-          <div>
-            <label className="block text-sm font-medium text-ink mb-1">Phone</label>
-            <div className="flex gap-2">
-              <select
-                value={form.countryDial}
-                onChange={onChange('countryDial')}
-                className="rounded-lg border border-border bg-white px-3 py-2.5 w-44
-                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
-                aria-label="Country code"
-              >
-                {COUNTRIES.map((c) => (
-                  <option key={c.code} value={c.dial}>
-                    {c.name} (+{c.dial})
-                  </option>
-                ))}
-              </select>
-              <input
-                value={form.localPhone}
-                onChange={onChange('localPhone')}
-                inputMode="tel"
-                placeholder="Local number"
-                className="flex-1 rounded-lg border border-border bg-surface px-3 py-2.5 placeholder:text-ink-soft
-                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
-              />
-            </div>
-            <p className="mt-1 text-xs text-ink-soft text-center">
-              Will format as +{form.countryDial} {form.localPhone.replace(/\D/g, '')}
+            <h1 className="mt-3 text-3xl font-semibold text-white drop-shadow-[0_1px_0_rgba(0,0,0,0.3)]">
+              Create your account
+            </h1>
+            <p className="mt-1 text-sm text-white/80">
+              Shop smarter with saved addresses, order tracking, and personalised picks.
             </p>
           </div>
 
-          {/* Passwords */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {/* Card */}
+          <form
+            onSubmit={submit}
+            className="rounded-2xl border border-white/30 bg-white/80 backdrop-blur-xl shadow-[0_10px_40px_-12px_rgba(59,130,246,0.35)] p-6 md:p-8 space-y-6 transition hover:shadow-[0_20px_60px_-12px_rgba(59,130,246,0.45)]"
+          >
+            {err && (
+              <div className="text-sm rounded-md border border-rose-300/60 bg-rose-50/90 text-rose-700 px-3 py-2">
+                {err}
+              </div>
+            )}
+
+            {/* Name grid */}
             <div>
-              <label className="block text-sm font-medium text-ink mb-1">Password</label>
-              <input
-                type="password"
-                value={form.password}
-                onChange={onChange('password')}
-                placeholder="At least 8 characters"
-                className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink placeholder:text-ink-soft
-                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
-              />
-              <p className="mt-1 text-[11px] text-ink-soft">
-                Include a letter, number, and special character.
+              <label className="block text-sm font-medium text-slate-800 mb-2">Your name</label>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="relative group">
+                  <input
+                    value={form.firstName}
+                    onChange={onChange('firstName')}
+                    className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 placeholder:text-slate-400 text-slate-900
+                               outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    placeholder="First name"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">👤</span>
+                </div>
+                <div className="relative group">
+                  <input
+                    value={form.middleName}
+                    onChange={onChange('middleName')}
+                    className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 placeholder:text-slate-400 text-slate-900
+                               outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    placeholder="Middle (optional)"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">👤</span>
+                </div>
+                <div className="relative group">
+                  <input
+                    value={form.lastName}
+                    onChange={onChange('lastName')}
+                    className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 placeholder:text-slate-400 text-slate-900
+                               outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    placeholder="Last name"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">👤</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Email & DOB */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="relative group">
+                <label className="block text-sm font-medium text-slate-800 mb-1">Email</label>
+                <input
+                  type="email"
+                  value={form.email}
+                  onChange={onChange('email')}
+                  placeholder="you@example.com"
+                  className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 text-slate-900 placeholder:text-slate-400
+                             outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                />
+                <span className="pointer-events-none absolute right-3 bottom-3 text-slate-400 group-focus-within:text-violet-500 transition">✉</span>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-800 mb-1">Date of birth</label>
+                <input
+                  type="date"
+                  value={form.dateOfBirth}
+                  onChange={onDateChange}
+                  className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 text-slate-900
+                             outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                />
+                <p className="mt-1 text-xs text-slate-500">Must be 18+ years old.</p>
+              </div>
+            </div>
+
+            {/* Phone */}
+            <div>
+              <label className="block text-sm font-medium text-slate-800 mb-1">Phone</label>
+              <div className="flex gap-2">
+                <div className="relative group">
+                  <select
+                    value={form.countryDial}
+                    onChange={onChange('countryDial')}
+                    className="rounded-xl border border-slate-300/80 bg-white px-3 py-3 w-44
+                               outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    aria-label="Country code"
+                  >
+                    {COUNTRIES.map((c) => (
+                      <option key={c.code} value={c.dial}>
+                        {c.name} (+{c.dial})
+                      </option>
+                    ))}
+                  </select>
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">🌍</span>
+                </div>
+                <div className="relative group flex-1">
+                  <input
+                    value={form.localPhone}
+                    onChange={onChange('localPhone')}
+                    inputMode="tel"
+                    placeholder="Local number"
+                    className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 placeholder:text-slate-400 text-slate-900
+                               outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">📱</span>
+                </div>
+              </div>
+              <p className="mt-1 text-xs text-slate-500 text-center">
+                Will format as +{form.countryDial} {form.localPhone.replace(/\D/g, '')}
               </p>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-ink mb-1">Confirm password</label>
-              <input
-                type="password"
-                value={form.confirmPassword}
-                onChange={onChange('confirmPassword')}
-                placeholder="Re-enter password"
-                className="w-full rounded-lg border border-border bg-surface px-3 py-2.5 text-ink placeholder:text-ink-soft
-                           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition"
-              />
+
+            {/* Passwords */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-800 mb-1">Password</label>
+                <div className="relative group">
+                  <input
+                    type="password"
+                    value={form.password}
+                    onChange={onChange('password')}
+                    placeholder="At least 8 characters"
+                    className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 text-slate-900 placeholder:text-slate-400
+                               outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                  />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">🔒</span>
+                </div>
+                {/* Strength bar (visual hint) */}
+                <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                  <div
+                    className={`h-full transition-all ${
+                      pwdStrength <= 1
+                        ? 'w-1/4 bg-rose-400'
+                        : pwdStrength === 2
+                        ? 'w-2/4 bg-amber-400'
+                        : pwdStrength === 3
+                        ? 'w-3/4 bg-lime-400'
+                        : 'w-full bg-emerald-400'
+                    }`}
+                  />
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Include a letter, number, and special character.
+                </p>
+              </div>
+              <div>
+                <label className="block text sm font-medium text-slate-800 mb-1">Confirm password</label>
+                <div className="relative group">
+                  <input
+                    type="password"
+                    value={form.confirmPassword}
+                    onChange={onChange('confirmPassword')}
+                    placeholder="Re-enter password"
+                    className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 text-slate-900 placeholder:text-slate-400
+                               outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                  />
+                  {(form.password === form.confirmPassword) && <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">✅</span>}
+                </div>
+              </div>
             </div>
-          </div>
 
-          {/* Role (fixed) */}
-          <div>
-            <label className="block text-sm font-medium text-ink mb-1">Role</label>
-            <input
-              value="SHOPPER"
-              disabled
-              className="w-full rounded-lg border border-border bg-zinc-100 text-ink-soft px-3 py-2.5"
-              title="Role is fixed for self-registration"
-            />
-            <p className="mt-1 text-xs text-ink-soft">
-              Supplier/Admin roles are assigned by an administrator later.
+            {/* Actions */}
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white
+                         px-4 py-3 font-semibold shadow-[0_10px_30px_-12px_rgba(14,165,233,0.6)]
+                         hover:scale-[1.01] active:scale-[0.995]
+                         focus:outline-none focus:ring-4 focus:ring-cyan-300/40 transition disabled:opacity-50"
+            >
+              {submitting ? 'Creating account…' : 'Create account'}
+              {!submitting && (
+                <svg className="w-4 h-4 opacity-90" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                  <path fillRule="evenodd" d="M3 10a1 1 0 011-1h9.586L11.293 6.707a1 1 0 111.414-1.414l4.0 4a1 1 0 010 1.414l-4.0 4a1 1 0 11-1.414-1.414L13.586 11H4a1 1 0 01-1-1z" clipRule="evenodd" />
+                </svg>
+              )}
+            </button>
+
+            <p className="text-center text-xs text-slate-600">
+              By creating an account, you agree to our{' '}
+              <a className="text-violet-700 hover:underline" href="/terms">Terms</a> and{' '}
+              <a className="text-violet-700 hover:underline" href="/privacy">Privacy Policy</a>.
             </p>
-          </div>
+          </form>
 
-          {/* Actions */}
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary-600 text-white
-                       px-4 py-2.5 font-medium hover:bg-primary-700 active:bg-primary-800
-                       focus:outline-none focus:ring-4 focus:ring-primary-200 transition disabled:opacity-50"
-          >
-            {submitting ? 'Creating account…' : 'Create account'}
-          </button>
-
-          <p className="text-center text-xs text-ink-soft">
-            By creating an account, you agree to our{' '}
-            <a className="text-primary-700 hover:underline" href="/terms">Terms</a> and{' '}
-            <a className="text-primary-700 hover:underline" href="/privacy">Privacy Policy</a>.
+          {/* Bottom hint */}
+          <p className="mt-5 text-center text-sm text-white/80">
+            Already have an account?{' '}
+            <a className="text-cyan-200 hover:underline" href="/login">
+              Sign in
+            </a>
           </p>
-        </form>
-
-        {/* Bottom hint */}
-        <p className="mt-4 text-center text-sm text-ink-soft">
-          Already have an account?{' '}
-          <a className="text-primary-700 hover:underline" href="/login">
-            Sign in
-          </a>
-        </p>
+        </div>
       </div>
     </div>
   );

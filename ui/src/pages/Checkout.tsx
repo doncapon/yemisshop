@@ -6,6 +6,7 @@ import api from '../api/client';
 import { useAuthStore } from '../store/auth';
 import { useModal } from "../components/ModalProvider";
 
+/* ----------------------------- Types ----------------------------- */
 type CartLine = {
   productId: string;
   title: string;
@@ -25,7 +26,6 @@ type Address = {
 };
 
 type ProfileMe = {
-  // backend returns { address, shippingAddress }
   address?: Address | null;
   shippingAddress?: Address | null;
 };
@@ -46,9 +46,92 @@ const ngn = new Intl.NumberFormat('en-NG', {
   maximumFractionDigits: 2,
 });
 
+/* ----------------------------- Icons (small) ----------------------------- */
+const IconCart = (props: any) => (
+  <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
+    <path d="M6 6h15l-1.5 9h-12L6 6Z" stroke="currentColor" strokeWidth="1.5"/>
+    <circle cx="9" cy="20" r="1" fill="currentColor"/>
+    <circle cx="18" cy="20" r="1" fill="currentColor"/>
+    <path d="M6 6l-1-3H2" stroke="currentColor" strokeWidth="1.5" />
+  </svg>
+);
+
+const IconHome = (props: any) => (
+  <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
+    <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" strokeWidth="1.5"/>
+  </svg>
+);
+
+const IconTruck = (props: any) => (
+  <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
+    <path d="M14 17H6a1 1 0 0 1-1-1V5h9v12ZM14 8h4l3 3v5a1 1 0 0 1-1 1h-1" stroke="currentColor" strokeWidth="1.5"/>
+    <circle cx="7.5" cy="18.5" r="1.5" fill="currentColor"/>
+    <circle cx="17.5" cy="18.5" r="1.5" fill="currentColor"/>
+  </svg>
+);
+
+/* ----------------------------- Card UI ----------------------------- */
+function Card({
+  children,
+  className = '',
+  tone = 'neutral', // 'primary' | 'emerald' | 'amber' | 'neutral'
+}: { children: React.ReactNode; className?: string; tone?: 'primary'|'emerald'|'amber'|'neutral' }) {
+  const toneBorder =
+    tone === 'primary' ? 'border-primary-200' :
+    tone === 'emerald' ? 'border-emerald-200' :
+    tone === 'amber'   ? 'border-amber-200' :
+    'border-border';
+
+  return (
+    <div className={`rounded-2xl border ${toneBorder} bg-white/90 backdrop-blur shadow-sm overflow-hidden hover:shadow-md transition ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function CardHeader({
+  title,
+  subtitle,
+  icon,
+  action,
+  tone = 'neutral',
+}: {
+  title: string;
+  subtitle?: string;
+  icon?: React.ReactNode;
+  action?: React.ReactNode;
+  tone?: 'primary'|'emerald'|'amber'|'neutral';
+}) {
+  const toneBg =
+    tone === 'primary' ? 'from-primary-50 to-white' :
+    tone === 'emerald' ? 'from-emerald-50 to-white' :
+    tone === 'amber'   ? 'from-amber-50 to-white' :
+    'from-surface to-white';
+
+  const toneIcon =
+    tone === 'primary' ? 'text-primary-600' :
+    tone === 'emerald' ? 'text-emerald-600' :
+    tone === 'amber'   ? 'text-amber-600' :
+    'text-ink-soft';
+
+  return (
+    <div className={`flex items-center justify-between p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
+      <div className="flex items-start gap-3">
+        {icon && <div className={`mt-[2px] ${toneIcon}`}>{icon}</div>}
+        <div>
+          <h3 className="font-semibold text-ink">{title}</h3>
+          {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
+        </div>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+/* ----------------------------- Component ----------------------------- */
 export default function Checkout() {
   const nav = useNavigate();
-  const {openModal} = useModal();
+  const { openModal } = useModal();
   const token = useAuthStore((s) => s.token);
 
   // Require login for checkout
@@ -108,16 +191,12 @@ export default function Checkout() {
       }
     }
     load();
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, [token]);
 
   // Keep shipping in sync when "same as home" toggles on
   useEffect(() => {
-    if (sameAsHome) {
-      setShipAddr((prev) => ({ ...prev, ...homeAddr }));
-    }
+    if (sameAsHome) setShipAddr((prev) => ({ ...prev, ...homeAddr }));
   }, [sameAsHome, homeAddr]);
 
   // Helpers
@@ -142,11 +221,7 @@ export default function Checkout() {
 
   const saveHome = async () => {
     const v = validateAddress(homeAddr, false);
-    if (v) {
-        openModal({ title: 'checkout', message: v});
-
-      return;
-    }
+    if (v) { openModal({ title: 'Checkout', message: v }); return; }
     try {
       setSavingHome(true);
       await api.post('/api/profile/address', homeAddr, { headers: authHeader });
@@ -158,8 +233,7 @@ export default function Checkout() {
         setShowShipForm(false);
       }
     } catch (e: any) {
-        openModal({ title: 'checkout', message: e?.response?.data?.error || 'Failed to save home address'});
-
+      openModal({ title: 'Checkout', message: e?.response?.data?.error || 'Failed to save home address' });
     } finally {
       setSavingHome(false);
     }
@@ -167,18 +241,13 @@ export default function Checkout() {
 
   const saveShip = async () => {
     const v = validateAddress(shipAddr, true);
-    if (v) {
-      openModal({ title: 'Checkout', message: v});
-
-      return;
-    }
+    if (v) { openModal({ title: 'Checkout', message: v }); return; }
     try {
       setSavingShip(true);
       await api.post('/api/profile/shipping', shipAddr, { headers: authHeader });
       setShowShipForm(false);
     } catch (e: any) {
-      openModal({ title: 'checkout', message: e?.response?.data?.error || 'Failed to save shipping address'});
-      
+      openModal({ title: 'Checkout', message: e?.response?.data?.error || 'Failed to save shipping address' });
     } finally {
       setSavingShip(false);
     }
@@ -210,7 +279,6 @@ export default function Checkout() {
       return res.data as { id: string };
     },
     onSuccess: (order) => {
-       // clear cart now that it’s paid (if you want):
       localStorage.removeItem('cart');
       nav(`/payment?orderId=${order.id}`, {
         state: {
@@ -247,9 +315,9 @@ export default function Checkout() {
         {/* Step header */}
         <div className="mb-6">
           <nav className="flex items-center gap-2 text-sm">
-            <span className="text-ink-soft">Cart</span>
+            <span className="text-ink font-medium">Items</span>
             <span className="opacity-40">›</span>
-            <span className="text-ink font-medium">Address</span>
+            <span className="text-ink-soft">Address</span>
             <span className="opacity-40">›</span>
             <span className="text-ink-soft">Payment</span>
           </nav>
@@ -262,25 +330,47 @@ export default function Checkout() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-6">
-          {/* LEFT: Address cards */}
+          {/* LEFT: Items → Home → Shipping */}
           <section className="space-y-6">
-            {/* Home Address */}
-            <div className="rounded-2xl border border-border bg-white shadow-sm overflow-hidden">
-              <div className="flex items-center justify-between p-4 border-b">
-                <div>
-                  <h3 className="font-semibold text-ink">Home address</h3>
-                  <p className="text-xs text-ink-soft">We’ll keep this on your profile.</p>
-                </div>
-                {!showHomeForm && (
-                  <button
-                    className="text-sm text-primary-700 hover:underline"
-                    onClick={() => setShowHomeForm(true)}
-                  >
-                    Change
-                  </button>
-                )}
-              </div>
+            {/* Items */}
+            <Card tone="primary" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <CardHeader
+                tone="primary"
+                title="Items in your order"
+                subtitle="Review quantities and pricing before adding addresses."
+                icon={<IconCart />}
+              />
+              <ul className="divide-y">
+                {cart.map((it) => (
+                  <li key={it.productId} className="p-4 flex items-center justify-between">
+                    <div className="min-w-0 pr-3">
+                      <div className="font-medium text-ink truncate">{it.title}</div>
+                      <div className="text-xs text-ink-soft">Qty: {it.qty} • Unit: {ngn.format(Number(it.price) || 0)}</div>
+                    </div>
+                    <div className="text-ink font-semibold">{ngn.format(Number(it.totalPrice) || 0)}</div>
+                  </li>
+                ))}
+              </ul>
+            </Card>
 
+            {/* Home Address */}
+            <Card tone="emerald" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <CardHeader
+                tone="emerald"
+                title="Home address"
+                subtitle="Saved to your profile."
+                icon={<IconHome />}
+                action={
+                  !showHomeForm && (
+                    <button
+                      className="text-sm text-emerald-700 hover:underline"
+                      onClick={() => setShowHomeForm(true)}
+                    >
+                      Change
+                    </button>
+                  )
+                }
+              />
               {loadingProfile ? (
                 <div className="p-4 text-sm text-ink-soft">Loading…</div>
               ) : showHomeForm ? (
@@ -302,7 +392,7 @@ export default function Checkout() {
                   <div className="flex items-center gap-3 pt-1">
                     <button
                       type="button"
-                      className="inline-flex items-center rounded-md bg-primary-600 px-4 py-2 text-white font-medium hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-200 transition disabled:opacity-50"
+                      className="inline-flex items-center rounded-md bg-emerald-600 px-4 py-2 text-white font-medium hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-200 transition disabled:opacity-50"
                       onClick={saveHome}
                       disabled={savingHome}
                     >
@@ -321,41 +411,41 @@ export default function Checkout() {
               ) : (
                 <AddressPreview a={homeAddr} />
               )}
-            </div>
+            </Card>
 
             {/* Shipping Address */}
-            <div className="rounded-2xl border border-border bg-white shadow-sm overflow-hidden">
-              <div className="flex items-center justify-between p-4 border-b">
-                <div>
-                  <h3 className="font-semibold text-ink">Shipping address</h3>
-                  <p className="text-xs text-ink-soft">Where we’ll deliver your items.</p>
-                </div>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={sameAsHome}
-                    onChange={async (e) => {
-                      const checked = e.target.checked;
-                      setSameAsHome(checked);
-                      if (checked) {
-                        try {
-                          setSavingShip(true);
-                          await api.post('/api/profile/shipping', homeAddr, { headers: authHeader });
-                          setShipAddr(homeAddr);
-                          setShowShipForm(false);
-                        } catch (err: any) {
-                          openModal({ title: 'checkout', message: err?.response?.data?.error || 'Failed to set shipping as home'});
-                          
-                        } finally {
-                          setSavingShip(false);
+            <Card tone="amber" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <CardHeader
+                tone="amber"
+                title="Shipping address"
+                subtitle="Where we’ll deliver your items."
+                icon={<IconTruck />}
+                action={
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={sameAsHome}
+                      onChange={async (e) => {
+                        const checked = e.target.checked;
+                        setSameAsHome(checked);
+                        if (checked) {
+                          try {
+                            setSavingShip(true);
+                            await api.post('/api/profile/shipping', homeAddr, { headers: authHeader });
+                            setShipAddr(homeAddr);
+                            setShowShipForm(false);
+                          } catch (err: any) {
+                            openModal({ title: 'Checkout', message: err?.response?.data?.error || 'Failed to set shipping as home' });
+                          } finally {
+                            setSavingShip(false);
+                          }
                         }
-                      }
-                    }}
-                  />
-                  <span className="text-ink-soft">Same as home</span>
-                </label>
-              </div>
-
+                      }}
+                    />
+                    <span className="text-ink-soft">Same as home</span>
+                  </label>
+                }
+              />
               {sameAsHome ? (
                 <div className="p-4 text-sm text-ink-soft">Using your Home address for shipping.</div>
               ) : loadingProfile ? (
@@ -379,7 +469,7 @@ export default function Checkout() {
                   <div className="flex items-center gap-3 pt-1">
                     <button
                       type="button"
-                      className="inline-flex items-center rounded-md bg-primary-600 px-4 py-2 text-white font-medium hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-200 transition disabled:opacity-50"
+                      className="inline-flex items-center rounded-md bg-amber-600 px-4 py-2 text-white font-medium hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-200 transition disabled:opacity-50"
                       onClick={saveShip}
                       disabled={savingShip}
                     >
@@ -404,7 +494,7 @@ export default function Checkout() {
                       <div>{shipAddr.state}, {shipAddr.country}</div>
                     </div>
                     <button
-                      className="text-sm text-primary-700 hover:underline"
+                      className="text-sm text-amber-700 hover:underline"
                       onClick={() => setShowShipForm(true)}
                     >
                       Change
@@ -412,31 +502,14 @@ export default function Checkout() {
                   </div>
                 </div>
               )}
-            </div>
-
-            {/* Order items (compact list) */}
-            <div className="rounded-2xl border border-border bg-white shadow-sm overflow-hidden">
-              <div className="p-4 border-b">
-                <h3 className="font-semibold text-ink">Items</h3>
-              </div>
-              <ul className="divide-y">
-                {cart.map((it) => (
-                  <li key={it.productId} className="p-4 flex items-center justify-between">
-                    <div className="min-w-0 pr-3">
-                      <div className="font-medium text-ink truncate">{it.title}</div>
-                      <div className="text-xs text-ink-soft">Qty: {it.qty}</div>
-                    </div>
-                    <div className="text-ink font-semibold">{ngn.format(Number(it.totalPrice) || 0)}</div>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            </Card>
           </section>
 
           {/* RIGHT: Summary / Action */}
           <aside className="lg:sticky lg:top-6 h-max">
-            <div className="rounded-2xl border border-border bg-white p-5 shadow-sm">
+            <Card className="p-5">
               <h2 className="text-lg font-semibold text-ink">Order Summary</h2>
+
               <div className="mt-3 space-y-2 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-ink-soft">Items</span>
@@ -462,7 +535,7 @@ export default function Checkout() {
                 onClick={() => createOrder.mutate()}
                 className="mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50"
               >
-                {createOrder.isPending ? 'Processing…' : 'Place order & Go to payment'}
+                {createOrder.isPending ? 'Processing…' : 'Place order & Proceed to payment'}
               </button>
 
               {createOrder.isError && (
@@ -484,7 +557,7 @@ export default function Checkout() {
               >
                 Back to cart
               </button>
-            </div>
+            </Card>
 
             <p className="mt-3 text-[11px] text-ink-soft text-center">
               You can update addresses here. Payment happens on the next step.
@@ -496,8 +569,7 @@ export default function Checkout() {
   );
 }
 
-/* ---------- small presentational bits ---------- */
-
+/* ----------------------------- Bits ----------------------------- */
 function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input

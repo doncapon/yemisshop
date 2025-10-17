@@ -3,17 +3,21 @@ import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { useAuthStore } from '../store/auth';
 import api from '../api/client';
+import { hardResetApp } from '../utils/resetApp.ts';
+
+type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER';
 
 type MeResponse = {
   id: string;
   email: string;
-  role: 'ADMIN' | 'SUPPLIER' | 'SHOPPER';
+  role: Role;
   status: 'PENDING' | 'PARTIAL' | 'VERIFIED';
   firstName?: string | null;
   middleName?: string | null;
   lastName?: string | null;
   name?: string | null;
 };
+
 
 function useClickAway<T extends HTMLElement>(onAway: () => void) {
   const ref = useRef<T | null>(null);
@@ -29,7 +33,12 @@ function useClickAway<T extends HTMLElement>(onAway: () => void) {
 }
 
 export default function Navbar() {
-  const { token, role, email, clear } = useAuthStore();
+  // Read from store via selectors to avoid type issues
+  const token = useAuthStore((s) => s.token);
+  const userRole = useAuthStore((s) => s.user?.role ?? null);
+  const userEmail = useAuthStore((s) => s.user?.email ?? null);
+  const clear = useAuthStore((s) => s.clear);
+
   const nav = useNavigate();
 
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -42,6 +51,7 @@ export default function Navbar() {
   const [lastName, setLastName] = useState<string | null>(null);
 
   // Fetch name details when token is present
+
   useEffect(() => {
     let cancelled = false;
     async function loadMe() {
@@ -56,27 +66,28 @@ export default function Navbar() {
           headers: { Authorization: `Bearer ${token}` },
         });
 
-        // Prefer explicit first/last/middle; fallback to splitting `name`
-        let f = data.firstName?.trim();
-        let m = data.middleName?.trim();
-        let l = data.lastName?.trim();
+        const f = data.firstName?.trim() || null;
+        const m = data.middleName?.trim() || null;
+        const l = data.lastName?.trim() || null;
+
         if (!cancelled) {
-          setFirstName(f || null);
-          setMiddleName(m || null);
-          setLastName(l || null);
+          setFirstName(f);
+          setMiddleName(m);
+          setLastName(l);
         }
-      } catch {
-        if (!cancelled) {
-          setFirstName(null);
-          setMiddleName(null);
-          setLastName(null);
+      } catch (e: any) {
+        // If token is invalid/expired -> full reset
+        const status = e?.response?.status;
+        if (status === 401 || status === 403) {
+          hardResetApp('/'); // wipe and reload
+          return;
         }
+        // network or other error: don't silently “U”; force reset as per your requirement
+        hardResetApp('/');
       }
     }
     loadMe();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [token]);
 
   const displayName = useMemo(() => {
@@ -87,29 +98,33 @@ export default function Navbar() {
       const mid = m ? ` ${m[0].toUpperCase()}.` : '';
       return `${f}${mid} ${l}`;
     }
+    return null;
   }, [firstName, middleName, lastName]);
 
   const initials = useMemo(() => {
     const f = (firstName?.trim()?.[0] || '').toUpperCase();
     const l = (lastName?.trim()?.[0] || '').toUpperCase();
     const init = `${f}${l}`.trim();
-    return init || ('U');
+    return init || 'U';
   }, [firstName, lastName]);
 
   const logout = useCallback(() => {
     clear();
-    if (localStorage.getItem('cart')) { localStorage.removeItem('cart') };
-    if (localStorage.getItem('auth')) { localStorage.removeItem('auth') };
+    try {
+      localStorage.removeItem('cart');
+      // if your persisted store key is different, remove that one instead
+      localStorage.removeItem('auth');
+    } catch { }
     nav('/');
   }, [clear, nav]);
 
   const linkBase =
     'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium transition';
-  const linkInactive = 'text-ink-invert/90 hover:bg-white/10';
+  const linkInactive = 'text-ink-invert/90 hover:bg.white/10 hover:bg-white/10';
   const linkActive = 'text-ink-invert bg-white/15';
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-primary-700/40 bg-primary-700/95 backdrop-blur">
+    <header className="sticky top-0 z-40 w-full border-b border-primary-700/40 bg-primary-800/95 backdrop-blur">
       <div className="max-w-7xl mx-auto h-16 px-4 md:px-6 flex items-center gap-4">
         {/* Brand */}
         <div className="flex items-center gap-3">
@@ -133,24 +148,6 @@ export default function Navbar() {
           >
             Catalogue
           </NavLink>
-          <NavLink
-            to="/cart"
-            className={({ isActive }) =>
-              `${linkBase} ${isActive ? linkActive : linkInactive}`
-            }
-          >
-            Cart
-          </NavLink>
-
-          <NavLink
-            to="/wishlist"
-            end
-            className={({ isActive }) =>
-              `${linkBase} ${isActive ? linkActive : linkInactive}`
-            }
-          >
-            Wishlist
-          </NavLink>
 
           {token && (
             <NavLink
@@ -163,7 +160,29 @@ export default function Navbar() {
               Dashboard
             </NavLink>
           )}
-          {role === 'ADMIN' && (
+
+          <NavLink
+            to="/cart"
+            className={({ isActive }) =>
+              `${linkBase} ${isActive ? linkActive : linkInactive}`
+            }
+          >
+            Cart
+          </NavLink>
+
+          {token && (
+            <NavLink
+              to="/wishlist"
+              end
+              className={({ isActive }) =>
+                `${linkBase} ${isActive ? linkActive : linkInactive}`
+              }
+            >
+              Wishlist
+            </NavLink>
+          )}
+
+          {(userRole === 'ADMIN' || userRole === 'SUPER_ADMIN') && (
             <NavLink
               to="/admin"
               className={({ isActive }) =>
@@ -171,16 +190,6 @@ export default function Navbar() {
               }
             >
               Admin
-            </NavLink>
-          )}
-          {role === 'SUPPLIER' && (
-            <NavLink
-              to="/supplier"
-              className={({ isActive }) =>
-                `${linkBase} ${isActive ? linkActive : linkInactive}`
-              }
-            >
-              Supplier
             </NavLink>
           )}
         </nav>
@@ -195,7 +204,10 @@ export default function Navbar() {
               <NavLink
                 to="/login"
                 className={({ isActive }) =>
-                  `${linkBase} ${isActive ? 'bg-white text-primary-800' : 'border border-white/15 text-white hover:bg-white/10'}`
+                  `${linkBase} ${isActive
+                    ? 'bg-white text-primary-800'
+                    : 'border border-white/15 text.white hover:bg-white/10 text-white'
+                  }`
                 }
               >
                 Login
@@ -225,9 +237,11 @@ export default function Navbar() {
                   <div className="px-3 py-3 border-b border-border/80 bg-surface-soft">
                     <div className="text-sm text-ink-soft">Signed in as</div>
                     <div className="text-sm font-medium truncate text-ink">
-                      {displayName}
+                      {displayName || userEmail || 'User'}
                     </div>
-                    <div className="text-xs opacity-70 truncate">{email}</div>
+                    {userEmail && (
+                      <div className="text-xs opacity-70 truncate">{userEmail}</div>
+                    )}
                   </div>
                   <nav className="py-1 text-sm">
                     <button
@@ -292,6 +306,7 @@ export default function Navbar() {
             >
               Catalogue
             </NavLink>
+
             <NavLink
               to="/cart"
               onClick={() => setMobileOpen(false)}
@@ -302,16 +317,17 @@ export default function Navbar() {
               Cart
             </NavLink>
 
-            <NavLink
-              to="/wishlist"
-              onClick={() => setMobileOpen(false)}
-              className={({ isActive }) =>
-                `${linkBase} ${isActive ? 'bg-white/20 text-white' : 'text-white/90 hover:bg-white/10'}`
-              }
-            >
-              Wishlist
-            </NavLink>
-
+            {token && (
+              <NavLink
+                to="/wishlist"
+                onClick={() => setMobileOpen(false)}
+                className={({ isActive }) =>
+                  `${linkBase} ${isActive ? 'bg-white/20 text-white' : 'text-white/90 hover:bg-white/10'}`
+                }
+              >
+                Wishlist
+              </NavLink>
+            )}
 
             {token && (
               <NavLink
@@ -319,13 +335,14 @@ export default function Navbar() {
                 end
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
-                  `${linkBase} ${isActive ? 'bg-white/20 text-white' : 'text-white/90 hover:bg-white/10'}`
+                  `${linkBase} ${isActive ? 'bg.white/20 text-white' : 'text-white/90 hover:bg-white/10'}`
                 }
               >
                 Dashboard
               </NavLink>
             )}
-            {role === 'ADMIN' && (
+
+            {(userRole === 'ADMIN' || userRole === 'SUPER_ADMIN') && (
               <NavLink
                 to="/admin"
                 onClick={() => setMobileOpen(false)}
@@ -334,17 +351,6 @@ export default function Navbar() {
                 }
               >
                 Admin
-              </NavLink>
-            )}
-            {role === 'SUPPLIER' && (
-              <NavLink
-                to="/supplier"
-                onClick={() => setMobileOpen(false)}
-                className={({ isActive }) =>
-                  `${linkBase} ${isActive ? 'bg-white/20 text-white' : 'text-white/90 hover:bg-white/10'}`
-                }
-              >
-                Supplier
               </NavLink>
             )}
 
@@ -356,7 +362,10 @@ export default function Navbar() {
                   to="/login"
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `flex-1 text-center ${linkBase} ${isActive ? 'bg-white text-primary-800' : 'border border-white/20 text-white hover:bg-white/10'}`
+                    `flex-1 text-center ${linkBase} ${isActive
+                      ? 'bg-white text-primary-800'
+                      : 'border border-white/20 text-white hover:bg-white/10'
+                    }`
                   }
                 >
                   Login
@@ -369,7 +378,7 @@ export default function Navbar() {
                   Register
                 </NavLink>
               </div>
-            ) : (
+            ) : (token &&
               <div className="flex flex-col gap-1">
                 <button
                   className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"

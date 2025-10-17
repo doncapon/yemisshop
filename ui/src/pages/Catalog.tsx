@@ -5,12 +5,25 @@ import api from '../api/client';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { useModal } from '../components/ModalProvider';
+import { motion } from 'framer-motion';
+import {
+  Sparkles,
+  Search,
+  SlidersHorizontal,
+  Star,
+  Heart,
+  HeartOff,
+  LayoutGrid,
+  ArrowUpDown,
+} from 'lucide-react';
 
+/* ---------------- Types ---------------- */
 type Product = {
   id: string;
   title: string;
   description: string;
   price: number;
+  stock: boolean;
   imagesJson: string[];
   categoryId?: string | null;
   categoryName?: string | null;
@@ -37,21 +50,16 @@ function inBucket(price: number, b: PriceBucket) {
 
 type SortKey = 'relevance' | 'price-asc' | 'price-desc';
 
-/* ---------------------------------------------------
-   Recommendation constants (easy to tune)
---------------------------------------------------- */
+/* ---------------- Recommendation weights ---------------- */
 const W_FAV = 2.5;
-const W_PURCHASE = 3.0;  // multiplied by log1p(qty)
-const W_CLICK = 1.5;     // multiplied by log1p(clicks)
+const W_PURCHASE = 3.0; // * log1p(qty)
+const W_CLICK = 1.5;    // * log1p(clicks)
 const W_CAT_MATCH = 1.0;
-const W_PRICE_PROX = 0.15; // tiny tie-breaker
+const W_PRICE_PROX = 0.15;
 
-/* ---------------------------------------------------
-   Lightweight click tracking in localStorage
---------------------------------------------------- */
+/* ---------------- Lightweight click tracking ---------------- */
 type ClickMap = Record<string, number>;
 const CLICKS_KEY = 'productClicks:v1';
-
 function readClicks(): ClickMap {
   try {
     return JSON.parse(localStorage.getItem(CLICKS_KEY) || '{}') || {};
@@ -64,14 +72,10 @@ function bumpClick(productId: string) {
     const m = readClicks();
     m[productId] = (m[productId] || 0) + 1;
     localStorage.setItem(CLICKS_KEY, JSON.stringify(m));
-  } catch {
-    // swallow
-  }
+  } catch {}
 }
 
-/* ---------------------------------------------------
-   Fetch user's recent orders and aggregate product qty
---------------------------------------------------- */
+/* ---------------- Purchased counts (orders) ---------------- */
 type OrdersResp = {
   data: Array<{
     id: string;
@@ -83,36 +87,49 @@ type OrdersResp = {
   pageSize: number;
   totalPages: number;
 };
-
 function usePurchasedCounts() {
   const token = useAuthStore((s) => s.token);
   return useQuery({
     queryKey: ['orders', 'mine', 'for-recs'],
     enabled: !!token,
+    // Avoid retry spam in logs if validation fails
+    retry: 0,
     queryFn: async () => {
-      // Pull a large page; server can cap safely. We just need a signal map.
-      const { data } = await api.get<OrdersResp>('/api/orders/mine?page=1&pageSize=500', {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      });
+      const PAGE_SIZE = 100; // server max
+      let page = 1;
+      let totalPages = 1;
       const map: Record<string, number> = {};
-      const list = Array.isArray(data?.data) ? data.data : [];
-      for (const o of list) {
-        for (const it of o.items || []) {
-          const pid = (it.product as any)?.id || it.productId;
-          if (!pid) continue;
-          const qty = Number(it.qty || 1);
-          map[pid] = (map[pid] || 0) + (Number.isFinite(qty) ? qty : 1);
+
+      while (page <= totalPages) {
+        const { data } = await api.get<OrdersResp>(
+          `/api/orders/mine?page=${page}&pageSize=${PAGE_SIZE}`,
+          { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+        );
+
+        const list = Array.isArray(data?.data) ? data.data : [];
+        for (const o of list) {
+          for (const it of o.items || []) {
+            const pid = (it.product as any)?.id || it.productId;
+            if (!pid) continue;
+            const qty = Number(it.qty || 1);
+            map[pid] = (map[pid] || 0) + (Number.isFinite(qty) ? qty : 1);
+          }
         }
+
+        totalPages = Math.max(1, Number(data?.totalPages ?? 1));
+        page += 1;
+
+        // hard safety cap in case the API misreports totalPages
+        if (page > 50) break; // at most 5k orders scanned
       }
+
       return map;
     },
     staleTime: 30_000,
   });
 }
 
-/* ---------------------------------------------------
-   Component
---------------------------------------------------- */
+/* ---------------- Component ---------------- */
 export default function Catalog() {
   const { token } = useAuthStore();
   const qc = useQueryClient();
@@ -125,7 +142,7 @@ export default function Catalog() {
     queryFn: async () => (await api.get('/api/products')).data as Product[],
   });
 
-  // My favorites (as a Set of product IDs)
+  // My favorites (Set of product IDs)
   const favQuery = useQuery({
     queryKey: ['favorites', 'mine'],
     enabled: !!token,
@@ -141,7 +158,7 @@ export default function Catalog() {
   // Purchased map (productId -> totalQty)
   const purchasedQ = usePurchasedCounts();
 
-  // Toggle favorite mutation
+  // Toggle favorite
   const toggleFav = useMutation({
     mutationFn: async ({ productId }: { productId: string }) => {
       const { data } = await api.post<{ favorited: boolean }>(
@@ -184,11 +201,10 @@ export default function Catalog() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<6 | 9 | 12>(9);
 
-  const products = data ?? [];
+  const products = useMemo(() => (data ?? []).filter((p) => p.stock === true), [data]);
 
   // Normalize for search
-  const norm = (s: string) =>
-    s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const norm = (s: string) => s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
   // Suggestions (across all products)
   const suggestions = useMemo(() => {
@@ -212,15 +228,8 @@ export default function Catalog() {
       .map((x) => x.p);
   }, [products, query]);
 
-  /**
-   * FACETS & FILTERED LIST (respects query).
-   * Category counts respect selected price ranges; price counts respect selected categories.
-   */
-  const {
-    categories,
-    visiblePriceBuckets,
-    filtered,
-  } = useMemo(() => {
+  /* -------- FACETS & FILTERED LIST (respects query) -------- */
+  const { categories, visiblePriceBuckets, filtered } = useMemo(() => {
     const q = norm(query.trim());
     const baseByQuery = products.filter((p) => {
       if (!q) return true;
@@ -264,7 +273,7 @@ export default function Catalog() {
       .map((b, i) => ({ bucket: b, idx: i, count: priceCounts[i] || 0 }))
       .filter((x) => x.count > 0);
 
-    // Final pre-sort filtering
+    // Final list (pre-sort)
     const filteredCore = baseByQuery.filter((p) => {
       const price = Number(p.price) || 0;
       const catId = p.categoryId ?? 'uncategorized';
@@ -276,9 +285,7 @@ export default function Catalog() {
     return { categories, visiblePriceBuckets, filtered: filteredCore };
   }, [products, selectedCategories, selectedBucketIdxs, query]);
 
-  /* -------------------------------------------
-     Build recommendation scores for 'relevance'
-  ------------------------------------------- */
+  /* ---------------- Recommendation score for relevance ---------------- */
   const recScored = useMemo(() => {
     if (sortKey !== 'relevance') return filtered;
 
@@ -286,13 +293,12 @@ export default function Catalog() {
     const purchased = purchasedQ.data ?? {};
     const clicks = readClicks();
 
-    // Derive top categories from signals
     const catWeight = new Map<string, number>();
     for (const p of filtered) {
       const catId = p.categoryId ?? 'uncategorized';
       let w = 0;
       if (favSet.has(p.id)) w += 2;
-      if (purchased[p.id]) w += Math.log1p(purchased[p.id]); // smaller than per-item weight
+      if (purchased[p.id]) w += Math.log1p(purchased[p.id]);
       if (clicks[p.id]) w += 0.5 * Math.log1p(clicks[p.id]);
       if (w > 0) catWeight.set(catId, (catWeight.get(catId) || 0) + w);
     }
@@ -300,10 +306,9 @@ export default function Catalog() {
       Array.from(catWeight.entries())
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5)
-        .map(([id]) => id),
+        .map(([id]) => id)
     );
 
-    // Historical median price (for a tiny tie-breaker)
     const purchasedPrices: number[] = [];
     for (const p of filtered) {
       const q = purchased[p.id];
@@ -314,20 +319,15 @@ export default function Catalog() {
     }
     purchasedPrices.sort((a, b) => a - b);
     const medianPrice =
-      purchasedPrices.length === 0
-        ? null
-        : purchasedPrices[Math.floor(purchasedPrices.length / 2)];
+      purchasedPrices.length === 0 ? null : purchasedPrices[Math.floor(purchasedPrices.length / 2)];
 
-    function priceProximityScore(price: number) {
+    const priceProximityScore = (price: number) => {
       if (medianPrice == null) return 0;
       const diff = Math.abs(price - medianPrice);
-      // normalize by 20% of median
       const denom = Math.max(1, 0.2 * medianPrice);
-      const v = Math.max(0, 1 - diff / denom); // 1 when identical, 0 when far
-      return v;
-    }
+      return Math.max(0, 1 - diff / denom);
+    };
 
-    // Score each product
     const scored = filtered.map((p) => {
       const fav = favSet.has(p.id) ? 1 : 0;
       const buy = Math.log1p(purchased[p.id] || 0);
@@ -335,17 +335,10 @@ export default function Catalog() {
       const catMatch = topCats.has(p.categoryId ?? 'uncategorized') ? 1 : 0;
       const prox = priceProximityScore(Number(p.price) || 0);
 
-      const score =
-        W_FAV * fav +
-        W_PURCHASE * buy +
-        W_CLICK * clk +
-        W_CAT_MATCH * catMatch +
-        W_PRICE_PROX * prox;
-
+      const score = W_FAV * fav + W_PURCHASE * buy + W_CLICK * clk + W_CAT_MATCH * catMatch + W_PRICE_PROX * prox;
       return { p, score };
     });
 
-    // Sort by score desc, then lightly by popularity proxy (clicks + purchases + price)
     return scored
       .sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
@@ -357,10 +350,9 @@ export default function Catalog() {
       .map((x) => x.p);
   }, [filtered, sortKey, favQuery.data, purchasedQ.data]);
 
-  // Which list do we show based on sort
+  // Which list to show
   const sorted = useMemo(() => {
     if (sortKey === 'relevance') return recScored;
-
     const arr = [...filtered].sort((a, b) => {
       if (sortKey === 'price-asc') return (Number(a.price) || 0) - (Number(b.price) || 0);
       if (sortKey === 'price-desc') return (Number(b.price) || 0) - (Number(a.price) || 0);
@@ -407,172 +399,197 @@ export default function Catalog() {
     setSelectedCategories([]);
     setSelectedBucketIdxs([]);
   };
-
   const goTo = (p: number) => {
     const clamped = Math.min(Math.max(1, p), totalPages);
     setPage(clamped);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
-
   const isFav = (id: string) => favQuery.data?.has(id);
 
+  const Shimmer = () => <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />;
+
   return (
-    <div className="max-w-screen-2xl mx-auto bg-bg-soft min-h-screen">
-      <div className="md:flex md:items-start md:gap-8">
-        {/* LEFT: filters */}
-        <aside className="space-y-8 md:w-72 lg:w-80 md:flex-none px-4 md:px-6 bg-primary-600 min-h-screen text-white">
-          <section>
-            <h3 className="pt-4 text-white/90">Filters</h3>
-            <div className="flex items-center gap-3 mb-3">
-              <h2 className="font-semibold">Categories</h2>
-              <button
-                className="text-sm underline disabled:opacity-40"
-                onClick={() => setSelectedCategories([])}
-                disabled={selectedCategories.length === 0}
+    <div className="max-w-screen-2xl mx-auto min-h-screen">
+      {/* Neon gradient hero */}
+      <div className="relative overflow-hidden bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700">
+        <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
+        <div className="relative px-4 md:px-8 pt-10 pb-8">
+          <div className="flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              {/* CHANGED: make hero text white for contrast on blue bg */}
+              <motion.h1
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-2xl md:text-3xl font-bold tracking-tight text-white"
               >
-                Clear
-              </button>
+                Discover Products <Sparkles className="inline text-white ml-1" size={22} />
+              </motion.h1>
+              <p className="text-sm text-white/80">Fresh picks, smart sorting, and instant search—tailored for you.</p>
             </div>
-            <ul className="space-y-2">
-              {categories.map((c) => {
-                const checked = selectedCategories.includes(c.id);
-                return (
-                  <li key={c.id} className="flex items-center gap-2 text-accent-200">
-                    <input
-                      id={`cat-${c.id}`}
-                      type="checkbox"
-                      className="size-4"
-                      checked={checked}
-                      onChange={() => toggleCategory(c.id)}
-                    />
-                    <label
-                      htmlFor={`cat-${c.id}`}
-                      className={`flex-1 flex items-center justify-between px-2 py-1 rounded border ${
-                        checked ? 'bg-black text-white' : 'hover:bg-black/5'
-                      }`}
-                    >
-                      <span className="truncate">{c.name}</span>
-                      <span className="ml-2 text-xs opacity-80">({c.count})</span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
+          </div>
+        </div>
+      </div>
 
-          <section>
-            <div className="flex items-center gap-3 mb-3">
-              <h2 className="font-semibold">Price</h2>
-              <button
-                className="text-sm underline disabled:opacity-40"
-                onClick={() => setSelectedBucketIdxs([])}
-                disabled={selectedBucketIdxs.length === 0}
-              >
-                Clear
-              </button>
+      <div className="md:flex md:items-start md:gap-8 px-4 md:px-8 pb-10">
+        {/* LEFT: Filters (glass) */}
+        <aside className="space-y-6 md:w-72 lg:w-80 md:flex-none mt-6 md:mt-10">          
+          <motion.section
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-2xl border border-white/40 bg-white/80 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-5"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="inline-flex items-center gap-2">
+                <span className="inline-grid place-items-center w-8 h-8 rounded-xl bg-gradient-to-br from-fuchsia-500/15 to-cyan-500/15 text-fuchsia-600">
+                  <SlidersHorizontal size={18} />
+                </span>
+                <h3 className="font-semibold text-zinc-900">Filters</h3>
+              </div>
+              {(selectedCategories.length || selectedBucketIdxs.length) > 0 && (
+                <button className="text-sm text-fuchsia-700 hover:underline" onClick={clearFilters}>
+                  Clear all
+                </button>
+              )}
             </div>
-            <ul className="space-y-2">
-              {visiblePriceBuckets.map(({ bucket, idx, count }) => {
-                const checked = selectedBucketIdxs.includes(idx);
-                return (
-                  <li key={bucket.label} className="flex items-center gap-2 text-accent-200">
-                    <input
-                      id={`price-${idx}`}
-                      type="checkbox"
-                      className="size-4"
-                      checked={checked}
-                      onChange={() => toggleBucket(idx)}
-                    />
-                    <label
-                      htmlFor={`price-${idx}`}
-                      className={`flex-1 flex items-center justify-between px-2 py-1 rounded border ${
-                        checked ? 'bg-black text-white' : 'hover:bg-black/5'
-                      }`}
-                    >
-                      <span>{bucket.label}</span>
-                      <span className="ml-2 text-xs opacity-80">({count})</span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
 
-          {(selectedCategories.length || selectedBucketIdxs.length) > 0 && (
-            <button className="text-sm underline" onClick={clearFilters}>
-              Clear all filters
-            </button>
-          )}
+            {/* Categories */}
+            <div className="mb-6">
+              <div className="flex items-center gap-3 mb-3">
+                <h4 className="text-sm font-semibold text-zinc-800">Categories</h4>
+                <button
+                  className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
+                  onClick={() => setSelectedCategories([])}
+                  disabled={selectedCategories.length === 0}
+                >
+                  Reset
+                </button>
+              </div>
+              <ul className="space-y-2">
+                {categories.length === 0 && <Shimmer />}
+                {categories.map((c) => {
+                  const checked = selectedCategories.includes(c.id);
+                  return (
+                    <li key={c.id}>
+                      <button
+                        onClick={() => toggleCategory(c.id)}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
+                          checked ? 'bg-zinc-900 text-white' : 'bg-white/80 hover:bg-black/5 text-zinc-800'
+                        }`}
+                      >
+                        <span className="truncate">{c.name}</span>
+                        <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>({c.count})</span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+
+            {/* Price */}
+            <div>
+              <div className="flex items-center gap-3 mb-3">
+                <h4 className="text-sm font-semibold text-zinc-800">Price</h4>
+                <button
+                  className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
+                  onClick={() => setSelectedBucketIdxs([])}
+                  disabled={selectedBucketIdxs.length === 0}
+                >
+                  Reset
+                </button>
+              </div>
+              <ul className="space-y-2">
+                {visiblePriceBuckets.length === 0 && <Shimmer />}
+                {visiblePriceBuckets.map(({ bucket, idx, count }) => {
+                  const checked = selectedBucketIdxs.includes(idx);
+                  return (
+                    <li key={bucket.label}>
+                      <button
+                        onClick={() => toggleBucket(idx)}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
+                          checked ? 'bg-zinc-900 text-white' : 'bg-white/80 hover:bg-black/5 text-zinc-800'
+                        }`}
+                      >
+                        <span>{bucket.label}</span>
+                        <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>({count})</span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          </motion.section>
         </aside>
 
-        {/* RIGHT: title + controls + grid + pagination */}
-        <section className="mt-8 md:mt-0 flex-1 px-4 md:px-0">
-          <div className="mb-2">
-            <h2 className="text-2xl font-semibold text-primary-700">Products</h2>
+        {/* RIGHT: Title + controls + grid */}
+        <section className="mt-8 md:mt-0 flex-1">
+          <div className="mb-3">
+            {/* CHANGED: white text variant in case bg behind is blue */}
+            <h2 className="text-2xl font-semibold text-zinc-900">Products</h2>
           </div>
 
-          {/* Controls BELOW the title */}
-          <div className="flex flex-wrap items-center gap-4 mb-4 pr-3">
-            {/* Search (2× width) */}
+          {/* Controls: Search + Sort + Per page */}
+          <div className="flex flex-wrap items-center gap-4 mb-5">
             <div className="relative w-[36rem] max-w-full">
-              <input
-                ref={inputRef}
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                  setShowSuggest(true);
-                  setActiveIdx(0);
-                }}
-                onFocus={() => query && setShowSuggest(true)}
-                onKeyDown={(e) => {
-                  if (!showSuggest || suggestions.length === 0) return;
-                  if (e.key === 'ArrowDown') {
-                    e.preventDefault();
-                    setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                  } else if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    setActiveIdx((i) => Math.max(i - 1, 0));
-                  } else if (e.key === 'Enter') {
-                    e.preventDefault();
-                    const pick = suggestions[activeIdx];
-                    if (pick) {
-                      bumpClick(pick.id);
-                      nav(`/product/${pick.id}`);
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+                <input
+                  ref={inputRef}
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setShowSuggest(true);
+                    setActiveIdx(0);
+                  }}
+                  onFocus={() => query && setShowSuggest(true)}
+                  onKeyDown={(e) => {
+                    if (!showSuggest || suggestions.length === 0) return;
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      setActiveIdx((i) => Math.max(i - 1, 0));
+                    } else if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const pick = suggestions[activeIdx];
+                      if (pick) {
+                        bumpClick(pick.id);
+                        nav(`/product/${pick.id}`);
+                      }
+                      setShowSuggest(false);
+                    } else if (e.key === 'Escape') {
+                      setShowSuggest(false);
                     }
-                    setShowSuggest(false);
-                  } else if (e.key === 'Escape') {
-                    setShowSuggest(false);
-                  }
-                }}
-                placeholder="Search products or categories…"
-                className="border rounded px-4 py-3 w-full bg-white text-base"
-                aria-label="Search products"
-              />
+                  }}
+                  placeholder="Search products or categories…"
+                  className="border rounded-2xl pl-9 pr-4 py-3 w-full bg-white/90 backdrop-blur focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
+                  aria-label="Search products"
+                />
+              </div>
+
               {showSuggest && query && suggestions.length > 0 && (
                 <div
                   ref={suggestRef}
-                  className="absolute left-0 right-0 mt-2 bg-white border rounded-xl shadow-2xl z-20 overflow-hidden"
+                  className="absolute left-0 right-0 mt-3 bg-white border rounded-2xl shadow-2xl z-20 overflow-hidden"
                 >
-                  <ul className="max-h-[80vh] overflow-auto p-2">
+                  <ul className="max-h-[80vh] overflow-auto p-3">
                     {suggestions.map((p, i) => {
                       const active = i === activeIdx;
                       return (
-                        <li key={p.id} className="mb-2 last:mb-0">
+                        <li key={p.id} className="mb-3 last:mb-0">
                           <Link
                             to={`/product/${p.id}`}
-                            className={`flex items-center gap-4 px-3 py-3 rounded-lg hover:bg-black/5 ${
-                              active ? 'bg-black/5' : ''
-                            }`}
+                            className={`flex items-center gap-4 px-3 py-3 rounded-xl hover:bg-black/5 ${active ? 'bg-black/5' : ''}`}
                             onClick={() => bumpClick(p.id)}
                           >
                             {p.imagesJson?.[0] ? (
                               <img
                                 src={p.imagesJson[0]}
                                 alt={p.title}
-                                className="w-[120px] h-[120px] object-cover rounded border"
+                                className="w-[120px] h-[120px] object-cover rounded-xl border"
                               />
                             ) : (
-                              <div className="w-[120px] h-[120px] rounded border grid place-items-center text-base text-gray-500">
+                              <div className="w-[120px] h-[120px] rounded-xl border grid place-items-center text-base text-gray-500">
                                 —
                               </div>
                             )}
@@ -596,12 +613,13 @@ export default function Catalog() {
               )}
             </div>
 
-            <div className="text-sm">
-              <label className="mr-2 opacity-70">Sort:</label>
+            <div className="text-sm inline-flex items-center gap-2">
+              <ArrowUpDown size={16} className="text-zinc-600" />
+              <label className="opacity-70">Sort</label>
               <select
                 value={sortKey}
                 onChange={(e) => setSortKey(e.target.value as SortKey)}
-                className="border rounded px-2 py-2 bg-white"
+                className="border rounded-xl px-3 py-2 bg-white/90"
               >
                 <option value="relevance">Relevance</option>
                 <option value="price-asc">Price: Low → High</option>
@@ -609,12 +627,13 @@ export default function Catalog() {
               </select>
             </div>
 
-            <div className="text-sm">
-              <label className="mr-2 opacity-70">Per page:</label>
+            <div className="text-sm inline-flex items-center gap-2">
+              <LayoutGrid size={16} className="text-zinc-600" />
+              <label className="opacity-70">Per page</label>
               <select
                 value={pageSize}
                 onChange={(e) => setPageSize(Number(e.target.value) as any)}
-                className="border rounded px-2 py-2 bg-white"
+                className="border rounded-xl px-3 py-2 bg-white/90"
               >
                 <option value={6}>6</option>
                 <option value={9}>9</option>
@@ -624,102 +643,100 @@ export default function Catalog() {
           </div>
 
           {sorted.length === 0 ? (
-            <p>No products match your filters.</p>
+            <p className="text-sm text-zinc-600">No products match your filters.</p>
           ) : (
             <>
-              <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(280px,1fr))] pr-3">
+              {/* CHANGED: Force three items per row on large screens */}
+              <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
                 {pageItems.map((p) => {
                   const fav = isFav(p.id);
                   return (
-                    <article key={p.id} className="border rounded p-4 grid gap-3 auto-rows-min bg-white">
+                    <motion.article
+                      key={p.id}
+                      whileHover={{ y: -4 }}
+                      className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden"
+                    >
                       <Link
                         to={`/product/${p.id}`}
-                        className="grid gap-3 auto-rows-min"
+                        className="block"
                         onClick={() => bumpClick(p.id)}
                       >
-                        {p.imagesJson?.[0] && (
+                        {p.imagesJson?.[0] ? (
                           <img
                             src={p.imagesJson[0]}
                             alt={p.title}
-                            className="w-full h-40 object-cover rounded border"
+                            className="w-full h-48 object-cover"
                           />
+                        ) : (
+                          <div className="w-full h-48 grid place-items-center text-zinc-400">No image</div>
                         )}
-                        <h3 className="font-medium text-primary-700">{p.title}</h3>
-                        <h3 className="font-small text-black-700 text-sm">{p.categoryName}</h3>
-                        <p className="text-sm mt-1 font-semibold">
-                          {ngn.format(Number(p.price) || 0)}
-                        </p>
                       </Link>
 
-                      <div className="flex items-center justify-between">
-                        <button
-                          aria-label={fav ? 'Remove from wishlist' : 'Add to wishlist'}
-                          className={`text-lg ${fav ? 'text-red-600' : 'text-gray-500 hover:text-red-600'}`}
-                          onClick={() => {
-                            if (!token) {
-                              openModal({ title: 'Wishlist', message: 'Please login to use the wishlist.' });
-                              return;
-                            }
-                            toggleFav.mutate({ productId: p.id });
-                          }}
-                          title={fav ? 'Remove from wishlist' : 'Add to wishlist'}
-                        >
-                          {fav ? '♥' : '♡'}
-                        </button>
-
-                        <Link to="/wishlist" className="text-sm underline opacity-80">
-                          View wishlist
+                      <div className="p-4">
+                        <Link to={`/product/${p.id}`} onClick={() => bumpClick(p.id)}>
+                          <h3 className="font-semibold text-zinc-900 line-clamp-1">{p.title}</h3>
+                          <div className="text-xs text-zinc-500">{p.categoryName || 'Uncategorized'}</div>
+                          <p className="text-base mt-1 font-semibold">{ngn.format(Number(p.price) || 0)}</p>
                         </Link>
+
+                        <div className="mt-3 flex items-center justify-between">
+                          <button
+                            aria-label={fav ? 'Remove from wishlist' : 'Add to wishlist'}
+                            className={`inline-flex items-center gap-1 text-sm rounded-full border px-3 py-1.5 transition ${
+                              fav
+                                ? 'bg-rose-50 text-rose-600 border-rose-200'
+                                : 'bg-white hover:bg-zinc-50 text-zinc-700'
+                            }`}
+                            onClick={() => {
+                              if (!token) {
+                                openModal({ title: 'Wishlist', message: 'Please login to use the wishlist.' });
+                                return;
+                              }
+                              toggleFav.mutate({ productId: p.id });
+                            }}
+                            title={fav ? 'Remove from wishlist' : 'Add to wishlist'}
+                          >
+                            {fav ? <Heart size={16} /> : <HeartOff size={16} />}
+                            <span>{fav ? 'Wishlisted' : 'Wishlist'}</span>
+                          </button>
+
+                          <Link to="/wishlist" className="text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1">
+                            <Star size={16} /> View list
+                          </Link>
+                        </div>
                       </div>
-                    </article>
+                    </motion.article>
                   );
                 })}
               </div>
 
               {/* Pagination */}
-              <div className="mt-6 flex items-center justify-center gap-2">
-                <button
-                  className="px-3 py-1 border rounded disabled:opacity-50"
-                  onClick={() => goTo(currentPage - 1)}
-                  disabled={currentPage <= 1}
-                >
-                  Prev
-                </button>
+              <div className="mt-8 flex items-center justify-between">
+                <div className="text-sm text-zinc-600">
+                  Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="px-3 py-1.5 border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                    onClick={() => goTo(currentPage - 1)}
+                    disabled={currentPage <= 1}
+                  >
+                    Prev
+                  </button>
 
-                {Array.from({ length: totalPages }).map((_, i) => {
-                  const p = i + 1;
-                  const active = p === currentPage;
-                  const shouldShow = p === 1 || p === totalPages || Math.abs(p - currentPage) <= 1;
-                  const isEdgeGap =
-                    (p === 2 && currentPage > 3) ||
-                    (p === totalPages - 1 && currentPage < totalPages - 2);
+                  <span className="text-sm text-zinc-700">
+                    Page {currentPage} / {totalPages}
+                  </span>
 
-                  if (!shouldShow && !isEdgeGap) return null;
-                  if (isEdgeGap) return <span key={`gap-${p}`} className="px-1">…</span>;
-
-                  return (
-                    <button
-                      key={p}
-                      onClick={() => goTo(p)}
-                      className={`px-3 py-1 border rounded ${active ? 'bg-accent-600 text-white' : 'hover:bg-black/5'}`}
-                    >
-                      {p}
-                    </button>
-                  );
-                })}
-
-                <button
-                  className="px-3 py-1 border rounded disabled:opacity-50"
-                  onClick={() => goTo(currentPage + 1)}
-                  disabled={currentPage >= totalPages}
-                >
-                  Next
-                </button>
+                  <button
+                    className="px-3 py-1.5 border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                    onClick={() => goTo(currentPage + 1)}
+                    disabled={currentPage >= totalPages}
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
-
-              <p className="mt-3 text-center text-sm opacity-70">
-                Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
-              </p>
             </>
           )}
         </section>
