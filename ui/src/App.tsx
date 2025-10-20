@@ -53,7 +53,7 @@ export default function App() {
         <main className="w-full px-4 md:px-8 flex-1 bg-primary-100">
           <div className="max-w-7xl mx-auto">
             <Routes>
-              <Route path="/" element={!token? <Catalog /> : ((role?.toUpperCase() === 'SHOPPER')?<Catalog />:<AdminDashboard />)} />
+              <Route path="/" element={<Catalog />} />
               <Route path="/product/:id" element={<ProductDetail />} />
               <Route path="/cart" element={<Cart />} />
 
@@ -77,7 +77,7 @@ export default function App() {
               <Route
                 path="/checkout"
                 element={
-                  <ProtectedRoute roles={['SHOPPER', 'ADMIN', 'SUPER_ADMIN']}>
+                  <ProtectedRoute roles={['SHOPPER', 'SUPER_ADMIN']}>
                     <Checkout />
                   </ProtectedRoute>
                 }
@@ -86,7 +86,7 @@ export default function App() {
               <Route
                 path="/wishlist"
                 element={
-                  <ProtectedRoute roles={['SHOPPER', 'SUPER_ADMIN']}>
+                  <ProtectedRoute roles={['SHOPPER', 'ADMIN', 'SUPER_ADMIN']}>
                     <Wishlist />
                   </ProtectedRoute>
                 }

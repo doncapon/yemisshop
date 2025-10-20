@@ -347,54 +347,149 @@ router.get('/recent', authMiddleware, async (req, res, next) => {
     const take = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, limitRaw)) : 5;
 
     const orders = await prisma.order.findMany({
-      where: { userId: req.user!.id },
+      where: {
+        // use current user rather than a hard-coded id
+        userId: req.user!.id,
+      },
       orderBy: { createdAt: 'desc' },
       take,
       include: {
+        // if you want to show last few payments per order
         payments: {
           orderBy: { createdAt: 'desc' },
+          take: 5,
           select: {
             id: true,
             reference: true,
+            amount: true,       // <— valid on Payment
             status: true,
             channel: true,
             provider: true,
             createdAt: true,
+            paidAt: true,
+            // (do NOT select title/unitPrice here; they don't exist on Payment)
           },
-          take: 5,
+        },
+
+        // OPTIONAL: include items if you want product/line details in this response
+        items: {
+          select: {
+            id: true,
+            productId: true,
+            variantId: true,
+            // below assume your new order-item fields; fall back if you still have old ones
+            title: true,
+            unitPrice: true,
+            quantity: true,
+            lineTotal: true,
+          },
         },
       },
     });
 
-    const rows = orders.map((o: any) => {
-      const paid = o.payments.find((p: any) => p.status === 'PAID');
-      const representative = paid ?? o.payments[0] ?? null;
+    // (optional) shape the response
+    const data = orders.map((o: { id: any; createdAt: any; total: any; payments: any[]; items: any; }) => ({
+      id: o.id,
+      createdAt: o.createdAt,
+      total: o.total,
+      // include a compact summary of the most recent payment (if any)
+      latestPayment: o.payments[0] || null,
+      // include items if you included them above
+      items: (o.items || []).map((it: { id: any; productId: any; variantId: any; title: any; unitPrice: any; quantity: any; lineTotal: any; }) => ({
+        id: it.id,
+        productId: it.productId,
+        variantId: it.variantId,
+        title: it.title ?? '—',
+        unitPrice: it.unitPrice,
+        quantity: it.quantity,
+        lineTotal: it.lineTotal,
+      })),
+    }));
 
-      return {
-        orderId: o.id,
-        createdAt: o.createdAt instanceof Date ? o.createdAt.toISOString() : o.createdAt,
-        total: Number(o.total),
-        orderStatus: o.status,
-        payment: representative
-          ? {
-              id: representative.id,
-              reference: representative.reference,
-              status: representative.status,
-              channel: representative.channel,
-              provider: representative.provider,
-              createdAt:
-                representative.createdAt instanceof Date
-                  ? representative.createdAt.toISOString()
-                  : representative.createdAt,
-            }
-          : undefined,
-      };
-    });
+    res.json({ data });
 
-    res.json(rows);
   } catch (e) {
     next(e);
   }
 });
+
+// Compat alias so existing UIs that call /api/admin/payments keep working.
+// Returns the SAME { data: [...] } shape as /api/payments/admin.
+router.get('/admin/compat-alias', authMiddleware, async (req, res, next) => {
+  try {
+    // Require admin:
+    const isAdmin = (r?: string) => r === 'ADMIN' || r === 'SUPER_ADMIN';
+    if (!isAdmin(req.user?.role)) return res.status(403).json({ error: 'Forbidden' });
+
+    // Reuse the same logic by faking the path:
+    (req as any).query.includeItems = (req.query.includeItems ?? '1');
+    (req as any).query.limit = (req.query.limit ?? '20');
+
+    // Call the same code as /api/payments/admin:
+    // easiest is to duplicate handler; but we can also 302 to /api/payments/admin
+    // Here we duplicate minimal logic to avoid surprises:
+
+    const includeItems = String(req.query.includeItems || '') === '1';
+    const q = String(req.query.q || '').trim();
+    const limitRaw = Number(req.query.limit);
+    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 20;
+
+    const where: any = {};
+    if (q) {
+      where.OR = [
+        { reference: { contains: q, mode: 'insensitive' } },
+        { orderId: { contains: q, mode: 'insensitive' } },
+        { order: { user: { email: { contains: q, mode: 'insensitive' } } } },
+      ];
+    }
+
+    const rows = await prisma.payment.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: {
+        order: {
+          select: {
+            id: true,
+            total: true,
+            status: true,
+            user: { select: { email: true } },
+            items: includeItems
+              ? { select: { id: true, title: true, unitPrice: true, quantity: true, status: true } }
+              : false,
+          },
+        },
+      },
+    });
+
+    const data = rows.map((p: { id: any; orderId: any; order: { user: { email: any; }; status: any; }; amount: any; status: any; provider: any; channel: any; reference: any; createdAt: { toISOString: () => any; }; }) => ({
+      id: p.id,
+      orderId: p.orderId,
+      userEmail: p.order?.user?.email || null,
+      amount: Number(p.amount),
+      status: p.status,
+      provider: p.provider,
+      channel: p.channel,
+      reference: p.reference,
+      createdAt: p.createdAt?.toISOString?.() ?? (p as any).createdAt,
+      orderStatus: p.order?.status,
+      items: Array.isArray((p.order as any)?.items)
+        ? (p.order as any).items.map((it: any) => ({
+          id: it.id,
+          title: it.title,
+          unitPrice: Number(it.unitPrice),
+          quantity: Number(it.quantity || 0),
+          lineTotal: Number(it.unitPrice) * Number(it.quantity || 0),
+          status: it.status,
+        }))
+        : undefined,
+    }));
+
+    res.json({ data });
+  } catch (e) {
+    next(e);
+  }
+});
+
 
 export default router;

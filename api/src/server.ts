@@ -10,6 +10,15 @@ import ordersRouter from './routes/orders.js';
 import wishlistRouter from './routes/wishlist.js';
 import favoritesRouter from './routes/favorites.js';
 import adminRouter from './routes/admin.js';
+import adminCatalogRouter from './routes/adminCatalog.js';
+import adminCategoriesRouter from './routes/adminCategories.js';
+import adminBrandsRouter from './routes/adminBrands.js';
+import adminAttributesRouter from './routes/adminAttributes.js';
+import adminProductsRouter from './routes/adminProducts.js';
+import adminSuppliers from './routes/adminSuppliers.js';
+import path from 'path';
+import uploadsRouter from './routes/uploads.js';
+import * as fs from 'fs';
 
 
 const app = express();
@@ -40,6 +49,22 @@ app.use(express.json());
 app.use('/api/auth', authRouter);
 app.use('/api/profile', profileRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/admin/catalog', adminCatalogRouter);
+app.use('/api/admin/categories', adminCategoriesRouter);
+app.use('/api/admin/brands', adminBrandsRouter);
+app.use('/api/admin/attributes', adminAttributesRouter);
+app.use('/api/admin/products', adminProductsRouter);
+app.use('/api/admin/suppliers', adminSuppliers);
+
+
+const UPLOADS_DIR =
+  process.env.UPLOADS_DIR ?? path.resolve(process.cwd(), 'uploads');
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+// Serve files publicly
+app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d', index: false }));
+// mount the router
+app.use('/api/uploads', uploadsRouter);
 
 /* 4) Payments:
    - Mount normal JSON endpoints at /api/payments
@@ -51,7 +76,6 @@ app.post(
   express.raw({ type: '*/*' }),          // raw body only here
   paymentsRouter                         // router should handle POST /webhook
 );
-
 
 // 5) products
 app.use('/api/products', productsRouter);

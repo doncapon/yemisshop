@@ -5,14 +5,29 @@ import { Link, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
 
+/* ---------------- Types (aligned with Catalog) ---------------- */
+type Variant = {
+  id: string;
+  sku?: string;
+  price?: number | null;
+  inStock?: boolean;
+  imagesJson?: string[];
+};
 type Product = {
   id: string;
   title: string;
-  description: string;
-  price: number;
+  description?: string;
+  price?: number;
+  inStock?: boolean;
   imagesJson?: string[];
   categoryId?: string | null;
   categoryName?: string | null;
+  brandName?: string | null;
+  brand?: { id: string; name: string } | null;
+  variants?: Variant[];
+  ratingAvg?: number | null;
+  ratingCount?: number | null;
+  attributesSummary?: { attribute: string; value: string }[];
 };
 
 const ngn = new Intl.NumberFormat('en-NG', {
@@ -21,24 +36,60 @@ const ngn = new Intl.NumberFormat('en-NG', {
   maximumFractionDigits: 2,
 });
 
-/* -------------------- Local cart helper -------------------- */
+/* ---------------- Helpers (shared with Catalog semantics) ---------------- */
+function getBrandName(p: Product) {
+  return (p.brand?.name || p.brandName || '').trim();
+}
+function hasVariantInStock(p: Product) {
+  return (p.variants || []).some(v => v.inStock !== false);
+}
+function getMinPrice(p: Product): number {
+  const base = Number(p.price ?? 0);
+  const mins = [base, ...(p.variants ?? []).map(v => Number(v?.price ?? base))].filter(Number.isFinite);
+  return mins.length ? Math.min(...mins) : 0;
+}
+function normalizeProductsPayload(payload: any): Product[] {
+  const raw: any[] = Array.isArray(payload) ? payload : (payload?.data ?? []);
+  return raw
+    .filter((x) => x && typeof x.id === 'string')
+    .map((x) => ({
+      id: String(x.id),
+      title: String(x.title ?? ''),
+      description: x.description ?? '',
+      price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
+      inStock: x.inStock !== false,
+      imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
+      categoryId: x.categoryId ?? null,
+      categoryName: x.categoryName ?? null,
+      brandName: x.brandName ?? x.brand?.name ?? null,
+      brand: x.brand ? { id: String(x.brand.id), name: String(x.brand.name) } : null,
+      variants: Array.isArray(x.variants) ? x.variants : [],
+      ratingAvg: x.ratingAvg ?? null,
+      ratingCount: x.ratingCount ?? null,
+      attributesSummary: Array.isArray(x.attributesSummary) ? x.attributesSummary : [],
+    })) as Product[];
+}
+
+/* ---------------- Local cart helper ---------------- */
 function addToLocalCart(p: Product) {
   try {
     const raw = localStorage.getItem('cart');
     const cart: any[] = raw ? JSON.parse(raw) : [];
     const idx = cart.findIndex((x) => x.productId === p.id);
+
+    const unit = getMinPrice(p);
     if (idx >= 0) {
       cart[idx].qty = Math.max(1, Number(cart[idx].qty) || 1) + 1;
-      const unit = Number(cart[idx].price ?? p.price) || 0;
+      cart[idx].price = unit;           // legacy
       cart[idx].totalPrice = unit * cart[idx].qty;
+      cart[idx].title = p.title;
     } else {
-      const unit = Number(p.price) || 0;
       cart.push({
         productId: p.id,
         title: p.title,
         qty: 1,
-        totalPrice: unit, // new shape
-        price: unit,      // back-compat if needed elsewhere
+        totalPrice: unit, // preferred
+        price: unit,      // legacy
       });
     }
     localStorage.setItem('cart', JSON.stringify(cart));
@@ -52,14 +103,14 @@ export default function Wishlist() {
   const nav = useNavigate();
   const qc = useQueryClient();
 
-  // Proper redirect outside of render
+  // Redirect unauthenticated users
   useEffect(() => {
     if (!token) {
       nav('/login', { replace: true, state: { from: { pathname: '/wishlist' } } });
     }
   }, [token, nav]);
 
-  // 1) My favorite product IDs
+  /* 1) Favorite product IDs */
   const favQuery = useQuery({
     queryKey: ['favorites', 'mine'],
     enabled: !!token,
@@ -73,27 +124,34 @@ export default function Wishlist() {
     staleTime: 30_000,
   });
 
-  // 2) All products (could be replaced with a /favorites/products endpoint if you have it)
+  /* 2) All products (rich) and then filter client-side by fav ids.
+        If you add /api/favorites/products later, you can switch to that. */
   const productsQuery = useQuery({
-    queryKey: ['products'],
-    queryFn: async () => (await api.get('/api/products')).data as Product[],
+    queryKey: ['products', { include: 'brand,variants,attributes' }],
+    queryFn: async () => {
+      const res = await api.get('/api/products?include=brand,variants,attributes');
+      return normalizeProductsPayload(res.data);
+    },
     staleTime: 30_000,
   });
 
   const loading = productsQuery.isLoading || favQuery.isLoading;
   const error = productsQuery.isError || favQuery.isError;
 
-  const favorites = useMemo(() => {
-    if (!productsQuery.data) return [];
-    return productsQuery.data.filter((p) => favQuery.data.has(p.id));
+  const favorites: Product[] = useMemo(() => {
+    const products = productsQuery.data ?? [];
+    const favIds = favQuery.data ?? new Set<string>();
+    return products.filter((p) => favIds.has(p.id));
   }, [productsQuery.data, favQuery.data]);
 
-  // Remove one
+  /* Remove one (toggle off) */
   const removeOne = useMutation({
     mutationFn: async ({ productId }: { productId: string }) => {
-      await api.delete(`/api/favorites/${productId}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      });
+      await api.post(
+        '/api/favorites/toggle',
+        { productId },
+        token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
+      );
       return { productId };
     },
     onMutate: async ({ productId }) => {
@@ -112,12 +170,19 @@ export default function Wishlist() {
     },
   });
 
-  // Clear all
+  /* Clear all — bulk toggle off client-side */
   const clearAll = useMutation({
     mutationFn: async () => {
-      await api.delete('/api/favorites', {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      });
+      const ids = Array.from(favQuery.data ?? []);
+      await Promise.allSettled(
+        ids.map((productId) =>
+          api.post(
+            '/api/favorites/toggle',
+            { productId },
+            token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
+          )
+        )
+      );
     },
     onSuccess: () => {
       qc.setQueryData(['favorites', 'mine'], new Set<string>());
@@ -214,75 +279,98 @@ export default function Wishlist() {
             </div>
 
             <div className="grid gap-5 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]">
-              {favorites.map((p) => (
-                <article
-                  key={p.id}
-                  className="group relative rounded-2xl border border-border bg-white overflow-hidden shadow-sm transition
-                             hover:shadow-lg hover:-translate-y-0.5"
-                >
-                  <Link
-                    to={`/product/${p.id}`}
-                    className="block"
-                    aria-label={`View ${p.title}`}
-                    title={p.title}
+              {favorites.map((p) => {
+                const minPrice = getMinPrice(p);
+                const available = p.inStock || hasVariantInStock(p);
+                const brand = getBrandName(p);
+                return (
+                  <article
+                    key={p.id}
+                    className="group relative rounded-2xl border border-border bg-white overflow-hidden shadow-sm transition
+                               hover:shadow-lg hover:-translate-y-0.5"
                   >
-                    {p.imagesJson?.[0] ? (
-                      <img
-                        src={p.imagesJson[0]}
-                        alt={p.title}
-                        className="h-56 w-full object-cover transition duration-300 group-hover:scale-[1.02]"
-                        loading="lazy"
-                      />
-                    ) : (
-                      <div className="h-56 w-full grid place-items-center text-sm text-ink-soft bg-zinc-50">
-                        No image
-                      </div>
-                    )}
-                  </Link>
+                    <Link
+                      to={`/product/${p.id}`}
+                      className="block"
+                      aria-label={`View ${p.title}`}
+                      title={p.title}
+                    >
+                      <div className="relative">
+                        {p.imagesJson?.[0] ? (
+                          <img
+                            src={p.imagesJson[0]}
+                            alt={p.title}
+                            className="h-56 w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="h-56 w-full grid place-items-center text-sm text-ink-soft bg-zinc-50">
+                            No image
+                          </div>
+                        )}
 
-                  {/* Top-right action (remove) */}
-                  <button
-                    onClick={() => removeOne.mutate({ productId: p.id })}
-                    className="absolute right-3 top-3 rounded-full bg-white/90 backdrop-blur border px-3 py-1 text-xs
-                               hover:bg-white active:scale-95 transition"
-                    aria-label="Remove from wishlist"
-                    title="Remove"
-                  >
-                    Remove
-                  </button>
-
-                  {/* Body */}
-                  <div className="p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <h3 className="font-semibold text-ink line-clamp-2">{p.title}</h3>
-                      {p.categoryName && (
-                        <span className="ml-auto shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-ink-soft bg-surface">
-                          {p.categoryName}
+                        <span
+                          className={`absolute left-3 top-3 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium
+                                      ${available ? 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20' : 'bg-rose-600/10 text-rose-700 border border-rose-600/20'}`}
+                        >
+                          {available ? 'In stock' : 'Out of stock'}
                         </span>
-                      )}
-                    </div>
+                      </div>
+                    </Link>
 
-                    <div className="mt-2 text-lg font-semibold">{ngn.format(Number(p.price) || 0)}</div>
+                    {/* Top-right action (remove) */}
+                    <button
+                      onClick={() => removeOne.mutate({ productId: p.id })}
+                      className="absolute right-3 top-3 rounded-full bg-white/90 backdrop-blur border px-3 py-1 text-xs
+                                 hover:bg-white active:scale-95 transition"
+                      aria-label="Remove from wishlist"
+                      title="Remove"
+                    >
+                      Remove
+                    </button>
 
-                    <div className="mt-3 flex items-center gap-2">
-                      <Link
-                        to={`/product/${p.id}`}
-                        className="inline-flex items-center justify-center rounded-xl border border-border bg-white px-3 py-2 text-sm
-                                   hover:bg-black/5 active:scale-[.98] transition"
-                      >
-                        View
-                      </Link>
-                      <button
-                        onClick={() => addToLocalCart(p)}
-                        className="inline-flex items-center justify-center rounded-xl bg-primary-600 text-white px-3 py-2 text-sm font-medium
-                                   hover:bg-primary-700 active:bg-primary-800 focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
-                      >
-                        Add to cart
-                      </button>
+                    {/* Body */}
+                    <div className="p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <h3 className="font-semibold text-ink line-clamp-2">{p.title}</h3>
+                        {p.categoryName && (
+                          <span className="ml-auto shrink-0 rounded-full border px-2 py-0.5 text-[11px] text-ink-soft bg-surface">
+                            {p.categoryName}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-1 text-xs text-ink-soft line-clamp-1">
+                        {brand ? `${brand} • ` : ''}{available ? 'Available' : 'Unavailable'}
+                      </div>
+
+                      <div className="mt-2 text-lg font-semibold">
+                        {ngn.format(minPrice)}
+                        {p.variants && p.variants.length > 0 && minPrice < Number(p.price ?? Infinity) && (
+                          <span className="ml-1 text-[11px] text-ink-soft">from variants</span>
+                        )}
+                      </div>
+
+                      <div className="mt-3 flex items-center gap-2">
+                        <Link
+                          to={`/product/${p.id}`}
+                          className="inline-flex items-center justify-center rounded-xl border border-border bg-white px-3 py-2 text-sm
+                                     hover:bg-black/5 active:scale-[.98] transition"
+                        >
+                          View
+                        </Link>
+                        <button
+                          onClick={() => addToLocalCart(p)}
+                          className="inline-flex items-center justify-center rounded-xl bg-primary-600 text-white px-3 py-2 text-sm font-medium
+                                     hover:bg-primary-700 active:bg-primary-800 focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
+                        >
+                          Add to cart
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                </article>
-              ))}
+                  </article>
+                );
+              })}
             </div>
           </>
         )}

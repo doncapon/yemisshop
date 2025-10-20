@@ -1,796 +1,242 @@
 // src/pages/Orders.tsx
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
 
+/* ---------------- Types (loose to match API) ---------------- */
+type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER' | string;
+
 type OrderItem = {
   id: string;
-  qty: number;
-  unitPrice: string | number;
-  product?: { id: string; title: string } | null;
+  productId?: string | null;
+  title?: string | null;          // stored on OrderItem (optional)
+  unitPrice?: number | string | null;
+  quantity?: number | string | null;
+  lineTotal?: number | string | null;
+  status?: string | null;
+  product?: { title?: string | null } | null; // sometimes included by backend
 };
 
-type Payment = {
+type OrderRow = {
   id: string;
-  status: 'PENDING' | 'PAID' | 'FAILED' | 'CANCELED' | string;
-  provider?: string | null;
-  channel?: string | null;
-  reference?: string | null;
+  userEmail?: string | null;
+  status?: string;
+  total?: number | string | null;
   createdAt?: string;
-};
-
-type Order = {
-  id: string;
-  createdAt: string;
-  status:
-    | 'PENDING'
-    | 'PAID'
-    | 'FAILED'
-    | 'CANCELED'
-    | 'PROCESSING'
-    | 'SHIPPED'
-    | 'DELIVERED'
-    | string;
-  total: number | string;
-  tax?: number | string;
-  shipping?: number | string;
   items?: OrderItem[];
-  payments?: Payment[];
-  shippingAddress?: {
-    city?: string | null;
-    state?: string | null;
-    country?: string | null;
+  payment?: {
+    id: string;
+    status: string;
+    provider?: string | null;
+    reference?: string | null;
+    createdAt?: string;
   } | null;
 };
 
+/* ---------------- Utils ---------------- */
 const ngn = new Intl.NumberFormat('en-NG', {
   style: 'currency',
   currency: 'NGN',
   maximumFractionDigits: 2,
 });
-
-// --- tiny helpers -----------------------------------------------------------
-function toNumber(v: unknown) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-function shortId(id: string) {
-  return id.length > 10 ? `#${id.slice(0, 6)}…${id.slice(-4)}` : `#${id}`;
-}
-function formatDate(s: string) {
+const fmtN = (n?: number | string | null) => {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : 0;
+};
+const fmtDate = (s?: string) => {
+  if (!s) return '—';
   const d = new Date(s);
-  if (Number.isNaN(+d)) return s;
-  return d.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return Number.isNaN(+d)
+    ? s
+    : d.toLocaleString(undefined, {
+        month: 'short',
+        day: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+};
+
+// VERY defensive normalization: array | {data: array} | {orders: array}
+function normalizeOrders(payload: any): OrderRow[] {
+  if (Array.isArray(payload)) return payload;
+  if (payload && Array.isArray(payload.data)) return payload.data;
+  if (payload && Array.isArray(payload.orders)) return payload.orders;
+  return [];
 }
 
-type SortKey = 'createdAt' | 'id' | 'items' | 'total';
-type SortDir = 'asc' | 'desc';
-
-export default function Orders() {
+/* ---------------- Page ---------------- */
+export default function OrdersPage() {
   const nav = useNavigate();
-  const token = useAuthStore((s) => s.token);
-  const isOrderFullyPaid = (o: Order) => (o.status || '').toUpperCase() === 'PAID';
-
   const location = useLocation();
-  const params = new URLSearchParams(location.search);
-  const openParam = params.get('open'); // may be <id> or "latest"
 
-  // read optional navigation state from payment page
-  const navState = (location.state || {}) as any;
-  const stateOpen: string | null =
-    navState?.open ?? navState?.orderId ?? (navState?.openLatest ? 'latest' : null);
+  const token = useAuthStore((s) => s.token);
+  const storeUser = useAuthStore((s) => s.user);
+  const storeRole = (storeUser?.role || '') as Role;
 
-  // also allow sessionStorage fallback
-  const ssOpenRaw = (() => {
-    try {
-      return sessionStorage.getItem('orders.open');
-    } catch {
-      return null;
-    }
-  })();
-
-  // redirect to login if needed
-  useEffect(() => {
-    if (!token) nav('/login', { state: { from: { pathname: '/orders' } } });
-  }, [token, nav]);
-
-  // raw data
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-
-  // table/filters
-  const [q, setQ] = useState(''); // text filter
-  const [statusFilter, setStatusFilter] = useState<string>(''); // "" = all
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<10 | 20 | 50>(10);
-
-  // date range filter
-  const [fromDate, setFromDate] = useState<string>(''); // yyyy-mm-dd
-  const [toDate, setToDate] = useState<string>(''); // yyyy-mm-dd
-
-  // expansion (only one open at a time)
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  // sorting: keep per-column dir; only one active sort key
-  const [sortKey, setSortKey] = useState<SortKey>('createdAt');
-  const [sortDirs, setSortDirs] = useState<Record<SortKey, SortDir>>({
-    createdAt: 'desc', // default newest first
-    id: 'asc',
-    items: 'asc',
-    total: 'asc',
+  // If role not in store, fetch profile to decide admin vs shopper list
+  const meQ = useQuery({
+    queryKey: ['me-min'],
+    enabled: !!token && !storeRole,
+    queryFn: async () => (await api.get('/api/profile/me', { headers: { Authorization: `Bearer ${token}` } })).data as { role: Role },
+    staleTime: 60_000,
   });
 
-  // load orders
+  const role: Role = (storeRole || meQ.data?.role || 'SHOPPER') as Role;
+  const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
+
+  // Fetch orders (admin vs mine)
+  const ordersQ = useQuery({
+    queryKey: ['orders', isAdmin ? 'admin' : 'mine'],
+    enabled: !!token,
+    queryFn: async () => {
+      const url = isAdmin ? '/api/orders?limit=50' : '/api/orders/mine?limit=50';
+      const res = await api.get(url, { headers: { Authorization: `Bearer ${token}` } });
+      return normalizeOrders(res.data);
+    },
+    staleTime: 15_000,
+  });
+
+  // open param support e.g. /orders?open=<orderId>
+  const openId = useMemo(() => new URLSearchParams(location.search).get('open') || '', [location.search]);
+
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      if (!token) return;
-      setLoading(true);
-      setErr(null);
-      try {
-        const { data } = await api.get('/api/orders/mine', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-        if (mounted) setOrders(list);
-      } catch (e: any) {
-        if (mounted) setErr(e?.response?.data?.error || 'Failed to load orders');
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [token]);
+    if (openId && ordersQ.data && Array.isArray(ordersQ.data)) {
+      // no-op: we just ensure data has loaded so UI can reveal the row
+    }
+  }, [openId, ordersQ.data]);
 
-  // derived
-  const uniqueStatuses = useMemo(() => {
-    const s = new Set<string>();
-    for (const o of orders) s.add(o.status);
-    return Array.from(s).sort((a, b) => a.localeCompare(b));
-  }, [orders]);
-
-  const filtered = useMemo(() => {
-    const query = q.trim().toLowerCase();
-
-    return orders.filter((o) => {
-      // status filter
-      const matchStatus = !statusFilter || o.status === statusFilter;
-      if (!matchStatus) return false;
-
-      // date range filter
-      const ts = +new Date(o.createdAt);
-      if (fromDate) {
-        const fromTs = +new Date(fromDate + 'T00:00:00');
-        if (ts < fromTs) return false;
-      }
-      if (toDate) {
-        // include whole "to" day
-        const toTs = +new Date(toDate + 'T23:59:59.999');
-        if (ts > toTs) return false;
-      }
-
-      if (!query) return true;
-
-      const idStr = o.id.toLowerCase();
-      const statusStr = o.status.toLowerCase();
-      const itemsTxt = (o.items || [])
-        .map((it) => (it.product?.title || '').toLowerCase())
-        .join(' ');
-
-      const hit =
-        idStr.includes(query) ||
-        statusStr.includes(query) ||
-        itemsTxt.includes(query);
-
-      return hit;
-    });
-  }, [orders, q, statusFilter, fromDate, toDate]);
-
-  const sorted = useMemo(() => {
-    const dir = sortDirs[sortKey] === 'asc' ? 1 : -1;
-
-    const arr = [...filtered].sort((a, b) => {
-      switch (sortKey) {
-        case 'createdAt': {
-          const aa = new Date(a.createdAt).getTime();
-          const bb = new Date(b.createdAt).getTime();
-          return (aa - bb) * dir;
-        }
-        case 'id': {
-          return a.id.localeCompare(b.id) * dir;
-        }
-        case 'items': {
-          const aa = a.items?.reduce((s, x) => s + (x.qty || 0), 0) ?? 0;
-          const bb = b.items?.reduce((s, x) => s + (x.qty || 0), 0) ?? 0;
-          return (aa - bb) * dir;
-        }
-        case 'total': {
-          const aa = toNumber(a.total);
-          const bb = toNumber(b.total);
-          return (aa - bb) * dir;
-        }
-        default:
-          return 0;
-      }
-    });
-
-    return arr;
-  }, [filtered, sortKey, sortDirs]);
-
-  // clamp page when inputs change
-  useEffect(
-    () => setPage(1),
-    [q, statusFilter, fromDate, toDate, pageSize, sortKey, sortDirs],
-  );
-
-  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
-  const currentPage = Math.min(page, totalPages);
-  const start = (currentPage - 1) * pageSize;
-  const pageItems = sorted.slice(start, start + pageSize);
-
-  // sorting UI helpers
-  function toggleSort(col: SortKey) {
-    setExpandedId(null);
-    setSortKey(col);
-    setSortDirs((prev) => {
-      const next: Record<SortKey, SortDir> = {
-        createdAt: 'asc',
-        id: 'asc',
-        items: 'asc',
-        total: 'asc',
-      };
-      next[col] = prev[col] === 'asc' ? 'desc' : 'asc';
-      return next;
-    });
+  if (!token) {
+    nav('/login', { replace: true, state: { from: { pathname: '/orders' } } });
+    return null;
   }
 
-  function sortIcon(col: SortKey) {
-    const dir = sortDirs[col];
-    return dir === 'asc' ? '▲' : '▼';
-  }
-
-  function toggleExpand(id: string) {
-    setExpandedId((curr) => (curr === id ? null : id));
-  }
-
-  // ---- Auto-open logic (supports ?open=<id>, ?open=latest, nav state, sessionStorage) ----
-  const [autoOpenDone, setAutoOpenDone] = useState(false);
-  useEffect(() => {
-    if (autoOpenDone || !orders.length) return;
-
-    // Determine requested target to open
-    // Priority: URL param > nav state > sessionStorage
-    let requested: string | null = openParam || stateOpen || ssOpenRaw || null;
-
-    // If nothing explicitly requested but we're coming "from payment",
-    // your payment page can push state { open: 'latest' } or set sessionStorage.
-    if (!requested && navState?.fromPayment) {
-      requested = 'latest';
-    }
-
-    if (!requested) return;
-
-    // If filters would hide it, relax filters first.
-    // We’ll run again once filtered list updates.
-    const relaxFilters = () => {
-      if (q || statusFilter || fromDate || toDate) {
-        setQ('');
-        setStatusFilter('');
-        setFromDate('');
-        setToDate('');
-        return true;
-      }
-      return false;
-    };
-
-    // Resolve "latest" → most recent by createdAt from *all* orders
-    const resolveLatestId = () => {
-      if (!orders.length) return null;
-      let latest = orders[0];
-      for (const o of orders) {
-        if (+new Date(o.createdAt) > +new Date(latest.createdAt)) latest = o;
-      }
-      return latest.id;
-    };
-
-    // If "latest" requested, map it to an actual ID
-    let targetId = requested === 'latest' ? resolveLatestId() : requested;
-
-    if (!targetId) return;
-
-    // If the currently filtered list doesn't include target -> relax filters first.
-    const inFiltered = filtered.some((o) => o.id === targetId);
-    if (!inFiltered) {
-      if (relaxFilters()) return; // wait for next pass after filters clear
-    }
-
-    // Find index in current sorted array to set page, expand, scroll
-    const idx = sorted.findIndex((o) => o.id === targetId);
-    if (idx >= 0) {
-      const newPage = Math.floor(idx / pageSize) + 1;
-      setPage(newPage);
-      setExpandedId(targetId);
-      setAutoOpenDone(true);
-
-      // clean up session flag if any
-      try {
-        if (ssOpenRaw) sessionStorage.removeItem('orders.open');
-      } catch {}
-
-      // Scroll into view after paint
-      setTimeout(() => {
-        const el = document.getElementById(`order-${targetId}`);
-        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }, 0);
-    }
-  }, [
-    autoOpenDone,
-    orders.length,
-    orders,
-    filtered,
-    sorted,
-    pageSize,
-    openParam,
-    stateOpen,
-    ssOpenRaw,
-    q,
-    statusFilter,
-    fromDate,
-    toDate,
-    navState?.fromPayment,
-  ]);
-
-  // UI helpers
-  const StatusBadge = ({ status }: { status: string }) => {
-    const s = status.toUpperCase();
-    const style =
-      s === 'PAID'
-        ? 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20'
-        : s === 'PENDING'
-        ? 'bg-amber-500/10 text-amber-700 border-amber-600/20'
-        : s === 'FAILED' || s === 'CANCELED'
-        ? 'bg-rose-500/10 text-rose-700 border-rose-600/20'
-        : s === 'DELIVERED' || s === 'SHIPPED' || s === 'PROCESSING'
-        ? 'bg-sky-600/10 text-sky-700 border-sky-600/20'
-        : 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
-    return (
-      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${style}`}>
-        {status}
-      </span>
-    );
-  };
-
-  const PaymentBadge = ({ payments }: { payments?: Payment[] }) => {
-    if (!payments || !payments.length) return <span className="text-xs opacity-60">—</span>;
-    const paid = payments.find((p) => p.status === 'PAID');
-    const last = payments[payments.length - 1];
-    const status = paid ? 'PAID' : (last?.status || 'PENDING');
-    const style =
-      status === 'PAID'
-        ? 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20'
-        : status === 'FAILED' || status === 'CANCELED'
-        ? 'bg-rose-500/10 text-rose-700 border-rose-600/20'
-        : 'bg-amber-500/10 text-amber-700 border-amber-600/20';
-
-    return (
-      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${style}`}>
-        {status}
-      </span>
-    );
-  };
-
-  const clearAll = () => {
-    setQ('');
-    setStatusFilter('');
-    setFromDate('');
-    setToDate('');
-  };
+  const orders = ordersQ.data || []; // normalized array
+  const loading = ordersQ.isLoading;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-primary-700">Your Orders</h1>
-          <p className="text-sm opacity-70">Track purchases, payment status and totals.</p>
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="max-w-6xl mx-auto px-4 md:px-6 py-6">
+      <div className="mb-5">
+        <h1 className="text-2xl font-semibold text-ink">{isAdmin ? 'All Orders' : 'My Orders'}</h1>
+        <p className="text-sm text-ink-soft mt-1">
+          {isAdmin ? 'Manage all customer orders.' : 'Your recent purchase history.'}
+        </p>
+      </div>
+
+      <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+        <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
+          <div className="text-sm text-ink-soft">
+            {loading ? 'Loading…' : `${orders.length} order${orders.length === 1 ? '' : 's'}`}
+          </div>
           <button
-            className="rounded-md border bg-accent-500 px-3 py-2 text-white hover:bg-accent-600 transition"
-            onClick={() => window.location.reload()}
-            title="Refresh"
+            onClick={() => ordersQ.refetch()}
+            className="inline-flex items-center gap-2 rounded-lg border bg-white hover:bg-black/5 px-3 py-2 text-sm"
           >
             Refresh
           </button>
         </div>
-      </div>
 
-      {/* Filters */}
-      <div className="rounded-2xl border shadow-sm bg-gradient-to-r from-white via-white to-amber-50 p-3 md:p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-1 flex-col md:flex-row md:items-center gap-3">
-            <div className="relative flex-1 min-w-[220px]">
-              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
-                  <path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16a6.471 6.471 0 0 0 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-                </svg>
-              </span>
-              <input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search orders (id, status, product)…"
-                className="w-full rounded-xl border px-9 py-2.5 bg-white focus:outline-none focus:ring-4 focus:ring-amber-100 focus:border-amber-400"
-              />
-            </div>
-
-            <div className="relative w-full md:w-[240px]">
-              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
-                  <path fill="currentColor" d="M12 2L2 7l10 5l10-5zm0 7.09L5.26 7L12 3.91L18.74 7zm0 3.41L2 8l10 5l10-5l-10 5zm0 2.5L2 10.5l10 5l10-5z"/>
-                </svg>
-              </span>
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                className="w-full appearance-none rounded-xl border px-9 py-2.5 bg-white focus:outline-none focus:ring-4 focus:ring-emerald-100 focus:border-emerald-400"
-              >
-                <option value="">All statuses</option>
-                {uniqueStatuses.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
-                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-50">
-                  <path fill="currentColor" d="M7 10l5 5l5-5z"/>
-                </svg>
-              </span>
-            </div>
-          </div>
-
-          <div className="flex flex-col md:flex-row md:items-center gap-3">
-            <div className="relative">
-              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
-                  <path fill="currentColor" d="M7 10h5v5H7z"/><path fill="currentColor" d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0 2 .9 2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2m0 14H5V9h14z"/>
-                </svg>
-              </span>
-              <input
-                type="date"
-                value={fromDate}
-                onChange={(e) => setFromDate(e.target.value)}
-                className="rounded-xl border px-9 py-2.5 bg-white focus:outline-none focus:ring-4 focus:ring-sky-100 focus:border-sky-400"
-                aria-label="From date"
-              />
-            </div>
-
-            <div className="relative">
-              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
-                  <path fill="currentColor" d="M7 10h5v5H7z"/><path fill="currentColor" d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.1 0 2 .9 2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2m0 14H5V9h14z"/>
-                </svg>
-              </span>
-              <input
-                type="date"
-                value={toDate}
-                onChange={(e) => setToDate(e.target.value)}
-                className="rounded-xl border px-9 py-2.5 bg-white focus:outline-none focus:ring-4 focus:ring-sky-100 focus:border-sky-400"
-                aria-label="To date"
-              />
-            </div>
-
-            <div className="relative">
-              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-60">
-                  <path fill="currentColor" d="M3 5h18v2H3zm0 6h18v2H3zm0 6h18v2H3z"/>
-                </svg>
-              </span>
-              <select
-                value={pageSize}
-                onChange={(e) => setPageSize(Number(e.target.value) as any)}
-                className="appearance-none rounded-xl border px-9 py-2.5 bg-white focus:outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
-              >
-                <option value={10}>10 / page</option>
-                <option value={20}>20 / page</option>
-                <option value={50}>50 / page</option>
-              </select>
-              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
-                <svg width="16" height="16" viewBox="0 0 24 24" className="opacity-50">
-                  <path fill="currentColor" d="M7 10l5 5l5-5z"/>
-                </svg>
-              </span>
-            </div>
-
-            {(q || statusFilter || fromDate || toDate) ? (
-              <button
-                className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 bg-white hover:bg-black/5 transition"
-                onClick={clearAll}
-                title="Clear filters"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24">
-                  <path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-                </svg>
-                Clear
-              </button>
-            ) : null}
-          </div>
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="overflow-x-auto border rounded-lg bg-white">
-        <table className="min-w-full text-sm">
-          <thead className="bg-primary-600/90 text-white">
-            <tr>
-              <th className="text-left px-3 py-3 cursor-pointer select-none" onClick={() => toggleSort('createdAt')} title="Sort by date">
-                <span className="inline-flex items-center gap-2">Date {sortIcon('createdAt')}</span>
-              </th>
-              <th className="text-left px-3 py-3 cursor-pointer select-none" onClick={() => toggleSort('id')} title="Sort by ID">
-                <span className="inline-flex items-center gap-2">Order {sortIcon('id')}</span>
-              </th>
-              <th className="text-left px-3 py-3">Status</th>
-              <th className="text-left px-3 py-3">Payment</th>
-              <th className="text-left px-3 py-3 cursor-pointer select-none" onClick={() => toggleSort('items')} title="Sort by item count">
-                <span className="inline-flex items-center gap-2">Items {sortIcon('items')}</span>
-              </th>
-              <th className="text-left px-3 py-3 cursor-pointer select-none" onClick={() => toggleSort('total')} title="Sort by total">
-                <span className="inline-flex items-center gap-2">Total {sortIcon('total')}</span>
-              </th>
-              <th className="text-right px-3 py-3">Actions</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-sm opacity-70">Loading…</td>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="bg-zinc-50 text-ink">
+                <th className="text-left px-3 py-2">Order</th>
+                {isAdmin && <th className="text-left px-3 py-2">User</th>}
+                <th className="text-left px-3 py-2">Items</th>
+                <th className="text-left px-3 py-2">Total</th>
+                <th className="text-left px-3 py-2">Status</th>
+                <th className="text-left px-3 py-2">Date</th>
               </tr>
-            )}
-            {!loading && err && (
-              <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-red-600">{err}</td>
-              </tr>
-            )}
-            {!loading && !err && pageItems.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-sm opacity-70">No orders found.</td>
-              </tr>
-            )}
-
-            {pageItems.map((o) => {
-              const isOpen = expandedId === o.id;
-              const itemCount = o.items?.reduce((s, it) => s + (it.qty || 0), 0) ?? 0;
-              const total = ngn.format(toNumber(o.total));
-              const city = o.shippingAddress?.city || '';
-              const state = o.shippingAddress?.state || '';
-              const country = o.shippingAddress?.country || '';
-
-              return (
+            </thead>
+            <tbody className="divide-y">
+              {loading && (
                 <>
-                  <tr
-                    key={o.id}
-                    id={`order-${o.id}`}
-                    className={`border-t hover:bg-black/5 ${isOpen ? 'bg-black/5' : ''}`}
-                    onClick={() => toggleExpand(o.id)}
-                  >
-                    <td className="px-3 py-3 align-top">{formatDate(o.createdAt)}</td>
-                    <td className="px-3 py-3 align-top">
-                      <div className="font-medium">{shortId(o.id)}</div>
-                      <div className="text-xs opacity-70">
-                        {city || state || country
-                          ? [city, state, country].filter(Boolean).join(', ')
-                          : '—'}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 align-top"><StatusBadge status={o.status} /></td>
-                    <td className="px-3 py-3 align-top"><PaymentBadge payments={o.payments} /></td>
-                    <td className="px-3 py-3 align-top">
-                      <div className="font-medium">{itemCount}</div>
-                      {!!o.items?.length && (
-                        <div className="text-xs opacity-70 line-clamp-2">
-                          {o.items.slice(0, 3).map((it) => it.product?.title).filter(Boolean).join(', ')}
-                          {o.items.length > 3 ? '…' : ''}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-3 py-3 align-top">{total}</td>
-                    <td className="px-3 py-3 align-top text-right">
-                      <div className="inline-flex items-center gap-2">
-                        {!isOrderFullyPaid(o) && (
-                          <button
-                            className="rounded-md border bg-primary-600 px-3 py-1.5 text-white hover:bg-primary-700 transition"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              nav(`/payment?orderId=${o.id}`);
-                            }}
-                            title="Pay for this order"
-                          >
-                            Pay
-                          </button>
-                        )}
-                        <button
-                          className="rounded-md border bg-accent-500 px-3 py-1.5 text-white hover:bg-accent-600 transition"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleExpand(o.id);
-                          }}
-                        >
-                          {isOpen ? 'Hide' : 'View'}
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
+                  <SkeletonRow cols={isAdmin ? 6 : 5} />
+                  <SkeletonRow cols={isAdmin ? 6 : 5} />
+                  <SkeletonRow cols={isAdmin ? 6 : 5} />
+                </>
+              )}
 
-                  {isOpen && (
-                    <tr className="bg-black/[0.03]">
-                      <td colSpan={7} className="px-3 py-3">
-                        <div className="rounded-lg border bg-white">
-                          <div className="p-4 border-b flex items-start justify-between gap-4">
-                            <div className="grid md:grid-cols-3 gap-4 w-full">
-                              <div>
-                                <div className="text-xs opacity-70">Order ID</div>
-                                <div className="font-mono text-sm">{o.id}</div>
-                              </div>
-                              <div>
-                                <div className="text-xs opacity-70">Created</div>
-                                <div className="text-sm">{formatDate(o.createdAt)}</div>
-                              </div>
-                              <div>
-                                <div className="text-xs opacity-70">Status</div>
-                                <StatusBadge status={o.status} />
-                              </div>
-                            </div>
-                            <button
-                              className="h-9 shrink-0 rounded-md border px-3 text-sm hover:bg-black/5 transition"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setExpandedId(null);
-                              }}
-                              aria-label="Close view"
-                              title="Close view"
-                            >
-                              Close view
-                            </button>
-                          </div>
+              {!loading && orders.length === 0 && (
+                <tr>
+                  <td colSpan={isAdmin ? 6 : 5} className="px-3 py-6 text-center text-zinc-500">
+                    No orders found.
+                  </td>
+                </tr>
+              )}
 
-                          <div className="grid md:grid-cols-2 gap-4 p-4 border-b">
-                            <div>
-                              <div className="text-sm font-semibold mb-2">Items</div>
-                              <div className="divide-y">
-                                {(o.items ?? []).map((it) => (
-                                  <div key={it.id} className="py-2 flex items-center justify-between">
-                                    <div className="min-w-0">
-                                      <div className="text-sm font-medium truncate">
-                                        {it.product?.title || 'Untitled'}
-                                      </div>
-                                      <div className="text-xs opacity-70">Qty: {it.qty}</div>
-                                    </div>
-                                    <div className="text-sm font-medium">
-                                      {ngn.format(toNumber(it.unitPrice) * (it.qty || 0))}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-
-                            <div>
-                              <div className="text-sm font-semibold mb-2">Summary</div>
-                              <div className="space-y-1 text-sm">
-                                <div className="flex justify-between">
-                                  <span>Subtotal</span>
-                                  <span>
-                                    {ngn.format(
-                                      toNumber(o.total) - toNumber(o.tax) - toNumber(o.shipping),
-                                    )}
-                                  </span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span>Tax</span>
-                                  <span>{ngn.format(toNumber(o.tax))}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                  <span>Shipping</span>
-                                  <span>{ngn.format(toNumber(o.shipping))}</span>
-                                </div>
-                                <div className="border-t pt-2 flex justify-between font-semibold">
-                                  <span>Total</span>
-                                  <span>{ngn.format(toNumber(o.total))}</span>
-                                </div>
-
-                                {!isOrderFullyPaid(o) && (
-                                  <div className="pt-3">
-                                    <button
-                                      className="rounded-md border bg-primary-600 px-3 py-2 text-white hover:bg-primary-700 transition"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        nav(`/payment?orderId=${o.id}`);
-                                      }}
-                                    >
-                                      Pay for this order
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="p-4">
-                            <div className="text-sm font-semibold mb-2">Payments</div>
-                            {(() => {
-                              const payments = o.payments ?? [];
-                              if (payments.length === 0) {
-                                return <div className="text-sm opacity-70">No payments yet.</div>;
-                              }
-                              const paid = payments.find((p) => p.status === 'PAID');
-                              const display = paid ?? payments[payments.length - 1];
-
+              {!loading &&
+                orders.map((o: OrderRow) => {
+                  const isOpen = openId && o.id === openId;
+                  return (
+                    <tr key={o.id} className={`hover:bg-black/5 ${isOpen ? 'bg-amber-50/60' : ''}`}>
+                      <td className="px-3 py-3">
+                        <div className="font-mono">{o.id}</div>
+                      </td>
+                      {isAdmin && <td className="px-3 py-3">{o.userEmail || '—'}</td>}
+                      <td className="px-3 py-3">
+                        {Array.isArray(o.items) && o.items.length > 0 ? (
+                          <div className="space-y-1">
+                            {o.items.slice(0, 3).map((it) => {
+                              const name = (it.title || it.product?.title || '—').toString();
+                              const qty = Number(it.quantity ?? 1);
+                              const unit = fmtN(it.unitPrice);
                               return (
-                                <div className="grid md:grid-cols-2 gap-3">
-                                  <div key={display.id} className="rounded-md border p-3 bg-white/70">
-                                    <div className="flex items-center justify-between">
-                                      <div className="text-sm font-medium">
-                                        Ref: <span className="font-mono">{display.reference || '—'}</span>
-                                      </div>
-                                      <PaymentBadge payments={[display]} />
-                                    </div>
-                                    <div className="mt-1 text-xs opacity-70">
-                                      {display.provider || 'PAYSTACK'} • {display.channel || '—'}
-                                    </div>
-                                    <div className="mt-1 text-xs opacity-70">
-                                      {display.createdAt ? formatDate(display.createdAt) : '—'}
-                                    </div>
-                                  </div>
+                                <div key={it.id} className="text-ink">
+                                  <span className="font-medium">{name}</span>
+                                  <span className="text-ink-soft">{`  •  ${qty} × ${ngn.format(unit)}`}</span>
                                 </div>
                               );
-                            })()}
+                            })}
+                            {o.items.length > 3 && (
+                              <div className="text-xs text-ink-soft">+ {o.items.length - 3} more…</div>
+                            )}
                           </div>
-                        </div>
+                        ) : (
+                          '—'
+                        )}
                       </td>
+                      <td className="px-3 py-3">{ngn.format(fmtN(o.total))}</td>
+                      <td className="px-3 py-3">
+                        <StatusDot label={o.status || '—'} />
+                      </td>
+                      <td className="px-3 py-3">{fmtDate(o.createdAt)}</td>
                     </tr>
-                  )}
-                </>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Pagination */}
-      {sorted.length > 0 && (
-        <div className="flex items-center justify-between">
-          <div className="text-sm opacity-70">
-            Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              className="px-3 py-1 border rounded disabled:opacity-50"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={currentPage <= 1}
-            >
-              Prev
-            </button>
-            <span className="text-sm">
-              Page {currentPage} / {totalPages}
-            </span>
-            <button
-              className="px-3 py-1 border rounded disabled:opacity-50"
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={currentPage >= totalPages}
-            >
-              Next
-            </button>
-          </div>
+                  );
+                })}
+            </tbody>
+          </table>
         </div>
-      )}
+      </div>
     </div>
   );
+}
+
+/* ---------------- Small bits ---------------- */
+function SkeletonRow({ cols = 5 }: { cols?: number }) {
+  return (
+    <tr className="animate-pulse">
+      {Array.from({ length: cols }).map((_, i) => (
+        <td key={i} className="px-3 py-3">
+          <div className="h-3 rounded bg-zinc-200" />
+        </td>
+      ))}
+    </tr>
+  );
+}
+
+function StatusDot({ label }: { label: string }) {
+  const s = (label || '').toUpperCase();
+  const cls =
+    s === 'PAID' || s === 'VERIFIED'
+      ? 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20'
+      : s === 'PENDING'
+      ? 'bg-amber-500/10 text-amber-700 border-amber-600/20'
+      : s === 'FAILED' || s === 'CANCELED' || s === 'REJECTED' || s === 'REFUNDED'
+      ? 'bg-rose-500/10 text-rose-700 border-rose-600/20'
+      : 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
+
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${cls}`}>{label}</span>;
 }

@@ -26,5 +26,12 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/purchase-orders', poRoutes);
 
+app.get('/api/admin/payments', (req, res, next) => {
+  // forward to compat alias
+  req.url = '/admin/compat-alias' + (req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '');
+  (paymentRoutes as any).handle(req, res, next);
+});
+
+
 app.use(errorHandler);
 export default app;

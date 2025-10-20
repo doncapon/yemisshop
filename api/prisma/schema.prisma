@@ -58,10 +58,10 @@ model User {
   shippingAddress   Address? @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
 
   // Verification (single source of truth)
-  status               String    @default("PENDING")
-  emailVerifiedAt      DateTime?
-  phoneVerifiedAt      DateTime?
-  
+  status          String    @default("PENDING")
+  emailVerifiedAt DateTime?
+  phoneVerifiedAt DateTime?
+
   phoneOtpHash         String?
   phoneOtpExpiresAt    DateTime?
   phoneOtpLastSentAt   DateTime?
@@ -84,6 +84,7 @@ model User {
   createdAt        DateTime           @default(now())
   joinedAt         DateTime           @default(now()) // <-- NEW
   EmailVerifyToken EmailVerifyToken[]
+  Product          Product[]
 
   @@index([emailVerifiedAt])
   @@index([phoneVerifiedAt])
@@ -116,10 +117,49 @@ model Supplier {
 }
 
 model Category {
-  id        String    @id @default(cuid())
-  name      String    @unique
-  products  Product[]
-  createdAt DateTime  @default(now())
+  id       String     @id @default(cuid())
+  name     String     @unique
+  slug     String?    @unique
+  parentId String?
+  parent   Category?  @relation("CategoryToParent", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryToParent")
+  position Int        @default(0)
+  isActive Boolean    @default(true)
+  products Product[] // if you link products
+
+  createdAt DateTime @default(now())
+}
+
+model Brand {
+  id       String    @id @default(cuid())
+  name     String
+  slug     String    @unique
+  logoUrl  String?
+  isActive Boolean   @default(true)
+  products Product[]
+}
+
+model Attribute {
+  id                    String                  @id @default(cuid())
+  name                  String
+  type                  String                  @default("SELECT") // TEXT | SELECT | MULTISELECT
+  isActive              Boolean                 @default(true)
+  values                AttributeValue[]
+  ProductAttributeValue ProductAttributeValue[]
+  ProductAttributeText  ProductAttributeText[]
+  ProductVariantOption  ProductVariantOption[]
+}
+
+model AttributeValue {
+  id                    String                  @id @default(cuid())
+  attribute             Attribute               @relation(fields: [attributeId], references: [id])
+  attributeId           String
+  name                  String
+  code                  String?
+  position              Int                     @default(0)
+  isActive              Boolean                 @default(true)
+  ProductAttributeValue ProductAttributeValue[]
+  ProductVariantOption  ProductVariantOption[]
 }
 
 model Product {
@@ -127,26 +167,43 @@ model Product {
   title       String
   description String
   price       Decimal  @db.Decimal(10, 2)
-  sku         String
-  stock       Boolean  @default(true)
+  sku         String   @unique
+  inStock     Boolean  @default(true)
   vatFlag     Boolean  @default(true)
   status      String   @default("PUBLISHED")
   imagesJson  String[]
+  owner       User?    @relation(fields: [userId], references: [id])
 
-  supplier             Supplier      @relation(fields: [supplierId], references: [id])
-  supplierId           String
+  // Brand (optional)
+  brandId String?
+  brand   Brand?  @relation(fields: [brandId], references: [id])
+
+  // Category (optional or required – pick one; here optional)
+  categoryId   String?
+  category     Category? @relation(fields: [categoryId], references: [id])
+  categoryName String?
+  // Supplier (required, per your intent)
+  supplierId   String
+  supplier     Supplier  @relation(fields: [supplierId], references: [id])
+
+  // Pricing/commission
   supplierTypeOverride SupplierType?
   commissionPctInt     Int?
 
-  categoryId   String
-  category     Category @relation(fields: [categoryId], references: [id])
-  categoryName String?
-
   orderItems OrderItem[]
 
-  createdAt DateTime   @default(now())
-  Favorite  Favorite[]
-  Wishlist  Wishlist[]
+  createdAt DateTime @default(now())
+
+  Favorite              Favorite[]
+  Wishlist              Wishlist[]
+  ProductAttributeValue ProductAttributeValue[]
+  ProductAttributeText  ProductAttributeText[]
+  ProductVariant        ProductVariant[]
+  userId                String?
+
+  @@index([brandId])
+  @@index([categoryId])
+  @@index([supplierId])
 }
 
 model Order {
@@ -161,6 +218,7 @@ model Order {
 
   total    Decimal @db.Decimal(10, 2)
   tax      Decimal @db.Decimal(10, 2)
+  subtotal Decimal @db.Decimal(10, 2)
   shipping Decimal @db.Decimal(10, 2)
   status   String  @default("PENDING")
 
@@ -205,22 +263,34 @@ model Payment {
 /**
  * ---------------- OrderItem / PurchaseOrder ----------------
  */
+// prisma/schema.prisma
+
 model OrderItem {
-  id String @id @default(cuid())
+  id        String  @id @default(cuid())
+  orderId   String
+  variantId String? // <- optional
+  order     Order   @relation(fields: [orderId], references: [id])
 
-  order   Order  @relation(fields: [orderId], references: [id])
-  orderId String
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
 
-  product   Product @relation(fields: [productId], references: [id])
-  productId String
-
-  supplierRel Supplier @relation("OrderItemSupplierRel", fields: [supplierId], references: [id])
-  supplierId  String
-
-  qty       Int
-  unitPrice Decimal @db.Decimal(10, 2)
+  supplierId String?
+  supplier   Supplier? @relation("OrderItemSupplierRel", fields: [supplierId], references: [id])
 
   purchaseOrderItems PurchaseOrderItem[]
+
+  // Keep these optional for existing data, backfill later
+  title           String
+  unitPrice       Decimal  @db.Decimal(10, 2)
+  quantity        Int
+  lineTotal       Decimal? @db.Decimal(10, 2)
+  status          String?
+  selectedOptions Json?
+  createdAt       DateTime @default(now())
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([supplierId])
 }
 
 model PurchaseOrder {
@@ -311,4 +381,68 @@ model EmailVerifyToken {
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ProductAttributeValue {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  attributeId String
+  attribute   Attribute @relation(fields: [attributeId], references: [id])
+
+  valueId String
+  value   AttributeValue @relation(fields: [valueId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([productId, attributeId, valueId])
+  @@index([productId])
+  @@index([attributeId])
+  @@index([valueId])
+}
+
+model ProductAttributeText {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  attributeId String
+  attribute   Attribute @relation(fields: [attributeId], references: [id])
+
+  value     String // e.g., “Care: Hand wash only”
+  createdAt DateTime @default(now())
+
+  @@unique([productId, attributeId]) // one text value per attribute per product
+  @@index([productId])
+  @@index([attributeId])
+}
+
+model ProductVariant {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  sku        String   @unique
+  price      Decimal? @db.Decimal(10, 2) // overrides product.price if set
+  inStock    Boolean  @default(true)
+  imagesJson String[]
+  createdAt  DateTime @default(now())
+
+  options ProductVariantOption[]
+}
+
+model ProductVariantOption {
+  id        String         @id @default(cuid())
+  variantId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+
+  attributeId String
+  attribute   Attribute @relation(fields: [attributeId], references: [id])
+
+  valueId String
+  value   AttributeValue @relation(fields: [valueId], references: [id])
+
+  @@unique([variantId, attributeId]) // a variant has one value per attribute
+  @@index([attributeId, valueId])
 }

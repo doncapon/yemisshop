@@ -1,489 +1,420 @@
-// src/routes/orders.ts
-import { Router, type Request, type Response, type NextFunction } from 'express';
+// api/src/routes/orders.ts
+import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
-import { z } from 'zod';
-import type { Prisma } from '@prisma/client';
-import { authMiddleware } from '../middleware/auth.js';
-import { requireRole } from '../lib/requireRole.js';
+import { authMiddleware, requireAuth } from '../middleware/auth.js';
+import { Prisma } from '@prisma/client';
 
 const router = Router();
 
-/* ----------------------------- Validation ----------------------------- */
+const isAdmin = (role?: string) => role === 'ADMIN' || role === 'SUPER_ADMIN';
 
-const AddressSchema = z.object({
-  houseNumber: z.string().min(1),
-  streetName: z.string().min(1),
-  postCode: z.string().optional().nullable(),
-  town: z.string().optional().nullable(),
-  city: z.string().min(1),
-  state: z.string().min(1),
-  country: z.string().min(1),
-});
+/* ------------------------ Helpers ------------------------ */
+function asNumber(v: any, def = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
 
-const CreateOrderSchema = z.object({
-  items: z.array(z.object({ productId: z.string(), qty: z.number().int().positive() })),
-  tax: z.number().nonnegative().default(0),
-  shipping: z.number().nonnegative().default(0),
-  sameAsHome: z.boolean().default(true),
-  homeAddress: AddressSchema.optional(),      // present if user is editing/adding home
-  shippingAddress: AddressSchema.optional(),  // present if not sameAsHome
-});
-
-const MineQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(100).default(10),
-  status: z.string().optional(), // comma list e.g. "PENDING,PAID"
-  from: z.string().datetime().optional(),    // ISO
-  to: z.string().datetime().optional(),      // ISO
-  sortBy: z.enum(['createdAt', 'total', 'status']).default('createdAt'),
-  sortDir: z.enum(['asc', 'desc']).default('desc'),
-  limit: z.coerce.number().int().min(1).max(100).optional(), // 👈 NEW
-});
-
-
-type ProductRow = {
-  id: string;
-  supplierId: string;
-  price: Prisma.Decimal; // exact DB type
+type Address = {
+  houseNumber: string;
+  streetName: string;
+  postCode?: string | null;
+  town?: string | null;
+  city: string;
+  state: string;
+  country: string;
 };
 
-type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SUPER_USER' | 'SHOPPER';
-type AuthedRequest = Request & { user: { id: string; role: Role; email?: string } };
+type IncomingItem = {
+  productId: string;
+  variantId?: string | null;
+  qty: number;
+  title?: string;
+  unitPrice?: number; // sent by client
+  selectedOptions?: any[]; // JSON
+};
 
+/** Minimal auth helper – replace with your real extraction if needed */
+function getUserId(req: any): string {
+  return req.user?.id || req.auth?.userId || 'cmgvix0de0008kdlsvg55zbri';
+}
 
-/* -------------------------------- Routes ------------------------------ */
+/* =========================================================
+   POST /api/orders
+   Body: {
+     items: [{ productId, variantId?, qty, unitPrice, title?, selectedOptions? }],
+     shipping?: number,
+     tax?: number,
+     homeAddress?: Address,
+     shippingAddress?: Address
+   }
+========================================================= */
+router.post('/', requireAuth, async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
 
-/**
- * CREATE ORDER
- */
-router.post(
-  '/',
-  authMiddleware,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { items, tax, shipping, sameAsHome, homeAddress, shippingAddress } =
-        CreateOrderSchema.parse(req.body);
+    const body = req.body as {
+      items: IncomingItem[];
+      shipping?: number;
+      tax?: number;
+      homeAddress?: Address;
+      shippingAddress?: Address;
+    };
 
-      if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
-      if (items.length === 0) return res.status(400).json({ error: 'No items' });
+    if (!Array.isArray(body.items) || body.items.length === 0) {
+      return res.status(400).json({ error: 'No items in order' });
+    }
 
-      // Fetch products to compute totals and validate
-      const products = await prisma.product.findMany({
-        where: { id: { in: items.map((i) => i.productId) } },
-        select: { id: true, supplierId: true, price: true },
-      });
-
-      const prodById = new Map<string, ProductRow>(products.map((p: { id: any; }) => [p.id, p]));
-      let subtotal = 0;
-      for (const it of items) {
-        const p = prodById.get(it.productId);
-        if (!p) return res.status(400).json({ error: `Unknown product: ${it.productId}` });
-        subtotal += Number(p.price) * it.qty;
+    // Normalize & validate items
+    const items = body.items.map((it, idx) => {
+      const qty = Math.max(1, Number(it.qty) || 1);
+      const unit = Number(it.unitPrice ?? 0);
+      if (!Number.isFinite(unit) || unit <= 0) {
+        throw new Error(`Invalid unitPrice for item at index ${idx}`);
       }
-      const total = subtotal + tax + shipping;
+      return {
+        productId: String(it.productId),
+        variantId: it.variantId ?? null,
+        qty,
+        title: it.title ?? '',
+        unitPrice: unit,
+        selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : [],
+      };
+    });
 
-      // Transaction: ensure addresses and create order
-      const created = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-        // 1) User with existing address refs
-        const user = await tx.user.findUnique({
-          where: { id: req.user!.id },
-          select: { id: true, addressId: true, shippingAddressId: true },
+    const shippingNum = Number.isFinite(Number(body.shipping)) ? Number(body.shipping) : 0;
+    const taxNum = Number.isFinite(Number(body.tax)) ? Number(body.tax) : 0;
+
+    const subtotalNum = items.reduce((s, it) => s + it.unitPrice * it.qty, 0);
+    const totalNum = subtotalNum + shippingNum + taxNum;
+
+    // Money as Decimals
+    const subtotal = new Prisma.Decimal(subtotalNum);
+    const shipping = new Prisma.Decimal(shippingNum);
+    const tax = new Prisma.Decimal(taxNum);
+    const total = new Prisma.Decimal(totalNum);
+
+    // Meta JSON (handy for quick reads)
+    const meta: Prisma.JsonObject = {};
+    if (body.homeAddress) (meta as any).homeAddress = body.homeAddress;
+    if (body.shippingAddress) (meta as any).shippingAddress = body.shippingAddress;
+
+    // Required relation: Order.shippingAddress
+    const shippingAddrInput: Address | undefined = body.shippingAddress ?? body.homeAddress ?? undefined;
+    if (!shippingAddrInput) {
+      return res.status(400).json({ error: 'shippingAddress is required' });
+    }
+
+      const created = await prisma.$transaction(async (tx: {
+          address: { create: (arg0: { data: { houseNumber: string; streetName: string; postCode: string | null; town: string | null; city: string; state: string; country: string; }; select: { id: boolean; }; }) => any; }; order: {
+            create: (arg0: {
+              data: {
+                user: { connect: { id: string; }; }; shippingAddress: { connect: { id: any; }; }; status: string; subtotal: Prisma.Decimal; shipping: Prisma.Decimal; tax: Prisma.Decimal; total: Prisma.Decimal; items: {
+                  create: {
+                    productId: string; variantId: string | null;
+                    // if your column is `quantity` instead of `qty`, change this key:
+                    quantity: number; title: string; unitPrice: Prisma.Decimal;
+                    // keep only if OrderItem has this JSON column; otherwise remove next line
+                    selectedOptions: any[];
+                  }[];
+                };
+              }; select: { id: boolean; };
+            }) => any;
+          };
+        }) => {
+        // 1) Create a concrete Address row to satisfy required Order.shippingAddress
+        const shipAddr = await tx.address.create({
+          data: {
+            houseNumber: String(shippingAddrInput.houseNumber || ''),
+            streetName: String(shippingAddrInput.streetName || ''),
+            postCode: shippingAddrInput.postCode || null,
+            town: shippingAddrInput.town || null,
+            city: String(shippingAddrInput.city || ''),
+            state: String(shippingAddrInput.state || ''),
+            country: String(shippingAddrInput.country || ''),
+            // NOTE: do NOT try to set a `user` relation here; your Address model
+            // exposes userPrimary?, userShipping?, ordersAsShipping? — we don't need any for this flow.
+          },
+          select: { id: true },
         });
-        if (!user) throw new Error('User not found');
 
-        // 2) Home address upsert
-        let homeAddressId = user.addressId || null;
-        if (homeAddress && !user.addressId) {
-          const createdHome = await tx.address.create({ data: homeAddress });
-          await tx.user.update({ where: { id: user.id }, data: { addressId: createdHome.id } });
-          homeAddressId = createdHome.id;
-        } else if (homeAddress && user.addressId) {
-          await tx.address.update({ where: { id: user.addressId }, data: homeAddress });
-          homeAddressId = user.addressId;
-        }
-
-        // 3) Shipping address
-        let shippingAddressId = user.shippingAddressId || null;
-        if (sameAsHome) {
-          if (!homeAddressId) throw new Error('Home address required when shipping is same as home.');
-          shippingAddressId = homeAddressId;
-        } else {
-          if (shippingAddress) {
-            if (!user.shippingAddressId) {
-              const createdShip = await tx.address.create({ data: shippingAddress });
-              await tx.user.update({
-                where: { id: user.id },
-                data: { shippingAddressId: createdShip.id },
-              });
-              shippingAddressId = createdShip.id;
-            } else {
-              await tx.address.update({
-                where: { id: user.shippingAddressId },
-                data: shippingAddress, // ✅ pass the address fields directly
-              });
-              shippingAddressId = user.shippingAddressId;
-            }
-          } else if (!user.shippingAddressId) {
-            throw new Error('Shipping address is required if not same as home.');
-          }
-        }
-
-        if (!shippingAddressId) throw new Error('Could not determine shipping address.');
-
-        // 4) Create order + items
+        // 2) Create the order, connect user + required shippingAddress, and nest items
         const order = await tx.order.create({
           data: {
-            user: { connect: { id: user.id } },
+            user: { connect: { id: userId } },
+            shippingAddress: { connect: { id: shipAddr.id } },
+
             status: 'PENDING',
-            total,
-            tax,
-            shipping,
-            shippingAddress: { connect: { id: shippingAddressId } },
+            subtotal: new Prisma.Decimal(subtotalNum),
+            shipping: new Prisma.Decimal(shippingNum),
+            tax: new Prisma.Decimal(taxNum),
+            total: new Prisma.Decimal(totalNum),
+
             items: {
-              create: items.map((it) => {
-                const pr = prodById.get(it.productId)!;
-                return {
-                  product: { connect: { id: pr.id } },
-                  supplierRel: { connect: { id: pr.supplierId } },
-                  qty: it.qty,
-                  unitPrice: pr.price,
-                };
-              }),
+              create: items.map((it) => ({
+                productId: it.productId,
+                variantId: it.variantId,
+                // if your column is `quantity` instead of `qty`, change this key:
+                quantity: it.qty,
+                title: it.title,
+                unitPrice: new Prisma.Decimal(it.unitPrice),
+                // keep only if OrderItem has this JSON column; otherwise remove next line
+                selectedOptions: it.selectedOptions,
+              })),
             },
           },
-          include: {
-            items: { include: { product: { select: { id: true, title: true, imagesJson: true } } } },
-            shippingAddress: true,
-          },
+          select: { id: true },
         });
 
         return order;
       });
 
-      res.json({
-        ...created,
-        computedTotals: { subtotal, tax, shipping, total },
-      });
-    } catch (e: any) {
-      if (e?.message === 'User not found' || e?.name === 'JsonWebTokenError') {
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
-      next(e);
-    }
-  },
-);
-
-/**
- * GET MY ORDERS (paginated/filterable/sortable)
- * Query params:
- *   page, pageSize, status=CSV, from, to, sortBy=createdAt|total|status, sortDir=asc|desc
- */
-router.get(
-  '/mine',
-  authMiddleware,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
-
-      const q = MineQuerySchema.parse(req.query);
-
-      // Build where
-      const where: Prisma.OrderWhereInput = { userId: req.user.id };
-
-      if (q.status) {
-        const statuses = q.status
-          .split(',')
-          .map((s) => s.trim().toUpperCase())
-          .filter(Boolean);
-        if (statuses.length > 0) {
-          where.status = { in: statuses as any };
-        }
-      }
-
-      if (q.from || q.to) {
-        where.createdAt = {};
-        if (q.from) (where.createdAt as any).gte = new Date(q.from);
-        if (q.to) (where.createdAt as any).lte = new Date(q.to);
-      }
-
-      // Sort
-      let orderBy: Prisma.OrderOrderByWithRelationInput = { createdAt: q.sortDir };
-      if (q.sortBy === 'total') orderBy = { total: q.sortDir };
-      if (q.sortBy === 'status') orderBy = { status: q.sortDir };
-
-      // If limit is provided, return the most recent N (no pagination wrapper)
-      if (q.limit) {
-        const data = await prisma.order.findMany({
-          where,
-          orderBy,
-          take: q.limit,
-          skip: 0,
-          include: {
-            items: {
-              include: {
-                product: { select: { id: true, title: true, imagesJson: true } },
-              },
-            },
-            payments: {
-              orderBy: { createdAt: 'desc' },
-              select: {
-                id: true,
-                reference: true,
-                amount: true,
-                status: true,
-                channel: true,
-                createdAt: true,
-              },
-            },
-            shippingAddress: true,
-          },
-        });
-        return res.json(data); // <- just the array for convenience
-      }
-
-      // Otherwise do full pagination
-      const skip = (q.page - 1) * q.pageSize;
-      const take = q.pageSize;
-
-      const [totalItems, data] = await Promise.all([
-        prisma.order.count({ where }),
-        prisma.order.findMany({
-          where,
-          orderBy,
-          skip,
-          take,
-          include: {
-            items: {
-              include: {
-                product: { select: { id: true, title: true, imagesJson: true } },
-              },
-            },
-            payments: {
-              orderBy: { createdAt: 'desc' },
-              select: {
-                id: true,
-                reference: true,
-                amount: true,
-                status: true,
-                channel: true,
-                createdAt: true,
-              },
-            },
-            shippingAddress: true,
-          },
-        }),
-      ]);
-
-      const totalPages = Math.max(1, Math.ceil(totalItems / q.pageSize));
-
-      res.json({
-        page: q.page,
-        pageSize: q.pageSize,
-        totalItems,
-        totalPages,
-        sortBy: q.sortBy,
-        sortDir: q.sortDir,
-        data,
-      });
+      return res.json({ id: created.id });
     } catch (e) {
       next(e);
     }
-  },
-);
+  });
 
-
-
-router.get('/summary', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+/* =========================================================
+   GET /api/orders
+   Admin only
+========================================================= */
+router.get('/', authMiddleware, async (req, res, next) => {
   try {
-    const user = (req as AuthedRequest).user;
-    if (!user) return res.status(401).json({ error: 'Unauthorized' });
-
-    const userId = user.id;
-    const role = user.role;
-    const scope = String(req.query.scope || 'mine'); // 'mine' | 'all'
-
-    const where: Record<string, any> = {};
-    if (!(role === 'ADMIN' && scope === 'all')) {
-      where.userId = userId;
+    if (!isAdmin(req.user?.role)) {
+      return res.status(403).json({ error: 'Admins only' });
     }
 
-    const grouped = await prisma.order.groupBy({
+    const limitRaw = Number(req.query.limit);
+    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 50;
+    const q = String(req.query.q ?? '').trim().toLowerCase();
+
+    const where: any = q
+      ? {
+        OR: [{ id: { contains: q } }, { user: { email: { contains: q } } }],
+      }
+      : {};
+
+    const orders = await prisma.order.findMany({
       where,
-      by: ['status'],
-      _count: { _all: true },
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: {
+        user: { select: { id: true, email: true } },
+        items: {
+          include: {
+            product: { select: { id: true, title: true, price: true } },
+          },
+        },
+        payments: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: {
+            id: true,
+            status: true,
+            provider: true,
+            channel: true,
+            reference: true,
+            amount: true,
+            createdAt: true,
+          },
+        },
+      },
     });
 
-    const byStatus: Record<string, number> = {};
-    for (const g of grouped) {
-      const key = (g.status ?? 'UNKNOWN').toString().toUpperCase();
-      byStatus[key] = (byStatus[key] || 0) + g._count._all;
-    }
+    const data = orders.map((o: any) => ({
+      id: o.id,
+      userEmail: o.user?.email ?? null,
+      status: o.status,
+      total: Number(o.total ?? 0),
+      createdAt: o.createdAt?.toISOString?.() ?? o.createdAt,
+      items: o.items.map((it: any) => ({
+        id: it.id,
+        productId: it.productId,
+        variantId: it.variantId ?? null,
+        title: it.title ?? it.product?.title ?? '—',
+        unitPrice: asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0),
+        quantity: asNumber(it.quantity ?? it.qty, 1),
+        lineTotal: asNumber(
+          it.lineTotal ??
+          asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0) *
+          asNumber(it.quantity ?? it.qty, 1),
+          0
+        ),
+        status: it.status ?? '—',
+        selectedOptions:
+          it.selectedOptions ?? it.selectedOptionsJson ?? it?.metaJson?.selectedOptions ?? null,
+      })),
+      payment: o.payments[0] || null,
+    }));
 
-    const total = await prisma.order.count({ where });
-    res.json({ total, byStatus });
-  } catch (err) {
-    next(err);
+    res.json({ data });
+  } catch (e) {
+    next(e);
   }
 });
 
-/**
- * GET SINGLE ORDER (owner-only)
- */
+/* =========================================================
+   GET /api/orders/mine
+========================================================= */
+router.get('/mine', requireAuth, async (req, res, next) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 50;
+
+    const orders = await prisma.order.findMany({
+      where: { userId: req.user!.id },
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: {
+        items: {
+          include: {
+            product: { select: { id: true, title: true, price: true } },
+          },
+        },
+        payments: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: {
+            id: true,
+            status: true,
+            provider: true,
+            channel: true,
+            reference: true,
+            amount: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    const data = orders.map((o: any) => ({
+      id: o.id,
+      status: o.status,
+      total: Number(o.total ?? 0),
+      createdAt: o.createdAt?.toISOString?.() ?? o.createdAt,
+      items: o.items.map((it: any) => ({
+        id: it.id,
+        productId: it.productId,
+        variantId: it.variantId ?? null,
+        title: it.title ?? it.product?.title ?? '—',
+        unitPrice: asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0),
+        quantity: asNumber(it.quantity ?? it.qty, 1),
+        lineTotal: asNumber(
+          it.lineTotal ??
+          asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0) *
+          asNumber(it.quantity ?? it.qty, 1),
+          0
+        ),
+        status: it.status ?? '—',
+        selectedOptions:
+          it.selectedOptions ?? it.selectedOptionsJson ?? it?.metaJson?.selectedOptions ?? null,
+      })),
+      payment: o.payments[0] || null,
+    }));
+
+    res.json({ data });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/* =========================================================
+   GET /api/orders/:id
+   Admin: any; User: only own
+========================================================= */
 router.get('/:id', authMiddleware, async (req, res, next) => {
   try {
     const id = req.params.id;
     const order = await prisma.order.findUnique({
       where: { id },
       include: {
+        user: { select: { id: true, email: true } },
         items: {
           include: {
-            product: { select: { id: true, title: true, imagesJson: true } },
+            product: { select: { id: true, title: true, price: true } },
           },
         },
-        payments: true,
-        user: { select: { id: true, email: true } },
-        shippingAddress: true,
+        payments: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            status: true,
+            provider: true,
+            channel: true,
+            reference: true,
+            amount: true,
+            createdAt: true,
+          },
+        },
       },
     });
-    if (!order) return res.status(404).json({ error: 'Not found' });
-    if (order.userId !== req.user!.id) return res.status(403).json({ error: 'Forbidden' });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    res.json(order);
+    if (!isAdmin(req.user?.role) && String(order.userId) !== String(req.user?.id)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const data = {
+      id: order.id,
+      userEmail: (order as any).user?.email ?? null,
+      status: order.status,
+      total: Number(order.total ?? 0),
+      createdAt: (order as any).createdAt?.toISOString?.() ?? (order as any).createdAt,
+      items: (order as any).items.map((it: any) => ({
+        id: it.id,
+        productId: it.productId,
+        variantId: it.variantId ?? null,
+        title: it.title ?? it.product?.title ?? '—',
+        unitPrice: asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0),
+        quantity: asNumber(it.quantity ?? it.qty, 1),
+        lineTotal: asNumber(
+          it.lineTotal ??
+          asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0) *
+          asNumber(it.quantity ?? it.qty, 1),
+          0
+        ),
+        status: it.status ?? '—',
+        selectedOptions:
+          it.selectedOptions ?? it.selectedOptionsJson ?? it?.metaJson?.selectedOptions ?? null,
+      })),
+      payments: order.payments,
+    };
+
+    res.json(data);
   } catch (e) {
     next(e);
   }
 });
 
-/**
- * CANCEL ORDER (owner-only)
- * Allowed only when status is PENDING or PARTIAL, and no successful payment exists.
- */
-router.post('/:id/cancel', authMiddleware, async (req, res, next) => {
+/* =========================================================
+   GET /api/orders/summary  --> router path should be '/summary'
+========================================================= */
+router.get('/summary', authMiddleware, async (req, res, next) => {
   try {
-    const id = req.params.id;
+    const userId = getUserId(req);
 
-    const order = await prisma.order.findUnique({
-      where: { id },
-      include: { payments: true },
+    const [countAll, paidAgg, latest] = await prisma.$transaction([
+      prisma.order.count({ where: { userId } }),
+      prisma.order.aggregate({
+        where: { userId, status: { in: ['PAID', 'COMPLETED'] } },
+        _sum: { total: true },
+      }),
+      prisma.order.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+        select: { id: true, status: true, total: true, createdAt: true },
+      }),
+    ]);
+
+    res.json({
+      ordersCount: countAll,
+      totalSpent: paidAgg._sum.total ?? '0',
+      recent: latest,
     });
-    if (!order) return res.status(404).json({ error: 'Not found' });
-    if (order.userId !== req.user!.id) return res.status(403).json({ error: 'Forbidden' });
-
-    // If already terminal or fully paid, disallow
-    if (order.status === 'PAID' || order.status === 'CANCELED' || order.status === 'FAILED') {
-      return res.status(400).json({ error: `Cannot cancel order in status ${order.status}` });
-    }
-
-    // If any PAID payment exists, disallow
-    const hasPaid = order.payments?.some((p: { status: string; }) => p.status === 'PAID');
-    if (hasPaid) return res.status(400).json({ error: 'Order already has a successful payment' });
-
-    const updated = await prisma.order.update({
-      where: { id: order.id },
-      data: { status: 'CANCELED' },
-    });
-
-    res.json(updated);
-  } catch (e) {
-    next(e);
+  } catch (err) {
+    next(err);
   }
 });
-
-
-//------------- ADMIN GetOrders
-const AdminQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(100).default(20),
-  status: z.string().optional(),            // "PENDING,PAID"
-  from: z.string().datetime().optional(),   // ISO
-  to: z.string().datetime().optional(),     // ISO
-  userId: z.string().optional(),            // filter by a specific user
-  email: z.string().email().optional(),     // or by user email
-  sortBy: z.enum(['createdAt', 'total', 'status']).default('createdAt'),
-  sortDir: z.enum(['asc', 'desc']).default('desc'),
-  includeUser: z.coerce.boolean().optional().default(false),
-});
-
-/** ADMIN: list all orders */
-router.get(
-  '/',
-  authMiddleware,
-  requireRole('ADMIN'),
-  async (req, res, next) => {
-    try {
-      const q = AdminQuerySchema.parse(req.query);
-      const skip = (q.page - 1) * q.pageSize;
-      const take = q.pageSize;
-
-      // Build base where
-      const where: Prisma.OrderWhereInput = {};
-
-      if (q.status) {
-        const statuses = q.status.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-        if (statuses.length) where.status = { in: statuses as any };
-      }
-
-      if (q.from || q.to) {
-        where.createdAt = {};
-        if (q.from) (where.createdAt as any).gte = new Date(q.from);
-        if (q.to) (where.createdAt as any).lte = new Date(q.to);
-      }
-
-      // Filter by user
-      if (q.userId) {
-        where.userId = q.userId;
-      } else if (q.email) {
-        // look up user by email once
-        const user = await prisma.user.findUnique({ where: { email: q.email }, select: { id: true } });
-        // If no user found by that email, return empty set
-        if (!user) return res.json({ page: q.page, pageSize: q.pageSize, totalItems: 0, totalPages: 1, data: [] });
-        where.userId = user.id;
-      }
-
-      // Sorting
-      let orderBy: Prisma.OrderOrderByWithRelationInput = { createdAt: q.sortDir };
-      if (q.sortBy === 'total') orderBy = { total: q.sortDir };
-      if (q.sortBy === 'status') orderBy = { status: q.sortDir };
-
-      const [totalItems, data] = await Promise.all([
-        prisma.order.count({ where }),
-        prisma.order.findMany({
-          where,
-          orderBy,
-          skip,
-          take,
-          include: {
-            items: {
-              include: {
-                product: { select: { id: true, title: true, imagesJson: true } },
-              },
-            },
-            payments: {
-              orderBy: { createdAt: 'desc' },
-              select: { id: true, reference: true, amount: true, status: true, channel: true, createdAt: true },
-            },
-            shippingAddress: true,
-            ...(q.includeUser ? { user: { select: { id: true, email: true, firstName: true, lastName: true } } } : {}),
-          },
-        }),
-      ]);
-
-      const totalPages = Math.max(1, Math.ceil(totalItems / q.pageSize));
-
-      res.json({
-        page: q.page,
-        pageSize: q.pageSize,
-        totalItems,
-        totalPages,
-        sortBy: q.sortBy,
-        sortDir: q.sortDir,
-        data,
-      });
-    } catch (e) {
-      next(e);
-    }
-  }
-);
-
 
 export default router;

@@ -1,18 +1,33 @@
-// src/pages/Checkout.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
-import { useModal } from "../components/ModalProvider";
+import { useModal } from '../components/ModalProvider';
 
 /* ----------------------------- Types ----------------------------- */
+type SelectedOption = {
+  attributeId: string;
+  attribute: string;
+  valueId?: string;
+  value: string;
+};
+
 type CartLine = {
   productId: string;
   title: string;
-  price: number;
   qty: number;
-  totalPrice: number;
+
+  unitPrice?: number;
+  variantId?: string | null;
+  selectedOptions?: SelectedOption[];
+
+  // legacy mirror
+  price?: number;
+  totalPrice?: number;
+
+  // NEW: keep image through checkout
+  image?: string | null;
 };
 
 type Address = {
@@ -46,40 +61,102 @@ const ngn = new Intl.NumberFormat('en-NG', {
   maximumFractionDigits: 2,
 });
 
-/* ----------------------------- Icons (small) ----------------------------- */
+/* ----------------------------- Helpers ----------------------------- */
+const num = (v: any, d = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+
+// Normalize whatever we find in localStorage to a consistent shape
+function readCart(): CartLine[] {
+  try {
+    const raw = localStorage.getItem('cart');
+    const arr: any[] = raw ? JSON.parse(raw) : [];
+    return arr.map((x) => {
+      const unit = num(x.unitPrice, num(x.price, 0));
+      const qty = Math.max(1, num(x.qty, 1));
+      return {
+        productId: String(x.productId),
+        title: String(x.title ?? ''),
+        qty,
+        unitPrice: unit,
+        variantId: x.variantId ?? null,
+        selectedOptions: Array.isArray(x.selectedOptions) ? x.selectedOptions : undefined,
+        price: unit,                          // legacy
+        totalPrice: num(x.totalPrice, unit * qty), // legacy
+        image: x.image ?? null,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writeCart(lines: CartLine[]) {
+  const out = lines.map((l) => {
+    const unit = num(l.unitPrice, num(l.price, 0));
+    const qty = Math.max(1, num(l.qty, 1));
+    const total = unit * qty;
+    return {
+      productId: l.productId,
+      title: l.title,
+      qty,
+      unitPrice: unit,
+      variantId: l.variantId ?? null,
+      selectedOptions: l.selectedOptions ?? [],
+      image: l.image ?? null,
+
+      // legacy mirror:
+      price: unit,
+      totalPrice: total,
+    };
+  });
+  localStorage.setItem('cart', JSON.stringify(out));
+}
+
+function computeLineTotal(line: CartLine): number {
+  const unit = num(line.unitPrice, num(line.price, 0));
+  const qty = Math.max(1, num(line.qty, 1));
+  return unit * qty;
+}
+
+/* ----------------------------- Small UI bits ----------------------------- */
 const IconCart = (props: any) => (
   <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
-    <path d="M6 6h15l-1.5 9h-12L6 6Z" stroke="currentColor" strokeWidth="1.5"/>
-    <circle cx="9" cy="20" r="1" fill="currentColor"/>
-    <circle cx="18" cy="20" r="1" fill="currentColor"/>
+    <path d="M6 6h15l-1.5 9h-12L6 6Z" stroke="currentColor" strokeWidth="1.5" />
+    <circle cx="9" cy="20" r="1" fill="currentColor" />
+    <circle cx="18" cy="20" r="1" fill="currentColor" />
     <path d="M6 6l-1-3H2" stroke="currentColor" strokeWidth="1.5" />
   </svg>
 );
 
 const IconHome = (props: any) => (
   <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
-    <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" strokeWidth="1.5"/>
+    <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" strokeWidth="1.5" />
   </svg>
 );
 
 const IconTruck = (props: any) => (
   <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
-    <path d="M14 17H6a1 1 0 0 1-1-1V5h9v12ZM14 8h4l3 3v5a1 1 0 0 1-1 1h-1" stroke="currentColor" strokeWidth="1.5"/>
-    <circle cx="7.5" cy="18.5" r="1.5" fill="currentColor"/>
-    <circle cx="17.5" cy="18.5" r="1.5" fill="currentColor"/>
+    <path d="M14 17H6a1 1 0 0 1-1-1V5h9v12ZM14 8h4l3 3v5a1 1 0 0 1-1 1h-1" stroke="currentColor" strokeWidth="1.5" />
+    <circle cx="7.5" cy="18.5" r="1.5" fill="currentColor" />
+    <circle cx="17.5" cy="18.5" r="1.5" fill="currentColor" />
   </svg>
 );
 
-/* ----------------------------- Card UI ----------------------------- */
 function Card({
   children,
   className = '',
-  tone = 'neutral', // 'primary' | 'emerald' | 'amber' | 'neutral'
-}: { children: React.ReactNode; className?: string; tone?: 'primary'|'emerald'|'amber'|'neutral' }) {
+  tone = 'neutral',
+}: {
+  children: React.ReactNode;
+  className?: string;
+  tone?: 'primary' | 'emerald' | 'amber' | 'neutral';
+}) {
   const toneBorder =
     tone === 'primary' ? 'border-primary-200' :
     tone === 'emerald' ? 'border-emerald-200' :
-    tone === 'amber'   ? 'border-amber-200' :
+    tone === 'amber' ? 'border-amber-200' :
     'border-border';
 
   return (
@@ -100,18 +177,18 @@ function CardHeader({
   subtitle?: string;
   icon?: React.ReactNode;
   action?: React.ReactNode;
-  tone?: 'primary'|'emerald'|'amber'|'neutral';
+  tone?: 'primary' | 'emerald' | 'amber' | 'neutral';
 }) {
   const toneBg =
     tone === 'primary' ? 'from-primary-50 to-white' :
     tone === 'emerald' ? 'from-emerald-50 to-white' :
-    tone === 'amber'   ? 'from-amber-50 to-white' :
+    tone === 'amber' ? 'from-amber-50 to-white' :
     'from-surface to-white';
 
   const toneIcon =
     tone === 'primary' ? 'text-primary-600' :
     tone === 'emerald' ? 'text-emerald-600' :
-    tone === 'amber'   ? 'text-amber-600' :
+    tone === 'amber' ? 'text-amber-600' :
     'text-ink-soft';
 
   return (
@@ -128,6 +205,25 @@ function CardHeader({
   );
 }
 
+function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      {...props}
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 ${props.className || ''}`}
+    />
+  );
+}
+
+function AddressPreview({ a }: { a: Address }) {
+  return (
+    <div className="p-4 text-sm leading-6 text-ink">
+      <div>{a.houseNumber} {a.streetName}</div>
+      <div>{a.town || ''} {a.city || ''} {a.postCode || ''}</div>
+      <div>{a.state}, {a.country}</div>
+    </div>
+  );
+}
+
 /* ----------------------------- Component ----------------------------- */
 export default function Checkout() {
   const nav = useNavigate();
@@ -139,11 +235,56 @@ export default function Checkout() {
     if (!token) nav('/login', { state: { from: { pathname: '/checkout' } } });
   }, [token, nav]);
 
-  // CART
-  const raw = localStorage.getItem('cart');
-  const cart: CartLine[] = raw ? JSON.parse(raw) : [];
+  // CART — normalize & persist the normalized shape
+  const [cart, setCart] = useState<CartLine[]>(() => readCart());
+  useEffect(() => {
+    writeCart(cart);
+  }, [cart]);
+
+  // 🔧 Hydrate missing prices if any (safety net)
+  useEffect(() => {
+    (async () => {
+      const needs = cart.filter((l) => num(l.unitPrice, num(l.price, 0)) <= 0);
+      if (needs.length === 0) return;
+
+      try {
+        const updated = await Promise.all(cart.map(async (line) => {
+          const currentUnit = num(line.unitPrice, num(line.price, 0));
+          if (currentUnit > 0) return line;
+
+          const resp = await api.get(`/api/products/${line.productId}?include=variants`);
+          const p = resp.data || {};
+          const base = num(p?.price, 0);
+
+          let unit = base;
+          if (line.variantId && Array.isArray(p?.variants)) {
+            const v = p.variants.find((vv: any) => String(vv.id) === String(line.variantId));
+            if (v && num(v.price, NaN) >= 0) {
+              unit = num(v.price, base);
+            }
+          }
+
+          const qty = Math.max(1, num(line.qty, 1));
+          return {
+            ...line,
+            unitPrice: unit,
+            price: unit,
+            totalPrice: unit * qty,
+            image: line.image ?? (Array.isArray(p?.imagesJson) ? p.imagesJson[0] : null),
+          };
+        }));
+
+        setCart(updated);
+        writeCart(updated);
+      } catch {
+        // ignore; guard below prevents ordering with zero prices
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const subtotal = useMemo(
-    () => cart.reduce((sum, it) => sum + (Number(it.totalPrice) || 0), 0),
+    () => cart.reduce((sum, it) => sum + computeLineTotal(it), 0),
     [cart]
   );
 
@@ -216,7 +357,6 @@ export default function Checkout() {
     return null;
   }
 
-  // Save addresses immediately
   const authHeader = token ? { Authorization: `Bearer ${token}` } : undefined;
 
   const saveHome = async () => {
@@ -256,7 +396,11 @@ export default function Checkout() {
   // Create order → go to payment
   const createOrder = useMutation({
     mutationFn: async () => {
-      const items = cart.map((it) => ({ productId: it.productId, qty: it.qty }));
+      if (cart.length === 0) throw new Error('Your cart is empty');
+
+      // guard: any line still without price? stop
+      const bad = cart.find((l) => num(l.unitPrice, num(l.price, 0)) <= 0);
+      if (bad) throw new Error('One or more items have no price. Please remove and re-add them to cart.');
 
       const vaHome = validateAddress(homeAddr);
       if (vaHome) throw new Error(vaHome);
@@ -267,12 +411,23 @@ export default function Checkout() {
         if (vaShip) throw new Error(vaShip);
       }
 
+      // Build order items (includes variants & options if present)
+      const items = cart.map((it) => ({
+        productId: it.productId,
+        variantId: it.variantId || undefined,
+        qty: Math.max(1, num(it.qty, 1)),
+        title: it.title,
+        unitPrice: num(it.unitPrice, num(it.price, 0)),
+        selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : undefined,
+        imageUrl: it.image ?? undefined, // optional; backend may ignore
+      }));
+
       const payload = {
         items,
         shipping: 0,
         tax: 0,
         homeAddress: homeAddr,
-        shippingAddress: sameAsHome ? homeAddr : shipAddr,
+        shippingAddress: finalShip,
       };
 
       const res = await api.post('/api/orders', payload, { headers: authHeader });
@@ -341,15 +496,53 @@ export default function Checkout() {
                 icon={<IconCart />}
               />
               <ul className="divide-y">
-                {cart.map((it) => (
-                  <li key={it.productId} className="p-4 flex items-center justify-between">
-                    <div className="min-w-0 pr-3">
-                      <div className="font-medium text-ink truncate">{it.title}</div>
-                      <div className="text-xs text-ink-soft">Qty: {it.qty} • Unit: {ngn.format(Number(it.price) || 0)}</div>
-                    </div>
-                    <div className="text-ink font-semibold">{ngn.format(Number(it.totalPrice) || 0)}</div>
-                  </li>
-                ))}
+                {cart.map((it) => {
+                  const unit = num(it.unitPrice, num(it.price, 0));
+                  const lineTotal = computeLineTotal(it);
+                  const hasOptions = Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0;
+                  const optionsText = hasOptions
+                    ? it.selectedOptions!.map(o => `${o.attribute}: ${o.value}`).join(' • ')
+                    : null;
+
+                  return (
+                    <li key={`${it.productId}-${it.variantId ?? 'base'}`} className="p-4">
+                      <div className="flex items-center gap-4">
+                        {it.image ? (
+                          <img
+                            src={it.image}
+                            alt={it.title}
+                            className="w-14 h-14 rounded-md object-cover border"
+                          />
+                        ) : (
+                          <div className="w-14 h-14 rounded-md bg-zinc-100 grid place-items-center text-[10px] text-ink-soft border">
+                            No image
+                          </div>
+                        )}
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="font-medium text-ink truncate">
+                                {it.title}{it.variantId ? ' (Variant)' : ''}
+                              </div>
+                              <div className="text-xs text-ink-soft">
+                                Qty: {it.qty} • Unit: {ngn.format(unit)}
+                              </div>
+                              {optionsText && (
+                                <div className="mt-1 text-xs text-ink-soft">
+                                  {optionsText}
+                                </div>
+                              )}
+                            </div>
+                            <div className="text-ink font-semibold whitespace-nowrap">
+                              {ngn.format(lineTotal)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             </Card>
 
@@ -565,26 +758,6 @@ export default function Checkout() {
           </aside>
         </div>
       </div>
-    </div>
-  );
-}
-
-/* ----------------------------- Bits ----------------------------- */
-function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 ${props.className || ''}`}
-    />
-  );
-}
-
-function AddressPreview({ a }: { a: Address }) {
-  return (
-    <div className="p-4 text-sm leading-6 text-ink">
-      <div>{a.houseNumber} {a.streetName}</div>
-      <div>{a.town || ''} {a.city || ''} {a.postCode || ''}</div>
-      <div>{a.state}, {a.country}</div>
     </div>
   );
 }
