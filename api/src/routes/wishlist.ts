@@ -1,77 +1,76 @@
+// api/src/routes/favorites.ts
 import { Router } from 'express';
-import { authMiddleware, AuthedRequest} from '../middleware/auth.js';
+import { z } from 'zod';
+import { authMiddleware, AuthedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 
 const router = Router();
 
-// Get my wishlist (ids or full products)
-router.get('/', authMiddleware, async (req: AuthedRequest, res, next) => {
+// All routes require auth
+router.use(authMiddleware);
+
+/**
+ * GET /api/favorites/mine
+ * Returns a compact list of product ids in the user's wishlist.
+ */
+router.get('/mine', async (req: AuthedRequest, res, next) => {
   try {
-    const favs = await prisma.favorite.findMany({
+    const rows = await prisma.favorite.findMany({
       where: { userId: req.user!.id },
       select: { productId: true },
       orderBy: { createdAt: 'desc' },
     });
-    res.json({ productIds: favs.map((f: { productId: any; }) => f.productId) });
-  } catch (e) { next(e); }
+    res.json({ productIds: rows.map((r: { productId: any; }) => r.productId) });
+  } catch (e) {
+    next(e);
+  }
 });
 
-// Toggle (add if missing, remove if present)
-router.post('/toggle/:productId', authMiddleware, async (req: AuthedRequest, res, next) => {
+/**
+ * POST /api/favorites/toggle
+ * Body: { productId: string }
+ * Toggles a favorite. Response: { favorited: boolean }
+ */
+const ToggleSchema = z.object({
+  productId: z.string().min(1, 'productId required'),
+});
+
+router.post('/toggle', async (req: AuthedRequest, res, next) => {
   try {
-    const { productId } = req.params;
+    const { productId } = ToggleSchema.parse(req.body);
+
+    // Check if exists
     const existing = await prisma.favorite.findUnique({
-      where: { userId_productId: { userId: req.user!.id, productId } },
+      where: {
+        userId_productId: {
+          userId: req.user!.id,
+          productId,
+        },
+      },
     });
 
     if (existing) {
       await prisma.favorite.delete({ where: { id: existing.id } });
-      return res.json({ liked: false });
+      return res.json({ favorited: false });
     } else {
+      // (optional) ensure product exists & is visible
+      const product = await prisma.product.findUnique({
+        where: { id: productId },
+        select: { id: true },
+      });
+      if (!product) return res.status(404).json({ error: 'Product not found' });
+
       await prisma.favorite.create({
-        data: { userId: req.user!.id, productId },
+        data: {
+          userId: req.user!.id,
+          productId,
+        },
       });
-      return res.json({ liked: true });
+      return res.json({ favorited: true });
     }
-  } catch (e) { next(e); }
-});
-
-
-router.use(authMiddleware);
-
-// List ids
-router.get('/', async (req: any, res, next) => {
-  try {
-    const userId = req.user.id;
-    const rows = await prisma.wishlist.findMany({
-      where: { userId },
-      select: { productId: true },
-    });
-    res.json({ productIds: rows.map((r: { productId: any; }) => r.productId) });
-  } catch (e) { next(e); }
-});
-
-// Toggle single product
-router.post('/toggle', async (req: any, res, next) => {
-  try {
-    const userId = req.user.id;
-    const { productId } = req.body as { productId: string };
-    if (!productId) return res.status(400).json({ error: 'productId required' });
-
-    const existing = await prisma.wishlist.findUnique({
-      where: { userId_productId: { userId, productId } },
-    });
-
-    if (existing) {
-      await prisma.wishlist.delete({
-        where: { userId_productId: { userId, productId } },
-      });
-      return res.json({ liked: false });
-    } else {
-      await prisma.wishlist.create({ data: { userId, productId } });
-      return res.json({ liked: true });
-    }
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
 export default router;

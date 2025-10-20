@@ -1,18 +1,44 @@
-// src/pages/ProductDetail.tsx
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../api/client';
 import { useToast } from '../components/ToastProvider';
 import { useAuthStore } from '../store/auth';
 
+/* ---------------- Types (tolerant to optional richer payloads) ---------------- */
+type Attr = { id: string; name: string; type?: string | null };
+type AttrVal = { id: string; name: string; code?: string | null };
+
+type VariantOption = {
+  attribute: Attr;
+  value: AttrVal;
+};
+
+type Variant = {
+  id: string;
+  sku?: string | null;
+  price?: number | null; // nullable => falls back to product price
+  inStock?: boolean;
+  imagesJson?: string[];
+  options?: VariantOption[];
+};
+
 type Product = {
   id: string;
   title: string;
   description: string;
-  stock: boolean;
-  price: number;
+  inStock: boolean;
+  price: number; // base price
   imagesJson?: string[];
+  brand?: { id: string; name: string } | null;
+  brandName?: string | null;
+
+  // Rich attributes (for spec table)
+  attributeValues?: Array<{ id: string; attribute: Attr; value: AttrVal }>;
+  attributeTexts?: Array<{ id: string; attribute: Attr; value: string }>;
+
+  // Variants
+  variants?: Variant[];
 };
 
 const ngn = new Intl.NumberFormat('en-NG', {
@@ -21,6 +47,110 @@ const ngn = new Intl.NumberFormat('en-NG', {
   maximumFractionDigits: 2,
 });
 
+/* ---------------- Helpers ---------------- */
+function getBrandName(p?: Product | null) {
+  if (!p) return '';
+  return (p.brand?.name || p.brandName || '').trim();
+}
+
+function priceOf(p: Product, v?: Variant | null) {
+  const candidate = v?.price ?? p.price;
+  return Number.isFinite(Number(candidate)) ? Number(candidate) : 0;
+}
+
+function imagesOf(p: Product, v?: Variant | null) {
+  const fromVariant = v?.imagesJson && v.imagesJson.length > 0 ? v.imagesJson : null;
+  return fromVariant || p.imagesJson || [];
+}
+
+function isVariantAvailable(v?: Variant | null) {
+  if (!v) return false;
+  return v.inStock !== false; // default truthy
+}
+
+function hasAnyVariant(p: Product) {
+  return Array.isArray(p.variants) && p.variants.length > 0;
+}
+
+/**
+ * Build axes data structure from variants:
+ * - axes: [{ attribute, values: [{value, present, available}] }]
+ * - order axes by attribute name asc for stability
+ */
+function buildAxes(variants: Variant[]) {
+  type AxisValue = { value: AttrVal; present: boolean; available: boolean };
+  type Axis = { attribute: Attr; values: AxisValue[] };
+
+  const map = new Map<string, Axis>();
+
+  for (const v of variants) {
+    for (const opt of v.options || []) {
+      const aId = opt.attribute.id;
+      const axis = map.get(aId) || {
+        attribute: opt.attribute,
+        values: [],
+      };
+      // ensure value in axis.values (present=true, we'll compute available later)
+      if (!axis.values.find((x) => x.value.id === opt.value.id)) {
+        axis.values.push({ value: opt.value, present: true, available: true });
+      }
+      map.set(aId, axis);
+    }
+  }
+
+  // deduplicate & sort axis values by name
+  const axes = Array.from(map.values()).map((ax) => ({
+    ...ax,
+    values: ax.values.sort((a, b) => a.value.name.localeCompare(b.value.name, undefined, { sensitivity: 'base' })),
+  }));
+
+  // sort axes by attribute name
+  axes.sort((a, b) => a.attribute.name.localeCompare(b.attribute.name, undefined, { sensitivity: 'base' }));
+  return axes;
+}
+
+/** Given a selection { [attributeId]: valueId }, find the matching variant */
+function findVariant(variants: Variant[], selection: Record<string, string>) {
+  return variants.find((v) => {
+    const opts = v.options || [];
+    for (const [attrId, valId] of Object.entries(selection)) {
+      const hit = opts.find((o) => o.attribute.id === attrId && o.value.id === valId);
+      if (!hit) return false;
+    }
+    return true;
+  });
+}
+
+/** Recompute availability for each axis value, constrained by current selections */
+function computeAvailability(
+  variants: Variant[],
+  axes: ReturnType<typeof buildAxes>,
+  selection: Record<string, string>
+) {
+  return axes.map((ax) => {
+    const otherSelections = { ...selection };
+    delete otherSelections[ax.attribute.id];
+
+    const nextValues = ax.values.map((val) => {
+      const ok = variants.some((v) => {
+        if (v.inStock === false) return false;
+        const opts = v.options || [];
+        for (const [attrId, valId] of Object.entries(otherSelections)) {
+          if (!opts.find((o) => o.attribute.id === attrId && o.value.id === valId)) return false;
+        }
+        if (!opts.find((o) => o.attribute.id === ax.attribute.id && o.value.id === val.value.id)) return false;
+        return true;
+      });
+      return { ...val, available: ok };
+    });
+
+    return { ...ax, values: nextValues };
+  });
+}
+
+/* ======================= */
+/* Product Detail Component */
+/* ======================= */
 export default function ProductDetail() {
   const { id } = useParams();
   const toast = useToast();
@@ -28,8 +158,8 @@ export default function ProductDetail() {
   const qc = useQueryClient();
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['product', id],
-    queryFn: async () => (await api.get(`/api/products/${id}`)).data as Product,
+    queryKey: ['product', id, { include: 'brand,variants,attributes' }],
+    queryFn: async () => (await api.get(`/api/products/${id}?include=brand,variants,attributes`)).data as Product,
     enabled: !!id,
     staleTime: 30_000,
   });
@@ -79,44 +209,152 @@ export default function ProductDetail() {
     },
   });
 
+  /* ---------- Variant selection state ---------- */
+  const axes = useMemo(() => buildAxes(data?.variants || []), [data?.variants]);
+
+  // selection map: attributeId -> valueId
+  const [selection, setSelection] = useState<Record<string, string>>({});
+
+  // seed selection with first available values (only once when data/axes arrive)
+  useEffect(() => {
+    if (!data || axes.length === 0) return;
+
+    let nextSel: Record<string, string> = {};
+    let availAxes = computeAvailability(data.variants || [], axes, nextSel);
+    for (const ax of availAxes) {
+      const firstAvail = ax.values.find((v) => v.available) || ax.values[0];
+      if (firstAvail) {
+        nextSel = { ...nextSel, [ax.attribute.id]: firstAvail.value.id };
+        availAxes = computeAvailability(data.variants || [], axes, nextSel);
+      }
+    }
+    setSelection(nextSel);
+  }, [data, axes]);
+
+  const availability = useMemo(() => {
+    if (!data || axes.length === 0) return axes;
+    return computeAvailability(data.variants || [], axes, selection);
+  }, [data, axes, selection]);
+
+  const matchedVariant = useMemo(() => {
+    if (!data || axes.length === 0) return undefined;
+    return findVariant(data.variants || [], selection);
+  }, [data, selection, axes.length]);
+
+  const available = useMemo(() => {
+    if (!data) return false;
+    if (axes.length === 0) return data.inStock !== false;
+    return matchedVariant ? isVariantAvailable(matchedVariant) : false;
+  }, [data, matchedVariant, axes.length]);
+
+  const price = useMemo(() => {
+    if (!data) return 0;
+    return priceOf(data, matchedVariant);
+  }, [data, matchedVariant]);
+
+  const images = useMemo(() => {
+    if (!data) return [];
+    return imagesOf(data, matchedVariant);
+  }, [data, matchedVariant]);
+
+  /* ---------- Add to cart ---------- */
   const addToCart = () => {
     if (!data) return;
-    const p = data;
-    const raw = localStorage.getItem('cart');
-    const cart: any[] = raw ? JSON.parse(raw) : [];
-    const idx = cart.findIndex((x) => x.productId === p.id);
 
-    // store totalPrice for current qty (back-compat: also keep price)
-    if (idx >= 0) {
-      const currentQty = Math.max(1, Number(cart[idx].qty) || 1) + 1;
-      const unit = Number(p.price) || 0;
-      cart[idx] = {
-        ...cart[idx],
-        qty: currentQty,
-        price: unit, // legacy
-        totalPrice: unit * currentQty,
-        title: p.title,
-      };
-    } else {
-      const unit = Number(p.price) || 0;
-      cart.push({
-        productId: p.id,
-        title: p.title,
-        qty: 1,
-        price: unit,          // legacy support
-        totalPrice: unit * 1, // new preferred field
-      });
+    // If variants exist, ensure we have a fully matched variant
+    if (axes.length > 0 && !matchedVariant) {
+      toast.push({ title: 'Select options', message: 'Please choose all required options.', duration: 3500 });
+      return;
     }
-    localStorage.setItem('cart', JSON.stringify(cart));
+    if (!available) {
+      toast.push({ title: 'Unavailable', message: 'That combination is not in stock.', duration: 3500 });
+      return;
+    }
 
-    toast.push({
-      title: 'Added to cart',
-      message: `${p.title} has been added to your cart.`,
-      duration: 5000,
-    });
+    // Build a rich selectedOptions[] for checkout display
+    const selectedOptions =
+      axes.length > 0
+        ? axes.map((ax) => {
+            const valId = selection[ax.attribute.id];
+            const v = ax.values.find((x) => x.value.id === valId)?.value;
+            return {
+              attributeId: ax.attribute.id,
+              attribute: ax.attribute.name,
+              valueId: v?.id,
+              value: v?.name || '',
+            };
+          })
+        : [];
+
+    try {
+      const raw = localStorage.getItem('cart');
+      const cart: Array<{
+        productId: string;
+        variantId?: string | null;
+        title: string;
+        qty: number;
+        unitPrice: number;
+        totalPrice: number;
+        price: number; // legacy mirror
+        selectedOptions?: Array<{ attributeId: string; attribute: string; valueId?: string; value: string }>;
+        image?: string;
+      }> = raw ? JSON.parse(raw) : [];
+
+      const variantId = matchedVariant?.id ?? null;
+      const unit = price; // resolved unit price (variant or product)
+      const img = images?.[0];
+
+      const keyMatch = (x: any) =>
+        x.productId === data.id && (variantId ? x.variantId === variantId : !x.variantId);
+
+      const idx = cart.findIndex(keyMatch);
+
+      if (idx >= 0) {
+        const newQty = Math.max(1, Number(cart[idx].qty) || 1) + 1;
+        cart[idx] = {
+          ...cart[idx],
+          qty: newQty,
+          unitPrice: unit,
+          totalPrice: unit * newQty,
+          price: unit, // legacy
+          title: data.title,
+          selectedOptions,
+          image: img || cart[idx].image,
+        };
+      } else {
+        cart.push({
+          productId: data.id,
+          variantId,
+          title: data.title,
+          qty: 1,
+          unitPrice: unit,
+          totalPrice: unit,
+          price: unit, // legacy
+          selectedOptions,
+          image: img,
+        });
+      }
+
+      localStorage.setItem('cart', JSON.stringify(cart));
+
+      const summary =
+        selectedOptions.length > 0
+          ? ` (${selectedOptions.map((o) => `${o.attribute}: ${o.value}`).join(', ')})`
+          : '';
+
+      toast.push({
+        title: 'Added to cart',
+        message: `${data.title}${summary} added to your cart.`,
+        duration: 4500,
+      });
+    } catch {
+      toast.push({ title: 'Cart', message: 'Could not add to cart.', duration: 3500 });
+    }
   };
 
-  // Loading state (skeleton)
+  /* ---------- UI ---------- */
+
+  // Loading state
   if (isLoading) {
     return (
       <div className="relative bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft overflow-hidden rounded-2xl p-4 md:p-6">
@@ -153,6 +391,7 @@ export default function ProductDetail() {
 
   const p = data;
   const fav = !!favQuery.data?.has(p.id);
+  const brand = getBrandName(p);
 
   return (
     <div className="relative bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft rounded-2xl p-4 md:p-6 overflow-hidden">
@@ -161,21 +400,22 @@ export default function ProductDetail() {
       <div className="pointer-events-none absolute -bottom-24 -right-24 size-96 rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
 
       <div className="relative grid md:grid-cols-2 gap-6">
-        {/* LEFT: image carousel */}
+        {/* LEFT: image */}
         <div className="w-full">
-          <ImageCarousel images={p.imagesJson ?? []} title={p.title} />
+          <ImageCarousel images={images} title={p.title} />
         </div>
 
-        {/* RIGHT: product details (glassy card) */}
+        {/* RIGHT: details */}
         <div className="rounded-2xl border border-white/60 bg-white/70 backdrop-blur p-5 md:p-6 shadow-[0_6px_30px_rgba(0,0,0,0.06)]">
           <div className="flex items-start justify-between gap-3">
-            {p.stock && (<div className="min-w-0">
-              <span className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
-                <span className="inline-block size-1.5 rounded-full bg-white/90" />
-                In stock
-              </span>
+            <div className="min-w-0">
+              <div className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
+                <span className={`inline-block size-1.5 rounded-full ${available ? 'bg-white/90' : 'bg-black/50'}`} />
+                {available ? 'In stock' : 'May be out of stock'}
+              </div>
               <h1 className="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight text-ink">{p.title}</h1>
-            </div>)}
+              {brand && <div className="text-sm text-ink-soft mt-1">{brand}</div>}
+            </div>
 
             <button
               aria-label={fav ? 'Remove from wishlist' : 'Add to wishlist'}
@@ -194,17 +434,111 @@ export default function ProductDetail() {
             </button>
           </div>
 
-          <p className="mt-2 text-2xl font-extrabold tracking-tight text-ink">{ngn.format(Number(p.price) || 0)}</p>
+          {/* Price */}
+          <p className="mt-2 text-2xl font-extrabold tracking-tight text-ink">{ngn.format(price)}</p>
+          {hasAnyVariant(p) && (
+            <div className="text-xs text-ink-soft mt-0.5">
+              {p.variants && p.variants.length > 0
+                ? `Variants: ${p.variants.length} option${p.variants.length > 1 ? 's' : ''}`
+                : null}
+            </div>
+          )}
 
-          <div className="mt-4">
+          {/* Variant pickers */}
+          {axes.length > 0 && (
+            <div className="mt-5 space-y-4">
+              {availability.map((ax) => {
+                const current = selection[ax.attribute.id];
+                return (
+                  <div key={ax.attribute.id}>
+                    <div className="text-sm font-semibold text-ink mb-2">
+                      {ax.attribute.name}{' '}
+                      {current && (
+                        <span className="text-ink-soft font-normal">
+                          • {ax.values.find((v) => v.value.id === current)?.value.name}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {ax.values.map((v) => {
+                        const checked = current === v.value.id;
+                        const disabled = !v.available;
+                        const isColor = /color/i.test(ax.attribute.name) && v.value.code;
+
+                        return (
+                          <button
+                            key={v.value.id}
+                            disabled={disabled}
+                            onClick={() =>
+                              setSelection((s) => ({
+                                ...s,
+                                [ax.attribute.id]: v.value.id,
+                              }))
+                            }
+                            title={v.value.name}
+                            className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition
+                              ${checked ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white hover:bg-black/5'}
+                              ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+                          >
+                            {isColor ? (
+                              <>
+                                <span
+                                  className="inline-block w-4 h-4 rounded-full border"
+                                  style={{ background: v.value.code || '#ccc' }}
+                                />
+                                <span>{v.value.name}</span>
+                              </>
+                            ) : (
+                              <span>{v.value.name}</span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Description */}
+          <div className="mt-5">
             <h2 className="font-semibold text-ink">Description</h2>
             <p className="mt-1 text-ink-soft leading-relaxed">{p.description}</p>
           </div>
 
+          {/* Specs (attribute values + texts) */}
+          {(p.attributeValues?.length || p.attributeTexts?.length) ? (
+            <div className="mt-6">
+              <h3 className="font-semibold text-ink mb-2">Specifications</h3>
+              <div className="rounded-xl border bg-white">
+                <table className="w-full text-sm">
+                  <tbody>
+                    {(p.attributeValues || []).map((av) => (
+                      <tr key={`val-${av.id}`} className="border-b last:border-b-0">
+                        <td className="px-3 py-2 w-1/3 text-ink font-medium">{av.attribute?.name}</td>
+                        <td className="px-3 py-2 text-ink-soft">{av.value?.name}</td>
+                      </tr>
+                    ))}
+                    {(p.attributeTexts || []).map((at) => (
+                      <tr key={`txt-${at.id}`} className="border-b last:border-b-0">
+                        <td className="px-3 py-2 w-1/3 text-ink font-medium">{at.attribute?.name}</td>
+                        <td className="px-3 py-2 text-ink-soft">{at.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Actions */}
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <button
-              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
+              className={`inline-flex items-center gap-2 rounded-xl px-5 py-3 font-semibold shadow-sm
+                ${available ? 'bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200' : 'bg-zinc-200 text-zinc-500 cursor-not-allowed'}`}
               onClick={addToCart}
+              disabled={!available}
             >
               Add to cart
             </button>
@@ -216,19 +550,10 @@ export default function ProductDetail() {
               Go to cart
             </Link>
 
-            <Link
-              to="/wishlist"
-              className="inline-flex items-center gap-2 text-primary-700 hover:underline"
-            >
-              View wishlist
-            </Link>
-          </div>
-           <Link
-              to="/catalog"
-              className="inline-flex items-center gap-2 text-primary-700 hover:underline mt-20"
-            >
+            <Link to="/catalog" className="inline-flex items-center gap-2 text-primary-700 hover:underline">
               Back to catalogue
             </Link>
+          </div>
         </div>
       </div>
     </div>
@@ -238,7 +563,15 @@ export default function ProductDetail() {
 /* ===================== */
 /* Inline Carousel Comp. */
 /* ===================== */
-function ImageCarousel({ images, title }: { images: string[]; title: string }) {
+function ImageCarousel({
+  images,
+  title,
+  autoAdvanceMs = 4000, // set to 0 to disable auto-advance entirely
+}: {
+  images: string[];
+  title: string;
+  autoAdvanceMs?: number;
+}) {
   if (!images || images.length === 0) {
     return (
       <div className="w-full max-w-2xl aspect-square md:aspect-[4/3] rounded-2xl border overflow-hidden grid place-items-center text-sm text-ink-soft bg-white/70 backdrop-blur">
@@ -255,23 +588,25 @@ function ImageCarousel({ images, title }: { images: string[]; title: string }) {
   const imgAreaRef = useRef<HTMLDivElement | null>(null);
   const zoomPaneRef = useRef<HTMLDivElement | null>(null);
 
-  // rAF smoothing refs
+  // rAF smoothing refs (for buttery cursor tracking)
   const frameRef = useRef<number | null>(null);
   const targetPosRef = useRef<{ x: number; y: number }>({ x: 50, y: 50 });
   const currentPosRef = useRef<{ x: number; y: number }>({ x: 50, y: 50 });
 
+  // tuning knobs
   const ZOOM = 2.8;          // magnification
-  const PANE_REM = 28;       // 2× bigger
-  const GAP_PX = 16;         // gap from the image to the pane
+  const PANE_REM = 28;       // zoom pane size (in rem)
+  const GAP_PX = 16;         // gap between image and zoom pane
 
-  // Auto-advance
+  /* ---------- Auto-advance (pauses while hovering/zooming) ---------- */
   useEffect(() => {
+    if (autoAdvanceMs <= 0) return;
     if (paused || images.length <= 1) return;
-    const t = setInterval(() => setIdx((i) => (i + 1) % images.length), 4000);
+    const t = setInterval(() => setIdx((i) => (i + 1) % images.length), autoAdvanceMs);
     return () => clearInterval(t);
-  }, [paused, images.length]);
+  }, [paused, images.length, autoAdvanceMs]);
 
-  // Touch swipe
+  /* ---------- Touch swipe (mobile) ---------- */
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -307,7 +642,7 @@ function ImageCarousel({ images, title }: { images: string[]; title: string }) {
   const goPrev = () => setIdx((i) => (i - 1 + images.length) % images.length);
   const goNext = () => setIdx((i) => (i + 1) % images.length);
 
-  // Update zoom pane background when slide changes
+  /* ---------- Keep zoom pane synced with current slide ---------- */
   useEffect(() => {
     const pane = zoomPaneRef.current;
     if (!pane) return;
@@ -316,22 +651,19 @@ function ImageCarousel({ images, title }: { images: string[]; title: string }) {
     pane.style.backgroundSize = `${ZOOM * 100}%`;
   }, [idx, images]);
 
-  // Position the pane at the right edge of the image (fixed so it can overlap description)
+  /* ---------- Position zoom pane to the right of the image ---------- */
   const positionPane = () => {
     const pane = zoomPaneRef.current;
     const container = containerRef.current;
     if (!pane || !container) return;
 
     const rect = container.getBoundingClientRect();
-
-    // Compute size in px from rem
     const paneSizePx = PANE_REM * parseFloat(getComputedStyle(document.documentElement).fontSize);
 
-    // Ideal position: to the right of the image, vertically centered to the image
     let left = rect.right + GAP_PX;
     let top = rect.top + (rect.height - paneSizePx) / 2;
 
-    // Clamp inside viewport with small margin
+    // clamp inside viewport
     const margin = 8;
     left = Math.min(Math.max(margin, left), window.innerWidth - paneSizePx - margin);
     top = Math.min(Math.max(margin, top), window.innerHeight - paneSizePx - margin);
@@ -354,7 +686,7 @@ function ImageCarousel({ images, title }: { images: string[]; title: string }) {
     };
   }, [zooming]);
 
-  // rAF loop for smooth lerp toward targetPos
+  /* ---------- rAF loop to smoothly follow cursor ---------- */
   useEffect(() => {
     const pane = zoomPaneRef.current;
     if (!pane) return;
@@ -363,7 +695,7 @@ function ImageCarousel({ images, title }: { images: string[]; title: string }) {
     const animate = () => {
       const cur = currentPosRef.current;
       const tgt = targetPosRef.current;
-      const SMOOTH = 0.2;
+      const SMOOTH = 0.2; // lower = smoother/slower
       const nx = lerp(cur.x, tgt.x, SMOOTH);
       const ny = lerp(cur.y, tgt.y, SMOOTH);
       currentPosRef.current = { x: nx, y: ny };
@@ -377,14 +709,15 @@ function ImageCarousel({ images, title }: { images: string[]; title: string }) {
     };
   }, []);
 
-  // Mouse tracking → update target only; rAF handles smoothing
+  /* ---------- Mouse tracking (sets the target for rAF) ---------- */
   const onMouseMove = (e: React.MouseEvent) => {
     const el = imgAreaRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
-    targetPosRef.current = { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) };
+    const clamp = (v: number) => Math.max(0, Math.min(100, v));
+    targetPosRef.current = { x: clamp(x), y: clamp(y) };
   };
 
   return (
@@ -392,19 +725,20 @@ function ImageCarousel({ images, title }: { images: string[]; title: string }) {
       <div
         ref={containerRef}
         className="relative w-full max-w-2xl aspect-square md:aspect-[4/3] rounded-2xl border overflow-hidden bg-white shadow-[0_6px_30px_rgba(0,0,0,0.06)]"
-        onMouseEnter={() => setPaused(true)}
-        onMouseLeave={() => setPaused(false)}
+        onMouseEnter={() => { setPaused(true); }}
+        onMouseLeave={() => { setPaused(false); setZooming(false); }}
         onFocus={() => setPaused(true)}
         onBlur={() => setPaused(false)}
         aria-roledescription="carousel"
       >
-        {/* Slides */}
+        {/* Slides (carousel stays put while zooming) */}
         <div
           className="h-full w-full flex transition-transform duration-500"
           style={{ transform: `translateX(-${idx * 100}%)` }}
         >
           {images.map((src, i) => (
             <div key={src + i} className="min-w-full h-full grid place-items-center bg-white relative">
+              {/* invisible tracking layer */}
               <div
                 ref={i === idx ? imgAreaRef : null}
                 className="absolute inset-0"
@@ -422,7 +756,7 @@ function ImageCarousel({ images, title }: { images: string[]; title: string }) {
           ))}
         </div>
 
-        {/* Controls */}
+        {/* Prev / Next controls */}
         {images.length > 1 && (
           <>
             <button
@@ -472,14 +806,13 @@ function ImageCarousel({ images, title }: { images: string[]; title: string }) {
         </div>
       )}
 
-      {/* FIXED Zoom Pane — sits at page edge, can overlap description */}
+      {/* Fixed zoom pane */}
       <div
         ref={zoomPaneRef}
         aria-hidden={!zooming}
         className={`hidden md:block fixed z-40 rounded-xl border bg-white/90 backdrop-blur shadow-xl overflow-hidden transition
                     ${zooming ? 'opacity-100 visible' : 'opacity-0 invisible'}`}
         style={{
-          // width/height/left/top are set dynamically in positionPane()
           backgroundPosition: '50% 50%',
           backgroundSize: `${ZOOM * 100}%`,
         }}

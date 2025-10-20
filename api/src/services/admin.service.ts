@@ -10,11 +10,15 @@ import { startOfDay, addDays } from 'date-fns';
 
 export type Overview = {
   totalUsers: number;
-  totalSuperUsers: number;
+  totalSuperAdmins: number;
+  totalAdmins: number;
   totalCustomers: number;
 
   productsPending: number;
-  productsLive: number;
+  productsPublished: number;
+  productsInStock: number;
+  productsOutOfStock: number;
+  productsTotal: number;
 
   ordersToday: number;
   revenueToday: number;
@@ -66,16 +70,21 @@ function endOfDay(d: Date) {
 
 export async function getOverview(): Promise<Overview> {
   // Users
-  const [totalUsers, totalSuperUsers, totalCustomers] = await Promise.all([
+  const [totalUsers,totalCustomers, totalAdmins, totalSuperAdmins] = await Promise.all([
     prisma.user.count(),
-    prisma.user.count({ where: { role: 'SUPER_USER' } }),
     prisma.user.count({ where: { role: 'SHOPPER' } }),
+    prisma.user.count({ where: { role: 'ADMIN' } }),
+    prisma.user.count({ where: { role: 'SUPER_ADMIN' } }),
   ]);
 
-  // Products (assuming status: 'PENDING_REVIEW' | 'PUBLISHED' | 'REJECTED')
-  const [productsPending, productsLive] = await Promise.all([
-    prisma.product.count({ where: { status: 'PENDING_REVIEW' } }),
-    prisma.product.count({ where: { status: 'PUBLISHED' } }),
+  // Products (assuming status: | 'PUBLISHED' | 'REJECTED')
+  const [productsPending, productsPublished, productsInStock, productsOutOfStock, productsTotal] = await Promise.all([
+    prisma.product.count({ where: { status: 'PENDING' } }),
+    prisma.product.count({ where: { status: 'PUBLISHED'} }),
+    prisma.product.count({ where: { status: 'PUBLISHED', inStock: true } }),
+    prisma.product.count({ where: { status: 'PUBLISHED', inStock: false } }),
+  prisma.product.count({ where: {status: { not: 'REJECTED'}}}),
+
   ]);
 
 
@@ -129,10 +138,14 @@ export async function getOverview(): Promise<Overview> {
 
   return {
     totalUsers,
-    totalSuperUsers,
+    totalSuperAdmins,
+    totalAdmins,
     totalCustomers,
     productsPending,
-    productsLive,
+    productsPublished,
+    productsInStock,
+    productsOutOfStock,
+    productsTotal,
     ordersToday,
     revenueToday,
     sparklineRevenue7d,
@@ -169,18 +182,6 @@ export async function findUsers(q?: string): Promise<AdminUser[]> {
   return users;
 }
 
-/**
- * Promote an existing user to SUPER_USER and mark as VERIFIED.
- * If your business logic requires an approval queue, adapt accordingly.
- */
-export async function promoteToSuperUser(userId: string) {
-  const user = await prisma.user.update({
-    where: { id: userId },
-    data: { role: 'SUPER_USER', status: 'VERIFIED' },
-    select: { id: true, email: true, role: true, status: true },
-  });
-  return user;
-}
 
 /**
  * Suspend / deactivate a user.
@@ -190,6 +191,19 @@ export async function suspendUser(userId: string) {
   const user = await prisma.user.update({
     where: { id: userId },
     data: { status: 'SUSPENDED' },
+    select: { id: true, email: true, role: true, status: true },
+  });
+  return user;
+}
+
+/**
+ * Suspend / deactivate a user.
+ * We’ll set `status` to 'SUSPENDED'. Frontend union allows custom strings.
+ */
+export async function reactivateUser(userId: string) {
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: { status: 'VERIFIED' },
     select: { id: true, email: true, role: true, status: true },
   });
   return user;
@@ -256,7 +270,7 @@ export async function markPaymentRefunded(paymentId: string) {
 /** List products pending review, optional search by title. */
 export async function pendingProducts(q?: string): Promise<AdminProduct[]> {
   const where: Prisma.ProductWhereInput = {
-    status: 'PENDING_REVIEW',
+    status: 'PENDING',
     ...(q
       ? { title: { contains: q, mode: 'insensitive' } }
       : {}),

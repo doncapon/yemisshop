@@ -1,11 +1,12 @@
 // prisma/seed.ts
 import { PrismaClient, Prisma, SupplierType } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { email } from 'zod/v4';
 
 const prisma = new PrismaClient();
 const now = new Date();
 
-/** Random helpers */
+/** ---------------- Helpers ---------------- */
 function randInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
@@ -25,11 +26,11 @@ function randomPrice(): Prisma.Decimal {
   return new Prisma.Decimal(value);
 }
 
-function productImages(i: number): string[] {
+function productImages(seed: string | number): string[] {
   return [
-    `https://picsum.photos/seed/yemishop-${i}/800/600`,
-    `https://picsum.photos/seed/yemishop-${i}-b/800/600`,
-    `https://picsum.photos/seed/yemishop-${i}-c/800/600`,
+    `https://picsum.photos/seed/yemishop-${seed}/800/600`,
+    `https://picsum.photos/seed/yemishop-${seed}-b/800/600`,
+    `https://picsum.photos/seed/yemishop-${seed}-c/800/600`,
   ];
 }
 
@@ -55,78 +56,54 @@ async function makeAddress(seed: {
   });
 }
 
+/** ---------------- Seed Script ---------------- */
 async function main() {
   console.log('🧹 Clearing existing data …');
 
-  // Delete in FK-safe order
-  await prisma.$transaction([
-    prisma.purchaseOrderItem.deleteMany(),
-    prisma.payment.deleteMany(),
-    prisma.orderItem.deleteMany(),
-    prisma.purchaseOrder.deleteMany(),
-    prisma.order.deleteMany(),
-    prisma.favorite.deleteMany(),
-    prisma.wishlist.deleteMany(),
-    prisma.product.deleteMany(),
-    prisma.category.deleteMany(),
-    prisma.supplier.deleteMany(),
-    prisma.user.deleteMany(),
-    prisma.address.deleteMany(),
-  ]);
+  // FK-safe clear: remove most dependent tables first
+  await prisma.$transaction(
+    [
+      prisma.productVariantOption.deleteMany(),
+      prisma.productVariant.deleteMany(),
+      prisma.productAttributeValue?.deleteMany?.() as any, // only if you added the table
+      prisma.productAttributeText?.deleteMany?.() as any,  // only if you added the table
+      prisma.purchaseOrderItem.deleteMany(),
+      prisma.payment.deleteMany(),
+      prisma.orderItem.deleteMany(),
+      prisma.purchaseOrder.deleteMany(),
+      prisma.order.deleteMany(),
+      prisma.favorite.deleteMany(),
+      prisma.wishlist.deleteMany(),
+      prisma.product.deleteMany(),
+      prisma.attributeValue.deleteMany(),
+      prisma.attribute.deleteMany(),
+      prisma.brand.deleteMany(),
+      prisma.category.deleteMany(),
+      prisma.supplier.deleteMany(),
+      prisma.user.deleteMany(),
+      prisma.address.deleteMany(),
+    ].filter(Boolean)
+  );
 
   console.log('👥 Seeding users…');
   const adminPwd = await bcrypt.hash('Admin123!', 10);
   const superAdminPwd = await bcrypt.hash('SuperAdmin123!', 10);
-  const shopperPwd = await bcrypt.hash('Shopper123!', 10); // 👈 new
+  const shopperPwd = await bcrypt.hash('Shopper123!', 10);
 
-  // Create addresses first (we’ll attach to users)
+  // Addresses
   const [adminHome, adminShip] = await Promise.all([
-    makeAddress({
-      houseNumber: '10',
-      streetName: 'Admin Crescent',
-      city: 'Ikeja',
-      state: 'Lagos',
-    }),
-    makeAddress({
-      houseNumber: '12',
-      streetName: 'Admin Crescent',
-      city: 'Ikeja',
-      state: 'Lagos',
-    }),
+    makeAddress({ houseNumber: '10', streetName: 'Admin Crescent', city: 'Ikeja', state: 'Lagos' }),
+    makeAddress({ houseNumber: '12', streetName: 'Admin Crescent', city: 'Ikeja', state: 'Lagos' }),
   ]);
-
   const [superAdminHome, superAdminShip] = await Promise.all([
-    makeAddress({
-      houseNumber: '22B',
-      streetName: 'Leadership Ave',
-      city: 'Abuja',
-      state: 'FCT',
-    }),
-    makeAddress({
-      houseNumber: '5',
-      streetName: 'Steward Road',
-      city: 'Abuja',
-      state: 'FCT',
-    }),
+    makeAddress({ houseNumber: '22B', streetName: 'Leadership Ave', city: 'Abuja', state: 'FCT' }),
+    makeAddress({ houseNumber: '5', streetName: 'Steward Road', city: 'Abuja', state: 'FCT' }),
   ]);
-
-  // ✅ Shopper addresses
   const [shopperHome, shopperShip] = await Promise.all([
-    makeAddress({
-      houseNumber: '7',
-      streetName: 'Market Lane',
-      city: 'Ibadan',
-      state: 'Oyo',
-    }),
-    makeAddress({
-      houseNumber: '9',
-      streetName: 'Market Lane',
-      city: 'Ibadan',
-      state: 'Oyo',
-    }),
+    makeAddress({ houseNumber: '7', streetName: 'Market Lane', city: 'Ibadan', state: 'Oyo' }),
+    makeAddress({ houseNumber: '9', streetName: 'Market Lane', city: 'Ibadan', state: 'Oyo' }),
   ]);
 
-  // ADMIN
   const admin = await prisma.user.create({
     data: {
       email: 'admin@example.com',
@@ -144,7 +121,6 @@ async function main() {
     },
   });
 
-  // SUPER_ADMIN
   const superAdmin = await prisma.user.create({
     data: {
       email: 'superadmin@example.com',
@@ -162,7 +138,6 @@ async function main() {
     },
   });
 
-  // 👤 SHOPPER (verified)
   const shopper = await prisma.user.create({
     data: {
       email: 'shopper@example.com',
@@ -180,20 +155,43 @@ async function main() {
     },
   });
 
-  console.log('🏭 Seeding supplier (without user)…');
-  // Create a supplier WITHOUT linking to any user (userId is optional in your schema)
-  const supplier = await prisma.supplier.create({
-    data: {
-      name: 'YemiShop Wholesale',
-      type: SupplierType.PHYSICAL,
-      status: 'ACTIVE',
-      contactEmail: 'wholesale@yemishop.com',
-      whatsappPhone: '+2348100000000',
-      payoutPctInt: 70,
-    },
-  });
+  console.log('🏭 Seeding suppliers…');
+  // Create a few suppliers and reuse them across products
+  const suppliers = await prisma.$transaction([
+    prisma.supplier.create({
+      data: {
+        name: 'YemiShop Wholesale',
+        type: SupplierType.PHYSICAL,
+        status: 'ACTIVE',
+        contactEmail: 'wholesale@yemishop.com',
+        whatsappPhone: '+2348100000000',
+        payoutPctInt: 70,
+      },
+    }),
+    prisma.supplier.create({
+      data: {
+        name: 'MarketHub NG',
+        type: SupplierType.PHYSICAL,
+        status: 'ACTIVE',
+        contactEmail: 'contact@markethub.ng',
+        whatsappPhone: '+2348100000005',
+        payoutPctInt: 65,
+      },
+    }),
+    prisma.supplier.create({
+      data: {
+        name: 'PrimeMall Distributors',
+        type: SupplierType.ONLINE,
+        status: 'ACTIVE',
+        contactEmail: 'support@primemall.ng',
+        whatsappPhone: '+2348100000006',
+        payoutPctInt: 72,
+      },
+    }),
+  ]);
 
-  console.log('🏷️  Seeding categories…');
+
+  console.log('🏷️  Seeding categories (with slugs)…');
   const categoryNames = [
     'Home & Kitchen',
     'Electronics',
@@ -205,8 +203,59 @@ async function main() {
     'Sports & Outdoor',
   ];
   const categories = await Promise.all(
-    categoryNames.map((name) => prisma.category.create({ data: { name } }))
+    categoryNames.map((name) =>
+      prisma.category.create({
+        data: {
+          name,
+          slug: name
+            .toLowerCase()
+            .replace(/&/g, 'and')
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/(^-|-$)/g, ''),
+          isActive: true,
+          position: 0,
+        },
+      })
+    )
   );
+
+  console.log('🏷️  Seeding brands…');
+  const brandSeeds = ['YemiBasics', 'NaijaTech', 'GreenFarm', 'FitLife'];
+  const brands = await Promise.all(
+    brandSeeds.map((b) =>
+      prisma.brand.create({
+        data: {
+          name: b,
+          slug: b.toLowerCase(),
+          logoUrl: `https://picsum.photos/seed/${b}/160/160`,
+          isActive: true,
+        },
+      })
+    )
+  );
+
+  console.log('🏷️  Seeding attributes & values…');
+  // Attributes: Color (SELECT), Size (SELECT), Material (TEXT-like via ProductAttributeText when used)
+  const colorAttr = await prisma.attribute.create({
+    data: { name: 'Color', type: 'SELECT', isActive: true },
+  });
+  const sizeAttr = await prisma.attribute.create({
+    data: { name: 'Size', type: 'SELECT', isActive: true },
+  });
+  const materialAttr = await prisma.attribute.create({
+    data: { name: 'Material', type: 'TEXT', isActive: true },
+  });
+
+  const colorValues = await prisma.$transaction([
+    prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Red', code: 'RED', position: 1 } }),
+    prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Blue', code: 'BLU', position: 2 } }),
+    prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Black', code: 'BLK', position: 3 } }),
+  ]);
+
+  const sizeValues = await prisma.$transaction([
+    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'M', code: 'M', position: 1 } }),
+    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'L', code: 'L', position: 2 } }),
+  ]);
 
   console.log('📦 Seeding products…');
 
@@ -235,58 +284,174 @@ async function main() {
 
   const TOTAL_IN_STOCK = 60;
   const TOTAL_OUT_OF_STOCK = 30;
+  const TOTAL = TOTAL_IN_STOCK + TOTAL_OUT_OF_STOCK;
 
-  // First 60: in stock (stock: true)
-  for (let i = 1; i <= TOTAL_IN_STOCK; i++) {
+  // Create all PUBLISHED products first (with inStock)
+  const createdProducts: { id: string; i: number }[] = [];
+  for (let i = 1; i <= TOTAL; i++) {
     const cat = categories[(i - 1) % categories.length];
+    const brand = brands[(i - 1) % brands.length];
     const title = `${titlePool[i % titlePool.length]} #${i}`;
-
-    await prisma.product.create({
+    const sup = suppliers[(i - 1) % suppliers.length];
+    const p = await prisma.product.create({
       data: {
         title,
         description:
           'Quality product from YemiShop—reliable, durable and designed for everyday use. Great value at the right price.',
         price: randomPrice(),
         sku: `SKU-${String(i).padStart(5, '0')}`,
-        stock: true, // ✅ boolean
+        inStock: i <= TOTAL_IN_STOCK,
         vatFlag: true,
         status: 'PUBLISHED',
         imagesJson: productImages(i),
-        supplier: { connect: { id: supplier.id } },
+        supplier: { connect: { id: sup.id } },        // 👈 attach supplier
         category: { connect: { id: cat.id } },
-        categoryName: cat.name,
+        brand: { connect: { id: brand.id } },
+        owner: { connect: { id: admin.id } },         // 👈 connect by id (email not needed)
       },
+      select: { id: true },
     });
+
+
+    createdProducts.push({ id: p.id, i });
   }
 
-  // Next 30: out of stock (stock: false)
-  for (let j = TOTAL_IN_STOCK + 1; j <= TOTAL_IN_STOCK + TOTAL_OUT_OF_STOCK; j++) {
+  /** ---------------------------------------------------------
+   *  NEW: Add 30 products with status 'PENDING' for moderation
+   * --------------------------------------------------------- */
+  const TOTAL_PENDING = 30;
+  console.log(`⏳ Seeding ${TOTAL_PENDING} pending products…`);
+  for (let j = 1; j <= TOTAL_PENDING; j++) {
     const cat = categories[(j - 1) % categories.length];
-    const title = `${titlePool[j % titlePool.length]} #${j}`;
+    const brand = brands[(j - 1) % brands.length];
+    const title = `${titlePool[(j * 3) % titlePool.length]} (Pending #${j})`;
+
+    const sup2 = suppliers[(j - 1) % suppliers.length];
 
     await prisma.product.create({
       data: {
         title,
         description:
-          'Quality product from YemiShop—reliable, durable and designed for everyday use. Great value at the right price.',
+          'Awaiting moderation. Submitted by admin for review prior to publishing.',
         price: randomPrice(),
-        sku: `SKU-${String(j).padStart(5, '0')}`,
-        stock: false, // ✅ boolean
+        sku: `SKU-PEND-${String(j).padStart(4, '0')}`,
+        inStock: Math.random() > 0.4,
         vatFlag: true,
-        status: 'PUBLISHED',
-        imagesJson: productImages(j),
-        supplier: { connect: { id: supplier.id } },
+        status: 'PENDING',
+        imagesJson: productImages(`pending-${j}`),
+        supplier: { connect: { id: sup2.id } },        // 👈 attach supplier
         category: { connect: { id: cat.id } },
-        categoryName: cat.name,
+        brand: { connect: { id: brand.id } },
+        owner: { connect: { id: admin.id } },          // 👈 connect by id
       },
     });
+
+
+  }
+
+  console.log('🏷️  Tagging some products with attributes…');
+  // If you’ve added ProductAttributeValue / ProductAttributeText models:
+  // Safe-guard calls when tables exist
+  const haveAttrValueTable =
+    typeof (prisma as any).productAttributeValue?.create === 'function';
+  const haveAttrTextTable =
+    typeof (prisma as any).productAttributeText?.create === 'function';
+
+  if (haveAttrValueTable) {
+    const [red, blue] = colorValues;
+    const [sizeM, sizeL] = sizeValues;
+
+    // Tag first 20 *published* products with Color/Size
+    for (const { id, i } of createdProducts.slice(0, 20)) {
+      const color = i % 2 === 0 ? red : blue;
+      const size = i % 3 === 0 ? sizeL : sizeM;
+
+      await prisma.productAttributeValue.create({
+        data: { productId: id, attributeId: colorAttr.id, valueId: color.id },
+      });
+      await prisma.productAttributeValue.create({
+        data: { productId: id, attributeId: sizeAttr.id, valueId: size.id },
+      });
+    }
+  }
+
+  if (haveAttrTextTable) {
+    // Add material text for a few *published* products (illustrative)
+    for (const { id } of createdProducts.slice(0, 6)) {
+      await prisma.productAttributeText.create({
+        data: {
+          productId: id,
+          attributeId: materialAttr.id,
+          value: 'Cotton/Polyester Blend',
+        },
+      });
+    }
+  }
+
+  console.log('🔀 Creating variants (Color × Size) for first 12 products…');
+  // Requires ProductVariant & ProductVariantOption tables
+  const canVariants =
+    typeof (prisma as any).productVariant?.create === 'function' &&
+    typeof (prisma as any).productVariantOption?.create === 'function';
+
+  if (canVariants) {
+    // Create 2×2 variants: [Red, Blue] × [M, L]
+    const [red, blue] = colorValues;
+    const [sizeM, sizeL] = sizeValues;
+
+    const productsForVariants = createdProducts.slice(0, 12);
+    for (const { id, i } of productsForVariants) {
+      const baseSku = `SKU-V-${String(i).padStart(4, '0')}`;
+
+      // four combinations
+      const combos = [
+        { color: red, size: sizeM, sku: `${baseSku}-RED-M`, priceBump: 0, inStock: true },
+        { color: red, size: sizeL, sku: `${baseSku}-RED-L`, priceBump: 300, inStock: true },
+        { color: blue, size: sizeM, sku: `${baseSku}-BLU-M`, priceBump: 200, inStock: true },
+        { color: blue, size: sizeL, sku: `${baseSku}-BLU-L`, priceBump: 500, inStock: (i % 3) !== 0 },
+      ];
+
+      // Fetch product to read base price for an optional variant price override
+      const product = await prisma.product.findUnique({ where: { id } });
+      const basePrice = Number(product?.price || 0);
+
+      for (const [idx, c] of combos.entries()) {
+        const variant = await prisma.productVariant.create({
+          data: {
+            productId: id,
+            sku: c.sku,
+            price: c.priceBump ? new Prisma.Decimal(basePrice + c.priceBump) : undefined,
+            inStock: c.inStock,
+            imagesJson: productImages(`${i}-${idx + 1}`),
+          },
+        });
+
+        await prisma.productVariantOption.create({
+          data: {
+            variantId: variant.id,
+            attributeId: colorAttr.id,
+            valueId: c.color.id,
+          },
+        });
+
+        await prisma.productVariantOption.create({
+          data: {
+            variantId: variant.id,
+            attributeId: sizeAttr.id,
+            valueId: c.size.id,
+          },
+        });
+      }
+    }
+  } else {
+    console.log('⚠️  Variant tables not found. Skipping variant creation.');
   }
 
   console.log('✅ Seed complete.');
   console.log('Users:');
-  console.log('  Admin:        admin@example.com / Shopper123!');
-  console.log('  Super Admin:  superadmin@example.com / Shopper123!');
-  console.log('  Shopper:      shopper@example.com / Shopper123!'); // 👈 new
+  console.log('  Admin:        admin@example.com / Admin123!');
+  console.log('  Super Admin:  superadmin@example.com / SuperAdmin123!');
+  console.log('  Shopper:      shopper@example.com / Shopper123!');
 }
 
 main()

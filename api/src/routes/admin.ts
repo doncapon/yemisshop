@@ -1,16 +1,19 @@
 // api/src/routes/admin.ts
-import { Router } from 'express';
-import { requireAuth, requireAdmin , requireSuperAdmin} from '../middleware/auth.js';
+import express, { Router } from 'express';
+import { requireAuth, requireAdmin , requireSuperAdmin, authMiddleware} from '../middleware/auth.js';
+import { z } from 'zod';
+import { Prisma } from '@prisma/client';
+
+
 import {
   getOverview,
   findUsers,
-  promoteToSuperUser,
   suspendUser,
+  reactivateUser,
   
   markPaymentPaid,
   markPaymentRefunded,
 
-  pendingProducts,
   approveProduct as approveProductSvc,
   rejectProduct as rejectProductSvc,
   listPayments as listPaymentsSvc,
@@ -34,24 +37,69 @@ r.get('/users', async (req, res) => {
   const q = String(req.query.q || '');
   res.json({ data: await findUsers(q) });
 });
-r.post('/users/:userId/approve-super', requireSuperAdmin,  async (req, res) => {
-  res.json(await promoteToSuperUser(req.params.userId));
-});
+
 r.post('/users/:userId/deactivate',  requireSuperAdmin, async (req, res) => {
   res.json(await suspendUser(req.params.userId));
 });
 
-/* Product moderation */
-r.get('/products/pending', async (req, res) => {
-  const q = String(req.query.q || '');
-  res.json({ data: await pendingProducts(q) });
+r.post('/users/:userId/reactivate',  requireSuperAdmin, async (req, res) => {
+  res.json(await reactivateUser(req.params.userId));
 });
-r.post('/products/:productId/approve', async (req, res) => {
-  res.json(await approveProductSvc(req.params.productId));
+
+/**
+ * POST /api/admin/users/:id/role
+ * Body: { role: "SHOPPER" | "ADMIN" | "SUPER_ADMIN" }
+ * Auth: SUPER_ADMIN only
+ * Behavior: allows promoting/demoting ANY user (including SUPER_ADMIN and self).
+ */
+const SetRoleSchema = z.object({
+  role: z.enum(['SHOPPER', 'ADMIN', 'SUPER_ADMIN']),
 });
-r.post('/products/:productId/reject', async (req, res) => {
-  res.json(await rejectProductSvc(req.params.productId));
-});
+
+const wrap = (
+  fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<any>
+): express.RequestHandler =>
+  (req, res, next) => { fn(req, res, next).catch(next); };
+
+r.post(
+  '/users/:id/role',
+  authMiddleware,
+  wrap(async (req, res) => {
+    const me = (req as any).user as { id: string; role?: string } | undefined;
+    if (!me || me.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const targetId = String(req.params.id || '').trim();
+    if (!targetId) return res.status(400).json({ error: 'Missing user id' });
+
+    const { role } = SetRoleSchema.parse({
+      role: String(req.body?.role || '').toUpperCase(),
+    });
+
+    const existing = await prisma.user.findUnique({
+      where: { id: targetId },
+      select: { id: true, email: true },
+    });
+    if (!existing) return res.status(404).json({ error: 'User not found' });
+
+    const updated = await prisma.user.update({
+      where: { id: targetId },
+      data: { role },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        status: true,
+        firstName: true,
+        lastName: true,
+        createdAt: true,
+      },
+    });
+
+    return res.json({ ok: true, user: updated });
+  })
+);
 
 /* Transactions */
 r.get('/payments', async (req, res) => {
@@ -120,4 +168,99 @@ r.get('/analytics/export', requireSuperAdmin, async (_req, res) => {
   res.send(csv);
 });
 
+
+/* ---------------- Catalog: per-product attributes & variants ---------------- */
+
+// zod helpers
+const IdSchema = z.string().min(1, 'id is required');
+
+const UpdateVariantSchema = z.object({
+  sku: z.string().min(1).optional(),
+  price: z.number().nullable().optional(), // null to clear price override
+  inStock: z.boolean().optional(),
+  imagesJson: z.array(z.string().url()).optional(),
+  options: z
+    .array(
+      z.object({
+        attributeId: z.string().min(1),
+        valueId: z.string().min(1),
+      })
+    )
+    .optional(), // if present, we replace all options
+});
+
+/** --------- Attributes (select values) --------- */
+// PUT /api/admin/variants/:variantId
+r.put(
+  '/variants/:variantId',
+  wrap(async (req, res) => {
+    const variantId = IdSchema.parse(req.params.variantId);
+    const payload = UpdateVariantSchema.parse(req.body ?? {});
+
+    // If options provided, validate them
+    if (payload.options) {
+      for (const opt of payload.options) {
+        const val = await prisma.attributeValue.findUnique({
+          where: { id: opt.valueId },
+          select: { id: true, attributeId: true },
+        });
+        if (!val) return res.status(404).json({ error: `Attribute value not found: ${opt.valueId}` });
+        if (val.attributeId !== opt.attributeId) {
+          return res
+            .status(400)
+            .json({ error: `valueId ${opt.valueId} does not belong to attributeId ${opt.attributeId}` });
+        }
+      }
+    }
+
+    const updated = await prisma.$transaction(async (tx: { productVariant: { update: (arg0: { where: { id: string; }; data: any; }) => any; findUnique: (arg0: { where: { id: string; }; include: { options: { include: { attribute: boolean; value: boolean; }; }; }; }) => any; }; productVariantOption: { deleteMany: (arg0: { where: { variantId: string; }; }) => any; createMany: (arg0: { data: { variantId: string; attributeId: string; valueId: string; }[]; skipDuplicates: boolean; }) => any; }; }) => {
+      const data: any = {};
+      if (payload.sku !== undefined) data.sku = payload.sku;
+      if (payload.price !== undefined) data.price = payload.price === null ? null : new Prisma.Decimal(payload.price);
+      if (payload.inStock !== undefined) data.inStock = payload.inStock;
+      if (payload.imagesJson !== undefined) data.imagesJson = payload.imagesJson;
+
+      await tx.productVariant.update({ where: { id: variantId }, data });
+
+      if (payload.options) {
+        await tx.productVariantOption.deleteMany({ where: { variantId } });
+        if (payload.options.length) {
+          await tx.productVariantOption.createMany({
+            data: payload.options.map((o: { attributeId: any; valueId: any; }) => ({
+              variantId,
+              attributeId: o.attributeId,
+              valueId: o.valueId,
+            })),
+            skipDuplicates: true,
+          });
+        }
+      }
+
+      return tx.productVariant.findUnique({
+        where: { id: variantId },
+        include: { options: { include: { attribute: true, value: true } } },
+      });
+    });
+
+    res.json({ ok: true, data: updated });
+  })
+);
+
+// DELETE /api/admin/variants/:variantId
+r.delete(
+  '/variants/:variantId',
+  wrap(async (req, res) => {
+    const variantId = IdSchema.parse(req.params.variantId);
+
+    await prisma.$transaction([
+      prisma.productVariantOption.deleteMany({ where: { variantId } }),
+      prisma.productVariant.delete({ where: { id: variantId } }),
+    ]);
+
+    res.json({ ok: true });
+  })
+);
+
 export default r;
+
+
