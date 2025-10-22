@@ -24,6 +24,7 @@ import { useAuthStore } from './store/auth';
 import { useEffect, useMemo } from 'react';
 import { scheduleTokenExpiryLogout } from './utils/tokenWatcher';
 import ResetGuard from './routes/ResetGuard.tsx';
+import ReceiptPage from './pages/Receipts.tsx';
 
 export default function App() {
   const token = useAuthStore((s) => s.token);
@@ -73,6 +74,7 @@ export default function App() {
               <Route path="/payment" element={<Payment />} />
               <Route path="/reset-password" element={<ResetGuard><ResetPassword /></ResetGuard>} />
               <Route path="/payment-callback" element={<PaymentCallback />} />
+              <Route path="/receipt/:paymentId" element={<ReceiptPage />} />
 
               <Route
                 path="/checkout"

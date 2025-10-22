@@ -1,54 +1,40 @@
 // src/routes/payments.ts
-import { Router, type Request, type Response } from 'express';
-import axios from 'axios';
-import crypto from 'crypto';
+import express, { Router } from 'express';
+import type { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma.js';
 import { authMiddleware, requireAuth } from '../middleware/auth.js';
-import { requireVerified } from '../middleware/requireVerify.js';
+import { logOrderActivity } from '../services/activity.service.js';
+import { ps, toKobo } from '../lib/paystack.js';
+import { generateRef8, isFresh, toNumber } from '../lib/payments.js';
+import { issueReceiptIfNeeded } from '../lib/receipts.js';
+import PDFDocument from 'pdfkit';
+import { getInitChannels } from '../config/paystack.js';
+import crypto from 'crypto';
+import {
+  WEBHOOK_ACCEPT_CARD,
+  WEBHOOK_ACCEPT_BANK_TRANSFER,
+} from '../config/paystack.js';
 
 const router = Router();
 
 /* ----------------------------- Config ----------------------------- */
 
-const MODE = (process.env.PAYMENTS_MODE || 'trial').toLowerCase() as 'trial' | 'paystack';
+const isTrue = (v?: string | null) =>
+  ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
+
+const TRIAL_MODE = isTrue(process.env.PAYMENTS_TRIAL_MODE);
 const APP_URL = process.env.APP_URL || 'http://localhost:5173';
-const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY || '';
 
-const TRIAL_BANK_NAME = process.env.TRIAL_BANK_NAME || '';
-const TRIAL_BANK_ACCOUNT_NAME = process.env.TRIAL_BANK_ACCOUNT_NAME || '';
-const TRIAL_BANK_ACCOUNT_NUMBER = process.env.TRIAL_BANK_ACCOUNT_NUMBER || '';
+const ACTIVE_PENDING_TTL_MIN = Number(process.env.PAYMENT_PENDING_TTL_MIN ?? 60); // how long a pending Paystack init is reusable
+// const PAYSTACK_CHANNELS: Array<'bank_transfer'> = ['bank_transfer']; // restrict to card only (change if you want)
 
-function makeRef(orderId: string) {
-  return `ys_${orderId}_${Math.random().toString(36).slice(2, 8)}`;
-}
+// Single source of truth for modes
+const INLINE_APPROVAL = (process.env.INLINE_APPROVAL || 'auto').toLowerCase() as 'auto' | 'manual';
 
-/* --------------------------- Helpers ------------------------------ */
-
-/** Ensure Paystack customer exists, returning customer_code */
-async function ensurePaystackCustomer(email: string, fallbackEmail: string): Promise<string> {
-  try {
-    const r = await axios.post(
-      'https://api.paystack.co/customer',
-      { email: email || fallbackEmail },
-      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` }, timeout: 15000 }
-    );
-    const code = r.data?.data?.customer_code;
-    if (code) return code;
-  } catch (err: any) {
-    if (err?.response?.status === 400) {
-      const sr = await axios.get('https://api.paystack.co/customer', {
-        params: { email },
-        headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` },
-        timeout: 15000,
-      });
-      const code = sr.data?.data?.[0]?.customer_code;
-      if (code) return code;
-    }
-    throw err;
-  }
-  throw new Error('Unable to resolve Paystack customer');
-}
+const BANK_NAME = process.env.BANK_NAME || '';
+const BANK_ACCOUNT_NAME = process.env.BANK_ACCOUNT_NAME || '';
+const BANK_ACCOUNT_NUMBER = process.env.BANK_ACCOUNT_NUMBER || '';
 
 /* ----------------------------- Routes ----------------------------- */
 
@@ -74,168 +60,611 @@ router.get('/summary', authMiddleware, async (req, res, next) => {
   }
 });
 
-const isAdmin = (role?: string) => role === 'ADMIN' || role === 'SUPER_ADMIN';
 
 /**
  * POST /api/payments/init
  * Body: { orderId: string, channel?: string }
  * Requires: logged in + email & phone verified
  */
-router.post('/init', requireAuth, requireVerified(), async (req, res) => {
-  try {
-    const { orderId, channel } = req.body as { orderId: string; channel?: string };
-    if (!orderId?.trim()) return res.status(400).json({ error: 'orderId is required' });
+// routes/payments.ts
 
-    // Load order + user’s email (Paystack needs an email)
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      include: {
-        items: true,
-        user: { select: { id: true, email: true } },
-      },
-    });
-    if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    // Non-admins must own the order
-    if (!isAdmin(req.user?.role) && String(order.userId) !== String(req.user!.id)) {
-      return res.status(403).json({ error: 'This order does not belong to your account.' });
+// Safe creator: retries on unique constraint for `reference`
+async function createPendingAttempt(args: {
+  orderId: string;
+  channel: string;
+  amountDecimal: any; // Prisma.Decimal or compatible
+  provider?: string | null;
+}) {
+  const { orderId, channel, amountDecimal, provider } = args;
+  for (let i = 0; i < 5; i++) {
+    const reference = generateRef8();
+    try {
+      return await prisma.payment.create({
+        data: {
+          orderId,
+          reference,
+          channel,
+          amount: amountDecimal,
+          status: 'PENDING',
+          provider: provider ?? (channel === 'paystack' ? 'PAYSTACK' : null),
+        },
+      });
+    } catch (e: any) {
+      // Prisma unique violation
+      if (e?.code === 'P2002' && Array.isArray(e?.meta?.target) && e.meta.target.includes('reference')) {
+        continue; // try a new reference
+      }
+      throw e;
     }
-    if (order.status === 'PAID') return res.status(400).json({ error: 'Order already paid' });
-    if (!order.items?.length) return res.status(400).json({ error: 'Order has no items' });
-
-    // Compute amount (replace with order.total if you persist it)
-    const amount = order.items.reduce(
-      (sum: number, it: any) => sum + Number(it.unitPrice) * Number(it.quantity ?? it.qty ?? 0),
-      0
-    );
-
-    // Close any open attempts for this order
-    await prisma.payment.updateMany({
-      where: { orderId, status: { in: ['PENDING', 'REQUIRES_ACTION'] } },
-      data: { status: 'CANCELED' },
-    });
-
-    // Create a new PENDING attempt
-    const reference = `PSK_${orderId}_${Date.now()}`;
-    await prisma.payment.create({
-      data: {
-        orderId,
-        amount,
-        status: 'PENDING',
-        provider: 'PAYSTACK',
-        channel,
-        reference,
-        initPayload: { startedBy: req.user?.email, at: new Date().toISOString() },
-      },
-    });
-
-    // Initialize with Paystack
-    const initResp = await axios.post(
-      'https://api.paystack.co/transaction/initialize',
-      {
-        email: order.user.email,
-        amount: Math.round(amount * 100), // KOBO
-        reference,
-        callback_url: `${APP_URL}/payment-callback?orderId=${orderId}`,
-        metadata: { orderId, userId: order.userId },
-      },
-      { headers: { Authorization: `Bearer ${PAYSTACK_SECRET}` } }
-    );
-
-    const { authorization_url } = initResp.data?.data || {};
-    if (!authorization_url) {
-      return res.status(502).json({ error: 'Could not get authorization URL from Paystack' });
-    }
-
-    return res.json({
-      mode: MODE,
-      reference,
-      authorization_url,
-    });
-  } catch (err: any) {
-    console.error('init error:', err?.response?.data || err);
-    return res.status(500).json({ error: 'Could not initialize payment' });
   }
-});
+  // last resort — extremely unlikely
+  return await prisma.payment.create({
+    data: {
+      orderId,
+      reference: `${generateRef8().slice(0, 6) + generateRef8().slice(0, 2)}`,
+      channel,
+      amount: amountDecimal,
+      status: 'PENDING',
+      provider: provider ?? (channel === 'paystack' ? 'PAYSTACK' : null),
+    },
+  });
+}
 
-/**
- * POST /api/payments/verify
- * Body: { orderId: string, reference: string }
- * Requires: logged in + email & phone verified
- */
-router.post('/verify', requireAuth, requireVerified(), async (req, res) => {
-  const { orderId, reference } = req.body as { orderId: string; reference: string };
+// POST /api/payments/init  { orderId, channel? }
+router.post('/init', requireAuth, async (req: Request, res: Response) => {
+  const { orderId } = req.body ?? {};
+  let { channel } = req.body ?? {};
+  const userId = req.user!.id;
+  const userEmail = req.user!.email;
 
-  if (!orderId?.trim() || !reference?.trim()) {
-    return res.status(400).json({ error: 'orderId and reference are required' });
-  }
+  channel = channel.toLowerCase();
 
-  const payment = await prisma.payment.findUnique({ where: { reference } });
-  if (!payment) return res.status(404).json({ error: 'Payment not initialized' });
-  if (payment.reference !== reference) {
-    return res.status(400).json({ error: 'Reference mismatch' });
-  }
+  // 1) Load order
+  const order = await prisma.order.findFirst({
+    where: { id: orderId, userId },
+    select: { id: true, total: true, createdAt: true },
+  });
+  if (!order) return res.status(404).json({ error: 'Order not found' });
 
-  // TODO: Call provider verify here (Paystack /transaction/verify/:reference)
-  const verified = true; // demo placeholder
+  // 2) Stop if already paid
+  const paid = await prisma.payment.findFirst({
+    where: { orderId, status: 'PAID' },
+    select: { id: true },
+  });
+  if (paid) return res.status(409).json({ error: 'Order already paid' });
 
-  if (!verified) {
-    await prisma.payment.update({ where: { orderId }, data: { status: 'FAILED' } });
-    return res.json({ status: 'FAILED', message: 'Verification failed' });
-  }
-
-  // Mark payment + order once
-  await prisma.$transaction(async (tx: { payment: { update: (arg0: { where: { reference: string; }; data: { status: string; paidAt: Date; }; }) => any; }; order: { update: (arg0: { where: { id: any; }; data: { status: string; }; }) => any; }; }) => {
-    await tx.payment.update({
-      where: { reference },
-      data: { status: 'PAID', paidAt: new Date() },
-    });
-    await tx.order.update({
-      where: { id: payment.orderId },
-      data: { status: 'PAID' },
-    });
+  // 3) Find latest PENDING attempt for this order+channel
+  let pay = await prisma.payment.findFirst({
+    where: { orderId, status: 'PENDING', channel },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      id: true,
+      reference: true,
+      createdAt: true,
+      channel: true,
+      providerPayload: true,
+      status: true,
+    },
   });
 
-  return res.json({ ok: true, status: 'PAID', message: 'Payment verified' });
+  // 4) If it exists and is still "fresh", resume (avoid duplicate Paystack init)
+  if (pay && isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN) && channel === 'paystack') {
+    const authUrl = (pay.providerPayload as any)?.authorization_url;
+    if (authUrl) {
+      await logOrderActivity(orderId, 'PAYMENT_RESUME', 'Resumed existing Paystack attempt', {
+        reference: pay.reference,
+      });
+      return res.json({
+        mode: 'paystack',
+        reference: pay.reference,
+        authorization_url: authUrl,
+      });
+    }
+    // if no authorization_url stored, treat as stale below -> rotate
+  }
+
+  // 5) If a pending exists but is stale or unusable, close it and create a new attempt
+  if (pay && !isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN)) {
+    await prisma.payment.update({
+      where: { id: pay.id },
+      data: { status: 'CANCELED' }, // or add a reason column/status if you like
+    });
+    pay = null as any;
+  }
+
+  // 6) Create a brand-new PENDING attempt with a fresh, unique reference
+  if (!pay) {
+    const created = await createPendingAttempt({
+      orderId,
+      channel,
+      amountDecimal: order.total,
+      provider: channel === 'paystack' ? 'PAYSTACK' : null,
+    });
+    pay = {
+      id: created.id,
+      reference: created.reference,
+      createdAt: created.createdAt,
+      channel: created.channel,
+      providerPayload: created.providerPayload,
+      status: created.status,
+    } as any;
+  }
+
+  // 7) Trial mode? Return stub without calling Paystack
+  if (TRIAL_MODE) {
+    await logOrderActivity(orderId, 'PAYMENT_INIT', `Trial init (${channel})`, {
+      reference: pay.reference,
+      channel,
+      amount: toNumber(order.total),
+    });
+    return res.json({
+      mode: 'trial',
+      reference: pay.reference,
+      amount: toNumber(order.total),
+      currency: 'NGN',
+      autoPaid: INLINE_APPROVAL == 'auto' ? true : 'manual',
+      bank: {
+        bank_name: 'Demo Bank',
+        account_name: 'Yemis Shop',
+        account_number: '0123456789',
+      },
+    });
+  }
+
+  // 8) Hosted Paystack checkout (card-only)
+  if (channel === 'paystack') {
+    const channels = getInitChannels(); // ['card'], ['bank_transfer'], or both
+
+    const callback_url = `${process.env.APP_URL}/payment-callback?orderId=${orderId}&reference=${pay.reference}&gateway=paystack`;
+
+    // Initialize with a NEW reference (or reuse if we resumed above)
+    const initPayload = {
+      email: userEmail,
+      amount: toKobo(order.total),       // integer kobo
+      reference: pay.reference,          // must be unique per attempt
+      currency: 'NGN',
+      callback_url,
+      channels,       // ['card'] to force card-only
+      metadata: {
+        orderId,
+        userId: req.user!.id,
+        custom_fields: [
+          {
+            display_name: 'Order Ref',
+            variable_name: 'order_ref',
+            value: pay.reference,
+          },
+        ],
+      },
+      customizations: {
+        title: 'Yemis Shop',
+        description: `Order ${order.id} • Use Payment Ref: ${pay.reference}`, // <- visible on checkout
+        // optional logo
+        logo: process.env.PAYSTACK_LOGO_URL || undefined,
+      },
+    };
+
+    const resp = await ps.post('/transaction/initialize', initPayload);
+    const data = resp.data?.data;
+
+    // Save provider payload
+    await prisma.payment.update({
+      where: { id: pay.id },
+      data: {
+        providerPayload: data,
+        initPayload,           // store what you asked Paystack for
+        provider: 'paystack',
+        channel: 'paystack',   // hosted flow; user can still pick card/bank on the page
+      },
+    });
+
+    await logOrderActivity(orderId, 'PAYMENT_INIT', 'Paystack init', {
+      reference: pay.reference,
+      amount: toNumber(order.total),
+    });
+
+    return res.json({
+      mode: 'paystack',
+      reference: pay.reference,
+      authorization_url: data?.authorization_url,
+      data
+    });
+  }
+
+  // 9) Inline/Bank flow (if you support it)
+  await logOrderActivity(orderId, 'PAYMENT_INIT', 'Inline bank init', {
+    reference: pay.reference,
+    amount: toNumber(order.total),
+  });
+  return res.json({
+    mode: 'paystack_inline_bank',
+    reference: pay.reference,
+    amount: toNumber(order.total),
+    currency: 'NGN',
+    bank: {
+      bank_name: BANK_NAME || 'GTB Banks Virtual',
+      account_name: BANK_ACCOUNT_NAME || 'Yemis Shop',
+      account_number: BANK_ACCOUNT_NUMBER || '0123456789',
+    },
+  });
 });
 
-/**
- * WEBHOOK HANDLER (exported)
- * Mount with express.raw at app level before express.json()
- */
-export async function paystackWebhookHandler(req: Request, res: Response) {
-  const signature = req.headers['x-paystack-signature'] as string | undefined;
-  if (!signature) return res.status(400).end('No signature');
-  if (!PAYSTACK_SECRET) return res.status(500).end('Missing secret');
 
-  const computed = crypto.createHmac('sha512', PAYSTACK_SECRET).update(req.body).digest('hex');
-  if (computed !== signature) return res.status(400).end('Invalid signature');
+router.post('/verify', requireAuth, async (req: Request, res: Response) => {
+  const { orderId, reference, data } = req.body ?? {};
 
-  try {
-    const evt = JSON.parse(req.body.toString('utf8'));
-    if (evt?.event === 'charge.success') {
-      const reference = evt?.data?.reference as string | undefined;
-      if (reference) {
-        const payment = await prisma.payment.findUnique({ where: { reference } });
-        if (payment && payment.status !== 'PAID') {
-          await prisma.$transaction([
-            prisma.payment.update({
-              where: { reference },
-              data: { status: 'PAID', providerRef: reference },
-            }),
-            prisma.order.update({
-              where: { id: payment.orderId },
-              data: { status: 'PAID' },
-            }),
-          ]);
-        }
-      }
-    }
-  } catch (_) {
-    // swallow parse errors; respond 200 to stop retries when appropriate.
+  if (!orderId || !reference) {
+    return res.status(400).json({ error: 'orderId and reference required' });
   }
-  res.sendStatus(200);
+
+  // 1) Load the payment by reference and sanity-check it belongs to this order
+  const pay = await prisma.payment.findUnique({
+    where: { reference },
+    select: { id: true, orderId: true, status: true, channel: true, amount: true },
+  });
+  if (!pay || pay.orderId !== orderId) {
+    return res.status(404).json({ error: 'Payment not found' });
+  }
+
+  // 2) Idempotency: return immediately if already terminal
+  if (pay.status === 'PAID') {
+    return res.json({ ok: true, status: 'PAID', message: 'Already verified' });
+  }
+  if (pay.status === 'FAILED' || pay.status === 'CANCELED' || pay.status === 'REFUNDED') {
+    await logOrderActivity(orderId, 'PAYMENT_FAILED', 'Verification attempted on non-pending payment', { reference });
+    return res.json({ ok: true, status: pay.status, message: 'Payment is not successful' });
+  }
+
+  // Helper to finalize success in a single txn and cancel siblings
+  async function markPaidAndFinalize() {
+    const result = await prisma.$transaction(async (tx: { payment: { update: (arg0: { where: { reference: any; }; data: { status: string; paidAt: Date; }; }) => any; updateMany: (arg0: { where: { orderId: any; status: string; NOT: { reference: any; }; }; data: { status: string; }; }) => any; }; order: { update: (arg0: { where: { id: any; }; data: { status: string; }; }) => any; }; paymentEvent: { create: (arg0: { data: { paymentId: any; type: string; data: { reference: any; }; }; }) => any; }; }) => {
+      // 2a) Mark THIS payment as PAID
+      const updated = await tx.payment.update({
+        where: { reference },
+        data: { status: 'PAID', paidAt: new Date() },
+      });
+
+      // 2b) Cancel any other PENDING attempts for the same order
+      await tx.payment.updateMany({
+        where: { orderId, status: 'PENDING', NOT: { reference } },
+        data: { status: 'CANCELED' },
+      });
+
+      // 2c) Update order workflow status (adapt to your terms)
+      const sta = (process.env.TURN_OFF_AWAIT_CONF === "true")? 'PAID': 'AWAITING_FULFILLMENT'
+      await tx.order.update({
+        where: { id: orderId },
+        data: { status: sta },
+      });
+
+      // 2d) Record event + activity
+      await tx.paymentEvent.create({
+        data: { paymentId: updated.id, type: 'VERIFY_PAID', data: { reference } },
+      });
+      // after marking PAID successfully:
+      await issueReceiptIfNeeded(updated.id);
+
+      await logOrderActivity(orderId, 'PAYMENT_PAID', 'Payment verified', { reference });
+
+      return updated;
+    });
+
+    return result;
+  }
+
+  // 3) Trial or inline-bank flow
+  // Mode A (default): auto-approve when user clicks "I’ve transferred"
+  // Mode B (INLINE_APPROVAL=manual): keep it PENDING and let admin approve in dashboard
+  if (TRIAL_MODE || pay.channel !== 'paystack') {
+    if (INLINE_APPROVAL === 'manual') {
+      // keep pending, just acknowledge
+      await prisma.paymentEvent.create({
+        data: { paymentId: pay.id, type: 'VERIFY_PENDING', data: { reference, note: 'Manual approval required' } },
+      });
+      await logOrderActivity(orderId, 'PAYMENT_PENDING', 'Awaiting manual confirmation', { reference });
+      return res.json({ ok: true, status: 'PENDING', message: 'Awaiting confirmation' });
+    }
+
+    // auto-approve trial/inline for your current UI flow
+    await markPaidAndFinalize();
+    return res.json({ ok: true, status: 'PAID', message: 'Payment verified (trial/virtual)' });
+  }
+
+  // 4) Paystack (card) — verify via API
+  try {
+    const vr = await ps.get(`/transaction/verify/${reference}`);
+    const pData = vr.data?.data;
+    const status: string | undefined = pData?.status; // "success" | "failed" | "abandoned" | ...
+    const gatewayRef = pData?.reference;
+
+    // A tiny sanity-check: the reference must match
+    if (gatewayRef && gatewayRef !== reference) {
+      await prisma.paymentEvent.create({
+        data: { paymentId: pay.id, type: 'VERIFY_MISMATCH', data: { reference, gatewayRef, status } },
+      });
+      return res.status(400).json({ error: 'Reference mismatch from gateway' });
+    }
+
+    if (status === 'success') {
+      // Good — mark this payment as paid and finalize order
+      await prisma.payment.update({
+        where: { id: pay.id },
+        data: { providerPayload: pData },
+      });
+      await markPaidAndFinalize();
+      return res.json({ ok: true, status: 'PAID', message: 'Payment verified' });
+    }
+
+    if (status === 'failed') {
+      await prisma.$transaction(async (tx: { payment: { update: (arg0: { where: { id: any; }; data: { status: string; providerPayload: any; }; }) => any; }; paymentEvent: { create: (arg0: { data: { paymentId: any; type: string; data: { reference: any; status: string; }; }; }) => any; }; }) => {
+        await tx.payment.update({
+          where: { id: pay.id },
+          data: { status: 'FAILED', providerPayload: pData },
+        });
+        await tx.paymentEvent.create({
+          data: { paymentId: pay.id, type: 'VERIFY_FAILED', data: { reference, status } },
+        });
+      });
+      await logOrderActivity(orderId, 'PAYMENT_FAILED', 'Gateway reported failure', { reference });
+      return res.json({ ok: true, status: 'FAILED', message: 'Payment failed' });
+    }
+
+    // abandoned / pending / unknown — keep it pending
+    await prisma.paymentEvent.create({
+      data: { paymentId: pay.id, type: 'VERIFY_PENDING', data: { reference, status: status ?? 'unknown' } },
+    });
+    await logOrderActivity(orderId, 'PAYMENT_PENDING', 'Awaiting confirmation', { reference });
+    return res.json({ ok: true, status: 'PENDING', message: 'Awaiting confirmation' });
+  } catch (e: any) {
+    // Network / API error: do not flip status; just report pending
+    await prisma.paymentEvent.create({
+      data: { paymentId: pay.id, type: 'VERIFY_ERROR', data: { reference, err: e?.message } },
+    });
+    return res.json({ ok: true, status: 'PENDING', message: 'Could not verify yet; try again shortly' });
+  }
+});
+
+
+router.post('/webhook/paystack', express.raw({ type: '*/*' }), async (req, res) => {
+  const sig = req.headers['x-paystack-signature'] as string | undefined;
+  if (!isValidSignature(req.body.toString('utf8'), sig, process.env.PAYSTACK_SECRET_KEY!)) {
+    return res.status(401).send('bad sig');
+  }
+
+  // Once verified, parse JSON
+  const evt = JSON.parse(req.body.toString('utf8'));
+  const ref: string | undefined = evt?.data?.reference;
+  const status: string | undefined = evt?.data?.status; // 'success' | 'failed' | 'abandoned' | ...
+  const evtChannel: string | undefined =
+    evt?.data?.channel || evt?.data?.authorization?.channel; // 'card' | 'bank' | 'bank_transfer'
+
+  // Filter by allowed webhook channels (optional)
+  if (evtChannel === 'card' && !WEBHOOK_ACCEPT_CARD) return res.status(200).send('ignored: card off');
+  if ((evtChannel === 'bank' || evtChannel === 'bank_transfer') && !WEBHOOK_ACCEPT_BANK_TRANSFER) {
+    return res.status(200).send('ignored: bank_transfer off');
+  }
+
+  if (!ref) return res.status(200).send('ok'); // nothing to do
+
+  const pay = await prisma.payment.findUnique({ where: { reference: ref } });
+  if (!pay) return res.status(200).send('ok'); // unknown ref -> ignore (do NOT 4xx)
+
+  // Already processed? great — ack & exit
+  if (pay.status === 'PAID') return res.status(200).send('already paid');
+  if (['FAILED', 'CANCELED', 'REFUNDED'].includes(pay.status)) return res.status(200).send('terminal');
+
+  // Optional: if you want to only accept events matching what you initialized with
+  const allowed = (pay.initPayload as any)?.channels as Array<'card' | 'bank_transfer'> | undefined;
+  if (allowed && evtChannel) {
+    const normalized = evtChannel === 'bank' ? 'bank_transfer' : evtChannel;
+    if (!allowed.includes(normalized as any)) {
+      // Ignore mismatch without error
+      await prisma.paymentEvent.create({
+        data: { paymentId: pay.id, type: 'WEBHOOK_IGNORED_CHANNEL', data: { evtChannel, allowed } },
+      });
+      return res.status(200).send('ignored channel');
+    }
+  }
+
+  // Persist the raw event
+  await prisma.paymentEvent.create({
+    data: { paymentId: pay.id, type: evt?.event || 'webhook', data: evt },
+  });
+
+  if (status === 'success') {
+    // Mark PAID + cancel siblings (idempotent)
+    await prisma.$transaction(async (tx: { payment: { update: (arg0: { where: { id: any; }; data: { status: string; paidAt: Date; providerPayload: any; }; }) => any; updateMany: (arg0: { where: { orderId: any; status: string; NOT: { id: any; }; }; data: { status: string; }; }) => any; }; order: { update: (arg0: { where: { id: any; }; data: { status: string; }; }) => any; }; paymentEvent: { create: (arg0: { data: { paymentId: any; type: string; data: { reference: string; }; }; }) => any; }; }) => {
+      await tx.payment.update({
+        where: { id: pay.id },
+        data: { status: 'PAID', paidAt: new Date(), providerPayload: evt?.data },
+      });
+      await tx.payment.updateMany({
+        where: { orderId: pay.orderId, status: 'PENDING', NOT: { id: pay.id } },
+        data: { status: 'CANCELED' },
+      });
+      await tx.order.update({
+        where: { id: pay.orderId },
+        data: { status: 'AWAITING_FULFILLMENT' },
+      });
+      await tx.paymentEvent.create({
+        data: { paymentId: pay.id, type: 'WEBHOOK_MARK_PAID', data: { reference: ref } },
+      });
+    });
+    return res.status(200).send('paid');
+  }
+
+  if (status === 'failed') {
+    // Mark failed only if still pending
+    if (pay.status === 'PENDING') {
+      await prisma.payment.update({
+        where: { id: pay.id },
+        data: { status: 'FAILED', providerPayload: evt?.data },
+      });
+      await prisma.paymentEvent.create({
+        data: { paymentId: pay.id, type: 'WEBHOOK_MARK_FAILED', data: { reference: ref } },
+      });
+    }
+    return res.status(200).send('failed');
+  }
+
+  // Abandoned / pending / unknown
+  return res.status(200).send('pending');
+});
+
+// GET /api/payments/status?orderId=...&reference=...
+router.get('/status', requireAuth, async (req, res) => {
+  try {
+    const orderId = String(req.query.orderId || '');
+    const reference = String(req.query.reference || '');
+
+    if (!orderId || !reference) {
+      return res.status(400).json({ error: 'orderId and reference are required' });
+    }
+
+    // Ensure the payment belongs to this order AND this user
+    const pay = await prisma.payment.findFirst({
+      where: {
+        reference,          // unique globally
+        orderId,            // belts & suspenders check
+        order: { userId: req.user!.id },
+      },
+      select: { status: true },
+    });
+
+    if (!pay) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    // Client expects { status: 'PAID' | 'PENDING' | ... }
+    return res.json({ status: pay.status });
+  } catch (e: any) {
+    console.error('payments/status error', e);
+    return res.status(500).json({ error: 'Failed to fetch payment status' });
+  }
+});
+
+
+// Verify signature first
+function isValidSignature(rawBody: string, headerSig: string | undefined, secret: string) {
+  if (!headerSig) return false;
+  const hash = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
+  return hash === headerSig;
 }
+
+// Helper: gate owner/admin
+async function assertCanViewReceipt(userId: string, paymentId: string) {
+  const row = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: { status: true, order: { select: { userId: true } } },
+  });
+  console.log("row: ", row);
+  if (!row || row.status !== 'PAID') throw new Error('Not found');
+  const isOwner = row.order?.userId === userId;
+  // you can add admin check here from req.user.role
+  if (!isOwner) throw new Error('Forbidden');
+}
+
+router.get('/:paymentId/receipt', requireAuth, async (req, res) => {
+  const { paymentId } = req.params;
+  await assertCanViewReceipt(req.user!.id, paymentId);
+
+  const pay = await issueReceiptIfNeeded(paymentId);
+  if (!pay) return res.status(404).json({ error: 'Receipt not available' });
+
+  return res.json({
+    ok: true,
+    receiptNo: pay.receiptNo,
+    issuedAt: pay.receiptIssuedAt,
+    data: pay.receiptData, // snapshot used by UI
+  });
+});
+
+router.get('/:paymentId/receipt.pdf', requireAuth, async (req, res) => {
+  const { paymentId } = req.params;
+  await assertCanViewReceipt(req.user!.id, paymentId);
+  const pay = await issueReceiptIfNeeded(paymentId);
+  if (!pay?.receiptData) return res.status(404).json({ error: 'Receipt not available' });
+
+  const r = pay.receiptData as any;
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${pay.receiptNo || 'receipt'}.pdf"`);
+
+  const doc = new PDFDocument({ size: 'A4', margin: 48 });
+  doc.pipe(res);
+
+  // Header
+  doc.font('Helvetica-Bold').fontSize(18).text(r.merchant?.name || 'Receipt');
+  doc.moveDown(0.5);
+
+  doc.font('Helvetica').fontSize(10).fillColor('#555');
+  doc.text(r.merchant?.addressLine1 || '');
+  if (r.merchant?.addressLine2) doc.text(r.merchant.addressLine2);
+  if (r.merchant?.supportEmail) doc.text(`Support: ${r.merchant.supportEmail}`);
+  doc.moveDown();
+  doc.fillColor('#000'); // reset
+
+
+  // Receipt meta
+  doc.fillColor('#000').fontSize(12);
+  doc.text(`Receipt No: ${pay.receiptNo || ''}`);
+  doc.text(`Reference: ${r.reference}`);
+  doc.text(`Paid At: ${new Date(r.paidAt).toLocaleString()}`);
+  doc.moveDown();
+
+  // Customer + Shipping
+  doc.font('Helvetica-Bold').fontSize(11).text('Customer', { underline: true });
+  doc.font('Helvetica'); // back to regular for the lines that follow
+  doc.text(`${r.customer?.name || '—'}`);
+  doc.text(`${r.customer?.email || '—'}`);
+  if (r.customer?.phone) doc.text(r.customer.phone);
+  doc.moveDown();
+
+  doc.fontSize(11).text('Ship To', { underline: true });
+  const addr = r.order?.shippingAddress || {};
+  [addr.houseNumber, addr.streetName, addr.town, addr.city, addr.state, addr.country]
+    .filter(Boolean)
+    .forEach((line: string) => doc.text(line));
+  doc.moveDown();
+
+  // Items table (simple)
+  doc.fontSize(11).text('Items', { underline: true });
+  doc.moveDown(0.25);
+  r.order?.items?.forEach((it: any) => {
+    const title = it.title || 'Item';
+    const qty = Number(it.quantity || 1);
+    const unit = Number(it.unitPrice || 0);
+    const line = Number(it.lineTotal || unit * qty);
+    doc.fontSize(10).text(`${title}  •  ${qty} × NGN ${unit.toLocaleString()}  =  NGN ${line.toLocaleString()}`);
+    if (Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0) {
+      doc.fillColor('#555').fontSize(9).text(
+        it.selectedOptions.map((o: any) => `${o.attribute}: ${o.value}`).join(' • ')
+      );
+      doc.fillColor('#000');
+    }
+    doc.moveDown(0.25);
+  });
+  doc.moveDown();
+
+  // Totals
+  const subtotal = Number(r.order?.subtotal || 0);
+  const tax = Number(r.order?.tax || 0);
+  const shipping = Number(r.order?.shipping || 0);
+  const total = Number(r.order?.total || 0);
+  doc.fontSize(11);
+  doc.text(`Subtotal: NGN ${subtotal.toLocaleString()}`);
+  doc.text(`Tax: NGN ${tax.toLocaleString()}`);
+  doc.text(`Shipping: NGN ${shipping.toLocaleString()}`);
+  doc.fontSize(12).text(`Total: NGN ${total.toLocaleString()}`, { continued: false });
+  doc.moveDown(1);
+
+  doc.fontSize(9).fillColor('#666')
+    .text('Thank you for your purchase. This document serves as a receipt.', { align: 'left' });
+
+  doc.end();
+});
+
 
 /**
  * POST /api/payments/link

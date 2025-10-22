@@ -26,11 +26,14 @@ import api from '../../api/client';
 import { useAuthStore } from '../../store/auth.js';
 import { useToast } from '../../components/ToastProvider.js';
 import { useModal } from '../../components/ModalProvider.js';
+import { getHttpErrorMessage } from '../../utils/httpError.js';
+import ActivitiesPanel from '../../components/admin/ActivitiesPanel.js';
 
 
 /** ===== tweak this if your backend upload route differs ===== */
 const UPLOAD_ENDPOINT = '/api/uploads';
 /** =========================================================== */
+const staleTImeInSecs = 300_000;
 
 /* ---------------- Types ---------------- */
 type Me = {
@@ -49,7 +52,10 @@ type Overview = {
     productsPending: number;
     productsPublished: number;
     productsInStock: number;
-    productsOutOfStock: number;
+    productsOutStock: number;
+    productsLive: number;
+    productsRejected: number;
+    productsOffline: number;
     productsTotal: number;
     ordersToday: number;
     revenueToday: number;
@@ -194,675 +200,744 @@ type TabKey = 'overview' | 'users' | 'products' | 'transactions' | 'catalog' | '
    AdminDashboard
    ========================================================= */
 export default function AdminDashboard() {
-    const { token } = useAuthStore();
-    const nav = useNavigate();
-    const toast = useToast();
-    const { openModal } = useModal();
-    const qc = useQueryClient();
+  const { token } = useAuthStore();
+  const nav = useNavigate();
+  const toast = useToast();
+  const { openModal } = useModal();
+  const qc = useQueryClient();
 
-    // inner products tab state
-    type ProductsInnerTab = 'moderation' | 'manage';
-    const [pTab, setPTab] = useState<ProductsInnerTab>('moderation');
+  // inner products tab state
+  type ProductsInnerTab = 'moderation' | 'manage';
+  const [pTab, setPTab] = useState<ProductsInnerTab>('moderation');
 
-    // NEW state at the top alongside other useStates
-    const [prodSearch, setProdSearch] = useState('');
-    const [focusProductId, setFocusProductId] = useState<string | null>(null);
-    // Role-gate
-    const me = useQuery({
-        queryKey: ['me'],
-        enabled: !!token,
-        queryFn: async () =>
-            (await api.get<Me>('/api/profile/me', { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
-        staleTime: 60_000,
-    });
+  // NEW state at the top alongside other useStates
+  const [prodSearch, setProdSearch] = useState('');
+  const [focusProductId, setFocusProductId] = useState<string | null>(null);
 
-    useEffect(() => {
-        if (!token) {
-            nav('/login', { replace: true, state: { from: { pathname: '/admin' } } });
-            return;
+  // Role-gate
+  const me = useQuery({
+    queryKey: ['me'],
+    enabled: !!token,
+    queryFn: async () =>
+      (await api.get<Me>('/api/profile/me', { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
+    staleTime: staleTImeInSecs,
+  });
+
+  useEffect(() => {
+    if (!token) {
+      nav('/login', { replace: true, state: { from: { pathname: '/admin' } } });
+      return;
+    }
+  }, [token, nav]);
+
+  const role = me.data?.role ?? '';
+  const canAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
+
+  useEffect(() => {
+    if (me.isFetched && !canAdmin) nav('/', { replace: true });
+  }, [me.isFetched, canAdmin, nav]);
+
+  const [tab, setTab] = useState<TabKey>('overview');
+  const [q, setQ] = useState('');
+
+  /* -------- Overview -------- */
+  const overview = useQuery({
+    queryKey: ['admin', 'overview'],
+    enabled: !!canAdmin,
+    queryFn: async () =>
+      (await api.get<Overview>('/api/admin/overview', { headers: { Authorization: `Bearer ${token}` } })).data,
+    staleTime: staleTImeInSecs,
+    refetchOnWindowFocus: false,
+  });
+
+  /* -------- Transactions -------- */
+  const txQ = useQuery({
+    queryKey: ['admin', 'payments', q],
+    enabled: !!canAdmin && tab === 'transactions',
+    queryFn: async () => {
+      try {
+        const { data } = await api.get<{ data: AdminPayment[] }>(
+          `/api/payments/admin?includeItems=1&q=${encodeURIComponent(q)}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        return data?.data ?? [];
+      } catch {
+        const { data } = await api.get<{ data: AdminPayment[] }>(
+          `/api/admin/payments?includeItems=1&q=${encodeURIComponent(q)}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        return data?.data ?? [];
+      }
+    },
+    staleTime: staleTImeInSecs,
+    refetchOnWindowFocus: false,
+  });
+
+  const verifyPayment = useMutation({
+    mutationFn: async (paymentId: string) =>
+      (await api.post(`/api/admin/payments/${paymentId}/verify`, {}, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'payments'] });
+      qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+      toast.push({ title: 'Payments', message: 'Payment verified.', duration: 2500 });
+    },
+    onError: () => openModal({ title: 'Payments', message: 'Verification failed.' }),
+  });
+
+  const refundPayment = useMutation({
+    mutationFn: async (paymentId: string) =>
+      (await api.post(`/api/admin/payments/${paymentId}/refund`, {}, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'payments'] });
+      toast.push({ title: 'Payments', message: 'Refund processed.', duration: 2500 });
+    },
+    onError: () => openModal({ title: 'Payments', message: 'Refund failed.' }),
+  });
+
+  /* -------- Catalog: lists (only when on catalog) -------- */
+  const categoriesQ = useQuery({
+    queryKey: ['admin', 'categories'],
+    enabled: !!canAdmin && tab === 'catalog',
+    queryFn: async () =>
+      (await api.get<{ data: AdminCategory[] }>('/api/admin/categories', { headers: { Authorization: `Bearer ${token}` } })).data
+        .data,
+    refetchOnWindowFocus: false,
+    staleTime: staleTImeInSecs,
+  });
+
+  const createCategory = useMutation({
+    mutationFn: async (payload: Partial<AdminCategory>) =>
+      (await api.post('/api/admin/categories', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
+    },
+  });
+
+  const updateCategory = useMutation({
+    mutationFn: async ({ id, ...payload }: Partial<AdminCategory> & { id: string }) =>
+      (await api.put(`/api/admin/categories/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
+    },
+  });
+
+  const deleteCategory = useMutation({
+    mutationFn: async (id: string) =>
+      (await api.delete(`/api/admin/categories/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
+    },
+  });
+
+  const brandsQ = useQuery({
+    queryKey: ['admin', 'brands'],
+    enabled: !!canAdmin && tab === 'catalog',
+    queryFn: async () =>
+      (await api.get<{ data: AdminBrand[] }>('/api/admin/brands', { headers: { Authorization: `Bearer ${token}` } })).data.data,
+    refetchOnWindowFocus: false,
+    staleTime: staleTImeInSecs,
+  });
+
+  const createBrand = useMutation({
+    mutationFn: async (payload: Partial<AdminBrand>) =>
+      (await api.post('/api/admin/brands', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'brands'] });
+    },
+  });
+  const updateBrand = useMutation({
+    mutationFn: async ({ id, ...payload }: Partial<AdminBrand> & { id: string }) =>
+      (await api.put(`/api/admin/brands/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'brands'] });
+    },
+  });
+  const deleteBrand = useMutation({
+    mutationFn: async (id: string) =>
+      (await api.delete(`/api/admin/brands/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'brands'] });
+    },
+  });
+
+  const attributesQ = useQuery({
+    queryKey: ['admin', 'attributes'],
+    enabled: !!canAdmin && tab === 'catalog',
+    queryFn: async () =>
+      (await api.get<{ data: AdminAttribute[] }>('/api/admin/attributes', { headers: { Authorization: `Bearer ${token}` } }))
+        .data.data,
+    refetchOnWindowFocus: false,
+    staleTime: staleTImeInSecs,
+  });
+
+  const createAttribute = useMutation({
+    mutationFn: async (payload: Partial<AdminAttribute>) =>
+      (await api.post('/api/admin/attributes', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+    },
+  });
+  const updateAttribute = useMutation({
+    mutationFn: async ({ id, ...payload }: Partial<AdminAttribute> & { id: string }) =>
+      (await api.put(`/api/admin/attributes/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+    },
+  });
+  const deleteAttribute = useMutation({
+    mutationFn: async (id: string) =>
+      (await api.delete(`/api/admin/attributes/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+    },
+  });
+
+  const createAttrValue = useMutation({
+    mutationFn: async ({
+      attributeId,
+      ...payload
+    }: {
+      attributeId: string;
+      name: string;
+      code?: string | null;
+      position?: number | null;
+      isActive?: boolean;
+    }) =>
+      (await api.post(`/api/admin/attributes/${attributeId}/values`, payload, { headers: { Authorization: `Bearer ${token}` } }))
+        .data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+    },
+  });
+  const updateAttrValue = useMutation({
+    mutationFn: async ({
+      attributeId,
+      id,
+      ...payload
+    }: {
+      attributeId: string;
+      id: string;
+      name?: string;
+      code?: string | null;
+      position?: number | null;
+      isActive?: boolean;
+    }) =>
+      (await api.put(`/api/admin/attributes/${attributeId}/values/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } }))
+        .data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+    },
+  });
+  const deleteAttrValue = useMutation({
+    mutationFn: async ({ attributeId, id }: { attributeId: string; id: string }) =>
+      (await api.delete(`/api/admin/attributes/${attributeId}/values/${id}`, { headers: { Authorization: `Bearer ${token}` } }))
+        .data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+    },
+  });
+
+  /* -------- Usage (for disable delete) -------- */
+  const usageQ = useQuery({
+    queryKey: ['admin', 'catalog', 'usage'],
+    enabled: !!canAdmin && tab === 'catalog',
+    queryFn: async () => {
+      try {
+        const { data } = await api.get('/api/admin/catalog/usage', { headers: { Authorization: `Bearer ${token}` } });
+        return data || { categories: {}, attributes: {}, brands: {} };
+      } catch {
+        try {
+          const { data } = await api.get('/api/products?include=attributes,variants', {
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          });
+          const arr: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+          const categories: Record<string, number> = {};
+          const attributes: Record<string, number> = {};
+          const brands: Record<string, number> = {};
+
+          for (const p of arr) {
+            if (p.categoryId) categories[p.categoryId] = (categories[p.categoryId] || 0) + 1;
+            if (p.brandId) brands[p.brandId] = (brands[p.brandId] || 0) + 1;
+
+            const avs = p.attributeValues || [];
+            for (const av of avs) {
+              const attrId = av?.attributeId || av?.attribute?.id;
+              if (attrId) attributes[attrId] = (attributes[attrId] || 0) + 1;
+            }
+            const variants = p.variants || [];
+            for (const v of variants) {
+              const opts = v.options || [];
+              for (const opt of opts) {
+                const attrId = opt?.attributeId || opt?.attribute?.id;
+                if (attrId) attributes[attrId] = (attributes[attrId] || 0) + 1;
+              }
+            }
+          }
+          return { categories, attributes, brands };
+        } catch {
+          return { categories: {}, attributes: {}, brands: {} };
         }
-    }, [token, nav]);
+      }
+    },
+    refetchOnWindowFocus: false,
+    staleTime: staleTImeInSecs,
+  });
 
-    const role = me.data?.role ?? '';
-    const canAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
+  /* -------- Suppliers (Catalog) -------- */
+  const suppliersQ = useQuery({
+    queryKey: ['admin', 'suppliers'],
+    enabled: !!canAdmin && tab === 'catalog',
+    queryFn: async () =>
+      (await api.get<{ data: AdminSupplier[] }>('/api/admin/suppliers', { headers: { Authorization: `Bearer ${token}` } })).data
+        .data,
+    refetchOnWindowFocus: false,
+    staleTime: staleTImeInSecs,
+  });
+
+  const createSupplier = useMutation({
+    mutationFn: async (payload: Partial<AdminSupplier>) =>
+      (await api.post('/api/admin/suppliers', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
+    },
+  });
+  const updateSupplier = useMutation({
+    mutationFn: async ({ id, ...payload }: Partial<AdminSupplier> & { id: string }) =>
+      (await api.put(`/api/admin/suppliers/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
+    },
+  });
+  const deleteSupplier = useMutation({
+    mutationFn: async (id: string) =>
+      (await api.delete(`/api/admin/suppliers/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
+    },
+  });
+
+  /* -------- Backfill on first open -------- */
+  const didBackfill = useRef(false);
+  useEffect(() => {
+    if (!canAdmin || tab !== 'catalog' || didBackfill.current) return;
+    (async () => {
+      try {
+        await api.post('/api/admin/catalog/backfill', {}, { headers: { Authorization: `Bearer ${token}` } });
+      } catch {
+        // ignore missing route
+      } finally {
+        didBackfill.current = true;
+        qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
+        qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+        qc.invalidateQueries({ queryKey: ['admin', 'brands'] });
+        qc.invalidateQueries({ queryKey: ['admin', 'catalog', 'usage'] });
+      }
+    })();
+  }, [tab, canAdmin, token, qc]);
+
+  /* ---------------- UI helpers ---------------- */
+  function TabButton({ k, label, Icon }: { k: TabKey; label: string; Icon: any }) {
+    const active = tab === k;
+    return (
+      <button
+        onClick={() => setTab(k)}
+        className={`group inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm border transition
+          ${active ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white hover:bg-black/5 border-border text-ink'}`}
+      >
+        <Icon size={16} className={`${active ? 'text-white' : 'text-zinc-600'} group-hover:opacity-100`} />
+        {label}
+      </button>
+    );
+  }
+
+  function SectionCard({
+    title,
+    subtitle,
+    children,
+    right,
+  }: {
+    title: string;
+    subtitle?: string;
+    children: ReactNode;
+    right?: ReactNode;
+  }) {
+    return (
+      <div className="rounded-2xl border bg-white shadow-sm">
+        <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
+          <div>
+            <h3 className="text-ink font-semibold">{title}</h3>
+            {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
+          </div>
+          {right}
+        </div>
+        <div className="p-4 md:p-5">{children}</div>
+      </div>
+    );
+  }
+
+  function SkeletonRow({ cols = 4 }: { cols?: number }) {
+    return (
+      <tr className="animate-pulse">
+        {Array.from({ length: cols }).map((_, i) => (
+          <td key={i} className="px-3 py-3">
+            <div className="h-3 rounded bg-zinc-200" />
+          </td>
+        ))}
+      </tr>
+    );
+  }
+
+  /** --------- LOCALIZED Users section (Fix B) --------- */
+  function UsersSection({ token, canAdmin }: { token?: string | null; canAdmin: boolean }) {
+    const qc = useQueryClient();
+    const { openModal } = useModal();
+    const toast = useToast();
+
+    const [usersSearchInput, setUsersSearchInput] = useState('');
+    const usersSearch = useDebounced(usersSearchInput, 350);
+
+    const usersQ = useQuery<AdminUser[]>({
+      queryKey: ['admin', 'users', usersSearch],
+      enabled: !!canAdmin,
+      queryFn: async () => {
+        const { data } = await api.get<{ data: AdminUser[] }>(
+          '/api/admin/users',
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            params: { q: usersSearch || '' },
+          }
+        );
+        return Array.isArray(data?.data) ? data.data : [];
+      },
+      placeholderData: keepPreviousData,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      refetchOnMount: 'always',
+      staleTime: staleTImeInSecs,
+    });
 
     useEffect(() => {
-        if (me.isFetched && !canAdmin) nav('/', { replace: true });
-    }, [me.isFetched, canAdmin, nav]);
-
-    const [tab, setTab] = useState<TabKey>('overview');
-    const [q, setQ] = useState('');
-
-    /* -------- Overview -------- */
-    const overview = useQuery({
-        queryKey: ['admin', 'overview'],
-        enabled: !!canAdmin,
-        queryFn: async () => (await api.get<Overview>('/api/admin/overview', { headers: { Authorization: `Bearer ${token}` } })).data,
-        staleTime: 30_000,
-        refetchOnWindowFocus: false,
-    });
-
-    /* -------- Users & Roles -------- */
-    const usersQ = useQuery({
-        queryKey: ['admin', 'users', q],
-        enabled: !!canAdmin && tab === 'users',
-        queryFn: async () => {
-            const { data } = await api.get<{ data: AdminUser[] }>(`/api/admin/users?q=${encodeURIComponent(q)}`, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            return data?.data ?? [];
-        },
-        refetchOnWindowFocus: false,
-    });
+      if (usersQ.isError) {
+        const e: any = usersQ.error;
+        console.error('Users list failed:', e?.response?.status, e?.response?.data || e?.message);
+      }
+    }, [usersQ.isError, usersQ.error]);
 
     const updateUserRole = useMutation({
-        mutationFn: async ({ userId, role }: { userId: string; role: string }) =>
-            (await api.post(`/api/admin/users/${userId}/role`, { role }, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'users'], exact: false });
-            toast.push({ title: 'Users', message: 'Role updated.', duration: 2500 });
-        },
-        onError: (e: any) => {
-            const msg = e?.response?.data?.error || 'Could not update role.';
-            openModal({ title: 'Users', message: msg });
-        },
+      mutationFn: async ({ userId, role }: { userId: string; role: string }) =>
+        (await api.post(`/api/admin/users/${userId}/role`, { role }, { headers: { Authorization: `Bearer ${token}` } })).data,
+      onSuccess: () => {
+        qc.invalidateQueries({ queryKey: ['admin', 'users'], exact: false });
+        toast.push({ title: 'Users', message: 'Role updated.', duration: 2500 });
+      },
+      onError: (e: any) => {
+        const msg = e?.response?.data?.error || 'Could not update role.';
+        openModal({ title: 'Users', message: msg });
+      },
     });
 
     const deactivateUser = useMutation({
-        mutationFn: async (userId: string) =>
-            (await api.post(`/api/admin/users/${userId}/deactivate`, {}, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'users'], exact: false });
-            toast.push({ title: 'Users', message: 'User deactivated.', duration: 2500 });
-        },
-        onError: () => openModal({ title: 'Users', message: 'Could not deactivate user.' }),
+      mutationFn: async (userId: string) =>
+        (await api.post(`/api/admin/users/${userId}/deactivate`, {}, { headers: { Authorization: `Bearer ${token}` } })).data,
+      onSuccess: () => {
+        qc.invalidateQueries({ queryKey: ['admin', 'users'], exact: false });
+        toast.push({ title: 'Users', message: 'User deactivated.', duration: 2500 });
+      },
+      onError: () => openModal({ title: 'Users', message: 'Could not deactivate user.' }),
     });
 
     const reactivateUser = useMutation({
-        mutationFn: async (userId: string) =>
-            (await api.post(`/api/admin/users/${userId}/reactivate`, {}, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'users'], exact: false });
-            toast.push({ title: 'Users', message: 'User reactivated.', duration: 2500 });
-        },
-        onError: () => openModal({ title: 'Users', message: 'Could not reactivate user.' }),
+      mutationFn: async (userId: string) =>
+        (await api.post(`/api/admin/users/${userId}/reactivate`, {}, { headers: { Authorization: `Bearer ${token}` } })).data,
+      onSuccess: () => {
+        qc.invalidateQueries({ queryKey: ['admin', 'users'], exact: false });
+        toast.push({ title: 'Users', message: 'User reactivated.', duration: 2500 });
+      },
+      onError: () => openModal({ title: 'Users', message: 'Could not reactivate user.' }),
     });
-
-    /* -------- Transactions -------- */
-    const txQ = useQuery({
-        queryKey: ['admin', 'payments', q],
-        enabled: !!canAdmin && tab === 'transactions',
-        queryFn: async () => {
-            try {
-                const { data } = await api.get<{ data: AdminPayment[] }>(
-                    `/api/payments/admin?includeItems=1&q=${encodeURIComponent(q)}`,
-                    { headers: { Authorization: `Bearer ${token}` } }
-                );
-                return data?.data ?? [];
-            } catch {
-                const { data } = await api.get<{ data: AdminPayment[] }>(
-                    `/api/admin/payments?includeItems=1&q=${encodeURIComponent(q)}`,
-                    { headers: { Authorization: `Bearer ${token}` } }
-                );
-                return data?.data ?? [];
-            }
-        },
-        staleTime: 15_000,
-        refetchOnWindowFocus: false,
-    });
-
-    const verifyPayment = useMutation({
-        mutationFn: async (paymentId: string) =>
-            (await api.post(`/api/admin/payments/${paymentId}/verify`, {}, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'payments'] });
-            qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
-            toast.push({ title: 'Payments', message: 'Payment verified.', duration: 2500 });
-        },
-        onError: () => openModal({ title: 'Payments', message: 'Verification failed.' }),
-    });
-
-    const refundPayment = useMutation({
-        mutationFn: async (paymentId: string) =>
-            (await api.post(`/api/admin/payments/${paymentId}/refund`, {}, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'payments'] });
-            toast.push({ title: 'Payments', message: 'Refund processed.', duration: 2500 });
-        },
-        onError: () => openModal({ title: 'Payments', message: 'Refund failed.' }),
-    });
-
-    /* -------- Catalog: lists (only when on catalog) -------- */
-    const categoriesQ = useQuery({
-        queryKey: ['admin', 'categories'],
-        enabled: !!canAdmin && tab === 'catalog',
-        queryFn: async () =>
-            (await api.get<{ data: AdminCategory[] }>('/api/admin/categories', { headers: { Authorization: `Bearer ${token}` } })).data.data,
-        refetchOnWindowFocus: false,
-        staleTime: 60_000,
-    });
-
-    const createCategory = useMutation({
-        mutationFn: async (payload: Partial<AdminCategory>) =>
-            (await api.post('/api/admin/categories', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
-        },
-    });
-
-    const updateCategory = useMutation({
-        mutationFn: async ({ id, ...payload }: Partial<AdminCategory> & { id: string }) =>
-            (await api.put(`/api/admin/categories/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
-        },
-    });
-
-    const deleteCategory = useMutation({
-        mutationFn: async (id: string) =>
-            (await api.delete(`/api/admin/categories/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
-        },
-    });
-
-    const brandsQ = useQuery({
-        queryKey: ['admin', 'brands'],
-        enabled: !!canAdmin && tab === 'catalog',
-        queryFn: async () =>
-            (await api.get<{ data: AdminBrand[] }>('/api/admin/brands', { headers: { Authorization: `Bearer ${token}` } })).data.data,
-        refetchOnWindowFocus: false,
-        staleTime: 60_000,
-    });
-
-    const createBrand = useMutation({
-        mutationFn: async (payload: Partial<AdminBrand>) =>
-            (await api.post('/api/admin/brands', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'brands'] });
-        },
-    });
-    const updateBrand = useMutation({
-        mutationFn: async ({ id, ...payload }: Partial<AdminBrand> & { id: string }) =>
-            (await api.put(`/api/admin/brands/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'brands'] });
-        },
-    });
-    const deleteBrand = useMutation({
-        mutationFn: async (id: string) =>
-            (await api.delete(`/api/admin/brands/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'brands'] });
-        },
-    });
-
-    const attributesQ = useQuery({
-        queryKey: ['admin', 'attributes'],
-        enabled: !!canAdmin && tab === 'catalog',
-        queryFn: async () =>
-            (await api.get<{ data: AdminAttribute[] }>('/api/admin/attributes', { headers: { Authorization: `Bearer ${token}` } })).data.data,
-        refetchOnWindowFocus: false,
-        staleTime: 60_000,
-    });
-
-    const createAttribute = useMutation({
-        mutationFn: async (payload: Partial<AdminAttribute>) =>
-            (await api.post('/api/admin/attributes', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
-        },
-    });
-    const updateAttribute = useMutation({
-        mutationFn: async ({ id, ...payload }: Partial<AdminAttribute> & { id: string }) =>
-            (await api.put(`/api/admin/attributes/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
-        },
-    });
-    const deleteAttribute = useMutation({
-        mutationFn: async (id: string) =>
-            (await api.delete(`/api/admin/attributes/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
-        },
-    });
-
-    const createAttrValue = useMutation({
-        mutationFn: async ({
-            attributeId,
-            ...payload
-        }: {
-            attributeId: string;
-            name: string;
-            code?: string | null;
-            position?: number | null;
-            isActive?: boolean;
-        }) => (await api.post(`/api/admin/attributes/${attributeId}/values`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
-        },
-    });
-    const updateAttrValue = useMutation({
-        mutationFn: async ({
-            attributeId,
-            id,
-            ...payload
-        }: {
-            attributeId: string;
-            id: string;
-            name?: string;
-            code?: string | null;
-            position?: number | null;
-            isActive?: boolean;
-        }) => (await api.put(`/api/admin/attributes/${attributeId}/values/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
-        },
-    });
-    const deleteAttrValue = useMutation({
-        mutationFn: async ({ attributeId, id }: { attributeId: string; id: string }) =>
-            (await api.delete(`/api/admin/attributes/${attributeId}/values/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
-        },
-    });
-
-    /* -------- Usage (for disable delete) -------- */
-    const usageQ = useQuery({
-        queryKey: ['admin', 'catalog', 'usage'],
-        enabled: !!canAdmin && tab === 'catalog',
-        queryFn: async () => {
-            try {
-                const { data } = await api.get('/api/admin/catalog/usage', { headers: { Authorization: `Bearer ${token}` } });
-                return data || { categories: {}, attributes: {}, brands: {} };
-            } catch {
-                try {
-                    const { data } = await api.get('/api/products?include=attributes,variants', {
-                        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-                    });
-                    const arr: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-                    const categories: Record<string, number> = {};
-                    const attributes: Record<string, number> = {};
-                    const brands: Record<string, number> = {};
-
-                    for (const p of arr) {
-                        if (p.categoryId) categories[p.categoryId] = (categories[p.categoryId] || 0) + 1;
-                        if (p.brandId) brands[p.brandId] = (brands[p.brandId] || 0) + 1;
-
-                        const avs = p.attributeValues || [];
-                        for (const av of avs) {
-                            const attrId = av?.attributeId || av?.attribute?.id;
-                            if (attrId) attributes[attrId] = (attributes[attrId] || 0) + 1;
-                        }
-                        const variants = p.variants || [];
-                        for (const v of variants) {
-                            const opts = v.options || [];
-                            for (const opt of opts) {
-                                const attrId = opt?.attributeId || opt?.attribute?.id;
-                                if (attrId) attributes[attrId] = (attributes[attrId] || 0) + 1;
-                            }
-                        }
-                    }
-                    return { categories, attributes, brands };
-                } catch {
-                    return { categories: {}, attributes: {}, brands: {} };
-                }
-            }
-        },
-        refetchOnWindowFocus: false,
-        staleTime: 60_000,
-    });
-
-    /* -------- Suppliers (Catalog) -------- */
-    const suppliersQ = useQuery({
-        queryKey: ['admin', 'suppliers'],
-        enabled: !!canAdmin && tab === 'catalog',
-        queryFn: async () =>
-            (await api.get<{ data: AdminSupplier[] }>('/api/admin/suppliers', { headers: { Authorization: `Bearer ${token}` } })).data.data,
-        refetchOnWindowFocus: false,
-        staleTime: 60_000,
-    });
-
-    const createSupplier = useMutation({
-        mutationFn: async (payload: Partial<AdminSupplier>) =>
-            (await api.post('/api/admin/suppliers', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
-        },
-    });
-    const updateSupplier = useMutation({
-        mutationFn: async ({ id, ...payload }: Partial<AdminSupplier> & { id: string }) =>
-            (await api.put(`/api/admin/suppliers/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
-        },
-    });
-    const deleteSupplier = useMutation({
-        mutationFn: async (id: string) =>
-            (await api.delete(`/api/admin/suppliers/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
-        },
-    });
-
-    /* -------- Backfill on first open -------- */
-    const didBackfill = useRef(false);
-    useEffect(() => {
-        if (!canAdmin || tab !== 'catalog' || didBackfill.current) return;
-        (async () => {
-            try {
-                await api.post('/api/admin/catalog/backfill', {}, { headers: { Authorization: `Bearer ${token}` } });
-            } catch {
-                // ignore missing route
-            } finally {
-                didBackfill.current = true;
-                qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
-                qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
-                qc.invalidateQueries({ queryKey: ['admin', 'brands'] });
-                qc.invalidateQueries({ queryKey: ['admin', 'catalog', 'usage'] });
-            }
-        })();
-    }, [tab, canAdmin, token, qc]);
-
-    /* ---------------- UI helpers ---------------- */
-    function TabButton({ k, label, Icon }: { k: TabKey; label: string; Icon: any }) {
-        const active = tab === k;
-        return (
-            <button
-                onClick={() => setTab(k)}
-                className={`group inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm border transition
-          ${active ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white hover:bg-black/5 border-border text-ink'}`}
-            >
-                <Icon size={16} className={`${active ? 'text-white' : 'text-zinc-600'} group-hover:opacity-100`} />
-                {label}
-            </button>
-        );
-    }
-
-    function SectionCard({
-        title,
-        subtitle,
-        children,
-        right,
-    }: {
-        title: string;
-        subtitle?: string;
-        children: ReactNode;
-        right?: ReactNode;
-    }) {
-        return (
-            <div className="rounded-2xl border bg-white shadow-sm">
-                <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
-                    <div>
-                        <h3 className="text-ink font-semibold">{title}</h3>
-                        {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
-                    </div>
-                    {right}
-                </div>
-                <div className="p-4 md:p-5">{children}</div>
-            </div>
-        );
-    }
-
-    function SkeletonRow({ cols = 4 }: { cols?: number }) {
-        return (
-            <tr className="animate-pulse">
-                {Array.from({ length: cols }).map((_, i) => (
-                    <td key={i} className="px-3 py-3">
-                        <div className="h-3 rounded bg-zinc-200" />
-                    </td>
-                ))}
-            </tr>
-        );
-    }
 
     return (
-        <div className="max-w-[1400px] mx-auto px-4 md:px-6 py-6">
-            {/* Hero */}
-            <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-sky-700 via-sky-600 to-indigo-700 text-white">
-                <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(255,255,255,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,0,0,0.15),transparent_60%)]" />
-                <div className="relative px-5 md:px-8 py-6">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <motion.h1 initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="text-2xl md:text-3xl font-bold tracking-tight">
-                                {me.isLoading ? 'Loading…' : (role === 'SUPER_ADMIN' ? 'Super Admin Dashboard' : 'Admin Dashboard')}                            </motion.h1>
-                            <p className="text-white/80 text-sm mt-1">Full control & oversight — users, products, transactions, operations, marketing, and analytics.</p>
-                        </div>
-                        <div className="hidden md:flex items-center gap-2">
-                            <Link to="/" className="inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-2 text-sm">
-                                <ShieldCheck size={16} /> Back to site
-                            </Link>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {/* KPIs */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-                <KpiCard
-                    title="Users"
-                    value={(overview.data?.totalUsers ?? 0).toLocaleString()}
-                    hint={`${overview.data?.totalCustomers ?? 0} Customers   • ${overview.data?.totalSuperAdmins ?? 0} Super Admins Users  • ${overview.data?.totalAdmins ?? 0} Admin Users`}
-                    Icon={Users}
-                />
-                <KpiCard
-                    title="Products"
-                    value={`${overview.data?.productsPublished ?? 0} Published, ${overview.data?.productsTotal ?? 0} total`}
-                    hint={`${overview.data?.productsInStock ?? 0} In Stock, ${overview.data?.productsOutOfStock ?? 0} Out of Stock, ${overview.data?.productsPending ?? 0} pending review`}
-                    Icon={PackageCheck}
-                />
-                <KpiCard title="Orders Today" value={(overview.data?.ordersToday ?? 0).toLocaleString()} hint="New orders" Icon={CreditCard} />
-                <KpiCard title="Revenue Today" value={ngn.format(fmtN(overview.data?.revenueToday))} hint="Last 7 days" Icon={BarChart3} chart={<Sparkline points={overview.data?.sparklineRevenue7d || []} />} />
-            </div>
-
-            {/* Tabs */}
-            <div className="mt-6 flex flex-wrap items-center gap-2">
-                <TabButton k="overview" label="Overview" Icon={ShieldCheck} />
-                <TabButton k="users" label="Users & Roles" Icon={UserCheck} />
-                <TabButton k="products" label="Product Moderation" Icon={PackageCheck} />
-                <TabButton k="catalog" label="Catalog Settings" Icon={Settings} />
-                <TabButton k="transactions" label="Transactions" Icon={CreditCard} />
-                <TabButton k="ops" label="Ops & Security" Icon={Settings} />
-                <TabButton k="marketing" label="Marketing" Icon={BellRing} />
-                <TabButton k="analytics" label="Analytics" Icon={BarChart3} />
-            </div>
-
-            {/* Content */}
-            <div className="mt-4 space-y-6">
-                {/* -------- Users -------- */}
-                {tab === 'users' && (
-                    <SectionCard
-                        title="Users & Roles"
-                        subtitle="Create, approve, deactivate, reactivate; manage privileges"
-                        right={
-                            <div className="relative">
-                                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
-                                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by email or role…" className="pl-9 pr-3 py-2 rounded-xl border bg-white" />
-                            </div>
-                        }
-                    >
-                        <div className="overflow-x-auto">
-                            <table className="min-w-full text-sm">
-                                <thead>
-                                    <tr className="bg-zinc-50 text-ink">
-                                        <th className="text-left px-3 py-2">User</th>
-                                        <th className="text-left px-3 py-2">Role</th>
-                                        <th className="text-left px-3 py-2">Status</th>
-                                        <th className="text-left px-3 py-2">Created</th>
-                                        <th className="text-right px-3 py-2">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y">
-                                    {usersQ.isLoading && (
-                                        <>
-                                            <SkeletonRow cols={5} />
-                                            <SkeletonRow cols={5} />
-                                            <SkeletonRow cols={5} />
-                                        </>
-                                    )}
-                                    {!usersQ.isLoading && (usersQ.data ?? []).length === 0 && (
-                                        <tr>
-                                            <td colSpan={5} className="px-3 py-6 text-center text-zinc-500">
-                                                No users found.
-                                            </td>
-                                        </tr>
-                                    )}
-                                    {(usersQ.data ?? []).map((u) => {
-                                        const statusUpper = (u.status || '').toUpperCase();
-                                        const isSuspended = ['SUSPENDED', 'DEACTIVATED', 'DISABLED'].includes(statusUpper);
-                                        return (
-                                            <tr key={u.id} className="hover:bg-black/5">
-                                                <td className="px-3 py-3">{u.email}</td>
-                                                <td className="px-3 py-3">{role === 'SUPER_ADMIN' ? <RoleSelect value={u.role} onChange={(newRole) => updateUserRole.mutate({ userId: u.id, role: newRole })} /> : u.role}</td>
-                                                <td className="px-3 py-3">
-                                                    <StatusDot label={u.status} />
-                                                </td>
-                                                <td className="px-3 py-3">{fmtDate(u.createdAt)}</td>
-                                                <td className="px-3 py-3 text-right">
-                                                    <div className="inline-flex flex-wrap items-center gap-2">
-                                                        {!isSuspended ? (
-                                                            <button onClick={() => deactivateUser.mutate(u.id)} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50">
-                                                                Deactivate
-                                                            </button>
-                                                        ) : (
-                                                            <button onClick={() => reactivateUser.mutate(u.id)} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">
-                                                                <RefreshCcw size={16} /> Reactivate
-                                                            </button>
-                                                        )}
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
-                        </div>
-                    </SectionCard>
-                )}
-
-                {/* -------- Overview -------- */}
-                {tab === 'overview' && (
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <SectionCard title="Quick Actions" subtitle="Common admin tasks at a glance">
-                            <div className="grid sm:grid-cols-2 gap-3">
-                                <QuickAction toAction={() => setTab('users')} icon={UserCheck} label="Approve Super Users" desc="Review & approve applicants" />
-                                <QuickAction toAction={() => setTab('products')} icon={PackageCheck} label="Moderate Products" desc="Approve or reject submissions" />
-                                <QuickAction toAction={() => setTab('transactions')} icon={CreditCard} label="Verify Payments" desc="Handle verifications & refunds" />
-                                <QuickAction toAction={() => setTab('marketing')} icon={BellRing} label="Send Announcement" desc="Notify users of updates" />
-                            </div>
-                        </SectionCard>
-
-                        <SectionCard title="What needs attention" subtitle="Pending items & alerts">
-                            <ul className="space-y-3 text-sm">
-                                <li className="flex items-center justify-between border rounded-xl px-3 py-2">
-                                    <span className="text-ink">Products pending review</span>
-                                    <span className="font-semibold">{overview.data?.productsPending ?? 0}</span>
-                                </li>
-                                <li className="flex items-center justify-between border rounded-xl px-3 py-2">
-                                    <span className="text-ink">Unverified / flagged transactions</span>
-                                    <span className="font-semibold">—</span>
-                                </li>
-                                <li className="flex items-center justify-between border rounded-xl px-3 py-2">
-                                    <span className="text-ink">Unusual activity alerts</span>
-                                    <span className="font-semibold">—</span>
-                                </li>
-                            </ul>
-                        </SectionCard>
-                    </div>
-                )}
-
-                {/* -------- Products (Moderation + Manage) -------- */}
-                {tab === 'products' && (
-                    <SectionCard
-                        title="Products"
-                        subtitle="Moderate submissions or manage the catalog"
-                        right={
-                            <div className="inline-flex rounded-xl border overflow-hidden">
-                                <button
-                                    onClick={() => setPTab('moderation')}
-                                    className={`px-3 py-1.5 text-sm ${pTab === 'moderation' ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5'}`}
-                                >
-                                    Moderation
-                                </button>
-                                <button
-                                    onClick={() => setPTab('manage')}
-                                    className={`px-3 py-1.5 text-sm ${pTab === 'manage' ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5'}`}
-                                >
-                                    Manage
-                                </button>
-                            </div>
-                        }
-                    >
-                        {pTab === 'moderation' ? (
-                            <ModerationSection
-                                token={token}
-                                onInspect={(p: { id: string; title?: string; sku?: string }) => {
-                                    setProdSearch(p.title || p.sku || '');
-                                    setFocusProductId(p.id);
-                                    setPTab('manage');
-                                    setTab('products');
-                                }}
-                            />
+      <SectionCard
+        title="Users & Roles"
+        subtitle="Create, approve, deactivate, reactivate; manage privileges"
+        right={
+          <div className="relative">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <input
+              value={usersSearchInput}
+              onChange={(e) => setUsersSearchInput(e.target.value)}
+              placeholder="Search by email or role…"
+              className="pl-9 pr-3 py-2 rounded-xl border bg-white"
+            />
+          </div>
+        }
+      >
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="bg-zinc-50 text-ink">
+                <th className="text-left px-3 py-2">User</th>
+                <th className="text-left px-3 py-2">Role</th>
+                <th className="text-left px-3 py-2">Status</th>
+                <th className="text-left px-3 py-2">Created</th>
+                <th className="text-right px-3 py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {usersQ.isLoading && (
+                <>
+                  <SkeletonRow cols={5} />
+                  <SkeletonRow cols={5} />
+                  <SkeletonRow cols={5} />
+                </>
+              )}
+              {!usersQ.isLoading && (usersQ.data ?? []).length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-3 py-6 text-center text-zinc-500">
+                    No users found.
+                  </td>
+                </tr>
+              )}
+              {(usersQ.data ?? []).map((u) => {
+                const statusUpper = (u.status || '').toUpperCase();
+                const isSuspended = ['SUSPENDED', 'DEACTIVATED', 'DISABLED'].includes(statusUpper);
+                return (
+                  <tr key={u.id} className="hover:bg-black/5">
+                    <td className="px-3 py-3">{u.email}</td>
+                    <td className="px-3 py-3">
+                      {role === 'SUPER_ADMIN' ? (
+                        <RoleSelect value={u.role} onChange={(newRole) => updateUserRole.mutate({ userId: u.id, role: newRole })} />
+                      ) : (
+                        u.role
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusDot label={u.status} />
+                    </td>
+                    <td className="px-3 py-3">{fmtDate(u.createdAt)}</td>
+                    <td className="px-3 py-3 text-right">
+                      <div className="inline-flex flex-wrap items-center gap-2">
+                        {!isSuspended ? (
+                          <button
+                            onClick={() => deactivateUser.mutate(u.id)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
+                          >
+                            Deactivate
+                          </button>
                         ) : (
-                            <ManageProducts
-                                role={role}
-                                token={token}
-                                search={prodSearch}
-                                setSearch={setProdSearch}
-                                focusId={focusProductId}
-                                onFocusedConsumed={() => setFocusProductId(null)}
-                            />
+                          <button
+                            onClick={() => reactivateUser.mutate(u.id)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                          >
+                            <RefreshCcw size={16} /> Reactivate
+                          </button>
                         )}
-
-                    </SectionCard>
-                )}
-
-
-                {/* -------- Catalog Settings -------- */}
-                {tab === 'catalog' && (
-                    <CatalogSettingsSection
-                        token={token}
-                        canEdit={role === 'SUPER_ADMIN'}
-                        categoriesQ={categoriesQ}
-                        brandsQ={brandsQ}
-                        attributesQ={attributesQ}
-                        usageQ={usageQ}
-                        createCategory={createCategory}
-                        updateCategory={updateCategory}
-                        deleteCategory={deleteCategory}
-                        createBrand={createBrand}
-                        updateBrand={updateBrand}
-                        deleteBrand={deleteBrand}
-                        createAttribute={createAttribute}
-                        updateAttribute={updateAttribute}
-                        deleteAttribute={deleteAttribute}
-                        createAttrValue={createAttrValue}
-                        updateAttrValue={updateAttrValue}
-                        deleteAttrValue={deleteAttrValue}
-                        /* Suppliers */
-                        suppliersQ={suppliersQ}
-                        createSupplier={createSupplier}
-                        updateSupplier={updateSupplier}
-                        deleteSupplier={deleteSupplier}
-                    />
-                )}
-
-                {/* -------- Transactions -------- */}
-                {tab === 'transactions' && (
-                    <TransactionsSection
-                        q={q}
-                        setQ={setQ}
-                        txQ={txQ}
-                        onRefresh={() => qc.invalidateQueries({ queryKey: ['admin', 'payments'] })}
-                        onVerify={verifyPayment.mutate}
-                        onRefund={refundPayment.mutate}
-                    />
-                )}
-            </div>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
+      </SectionCard>
     );
+  }
+
+  return (
+    <div className="max-w-[1400px] mx-auto px-4 md:px-6 py-6">
+      {/* Hero */}
+      <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-sky-700 via-sky-600 to-indigo-700 text-white">
+        <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(255,255,255,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,0,0,0.15),transparent_60%)]" />
+        <div className="relative px-5 md:px-8 py-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <motion.h1
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-2xl md:text-3xl font-bold tracking-tight"
+              >
+                {me.isLoading ? 'Loading…' : role === 'SUPER_ADMIN' ? 'Super Admin Dashboard' : 'Admin Dashboard'}
+              </motion.h1>
+              <p className="text-white/80 text-sm mt-1">
+                Full control & oversight — users, products, transactions, operations, marketing, and analytics.
+              </p>
+            </div>
+            <div className="hidden md:flex items-center gap-2">
+              <Link to="/" className="inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-2 text-sm">
+                <ShieldCheck size={16} /> Back to site
+              </Link>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+        <KpiCard
+          title="Users"
+          value={(overview.data?.totalUsers ?? 0).toLocaleString()}
+          hint={`${overview.data?.totalCustomers ?? 0} Customers   • ${overview.data?.totalSuperAdmins ?? 0} Super Admins Users  • ${overview.data?.totalAdmins ?? 0} Admin Users`}
+          Icon={Users}
+        />
+        <KpiCardOverview
+          title="Products"
+          total={`${overview.data?.productsTotal ?? 0} total`}
+          value={`${overview.data?.productsLive ?? 0} Live,  ${overview.data?.productsOffline ?? 0} Offline, ${overview.data?.productsPublished ?? 0} Total published`}
+          hint={`${overview.data?.productsPending ?? 0} pending review, ${overview.data?.productsRejected ?? 0} Rejected`}
+          res={`${overview.data?.productsInStock ?? 0} Total Instock, ${overview.data?.productsOutStock ?? 0} Total Out stock`}
+          Icon={PackageCheck}
+        />
+        <KpiCard title="Orders Today" value={(overview.data?.ordersToday ?? 0).toLocaleString()} hint="New orders" Icon={CreditCard} />
+        <KpiCard
+          title="Revenue Today"
+          value={ngn.format(fmtN(overview.data?.revenueToday))}
+          hint="Last 7 days"
+          Icon={BarChart3}
+          chart={<Sparkline points={overview.data?.sparklineRevenue7d || []} />}
+        />
+      </div>
+
+      {/* Tabs */}
+      <div className="mt-6 flex flex-wrap items-center gap-2">
+        <TabButton k="overview" label="Overview" Icon={ShieldCheck} />
+        <TabButton k="users" label="Users & Roles" Icon={UserCheck} />
+        <TabButton k="products" label="Product Moderation" Icon={PackageCheck} />
+        <TabButton k="catalog" label="Catalog Settings" Icon={Settings} />
+        <TabButton k="transactions" label="Transactions" Icon={CreditCard} />
+        <TabButton k="ops" label="Ops & Security" Icon={Settings} />
+        <TabButton k="marketing" label="Marketing" Icon={BellRing} />
+        <TabButton k="analytics" label="Analytics" Icon={BarChart3} />
+      </div>
+
+      {/* Content */}
+      <div className="mt-4 space-y-6">
+        {/* -------- Users (localized Fix B) -------- */}
+        {tab === 'users' && <UsersSection token={token} canAdmin={canAdmin} />}
+
+        {tab === 'analytics' && <ActivitiesPanel />}
+
+        {/* -------- Overview -------- */}
+        {tab === 'overview' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <SectionCard title="Quick Actions" subtitle="Common admin tasks at a glance">
+              <div className="grid sm:grid-cols-2 gap-3">
+                <QuickAction toAction={() => setTab('users')} icon={UserCheck} label="Approve Super Users" desc="Review & approve applicants" />
+                <QuickAction toAction={() => setTab('products')} icon={PackageCheck} label="Moderate Products" desc="Approve or reject submissions" />
+                <QuickAction toAction={() => setTab('transactions')} icon={CreditCard} label="Verify Payments" desc="Handle verifications & refunds" />
+                <QuickAction toAction={() => setTab('marketing')} icon={BellRing} label="Send Announcement" desc="Notify users of updates" />
+              </div>
+            </SectionCard>
+
+            <SectionCard title="What needs attention" subtitle="Pending items & alerts">
+              <ul className="space-y-3 text-sm">
+                <li className="flex items-center justify-between border rounded-xl px-3 py-2">
+                  <span className="text-ink">Products pending review</span>
+                  <span className="font-semibold">{overview.data?.productsPending ?? 0}</span>
+                </li>
+                <li className="flex items-center justify-between border rounded-xl px-3 py-2">
+                  <span className="text-ink">Unverified / flagged transactions</span>
+                  <span className="font-semibold">—</span>
+                </li>
+                <li className="flex items-center justify-between border rounded-xl px-3 py-2">
+                  <span className="text-ink">Unusual activity alerts</span>
+                  <span className="font-semibold">—</span>
+                </li>
+              </ul>
+            </SectionCard>
+          </div>
+        )}
+
+        {/* -------- Products (Moderation + Manage) -------- */}
+        {tab === 'products' && (
+          <SectionCard
+            title="Products"
+            subtitle="Moderate submissions or manage the catalog"
+            right={
+              <div className="inline-flex rounded-xl border overflow-hidden">
+                <button
+                  onClick={() => setPTab('moderation')}
+                  className={`px-3 py-1.5 text-sm ${pTab === 'moderation' ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5'}`}
+                >
+                  Moderation
+                </button>
+                <button
+                  onClick={() => setPTab('manage')}
+                  className={`px-3 py-1.5 text-sm ${pTab === 'manage' ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5'}`}
+                >
+                  Manage
+                </button>
+              </div>
+            }
+          >
+            {pTab === 'moderation' ? (
+              <ModerationSection
+                token={token}
+                onInspect={(p: { id: string; title?: string; sku?: string }) => {
+                  setProdSearch(p.title || p.sku || '');
+                  setFocusProductId(p.id);
+                  setPTab('manage');
+                  setTab('products');
+                }}
+              />
+            ) : (
+              <ManageProducts
+                role={role}
+                token={token}
+                search={prodSearch}
+                setSearch={setProdSearch}
+                focusId={focusProductId}
+                onFocusedConsumed={() => setFocusProductId(null)}
+              />
+            )}
+          </SectionCard>
+        )}
+
+        {/* -------- Catalog Settings -------- */}
+        {tab === 'catalog' && (
+          <CatalogSettingsSection
+            token={token}
+            canEdit={role === 'SUPER_ADMIN'}
+            categoriesQ={categoriesQ}
+            brandsQ={brandsQ}
+            attributesQ={attributesQ}
+            usageQ={usageQ}
+            createCategory={createCategory}
+            updateCategory={updateCategory}
+            deleteCategory={deleteCategory}
+            createBrand={createBrand}
+            updateBrand={updateBrand}
+            deleteBrand={deleteBrand}
+            createAttribute={createAttribute}
+            updateAttribute={updateAttribute}
+            deleteAttribute={deleteAttribute}
+            createAttrValue={createAttrValue}
+            updateAttrValue={updateAttrValue}
+            deleteAttrValue={deleteAttrValue}
+            /* Suppliers */
+            suppliersQ={suppliersQ}
+            createSupplier={createSupplier}
+            updateSupplier={updateSupplier}
+            deleteSupplier={deleteSupplier}
+          />
+        )}
+
+        {/* -------- Transactions -------- */}
+        {tab === 'transactions' && (
+          <TransactionsSection
+            q={q}
+            setQ={setQ}
+            txQ={txQ}
+            onRefresh={() => qc.invalidateQueries({ queryKey: ['admin', 'payments'] })}
+            onVerify={verifyPayment.mutate}
+            onRefund={refundPayment.mutate}
+          />
+        )}
+      </div>
+    </div>
+  );
 }
+
 
 /* ---------------- Transactions section & row ---------------- */
 function TransactionsSection({
@@ -1089,6 +1164,28 @@ function KpiCard({ title, value, hint, Icon, chart }: { title: string; value: st
     );
 }
 
+
+function KpiCardOverview({ title, total, value, hint, res, Icon, chart }: { title: string; total: string; value: string; hint?: string; res?: string; Icon: any; chart?: ReactNode }) {
+    return (
+        <div className="rounded-2xl border bg-white shadow-sm p-4">
+            <div className="flex items-center justify-between">
+                <div>
+                    <div className="text-xs text-ink-soft">{title}</div>
+                    <div className="text-xl font-semibold text-ink mt-0.5">{total}</div>
+                    <div className="text-lg font-semibold text-ink mt-0.5">{value}</div>
+                    {!!hint && <div className="text-xs text-ink-soft mt-1">{hint}</div>}
+                    {!!res && <div className="text-xs text-ink-soft mt-1">{res}</div>}
+                </div>
+
+                <span className="inline-grid place-items-center w-10 h-10 rounded-xl bg-primary-50">
+                    <Icon size={18} />
+                </span>
+            </div>
+            {chart && <div className="mt-2">{chart}</div>}
+        </div>
+    );
+}
+
 function StatusDot({ label }: { label: string }) {
     const s = (label || '').toUpperCase();
     const cls =
@@ -1206,7 +1303,7 @@ function CatalogSettingsSection(props: {
         children: ReactNode;
     }) {
         return (
-            <div className="rounded-2xl border bg-white shadow-sm">
+            <div className="rounded-2xl border bg-white shadow-sm overflow-visible">
                 <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
                     <div>
                         <h3 className="text-ink font-semibold">{title}</h3>
@@ -1246,7 +1343,7 @@ function CatalogSettingsSection(props: {
             >
                 {canEdit && <CategoryForm categories={categoriesQ.data ?? []} onCreate={(payload) => createCategory.mutate(payload)} />}
 
-                <div className="border rounded-xl overflow-hidden">
+                <div className="border rounded-xl overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead className="bg-zinc-50">
                             <tr>
@@ -1301,7 +1398,7 @@ function CatalogSettingsSection(props: {
             {/* Brands */}
             <SectionCard title="Brands" subtitle="Manage brand metadata">
                 {canEdit && <BrandForm onCreate={(payload) => createBrand.mutate(payload)} />}
-                <div className="border rounded-xl overflow-hidden">
+                <div className="border rounded-xl overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead className="bg-zinc-50">
                             <tr>
@@ -1358,7 +1455,7 @@ function CatalogSettingsSection(props: {
             {/* Suppliers */}
             <SectionCard title="Suppliers" subtitle="Manage suppliers available to assign to products">
                 {canEdit && <SupplierForm onCreate={(payload) => createSupplier.mutate(payload)} />}
-                <div className="border rounded-xl overflow-hidden">
+                <div className="border rounded-xl overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead className="bg-zinc-50">
                             <tr>
@@ -1722,31 +1819,37 @@ function ModerationSection({ token, onInspect }: { token?: string | null; onInsp
         enabled: !!token,
         queryFn: async () => {
             try {
-                const { data } = await api.get('/api/admin/products', {
-                    headers: hdr,
-                    params: { status: 'PENDING', q: debounced, take: 50, skip: 0 },
-                });
-                return Array.isArray(data?.data) ? data.data : [];
-            } catch {
-                // fallback to the dedicated /pending route
                 const { data } = await api.get('/api/admin/products/pending', {
                     headers: hdr, params: { q: debounced },
                 });
                 return Array.isArray(data?.data) ? data.data : [];
+            } catch {
+                const { data } = await api.get('/api/products', {
+                    headers: hdr, params: { status: 'PENDING', q: debounced, take: 50, skip: 0 },
+                });
+                return Array.isArray(data?.data) ? data.data : [];
             }
         },
-        staleTime: 10_000,
-        refetchOnWindowFocus: false,
     });
 
     // approve / reject
     const approveM = useMutation({
-        mutationFn: async (id: string) => (await api.post(`/api/admin/products/${id}/approve`, {}, { headers: hdr })).data,
+        mutationFn: async (id: string) =>
+            (await api.post(`/api/admin/products/${id}/approve`, {}, { headers: hdr })).data,
         onSuccess: () => {
+            // you were missing this 👇
             qc.invalidateQueries({ queryKey: ['admin', 'products', 'pending'] });
-            qc.invalidateQueries({ queryKey: ['admin', 'overview'] }); // refresh KPIs
+            // keep these:
+            qc.invalidateQueries({ queryKey: ['admin', 'products', 'published'] });
+            qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+        },
+        onError: (e) => {
+            const msg =
+                (e as any)?.response?.data?.error || (e as any)?.message || 'Approve failed';
+            console.error('Approve failed:', msg);
         },
     });
+
     const rejectM = useMutation({
         mutationFn: async (id: string) => (await api.post(`/api/admin/products/${id}/reject`, {}, { headers: hdr })).data,
         onSuccess: () => {
@@ -1877,7 +1980,6 @@ function ManageProducts({
     role,
     token,
     search,
-    setSearch,
     focusId,
     onFocusedConsumed,
 }: {
@@ -1903,13 +2005,6 @@ function ManageProducts({
 
     const debouncedSearch = useDebounced(searchInput, 350);
 
-    // only notify parent when debounced value changes
-    React.useEffect(() => {
-        if (debouncedSearch !== search) setSearch(debouncedSearch);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [debouncedSearch]);
-
-
     const listQ = useQuery<AdminProduct[]>({
         queryKey: ['admin', 'products', 'manage', { q: debouncedSearch }],
         enabled: !!token,
@@ -1921,7 +2016,7 @@ function ManageProducts({
             const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
             return arr ?? [];
         },
-        staleTime: 30_000,
+        staleTime: staleTImeInSecs,
         gcTime: 300_000,
         refetchOnWindowFocus: false,
         placeholderData: keepPreviousData, // v5 way to keep previous rows
@@ -1942,42 +2037,24 @@ function ManageProducts({
 
     const rows = listQ.data ?? [];
 
-    // add this near your other mutations
+    // In AdminDashboard.tsx – replace your updateStatusM with this:
     const updateStatusM = useMutation({
-        mutationFn: async ({ id, status }: { id: string; status: 'PUBLISHED' | 'PENDING' }) => {
-            const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
-            const attempts: Array<{ method: 'put' | 'patch'; url: string; body: any }> = [
-                { method: 'put', url: `/api/admin/products/${id}`, body: { status } },
-                { method: 'patch', url: `/api/admin/products/${id}`, body: { status } },
-                { method: 'put', url: `/api/products/${id}?admin=1`, body: { status } },
-                { method: 'patch', url: `/api/products/${id}?admin=1`, body: { status } },
-            ];
-            let lastErr: any;
-            for (const a of attempts) {
-                try {
-                    return a.method === 'put'
-                        ? (await api.put(a.url, a.body, { headers: hdr })).data
-                        : (await api.patch(a.url, a.body, { headers: hdr })).data;
-                } catch (e) { lastErr = e; }
-            }
-            throw lastErr;
-        },
+        mutationFn: async ({ id, status }: { id: string; status: 'PUBLISHED' | 'PENDING' | 'REJECTED' }) =>
+            (await api.post(`/api/admin/products/${id}/status`, { status }, { headers: { Authorization: `Bearer ${token}` } })).data,
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['admin', 'products', 'manage'] });
             qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
         },
-        onError: (e: any) => {
-            openModal({ title: 'Products', message: e?.response?.data?.error || e?.message || 'Status update failed' });
-        },
+        onError: (e) => openModal({ title: 'Products', message: getHttpErrorMessage(e, 'Status update failed') }),
     });
+
 
     /* ---------- lookups for creation & editing ---------- */
     /* ---------- lookups for creation & editing (resilient) ---------- */
     const catsQ = useQuery<AdminCategory[]>({
         queryKey: ['admin', 'products', 'cats'],
         enabled: !!token, // only fetch when we have a token
-        refetchOnWindowFocus: false,
-        staleTime: 60_000,
+
         queryFn: async () => {
             const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
             // Try admin route first, then public fallbacks; normalize shapes
@@ -1998,13 +2075,13 @@ function ManageProducts({
             };
             return await tryAll();
         },
+        staleTime: staleTImeInSecs,
+        refetchOnWindowFocus: false,
     });
 
     const brandsQ = useQuery<AdminBrand[]>({
         queryKey: ['admin', 'products', 'brands'],
         enabled: !!token,
-        refetchOnWindowFocus: false,
-        staleTime: 60_000,
         queryFn: async () => {
             const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
             const attempts = ['/api/admin/brands', '/api/brands'];
@@ -2017,13 +2094,15 @@ function ManageProducts({
             }
             return [];
         },
+        staleTime: staleTImeInSecs,
+        refetchOnWindowFocus: false,
     });
 
     const suppliersQ = useQuery<AdminSupplier[]>({
         queryKey: ['admin', 'products', 'suppliers'],
         enabled: !!token,
         refetchOnWindowFocus: false,
-        staleTime: 60_000,
+        staleTime: staleTImeInSecs,
         queryFn: async () => {
             const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
             const attempts = ['/api/admin/suppliers', '/api/suppliers'];
@@ -2041,8 +2120,6 @@ function ManageProducts({
     const attrsQ = useQuery<AdminAttribute[]>({
         queryKey: ['admin', 'products', 'attributes'],
         enabled: !!token,
-        refetchOnWindowFocus: false,
-        staleTime: 60_000,
         queryFn: async () => {
             const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
             const attempts = ['/api/admin/attributes', '/api/attributes'];
@@ -2055,20 +2132,76 @@ function ManageProducts({
             }
             return [];
         },
+        staleTime: staleTImeInSecs,
+        refetchOnWindowFocus: false,
     });
 
     /* ---------- mutations ---------- */
+    function wrapBodies(payload: any) {
+        return [payload, { product: payload }, { data: payload }];
+    }
+
+    // Update
+    // import at top if not present:
+    // import { AxiosError } from 'axios';
+
+    // CREATE (backend now accepts attributeSelections + variants)
     const createM = useMutation({
         mutationFn: async (payload: any) =>
-            (await api.post('/api/admin/products', payload, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
-        onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'products', 'manage'] }),
+            (await api.post('/api/admin/products', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['admin', 'products', 'manage'] });
+            qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+        },
+        onError: (e) => openModal({ title: 'Products', message: getHttpErrorMessage(e, 'Create failed') }),
     });
 
+    // UPDATE (single, canonical route)
     const updateM = useMutation({
         mutationFn: async ({ id, ...payload }: any) =>
-            (await api.put(`/api/admin/products/${id}`, payload, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
-        onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'products', 'manage'] }),
+            (await api.patch(`/api/admin/products/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['admin', 'products', 'manage'] });
+            qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+        },
+        onError: (e) => openModal({ title: 'Products', message: getHttpErrorMessage(e, 'Update failed') }),
     });
+
+
+
+    async function saveVariantsFallback(productId: string, variants: any[]) {
+        if (!variants?.length) return true; // nothing to do
+        const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+        // send several plausible shapes
+        const bodies = [
+            { variants },
+            { data: { variants } },
+            { productId, variants },
+            variants,
+        ];
+        const urls = [
+            `/api/admin/products/${productId}/variants/bulk?admin=1`,
+            `/api/admin/products/${productId}/variants?admin=1`,
+            `/api/admin/products/${productId}/variants`,
+            `/api/admin/products/${productId}/variants/bulk`,
+            `/api/admin/products/${productId}?include=variants,attributes,brand`,           // ← try admin first
+            `/api/admin/products/${productId}?admin=1&include=variants,attributes,brand`,
+        ];
+
+        let lastErr: any;
+        for (const b of bodies) {
+            for (const u of urls) {
+                try {
+                    await api.post(u, b, { headers: hdr });
+                    return true;
+                } catch (e) { lastErr = e; }
+            }
+        }
+        console.warn('All variant endpoints failed:', lastErr?.response?.status, lastErr?.response?.data || lastErr?.message);
+        return false;
+    }
+
 
     const deleteM = useMutation({
         mutationFn: async (id: string) =>
@@ -2257,62 +2390,200 @@ function ManageProducts({
         if (fileInputRef.current) fileInputRef.current.value = '';
     }
 
+    /** Make the payload compatible with multiple backends */
+    function buildProductPayload({
+        base,
+        selectedAttrs,
+        variantRows,
+        attrsAll,
+    }: {
+        base: {
+            title: string;
+            price: number;
+            status: string;
+            sku?: string;
+            inStock: boolean;
+            vatFlag: boolean;
+            categoryId?: string;
+            brandId?: string;
+            supplierId?: string;
+            imagesJson?: string[];
+        };
+        selectedAttrs: Record<string, string | string[]>;
+        variantRows: Array<{
+            key: string;
+            combo: Array<{ attributeId: string; valueId: string }>;
+            skuSuffix: string;
+            priceBump: string;
+            inStock: boolean;
+        }>;
+        attrsAll: AdminAttribute[];
+    }) {
+        const payload: any = { ...base };
 
+        // ---- Non-variant attributes: provide multiple shapes ----
+        const attributeSelections: any[] = [];
+        const attributeValues: Array<{ attributeId: string; valueId?: string; valueIds?: string[] }> = [];
+        const attributeTexts: Array<{ attributeId: string; value: string }> = [];
+
+        for (const a of attrsAll) {
+            const sel = selectedAttrs[a.id];
+            if (sel == null || (Array.isArray(sel) && sel.length === 0) || (typeof sel === 'string' && sel.trim() === '')) continue;
+
+            if (a.type === 'TEXT') {
+                attributeSelections.push({ attributeId: a.id, text: String(sel) });
+                attributeTexts.push({ attributeId: a.id, value: String(sel) });
+            } else if (a.type === 'SELECT') {
+                const valueId = String(sel);
+                attributeSelections.push({ attributeId: a.id, valueId });
+                attributeValues.push({ attributeId: a.id, valueId });
+            } else if (a.type === 'MULTISELECT') {
+                const valueIds = (sel as string[]).map(String);
+                attributeSelections.push({ attributeId: a.id, valueIds });
+                attributeValues.push({ attributeId: a.id, valueIds });
+            }
+        }
+
+        if (attributeSelections.length) payload.attributeSelections = attributeSelections;
+        if (attributeValues.length) payload.attributeValues = attributeValues;
+        if (attributeTexts.length) payload.attributeTexts = attributeTexts;
+
+        // ---- Variants: provide multiple shapes for options ----
+        if (variantRows.length > 0) {
+            const basePrice = Number(base.price) || 0;
+            payload.variants = variantRows.map((r) => {
+                const bump = Number(r.priceBump) || 0;
+                const sku = [base.sku?.trim(), r.skuSuffix].filter(Boolean).join('-');
+                const price = bump ? Math.max(0, basePrice + bump) : undefined;
+
+                const options = r.combo.map((c) => ({
+                    attributeId: c.attributeId,
+                    valueId: c.valueId,                 // common
+                    attributeValueId: c.valueId,        // alt key (some backends use this)
+                }));
+
+                return {
+                    sku,
+                    inStock: r.inStock,
+                    ...(price != null ? { price } : {}),
+                    options,                            // common
+                    optionSelections: options,          // alt naming
+                    attributes: options.map(o => ({ attributeId: o.attributeId, valueId: o.valueId })), // another alt
+                };
+            });
+
+            // Some backends also accept a flat list:
+            payload.variantOptions = payload.variants.map((v: any) => v.options);
+        }
+
+        return payload;
+    }
+
+    async function fetchProductFull(id: string) {
+        const { data } = await api.get(`/api/admin/products/${id}`, {
+            headers: { Authorization: `Bearer ${token}` },
+            params: { include: 'variants,attributes,brand' },
+        });
+        // <-- unwrap shape { data: product } OR allow raw product
+        const prod = data?.data ?? data;
+
+        // guard against undefineds so the form never breaks
+        return {
+            ...prod,
+            imagesJson: Array.isArray(prod?.imagesJson) ? prod.imagesJson : [],
+            variants: Array.isArray(prod?.variants) ? prod.variants : [],
+            attributeValues: Array.isArray(prod?.attributeValues) ? prod.attributeValues : [],
+            attributeTexts: Array.isArray(prod?.attributeTexts) ? prod.attributeTexts : [],
+        };
+    }
+
+    function toSkuSuffix(baseSku?: string, variantSku?: string) {
+        if (!variantSku) return '';
+        if (!baseSku) return variantSku;
+        const prefix = `${baseSku}-`.toUpperCase();
+        return variantSku.toUpperCase().startsWith(prefix) ? variantSku.slice(prefix.length) : variantSku;
+    }
+
+    async function startEdit(p: any) {
+        try {
+            const full = await fetchProductFull(p.id);
+            populateCreateFormFromProduct(full);
+
+            // seed non-variant attributes
+            const nextSel: Record<string, string | string[]> = {};
+            (full.attributeValues || full.attributeSelections || []).forEach((av: any) => {
+                if (Array.isArray(av.valueIds)) nextSel[av.attributeId] = av.valueIds;
+                else if (av.valueId) nextSel[av.attributeId] = av.valueId;
+            });
+            (full.attributeTexts || []).forEach((at: any) => { nextSel[at.attributeId] = at.value; });
+            setSelectedAttrs(nextSel);
+
+            // seed variant axes/rows from existing variants (supports options/optionSelections)
+            const allOpts = new Map<string, Set<string>>();
+            (full.variants || []).forEach((v: any) => {
+                (v.options || v.optionSelections || []).forEach((o: any) => {
+                    const aId = o.attributeId || o.attribute?.id;
+                    const vId = o.valueId || o.attributeValueId || o.value?.id;
+                    if (!aId || !vId) return;
+                    if (!allOpts.has(aId)) allOpts.set(aId, new Set());
+                    allOpts.get(aId)!.add(String(vId));
+                });
+            });
+            const axisIds = Array.from(allOpts.keys()).slice(0, 2);
+            setVariantAttrIds(axisIds);
+            const valueMap: Record<string, string[]> = {};
+            axisIds.forEach((aid) => (valueMap[aid] = Array.from(allOpts.get(aid) || [])));
+            setVariantValueIds(valueMap);
+
+            const base = Number(full.price) || 0;
+            const rowsFromExisting = (full.variants || []).map((v: any) => {
+                const combo = (v.options || v.optionSelections || []).map((o: any) => ({
+                    attributeId: o.attributeId || o.attribute?.id,
+                    valueId: o.valueId || o.attributeValueId || o.value?.id,
+                })).filter((x: any) => x.attributeId && x.valueId);
+                const key = combo.map((c: any) => `${c.attributeId}:${c.valueId}`).join('|');
+                return {
+                    key,
+                    combo,
+                    skuSuffix: toSkuSuffix(full.sku, v.sku),
+                    priceBump: v.price != null ? String((Number(v.price) || 0) - base) : '',
+                    inStock: v.inStock !== false,
+                };
+            });
+            setVariantRows(rowsFromExisting);
+            setEditingId(full.id);
+        } catch {
+            openModal({ title: 'Products', message: 'Could not load product for editing.' });
+        }
+    }
 
 
     /* ---------- creation submit ---------- */
 
     const saveOrCreate = async () => {
-        const payload: any = {
+        const base = {
             title: pending.title.trim(),
             price: Number(pending.price) || 0,
             status: pending.status,
             sku: pending.sku.trim() || undefined,
             inStock: !!pending.inStock,
             vatFlag: !!pending.vatFlag,
-        };
+        } as any;
 
-        // Make sure required fields are set
-        if (!payload.title) return;
-        if (pending.categoryId) payload.categoryId = pending.categoryId;
-        if (pending.brandId) payload.brandId = pending.brandId;
-        if (pending.supplierId) payload.supplierId = pending.supplierId;
+        if (!base.title) return;
 
-        // Images: combine URLs from textarea and newly uploaded local files
+        if (pending.categoryId) base.categoryId = pending.categoryId;
+        if (pending.brandId) base.brandId = pending.brandId;
+        if (pending.supplierId) base.supplierId = pending.supplierId;
+
+        // images: textarea + uploaded files
         const urlList = parseUrlList(pending.imageUrls);
         const uploaded = await uploadLocalFiles();
-        const imagesJson = [...urlList, ...uploaded];
-        if (imagesJson.length) payload.imagesJson = imagesJson;
+        const imagesJson = [...urlList, ...uploaded].filter(Boolean);
+        if (imagesJson.length) base.imagesJson = imagesJson;
 
-        // Handle attributes, variants, etc.
-        const attributeSelections: any[] = [];
-        (attrsQ.data || []).forEach((a) => {
-            if (variantAttrIds.includes(a.id)) return;
-            const sel = selectedAttrs[a.id];
-            if (sel == null || (Array.isArray(sel) && sel.length === 0) || (typeof sel === 'string' && sel.trim() === '')) return;
-            if (a.type === 'SELECT') attributeSelections.push({ attributeId: a.id, valueId: sel as string });
-            else if (a.type === 'MULTISELECT') attributeSelections.push({ attributeId: a.id, valueIds: sel as string[] });
-            else if (a.type === 'TEXT') attributeSelections.push({ attributeId: a.id, text: sel as string });
-        });
 
-        if (attributeSelections.length) payload.attributeSelections = attributeSelections;
-
-        // Handle variants
-        if (variantRows.length > 0) {
-            const base = Number(pending.price) || 0;
-            payload.variants = variantRows.map((r) => {
-                const bump = Number(r.priceBump);
-                const v: any = {
-                    sku: [pending.sku?.trim(), r.skuSuffix].filter(Boolean).join('-'),
-                    inStock: r.inStock,
-                    options: r.combo.map((c) => ({ attributeId: c.attributeId, valueId: c.valueId })),
-                };
-                if (Number.isFinite(bump) && bump !== 0) v.price = Math.max(0, base + bump);
-                return v;
-            });
-        }
-
-        // Reset form function
+        // reset helper
         const resetForm = () => {
             setEditingId(null);
             setPending(defaultPending);
@@ -2324,34 +2595,61 @@ function ManageProducts({
             setVariantRows([]);
         };
 
-        // Submit either create or update
+        const payload = buildProductPayload({
+            base, selectedAttrs, variantRows, attrsAll: attrsQ.data || [],
+        });
+        if (import.meta.env.DEV) {
+            console.log('[products] submit payload', payload);
+        }
         if (editingId) {
             updateM.mutate(
                 { id: editingId, ...payload },
                 {
-                    onSuccess: () => {
+                    onSuccess: async (res) => {
+                        const productId = editingId;
+                        if (payload.variants?.length) {
+                            const variantsPersisted = Array.isArray(res?.variants) && res.variants.length > 0;
+                            if (!variantsPersisted) {
+                                await saveVariantsFallback(productId, payload.variants);
+                            }
+                        }
                         qc.invalidateQueries({ queryKey: ['admin', 'products', 'manage'] });
                         qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
                         resetForm();
                     },
-                    onError: (error) => {
-                        console.error("Error saving product", error);
-                    }
+                    onError: (e) => openModal({
+                        title: 'Products',
+                        message: getHttpErrorMessage(e, 'Update failed'),
+                    }),
+
                 }
             );
         } else {
             createM.mutate(payload, {
-                onSuccess: () => {
+                onSuccess: async (res) => {
+                    const created = (res?.data ?? res) as any;
+                    const productId = created?.id || created?.product?.id || created?.data?.id;
+                    if (productId && payload.variants?.length) {
+                        const variantsPersisted = Array.isArray(created?.variants) && created.variants.length > 0;
+                        if (!variantsPersisted) {
+                            await saveVariantsFallback(productId, payload.variants);
+                        }
+                    }
                     qc.invalidateQueries({ queryKey: ['admin', 'products', 'manage'] });
                     qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
                     resetForm();
                 },
-                onError: (error) => {
-                    console.error("Error creating product", error);
-                }
+                onError: (e) => openModal({
+                    title: 'Products',
+                    message: getHttpErrorMessage(e, 'Create failed'),
+                }),
             });
+
         }
-    };
+    }
+
+
+
 
 
     /* ---------- EDITING EXISTING (inline row editor) ---------- */
@@ -2370,11 +2668,6 @@ function ManageProducts({
     const [openEditorId, setOpenEditorId] = useState<string | null>(null);
     const [editPendings, setEditPendings] = useState<Record<string, EditPending>>({});
     const [editImages, setEditImages] = useState<Record<string, string[]>>({});
-
-
-    function startEdit(p: any) {
-        populateCreateFormFromProduct(p);
-    }
 
     function changeEdit(pId: string, patch: Partial<EditPending>) {
         setEditPendings((prev) => ({ ...prev, [pId]: { ...(prev[pId] || { id: pId } as any), ...patch } as EditPending }));

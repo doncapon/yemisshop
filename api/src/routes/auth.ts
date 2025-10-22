@@ -50,7 +50,7 @@ const ResetSchema = z.object({
 });
 
 // Small async wrapper so handlers match RequestHandler
-const wrap =
+export const wrap =
   (fn: (req: Request, res: Response, next: NextFunction) => Promise<any>): RequestHandler =>
     (req, res, next) => {
       fn(req, res, next).catch(next);

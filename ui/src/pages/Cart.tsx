@@ -2,11 +2,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+type SelectedOption = {
+  attributeId: string;
+  attribute: string;
+  valueId?: string;
+  value: string;
+};
+
 type CartItem = {
   productId: string;
+  variantId?: string | null; // ← NEW
   title: string;
-  qty: number;          // integer, editable
-  totalPrice: number;   // total for this line (qty * unit)
+  qty: number;               // integer, editable
+  unitPrice: number;         // ← NEW: single unit price (variant or base)
+  totalPrice: number;        // total for this line (qty * unit)
+  selectedOptions?: SelectedOption[]; // ← NEW
+  image?: string;            // ← NEW
 };
 
 const ngn = new Intl.NumberFormat('en-NG', {
@@ -17,28 +28,48 @@ const ngn = new Intl.NumberFormat('en-NG', {
 
 // ---- Persistence helpers ----------------------------------------------------
 
+function toArray<T = any>(x: any): T[] {
+  if (!x) return [];
+  return Array.isArray(x) ? x : [x];
+}
+
 function normalizeCartShape(parsed: any[]): CartItem[] {
-  // Back-compat: if older entries had { price } and no totalPrice,
-  // treat price as unit price and compute totalPrice = price * qty.
+  // Back-compat and normalization of mixed shapes.
   return parsed.map((it: any) => {
     const qtyNum = Math.max(1, Number(it.qty) || 1);
-    const hasTotal = typeof it.totalPrice === 'number' && isFinite(it.totalPrice);
-    const hasPrice = typeof it.price === 'number' && isFinite(it.price);
 
-    let totalPrice: number;
-    if (hasTotal) {
-      totalPrice = Number(it.totalPrice);
-    } else if (hasPrice) {
-      totalPrice = Number(it.price) * qtyNum;
-    } else {
-      totalPrice = 0;
-    }
+    const hasTotal = Number.isFinite(Number(it.totalPrice));
+    const hasPrice = Number.isFinite(Number(it.price));
+    const hasUnit = Number.isFinite(Number(it.unitPrice));
+
+    const unitFromTotal = hasTotal ? Number(it.totalPrice) / qtyNum : undefined;
+    const unitPrice = hasUnit
+      ? Number(it.unitPrice)
+      : hasPrice
+      ? Number(it.price)
+      : unitFromTotal ?? 0;
+
+    const totalPrice = hasTotal ? Number(it.totalPrice) : unitPrice * qtyNum;
+
+    const rawSel = toArray<SelectedOption>(it.selectedOptions);
+    const selectedOptions: SelectedOption[] = rawSel
+      .map((o: any) => ({
+        attributeId: String(o.attributeId ?? ''),
+        attribute: String(o.attribute ?? ''),
+        valueId: o.valueId ? String(o.valueId) : undefined,
+        value: String(o.value ?? ''),
+      }))
+      .filter((o) => o.attribute || o.value);
 
     return {
       productId: String(it.productId),
+      variantId: it.variantId == null ? null : String(it.variantId),
       title: String(it.title ?? ''),
       qty: qtyNum,
-      totalPrice: totalPrice || 0,
+      unitPrice: Number.isFinite(unitPrice) ? unitPrice : 0,
+      totalPrice: Number.isFinite(totalPrice) ? totalPrice : 0,
+      selectedOptions,
+      image: typeof it.image === 'string' ? it.image : undefined,
     } as CartItem;
   });
 }
@@ -59,6 +90,14 @@ function saveCart(items: CartItem[]) {
   localStorage.setItem('cart', JSON.stringify(items));
 }
 
+// ---- Utilities --------------------------------------------------------------
+
+const keyFor = (productId: string, variantId?: string | null) =>
+  `${productId}::${variantId ?? ''}`;
+
+const sameLine = (a: CartItem, productId: string, variantId?: string | null) =>
+  a.productId === productId && (a.variantId ?? null) === (variantId ?? null);
+
 // ---- Component --------------------------------------------------------------
 
 export default function Cart() {
@@ -74,33 +113,38 @@ export default function Cart() {
     [cart]
   );
 
-  const updateQty = (productId: string, newQtyRaw: number) => {
+  const updateQty = (productId: string, variantId: string | null | undefined, newQtyRaw: number) => {
     const newQty = Math.max(1, Math.floor(Number(newQtyRaw) || 1));
     setCart((prev) =>
       prev.map((it) => {
-        if (it.productId !== productId) return it;
-        const currentQty = Math.max(1, Number(it.qty) || 1);
-        const unit = (Number(it.totalPrice) || 0) / currentQty;
-        const newTotal = unit * newQty;
-        return { ...it, qty: newQty, totalPrice: newTotal };
+        if (!sameLine(it, productId, variantId)) return it;
+        const unit = Number.isFinite(Number(it.unitPrice))
+          ? Number(it.unitPrice)
+          : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
+        return {
+          ...it,
+          qty: newQty,
+          totalPrice: unit * newQty,
+          unitPrice: unit, // keep unitPrice stable
+        };
       })
     );
   };
 
-  const inc = (productId: string) => {
-    const item = cart.find((c) => c.productId === productId);
+  const inc = (productId: string, variantId?: string | null) => {
+    const item = cart.find((c) => sameLine(c, productId, variantId));
     if (!item) return;
-    updateQty(productId, item.qty + 1);
+    updateQty(productId, variantId, item.qty + 1);
   };
 
-  const dec = (productId: string) => {
-    const item = cart.find((c) => c.productId === productId);
+  const dec = (productId: string, variantId?: string | null) => {
+    const item = cart.find((c) => sameLine(c, productId, variantId));
     if (!item) return;
-    updateQty(productId, Math.max(1, item.qty - 1));
+    updateQty(productId, variantId, Math.max(1, item.qty - 1));
   };
 
-  const remove = (productId: string) => {
-    setCart((prev) => prev.filter((it) => it.productId !== productId));
+  const remove = (productId: string, variantId?: string | null) => {
+    setCart((prev) => prev.filter((it) => !sameLine(it, productId, variantId)));
   };
 
   // Empty state (glassy card + gradient CTA)
@@ -151,66 +195,104 @@ export default function Cart() {
           <section className="space-y-4">
             {cart.map((it) => {
               const currentQty = Math.max(1, Number(it.qty) || 1);
-              const unit =
-                currentQty > 0 ? (Number(it.totalPrice) || 0) / currentQty : Number(it.totalPrice) || 0;
+              const unit = Number.isFinite(Number(it.unitPrice))
+                ? Number(it.unitPrice)
+                : currentQty > 0
+                ? (Number(it.totalPrice) || 0) / currentQty
+                : Number(it.totalPrice) || 0;
+
+              const key = keyFor(it.productId, it.variantId);
 
               return (
                 <article
-                  key={it.productId}
+                  key={key}
                   className="group rounded-2xl border border-white/60 bg-white/70 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)] p-4 md:p-5
                              transition hover:shadow-[0_12px_40px_rgba(0,0,0,0.08)]"
                 >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <h3 className="font-semibold text-ink truncate">{it.title}</h3>
-                      <p className="mt-0.5 text-xs text-ink-soft">Unit price: {ngn.format(unit)}</p>
+                  <div className="flex items-start gap-4">
+                    {/* Thumbnail */}
+                    <div className="shrink-0 w-20 h-20 rounded-xl border overflow-hidden bg-white">
+                      {it.image ? (
+                        <img
+                          src={it.image}
+                          alt={it.title}
+                          className="w-full h-full object-cover"
+                          onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = 'none')}
+                        />
+                      ) : (
+                        <div className="w-full h-full grid place-items-center text-[11px] text-ink-soft">No image</div>
+                      )}
                     </div>
 
-                    <button
-                      className="text-xs md:text-sm text-danger hover:underline rounded px-2 py-1 hover:bg-danger/5 transition"
-                      onClick={() => remove(it.productId)}
-                      aria-label={`Remove ${it.title}`}
-                      title="Remove item"
-                    >
-                      Remove
-                    </button>
-                  </div>
+                    {/* Text */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <h3 className="font-semibold text-ink truncate" title={it.title}>
+                            {it.title}
+                          </h3>
 
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                    {/* Quantity controls */}
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center rounded-xl border border-border bg-white overflow-hidden shadow-sm">
+                          {/* Selected variant options */}
+                          {!!it.selectedOptions?.length && (
+                            <div className="mt-1 text-xs text-ink-soft">
+                              {it.selectedOptions
+                                .map((o) => `${o.attribute}: ${o.value}`)
+                                .join(' • ')}
+                            </div>
+                          )}
+
+                          <p className="mt-1 text-xs text-ink-soft">Unit price: {ngn.format(unit)}</p>
+                        </div>
+
                         <button
-                          aria-label="Decrease quantity"
-                          className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
-                          onClick={() => dec(it.productId)}
+                          className="text-xs md:text-sm text-danger hover:underline rounded px-2 py-1 hover:bg-danger/5 transition"
+                          onClick={() => remove(it.productId, it.variantId ?? null)}
+                          aria-label={`Remove ${it.title}`}
+                          title="Remove item"
                         >
-                          −
-                        </button>
-                        <input
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={it.qty}
-                          onChange={(e) => updateQty(it.productId, Number(e.target.value))}
-                          className="w-16 text-center outline-none px-2 py-2 bg-white"
-                        />
-                        <button
-                          aria-label="Increase quantity"
-                          className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
-                          onClick={() => inc(it.productId)}
-                        >
-                          +
+                          Remove
                         </button>
                       </div>
-                      <span className="text-xs md:text-sm text-ink-soft">Qty</span>
-                    </div>
 
-                    {/* Line total */}
-                    <div className="text-right">
-                      <div className="text-xs md:text-sm text-ink-soft">Line total</div>
-                      <div className="text-lg md:text-xl font-semibold tracking-tight">
-                        {ngn.format(Number(it.totalPrice) || 0)}
+                      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                        {/* Quantity controls */}
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center rounded-xl border border-border bg-white overflow-hidden shadow-sm">
+                            <button
+                              aria-label="Decrease quantity"
+                              className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
+                              onClick={() => dec(it.productId, it.variantId ?? null)}
+                            >
+                              −
+                            </button>
+                            <input
+                              type="number"
+                              min={1}
+                              step={1}
+                              value={it.qty}
+                              onChange={(e) =>
+                                updateQty(it.productId, it.variantId ?? null, Number(e.target.value))
+                              }
+                              className="w-16 text-center outline-none px-2 py-2 bg-white"
+                            />
+                            <button
+                              aria-label="Increase quantity"
+                              className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
+                              onClick={() => inc(it.productId, it.variantId ?? null)}
+                            >
+                              +
+                            </button>
+                          </div>
+                          <span className="text-xs md:text-sm text-ink-soft">Qty</span>
+                        </div>
+
+                        {/* Line total */}
+                        <div className="text-right">
+                          <div className="text-xs md:text-sm text-ink-soft">Line total</div>
+                          <div className="text-lg md:text-xl font-semibold tracking-tight">
+                            {ngn.format(Number(it.totalPrice) || 0)}
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>

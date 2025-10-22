@@ -16,9 +16,12 @@ import adminBrandsRouter from './routes/adminBrands.js';
 import adminAttributesRouter from './routes/adminAttributes.js';
 import adminProductsRouter from './routes/adminProducts.js';
 import adminSuppliers from './routes/adminSuppliers.js';
+import adminActivitiesRouter from './routes/adminActivities.js';
+import adminOrdersRouter from './routes/adminOrders.js';
 import path from 'path';
 import uploadsRouter from './routes/uploads.js';
 import * as fs from 'fs';
+import adminPaymentsRouter from './routes/adminPayments.js';
 
 
 const app = express();
@@ -55,6 +58,9 @@ app.use('/api/admin/brands', adminBrandsRouter);
 app.use('/api/admin/attributes', adminAttributesRouter);
 app.use('/api/admin/products', adminProductsRouter);
 app.use('/api/admin/suppliers', adminSuppliers);
+app.use('/api/admin/order-activities', adminActivitiesRouter);
+app.use('/api/admin/orders', adminOrdersRouter);
+app.use('/api', adminPaymentsRouter);
 
 
 const UPLOADS_DIR =

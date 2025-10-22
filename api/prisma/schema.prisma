@@ -216,11 +216,12 @@ model Order {
   shippingAddressId String
   shippingAddress   Address @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id], onDelete: Restrict)
 
-  total    Decimal @db.Decimal(10, 2)
-  tax      Decimal @db.Decimal(10, 2)
-  subtotal Decimal @db.Decimal(10, 2)
-  shipping Decimal @db.Decimal(10, 2)
-  status   String  @default("PENDING")
+  total      Decimal         @db.Decimal(10, 2)
+  tax        Decimal         @db.Decimal(10, 2)
+  subtotal   Decimal         @db.Decimal(10, 2)
+  shipping   Decimal         @db.Decimal(10, 2)
+  status     String          @default("PENDING")
+  activities OrderActivity[] @relation("OrderToActivities")
 
   createdAt DateTime @default(now())
 
@@ -237,13 +238,13 @@ enum PaymentStatus {
   CANCELED
   REFUNDED
 }
-
+// prisma/schema.prisma
 model Payment {
   id              String        @id @default(cuid())
   orderId         String
   reference       String        @unique
   amount          Decimal
-  status          PaymentStatus
+  status          PaymentStatus @default(PENDING)
   provider        String?
   channel         String?
   attemptNo       Int?
@@ -252,12 +253,26 @@ model Payment {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
-  // NEW:
-  paidAt DateTime? // when it actually got marked PAID
+  // Receipt
+  receiptNo       String?       @unique
+  receiptIssuedAt DateTime?
+  receiptData     Json?         // snapshot of data used to render/print
+
+  events PaymentEvent[]
+  paidAt DateTime?
 
   order Order @relation(fields: [orderId], references: [id])
 
-  @@index([status, paidAt]) // helpful for “today” revenue queries
+  @@index([status, paidAt])
+}
+
+model PaymentEvent {
+  id        String   @id @default(cuid())
+  paymentId String
+  payment   Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  type      String // INIT | VERIFY | WEBHOOK | STATUS_CHANGE
+  data      Json?
+  createdAt DateTime @default(now())
 }
 
 /**
@@ -266,10 +281,12 @@ model Payment {
 // prisma/schema.prisma
 
 model OrderItem {
-  id        String  @id @default(cuid())
+  id        String          @id @default(cuid())
   orderId   String
   variantId String? // <- optional
-  order     Order   @relation(fields: [orderId], references: [id])
+  variant   ProductVariant? @relation("VariantOrderItems", fields: [variantId], references: [id], onDelete: SetNull)
+
+  order Order @relation(fields: [orderId], references: [id])
 
   productId String?
   product   Product? @relation(fields: [productId], references: [id])
@@ -325,6 +342,19 @@ model PurchaseOrderItem {
   externalRef    String?
   externalStatus String?
   receiptUrl     String?
+}
+
+model OrderActivity {
+  id        String   @id @default(cuid())
+  orderId   String
+  type      String
+  message   String?
+  meta      Json?
+  createdAt DateTime @default(now())
+  order     Order    @relation("OrderToActivities", fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@index([type, createdAt])
 }
 
 model Favorite {
@@ -429,7 +459,8 @@ model ProductVariant {
   imagesJson String[]
   createdAt  DateTime @default(now())
 
-  options ProductVariantOption[]
+  options    ProductVariantOption[]
+  orderItems OrderItem[]            @relation("VariantOrderItems")
 }
 
 model ProductVariantOption {

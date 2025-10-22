@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { authMiddleware, requireAuth } from '../middleware/auth.js';
 import { Prisma } from '@prisma/client';
+import { logOrderActivity } from '../services/activity.service.js';
 
 const router = Router();
 
@@ -35,7 +36,7 @@ type IncomingItem = {
 
 /** Minimal auth helper – replace with your real extraction if needed */
 function getUserId(req: any): string {
-  return req.user?.id || req.auth?.userId || 'cmgvix0de0008kdlsvg55zbri';
+  return req.user?.id || req.auth?.userId;
 }
 
 /* =========================================================
@@ -48,10 +49,11 @@ function getUserId(req: any): string {
      shippingAddress?: Address
    }
 ========================================================= */
+// ...
+
 router.post('/', requireAuth, async (req, res, next) => {
   try {
     const userId = getUserId(req);
-
     const body = req.body as {
       items: IncomingItem[];
       shipping?: number;
@@ -64,7 +66,7 @@ router.post('/', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'No items in order' });
     }
 
-    // Normalize & validate items
+    // normalize items
     const items = body.items.map((it, idx) => {
       const qty = Math.max(1, Number(it.qty) || 1);
       const unit = Number(it.unitPrice ?? 0);
@@ -87,92 +89,75 @@ router.post('/', requireAuth, async (req, res, next) => {
     const subtotalNum = items.reduce((s, it) => s + it.unitPrice * it.qty, 0);
     const totalNum = subtotalNum + shippingNum + taxNum;
 
-    // Money as Decimals
-    const subtotal = new Prisma.Decimal(subtotalNum);
-    const shipping = new Prisma.Decimal(shippingNum);
-    const tax = new Prisma.Decimal(taxNum);
-    const total = new Prisma.Decimal(totalNum);
-
-    // Meta JSON (handy for quick reads)
-    const meta: Prisma.JsonObject = {};
-    if (body.homeAddress) (meta as any).homeAddress = body.homeAddress;
-    if (body.shippingAddress) (meta as any).shippingAddress = body.shippingAddress;
-
-    // Required relation: Order.shippingAddress
     const shippingAddrInput: Address | undefined = body.shippingAddress ?? body.homeAddress ?? undefined;
     if (!shippingAddrInput) {
       return res.status(400).json({ error: 'shippingAddress is required' });
     }
 
-      const created = await prisma.$transaction(async (tx: {
-          address: { create: (arg0: { data: { houseNumber: string; streetName: string; postCode: string | null; town: string | null; city: string; state: string; country: string; }; select: { id: boolean; }; }) => any; }; order: {
-            create: (arg0: {
-              data: {
-                user: { connect: { id: string; }; }; shippingAddress: { connect: { id: any; }; }; status: string; subtotal: Prisma.Decimal; shipping: Prisma.Decimal; tax: Prisma.Decimal; total: Prisma.Decimal; items: {
-                  create: {
-                    productId: string; variantId: string | null;
-                    // if your column is `quantity` instead of `qty`, change this key:
-                    quantity: number; title: string; unitPrice: Prisma.Decimal;
-                    // keep only if OrderItem has this JSON column; otherwise remove next line
-                    selectedOptions: any[];
-                  }[];
-                };
-              }; select: { id: boolean; };
-            }) => any;
-          };
-        }) => {
-        // 1) Create a concrete Address row to satisfy required Order.shippingAddress
-        const shipAddr = await tx.address.create({
-          data: {
-            houseNumber: String(shippingAddrInput.houseNumber || ''),
-            streetName: String(shippingAddrInput.streetName || ''),
-            postCode: shippingAddrInput.postCode || null,
-            town: shippingAddrInput.town || null,
-            city: String(shippingAddrInput.city || ''),
-            state: String(shippingAddrInput.state || ''),
-            country: String(shippingAddrInput.country || ''),
-            // NOTE: do NOT try to set a `user` relation here; your Address model
-            // exposes userPrimary?, userShipping?, ordersAsShipping? — we don't need any for this flow.
-          },
-          select: { id: true },
-        });
-
-        // 2) Create the order, connect user + required shippingAddress, and nest items
-        const order = await tx.order.create({
-          data: {
-            user: { connect: { id: userId } },
-            shippingAddress: { connect: { id: shipAddr.id } },
-
-            status: 'PENDING',
-            subtotal: new Prisma.Decimal(subtotalNum),
-            shipping: new Prisma.Decimal(shippingNum),
-            tax: new Prisma.Decimal(taxNum),
-            total: new Prisma.Decimal(totalNum),
-
-            items: {
-              create: items.map((it) => ({
-                productId: it.productId,
-                variantId: it.variantId,
-                // if your column is `quantity` instead of `qty`, change this key:
-                quantity: it.qty,
-                title: it.title,
-                unitPrice: new Prisma.Decimal(it.unitPrice),
-                // keep only if OrderItem has this JSON column; otherwise remove next line
-                selectedOptions: it.selectedOptions,
-              })),
-            },
-          },
-          select: { id: true },
-        });
-
-        return order;
+    const created = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      // 1) concrete shipping address
+      const shipAddr = await tx.address.create({
+        data: {
+          houseNumber: String(shippingAddrInput.houseNumber || ''),
+          streetName: String(shippingAddrInput.streetName || ''),
+          postCode: shippingAddrInput.postCode || null,
+          town: shippingAddrInput.town || null,
+          city: String(shippingAddrInput.city || ''),
+          state: String(shippingAddrInput.state || ''),
+          country: String(shippingAddrInput.country || ''),
+        },
+        select: { id: true },
       });
 
-      return res.json({ id: created.id });
-    } catch (e) {
-      next(e);
-    }
-  });
+      // 2) order + nested items
+      const order = await tx.order.create({
+        data: {
+          user: { connect: { id: userId } },
+          shippingAddress: { connect: { id: shipAddr.id } },
+          status: 'PENDING',
+          subtotal: new Prisma.Decimal(subtotalNum),
+          shipping: new Prisma.Decimal(shippingNum),
+          tax: new Prisma.Decimal(taxNum),
+          total: new Prisma.Decimal(totalNum),
+          items: {
+            create: items.map((it) => ({
+              productId: it.productId,
+              variantId: it.variantId,
+              quantity: it.qty, // your model uses `quantity`
+              title: it.title,
+              unitPrice: new Prisma.Decimal(it.unitPrice),
+              selectedOptions: it.selectedOptions as any, // JSON column on OrderItem
+            })),
+          },
+        },
+        select: { id: true },
+      });
+
+      // 3) activity (use items.length; order.items is not selected here)
+      await tx.orderActivity.create({
+        data: {
+          orderId: order.id,
+          type: 'ORDER_CREATED',
+          message: 'Order placed',
+          meta: {
+            items: items.length,
+            subtotal: subtotalNum,
+            shipping: shippingNum,
+            tax: taxNum,
+            total: totalNum,
+          },
+        },
+      });
+
+      return order;
+    });
+
+    return res.json({ id: created.id });
+  } catch (e) {
+    next(e);
+  }
+});
+
 
 /* =========================================================
    GET /api/orders
@@ -263,12 +248,20 @@ router.get('/mine', requireAuth, async (req, res, next) => {
 
     const orders = await prisma.order.findMany({
       where: { userId: req.user!.id },
+
       orderBy: { createdAt: 'desc' },
       take,
       include: {
         items: {
-          include: {
+          select: {
             product: { select: { id: true, title: true, price: true } },
+            title: true,
+            unitPrice: true,
+            quantity: true,
+            lineTotal: true,
+            status: true,
+            selectedOptions: true,
+            variant: { select: { id: true, sku: true, imagesJson: true } },
           },
         },
         payments: {
