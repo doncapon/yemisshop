@@ -148,6 +148,20 @@ function computeAvailability(
   });
 }
 
+function safeNum(n: any, fallback = 0) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : fallback;
+}
+
+function minMaxVariantPrice(p: Product) {
+  if (!Array.isArray(p.variants) || p.variants.length === 0) {
+    return { min: p.price, max: p.price };
+  }
+  const prices = p.variants.map(v => safeNum(v.price, p.price));
+  return { min: Math.min(...prices), max: Math.max(...prices) };
+}
+
+
 /* ======================= */
 /* Product Detail Component */
 /* ======================= */
@@ -257,6 +271,17 @@ export default function ProductDetail() {
     return imagesOf(data, matchedVariant);
   }, [data, matchedVariant]);
 
+
+  const { min, max } = useMemo(() => (data ? minMaxVariantPrice(data) : { min: 0, max: 0 }), [data]);
+
+  const variantSku = matchedVariant?.sku ?? null;
+  const isVariantPriceDifferent = useMemo(() => {
+    if (!data) return false;
+    const pv = safeNum(data.price);
+    const cv = safeNum(price);
+    return pv !== 0 && cv !== pv;
+  }, [data, price]);
+
   /* ---------- Add to cart ---------- */
   const addToCart = () => {
     if (!data) return;
@@ -275,15 +300,15 @@ export default function ProductDetail() {
     const selectedOptions =
       axes.length > 0
         ? axes.map((ax) => {
-            const valId = selection[ax.attribute.id];
-            const v = ax.values.find((x) => x.value.id === valId)?.value;
-            return {
-              attributeId: ax.attribute.id,
-              attribute: ax.attribute.name,
-              valueId: v?.id,
-              value: v?.name || '',
-            };
-          })
+          const valId = selection[ax.attribute.id];
+          const v = ax.values.find((x) => x.value.id === valId)?.value;
+          return {
+            attributeId: ax.attribute.id,
+            attribute: ax.attribute.name,
+            valueId: v?.id,
+            value: v?.name || '',
+          };
+        })
         : [];
 
     try {
@@ -434,15 +459,34 @@ export default function ProductDetail() {
             </button>
           </div>
 
-          {/* Price */}
-          <p className="mt-2 text-2xl font-extrabold tracking-tight text-ink">{ngn.format(price)}</p>
+          {/* Price (reacts to variant selection) */}
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="text-2xl font-extrabold tracking-tight text-ink">
+              {ngn.format(price)}
+            </span>
+            {isVariantPriceDifferent && (
+              <span className="text-sm text-ink-soft line-through">
+                {ngn.format(p.price)}
+              </span>
+            )}
+          </div>
+
+          {/* Range helper (visible when variants exist; useful on first render) */}
           {hasAnyVariant(p) && (
             <div className="text-xs text-ink-soft mt-0.5">
-              {p.variants && p.variants.length > 0
-                ? `Variants: ${p.variants.length} option${p.variants.length > 1 ? 's' : ''}`
-                : null}
+              {min === max
+                ? `Variants: ${p.variants?.length ?? 0}`
+                : `From ${ngn.format(min)} to ${ngn.format(max)} • Variants: ${p.variants?.length ?? 0}`}
             </div>
           )}
+
+          {/* Variant SKU (only if the matched one has a sku) */}
+          {variantSku && (
+            <div className="text-xs text-ink-soft mt-0.5">
+              SKU: {variantSku}
+            </div>
+          )}
+
 
           {/* Variant pickers */}
           {axes.length > 0 && (

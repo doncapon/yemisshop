@@ -66,6 +66,11 @@ function inBucket(price: number, b: PriceBucket) {
 
 type SortKey = 'relevance' | 'price-asc' | 'price-desc';
 
+
+function availabilityRank(p: Product) {
+  return (p.inStock || hasVariantInStock(p)) ? 1 : 0; // 1 = in stock, 0 = out
+}
+
 /* ---------------- Recommendation weights ---------------- */
 const W_FAV = 2.5;
 const W_PURCHASE = 3.0;
@@ -171,6 +176,11 @@ function getMinPrice(p: Product): number {
 
 function hasVariantInStock(p: Product) {
   return (p.variants || []).some(v => v.inStock !== false);
+}
+
+function requiresVariantSelection(p: Product) {
+  // safest rule: any variants -> pick on detail page
+  return Array.isArray(p.variants) && p.variants.length > 0;
 }
 
 /* ---------------- Component ---------------- */
@@ -331,7 +341,7 @@ export default function Catalog() {
 
   // Clean list
   const products = useMemo(
-    () => (productsQ.data ?? []).filter((p: any) => p.inStock !== false),
+    () => productsQ.data ?? [],
     [productsQ.data]
   );
 
@@ -476,26 +486,42 @@ export default function Catalog() {
     });
 
     return scored
-      .sort((a: Scored, b: Scored) => {
+      .sort((a, b) => {
+        // In-stock first
+        const av = availabilityRank(a.p), bv = availabilityRank(b.p);
+        if (bv !== av) return bv - av;
+
+        // Then your existing relevance ordering
         if (b.score !== a.score) return b.score - a.score;
+
         const ap = (purchased[a.p.id] || 0) + (clicks[a.p.id] || 0);
         const bp = (purchased[b.p.id] || 0) + (clicks[b.p.id] || 0);
         if (bp !== ap) return bp - ap;
+
         return getMinPrice(b.p) - getMinPrice(a.p);
       })
-      .map((x: Scored) => x.p);
+      .map((x) => x.p);
+
   }, [filtered, sortKey, favQuery.data, purchasedQ.data]);
 
   // Which list to show
   const sorted = useMemo(() => {
     if (sortKey === 'relevance') return recScored;
+
     const arr = [...filtered].sort((a, b) => {
+      // In-stock first
+      const av = availabilityRank(a), bv = availabilityRank(b);
+      if (bv !== av) return bv - av;
+
+      // Then price
       if (sortKey === 'price-asc') return getMinPrice(a) - getMinPrice(b);
       if (sortKey === 'price-desc') return getMinPrice(b) - getMinPrice(a);
       return 0;
     });
+
     return arr;
   }, [filtered, recScored, sortKey]);
+
 
   // Reset page when inputs change
   useEffect(() => {
@@ -895,16 +921,32 @@ export default function Catalog() {
                             <span>{fav ? 'Wishlisted' : 'Wishlist'}</span>
                           </button>
 
-                          <button
-                            disabled={!available}
-                            onClick={() => addToCart(p)}
-                            className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm border transition ${available
-                              ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
-                              : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
-                              }`}
-                          >
-                            Add to cart
-                          </button>
+                          {requiresVariantSelection(p) ? (
+                            // Variant products: guide to detail page
+                            <Link
+                              to={`/product/${p.id}`}
+                              className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm border bg-zinc-900 text-white border-zinc-900 hover:opacity-90"
+                              onClick={() => bumpClick(p.id)}
+                              aria-label="Choose options"
+                              title="Choose options"
+                            >
+                              Choose options
+                            </Link>
+                          ) : (
+                            // Simple products: quick add
+                            <button
+                              disabled={!available}
+                              onClick={() => addToCart(p)}
+                              className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm border transition ${available
+                                ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
+                                : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
+                                }`}
+                              aria-label="Add to cart"
+                              title="Add to cart"
+                            >
+                              Add to cart
+                            </button>
+                          )}
                         </div>
                       </div>
                     </motion.article>
@@ -948,6 +990,6 @@ export default function Catalog() {
           )}
         </section>
       </div>
-    </div>
+    </div >
   );
 }

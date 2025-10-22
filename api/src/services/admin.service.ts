@@ -16,9 +16,12 @@ export type Overview = {
 
   productsPending: number;
   productsPublished: number;
-  productsInStock: number;
-  productsOutOfStock: number;
+  productsLive: number;
+  productsOffline: number;
   productsTotal: number;
+  productsInStock: number;
+  productsRejected: number;
+  productsOutStock: number;
 
   ordersToday: number;
   revenueToday: number;
@@ -70,7 +73,7 @@ function endOfDay(d: Date) {
 
 export async function getOverview(): Promise<Overview> {
   // Users
-  const [totalUsers,totalCustomers, totalAdmins, totalSuperAdmins] = await Promise.all([
+  const [totalUsers, totalCustomers, totalAdmins, totalSuperAdmins] = await Promise.all([
     prisma.user.count(),
     prisma.user.count({ where: { role: 'SHOPPER' } }),
     prisma.user.count({ where: { role: 'ADMIN' } }),
@@ -78,12 +81,24 @@ export async function getOverview(): Promise<Overview> {
   ]);
 
   // Products (assuming status: | 'PUBLISHED' | 'REJECTED')
-  const [productsPending, productsPublished, productsInStock, productsOutOfStock, productsTotal] = await Promise.all([
+  const [productsPending, productsPublished, productsLive, productsOffline, productsRejected,productsInStock, productsOutStock, productsTotal] = await Promise.all([
     prisma.product.count({ where: { status: 'PENDING' } }),
-    prisma.product.count({ where: { status: 'PUBLISHED'} }),
-    prisma.product.count({ where: { status: 'PUBLISHED', inStock: true } }),
-    prisma.product.count({ where: { status: 'PUBLISHED', inStock: false } }),
-  prisma.product.count({ where: {status: { not: 'REJECTED'}}}),
+    prisma.product.count({ where: { status: 'PUBLISHED' } }),
+    await prisma.product.count({
+      where: {
+        AND: [{ status: 'PUBLISHED' }, { inStock: true }],
+      },
+    }),
+    await prisma.product.count({
+      where: {
+        AND: [{ status: 'PUBLISHED' }, { inStock: false }],
+      },
+    }),
+    prisma.product.count({ where: { status: 'REJECTED' } }),
+    prisma.product.count({ where: { inStock:  true } }),
+    prisma.product.count({ where: { inStock:  false } }),
+    prisma.product.count(),
+
 
   ]);
 
@@ -143,9 +158,12 @@ export async function getOverview(): Promise<Overview> {
     totalCustomers,
     productsPending,
     productsPublished,
+    productsLive,
     productsInStock,
-    productsOutOfStock,
+    productsOutStock,
+    productsOffline,
     productsTotal,
+    productsRejected,
     ordersToday,
     revenueToday,
     sparklineRevenue7d,

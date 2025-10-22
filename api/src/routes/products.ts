@@ -1,119 +1,94 @@
+// api/src/routes/products.ts
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 
 const router = Router();
 
-function toProductDTO(p: any) {
+/* ---------------- helpers ---------------- */
+function parseInclude(q: any) {
+  const inc = String(q?.include || '').toLowerCase();
   return {
-    id: p.id,
-    title: p.title,
-    description: p.description,
-    price: Number(p.price),      // <- normalize Decimal -> number
-    sku: p.sku,
-    inStock: p.inStock,
-    vatFlag: p.vatFlag,
-    status: p.status,
-    imagesJson: p.imagesJson,            // text[]
-    supplierId: p.supplierId,
-    supplierTypeOverride: p.supplierTypeOverride,
-    commissionPctInt: p.commissionPctInt ?? null,
-    categoryId: p.categoryId,
-    categoryName: p.categoryName
+    brand: inc.includes('brand'),
+    variants: inc.includes('variants'),
+    attributes: inc.includes('attributes'),
   };
 }
 
-// Single product
-router.get('/:id', async (req, res, next) => {
-  try {
-    const p = await prisma.product.findUnique({
-      where: { id: req.params.id },
-      select: {
-        id: true, title: true, description: true, price: true,
-        imagesJson: true, categoryId: true, inStock: true,
-        category: { select: { name: true } },
+function toNumber(n: any) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : 0;
+}
+
+function mapVariant(v: any) {
+  return {
+    id: v.id,
+    sku: v.sku,
+    price: v.price != null ? Number(v.price) : null,
+    inStock: v.inStock !== false,
+    imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+    options: (v.options || []).map((o: any) => ({
+      attribute: {
+        id: o.attribute.id,
+        name: o.attribute.name,
+        type: o.attribute.type,
       },
-    });
-    if (!p) return res.status(404).json({ error: 'Not found' });
-    res.json({
-      id: p.id,
-      title: p.title,
-      description: p.description,
-      price: Number(p.price),
-      imagesJson: p.imagesJson ?? [],
-      categoryId: p.categoryId,
-      stock: p.stock,
-      categoryName: p.category?.name ?? null,
-    });
-  } catch (e) { next(e); }
-});
+      value: {
+        id: o.value.id,
+        name: o.value.name,
+        code: o.value.code ?? null,
+      },
+    })),
+  };
+}
 
+function mapProduct(p: any, opts: { brand: boolean; variants: boolean; attributes: boolean }) {
+  const out: any = {
+    id: p.id,
+    title: p.title,
+    description: p.description,
+    price: Number(p.price),
+    inStock: p.inStock !== false,
+    imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
+    categoryId: p.categoryId ?? null,
+    categoryName: p.category?.name ?? p.categoryName ?? null,
+    brandId: p.brandId ?? null,
+  };
 
-router.get('/:id', async (req, res, next) => {
-  try {
-    const p = await prisma.product.findUnique({ where: { id: req.params.id } });
-    if (!p) return res.status(404).json({ error: 'Not found' });
-    res.json(toProductDTO(p));
-  } catch (e) {
-    next(e);
+  if (opts.brand) {
+    out.brand = p.brand ? { id: p.brand.id, name: p.brand.name } : null;
+    out.brandName = p.brand ? p.brand.name : null;
   }
-});
 
+  if (opts.variants) {
+    const vs = (p.ProductVariant || []).map(mapVariant);
+    out.variants = vs;
+  }
 
-router.get('/:id/similar', async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const me = await prisma.product.findUnique({ where: { id } });
-    if (!me) return res.status(404).json({ error: 'Product not found' });
+  if (opts.attributes) {
+    const pavs = p.ProductAttributeValue || [];
+    const pats = p.ProductAttributeText || [];
+    out.attributeValues = pavs.map((av: any) => ({
+      id: av.id,
+      attribute: { id: av.attribute.id, name: av.attribute.name, type: av.attribute.type },
+      value: { id: av.value.id, name: av.value.name, code: av.value.code ?? null },
+    }));
+    out.attributeTexts = pats.map((at: any) => ({
+      id: at.id,
+      attribute: { id: at.attribute.id, name: at.attribute.name, type: at.attribute.type },
+      value: at.value,
+    }));
+  }
 
-    const byCat = await prisma.product.findMany({
-      where: { id: { not: id }, categoryId: me.categoryId ?? undefined },
-      take: 12,
-      orderBy: { createdAt: 'desc' },
-    });
+  return out;
+}
 
-    // Fallback by price window if category is empty
-    let results = byCat;
-    if (results.length < 6) {
-      const price = Number(me.price) || 0;
-      const window = { min: Math.max(0, price * 0.6), max: price * 1.4 };
-      const byPrice = await prisma.product.findMany({
-        where: {
-          id: { not: id },
-          price: { gte: window.min, lte: window.max },
-        },
-        take: 12,
-        orderBy: { createdAt: 'desc' },
-      });
-      // merge unique
-      const seen = new Set(results.map((r: { id: any; }) => r.id));
-      for (const p of byPrice) if (!seen.has(p.id)) results.push(p);
-    }
+/* ---------------- LIST: GET /api/products ----------------
+   Supports filters + ?include=brand,variants,attributes
+--------------------------------------------------------- */
 
-    res.json(results.slice(0, 12));
-  } catch (e) { next(e); }
-});
-
-
-/**
- * GET /api/products
- * Query:
- *  - q: string (search title/description/category)
- *  - categoryId: string
- *  - brandIds: string | string[] (comma-separated or repeated)
- *  - minPrice, maxPrice: number
- *  - inStock: "1" | "true" | "0" | "false"
- *  - page, pageSize: number
- *  - include: csv: "brand,variants,attributes"
- *
- * Includes:
- *  - brand: Product.brand
- *  - variants: ProductVariant[] with options (Attribute + AttributeValue)
- *  - attributes:
- *      - productAttributeValues (Attribute, AttributeValue)
- *      - productAttributeTexts (Attribute)
- */
-const QuerySchema = z.object({
+const ListQuery = z.object({
   q: z.string().optional(),
   categoryId: z.string().optional(),
   brandIds: z
@@ -132,29 +107,20 @@ const QuerySchema = z.object({
     .transform((v) => (v ? v === '1' || v === 'true' : undefined)),
   page: z.coerce.number().min(1).default(1),
   pageSize: z.coerce.number().min(1).max(60).default(24),
-  include: z
-    .string()
-    .optional()
-    .transform((s) => new Set((s ?? '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean))),
+  include: z.string().optional(),
 });
 
-
-
-/**
- * GET /api/products
- * Optional: ?include=brand,variants,attributes
- * Public: no auth required.
- */
-// api/src/routes/products.ts (inside r.get('/', ...))
+// GET /api/products?include=brand,variants,attributes
 router.get('/', async (req, res) => {
   try {
-    const includeParam = String(req.query.include || '').toLowerCase();
-    const wantBrand = includeParam.includes('brand');
-    const wantVariants = includeParam.includes('variants');
-    const wantAttributes = includeParam.includes('attributes');
+    const include = String(req.query.include || '').toLowerCase();
+    const wantBrand = include.includes('brand');
+    const wantVariants = include.includes('variants');
+    const wantAttributes = include.includes('attributes');
 
-    const products = await prisma.product.findMany({
-      where: { status: 'PUBLISHED' },
+    const rows = await prisma.product.findMany({
+      where: { status: 'PUBLISHED' },     // <-- published only
+      orderBy: { createdAt: 'desc' },
       select: {
         id: true,
         title: true,
@@ -162,19 +128,14 @@ router.get('/', async (req, res) => {
         price: true,
         inStock: true,
         imagesJson: true,
-
-        // keep if you store it
         categoryId: true,
-        categoryName: true,
-
-        // 🔥 add this join
-        category: { select: { id: true, name: true, slug: true } },
-
         brandId: true,
+        category: { select: { id: true, name: true, slug: true } },
         ...(wantBrand && { brand: { select: { id: true, name: true } } }),
         ...(wantVariants && {
           ProductVariant: {
             select: { id: true, sku: true, price: true, inStock: true, imagesJson: true },
+            orderBy: { createdAt: 'asc' },
           },
         }),
         ...(wantAttributes && {
@@ -194,14 +155,23 @@ router.get('/', async (req, res) => {
           },
         }),
       },
-      orderBy: { createdAt: 'desc' },
     });
 
-    const data = products.map((p: any) => {
-      const variants = wantVariants ? (p.ProductVariant ?? []) : [];
-      const attributesSummary =
-        wantAttributes
-          ? [
+    const data = rows.map((p: any) => ({
+      id: p.id,
+      title: p.title,
+      description: p.description,
+      price: Number(p.price),                           // normalize Decimal
+      inStock: p.inStock !== false,
+      imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
+      categoryId: p.categoryId ?? p.category?.id ?? null,
+      categoryName: p.category?.name ?? null,
+      brandId: p.brandId ?? null,
+      brand: wantBrand && p.brand ? { id: p.brand.id, name: p.brand.name } : null,
+      brandName: wantBrand && p.brand ? p.brand.name : null,
+      variants: wantVariants ? (p.ProductVariant ?? []) : undefined,  // may be empty
+      attributesSummary: wantAttributes
+        ? [
             ...(p.ProductAttributeValue ?? []).map((x: any) => ({
               attribute: x.attribute?.name ?? '',
               value: x.value?.name ?? '',
@@ -211,134 +181,125 @@ router.get('/', async (req, res) => {
               value: String(x.value ?? ''),
             })),
           ]
-          : [];
-
-      return {
-        id: p.id,
-        title: p.title,
-        description: p.description,
-        price: p.price,
-        inStock: p.inStock,
-        imagesJson: p.imagesJson,
-
-        // ✅ prefer canonical category name from join
-        categoryId: p.categoryId ?? p.category?.id ?? null,
-        categoryName: p.category?.name ?? p.categoryName ?? null,
-        categorySlug: p.category?.slug ?? null, // (handy later)
-
-        brandId: p.brandId,
-        brand: wantBrand && p.brand ? { id: p.brand.id, name: p.brand.name } : undefined,
-        brandName: wantBrand && p.brand ? p.brand.name : null,
-        variants,
-        attributesSummary,
-      };
-    });
+        : undefined,
+    }));
 
     res.json({ data });
-
   } catch (e) {
-    console.error('GET /api/products failed:', e);
-    res.status(500).json({ error: 'Could not load products.' });
+    res.status(500).json({ error: 'Could not load products' });
   }
 });
 
-// api/src/routes/products.ts (or wherever your GET /:id lives)
-router.get('/:id', async (req, res) => {
+
+/* ---------------- SIMILAR: must be before '/:id' ---------------- */
+
+router.get('/:id/similar', async (req, res, next) => {
   try {
-    const includeParam = String(req.query.include || '').toLowerCase();
-    const wantBrand = includeParam.includes('brand');
-    const wantVariants = includeParam.includes('variants');
-    const wantAttributes = includeParam.includes('attributes');
+    const { id } = req.params;
 
-    const products = await prisma.product.findMany({
-      where: { status: 'PUBLISHED' },
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        price: true,
-        inStock: true,
-        imagesJson: true,
+    const me = await prisma.product.findFirst({
+      where: { id, status: 'PUBLISHED' as any },
+      select: { id: true, price: true, categoryId: true },
+    });
+    if (!me) return res.status(404).json({ error: 'Product not found' });
 
-        // keep if you store it
-        categoryId: true,
-        categoryName: true,
-
-        // 🔥 add this join
-        category: { select: { id: true, name: true, slug: true } },
-
-        brandId: true,
-        ...(wantBrand && { brand: { select: { id: true, name: true } } }),
-        ...(wantVariants && {
-          ProductVariant: {
-            select: { id: true, sku: true, price: true, inStock: true, imagesJson: true },
-          },
-        }),
-        ...(wantAttributes && {
-          ProductAttributeValue: {
-            select: {
-              id: true,
-              attribute: { select: { id: true, name: true, type: true } },
-              value: { select: { id: true, name: true, code: true } },
-            },
-          },
-          ProductAttributeText: {
-            select: {
-              id: true,
-              attribute: { select: { id: true, name: true, type: true } },
-              value: true,
-            },
-          },
-        }),
+    // prefer same category
+    let results = await prisma.product.findMany({
+      where: {
+        id: { not: id },
+        status: 'PUBLISHED' as any,
+        ...(me.categoryId ? { categoryId: me.categoryId } : {}),
       },
+      take: 12,
       orderBy: { createdAt: 'desc' },
     });
 
-    const data = products.map((p: any) => {
-      const variants = wantVariants ? (p.ProductVariant ?? []) : [];
-      const attributesSummary =
-        wantAttributes
-          ? [
-            ...(p.ProductAttributeValue ?? []).map((x: any) => ({
-              attribute: x.attribute?.name ?? '',
-              value: x.value?.name ?? '',
-            })),
-            ...(p.ProductAttributeText ?? []).map((x: any) => ({
-              attribute: x.attribute?.name ?? '',
-              value: String(x.value ?? ''),
-            })),
-          ]
-          : [];
+    // fallback by price window
+    if (results.length < 6) {
+      const price = toNumber(me.price);
+      const byPrice = await prisma.product.findMany({
+        where: {
+          id: { not: id },
+          status: 'PUBLISHED' as any,
+          price: { gte: Math.max(0, price * 0.6), lte: price * 1.4 },
+        },
+        take: 12,
+        orderBy: { createdAt: 'desc' },
+      });
+      const seen = new Set(results.map((r: { id: any; }) => r.id));
+      for (const p of byPrice) if (!seen.has(p.id)) results.push(p);
+      results = results.slice(0, 12);
+    }
 
-      return {
+    res.json(
+      results.map((p: { id: any; title: any; price: any; imagesJson: any; inStock: boolean; }) => ({
         id: p.id,
         title: p.title,
-        description: p.description,
-        price: p.price,
-        inStock: p.inStock,
-        imagesJson: p.imagesJson,
-
-        // ✅ prefer canonical category name from join
-        categoryId: p.categoryId ?? p.category?.id ?? null,
-        categoryName: p.category?.name ?? p.categoryName ?? null,
-        categorySlug: p.category?.slug ?? null, // (handy later)
-
-        brandId: p.brandId,
-        brand: wantBrand && p.brand ? { id: p.brand.id, name: p.brand.name } : undefined,
-        brandName: wantBrand && p.brand ? p.brand.name : null,
-        variants,
-        attributesSummary,
-      };
-    });
-
-    res.json({ data });
-
+        price: Number(p.price),
+        imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
+        inStock: p.inStock !== false,
+      })),
+    );
   } catch (e) {
-    console.error('GET /api/products/:id failed:', e);
-    res.status(500).json({ error: 'Could not load product.' });
+    next(e);
   }
 });
 
+/* ---------------- DETAIL: GET /api/products/:id ----------------
+   Returns a single product object directly (no {data: ...} wrapper)
+   Supports ?include=brand,variants,attributes
+--------------------------------------------------------------- */
 
+router.get('/:id', async (req, res, next) => {
+  try {
+    const inc = parseInclude(req.query);
+    const p = await prisma.product.findFirst({
+      where: { id: req.params.id, status: 'PUBLISHED' as any },
+      include: {
+        category: { select: { id: true, name: true } },
+        ...(inc.brand ? { brand: { select: { id: true, name: true } } } : {}),
+        ...(inc.variants
+          ? {
+              ProductVariant: {
+                include: {
+                  options: {
+                    include: {
+                      attribute: { select: { id: true, name: true, type: true } },
+                      value: { select: { id: true, name: true, code: true } },
+                    },
+                  },
+                },
+                orderBy: { createdAt: 'asc' },
+              },
+            }
+          : {}),
+        ...(inc.attributes
+          ? {
+              ProductAttributeValue: {
+                include: {
+                  attribute: { select: { id: true, name: true, type: true } },
+                  value: { select: { id: true, name: true, code: true } },
+                },
+                orderBy: [{ attribute: { name: 'asc' } }],
+              },
+              ProductAttributeText: {
+                include: {
+                  attribute: { select: { id: true, name: true, type: true } },
+                },
+                orderBy: [{ attribute: { name: 'asc' } }],
+              },
+            }
+          : {}),
+      },
+    });
+
+    if (!p) return res.status(404).json({ error: 'Not found' });
+
+    // Return the product object directly (what ProductDetail expects)
+    res.json(mapProduct(p, inc));
+  } catch (e) {
+    next(e);
+  }
+});
 
 export default router;

@@ -1,17 +1,13 @@
-// src/pages/PaymentCallback.tsx
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
 
-type VerifyResp = {
-  ok?: boolean;
-  status?: 'PAID' | 'PENDING' | 'FAILED';
-  message?: string;
-};
+type VerifyResp = { ok?: boolean; status?: 'PAID' | 'PENDING' | 'FAILED' | 'CANCELED' | 'REFUNDED'; message?: string; };
+type StatusResp = { status: 'PAID' | 'PENDING' | 'FAILED' | 'CANCELED' | 'REFUNDED' };
 
-const POLL_INTERVAL_MS = 4000;   // every 4 seconds
-const POLL_MAX_ATTEMPTS = 15;    // ~60 seconds
+const POLL_INTERVAL_MS = 4000;
+const POLL_MAX_ATTEMPTS = 15;
 
 export default function PaymentCallback() {
   const nav = useNavigate();
@@ -24,61 +20,93 @@ export default function PaymentCallback() {
   const [remaining, setRemaining] = useState(POLL_MAX_ATTEMPTS);
   const timerRef = useRef<number | null>(null);
 
-  // Extract params
   const params = new URLSearchParams(loc.search);
   const orderId = params.get('orderId') || '';
   const reference = params.get('reference') || '';
+  const gateway = (params.get('gateway') || '').toLowerCase(); // 'paystack' for hosted card flow
 
-  const verifyOnce = async () => {
-    if (!orderId || !reference) {
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+
+  const checkStatus = async () => {
+    try {
+      const { data } = await api.get<StatusResp>('/api/payments/status', {
+        params: { orderId, reference },
+        headers,
+      });
+
+      if (data.status === 'PAID') {
+        localStorage.removeItem('cart'); // optional
+        setPhase('success');
+        setMsg('Payment verified. Redirecting to your orders…');
+        return;
+      }
+
+      if (data.status === 'FAILED' || data.status === 'CANCELED' || data.status === 'REFUNDED') {
+        setPhase('error');
+        setMsg('Payment is not successful.');
+        return;
+      }
+
+      // still pending
+      setPhase('pending');
+      setMsg('Waiting for confirmation from the payment processor…');
+    } catch (e: any) {
       setPhase('error');
-      setMsg('Missing orderId or reference in the callback URL.');
+      setMsg(e?.response?.data?.error || 'Could not check status right now.');
+    }
+  };
+
+  const verifyOnceIfCard = async () => {
+    // Only try gateway verify for hosted Paystack card flows
+
+    if (gateway !== 'paystack') {
       return;
     }
-
     try {
       const { data } = await api.post<VerifyResp>(
         '/api/payments/verify',
         { orderId, reference },
-        { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
+        { headers }
       );
-
-      const info = data?.message || '';
-
-      if (data?.status === 'PAID') {
-        localStorage.removeItem('cart'); // optional
+      
+      if (data.status === 'PAID') {
+        localStorage.removeItem('cart');
         setPhase('success');
-        setMsg(info || 'Payment verified. Redirecting to your orders…');
+        setMsg(data.message || 'Payment verified. Redirecting to your orders…');
         return;
       }
-
-      if (data?.status === 'FAILED') {
+      if (data.status === 'FAILED' || data.status === 'CANCELED' || data.status === 'REFUNDED') {
         setPhase('error');
-        setMsg(info || 'Payment could not be verified. Please try again.');
+        setMsg(data.message || 'Payment could not be verified.');
         return;
       }
 
-      // Otherwise treat as pending
+      // pending → fall through to status polling
       setPhase('pending');
-      setMsg(info || 'Waiting for confirmation from the payment processor…');
-
+      setMsg(data.message || 'Waiting for confirmation from the payment processor…');
     } catch (e: any) {
-      const em =
-        e?.response?.data?.error ||
-        e?.message ||
-        'Verification failed. Please try again or contact support.';
-      setPhase('error');
-      setMsg(em);
+      // If verify fails (network, etc.), just poll status — webhook can still flip it.
+      setPhase('pending');
+      setMsg('Awaiting confirmation…');
     }
   };
 
-  // First verification on mount
+  // On mount: (1) try verify once if card, then (2) check status
   useEffect(() => {
-    verifyOnce();
+    (async () => {
+      if (!orderId || !reference) {
+        setPhase('error');
+        setMsg('Missing orderId or reference in the callback URL.');
+        return;
+      }
+      await verifyOnceIfCard();
+      await checkStatus();
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Poll while pending
+  // Poll DB status (webhook will flip it to PAID)
   useEffect(() => {
     if (phase !== 'pending') return;
 
@@ -91,7 +119,7 @@ export default function PaymentCallback() {
     timerRef.current = window.setTimeout(async () => {
       setAttempt((a) => a + 1);
       setRemaining((r) => r - 1);
-      await verifyOnce();
+      await checkStatus();
     }, POLL_INTERVAL_MS) as unknown as number;
 
     return () => {
@@ -108,7 +136,7 @@ export default function PaymentCallback() {
     setAttempt(0);
     setPhase('loading');
     setMsg('Re-checking your payment…');
-    await verifyOnce();
+    await checkStatus();
   };
 
   return (
