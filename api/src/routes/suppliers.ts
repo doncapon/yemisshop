@@ -8,8 +8,8 @@ import {
 } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
-import { auth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/roles.js';
+import { requireAdmin } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -57,14 +57,8 @@ function toUpdateData(input: Partial<z.infer<typeof supplierSchema>>) {
   return data;
 }
 
-// Cast your middlewares to generic RequestHandler to satisfy Express overloads
-const adminOnly: RequestHandler[] = [
-  auth() as unknown as RequestHandler,
-  requireRole('ADMIN') as unknown as RequestHandler,
-];
-
 // List suppliers (ADMIN)
-router.get('/', ...adminOnly, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireAdmin, async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const suppliers = await prisma.supplier.findMany({ orderBy: { createdAt: 'desc' } });
     res.json(suppliers);
@@ -74,7 +68,7 @@ router.get('/', ...adminOnly, async (_req: Request, res: Response, next: NextFun
 });
 
 // Create supplier (ADMIN)
-router.post('/', ...adminOnly, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = supplierSchema.parse(req.body);
     const created = await prisma.supplier.create({ data: toCreateData(parsed) });
@@ -85,7 +79,7 @@ router.post('/', ...adminOnly, async (req: Request, res: Response, next: NextFun
 });
 
 // Update supplier (ADMIN)
-router.put('/:id', ...adminOnly, async (req: Request, res: Response, next: NextFunction) => {
+router.put('/:id', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const parsed = supplierSchema.partial().parse(req.body);
     const updated = await prisma.supplier.update({
