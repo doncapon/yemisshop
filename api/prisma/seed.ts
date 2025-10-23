@@ -1,29 +1,41 @@
 // prisma/seed.ts
 import { PrismaClient, Prisma, SupplierType } from '@prisma/client';
 import bcrypt from 'bcryptjs';
-import { email } from 'zod/v4';
 
 const prisma = new PrismaClient();
 const now = new Date();
 
-/** ---------------- Helpers ---------------- */
-function randInt(min: number, max: number) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+/* ---------------- Helpers ---------------- */
+const randInt = (min: number, max: number) =>
+  Math.floor(Math.random() * (max - min + 1)) + min;
+
+const sample = <T,>(arr: T[]) => arr[randInt(0, arr.length - 1)];
+const chance = (p: number) => Math.random() < p;
+
+function pickSome<T>(arr: T[], min = 1, max = 3) {
+  const n = Math.max(min, Math.min(max, randInt(min, max)));
+  const copy = [...arr];
+  const out: T[] = [];
+  for (let i = 0; i < n && copy.length; i++) {
+    out.push(copy.splice(randInt(0, copy.length - 1), 1)[0]);
+  }
+  return out;
 }
 
-/** Price buckets aligned with your UI filters */
 const PRICE_BUCKETS = [
-  { label: '₦1,000 – ₦4,999', min: 1000, max: 4999 },
-  { label: '₦5,000 – ₦9,999', min: 5000, max: 9999 },
-  { label: '₦10,000 – ₦99,999', min: 10000, max: 99999 },
+  { min: 1000, max: 4999 },
+  { min: 5000, max: 9999 },
+  { min: 10000, max: 99999 },
 ] as const;
 
 function randomPrice(): Prisma.Decimal {
-  const r = Math.random();
-  const bucket =
-    r < 0.35 ? PRICE_BUCKETS[0] : r < 0.75 ? PRICE_BUCKETS[1] : PRICE_BUCKETS[2];
-  const value = randInt(bucket.min, bucket.max);
-  return new Prisma.Decimal(value);
+  const b =
+    Math.random() < 0.35
+      ? PRICE_BUCKETS[0]
+      : Math.random() < 0.75
+      ? PRICE_BUCKETS[1]
+      : PRICE_BUCKETS[2];
+  return new Prisma.Decimal(randInt(b.min, b.max));
 }
 
 function productImages(seed: string | number): string[] {
@@ -56,32 +68,47 @@ async function makeAddress(seed: {
   });
 }
 
-/** ---------------- Seed Script ---------------- */
+/** Supplier offer price (keep margin vs retail): 65–90% of retail */
+function supplierOfferFromRetail(retail: number) {
+  const pct = 0.65 + Math.random() * 0.25; // 65%–90%
+  const val = Math.max(500, Math.round(retail * pct));
+  return new Prisma.Decimal(val);
+}
+
+/* ---------------- Seed Script ---------------- */
 async function main() {
   console.log('🧹 Clearing existing data …');
 
-  // FK-safe clear: remove most dependent tables first
+  // Delete dependents first (safely guard optional tables)
   await prisma.$transaction(
     [
-      prisma.productVariantOption.deleteMany(),
-      prisma.productVariant.deleteMany(),
-      prisma.productAttributeValue?.deleteMany?.() as any, // only if you added the table
-      prisma.productAttributeText?.deleteMany?.() as any,  // only if you added the table
-      prisma.purchaseOrderItem.deleteMany(),
-      prisma.payment.deleteMany(),
-      prisma.orderItem.deleteMany(),
-      prisma.purchaseOrder.deleteMany(),
-      prisma.order.deleteMany(),
-      prisma.favorite.deleteMany(),
-      prisma.wishlist.deleteMany(),
-      prisma.product.deleteMany(),
-      prisma.attributeValue.deleteMany(),
-      prisma.attribute.deleteMany(),
-      prisma.brand.deleteMany(),
-      prisma.category.deleteMany(),
-      prisma.supplier.deleteMany(),
-      prisma.user.deleteMany(),
-      prisma.address.deleteMany(),
+      prisma.paymentEvent?.deleteMany?.() as any,
+      prisma.orderActivity?.deleteMany?.() as any,
+      prisma.purchaseOrderItem?.deleteMany?.() as any,
+      prisma.purchaseOrder?.deleteMany?.() as any,
+      prisma.orderItem?.deleteMany?.() as any,
+      prisma.payment?.deleteMany?.() as any,
+
+      prisma.supplierOffer?.deleteMany?.() as any, // <-- IMPORTANT
+      prisma.productVariantOption?.deleteMany?.() as any,
+      prisma.productVariant?.deleteMany?.() as any,
+      prisma.productAttributeValue?.deleteMany?.() as any,
+      prisma.productAttributeText?.deleteMany?.() as any,
+
+      prisma.favorite?.deleteMany?.() as any,
+      prisma.wishlist?.deleteMany?.() as any,
+      prisma.product?.deleteMany?.() as any,
+
+      prisma.attributeValue?.deleteMany?.() as any,
+      prisma.attribute?.deleteMany?.() as any,
+      prisma.brand?.deleteMany?.() as any,
+      prisma.category?.deleteMany?.() as any,
+
+      prisma.supplier?.deleteMany?.() as any,
+      prisma.emailVerifyToken?.deleteMany?.() as any,
+      prisma.otp?.deleteMany?.() as any,
+      prisma.user?.deleteMany?.() as any,
+      prisma.address?.deleteMany?.() as any,
     ].filter(Boolean)
   );
 
@@ -121,7 +148,7 @@ async function main() {
     },
   });
 
-  const superAdmin = await prisma.user.create({
+  await prisma.user.create({
     data: {
       email: 'superadmin@example.com',
       password: superAdminPwd,
@@ -138,7 +165,7 @@ async function main() {
     },
   });
 
-  const shopper = await prisma.user.create({
+  await prisma.user.create({
     data: {
       email: 'shopper@example.com',
       password: shopperPwd,
@@ -155,8 +182,7 @@ async function main() {
     },
   });
 
-  console.log('🏭 Seeding suppliers…');
-  // Create a few suppliers and reuse them across products
+  console.log('🏭 Seeding suppliers… )');
   const suppliers = await prisma.$transaction([
     prisma.supplier.create({
       data: {
@@ -165,7 +191,6 @@ async function main() {
         status: 'ACTIVE',
         contactEmail: 'wholesale@yemishop.com',
         whatsappPhone: '+2348100000000',
-        payoutPctInt: 70,
       },
     }),
     prisma.supplier.create({
@@ -175,7 +200,6 @@ async function main() {
         status: 'ACTIVE',
         contactEmail: 'contact@markethub.ng',
         whatsappPhone: '+2348100000005',
-        payoutPctInt: 65,
       },
     }),
     prisma.supplier.create({
@@ -185,13 +209,38 @@ async function main() {
         status: 'ACTIVE',
         contactEmail: 'support@primemall.ng',
         whatsappPhone: '+2348100000006',
-        payoutPctInt: 72,
+      },
+    }),
+    prisma.supplier.create({
+      data: {
+        name: 'UrbanGoods Africa',
+        type: SupplierType.ONLINE,
+        status: 'ACTIVE',
+        contactEmail: 'hello@urbangoods.africa',
+        whatsappPhone: '+2348100000007',
+      },
+    }),
+    prisma.supplier.create({
+      data: {
+        name: 'Lagos Mega Supply',
+        type: SupplierType.PHYSICAL,
+        status: 'ACTIVE',
+        contactEmail: 'sales@lagosmega.ng',
+        whatsappPhone: '+2348100000008',
+      },
+    }),
+    prisma.supplier.create({
+      data: {
+        name: 'SwiftDrop NG',
+        type: SupplierType.ONLINE,
+        status: 'ACTIVE',
+        contactEmail: 'ops@swiftdrop.ng',
+        whatsappPhone: '+2348100000009',
       },
     }),
   ]);
 
-
-  console.log('🏷️  Seeding categories (with slugs)…');
+  console.log('🏷️  Seeding categories…');
   const categoryNames = [
     'Home & Kitchen',
     'Electronics',
@@ -235,7 +284,7 @@ async function main() {
   );
 
   console.log('🏷️  Seeding attributes & values…');
-  // Attributes: Color (SELECT), Size (SELECT), Material (TEXT-like via ProductAttributeText when used)
+  // Attributes: Color (SELECT), Size (SELECT), Material (TEXT)
   const colorAttr = await prisma.attribute.create({
     data: { name: 'Color', type: 'SELECT', isActive: true },
   });
@@ -250,15 +299,18 @@ async function main() {
     prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Red', code: 'RED', position: 1 } }),
     prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Blue', code: 'BLU', position: 2 } }),
     prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Black', code: 'BLK', position: 3 } }),
+    prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Green', code: 'GRN', position: 4 } }),
+    prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'White', code: 'WHT', position: 5 } }),
   ]);
 
   const sizeValues = await prisma.$transaction([
-    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'M', code: 'M', position: 1 } }),
-    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'L', code: 'L', position: 2 } }),
+    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'S', code: 'S', position: 1 } }),
+    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'M', code: 'M', position: 2 } }),
+    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'L', code: 'L', position: 3 } }),
+    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'XL', code: 'XL', position: 4 } }),
   ]);
 
   console.log('📦 Seeding products…');
-
   const titlePool = [
     'Wireless Headphones',
     'Stainless Steel Kettle',
@@ -286,13 +338,13 @@ async function main() {
   const TOTAL_OUT_OF_STOCK = 30;
   const TOTAL = TOTAL_IN_STOCK + TOTAL_OUT_OF_STOCK;
 
-  // Create all PUBLISHED products first (with inStock)
   const createdProducts: { id: string; i: number }[] = [];
   for (let i = 1; i <= TOTAL; i++) {
     const cat = categories[(i - 1) % categories.length];
     const brand = brands[(i - 1) % brands.length];
     const title = `${titlePool[i % titlePool.length]} #${i}`;
     const sup = suppliers[(i - 1) % suppliers.length];
+
     const p = await prisma.product.create({
       data: {
         title,
@@ -304,21 +356,18 @@ async function main() {
         vatFlag: true,
         status: 'PUBLISHED',
         imagesJson: productImages(i),
-        supplier: { connect: { id: sup.id } },        // 👈 attach supplier
+        supplier: { connect: { id: sup.id } },
         category: { connect: { id: cat.id } },
         brand: { connect: { id: brand.id } },
-        owner: { connect: { id: admin.id } },         // 👈 connect by id (email not needed)
+        owner: { connect: { id: admin.id } },
       },
       select: { id: true },
     });
 
-
     createdProducts.push({ id: p.id, i });
   }
 
-  /** ---------------------------------------------------------
-   *  NEW: Add 30 products with status 'PENDING' for moderation
-   * --------------------------------------------------------- */
+  // Pending products (also get offers later)
   const TOTAL_PENDING = 30;
   console.log(`⏳ Seeding ${TOTAL_PENDING} pending products…`);
   for (let j = 1; j <= TOTAL_PENDING; j++) {
@@ -331,120 +380,165 @@ async function main() {
     await prisma.product.create({
       data: {
         title,
-        description:
-          'Awaiting moderation. Submitted by admin for review prior to publishing.',
+        description: 'Awaiting moderation. Submitted by admin for review prior to publishing.',
         price: randomPrice(),
         sku: `SKU-PEND-${String(j).padStart(4, '0')}`,
         inStock: Math.random() > 0.4,
         vatFlag: true,
         status: 'PENDING',
         imagesJson: productImages(`pending-${j}`),
-        supplier: { connect: { id: sup2.id } },        // 👈 attach supplier
+        supplier: { connect: { id: sup2.id } },
         category: { connect: { id: cat.id } },
         brand: { connect: { id: brand.id } },
-        owner: { connect: { id: admin.id } },          // 👈 connect by id
+        owner: { connect: { id: admin.id } },
       },
     });
-
-
   }
 
-  console.log('🏷️  Tagging some products with attributes…');
-  // If you’ve added ProductAttributeValue / ProductAttributeText models:
-  // Safe-guard calls when tables exist
-  const haveAttrValueTable =
-    typeof (prisma as any).productAttributeValue?.create === 'function';
-  const haveAttrTextTable =
-    typeof (prisma as any).productAttributeText?.create === 'function';
-
-  if (haveAttrValueTable) {
-    const [red, blue] = colorValues;
-    const [sizeM, sizeL] = sizeValues;
-
-    // Tag first 20 *published* products with Color/Size
-    for (const { id, i } of createdProducts.slice(0, 20)) {
-      const color = i % 2 === 0 ? red : blue;
-      const size = i % 3 === 0 ? sizeL : sizeM;
-
+  console.log('🏷️  Tagging products with attributes…');
+  // Broadly apply attributes to many published products
+  for (const { id, i } of createdProducts) {
+    // Colors (1–3)
+    const colors = pickSome(colorValues, 1, 3);
+    for (const c of colors) {
       await prisma.productAttributeValue.create({
-        data: { productId: id, attributeId: colorAttr.id, valueId: color.id },
-      });
-      await prisma.productAttributeValue.create({
-        data: { productId: id, attributeId: sizeAttr.id, valueId: size.id },
+        data: { productId: id, attributeId: colorAttr.id, valueId: c.id },
       });
     }
-  }
 
-  if (haveAttrTextTable) {
-    // Add material text for a few *published* products (illustrative)
-    for (const { id } of createdProducts.slice(0, 6)) {
+    // Sizes (1–2)
+    const sizes = pickSome(sizeValues, 1, 2);
+    for (const s of sizes) {
+      await prisma.productAttributeValue.create({
+        data: { productId: id, attributeId: sizeAttr.id, valueId: s.id },
+      });
+    }
+
+    // Material text on ~40%
+    if (chance(0.4)) {
       await prisma.productAttributeText.create({
         data: {
           productId: id,
           attributeId: materialAttr.id,
-          value: 'Cotton/Polyester Blend',
+          value: sample(['Cotton', 'Polyester', 'Cotton/Poly Blend', 'Stainless Steel', 'BPA-free Plastic']),
         },
       });
     }
   }
 
-  console.log('🔀 Creating variants (Color × Size) for first 12 products…');
-  // Requires ProductVariant & ProductVariantOption tables
-  const canVariants =
-    typeof (prisma as any).productVariant?.create === 'function' &&
-    typeof (prisma as any).productVariantOption?.create === 'function';
+  console.log('🔀 Creating random variants…');
+  // Build up a map of variants per product for later offers
+  const variantsByProduct: Record<string, { id: string; sku: string }[]> = {};
 
-  if (canVariants) {
-    // Create 2×2 variants: [Red, Blue] × [M, L]
-    const [red, blue] = colorValues;
-    const [sizeM, sizeL] = sizeValues;
+  for (const { id, i } of createdProducts) {
+    // Each product gets 0–6 variants randomly
+    const makeVariants = randInt(0, 6);
+    if (makeVariants === 0) continue;
 
-    const productsForVariants = createdProducts.slice(0, 12);
-    for (const { id, i } of productsForVariants) {
-      const baseSku = `SKU-V-${String(i).padStart(4, '0')}`;
+    const product = await prisma.product.findUnique({ where: { id } });
+    const baseSku = (product?.sku || `SKU-V-${String(i).padStart(4, '0')}`).toUpperCase();
 
-      // four combinations
-      const combos = [
-        { color: red, size: sizeM, sku: `${baseSku}-RED-M`, priceBump: 0, inStock: true },
-        { color: red, size: sizeL, sku: `${baseSku}-RED-L`, priceBump: 300, inStock: true },
-        { color: blue, size: sizeM, sku: `${baseSku}-BLU-M`, priceBump: 200, inStock: true },
-        { color: blue, size: sizeL, sku: `${baseSku}-BLU-L`, priceBump: 500, inStock: (i % 3) !== 0 },
-      ];
+    const localVariants: { id: string; sku: string }[] = [];
+    const colors = pickSome(colorValues, 1, 3);
+    const sizes = pickSome(sizeValues, 1, 2);
 
-      // Fetch product to read base price for an optional variant price override
-      const product = await prisma.product.findUnique({ where: { id } });
-      const basePrice = Number(product?.price || 0);
+    // Generate up to makeVariants combinations
+    outer: for (const c of colors) {
+      for (const s of sizes) {
+        if (localVariants.length >= makeVariants) break outer;
 
-      for (const [idx, c] of combos.entries()) {
-        const variant = await prisma.productVariant.create({
+        const bump = [0, 200, 300, 500][randInt(0, 3)];
+        const sku = `${baseSku}-${(c.code || c.name).toUpperCase()}-${(s.code || s.name).toUpperCase()}`;
+        const v = await prisma.productVariant.create({
           data: {
             productId: id,
-            sku: c.sku,
-            price: c.priceBump ? new Prisma.Decimal(basePrice + c.priceBump) : undefined,
-            inStock: c.inStock,
-            imagesJson: productImages(`${i}-${idx + 1}`),
+            sku,
+            price: bump ? new Prisma.Decimal(Number(product?.price || 0) + bump) : undefined,
+            inStock: chance(0.8),
+            imagesJson: productImages(`${i}-${sku}`),
           },
         });
 
         await prisma.productVariantOption.create({
-          data: {
-            variantId: variant.id,
-            attributeId: colorAttr.id,
-            valueId: c.color.id,
-          },
+          data: { variantId: v.id, attributeId: colorAttr.id, valueId: c.id },
+        });
+        await prisma.productVariantOption.create({
+          data: { variantId: v.id, attributeId: sizeAttr.id, valueId: s.id },
         });
 
-        await prisma.productVariantOption.create({
+        localVariants.push({ id: v.id, sku });
+      }
+    }
+
+    variantsByProduct[id] = localVariants;
+  }
+
+  console.log('💸 Creating supplier offers (at least one per product)…');
+  // Add offers for ALL products (published + pending)
+  const allProducts = await prisma.product.findMany({
+    select: { id: true, price: true },
+  });
+
+  for (const p of allProducts) {
+    const retail = Number(p.price);
+    const vList = variantsByProduct[p.id] || [];
+
+    // Always at least ONE product-wide offer
+    const supForProductWide = sample(suppliers);
+    await prisma.supplierOffer.create({
+      data: {
+        supplierId: supForProductWide.id,
+        productId: p.id,
+        variantId: null,
+        price: supplierOfferFromRetail(retail),
+        currency: 'NGN',
+        inStock: true,
+        leadDays: randInt(1, 5),
+        isActive: true,
+      },
+    });
+
+    // Maybe add more product-wide offers (0–2 more)
+    const extraPw = randInt(0, 2);
+    const extraSuppliers = pickSome(
+      suppliers.filter((s) => s.id !== supForProductWide.id),
+      0,
+      extraPw
+    );
+    for (const sup of extraSuppliers) {
+      await prisma.supplierOffer.create({
+        data: {
+          supplierId: sup.id,
+          productId: p.id,
+          variantId: null,
+          price: supplierOfferFromRetail(retail * (0.95 + Math.random() * 0.1)), // slight variance
+          currency: 'NGN',
+          inStock: chance(0.9),
+          leadDays: randInt(2, 7),
+          isActive: true,
+        },
+      });
+    }
+
+    // Variant-specific offers for some products (~50%)
+    if (vList.length && chance(0.5)) {
+      const chosenVariants = pickSome(vList, 1, Math.min(3, vList.length));
+      for (const v of chosenVariants) {
+        const sup = sample(suppliers);
+        await prisma.supplierOffer.create({
           data: {
-            variantId: variant.id,
-            attributeId: sizeAttr.id,
-            valueId: c.size.id,
+            supplierId: sup.id,
+            productId: p.id,
+            variantId: v.id,
+            price: supplierOfferFromRetail(retail * (0.95 + Math.random() * 0.15)),
+            currency: 'NGN',
+            inStock: chance(0.85),
+            leadDays: randInt(2, 8),
+            isActive: true,
           },
         });
       }
     }
-  } else {
-    console.log('⚠️  Variant tables not found. Skipping variant creation.');
   }
 
   console.log('✅ Seed complete.');

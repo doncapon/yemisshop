@@ -1,7 +1,7 @@
 // routes/admin.products.ts
 import express, { Router } from 'express';
 import { PrismaClient, Prisma } from '@prisma/client';
-import { requireAdmin } from '../middleware/auth.js';
+import { requireAdmin, requireAuth } from '../middleware/auth.js';
 import {
   approveProduct as approveProductSvc,
   rejectProduct as rejectProductSvc,
@@ -138,6 +138,22 @@ const listPending: RequestHandler = async (req, res, next) => {
   } catch (e) {
     next(e);
   }
+};
+type OfferInput = {
+  supplierId: string;
+  price: number | string;    // NGN price
+  variantId?: string | null; // if set, price is for that variant
+  inStock?: boolean;
+  isActive?: boolean;
+};
+
+type CreateProductPayload = {
+  title: string;
+  description: string;
+  price: number | string;    // base UI price
+  sku: string;
+  // …your other fields (brandId, categoryId, imagesJson, etc.)
+  offers?: OfferInput[];     // <-- NEW
 };
 
 // ---- ROUTE ORDER: specific first, then generic ----
@@ -306,17 +322,17 @@ router.post('/', requireAdmin, async (req, res) => {
       attributeSelections = [], // <— NEW supported
       variants = [],            // <— NEW supported
     } = req.body ?? {};
-
+    const payload = req.body as CreateProductPayload;
     if (!supplierId) return res.status(400).json({ error: 'supplierId is required' });
 
     const created = await prisma.$transaction(async (tx) => {
       const product = await tx.product.create({
         data: {
-          title,
-          price: new Prisma.Decimal(price ?? 0),
+          title: payload.title,
+          description: payload.description,
+          price: new Prisma.Decimal(payload.price),
+          sku: payload.sku,
           status,
-          description,
-          sku: sku || '',
           vatFlag: vatFlag ?? undefined,
           inStock,
           imagesJson: Array.isArray(imagesJson) ? imagesJson : [],
@@ -326,15 +342,66 @@ router.post('/', requireAdmin, async (req, res) => {
         },
       });
 
-      await writeAttributesAndVariants(tx, product.id, attributeSelections, variants);
+      const offers = Array.isArray(payload.offers) ? payload.offers : [];
+      for (const o of offers) {
+        await prisma.supplierOffer.upsert({
+          where: {
+            supplierId_productId_variantId: {
+              supplierId: o.supplierId,
+              productId: product.id,
+              variantId: o.variantId ?? '',
+            },
+          },
+          update: {
+            price: new Prisma.Decimal(o.price),
+            inStock: o.inStock ?? true,
+            isActive: o.isActive ?? true,
+          },
+          create: {
+            supplierId: o.supplierId,
+            productId: product.id,
+            variantId: o.variantId ?? null,
+            price: new Prisma.Decimal(o.price),
+            inStock: o.inStock ?? true,
+            isActive: o.isActive ?? true,
+          },
+        });
+      } 
 
-      return product;
-    });
+    await writeAttributesAndVariants(tx, product.id, attributeSelections, variants);
 
-    res.status(201).json({ data: created });
+    return product;
+  });
+
+res.status(201).json({ data: created });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message || 'Failed to create product' });
-  }
+  res.status(400).json({ error: e?.message || 'Failed to create product' });
+}
+});
+
+
+// PUT /api/admin/products/:id/offers  { offers: OfferInput[] }
+router.put('/:id/offers', requireAdmin, async (req, res) => {
+  const { id: productId } = req.params as { id: string };
+  const offers = Array.isArray(req.body?.offers) ? req.body.offers : [];
+
+  await prisma.$transaction(async (tx) => {
+    await tx.supplierOffer.deleteMany({ where: { productId } });
+    if (offers.length) {
+      await tx.supplierOffer.createMany({
+        data: offers.map((o: { supplierId: any; variantId: any; price: Prisma.Decimal.Value; inStock: any; isActive: any; }) => ({
+          supplierId: o.supplierId,
+          productId,
+          variantId: o.variantId ?? null,
+          price: new Prisma.Decimal(o.price),
+          inStock: o.inStock ?? true,
+          isActive: o.isActive ?? true,
+        })),
+      });
+    }
+  });
+
+  res.json({ ok: true });
 });
 
 
@@ -762,15 +829,24 @@ router.delete('/:productId/attributes/text/:id', requireAdmin, wrap(async (req, 
 
 /* ---------------- variants ---------------- */
 
-router.get('/:productId/variants', requireAdmin, wrap(async (req, res) => {
-  const productId = IdSchema.parse(req.params.productId);
-  const variants = await prisma.productVariant.findMany({
-    where: { productId },
-    include: { options: { include: { attribute: true, value: true } } },
-    orderBy: [{ createdAt: 'asc' }],
-  });
-  res.json({ data: variants });
-}));
+/* ---------- GET /api/admin/products/:productId/variants ---------- */
+router.get(
+  '/:productId/variants',
+  requireAuth, requireAdmin,
+  async (req , res) => {
+
+    const { productId } = req.params;
+    const variants = await prisma.productVariant.findMany({
+      where: { productId },
+      select: { 
+        id: true, sku: true, inStock: true ,
+         options: { include: { attribute: true, value: true } }
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    return res.json({ data: variants });
+  }
+);
 
 router.post('/:productId/variants', requireAdmin, wrap(async (req, res) => {
   const productId = IdSchema.parse(req.params.productId);
@@ -895,6 +971,176 @@ async function replaceAllVariants(tx: Tx, productId: string, variants: any[]) {
     }
   }
 }
+
+
+
+const toDecimal = (v: any) => new Prisma.Decimal(String(v));
+
+/* ---------- GET /api/admin/products/:productId/offers ---------- */
+router.get(
+  '/:productId/offers',
+  requireAuth, requireAdmin,
+  async (req, res) => {
+
+    const { productId } = req.params;
+
+    const offers = await prisma.supplierOffer.findMany({
+      where: { productId },
+      include: {
+        supplier: { select: { id: true, name: true, whatsappPhone: true, contactEmail: true, status: true } },
+        variant:  { select: { id: true, sku: true, inStock: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return res.json({ data: offers });
+  }
+);
+
+/* ---------- POST /api/admin/products/:productId/offers ---------- */
+router.post(
+  '/:productId/offers',
+  requireAuth,requireAdmin,
+  async (req,res) => {
+
+    const { productId } = req.params;
+    const {
+      supplierId,
+      variantId,   // optional
+      price,
+      currency = 'NGN',
+      inStock = true,
+      leadDays,
+      isActive = true,
+    } = req.body ?? {};
+
+    if (!supplierId || price == null) {
+      return res.status(400).json({ error: 'supplierId and price are required' });
+    }
+
+    // Validate supplier exists
+    const supplier = await prisma.supplier.findUnique({ where: { id: supplierId }, select: { id: true } });
+    if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
+
+    // Validate product exists
+    const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true } });
+    if (!product) return res.status(404).json({ error: 'Product not found' });
+
+    // If variantId is provided, ensure it belongs to this product
+    if (variantId) {
+      const variant = await prisma.productVariant.findUnique({
+        where: { id: variantId },
+        select: { id: true, productId: true },
+      });
+      if (!variant || variant.productId !== productId) {
+        return res.status(400).json({ error: 'variantId does not belong to this product' });
+      }
+    }
+
+    try {
+      const created = await prisma.supplierOffer.create({
+        data: {
+          supplierId,
+          productId,
+          variantId: variantId || null,
+          price: toDecimal(price),
+          currency,
+          inStock: !!inStock,
+          leadDays: leadDays == null || leadDays === '' ? null : Number(leadDays),
+          isActive: !!isActive,
+        },
+      });
+      return res.status(201).json({ data: created });
+    } catch (e: any) {
+      // Unique tuple violation
+      if (e?.code === 'P2002') {
+        return res.status(409).json({ error: 'An offer for this (supplier, product, variant) already exists' });
+      }
+      console.error('Create offer failed:', e);
+      return res.status(500).json({ error: 'Could not create offer' });
+    }
+  }
+);
+
+/* ---------- PUT /api/admin/products/:productId/offers/:offerId ---------- */
+router.put(
+  '/:productId/offers/:offerId',
+  requireAuth,requireAdmin,
+  async (req,res) => {
+
+    const { productId, offerId } = req.params;
+    const payload = req.body ?? {};
+
+    // Fetch existing offer ensure it belongs to product
+    const existing = await prisma.supplierOffer.findUnique({
+      where: { id: offerId },
+      select: { id: true, productId: true },
+    });
+    if (!existing || existing.productId !== productId) {
+      return res.status(404).json({ error: 'Offer not found for this product' });
+    }
+
+    // If variantId is being changed, validate it belongs to product
+    if (payload.variantId) {
+      const variant = await prisma.productVariant.findUnique({
+        where: { id: payload.variantId },
+        select: { id: true, productId: true },
+      });
+      if (!variant || variant.productId !== productId) {
+        return res.status(400).json({ error: 'variantId does not belong to this product' });
+      }
+    }
+
+    const data: Prisma.SupplierOfferUpdateInput = {};
+    if (payload.supplierId) data.supplier = { connect: { id: payload.supplierId } };
+    if (payload.variantId !== undefined) {
+      data.variant = payload.variantId ? { connect: { id: payload.variantId } } : { disconnect: true };
+    }
+    if (payload.price != null) data.price = toDecimal(payload.price);
+    if (payload.currency != null) data.currency = String(payload.currency);
+    if (payload.inStock != null) data.inStock = !!payload.inStock;
+    if (payload.leadDays !== undefined) {
+      data.leadDays = payload.leadDays === '' || payload.leadDays == null ? null : Number(payload.leadDays);
+    }
+    if (payload.isActive != null) data.isActive = !!payload.isActive;
+
+    try {
+      const updated = await prisma.supplierOffer.update({
+        where: { id: offerId },
+        data,
+      });
+      return res.json({ data: updated });
+    } catch (e: any) {
+      if (e?.code === 'P2002') {
+        return res.status(409).json({ error: 'Another offer already exists with this (supplier, product, variant)' });
+      }
+      console.error('Update offer failed:', e);
+      return res.status(500).json({ error: 'Could not update offer' });
+    }
+  }
+);
+
+/* ---------- DELETE /api/admin/products/:productId/offers/:offerId ---------- */
+router.delete(
+  '/:productId/offers/:offerId',
+  requireAuth, requireAdmin,
+  async (req,res) => {
+
+    const { productId, offerId } = req.params;
+
+    // Make sure the offer belongs to the product before deleting
+    const existing = await prisma.supplierOffer.findUnique({
+      where: { id: offerId },
+      select: { id: true, productId: true },
+    });
+    if (!existing || existing.productId !== productId) {
+      return res.status(404).json({ error: 'Offer not found for this product' });
+    }
+
+    await prisma.supplierOffer.delete({ where: { id: offerId } });
+    return res.json({ ok: true });
+  }
+);
 
 export default router;
 

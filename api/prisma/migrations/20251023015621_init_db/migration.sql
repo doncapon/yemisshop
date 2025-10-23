@@ -61,11 +61,27 @@ CREATE TABLE "Supplier" (
     "apiBaseUrl" TEXT,
     "apiAuthType" TEXT,
     "apiKey" TEXT,
-    "payoutPctInt" INTEGER,
     "userId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Supplier_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "SupplierOffer" (
+    "id" TEXT NOT NULL,
+    "supplierId" TEXT NOT NULL,
+    "productId" TEXT NOT NULL,
+    "variantId" TEXT,
+    "price" DECIMAL(10,2) NOT NULL,
+    "currency" TEXT NOT NULL DEFAULT 'NGN',
+    "inStock" BOOLEAN NOT NULL DEFAULT true,
+    "leadDays" INTEGER,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "SupplierOffer_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -158,7 +174,7 @@ CREATE TABLE "Payment" (
     "orderId" TEXT NOT NULL,
     "reference" TEXT NOT NULL,
     "amount" DECIMAL(65,30) NOT NULL,
-    "status" "PaymentStatus" NOT NULL,
+    "status" "PaymentStatus" NOT NULL DEFAULT 'PENDING',
     "provider" TEXT,
     "channel" TEXT,
     "attemptNo" INTEGER,
@@ -166,9 +182,23 @@ CREATE TABLE "Payment" (
     "providerPayload" JSONB,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
+    "receiptNo" TEXT,
+    "receiptIssuedAt" TIMESTAMP(3),
+    "receiptData" JSONB,
     "paidAt" TIMESTAMP(3),
 
     CONSTRAINT "Payment_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "PaymentEvent" (
+    "id" TEXT NOT NULL,
+    "paymentId" TEXT NOT NULL,
+    "type" TEXT NOT NULL,
+    "data" JSONB,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "PaymentEvent_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -177,7 +207,6 @@ CREATE TABLE "OrderItem" (
     "orderId" TEXT NOT NULL,
     "variantId" TEXT,
     "productId" TEXT,
-    "supplierId" TEXT,
     "title" TEXT NOT NULL,
     "unitPrice" DECIMAL(10,2) NOT NULL,
     "quantity" INTEGER NOT NULL,
@@ -185,6 +214,9 @@ CREATE TABLE "OrderItem" (
     "status" TEXT,
     "selectedOptions" JSONB,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "chosenSupplierId" TEXT,
+    "chosenSupplierOfferId" TEXT,
+    "chosenSupplierUnitPrice" DECIMAL(10,2),
 
     CONSTRAINT "OrderItem_pkey" PRIMARY KEY ("id")
 );
@@ -197,7 +229,6 @@ CREATE TABLE "PurchaseOrder" (
     "subtotal" DECIMAL(10,2) NOT NULL,
     "platformFee" DECIMAL(10,2) NOT NULL,
     "supplierAmount" DECIMAL(10,2) NOT NULL,
-    "payoutPctInt" INTEGER NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'CREATED',
     "whatsappMsgId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -215,6 +246,18 @@ CREATE TABLE "PurchaseOrderItem" (
     "receiptUrl" TEXT,
 
     CONSTRAINT "PurchaseOrderItem_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "OrderActivity" (
+    "id" TEXT NOT NULL,
+    "orderId" TEXT NOT NULL,
+    "type" TEXT NOT NULL,
+    "message" TEXT,
+    "meta" JSONB,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "OrderActivity_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -326,6 +369,18 @@ CREATE UNIQUE INDEX "Supplier_name_key" ON "Supplier"("name");
 CREATE UNIQUE INDEX "Supplier_userId_key" ON "Supplier"("userId");
 
 -- CreateIndex
+CREATE INDEX "SupplierOffer_productId_idx" ON "SupplierOffer"("productId");
+
+-- CreateIndex
+CREATE INDEX "SupplierOffer_variantId_idx" ON "SupplierOffer"("variantId");
+
+-- CreateIndex
+CREATE INDEX "SupplierOffer_supplierId_idx" ON "SupplierOffer"("supplierId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "SupplierOffer_supplierId_productId_variantId_key" ON "SupplierOffer"("supplierId", "productId", "variantId");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Category_name_key" ON "Category"("name");
 
 -- CreateIndex
@@ -350,7 +405,16 @@ CREATE INDEX "Product_supplierId_idx" ON "Product"("supplierId");
 CREATE UNIQUE INDEX "Payment_reference_key" ON "Payment"("reference");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Payment_receiptNo_key" ON "Payment"("receiptNo");
+
+-- CreateIndex
 CREATE INDEX "Payment_status_paidAt_idx" ON "Payment"("status", "paidAt");
+
+-- CreateIndex
+CREATE INDEX "OrderItem_chosenSupplierId_idx" ON "OrderItem"("chosenSupplierId");
+
+-- CreateIndex
+CREATE INDEX "OrderItem_chosenSupplierOfferId_idx" ON "OrderItem"("chosenSupplierOfferId");
 
 -- CreateIndex
 CREATE INDEX "OrderItem_orderId_idx" ON "OrderItem"("orderId");
@@ -359,7 +423,10 @@ CREATE INDEX "OrderItem_orderId_idx" ON "OrderItem"("orderId");
 CREATE INDEX "OrderItem_productId_idx" ON "OrderItem"("productId");
 
 -- CreateIndex
-CREATE INDEX "OrderItem_supplierId_idx" ON "OrderItem"("supplierId");
+CREATE INDEX "OrderActivity_orderId_createdAt_idx" ON "OrderActivity"("orderId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "OrderActivity_type_createdAt_idx" ON "OrderActivity"("type", "createdAt");
 
 -- CreateIndex
 CREATE INDEX "Favorite_userId_idx" ON "Favorite"("userId");
@@ -422,6 +489,15 @@ ALTER TABLE "User" ADD CONSTRAINT "User_shippingAddressId_fkey" FOREIGN KEY ("sh
 ALTER TABLE "Supplier" ADD CONSTRAINT "Supplier_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "SupplierOffer" ADD CONSTRAINT "SupplierOffer_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "SupplierOffer" ADD CONSTRAINT "SupplierOffer_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "SupplierOffer" ADD CONSTRAINT "SupplierOffer_variantId_fkey" FOREIGN KEY ("variantId") REFERENCES "ProductVariant"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "Category" ADD CONSTRAINT "Category_parentId_fkey" FOREIGN KEY ("parentId") REFERENCES "Category"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -449,13 +525,22 @@ ALTER TABLE "Order" ADD CONSTRAINT "Order_shippingAddressId_fkey" FOREIGN KEY ("
 ALTER TABLE "Payment" ADD CONSTRAINT "Payment_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "PaymentEvent" ADD CONSTRAINT "PaymentEvent_paymentId_fkey" FOREIGN KEY ("paymentId") REFERENCES "Payment"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_variantId_fkey" FOREIGN KEY ("variantId") REFERENCES "ProductVariant"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_chosenSupplierId_fkey" FOREIGN KEY ("chosenSupplierId") REFERENCES "Supplier"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_chosenSupplierOfferId_fkey" FOREIGN KEY ("chosenSupplierOfferId") REFERENCES "SupplierOffer"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "PurchaseOrder" ADD CONSTRAINT "PurchaseOrder_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -468,6 +553,9 @@ ALTER TABLE "PurchaseOrderItem" ADD CONSTRAINT "PurchaseOrderItem_purchaseOrderI
 
 -- AddForeignKey
 ALTER TABLE "PurchaseOrderItem" ADD CONSTRAINT "PurchaseOrderItem_orderItemId_fkey" FOREIGN KEY ("orderItemId") REFERENCES "OrderItem"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "OrderActivity" ADD CONSTRAINT "OrderActivity_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Favorite" ADD CONSTRAINT "Favorite_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;

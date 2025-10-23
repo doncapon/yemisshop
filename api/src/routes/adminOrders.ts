@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { logOrderActivity } from '../services/activity.service.js';
+import { notifySuppliersForOrder } from '../services/notifySuppliers.js';
 
 const router = Router();
 
@@ -47,5 +48,28 @@ router.get('/:orderId/activities', requireAdmin, async (req, res, next) => {
     res.json({ data: items });
   } catch (e) { next(e); }
 });
+
+// POST /api/admin/orders/:orderId/notify-suppliers
+router.post('/:orderId/notify-suppliers', requireAdmin, async (req, res) => {
+  const { orderId } = req.params as { orderId: string };
+  try {
+    const result = await notifySuppliersForOrder(orderId);
+    return res.json(result);
+  } catch (e: any) {
+    return res.status(400).json({ error: e?.message || 'Notify failed' });
+  }
+});
+
+// GET /api/admin/orders/:orderId/notify-status
+router.get('/:orderId/notify-status', requireAdmin, async (req, res) => {
+  const { orderId } = req.params as { orderId: string };
+  // show suppliers + whether a whatsappMsgId exists
+  const pos = await prisma.purchaseOrder.findMany({
+    where: { orderId },
+    select: { id: true, supplierId: true, whatsappMsgId: true, status: true },
+  });
+  return res.json({ data: pos });
+});
+
 
 export default router;
