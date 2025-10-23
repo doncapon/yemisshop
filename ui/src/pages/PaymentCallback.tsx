@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
+import { useQuery } from '@tanstack/react-query';
 
 type VerifyResp = { ok?: boolean; status?: 'PAID' | 'PENDING' | 'FAILED' | 'CANCELED' | 'REFUNDED'; message?: string; };
 type StatusResp = { status: 'PAID' | 'PENDING' | 'FAILED' | 'CANCELED' | 'REFUNDED' };
@@ -27,6 +28,13 @@ export default function PaymentCallback() {
 
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
 
+  const meQ = useQuery({
+    queryKey: ['me-min'],
+    enabled: !!token,
+    queryFn: async () => (await api.get('/api/profile/me', { headers: { Authorization: `Bearer ${token}` } })).data as { role: string },
+    staleTime: 60_000,
+  });
+  const isAdmin = ['ADMIN', 'SUPER_ADMIN'].includes((meQ.data?.role || '').toUpperCase());
 
   const checkStatus = async () => {
     try {
@@ -69,7 +77,7 @@ export default function PaymentCallback() {
         { orderId, reference },
         { headers }
       );
-      
+
       if (data.status === 'PAID') {
         localStorage.removeItem('cart');
         setPhase('success');
@@ -141,6 +149,39 @@ export default function PaymentCallback() {
 
   return (
     <div className="max-w-4xl mx-auto px-4 md:px-8 py-8">
+
+      {
+        phase === 'success' && (
+          <>
+            {console.log('I am in ', isAdmin, orderId)}
+            {isAdmin && orderId && (
+
+              <button
+                className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                onClick={async () => {
+                  try {
+                    const res = await api.post(`/api/admin/orders/${orderId}/notify-suppliers`, {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+                    console.log("res: ", res);
+                    alert('Notifications (re)triggered.');
+                  } catch (e: any) {
+                    alert(e?.response?.data?.error || 'Could not notify suppliers.');
+                  }
+                }}
+              >
+                Notify suppliers
+              </button>
+            )}
+
+            <button
+              className="inline-flex items-center justify-center rounded-xl bg-emerald-600 text-white px-4 py-2 hover:bg-emerald-700"
+              onClick={() => nav('/orders')}
+            >
+              Go to orders
+            </button>
+          </>
+        )
+      }
+
       {/* Hero: matches dashboard header vibe */}
       <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-sky-700 via-sky-600 to-indigo-700 text-white">
         <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(255,255,255,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,0,0,0.15),transparent_60%)]" />

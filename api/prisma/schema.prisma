@@ -104,16 +104,47 @@ model Supplier {
   apiBaseUrl   String?
   apiAuthType  String?
   apiKey       String?
-  payoutPctInt Int?
+
+  offers SupplierOffer[] // all products this supplier offers
 
   userId String? @unique
   user   User?   @relation(fields: [userId], references: [id])
 
   products       Product[]
   purchaseOrders PurchaseOrder[]
-  orderItems     OrderItem[]     @relation("OrderItemSupplierRel")
+
+  // ✅ Keep the chosen-supplier back-rel
+  chosenOrderItems OrderItem[] @relation("OrderItemChosenSupplier")
 
   createdAt DateTime @default(now())
+}
+
+model SupplierOffer {
+  id         String  @id @default(cuid())
+  supplierId String
+  productId  String
+  variantId  String?
+
+  supplier Supplier        @relation(fields: [supplierId], references: [id])
+  product  Product         @relation(fields: [productId], references: [id])
+  variant  ProductVariant? @relation(fields: [variantId], references: [id])
+
+  price    Decimal @db.Decimal(10, 2)
+  currency String  @default("NGN")
+  inStock  Boolean @default(true)
+  leadDays Int?
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ✅ Back-rel name used below on OrderItem
+  orderItemsChosen OrderItem[] @relation("OrderItemChosenSupplierOffer")
+
+  @@unique([supplierId, productId, variantId])
+  @@index([productId])
+  @@index([variantId])
+  @@index([supplierId])
 }
 
 model Category {
@@ -190,7 +221,8 @@ model Product {
   supplierTypeOverride SupplierType?
   commissionPctInt     Int?
 
-  orderItems OrderItem[]
+  supplierOffers SupplierOffer[]
+  orderItems     OrderItem[]
 
   createdAt DateTime @default(now())
 
@@ -238,6 +270,7 @@ enum PaymentStatus {
   CANCELED
   REFUNDED
 }
+
 // prisma/schema.prisma
 model Payment {
   id              String        @id @default(cuid())
@@ -254,9 +287,9 @@ model Payment {
   updatedAt       DateTime      @updatedAt
 
   // Receipt
-  receiptNo       String?       @unique
+  receiptNo       String?   @unique
   receiptIssuedAt DateTime?
-  receiptData     Json?         // snapshot of data used to render/print
+  receiptData     Json? // snapshot of data used to render/print
 
   events PaymentEvent[]
   paidAt DateTime?
@@ -283,20 +316,15 @@ model PaymentEvent {
 model OrderItem {
   id        String          @id @default(cuid())
   orderId   String
-  variantId String? // <- optional
+  variantId String?
   variant   ProductVariant? @relation("VariantOrderItems", fields: [variantId], references: [id], onDelete: SetNull)
 
-  order Order @relation(fields: [orderId], references: [id])
-
+  order     Order    @relation(fields: [orderId], references: [id])
   productId String?
   product   Product? @relation(fields: [productId], references: [id])
 
-  supplierId String?
-  supplier   Supplier? @relation("OrderItemSupplierRel", fields: [supplierId], references: [id])
-
   purchaseOrderItems PurchaseOrderItem[]
 
-  // Keep these optional for existing data, backfill later
   title           String
   unitPrice       Decimal  @db.Decimal(10, 2)
   quantity        Int
@@ -305,9 +333,19 @@ model OrderItem {
   selectedOptions Json?
   createdAt       DateTime @default(now())
 
+  // ✅ chosen supplier (forward) — matches Supplier.chosenOrderItems
+  chosenSupplierId String?
+  chosenSupplier   Supplier? @relation("OrderItemChosenSupplier", fields: [chosenSupplierId], references: [id])
+
+  chosenSupplierOfferId String?
+  chosenSupplierOffer   SupplierOffer? @relation("OrderItemChosenSupplierOffer", fields: [chosenSupplierOfferId], references: [id])
+
+  chosenSupplierUnitPrice Decimal? @db.Decimal(10, 2)
+
+  @@index([chosenSupplierId])
+  @@index([chosenSupplierOfferId])
   @@index([orderId])
   @@index([productId])
-  @@index([supplierId])
 }
 
 model PurchaseOrder {
@@ -322,7 +360,6 @@ model PurchaseOrder {
   subtotal       Decimal  @db.Decimal(10, 2)
   platformFee    Decimal  @db.Decimal(10, 2)
   supplierAmount Decimal  @db.Decimal(10, 2)
-  payoutPctInt   Int
   status         String   @default("CREATED")
   whatsappMsgId  String?
   createdAt      DateTime @default(now())
@@ -453,12 +490,12 @@ model ProductVariant {
   productId String
   product   Product @relation(fields: [productId], references: [id])
 
-  sku        String   @unique
-  price      Decimal? @db.Decimal(10, 2) // overrides product.price if set
-  inStock    Boolean  @default(true)
+  sku        String                 @unique
+  price      Decimal?               @db.Decimal(10, 2) // overrides product.price if set
+  inStock    Boolean                @default(true)
   imagesJson String[]
-  createdAt  DateTime @default(now())
-
+  createdAt  DateTime               @default(now())
+  offers     SupplierOffer[] // ← variant-specific offers
   options    ProductVariantOption[]
   orderItems OrderItem[]            @relation("VariantOrderItems")
 }

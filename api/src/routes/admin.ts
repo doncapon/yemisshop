@@ -14,8 +14,6 @@ import {
   markPaymentPaid,
   markPaymentRefunded,
 
-  approveProduct as approveProductSvc,
-  rejectProduct as rejectProductSvc,
   listPayments as listPaymentsSvc,
   opsSnapshot as opsSnapshotSvc,
   createCoupon as createCouponSvc,

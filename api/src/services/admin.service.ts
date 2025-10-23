@@ -71,8 +71,103 @@ function endOfDay(d: Date) {
 /* Overview                                                            */
 /* ------------------------------------------------------------------ */
 
-export async function getOverview(): Promise<Overview> {
-  // Users
+
+// helpers you can keep at top of the file
+const variantAwareAvailable = {
+  OR: [
+    { inStock: true },
+    { ProductVariant: { some: { inStock: true } } }, // <-- relation name
+  ],
+} as const;
+
+const anyOffer = {
+  OR: [
+    { supplierOffers: { some: {} } }, // product-wide
+    { ProductVariant: { some: { offers: { some: {} } } } }, // variant-level
+  ],
+} as const;
+
+const anyActiveOffer = {
+  OR: [
+    { supplierOffers: { some: { isActive: true, inStock: true } } },
+    { ProductVariant: { some: { offers: { some: { isActive: true, inStock: true } } } } },
+  ],
+} as const;
+
+const noOffer = {
+  AND: [
+    { supplierOffers: { none: {} } },
+    { ProductVariant: { none: { offers: { some: {} } } } },
+  ],
+} as const;
+
+const noActiveOffer = {
+  AND: [
+    { supplierOffers: { none: { isActive: true, inStock: true } } },
+    { ProductVariant: { none: { offers: { some: { isActive: true, inStock: true } } } } },
+  ],
+} as const;
+
+  export async function getOverview() {
+    const [
+  // core status
+  productsTotal,
+  productsPending,
+  productsRejected,
+  productsPublished,
+
+  // availability (variant-aware)
+  productsAvailable,                 // across all statuses
+  productsPublishedAvailable,        // only published
+
+  // offers coverage
+  productsWithOffers,
+  productsWithoutOffers,
+  productsPublishedWithOffers,
+  productsPublishedWithoutOffers,
+
+  // active offers (sellable)
+  productsWithActiveOffer,
+  productsPublishedWithActiveOffer,
+
+  // "live" = published & available & active offer
+  productsLive,
+
+  // variant mix
+  productsWithVariants,
+  productsSimple,
+
+  // base stock split (non variant-aware, quick look)
+  productsPublishedInStockBaseOnly,
+  productsPublishedOutOfStockBaseOnly,
+] = await Promise.all([
+  prisma.product.count(),
+  prisma.product.count({ where: { status: 'PENDING' } }),
+  prisma.product.count({ where: { status: 'REJECTED' } }),
+  prisma.product.count({ where: { status: 'PUBLISHED' } }),
+
+  prisma.product.count({ where: variantAwareAvailable }),
+  prisma.product.count({ where: { status: 'PUBLISHED', ...variantAwareAvailable } }),
+
+  prisma.product.count({ where: anyOffer }),
+  prisma.product.count({ where: noOffer }),
+  prisma.product.count({ where: { status: 'PUBLISHED', ...anyOffer } }),
+  prisma.product.count({ where: { status: 'PUBLISHED', ...noOffer } }),
+
+  prisma.product.count({ where: anyActiveOffer }),
+  prisma.product.count({ where: { status: 'PUBLISHED', ...anyActiveOffer } }),
+
+  prisma.product.count({
+    where: { status: 'PUBLISHED', AND: [variantAwareAvailable, anyActiveOffer] },
+  }),
+
+  prisma.product.count({ where: { ProductVariant: { some: {} } } }),
+  prisma.product.count({ where: { ProductVariant: { none: {} } } }),
+
+  prisma.product.count({ where: { status: 'PUBLISHED', inStock: true } }),
+  prisma.product.count({ where: { status: 'PUBLISHED', inStock: false } }),
+]);
+
   const [totalUsers, totalCustomers, totalAdmins, totalSuperAdmins] = await Promise.all([
     prisma.user.count(),
     prisma.user.count({ where: { role: 'SHOPPER' } }),
@@ -80,31 +175,7 @@ export async function getOverview(): Promise<Overview> {
     prisma.user.count({ where: { role: 'SUPER_ADMIN' } }),
   ]);
 
-  // Products (assuming status: | 'PUBLISHED' | 'REJECTED')
-  const [productsPending, productsPublished, productsLive, productsOffline, productsRejected,productsInStock, productsOutStock, productsTotal] = await Promise.all([
-    prisma.product.count({ where: { status: 'PENDING' } }),
-    prisma.product.count({ where: { status: 'PUBLISHED' } }),
-    await prisma.product.count({
-      where: {
-        AND: [{ status: 'PUBLISHED' }, { inStock: true }],
-      },
-    }),
-    await prisma.product.count({
-      where: {
-        AND: [{ status: 'PUBLISHED' }, { inStock: false }],
-      },
-    }),
-    prisma.product.count({ where: { status: 'REJECTED' } }),
-    prisma.product.count({ where: { inStock:  true } }),
-    prisma.product.count({ where: { inStock:  false } }),
-    prisma.product.count(),
-
-
-  ]);
-
-
-
-
+  
   // Orders today
   const todayStart = startOfDay(new Date());
   const todayEnd = addDays(todayStart, 1);
@@ -152,21 +223,44 @@ export async function getOverview(): Promise<Overview> {
   }
 
   return {
-    totalUsers,
-    totalSuperAdmins,
-    totalAdmins,
-    totalCustomers,
-    productsPending,
-    productsPublished,
-    productsLive,
-    productsInStock,
-    productsOutStock,
-    productsOffline,
-    productsTotal,
-    productsRejected,
+    
     ordersToday,
     revenueToday,
     sparklineRevenue7d,
+    users: {
+
+      totalUsers,
+      totalSuperAdmins,
+      totalAdmins,
+      totalCustomers,
+    },
+    products: {
+      total: productsTotal,
+      pending: productsPending,
+      rejected: productsRejected,
+      published: productsPublished,                 // approval state
+      live: productsLive,                           // sellable & discoverable
+      availability: {
+        allStatusesAvailable: productsAvailable,
+        publishedAvailable: productsPublishedAvailable,
+      },
+      offers: {
+        withAny: productsWithOffers,
+        withoutAny: productsWithoutOffers,
+        publishedWithAny: productsPublishedWithOffers,
+        publishedWithoutAny: productsPublishedWithoutOffers,
+        withActive: productsWithActiveOffer,
+        publishedWithActive: productsPublishedWithActiveOffer,
+      },
+      variantMix: {
+        withVariants: productsWithVariants,
+        simple: productsSimple,
+      },
+      publishedBaseStock: {
+        inStock: productsPublishedInStockBaseOnly,
+        outOfStock: productsPublishedOutOfStockBaseOnly,
+      },
+    },
   };
 }
 

@@ -13,7 +13,7 @@ import { requireRole } from '../middleware/roles.js';
 
 const router = Router();
 
-// Zod schema for incoming payloads (note: payoutPct maps to Prisma's payoutPctInt)
+// Zod schema for incoming payloads (note: payoutPct maps to Prisma's)
 const supplierSchema = z.object({
   name: z.string().min(2),
   contactEmail: z.string().email().optional(),
@@ -38,7 +38,6 @@ function toCreateData(input: z.infer<typeof supplierSchema>) {
     apiBaseUrl: input.apiBaseUrl ?? null,
     apiAuthType: input.apiAuthType ?? null,
     apiKey: input.apiKey ?? null,
-    payoutPctInt: input.payoutPct ?? null,
     userId: input.userId ?? null,
   };
 }
@@ -54,7 +53,6 @@ function toUpdateData(input: Partial<z.infer<typeof supplierSchema>>) {
   if (input.apiBaseUrl !== undefined) data.apiBaseUrl = input.apiBaseUrl ?? null;
   if (input.apiAuthType !== undefined) data.apiAuthType = input.apiAuthType ?? null;
   if (input.apiKey !== undefined) data.apiKey = input.apiKey ?? null;
-  if (input.payoutPct !== undefined) data.payoutPctInt = input.payoutPct ?? null;
   if (input.userId !== undefined) data.userId = input.userId ?? null;
   return data;
 }

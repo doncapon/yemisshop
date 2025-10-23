@@ -22,6 +22,7 @@ import path from 'path';
 import uploadsRouter from './routes/uploads.js';
 import * as fs from 'fs';
 import adminPaymentsRouter from './routes/adminPayments.js';
+import adminReports from './routes/adminReports.js';
 
 
 const app = express();
@@ -61,6 +62,7 @@ app.use('/api/admin/suppliers', adminSuppliers);
 app.use('/api/admin/order-activities', adminActivitiesRouter);
 app.use('/api/admin/orders', adminOrdersRouter);
 app.use('/api', adminPaymentsRouter);
+app.use('/api/admin/reports',  adminReports);
 
 
 const UPLOADS_DIR =

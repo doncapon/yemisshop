@@ -26,7 +26,7 @@ router.get('/', requireAdmin, async (_req, res) => {
 // POST /api/admin/suppliers
 router.post('/', requireSuper, async (req, res) => {
   try {
-    const { name, type = 'PHYSICAL', status = 'ACTIVE', contactEmail, whatsappPhone, payoutPctInt } = req.body || {};
+    const { name, type = 'PHYSICAL', status = 'ACTIVE', contactEmail, whatsappPhone } = req.body || {};
     if (!name) return res.status(400).json({ error: 'name is required' });
 
     const created = await prisma.supplier.create({
@@ -36,7 +36,6 @@ router.post('/', requireSuper, async (req, res) => {
         status: status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE',
         contactEmail: contactEmail || null,
         whatsappPhone: whatsappPhone || null,
-        payoutPctInt: typeof payoutPctInt === 'number' ? payoutPctInt : payoutPctInt ? Number(payoutPctInt) : null,
       },
     });
     res.status(201).json({ data: created });
@@ -49,7 +48,7 @@ router.post('/', requireSuper, async (req, res) => {
 router.put('/:id', requireSuper, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, type, status, contactEmail, whatsappPhone, payoutPctInt } = req.body || {};
+    const { name, type, status, contactEmail, whatsappPhone } = req.body || {};
 
     const updated = await prisma.supplier.update({
       where: { id },
@@ -59,7 +58,6 @@ router.put('/:id', requireSuper, async (req, res) => {
         ...(status != null ? { status: status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE' } : {}),
         ...(contactEmail !== undefined ? { contactEmail: contactEmail || null } : {}),
         ...(whatsappPhone !== undefined ? { whatsappPhone: whatsappPhone || null } : {}),
-        ...(payoutPctInt !== undefined ? { payoutPctInt: payoutPctInt === null ? null : Number(payoutPctInt) } : {}),
       },
     });
     res.json({ data: updated });

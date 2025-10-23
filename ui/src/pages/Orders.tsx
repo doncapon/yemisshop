@@ -171,17 +171,17 @@ export default function OrdersPage() {
     );
   };
   const tdy = todayYMD();
-const isTodayActive = from === tdy && to === tdy;
+  const isTodayActive = from === tdy && to === tdy;
 
-const toggleToday = () => {
-  if (isTodayActive) {
-    setFrom('');
-    setTo('');
-  } else {
-    setFrom(tdy);
-    setTo(tdy);
-  }
-};
+  const toggleToday = () => {
+    if (isTodayActive) {
+      setFrom('');
+      setTo('');
+    } else {
+      setFrom(tdy);
+      setTo(tdy);
+    }
+  };
 
 
   const SortHeader = ({
@@ -596,6 +596,23 @@ const toggleToday = () => {
                               >
                                 Download PDF
                               </button>}
+                              {isAdmin && String(o.status).toUpperCase() !== 'PENDING' && (
+                                <button
+                                  className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-1.5 hover:bg-black/5"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    try {
+                                      await api.post(`/api/admin/orders/${o.id}/notify-suppliers`, {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+                                      alert('Notifications (re)triggered.');
+                                    } catch (e: any) {
+                                      alert(e?.response?.data?.error || 'Could not notify suppliers.');
+                                    }
+                                  }}
+                                >
+                                  Notify suppliers
+                                </button>
+                              )}
+
                             </div>
                           ) : (
                             <span className="text-xs text-ink-soft">—</span>

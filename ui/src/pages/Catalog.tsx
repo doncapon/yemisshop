@@ -19,14 +19,22 @@ import {
 } from 'lucide-react';
 
 /* ---------------- Types (tolerant to optional richer payloads) ---------------- */
+type SupplierOfferLite = {
+  id: string;
+  isActive?: boolean;
+  inStock?: boolean;
+};
+
 type Variant = {
   id: string;
   sku?: string;
   price?: number | null;
   inStock?: boolean;
   imagesJson?: string[];
+  // NEW: include offers at variant level (if your API returns them)
+  offers?: SupplierOfferLite[];
 };
-// keep id required; other props can be optional
+
 type Product = {
   id: string;
   title: string;
@@ -36,15 +44,29 @@ type Product = {
   imagesJson?: string[];
   categoryId?: string | null;
   categoryName?: string | null;
-
-  // NEW (optional)
   brandName?: string | null;
   brand?: { id: string; name: string } | null;
-  variants?: Variant[]; // if you declared Variant elsewhere
+  variants?: Variant[];
+
+  // NEW: direct product-level offers
+  supplierOffers?: SupplierOfferLite[];
+
+  // computed
   ratingAvg?: number | null;
   ratingCount?: number | null;
   attributesSummary?: { attribute: string; value: string }[];
+
+  // NEW: computed convenience flag
+  hasOffers?: boolean;
 };
+
+function productHasOffers(x: { supplierOffers?: SupplierOfferLite[]; variants?: Variant[] }) {
+  const direct = (x.supplierOffers || []).some(o => (o?.isActive ?? true) && (o?.inStock ?? true));
+  const viaVariants =
+    (x.variants || []).some(v => (v.offers || []).some(o => (o?.isActive ?? true) && (o?.inStock ?? true)));
+  return direct || viaVariants;
+}
+
 
 const ngn = new Intl.NumberFormat('en-NG', {
   style: 'currency',
@@ -52,14 +74,46 @@ const ngn = new Intl.NumberFormat('en-NG', {
   maximumFractionDigits: 2,
 });
 
+// types stay the same
 type PriceBucket = { label: string; min: number; max?: number };
-const PRICE_BUCKETS: PriceBucket[] = [
-  { label: '₦1,000 – ₦4,999', min: 1000, max: 4999 },
-  { label: '₦5,000 – ₦9,999', min: 5000, max: 9999 },
-  { label: '₦10,000 – ₦49,999', min: 10000, max: 49999 },
-  { label: '₦50,000 – ₦99,999', min: 50000, max: 99999 },
-  { label: '₦100,000+', min: 100000 },
-];
+
+const formatN = (n: number) => '₦' + n.toLocaleString();
+
+/** Builds buckets like: 1k–4,999; 5k–9,999; 10k–49,999; 50k–99,999; 100k–499,999; 500k–999,999; ... */
+function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceBucket[] {
+  if (!Number.isFinite(maxPrice) || maxPrice <= 0) {
+    // sensible default if dataset is empty
+    return [
+      { label: '₦1,000 – ₦4,999', min: 1_000, max: 4_999 },
+      { label: '₦5,000 – ₦9,999', min: 5_000, max: 9_999 },
+      { label: '₦10,000 – ₦49,999', min: 10_000, max: 49_999 },
+      { label: '₦50,000 – ₦99,999', min: 50_000, max: 99_999 },
+      { label: '₦100,000+', min: 100_000 },
+    ];
+  }
+
+  // thresholds: 1k, 5k, 10k, 50k, 100k, 500k, 1m, 5m, ...
+  const thresholds: number[] = [baseStep];
+  let mult = 5; // alternate ×5 then ×2  → 1,5,10,50,100,500,...
+  while (thresholds[thresholds.length - 1] < maxPrice) {
+    const next = thresholds[thresholds.length - 1] * mult;
+    thresholds.push(next);
+    mult = mult === 5 ? 2 : 5;
+  }
+
+  // build [t[i] .. (t[i+1]-1)] and final open-ended
+  const buckets: PriceBucket[] = [];
+  for (let i = 0; i < thresholds.length; i++) {
+    const start = thresholds[i];
+    const next = thresholds[i + 1];
+    const end = next ? next - 1 : undefined;
+    const label = end ? `${formatN(start)} – ${formatN(end)}` : `${formatN(start)}+`;
+    buckets.push({ label, min: start, max: end });
+  }
+  return buckets;
+}
+
+/** Keep your inBucket helper */
 function inBucket(price: number, b: PriceBucket) {
   return b.max == null ? price >= b.min : price >= b.min && price <= b.max;
 }
@@ -192,35 +246,59 @@ export default function Catalog() {
 
   // All products
   const productsQ = useQuery<Product[]>({
-    queryKey: ['products', { include: 'brand,variants,attributes' }],
+    queryKey: ['products', { include: 'brand,variants,attributes,offers' }], // ← add "offers"
     queryFn: async () => {
-      const res = await api.get('/api/products?include=brand,variants,attributes');
+      // Pass include as a param so the backend can expand relations
+      const res = await api.get('/api/products', { params: { include: 'brand,variants,attributes,offers' } });
       const payload = res.data;
       const raw: any[] = Array.isArray(payload) ? payload : (payload?.data ?? []);
 
-      const normalized = raw
+      const normalizedAll = raw
         .filter((x) => x && typeof x.id === 'string')
-        .map((x) => ({
-          id: x.id as string,
-          title: String(x.title ?? ''),
-          description: x.description ?? '',
-          price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
-          inStock: x.inStock !== false,
-          imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
-          categoryId: x.categoryId ?? null,
-          categoryName: x.categoryName ?? null,
+        .map((x) => {
+          // ensure variants carry offers array if provided
+          const variants = Array.isArray(x.variants)
+            ? x.variants.map((v: any) => ({
+              id: String(v.id),
+              sku: v.sku,
+              price: Number.isFinite(Number(v.price)) ? Number(v.price) : undefined,
+              inStock: v.inStock !== false,
+              imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+              offers: Array.isArray(v.offers) ? v.offers : [], // ← keep variant offers
+            }))
+            : [];
 
-          brandName: x.brandName ?? x.brand?.name ?? null,
-          brand: x.brand ? { id: String(x.brand.id), name: String(x.brand.name) } : null,
-          variants: Array.isArray(x.variants) ? x.variants : [],
-          ratingAvg: x.ratingAvg ?? null,
-          ratingCount: x.ratingCount ?? null,
-          attributesSummary: Array.isArray(x.attributesSummary) ? x.attributesSummary : [],
-        })) as Product[];
+          const supplierOffers = Array.isArray(x.supplierOffers) ? x.supplierOffers : []; // ← keep product offers
 
-      return normalized;
+          const p: Product = {
+            id: String(x.id),
+            title: String(x.title ?? ''),
+            description: x.description ?? '',
+            price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
+            inStock: x.inStock !== false,
+            imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
+            categoryId: x.categoryId ?? null,
+            categoryName: x.categoryName ?? null,
+            brandName: x.brandName ?? x.brand?.name ?? null,
+            brand: x.brand ? { id: String(x.brand.id), name: String(x.brand.name) } : null,
+            variants,
+            ratingAvg: x.ratingAvg ?? null,
+            ratingCount: x.ratingCount ?? null,
+            attributesSummary: Array.isArray(x.attributesSummary) ? x.attributesSummary : [],
+            supplierOffers,
+          };
+
+          p.hasOffers = productHasOffers(p);
+          return p;
+        }) as Product[];
+
+      // ← Only return products that have at least one (active & in-stock) supplier offer
+      const withOffersOnly = normalizedAll.filter(p => p.hasOffers);
+
+      return withOffersOnly;
     },
   });
+
 
   // Favorites
   const favQuery = useQuery({
@@ -344,6 +422,24 @@ export default function Catalog() {
     () => productsQ.data ?? [],
     [productsQ.data]
   );
+
+  // AFTER products are normalized:
+  const maxPriceSeen = useMemo(() => {
+    const prices = (products ?? [])
+      .map(getMinPrice)
+      .filter((n) => Number.isFinite(n) && n > 0) as number[];
+    return prices.length ? Math.max(...prices) : 0;
+  }, [products]);
+
+  const PRICE_BUCKETS = useMemo(
+    () => generateDynamicPriceBuckets(maxPriceSeen, 1_000), // base step = ₦1,000
+    [maxPriceSeen]
+  );
+
+  // Optional: if buckets change, clear selected ranges to avoid stale indexes
+  useEffect(() => {
+    setSelectedBucketIdxs([]);
+  }, [PRICE_BUCKETS.length]);
 
   // Normalizers
   const norm = (s: string) => s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
@@ -925,7 +1021,7 @@ export default function Catalog() {
                             // Variant products: guide to detail page
                             <Link
                               to={`/product/${p.id}`}
-                              className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm border bg-zinc-900 text-white border-zinc-900 hover:opacity-90"
+                              className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm border bg-zinc-500 text-white border-zinc-900 hover:opacity-90"
                               onClick={() => bumpClick(p.id)}
                               aria-label="Choose options"
                               title="Choose options"

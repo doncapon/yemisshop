@@ -182,6 +182,18 @@ export default function Navbar() {
             </NavLink>
           )}
 
+           {token && (
+            <NavLink
+              to="/orders"
+              end
+              className={({ isActive }) =>
+                `${linkBase} ${isActive ? linkActive : linkInactive}`
+              }
+            >
+              Orders
+            </NavLink>
+          )}
+
           {(userRole === 'ADMIN' || userRole === 'SUPER_ADMIN') && (
             <NavLink
               to="/admin"

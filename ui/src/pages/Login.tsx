@@ -30,8 +30,8 @@ function nukeAuthStorage() {
 }
 
 export default function Login() {
-  const [email, setEmail] = useState('shopper@example.com');           // put your seeded email here temporarily to test
-  const [password, setPassword] = useState('Shopper123!');     // put your seeded password here temporarily to test
+  const [email, setEmail] = useState('superadmin@example.com');           // put your seeded email here temporarily to test
+  const [password, setPassword] = useState('SuperAdmin123!');     // put your seeded password here temporarily to test
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 

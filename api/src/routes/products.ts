@@ -113,32 +113,55 @@ const ListQuery = z.object({
 // GET /api/products?include=brand,variants,attributes
 router.get('/', async (req, res) => {
   try {
-    const include = String(req.query.include || '').toLowerCase();
-    const wantBrand = include.includes('brand');
-    const wantVariants = include.includes('variants');
-    const wantAttributes = include.includes('attributes');
+    const includeStr = String(req.query.include || '').toLowerCase();
+    const wantBrand       = includeStr.includes('brand');
+    const wantVariants    = includeStr.includes('variants');
+    const wantAttributes  = includeStr.includes('attributes');
+    const wantOffers      = includeStr.includes('offers');
+    const withOffersOnly  = ['1', 'true', 'yes'].includes(String(req.query.withOffersOnly || '').toLowerCase());
+
+    const where: any = { status: 'PUBLISHED' };
+
+    // Optional: only return products that have at least one active, in-stock offer
+    if (withOffersOnly && wantOffers) {
+      where.OR = [
+        { supplierOffers: { some: { isActive: true, inStock: true } } },
+        { ProductVariant: { some: { offers: { some: { isActive: true, inStock: true } } } } },
+      ];
+    }
 
     const rows = await prisma.product.findMany({
-      where: { status: 'PUBLISHED' },     // <-- published only
+      where,
       orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        price: true,
-        inStock: true,
-        imagesJson: true,
-        categoryId: true,
-        brandId: true,
+      // Use include for relations; scalars come by default (no select).
+      include: {
         category: { select: { id: true, name: true, slug: true } },
-        ...(wantBrand && { brand: { select: { id: true, name: true } } }),
-        ...(wantVariants && {
+        ...(wantBrand ? { brand: { select: { id: true, name: true } } } : {}),
+
+        // product-wide offers
+        ...(wantOffers ? {
+          supplierOffers: {
+            select: { id: true, isActive: true, inStock: true, price: true, currency: true }
+          }
+        } : {}),
+
+        // variants (name is ProductVariant in your schema)
+        ...(wantVariants ? {
           ProductVariant: {
-            select: { id: true, sku: true, price: true, inStock: true, imagesJson: true },
             orderBy: { createdAt: 'asc' },
-          },
-        }),
-        ...(wantAttributes && {
+            select: {
+              id: true, sku: true, price: true, inStock: true, imagesJson: true,
+              ...(wantOffers ? {
+                offers: {
+                  select: { id: true, isActive: true, inStock: true, price: true, currency: true }
+                }
+              } : {}),
+            },
+          }
+        } : {}),
+
+        // attributes
+        ...(wantAttributes ? {
           ProductAttributeValue: {
             select: {
               id: true,
@@ -153,42 +176,59 @@ router.get('/', async (req, res) => {
               value: true,
             },
           },
-        }),
+        } : {}),
       },
     });
 
-    const data = rows.map((p: any) => ({
-      id: p.id,
-      title: p.title,
-      description: p.description,
-      price: Number(p.price),                           // normalize Decimal
-      inStock: p.inStock !== false,
-      imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
-      categoryId: p.categoryId ?? p.category?.id ?? null,
-      categoryName: p.category?.name ?? null,
-      brandId: p.brandId ?? null,
-      brand: wantBrand && p.brand ? { id: p.brand.id, name: p.brand.name } : null,
-      brandName: wantBrand && p.brand ? p.brand.name : null,
-      variants: wantVariants ? (p.ProductVariant ?? []) : undefined,  // may be empty
-      attributesSummary: wantAttributes
-        ? [
-            ...(p.ProductAttributeValue ?? []).map((x: any) => ({
-              attribute: x.attribute?.name ?? '',
-              value: x.value?.name ?? '',
-            })),
-            ...(p.ProductAttributeText ?? []).map((x: any) => ({
-              attribute: x.attribute?.name ?? '',
-              value: String(x.value ?? ''),
-            })),
-          ]
-        : undefined,
-    }));
+    const data = rows.map((p: any) => {
+      const variants = (p.ProductVariant ?? []).map((v: any) => ({
+        id: v.id,
+        sku: v.sku,
+        price: v.price != null ? Number(v.price) : undefined,
+        inStock: v.inStock !== false,
+        imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+        ...(wantOffers ? { offers: Array.isArray(v.offers) ? v.offers : [] } : {}),
+      }));
+
+      return {
+        id: p.id,
+        title: p.title,
+        description: p.description,
+        price: p.price != null ? Number(p.price) : undefined,
+        inStock: p.inStock !== false,
+        imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
+        categoryId: p.categoryId ?? p.category?.id ?? null,
+        categoryName: p.category?.name ?? null,
+        brandId: p.brandId ?? null,
+        brand: wantBrand && p.brand ? { id: p.brand.id, name: p.brand.name } : null,
+        brandName: wantBrand && p.brand ? p.brand.name : null,
+
+        // expose offers so the frontend can filter on them
+        ...(wantOffers ? { supplierOffers: Array.isArray(p.supplierOffers) ? p.supplierOffers : [] } : {}),
+        ...(wantVariants ? { variants } : {}),
+
+        attributesSummary: wantAttributes
+          ? [
+              ...(p.ProductAttributeValue ?? []).map((x: any) => ({
+                attribute: x.attribute?.name ?? '',
+                value: x.value?.name ?? '',
+              })),
+              ...(p.ProductAttributeText ?? []).map((x: any) => ({
+                attribute: x.attribute?.name ?? '',
+                value: String(x.value ?? ''),
+              })),
+            ]
+          : undefined,
+      };
+    });
 
     res.json({ data });
   } catch (e) {
+    console.error('GET /api/products failed:', e);
     res.status(500).json({ error: 'Could not load products' });
   }
 });
+
 
 
 /* ---------------- SIMILAR: must be before '/:id' ---------------- */

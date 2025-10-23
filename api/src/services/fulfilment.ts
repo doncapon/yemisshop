@@ -1,7 +1,7 @@
 // src/services/fulfilment.ts
 import { prisma } from '../lib/prisma.js';
 import { Decimal } from '@prisma/client/runtime/library';
-import { waSendText } from '../lib/whatsapp.js';
+import { waSendText } from './whatsapp.js';
 import {
   callSupplierPlaceOrder,
   callSupplierPay,
@@ -72,7 +72,6 @@ export async function handlePaidOrder(orderId: string) {
 
     let platformFee = new Decimal(0);
     let supplierAmount = new Decimal(0);
-    const payoutPct = supplier.payoutPctInt ?? DEFAULT_PHYSICAL_PAYOUT;
 
     if (supplier.type === 'PHYSICAL') {
       supplierAmount = subtotal.mul(payoutPct);
@@ -98,7 +97,6 @@ export async function handlePaidOrder(orderId: string) {
         subtotal: subtotal.toNumber(),
         platformFee: platformFee.toNumber(),
         supplierAmount: supplierAmount.toNumber(),
-        payoutPctInt: payoutPct,
         status: 'CREATED',
         items: { create: items.map((it) => ({ orderItemId: it.id })) },
       },

@@ -15,6 +15,8 @@ import {
   WEBHOOK_ACCEPT_CARD,
   WEBHOOK_ACCEPT_BANK_TRANSFER,
 } from '../config/paystack.js';
+import { notifySuppliersForOrder } from '../services/notifySuppliers.js';
+
 
 const router = Router();
 
@@ -332,11 +334,21 @@ router.post('/verify', requireAuth, async (req: Request, res: Response) => {
       });
 
       // 2c) Update order workflow status (adapt to your terms)
-      const sta = (process.env.TURN_OFF_AWAIT_CONF === "true")? 'PAID': 'AWAITING_FULFILLMENT'
+      const sta = (process.env.TURN_OFF_AWAIT_CONF === "true") ? 'PAID' : 'AWAITING_FULFILLMENT'
       await tx.order.update({
         where: { id: orderId },
         data: { status: sta },
       });
+
+      // move this code below to webhook call after status is marked as paid
+      try {
+        await notifySuppliersForOrder(orderId);
+        console.log("I was called");
+      } catch (e) {
+        console.error('notifySuppliersForOrder failed:', e);
+      }
+      setImmediate(() => createPurchaseOrdersForOrder(pay.orderId).catch(console.error));
+
 
       // 2d) Record event + activity
       await tx.paymentEvent.create({
@@ -351,6 +363,80 @@ router.post('/verify', requireAuth, async (req: Request, res: Response) => {
     });
 
     return result;
+  }
+
+  // payments.ts (or a dedicated service)
+  async function createPurchaseOrdersForOrder(orderId: string) {
+    await prisma.$transaction(async (tx: {
+      orderItem: { findMany: (arg0: { where: { orderId: string; }; select: { id: boolean; chosenSupplierId: boolean; chosenSupplierUnitPrice: boolean; }; }) => any; }; purchaseOrder: {
+        create: (arg0: {
+          data: {
+            orderId: string; supplierId: string; subtotal: any; // tune as needed (Decimal if you prefer)
+            platformFee: number; supplierAmount: any; // or subtotal - fee, etc.
+            status: string;
+          };
+        }) => any;
+      }; purchaseOrderItem: {
+        create: (arg0: {
+          data: {
+            purchaseOrderId: any; orderItemId: any; // <-- use the OrderItem id you just loaded
+            externalRef: null; externalStatus: null;
+          };
+        }) => any;
+      };
+    }) => {
+      // 1) load items with chosen supplier info (assume you already set chosenSupplierId/Offer)
+      const items = await tx.orderItem.findMany({
+        where: { orderId },
+        select: {
+          id: true,
+          chosenSupplierId: true,
+          chosenSupplierUnitPrice: true,
+        },
+      });
+
+      // group by supplier
+      const bySupplier = new Map<string, typeof items>();
+      for (const it of items) {
+        if (!it.chosenSupplierId) continue;                 // skip unassigned (or handle separately)
+        const arr = bySupplier.get(it.chosenSupplierId) ?? [];
+        arr.push(it);
+        bySupplier.set(it.chosenSupplierId, arr);
+      }
+
+      // 2) create a PO per supplier, then PO items
+      for (const [supplierId, group] of bySupplier) {
+        const subtotal = group.reduce(
+          (sum: number, it: { chosenSupplierUnitPrice: any; }) => sum + Number(it.chosenSupplierUnitPrice ?? 0),
+          0
+        );
+
+        const po = await tx.purchaseOrder.create({
+          data: {
+            orderId,
+            supplierId,
+            subtotal,                 // tune as needed (Decimal if you prefer)
+            platformFee: 0,
+            supplierAmount: subtotal, // or subtotal - fee, etc.
+            status: 'CREATED',
+          },
+        });
+
+        for (const it of group) {
+          // 👇 This is the exact spot for your call:
+          await tx.purchaseOrderItem.create({
+            data: {
+              purchaseOrderId: po.id,
+              orderItemId: it.id,      // <-- use the OrderItem id you just loaded
+              externalRef: null,
+              externalStatus: null,
+              // optional snapshot fields if you've added them:
+              // supplierUnitPrice: it.chosenSupplierUnitPrice ?? null,
+            },
+          });
+        }
+      }
+    });
   }
 
   // 3) Trial or inline-bank flow
@@ -553,21 +639,52 @@ function isValidSignature(rawBody: string, headerSig: string | undefined, secret
 }
 
 // Helper: gate owner/admin
-async function assertCanViewReceipt(userId: string, paymentId: string) {
-  const row = await prisma.payment.findUnique({
-    where: { id: paymentId },
-    select: { status: true, order: { select: { userId: true } } },
-  });
-  console.log("row: ", row);
-  if (!row || row.status !== 'PAID') throw new Error('Not found');
-  const isOwner = row.order?.userId === userId;
-  // you can add admin check here from req.user.role
-  if (!isOwner) throw new Error('Forbidden');
+// helpers/payments.ts (or inside payments route file)
+
+type JwtUser = { id: string; role?: string | null };
+
+function httpErr(status: number, message: string) {
+  return Object.assign(new Error(message), { status });
 }
+
+/**
+ * Accepts either a payment id OR a reference and ensures
+ * the current user can view its receipt.
+ * Returns the minimal row (id + orderId).
+ */
+export async function assertCanViewReceipt(
+  paymentKey: string,               // id OR reference
+  user: JwtUser
+) {
+  const row = await prisma.payment.findFirst({
+    where: { OR: [{ id: paymentKey }, { reference: paymentKey }] },
+    select: {
+      id: true,
+      orderId: true,
+      status: true,
+      order: { select: { userId: true } },
+    },
+  });
+
+  if (!row || row.status !== 'PAID') {
+    throw httpErr(404, 'Not found');
+  }
+
+  const role = (user?.role || '').toUpperCase();
+  const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
+  const isOwner = row.order?.userId && user?.id && row.order.userId === user.id;
+
+  if (!isOwner && !isAdmin) {
+    throw httpErr(403, 'Forbidden');
+  }
+
+  return row; // ok
+}
+
 
 router.get('/:paymentId/receipt', requireAuth, async (req, res) => {
   const { paymentId } = req.params;
-  await assertCanViewReceipt(req.user!.id, paymentId);
+  await assertCanViewReceipt(paymentId,req.user!);
 
   const pay = await issueReceiptIfNeeded(paymentId);
   if (!pay) return res.status(404).json({ error: 'Receipt not available' });
@@ -582,7 +699,7 @@ router.get('/:paymentId/receipt', requireAuth, async (req, res) => {
 
 router.get('/:paymentId/receipt.pdf', requireAuth, async (req, res) => {
   const { paymentId } = req.params;
-  await assertCanViewReceipt(req.user!.id, paymentId);
+  await assertCanViewReceipt(paymentId, req.user!);
   const pay = await issueReceiptIfNeeded(paymentId);
   if (!pay?.receiptData) return res.status(404).json({ error: 'Receipt not available' });
 

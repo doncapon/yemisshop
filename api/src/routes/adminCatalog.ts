@@ -18,7 +18,6 @@ router.get('/usage', authMiddleware, async (req, res, next) => {
     const catGroup = await prisma.product.groupBy({
       by: ['categoryId'],
       _count: { _all: true },
-      where: { categoryId: { not: null } },
     });
     const categories: Record<string, number> = {};
     for (const g of catGroup) {
@@ -50,24 +49,26 @@ router.get('/usage', authMiddleware, async (req, res, next) => {
       const pavGroup = await prisma.productAttributeValue.groupBy({
         by: ['attributeId'],
         _count: { _all: true },
-        where: { attributeId: { not: null } },
       });
       for (const g of pavGroup) {
         if (g.attributeId) attributes[g.attributeId] = (attributes[g.attributeId] || 0) + g._count._all;
       }
-    } catch { /* ignore */ }
+    } catch (e) {
+      console.error('pav groupBy failed', e);
+    }
 
     // Try variant options table (if you have variant options carrying attributeId)
     try {
       const voGroup = await prisma.productVariantOption.groupBy({
         by: ['attributeId'],
         _count: { _all: true },
-        where: { attributeId: { not: null } },
       });
       for (const g of voGroup) {
         if (g.attributeId) attributes[g.attributeId] = (attributes[g.attributeId] || 0) + g._count._all;
       }
-    } catch { /* ignore */ }
+    } catch (e) {
+      console.error('vo groupBy failed', e);
+    }
 
     return res.json({ categories, brands, attributes });
   } catch (e) {
@@ -81,15 +82,15 @@ router.post('/backfill', authMiddleware, async (req, res, next) => {
     if (!isAdmin(req.user?.role)) return res.status(403).json({ error: 'Admins only' });
 
     await prisma.$transaction(async (tx: {
-            product: { groupBy: (arg0: { by: string[]; _count: { _all: boolean; } | { _all: boolean; }; where: { categoryId: { not: null; }; } | { brandId: { not: null; }; }; }) => any; findFirst: (arg0: { where: { categoryId: any; } | { brandId: any; }; }) => any; }; category: {
-                findUnique: (arg0: { where: { id: any; }; }) => any; create: (arg0: {
-                    data: {
-                        id: any; // preserve id so linked products remain valid
-                        name: any; slug: any; isActive: boolean;
-                    };
-                }) => any;
-            }; brand: { findUnique: (arg0: { where: { id: any; }; }) => any; create: (arg0: { data: { id: any; name: any; slug: any; isActive: boolean; }; }) => any; }; productAttributeValue: { groupBy: (arg0: { by: string[]; _count: { _all: boolean; }; where: { attributeId: { not: null; }; }; }) => any; }; attribute: { findUnique: (arg0: { where: { id: any; } | { id: any; }; }) => any; create: (arg0: { data: { id: any; name: string; type: string; isActive: boolean; } | { id: any; name: string; type: string; isActive: boolean; }; }) => any; }; productVariantOption: { groupBy: (arg0: { by: string[]; _count: { _all: boolean; }; where: { attributeId: { not: null; }; }; }) => any; };
-        }) => {
+      product: { groupBy: (arg0: { by: string[]; _count: { _all: boolean; } | { _all: boolean; }; where: { categoryId: { not: null; }; } | { brandId: { not: null; }; }; }) => any; findFirst: (arg0: { where: { categoryId: any; } | { brandId: any; }; }) => any; }; category: {
+        findUnique: (arg0: { where: { id: any; }; }) => any; create: (arg0: {
+          data: {
+            id: any; // preserve id so linked products remain valid
+            name: any; slug: any; isActive: boolean;
+          };
+        }) => any;
+      }; brand: { findUnique: (arg0: { where: { id: any; }; }) => any; create: (arg0: { data: { id: any; name: any; slug: any; isActive: boolean; }; }) => any; }; productAttributeValue: { groupBy: (arg0: { by: string[]; _count: { _all: boolean; }; where: { attributeId: { not: null; }; }; }) => any; }; attribute: { findUnique: (arg0: { where: { id: any; } | { id: any; }; }) => any; create: (arg0: { data: { id: any; name: string; type: string; isActive: boolean; } | { id: any; name: string; type: string; isActive: boolean; }; }) => any; }; productVariantOption: { groupBy: (arg0: { by: string[]; _count: { _all: boolean; }; where: { attributeId: { not: null; }; }; }) => any; };
+    }) => {
       // 1) Backfill Categories
       const catRefs = await tx.product.groupBy({
         by: ['categoryId'],
