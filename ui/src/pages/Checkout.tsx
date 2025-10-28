@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import api from '../api/client';
+import api from '../api/client.js';
 import { useAuthStore } from '../store/auth';
 import { useModal } from '../components/ModalProvider';
 
@@ -26,8 +26,9 @@ type CartLine = {
   price?: number;
   totalPrice?: number;
 
-  // NEW: keep image through checkout
+  // keep image through checkout
   image?: string | null;
+  supplierId?: string | null;
 };
 
 type Address = {
@@ -120,6 +121,17 @@ function computeLineTotal(line: CartLine): number {
   return unit * qty;
 }
 
+/** Mirror of server heuristic for Paystack (local) fees.
+ * Local: 1.5% + ₦100 (> ₦2,500), cap ₦2,000
+ * (International path omitted here; estimation kept simple for checkout)
+ */
+function estimateGatewayFee(amountNaira: number) {
+  if (!Number.isFinite(amountNaira) || amountNaira <= 0) return 0;
+  const percent = amountNaira * 0.015;
+  const extra = amountNaira > 2500 ? 100 : 0;
+  return Math.min(percent + extra, 2000);
+}
+
 /* ----------------------------- Small UI bits ----------------------------- */
 const IconCart = (props: any) => (
   <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
@@ -155,9 +167,9 @@ function Card({
 }) {
   const toneBorder =
     tone === 'primary' ? 'border-primary-200' :
-    tone === 'emerald' ? 'border-emerald-200' :
-    tone === 'amber' ? 'border-amber-200' :
-    'border-border';
+      tone === 'emerald' ? 'border-emerald-200' :
+        tone === 'amber' ? 'border-amber-200' :
+          'border-border';
 
   return (
     <div className={`rounded-2xl border ${toneBorder} bg-white/90 backdrop-blur shadow-sm overflow-hidden hover:shadow-md transition ${className}`}>
@@ -181,15 +193,15 @@ function CardHeader({
 }) {
   const toneBg =
     tone === 'primary' ? 'from-primary-50 to-white' :
-    tone === 'emerald' ? 'from-emerald-50 to-white' :
-    tone === 'amber' ? 'from-amber-50 to-white' :
-    'from-surface to-white';
+      tone === 'emerald' ? 'from-emerald-50 to-white' :
+        tone === 'amber' ? 'from-amber-50 to-white' :
+          'from-surface to-white';
 
   const toneIcon =
     tone === 'primary' ? 'text-primary-600' :
-    tone === 'emerald' ? 'text-emerald-600' :
-    tone === 'amber' ? 'text-amber-600' :
-    'text-ink-soft';
+      tone === 'emerald' ? 'text-emerald-600' :
+        tone === 'amber' ? 'text-amber-600' :
+          'text-ink-soft';
 
   return (
     <div className={`flex items-center justify-between p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
@@ -230,7 +242,7 @@ export default function Checkout() {
   const { openModal } = useModal();
   const token = useAuthStore((s) => s.token);
 
-  // Require login for checkout
+  // require login for checkout
   useEffect(() => {
     if (!token) nav('/login', { state: { from: { pathname: '/checkout' } } });
   }, [token, nav]);
@@ -241,7 +253,7 @@ export default function Checkout() {
     writeCart(cart);
   }, [cart]);
 
-  // 🔧 Hydrate missing prices if any (safety net)
+  // 🔧 hydrate missing prices if any (safety net)
   useEffect(() => {
     (async () => {
       const needs = cart.filter((l) => num(l.unitPrice, num(l.price, 0)) <= 0);
@@ -283,10 +295,108 @@ export default function Checkout() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const subtotal = useMemo(
-    () => cart.reduce((sum, it) => sum + computeLineTotal(it), 0),
+  // Build distinct IDs from the cart
+  const productIds = useMemo(
+    () => Array.from(new Set(cart.map(l => l.productId))),
     [cart]
   );
+  // If you eventually track chosen supplier per line:
+  const supplierIds = useMemo(
+    () => Array.from(new Set(cart.map(l => l.supplierId).filter(Boolean) as string[])),
+    [cart]
+  );
+
+  // Ask the server to compute: unitFee × DISTINCT suppliers (explicit suppliers or product owners)
+  // Ask the server to compute: per-message unit fee × messages
+  const serviceFeeQ = useQuery({
+    queryKey: ['checkout', 'service-fee', { productIds, supplierIds }],
+    enabled: productIds.length > 0,
+    queryFn: async () => {
+      const qs = new URLSearchParams();
+      if (supplierIds.length) qs.set('supplierIds', supplierIds.join(','));
+      else qs.set('productIds', productIds.join(','));
+
+      const { data } = await api.get(`/api/settings/checkout/service-fee?${qs.toString()}`);
+
+      return {
+        unit: Number(data?.unitFee) || 0,
+        msgs: Number(data?.notificationsCount) || 0,   // 👈 messages multiplier
+        suppliers: Number(data?.suppliersCount) || 0,  // kept just in case
+        amount: Number(data?.serviceFee) || 0,
+      };
+    },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+
+  // Safe fallbacks
+  const svcUnit = serviceFeeQ.data?.unit ?? 0;
+  const svcMsgs = serviceFeeQ.data?.msgs ?? 0;
+  const svcFee  = serviceFeeQ.data?.amount ?? 0;
+
+  // ---------------- TAX & BASE SERVICE FEE (public settings) ----------------
+  const [baseFee, setBaseFee] = useState(0);
+  const [taxMode, setTaxMode] = useState<'INCLUDED' | 'ADDED' | 'NONE'>('INCLUDED');
+  const [taxRatePct, setTaxRatePct] = useState(0); // e.g. 7.5 means 7.5%
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await api.get('/api/settings/public');
+        // base fee
+        const base =
+          Number(data?.baseServiceFeeNGN) ||
+          Number(data?.serviceFeeBaseNGN) ||
+          Number(data?.platformBaseFeeNGN) ||
+          0;
+        if (Number.isFinite(base) && base >= 0) setBaseFee(base);
+
+        // tax mode & rate
+        const tmRaw = String(data?.taxMode || '').toUpperCase();
+        if (tmRaw === 'ADDED' || tmRaw === 'NONE' || tmRaw === 'INCLUDED') {
+          setTaxMode(tmRaw as 'INCLUDED' | 'ADDED' | 'NONE');
+        }
+        const tr = Number(data?.taxRatePct);
+        if (Number.isFinite(tr) && tr >= 0) setTaxRatePct(tr);
+      } catch {
+        // leave defaults
+      }
+    })();
+  }, []);
+
+  // numeric rate 0..1
+  const taxRate = useMemo(() => (Number.isFinite(taxRatePct) ? taxRatePct / 100 : 0), [taxRatePct]);
+
+  // totals
+  const itemsSubtotal = useMemo(
+    () => cart.reduce((s, it) => s + computeLineTotal(it), 0),
+    [cart]
+  );
+
+  const shippingShownInUI = 0; // shipping included by supplier
+
+  // VAT *included* estimate (purely informational)
+  const estimatedVATIncluded = useMemo(() => {
+    if (taxMode !== 'INCLUDED' || taxRate <= 0) return 0;
+    return itemsSubtotal - (itemsSubtotal / (1 + taxRate));
+  }, [itemsSubtotal, taxMode, taxRate]);
+
+  // VAT *added* amount (charged on top)
+  const vatAddOn = useMemo(() => {
+    if (taxMode !== 'ADDED' || taxRate <= 0) return 0;
+    return itemsSubtotal * taxRate;
+  }, [itemsSubtotal, taxMode, taxRate]);
+
+  // Gateway fee estimate should be computed on the gross amount the customer pays:
+  // items + tax (if ADDED) + base + comms
+  const gatewayEstimate = useMemo(() => {
+    const grossBeforeGateway = itemsSubtotal + (taxMode === 'ADDED' ? vatAddOn : 0) + baseFee + svcFee;
+    return estimateGatewayFee(grossBeforeGateway);
+  }, [itemsSubtotal, taxMode, vatAddOn, baseFee, svcFee]);
+
+  const serviceFeeTotal = baseFee + svcFee + gatewayEstimate;
+
+  const payableTotal = itemsSubtotal + (taxMode === 'ADDED' ? vatAddOn : 0) + serviceFeeTotal;
 
   // ADDRESSES
   const [loadingProfile, setLoadingProfile] = useState(true);
@@ -303,6 +413,8 @@ export default function Checkout() {
   const [savingShip, setSavingShip] = useState(false);
 
   // Load existing addresses
+  const authHeader = token ? { Authorization: `Bearer ${token}` } : undefined;
+
   useEffect(() => {
     let mounted = true;
     async function load() {
@@ -311,7 +423,7 @@ export default function Checkout() {
       setProfileErr(null);
       try {
         const res = await api.get<ProfileMe>('/api/profile/me', {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: authHeader,
         });
         if (!mounted) return;
 
@@ -333,6 +445,7 @@ export default function Checkout() {
     }
     load();
     return () => { mounted = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   // Keep shipping in sync when "same as home" toggles on
@@ -356,8 +469,6 @@ export default function Checkout() {
     if (!a.country.trim()) return `Enter ${label} address: country`;
     return null;
   }
-
-  const authHeader = token ? { Authorization: `Bearer ${token}` } : undefined;
 
   const saveHome = async () => {
     const v = validateAddress(homeAddr, false);
@@ -422,10 +533,13 @@ export default function Checkout() {
         imageUrl: it.image ?? undefined, // optional; backend may ignore
       }));
 
+      // If tax mode is ADDED we send the computed VAT; otherwise 0
+      const taxToSend = taxMode === 'ADDED' ? vatAddOn : 0;
+
       const payload = {
         items,
         shipping: 0,
-        tax: 0,
+        tax: taxToSend,
         homeAddress: homeAddr,
         shippingAddress: finalShip,
       };
@@ -438,7 +552,7 @@ export default function Checkout() {
       nav(`/payment?orderId=${order.id}`, {
         state: {
           orderId: order.id,
-          total: subtotal,
+          total: payableTotal, // reflect exactly what we show
           homeAddress: homeAddr,
           shippingAddress: sameAsHome ? homeAddr : shipAddr,
         },
@@ -705,22 +819,65 @@ export default function Checkout() {
 
               <div className="mt-3 space-y-2 text-sm">
                 <div className="flex items-center justify-between">
-                  <span className="text-ink-soft">Items</span>
-                  <span className="font-medium">{cart.length}</span>
+                  <span className="text-ink-soft">Items Subtotal</span>
+                  <span className="font-medium">{ngn.format(itemsSubtotal)}</span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-ink-soft">Subtotal</span>
-                  <span className="font-medium">{ngn.format(subtotal)}</span>
-                </div>
+
+                {taxMode === 'INCLUDED' && estimatedVATIncluded > 0 && (
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-ink-soft">VAT (included)</span>
+                    <span className="text-ink-soft">{ngn.format(estimatedVATIncluded)}</span>
+                  </div>
+                )}
+
+                {taxMode === 'ADDED' && vatAddOn > 0 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-ink-soft">VAT</span>
+                    <span className="font-medium">{ngn.format(vatAddOn)}</span>
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between">
                   <span className="text-ink-soft">Shipping</span>
-                  <span className="font-medium">Calculated at payment</span>
+                  <span className="font-medium">Included by supplier</span>
+                </div>
+
+                {/* Service fee breakdown */}
+                <div className="mt-4 pt-3 border-t border-border">
+                  <div className="flex items-center justify-between">
+                    <span className="text-ink-soft">Base service fee</span>
+                    <span className="font-medium">{ngn.format(baseFee)}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-ink-soft">
+                      Comms service fee
+                      {serviceFeeQ.isLoading
+                        ? ''
+                        : (svcMsgs > 0
+                          ? ` — ₦${svcUnit.toLocaleString()} × ${svcMsgs} msg${svcMsgs > 1 ? 's' : ''}`
+                          : '')}
+                    </span>
+                    <span className="font-medium">
+                      {serviceFeeQ.isLoading ? 'Calculating…' : ngn.format(svcFee)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-ink-soft">Estimated gateway fee</span>
+                    <span className="font-medium">{ngn.format(gatewayEstimate)}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between mt-2">
+                    <span className="text-ink">Service fee (total)</span>
+                    <span className="font-semibold">{ngn.format(serviceFeeTotal)}</span>
+                  </div>
                 </div>
               </div>
 
               <div className="mt-4 flex items-center justify-between text-ink">
                 <span className="font-semibold">Total</span>
-                <span className="text-xl font-semibold">{ngn.format(subtotal)}</span>
+                <span className="text-xl font-semibold">{ngn.format(payableTotal)}</span>
               </div>
 
               <button
@@ -744,17 +901,18 @@ export default function Checkout() {
                 </p>
               )}
 
+              {/* Back to cart */}
               <button
                 onClick={() => nav('/cart')}
                 className="mt-3 w-full inline-flex items-center justify-center rounded-lg border border-border bg-surface px-4 py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"
               >
                 Back to cart
               </button>
-            </Card>
 
-            <p className="mt-3 text-[11px] text-ink-soft text-center">
-              You can update addresses here. Payment happens on the next step.
-            </p>
+              <p className="mt-3 text-[11px] text-ink-soft text-center">
+                Fees are estimates. Any gateway differences are reconciled on your receipt.
+              </p>
+            </Card>
           </aside>
         </div>
       </div>

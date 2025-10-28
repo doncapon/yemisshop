@@ -25,6 +25,7 @@ import { useEffect, useMemo } from 'react';
 import { scheduleTokenExpiryLogout } from './utils/tokenWatcher';
 import ResetGuard from './routes/ResetGuard.tsx';
 import ReceiptPage from './pages/Receipts.tsx';
+import SettingsAdminPage from './pages/admin/SettingsAdminPage.tsx';
 
 export default function App() {
   const token = useAuthStore((s) => s.token);
@@ -86,19 +87,31 @@ export default function App() {
               />
 
               <Route
+                path="/admin"
+              >
+                {/* default /admin -> dashboard */}
+                <Route index element={<Navigate to="dashboard" replace />} />
+
+                <Route path="dashboard" element={<AdminDashboard />} />
+                <Route
+                  path="settings"
+                  element={
+                    <ProtectedRoute roles={['SUPER_ADMIN']}>
+                      <SettingsAdminPage />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* optional: 404 for admin-only space */}
+                <Route path="*" element={<Navigate to="dashboard" replace />} />
+              </Route>
+
+
+              <Route
                 path="/wishlist"
                 element={
                   <ProtectedRoute roles={['SHOPPER', 'ADMIN', 'SUPER_ADMIN']}>
                     <Wishlist />
-                  </ProtectedRoute>
-                }
-              />
-
-              <Route
-                path="/admin/*"
-                element={
-                  <ProtectedRoute roles={['ADMIN', 'SUPER_ADMIN']}>
-                    <AdminDashboard />
                   </ProtectedRoute>
                 }
               />

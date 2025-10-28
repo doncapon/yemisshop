@@ -1,10 +1,7 @@
-// src/pages/Login.tsx
 import { useEffect, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import api from '../api/client';
-import { useAuthStore } from '../store/auth';
-
-type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import api from '../api/client.js';
+import { useAuthStore, type Role } from '../store/auth';
 
 type MeResponse = {
   id: string;
@@ -16,40 +13,31 @@ type MeResponse = {
   phoneVerified: boolean;
 };
 
-function nukeAuthStorage() {
-  try { useAuthStore.getState().clear?.(); } catch {}
-  try {
-    const persist = useAuthStore.persist;
-    const name = persist?.getOptions?.().name || 'auth';
-    if (name) localStorage.removeItem(name);
-  } catch {}
-  try {
-    localStorage.removeItem('verifyToken');
-    localStorage.removeItem('verifyEmail');
-  } catch {}
-}
-
 export default function Login() {
-  const [email, setEmail] = useState('superadmin@example.com');           // put your seeded email here temporarily to test
-  const [password, setPassword] = useState('SuperAdmin123!');     // put your seeded password here temporarily to test
+  // seeded creds for testing — remove later
+  const [email, setEmail] = useState('superadmin@example.com');
+  const [password, setPassword] = useState('SuperAdmin123!');
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
 
   const nav = useNavigate();
   const loc = useLocation();
+
   const setAuth = useAuthStore((s) => s.setAuth);
+  const setNeedsVerification = useAuthStore((s) => s.setNeedsVerification);
   const clear = useAuthStore((s) => s.clear);
 
-  // Optional: remove if unused
-  const [cooldown, setCooldown] = useState(0);
   useEffect(() => {
     if (cooldown <= 0) return;
     const t = setInterval(() => setCooldown((s) => Math.max(0, s - 1)), 1000);
     return () => clearInterval(t);
   }, [cooldown]);
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (loading || cooldown > 0) return;
+
     setErr(null);
 
     if (!email.trim() || !password.trim()) {
@@ -58,10 +46,7 @@ export default function Login() {
     }
 
     setLoading(true);
-
     try {
-      // Do NOT clear storage before we know login succeeds.
-      // Only clear if you really need a fresh session on success.
       const res = await api.post('/api/auth/login', { email, password });
 
       const { token, profile, needsVerification } = res.data as {
@@ -70,40 +55,33 @@ export default function Login() {
         needsVerification?: boolean;
       };
 
-      // Store auth
+      // Persist to store (this also syncs axios/localStorage)
       setAuth({ token, user: profile });
-      useAuthStore.getState().setNeedsVerification?.(!!needsVerification);
+      setNeedsVerification(needsVerification ?? false);
 
-      // Useful for VerifyEmail page (non-blocking)
+      // Optional helpers for verify flow
       try {
         localStorage.setItem('verifyEmail', profile.email);
         if (needsVerification) localStorage.setItem('verifyToken', token);
       } catch {}
 
+      // Navigate based on role or "from"
       const from = (loc.state as any)?.from?.pathname as string | undefined;
       const defaultByRole: Record<Role, string> = {
         ADMIN: '/admin',
         SUPER_ADMIN: '/admin',
         SHOPPER: '/dashboard',
       };
-
       nav(from || defaultByRole[profile.role] || '/', { replace: true });
     } catch (e: any) {
-      // Show server-provided message if present; fallback to a generic one.
       const msg =
         e?.response?.data?.error ||
         (e?.response?.status === 401 ? 'Invalid email or password' : null) ||
         'Login failed';
       setErr(msg);
 
-      // Be sure we don't keep a half-broken session around:
-      clear();
-      try {
-        // If you insist on nuking any persisted auth on failed login:
-        const persist = useAuthStore.persist;
-        const name = persist?.getOptions?.().name || 'auth';
-        if (name) localStorage.removeItem(name);
-      } catch {}
+      clear();         // clear only auth, not entire localStorage
+      setCooldown(2);  // tiny cooldown to avoid hammering
     } finally {
       setLoading(false);
     }
@@ -133,10 +111,7 @@ export default function Login() {
           </div>
 
           {/* card */}
-          <form
-            onSubmit={submit}
-            className="rounded-2xl border border-white/30 bg-white/80 backdrop-blur-xl shadow-[0_10px_40px_-12px_rgba(59,130,246,0.35)] p-6 space-y-5"
-          >
+          <form onSubmit={submit} noValidate className="rounded-2xl border border-white/30 bg-white/80 backdrop-blur-xl shadow-[0_10px_40px_-12px_rgba(59,130,246,0.35)] p-6 space-y-5">
             {err && (
               <div className="text-sm rounded-md border border-rose-300/60 bg-rose-50/90 text-rose-700 px-3 py-2">
                 {err}
@@ -162,9 +137,9 @@ export default function Login() {
             <div className="space-y-1">
               <div className="flex items-center justify-between">
                 <label className="block text-sm font-medium text-slate-800">Password</label>
-                <a className="text-xs text-violet-700 hover:underline" href="/forgot-password">
+                <Link className="text-xs text-violet-700 hover:underline" to="/forgot-password">
                   Forgot password?
-                </a>
+                </Link>
               </div>
               <div className="relative group">
                 <input
@@ -183,11 +158,11 @@ export default function Login() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || cooldown > 0}
               className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white px-4 py-3 font-semibold shadow-[0_10px_30px_-12px_rgba(14,165,233,0.6)] hover:scale-[1.01] active:scale-[0.995] focus:outline-none focus:ring-4 focus:ring-cyan-300/40 transition disabled:opacity-50"
             >
-              {loading ? 'Logging in…' : 'Login'}
-              {!loading && (
+              {loading ? 'Logging in…' : cooldown > 0 ? `Try again in ${cooldown}s` : 'Login'}
+              {!loading && cooldown === 0 && (
                 <svg className="w-4 h-4 opacity-90" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                   <path
                     fillRule="evenodd"
@@ -200,17 +175,17 @@ export default function Login() {
 
             <div className="pt-1 text-center text-sm text-slate-700">
               Don’t have an account?{' '}
-              <a className="text-violet-700 hover:underline" href="/register">
+              <Link className="text-violet-700 hover:underline" to="/register">
                 Create one
-              </a>
+              </Link>
             </div>
           </form>
 
           <p className="mt-5 text-center text-xs text-white/80">
             Secured by industry-standard encryption • Need help?{' '}
-            <a className="text-cyan-200 hover:underline" href="/support">
+            <Link className="text-cyan-200 hover:underline" to="/support">
               Contact support
-            </a>
+            </Link>
           </p>
         </div>
       </div>

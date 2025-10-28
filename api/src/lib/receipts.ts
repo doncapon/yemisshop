@@ -82,7 +82,7 @@ export async function issueReceiptIfNeeded(paymentId: string) {
 
     // Your brand info — hardcode or read from env/config
     merchant: {
-      name: process.env.APP_NAME || 'Yemis Shop',
+      name: process.env.APP_NAME || 'DaySpring',
       addressLine1: process.env.MERCHANT_ADDR1 || '',
       addressLine2: process.env.MERCHANT_ADDR2 || '',
       supportEmail: process.env.SUPPORT_EMAIL || 'support@example.com',

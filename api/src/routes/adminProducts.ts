@@ -1,30 +1,62 @@
 // routes/admin.products.ts
-import express, { Router } from 'express';
+import express, { Router, type RequestHandler } from 'express';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { requireAdmin, requireAuth } from '../middleware/auth.js';
-import {
-  approveProduct as approveProductSvc,
-  rejectProduct as rejectProductSvc,
-} from '../services/admin.service.js';
 import { z } from 'zod';
 
 const prisma = new PrismaClient();
 const router = Router();
 
+/* -------------------------------- Types --------------------------------- */
+
 type Tx = Prisma.TransactionClient | PrismaClient;
+
+type OfferInput = {
+  supplierId: string;
+  price: number | string;    // NGN price
+  variantId?: string | null; // if set, price is for that variant
+  inStock?: boolean;
+  isActive?: boolean;
+};
+
+type CreateProductPayload = {
+  title: string;
+  description?: string;
+  price: number | string;
+  sku?: string;
+  // optional relations/flags
+  status?: 'PENDING' | 'PUBLISHED' | 'REJECTED';
+  inStock?: boolean;
+  categoryId?: string;
+  brandId?: string;
+  supplierId: string;
+  imagesJson?: string[];
+  // NEW per product defaults
+  communicationCost?: number | string;
+  offers?: OfferInput[];
+};
+
+/* ------------------------------ Utilities ------------------------------- */
+
+const toDec = (v: any) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+};
+const toDecimal = (v: any) => new Prisma.Decimal(String(v));
+
+const wrap = (fn: express.RequestHandler): express.RequestHandler =>
+  (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 async function makeUniqueSku(tx: Tx, desired: string | null | undefined, seen: Set<string>) {
   let base = (desired || '').trim();
-  if (!base) return null; // allow null; most DBs permit multiple NULLs in a UNIQUE index
+  if (!base) return null; // allow null; DB usually permits multiple NULLs in unique index
 
-  // If we've already used the exact same SKU in this request, bump it.
   let candidate = base;
   let i = 1;
 
   const existsInDb = async (sku: string) =>
     !!(await tx.productVariant.findUnique({ where: { sku }, select: { id: true } }));
 
-  // Avoid duplicates both within this payload (seen Set) and in DB.
   while (seen.has(candidate) || (await existsInDb(candidate))) {
     i += 1;
     candidate = `${base}-${i}`;
@@ -35,42 +67,93 @@ async function makeUniqueSku(tx: Tx, desired: string | null | undefined, seen: S
   return candidate;
 }
 
+// --------------------------------------------------------
+
+// If you already have your own alias `Tx`, you can keep it.
+// Otherwise prefer Prisma.TransactionClient for proper typing.
 async function writeAttributesAndVariants(
-  tx: Tx,
+  tx: Prisma.TransactionClient,            // or your alias `Tx`
   productId: string,
-  attributeSelections?: any[],
-  variants?: any[],
+  attributeSelections?: Array<{
+    attributeId: string;
+    valueId?: string;
+    valueIds?: string[];
+    text?: string;
+  }>,
+  variants?: Array<{
+    sku?: string | null;
+    price?: number | null;
+    inStock?: boolean;
+    imagesJson?: string[];
+    options?: Array<{ attributeId: string; valueId: string }>;
+  }>
 ) {
-  if (attributeSelections) {
-    await tx.productAttributeValue.deleteMany({ where: { productId } });
+  /* ----------------------- Product attributes ----------------------- */
+  if (attributeSelections && attributeSelections.length) {
+    // reset current attributes for this product
+    await tx.productAttributeOption.deleteMany({ where: { productId } });
     await tx.productAttributeText.deleteMany({ where: { productId } });
 
+    // collect SELECT/MULTISELECT rows to insert in one go
+    const optionRows: { productId: string; attributeId: string; valueId: string }[] = [];
+
     for (const sel of attributeSelections) {
-      if (sel?.valueId) {
-        await tx.productAttributeValue.create({ data: { productId, attributeId: sel.attributeId, valueId: sel.valueId } });
-      } else if (Array.isArray(sel?.valueIds)) {
-        await tx.productAttributeValue.createMany({
-          data: sel.valueIds.map((vId: string) => ({ productId, attributeId: sel.attributeId, valueId: vId })),
-        });
-      } else if (typeof sel?.text === 'string') {
-        await tx.productAttributeText.create({ data: { productId, attributeId: sel.attributeId, value: sel.text } });
+      if (!sel?.attributeId) continue;
+
+      // single value
+      if (sel.valueId) {
+        optionRows.push({ productId, attributeId: sel.attributeId, valueId: sel.valueId });
+        continue;
       }
+
+      // multiple values
+      if (Array.isArray(sel.valueIds) && sel.valueIds.length) {
+        for (const vId of sel.valueIds) {
+          optionRows.push({ productId, attributeId: sel.attributeId, valueId: vId });
+        }
+        continue;
+      }
+
+      // free text
+      if (typeof sel.text === 'string' && sel.text.trim()) {
+        await tx.productAttributeText.create({
+          data: { productId, attributeId: sel.attributeId, value: sel.text.trim() },
+        });
+      }
+    }
+
+    if (optionRows.length) {
+      await tx.productAttributeOption.createMany({
+        data: optionRows,
+        skipDuplicates: true, // respects @@unique([productId,attributeId,valueId])
+      });
     }
   }
 
+  /* ------------------------- Variants & options ------------------------- */
   if (variants) {
-    const existing = await tx.productVariant.findMany({ where: { productId }, select: { id: true } });
+    const existing = await tx.productVariant.findMany({
+      where: { productId },
+      select: { id: true },
+    });
+
     if (existing.length) {
-      await tx.productVariantOption.deleteMany({ where: { variantId: { in: existing.map(v => v.id) } } });
-      await tx.productVariant.deleteMany({ where: { id: { in: existing.map(v => v.id) } } });
+      await tx.productVariantOption.deleteMany({
+        where: { variantId: { in: existing.map((v) => v.id) } },
+      });
+      await tx.productVariant.deleteMany({ where: { id: { in: existing.map((v) => v.id) } } });
     }
 
+    const seen = new Set<string>(); // ensure SKUs unique in this batch
+
     for (const v of variants) {
+      const uniqueSku = await makeUniqueSku(tx, v?.sku ?? '', seen); // keep your existing helper
+
       const created = await tx.productVariant.create({
         data: {
           productId,
-          sku: v.sku,
-          price: v.price != null ? new Prisma.Decimal(v.price) : null,
+          sku: uniqueSku || undefined, // let DB allow null/undefined if schema permits
+          price: v.price != null ? new Prisma.Decimal(v.price) : undefined, // optional price
           inStock: v.inStock !== false,
           imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
         },
@@ -78,13 +161,182 @@ async function writeAttributesAndVariants(
 
       if (Array.isArray(v.options) && v.options.length) {
         await tx.productVariantOption.createMany({
-          data: v.options.map((o: any) => ({ variantId: created.id, attributeId: o.attributeId, valueId: o.valueId })),
+          data: v.options.map((o) => ({
+            variantId: created.id,
+            attributeId: o.attributeId,
+            valueId: o.valueId,
+          })),
           skipDuplicates: true,
         });
       }
     }
   }
 }
+
+
+/* ------------------------------- Zod ------------------------------------ */
+
+const IdSchema = z.string().min(1, 'id is required');
+
+const AddAttrValueSchema = z.object({
+  attributeId: z.string().min(1),
+  valueId: z.string().min(1),
+});
+
+const UpsertTextAttrSchema = z.object({
+  attributeId: z.string().min(1),
+  value: z.string().min(1),
+});
+
+const StatusSchema = z.object({
+  status: z.enum(['PENDING', 'PUBLISHED', 'REJECTED']),
+});
+
+const OptionLooseSchema = z.object({
+  attributeId: z.string().optional(),
+  valueId: z.string().optional(),
+  attribute: z.object({ id: z.string() }).optional(),
+  value: z.object({ id: z.string() }).optional(),
+  attributeValueId: z.string().optional(),
+}).transform(o => ({
+  attributeId: o.attributeId ?? o.attribute?.id,
+  valueId: o.valueId ?? o.attributeValueId ?? o.value?.id,
+}));
+
+const VariantLooseSchema = z.object({
+  sku: z.string().min(1),
+  price: z.coerce.number().nullable().optional(),
+  inStock: z.coerce.boolean().optional(),
+  imagesJson: z.array(z.string()).optional(),
+  options: z.array(OptionLooseSchema).default([]),
+});
+
+function normalizeVariantsPayload(body: any) {
+  const raw =
+    body?.variants ??
+    body?.data?.variants ??
+    (Array.isArray(body) ? body : undefined);
+
+  if (!raw) return [];
+
+  const parsed = z.array(VariantLooseSchema).parse(raw);
+
+  return parsed.map(v => ({
+    sku: v.sku,
+    price: v.price ?? null,
+    inStock: v.inStock ?? true,
+    imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+    options: (v.options || [])
+      .map(o => ({ attributeId: o.attributeId, valueId: o.valueId }))
+      .filter(o => o.attributeId && o.valueId),
+  }));
+}
+
+
+router.post('/:productId/approve', requireAdmin, async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const data = await prisma.product.update({
+      where: { id: productId },
+      data: { status: 'PUBLISHED' },
+      select: { id: true, title: true, status: true, price: true, imagesJson: true, createdAt: true },
+    });
+    res.json({ data });
+  } catch (e: any) {
+    if (e?.code === 'P2025') return res.status(404).json({ error: 'Product not found' });
+    return res.status(400).json({ error: e?.message || 'Approve failed' });
+  }
+});
+
+router.post('/:productId/reject', requireAdmin, async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const data = await prisma.product.update({
+      where: { id: productId },
+      data: { status: 'REJECTED' },
+      select: { id: true, title: true, status: true, price: true, imagesJson: true, createdAt: true },
+    });
+    res.json({ data });
+  } catch (e: any) {
+    if (e?.code === 'P2025') return res.status(404).json({ error: 'Product not found' });
+    return res.status(400).json({ error: e?.message || 'Reject failed' });
+  }
+});
+
+
+// DELETE /api/admin/products/:id
+router.delete('/:id', requireAdmin, async (req, res) => {
+  const id = IdSchema.parse(req.params.id);
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // 1) Block delete if product has ever been used in an order
+      const orderItemsCount = await tx.orderItem
+        .count({ where: { productId: id } })
+        .catch(() => 0);
+
+      if (orderItemsCount > 0) {
+        // Prefer returning a helpful 409 explaining why we won't hard-delete
+        throw Object.assign(new Error('PRODUCT_IN_ORDERS'), {
+          code: 'PRODUCT_IN_ORDERS',
+          meta: { orderItemsCount },
+        });
+      }
+
+      // 2) Collect variant IDs up-front
+      const variants = await tx.productVariant.findMany({
+        where: { productId: id },
+        select: { id: true },
+      });
+      const variantIds = variants.map((v) => v.id);
+
+      // 3) Delete dependents (tolerate optional tables)
+      if (variantIds.length) {
+        await tx.productVariantOption.deleteMany({
+          where: { variantId: { in: variantIds } },
+        });
+      }
+
+      await tx.productVariant.deleteMany({ where: { productId: id } });
+
+      // Product-level attributes
+      await tx.productAttributeOption.deleteMany({ where: { productId: id } }).catch(() => { });
+      await tx.productAttributeText.deleteMany({ where: { productId: id } }).catch(() => { });
+
+      // Supplier offers for this product
+      await tx.supplierOffer.deleteMany({ where: { productId: id } }).catch(() => { });
+
+      // Optional social/UX tables — ignore if they don't exist in your schema
+      await tx.favorite?.deleteMany({ where: { productId: id } }).catch(() => { });
+      await tx.wishlist?.deleteMany({ where: { productId: id } }).catch(() => { });
+
+      // 4) Finally, delete the product
+      await tx.product.delete({ where: { id } });
+    });
+
+    return res.json({ ok: true });
+  } catch (err: any) {
+    // Friendly message if the product has order items
+    if (err?.code === 'PRODUCT_IN_ORDERS') {
+      return res.status(409).json({
+        error:
+          'This product cannot be deleted because it exists in one or more orders. ' +
+          'Consider setting status to REJECTED or PENDING instead.',
+        details: err.meta,
+      });
+    }
+    if (err?.code === 'P2025') {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    console.error('DELETE /admin/products/:id failed:', err);
+    return res.status(500).json({ error: 'Could not delete product' });
+  }
+});
+
+
+/* ------------------------------- Routes ---------------------------------- */
+
+// GET /api/admin/products/pending
 const listPending: RequestHandler = async (req, res, next) => {
   try {
     const q = String(req.query.q ?? '').trim();
@@ -139,32 +391,39 @@ const listPending: RequestHandler = async (req, res, next) => {
     next(e);
   }
 };
-type OfferInput = {
-  supplierId: string;
-  price: number | string;    // NGN price
-  variantId?: string | null; // if set, price is for that variant
-  inStock?: boolean;
-  isActive?: boolean;
-};
 
-type CreateProductPayload = {
-  title: string;
-  description: string;
-  price: number | string;    // base UI price
-  sku: string;
-  // …your other fields (brandId, categoryId, imagesJson, etc.)
-  offers?: OfferInput[];     // <-- NEW
-};
-
-// ---- ROUTE ORDER: specific first, then generic ----
-
-// 1) PENDING list must be BEFORE '/:id'
 router.get('/pending', requireAdmin, listPending);
 
+
+// GET /api/admin/products/search?q=wireless headphones
+router.get('/search', requireAdmin, async (req, res) => {
+  const q = String(req.query.q ?? '').trim();
+  if (!q) return res.json([]);
+
+  const words = q.split(/\s+/).filter(Boolean);
+  const rows = await prisma.product.findMany({
+    where: {
+      OR: [
+        // title must contain ALL words (order-independent)
+        { AND: words.map(w => ({ title: { contains: w, mode: 'insensitive' } })) },
+        // also allow SKU substring search
+        { sku: { contains: q, mode: 'insensitive' } },
+      ],
+    },
+    select: { id: true, title: true, sku: true },
+    orderBy: { title: 'asc' },
+    take: 20,
+  });
+
+  res.json(rows);
+});
+
+
+
+// GET /api/admin/products/:id  (supports include=variants,attributes,brand)
 router.get('/:id', requireAdmin, async (req, res, next) => {
   try {
     const { id } = req.params;
-
     const includeParam = String(req.query.include || '').toLowerCase();
     const wantBrand = includeParam.includes('brand');
     const wantVariants = includeParam.includes('variants');
@@ -188,13 +447,15 @@ router.get('/:id', requireAdmin, async (req, res, next) => {
           },
         }),
         ...(wantAttributes && {
-          ProductAttributeValue: {
+          // ✅ use attributeOptions instead of ProductAttributeValue
+          attributeOptions: {
             include: {
               attribute: { select: { id: true, name: true, type: true } },
               value: { select: { id: true, name: true, code: true } },
             },
             orderBy: [{ attribute: { name: 'asc' } }],
           },
+          // keep text attributes if you have them
           ProductAttributeText: {
             include: {
               attribute: { select: { id: true, name: true, type: true } },
@@ -207,6 +468,7 @@ router.get('/:id', requireAdmin, async (req, res, next) => {
 
     if (!p) return res.status(404).json({ error: 'Not found' });
 
+    // ----- map result -----
     const data: any = {
       id: p.id,
       title: p.title,
@@ -215,94 +477,65 @@ router.get('/:id', requireAdmin, async (req, res, next) => {
       status: p.status,
       sku: p.sku,
       inStock: p.inStock,
-      vatFlag: p.vatFlag,
       imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
       categoryId: p.categoryId ?? null,
       brandId: p.brandId ?? null,
       supplierId: p.supplierId ?? null,
+      communicationCost: p.communicationCost != null ? Number(p.communicationCost) : null,
     };
 
     if (wantBrand) {
-      data.brand = p.brand ? { id: p.brand.id, name: p.brand.name } : null;
-      data.brandName = p.brand ? p.brand.name : null;
+      data.brand = (p as any).brand ? { id: (p as any).brand.id, name: (p as any).brand.name } : null;
+      data.brandName = (p as any).brand ? (p as any).brand.name : null;
     }
 
     if (wantVariants) {
-      const variants = (p as any).ProductVariant as any[];
-      data.variants = variants.map((v) => ({
+      const variants = (p as any).ProductVariant ?? [];
+      data.variants = variants.map((v: any) => ({
         id: v.id,
         sku: v.sku,
         price: v.price != null ? Number(v.price) : null,
         inStock: v.inStock,
         imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-        // Provide BOTH shapes so the UI can use either
         options: (v.options || []).map((o: any) => ({
-          attributeId: o.attribute.id,           // id-shape
-          valueId: o.value.id,
-          attributeValueId: o.value.id,          // alt key some code uses
-          attribute: {                           // object-shape
-            id: o.attribute.id,
-            name: o.attribute.name,
-            type: o.attribute.type,
-          },
-          value: {
-            id: o.value.id,
-            name: o.value.name,
-            code: o.value.code ?? null,
-          },
-        })),
-        optionSelections: (v.options || []).map((o: any) => ({
           attributeId: o.attribute.id,
           valueId: o.value.id,
+          attributeValueId: o.value.id,
+          attribute: { id: o.attribute.id, name: o.attribute.name, type: o.attribute.type },
+          value: { id: o.value.id, name: o.value.name, code: o.value.code ?? null },
         })),
+        optionSelections: (v.options || []).map((o: any) => ({ attributeId: o.attribute.id, valueId: o.value.id })),
       }));
     }
 
     if (wantAttributes) {
-      const pavs = (p as any).ProductAttributeValue as any[];
-      const pats = (p as any).ProductAttributeText as any[];
+      const paos = (p as any).attributeOptions ?? [];        // ✅ from attributeOptions
+      const pats = (p as any).ProductAttributeText ?? [];
 
-      // Display-friendly lists (also include ids to help editors)
-      data.attributeValues = pavs.map((av) => ({
-        id: av.id,
-        attribute: {
-          id: av.attribute.id,
-          name: av.attribute.name,
-          type: av.attribute.type,
-        },
-        value: {
-          id: av.value.id,
-          name: av.value.name,
-          code: av.value.code ?? null,
-        },
-        attributeId: av.attribute.id, // extra for editors
-        valueId: av.value.id,
+      data.attributeValues = paos.map((o: any) => ({
+        id: o.id,
+        attribute: { id: o.attribute.id, name: o.attribute.name, type: o.attribute.type },
+        value: { id: o.value.id, name: o.value.name, code: o.value.code ?? null },
+        attributeId: o.attribute.id,
+        valueId: o.value.id,
       }));
 
-      data.attributeTexts = pats.map((at) => ({
+      data.attributeTexts = pats.map((at: any) => ({
         id: at.id,
-        attribute: {
-          id: at.attribute.id,
-          name: at.attribute.name,
-          type: at.attribute.type,
-        },
+        attribute: { id: at.attribute.id, name: at.attribute.name, type: at.attribute.type },
         value: at.value,
-        attributeId: at.attribute.id, // for editors
+        attributeId: at.attribute.id,
       }));
 
-      // Editor seeding shape: group by attributeId ⇒ valueId OR valueIds[]
+      // Build attributeSelections from the join rows
       const grouped: Record<string, string[]> = {};
-      for (const av of pavs) {
-        const aId = av.attribute.id;
-        const vId = av.value.id;
-        if (!grouped[aId]) grouped[aId] = [];
-        grouped[aId].push(vId);
+      for (const o of paos) {
+        const aId = o.attribute.id;
+        const vId = o.value.id;
+        (grouped[aId] ??= []).push(vId);
       }
-      data.attributeSelections = Object.entries(grouped).map(
-        ([attributeId, valueIds]) =>
-          valueIds.length > 1
-            ? { attributeId, valueIds }
-            : { attributeId, valueId: valueIds[0] }
+      data.attributeSelections = Object.entries(grouped).map(([attributeId, valueIds]) =>
+        valueIds.length > 1 ? { attributeId, valueIds } : { attributeId, valueId: valueIds[0] },
       );
     }
 
@@ -312,39 +545,50 @@ router.get('/:id', requireAdmin, async (req, res, next) => {
   }
 });
 
-
 /* ---------- CREATE: accept attributes + variants ---------- */
 router.post('/', requireAdmin, async (req, res) => {
   try {
+    const body = (req.body ?? {}) as CreateProductPayload;
+
     const {
-      title, price, status = 'PENDING', description = '', sku, vatFlag, inStock = true,
+      title, description = '', price, sku,
+      status = 'PENDING', inStock = true,
       categoryId, brandId, supplierId, imagesJson = [],
-      attributeSelections = [], // <— NEW supported
-      variants = [],            // <— NEW supported
-    } = req.body ?? {};
-    const payload = req.body as CreateProductPayload;
+      communicationCost,
+      offers = [],
+    } = body;
+
+    const attributeSelections = Array.isArray((req.body as any).attributeSelections)
+      ? (req.body as any).attributeSelections
+      : [];
+
+    const variants = Array.isArray((req.body as any).variants)
+      ? (req.body as any).variants
+      : [];
+
     if (!supplierId) return res.status(400).json({ error: 'supplierId is required' });
+    if (!title || price == null) return res.status(400).json({ error: 'title and price are required' });
 
     const created = await prisma.$transaction(async (tx) => {
       const product = await tx.product.create({
         data: {
-          title: payload.title,
-          description: payload.description,
-          price: new Prisma.Decimal(payload.price),
-          sku: payload.sku,
+          title,
+          description,
+          price: toDecimal(price),
+          sku: sku || '',
           status,
-          vatFlag: vatFlag ?? undefined,
           inStock,
           imagesJson: Array.isArray(imagesJson) ? imagesJson : [],
           ...(categoryId ? { category: { connect: { id: categoryId } } } : {}),
           ...(brandId ? { brand: { connect: { id: brandId } } } : {}),
           supplier: { connect: { id: supplierId } },
+          ...(toDec(communicationCost) != null ? { communicationCost: toDec(communicationCost) } : {}),
         },
       });
 
-      const offers = Array.isArray(payload.offers) ? payload.offers : [];
+      // offers (use tx, not prisma)
       for (const o of offers) {
-        await prisma.supplierOffer.upsert({
+        await tx.supplierOffer.upsert({
           where: {
             supplierId_productId_variantId: {
               supplierId: o.supplierId,
@@ -353,7 +597,7 @@ router.post('/', requireAdmin, async (req, res) => {
             },
           },
           update: {
-            price: new Prisma.Decimal(o.price),
+            price: toDecimal(o.price),
             inStock: o.inStock ?? true,
             isActive: o.isActive ?? true,
           },
@@ -361,51 +605,485 @@ router.post('/', requireAdmin, async (req, res) => {
             supplierId: o.supplierId,
             productId: product.id,
             variantId: o.variantId ?? null,
-            price: new Prisma.Decimal(o.price),
+            price: toDecimal(o.price),
             inStock: o.inStock ?? true,
             isActive: o.isActive ?? true,
           },
         });
-      } 
+      }
 
-    await writeAttributesAndVariants(tx, product.id, attributeSelections, variants);
+      await writeAttributesAndVariants(tx, product.id, attributeSelections, variants);
 
-    return product;
-  });
+      return product;
+    });
 
-res.status(201).json({ data: created });
+    res.status(201).json({ data: created });
   } catch (e: any) {
-  res.status(400).json({ error: e?.message || 'Failed to create product' });
-}
+    res.status(400).json({ error: e?.message || 'Failed to create product' });
+  }
 });
 
+/* ---------- UPDATE (PUT/PATCH) unified: includes ---------- */
+const updateProduct: RequestHandler = async (req, res, next) => {
+  const id = req.params.id;
 
-// PUT /api/admin/products/:id/offers  { offers: OfferInput[] }
-router.put('/:id/offers', requireAdmin, async (req, res) => {
-  const { id: productId } = req.params as { id: string };
-  const offers = Array.isArray(req.body?.offers) ? req.body.offers : [];
+  // tolerate several shapes
+  const incoming = req.body ?? {};
+  const base = incoming.data?.product ?? incoming.data ?? incoming;
 
+  const {
+    title,
+    price,
+    status,
+    sku,
+    inStock,
+    brandId,
+    categoryId,
+    supplierId, // required by your schema; don't disconnect to null
+    imagesJson,
+    communicationCost,
+  } = base || {};
+
+  // tolerates multiple locations for these payloads
+  const variantsInput =
+    base?.variants ??
+    incoming.variants ??
+    incoming.data?.variants ??
+    (Array.isArray(incoming) ? incoming : undefined);
+
+  const attributeSelections =
+    base?.attributeSelections ?? incoming.attributeSelections ?? undefined;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const data: Prisma.ProductUpdateInput = {};
+
+      if (title !== undefined) data.title = title;
+
+      if (price !== undefined) {
+        const n = Number(price);
+        if (Number.isFinite(n)) data.price = new Prisma.Decimal(n);
+      }
+
+      if (status !== undefined) data.status = status;
+      if (sku !== undefined) data.sku = sku;
+      if (typeof inStock === 'boolean') data.inStock = inStock;
+      if (Array.isArray(imagesJson)) (data as any).imagesJson = imagesJson;
+
+      // communicationCost (optional decimal)
+      if (communicationCost !== undefined) {
+        const n = Number(communicationCost);
+        if (Number.isFinite(n)) (data as any).communicationCost = new Prisma.Decimal(n);
+      }
+
+      // brand connect/disconnect (optional)
+      if (brandId !== undefined) {
+        if (brandId === null) {
+          (data as any).brand = { disconnect: true };
+        } else if (typeof brandId === 'string' && brandId) {
+          (data as any).brand = { connect: { id: brandId } };
+        }
+      }
+
+      // category connect/disconnect (optional)
+      if (categoryId !== undefined) {
+        if (categoryId === null) {
+          (data as any).category = { disconnect: true };
+        } else if (typeof categoryId === 'string' && categoryId) {
+          (data as any).category = { connect: { id: categoryId } };
+        }
+      }
+
+      // supplier connect only (required field in your schema)
+      if (supplierId !== undefined && typeof supplierId === 'string' && supplierId) {
+        (data as any).supplier = { connect: { id: supplierId } };
+      }
+
+      // 1) Update base product fields
+      await tx.product.update({ where: { id }, data });
+
+      // 2) Attributes: use ProductAttributeOption (SELECT/MULTISELECT) and ProductAttributeText (TEXT)
+      if (attributeSelections) {
+        // wipe existing attributes for this product (idempotent replace)
+        await tx.productAttributeOption.deleteMany({ where: { productId: id } });
+        await tx.productAttributeText.deleteMany({ where: { productId: id } });
+
+        const optionRows: { productId: string; attributeId: string; valueId: string }[] = [];
+
+        for (const sel of attributeSelections as Array<any>) {
+          if (!sel?.attributeId) continue;
+
+          // single value
+          if (sel.valueId) {
+            optionRows.push({
+              productId: id,
+              attributeId: sel.attributeId,
+              valueId: sel.valueId,
+            });
+            continue;
+          }
+
+          // multiple values
+          if (Array.isArray(sel.valueIds) && sel.valueIds.length) {
+            for (const vId of sel.valueIds) {
+              optionRows.push({
+                productId: id,
+                attributeId: sel.attributeId,
+                valueId: vId,
+              });
+            }
+            continue;
+          }
+
+          // free text
+          if (typeof sel.text === 'string' && sel.text.trim()) {
+            await tx.productAttributeText.create({
+              data: { productId: id, attributeId: sel.attributeId, value: sel.text.trim() },
+            });
+          }
+        }
+
+        if (optionRows.length) {
+          await tx.productAttributeOption.createMany({
+            data: optionRows,
+            skipDuplicates: true, // respects @@unique([productId,attributeId,valueId])
+          });
+        }
+      }
+
+      // 3) Variants: normalize and replace (if you’re using helpers)
+      if (variantsInput) {
+        const normalized =
+          typeof normalizeVariantsPayload === 'function'
+            ? normalizeVariantsPayload({ variants: variantsInput })
+            : variantsInput;
+
+        // If you have a dedicated helper:
+        if (typeof replaceAllVariants === 'function') {
+          await replaceAllVariants(tx, id, normalized);
+        } else {
+          // inline fallback: wipe & recreate
+          const existing = await tx.productVariant.findMany({
+            where: { productId: id },
+            select: { id: true },
+          });
+
+          if (existing.length) {
+            await tx.productVariantOption.deleteMany({
+              where: { variantId: { in: existing.map((v) => v.id) } },
+            });
+            await tx.productVariant.deleteMany({
+              where: { id: { in: existing.map((v) => v.id) } },
+            });
+          }
+
+          const seen = new Set<string>(); // ensure unique SKUs within this batch
+
+          for (const v of normalized as Array<any>) {
+            const rawSku = (v?.sku ?? '').trim();
+            const skuUnique = await makeUniqueSku(tx as any, rawSku, seen); // keep your existing helper
+
+            const created = await tx.productVariant.create({
+              data: {
+                productId: id,
+                sku: skuUnique || undefined,
+                price:
+                  v?.price != null && Number.isFinite(Number(v.price))
+                    ? new Prisma.Decimal(Number(v.price))
+                    : undefined,
+                inStock: v?.inStock !== false,
+                imagesJson: Array.isArray(v?.imagesJson) ? v.imagesJson : [],
+              },
+            });
+
+            if (Array.isArray(v?.options) && v.options.length) {
+              await tx.productVariantOption.createMany({
+                data: v.options.map((o: any) => ({
+                  variantId: created.id,
+                  attributeId: o.attributeId,
+                  valueId: o.valueId,
+                })),
+                skipDuplicates: true,
+              });
+            }
+          }
+        }
+      }
+    });
+
+    res.json({ ok: true });
+  } catch (err: any) {
+    // SKU unique violation on product or variants
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      const target = Array.isArray((err as any).meta?.target)
+        ? (err as any).meta.target.join(',')
+        : (err as any).meta?.target;
+      if (String(target || '').toLowerCase().includes('sku')) {
+        return res
+          .status(409)
+          .json({ error: 'Variant SKU must be unique. Please change duplicate SKUs or leave blank to auto-assign.' });
+      }
+    }
+    next(err);
+  }
+};
+
+router.route('/:id')
+  .put(requireAdmin, updateProduct)
+  .patch(requireAdmin, updateProduct);
+
+/* ---------- Status ---------- */
+router.post('/:id/status', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = StatusSchema.parse(req.body ?? {});
+
+    const updated = await prisma.product.update({
+      where: { id },
+      data: { status },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        price: true,
+        sku: true,
+        inStock: true,
+        imagesJson: true,
+      },
+    });
+
+    res.json({ data: updated });
+  } catch (e: any) {
+    if (e?.code === 'P2025') return res.status(404).json({ error: 'Product not found' });
+    return res.status(400).json({ error: e?.message || 'Failed to update status' });
+  }
+});
+
+/* ---------- Variants (bulk replace) ---------- */
+router.post('/:productId/variants/bulk', requireAdmin, wrap(async (req, res) => {
+  const productId = IdSchema.parse(req.params.productId);
+  const normalized = normalizeVariantsPayload(req.body);
   await prisma.$transaction(async (tx) => {
-    await tx.supplierOffer.deleteMany({ where: { productId } });
-    if (offers.length) {
-      await tx.supplierOffer.createMany({
-        data: offers.map((o: { supplierId: any; variantId: any; price: Prisma.Decimal.Value; inStock: any; isActive: any; }) => ({
-          supplierId: o.supplierId,
-          productId,
-          variantId: o.variantId ?? null,
-          price: new Prisma.Decimal(o.price),
-          inStock: o.inStock ?? true,
-          isActive: o.isActive ?? true,
-        })),
+    await replaceAllVariants(tx, productId, normalized);
+  });
+  res.json({ ok: true, count: normalized.length });
+}));
+
+/* ---------- Variants (get) ---------- */
+router.get('/:productId/variants', requireAuth, requireAdmin, async (req, res) => {
+  const { productId } = req.params;
+  const variants = await prisma.productVariant.findMany({
+    where: { productId },
+    select: {
+      id: true, sku: true, inStock: true,
+      options: { include: { attribute: true, value: true } }
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+  return res.json({ data: variants });
+});
+
+/* ---------- Variants (create one) ---------- */
+const CreateVariantSchema = z.object({
+  sku: z.string().min(1),
+  price: z.number().optional(),
+  inStock: z.boolean().optional(),
+  imagesJson: z.array(z.string()).optional(),
+  options: z.array(z.object({
+    attributeId: z.string().min(1),
+    valueId: z.string().min(1),
+  })).default([]),
+});
+
+router.post('/:productId/variants', requireAdmin, wrap(async (req, res) => {
+  const productId = IdSchema.parse(req.params.productId);
+  const payload = CreateVariantSchema.parse(req.body ?? {});
+
+  // Validate options
+  for (const opt of payload.options) {
+    const val = await prisma.attributeValue.findUnique({ where: { id: opt.valueId }, select: { id: true, attributeId: true } });
+    if (!val) return res.status(404).json({ error: `Attribute value not found: ${opt.valueId}` });
+    if (val.attributeId !== opt.attributeId) return res.status(400).json({ error: `valueId ${opt.valueId} does not belong to attributeId ${opt.attributeId}` });
+  }
+
+  const created = await prisma.$transaction(async (tx) => {
+    const seen = new Set<string>();
+    const sku = await makeUniqueSku(tx, payload.sku, seen);
+
+    const variant = await tx.productVariant.create({
+      data: {
+        productId,
+        sku: sku || '',
+        price: payload.price != null ? new Prisma.Decimal(payload.price) : undefined,
+        inStock: payload.inStock ?? true,
+        imagesJson: payload.imagesJson ?? [],
+      },
+    });
+
+    if (payload.options.length) {
+      await tx.productVariantOption.createMany({
+        data: payload.options.map(o => ({ variantId: variant.id, attributeId: o.attributeId, valueId: o.valueId })),
+        skipDuplicates: true,
       });
     }
+
+    return tx.productVariant.findUnique({
+      where: { id: variant.id },
+      include: { options: { include: { attribute: true, value: true } } },
+    });
   });
 
-  res.json({ ok: true });
+  res.status(201).json({ ok: true, data: created });
+}));
+
+/* ---------- Offers ---------- */
+router.get('/:productId/offers', requireAuth, requireAdmin, async (req, res) => {
+  const { productId } = req.params;
+  const offers = await prisma.supplierOffer.findMany({
+    where: { productId },
+    include: {
+      supplier: { select: { id: true, name: true, whatsappPhone: true, contactEmail: true, status: true } },
+      variant: { select: { id: true, sku: true, inStock: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  return res.json({ data: offers });
+});
+
+router.post('/:productId/offers', requireAuth, requireAdmin, async (req, res) => {
+  const { productId } = req.params;
+  const {
+    supplierId,
+    variantId,
+    price,
+    currency = 'NGN',
+    inStock = true,
+    leadDays,
+    isActive = true,
+  } = req.body ?? {};
+
+  if (!supplierId || price == null) {
+    return res.status(400).json({ error: 'supplierId and price are required' });
+  }
+
+  const supplier = await prisma.supplier.findUnique({ where: { id: supplierId }, select: { id: true } });
+  if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
+
+  const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true } });
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+
+  if (variantId) {
+    const variant = await prisma.productVariant.findUnique({
+      where: { id: variantId },
+      select: { id: true, productId: true },
+    });
+    if (!variant || variant.productId !== productId) {
+      return res.status(400).json({ error: 'variantId does not belong to this product' });
+    }
+  }
+
+  try {
+    const created = await prisma.supplierOffer.create({
+      data: {
+        supplierId,
+        productId,
+        variantId: variantId || null,
+        price: toDecimal(price),
+        currency,
+        inStock: !!inStock,
+        leadDays: leadDays == null || leadDays === '' ? null : Number(leadDays),
+        isActive: !!isActive,
+      },
+    });
+    return res.status(201).json({ data: created });
+  } catch (e: any) {
+    if (e?.code === 'P2002') {
+      return res.status(409).json({ error: 'An offer for this (supplier, product, variant) already exists' });
+    }
+    console.error('Create offer failed:', e);
+    return res.status(500).json({ error: 'Could not create offer' });
+  }
+});
+
+router.put('/:productId/offers/:offerId', requireAuth, requireAdmin, async (req, res) => {
+  const { productId, offerId } = req.params;
+  const payload = req.body ?? {};
+
+  // Ensure offer belongs to this product
+  const existing = await prisma.supplierOffer.findUnique({
+    where: { id: offerId },
+    select: { id: true, productId: true },
+  });
+  if (!existing || existing.productId !== productId) {
+    return res.status(404).json({ error: 'Offer not found for this product' });
+  }
+
+  // If variantId is provided, validate it belongs to the product
+  if (payload.variantId) {
+    const v = await prisma.productVariant.findUnique({
+      where: { id: payload.variantId },
+      select: { id: true, productId: true },
+    });
+    if (!v || v.productId !== productId) {
+      return res.status(400).json({ error: 'variantId does not belong to this product' });
+    }
+  }
 });
 
 
-// GET /api/admin/products?status=ANY|PENDING|PUBLISHED&q=&take=50&skip=0
+router.delete('/:productId/offers/:offerId', requireAuth, requireAdmin, async (req, res) => {
+  const { productId, offerId } = req.params;
+
+  const existing = await prisma.supplierOffer.findUnique({
+    where: { id: offerId },
+    select: { id: true, productId: true },
+  });
+  if (!existing || existing.productId !== productId) {
+    return res.status(404).json({ error: 'Offer not found for this product' });
+  }
+
+  await prisma.supplierOffer.delete({ where: { id: offerId } });
+  return res.json({ ok: true });
+});
+
+/* ------------------------ helpers (bottom) ------------------------ */
+
+async function replaceAllVariants(tx: Tx, productId: string, variants: any[]) {
+  const existing = await tx.productVariant.findMany({ where: { productId }, select: { id: true } });
+  if (existing.length) {
+    await tx.productVariantOption.deleteMany({ where: { variantId: { in: existing.map(v => v.id) } } });
+    await tx.productVariant.deleteMany({ where: { id: { in: existing.map(v => v.id) } } });
+  }
+
+  const seen = new Set<string>(); // track SKUs within this request
+
+  for (const v of variants) {
+    const uniqueSku = await makeUniqueSku(tx, v.sku, seen);
+
+    const created = await tx.productVariant.create({
+      data: {
+        productId,
+        sku: uniqueSku || '',
+        price: v.price != null ? new Prisma.Decimal(v.price) : null,
+        inStock: v.inStock !== false,
+        imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+      },
+    });
+
+    if (Array.isArray(v.options) && v.options.length) {
+      await tx.productVariantOption.createMany({
+        data: v.options.map((o: any) => ({
+          variantId: created.id,
+          attributeId: o.attributeId,
+          valueId: o.valueId,
+        })),
+        skipDuplicates: true,
+      });
+    }
+  }
+}
+
+/* ---------- List products  ---------- */
 router.get('/', requireAdmin, async (req, res, next) => {
   try {
     const { status = 'ANY', q = '', take = '50', skip = '0' } = req.query as Record<string, string>;
@@ -439,12 +1117,12 @@ router.get('/', requireAdmin, async (req, res, next) => {
           status: true,
           sku: true,
           inStock: true,
-          vatFlag: true,
           imagesJson: true,
           createdAt: true,
           categoryId: true,
           brandId: true,
           supplierId: true,
+          communicationCost: true,
           owner: { select: { id: true, email: true } },
           category: { select: { id: true, name: true } },
           brand: { select: { id: true, name: true } },
@@ -461,7 +1139,6 @@ router.get('/', requireAdmin, async (req, res, next) => {
       status: p.status,
       sku: p.sku,
       inStock: p.inStock,
-      vatFlag: p.vatFlag,
       createdAt: p.createdAt,
       imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
       categoryId: p.categoryId,
@@ -472,6 +1149,8 @@ router.get('/', requireAdmin, async (req, res, next) => {
       supplierName: p.supplier?.name ?? null,
       ownerId: p.owner?.id ?? null,
       ownerEmail: p.owner?.email ?? null,
+      // NEW
+      communicationCost: p.communicationCost != null ? Number(p.communicationCost) : null,
     }));
 
     res.json({ data, total });
@@ -480,667 +1159,212 @@ router.get('/', requireAdmin, async (req, res, next) => {
   }
 });
 
+// ---------- validation ----------
+// ---------- validation (lenient & coercive) ----------
+const coerceNumber = (min = 0) =>
+  z.preprocess((v) => {
+    if (v === '' || v == null) return undefined;
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : v;
+  }, z.number().min(min));
 
-/* ---------------- helpers ---------------- */
-const wrap = (fn: express.RequestHandler): express.RequestHandler =>
-  (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+const coerceInt = (min = 0, def?: number) =>
+  z.preprocess((v) => {
+    if (v === '' || v == null) return def ?? undefined;
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? Math.trunc(n) : v;
+  }, z.number().int().min(min));
 
-// /routes/admin.products.ts
+const coerceBool = z.preprocess((v) => {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (s === 'true' || s === '1' || s === 'yes' || s === 'on') return true;
+    if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false;
+  }
+  return v;
+}, z.boolean());
 
-router.post('/:productId/approve', requireAdmin, async (req, res) => {
+const offerCreateSchema = z.object({
+  variantId: z.string().min(1).optional().nullable(),
+  supplierId: z.string().min(1),
+  price: coerceNumber(0),                 // accepts "1200" -> 1200
+  currency: z.string().min(1).default('NGN'),
+  availableQty: coerceInt(0, 0).default(0), // accepts "" -> 0
+  leadDays: coerceInt(0, 0).default(0),     // accepts "" -> 0
+  isActive: coerceBool.default(true),       // accepts "true"/"false"
+});
+
+const offerUpdateSchema = offerCreateSchema.partial();
+
+// ---------- GET: list offers for a product ----------
+router.get('/:productId/supplier-offers', requireAdmin, async (req, res, next) => {
   try {
     const { productId } = req.params;
-    const data = await prisma.product.update({
-      where: { id: productId },
-      data: { status: 'PUBLISHED' },
-      select: { id: true, title: true, status: true, price: true, imagesJson: true, createdAt: true },
-    });
-    res.json({ data });
-  } catch (e: any) {
-    if (e?.code === 'P2025') return res.status(404).json({ error: 'Product not found' });
-    return res.status(400).json({ error: e?.message || 'Approve failed' });
-  }
-});
 
-router.post('/:productId/reject', requireAdmin, async (req, res) => {
-  try {
-    const { productId } = req.params;
-    const data = await prisma.product.update({
-      where: { id: productId },
-      data: { status: 'REJECTED' },
-      select: { id: true, title: true, status: true, price: true, imagesJson: true, createdAt: true },
-    });
-    res.json({ data });
-  } catch (e: any) {
-    if (e?.code === 'P2025') return res.status(404).json({ error: 'Product not found' });
-    return res.status(400).json({ error: e?.message || 'Reject failed' });
-  }
-});
-
-
-// routes/admin.products.ts
-import type { RequestHandler } from 'express';
-
-// 1) put the shared update logic in one handler
-const updateProduct: RequestHandler = async (req, res, next) => {
-  const id = req.params.id;
-
-  // Accept various body shapes
-  const incoming = req.body ?? {};
-  const base = incoming.data?.product ?? incoming.data ?? incoming;
-
-  const {
-    title,
-    price,
-    status,
-    sku,
-    inStock,
-    vatFlag,
-    brandId,
-    categoryId,
-    supplierId,   // NOTE: probably required in your schema
-    imagesJson,
-  } = base;
-
-  // variants/attributes are handled below (unchanged)
-  const variantsInput =
-    base.variants ?? incoming.variants ?? incoming.data?.variants ??
-    (Array.isArray(incoming) ? incoming : undefined);
-
-  const attributeSelections =
-    base.attributeSelections ?? incoming.attributeSelections ?? undefined;
-
-  try {
-    await prisma.$transaction(async (tx) => {
-      // ---- build a *checked* update payload (uses nested relations)
-      const data: Prisma.ProductUpdateInput = {};
-
-      if (title !== undefined) data.title = title;
-      if (price !== undefined) data.price = new Prisma.Decimal(price);
-      if (status !== undefined) data.status = status;
-      if (sku !== undefined) data.sku = sku;
-      if (typeof inStock === 'boolean') data.inStock = inStock;
-      if (typeof vatFlag === 'boolean') data.vatFlag = vatFlag;
-      if (Array.isArray(imagesJson)) data.imagesJson = imagesJson;
-
-      // brand/category are usually optional relations → connect/disconnect
-      if (brandId !== undefined) {
-        if (brandId === null) {
-          // only valid if Product.brand is optional in your schema
-          (data as any).brand = { disconnect: true };
-        } else if (typeof brandId === 'string' && brandId) {
-          data.brand = { connect: { id: brandId } };
-        }
-      }
-
-      if (categoryId !== undefined) {
-        if (categoryId === null) {
-          // only valid if Product.category is optional
-          (data as any).category = { disconnect: true };
-        } else if (typeof categoryId === 'string' && categoryId) {
-          data.category = { connect: { id: categoryId } };
-        }
-      }
-
-      // supplier is likely required → allow connect, do NOT try to null it
-      if (supplierId !== undefined) {
-        if (typeof supplierId === 'string' && supplierId) {
-          data.supplier = { connect: { id: supplierId } };
-        }
-        // if supplier is required, do not set disconnect / null here
-      }
-
-      // ---- update base product
-      await tx.product.update({ where: { id }, data });
-
-      // ---- attributes: only replace if provided (your existing logic)
-      if (attributeSelections) {
-        await tx.productAttributeValue.deleteMany({ where: { productId: id } });
-        await tx.productAttributeText.deleteMany({ where: { productId: id } });
-
-        for (const sel of attributeSelections) {
-          if (sel?.valueId) {
-            await tx.productAttributeValue.create({
-              data: { productId: id, attributeId: sel.attributeId, valueId: sel.valueId },
-            });
-          } else if (Array.isArray(sel?.valueIds)) {
-            await tx.productAttributeValue.createMany({
-              data: sel.valueIds.map((vId: string) => ({
-                productId: id, attributeId: sel.attributeId, valueId: vId,
-              })),
-              skipDuplicates: true,
-            });
-          } else if (typeof sel?.text === 'string') {
-            await tx.productAttributeText.create({
-              data: { productId: id, attributeId: sel.attributeId, value: sel.text },
-            });
-          }
-        }
-      }
-
-      // ---- variants: only replace if provided (use your normalize/replace helpers)
-      if (variantsInput) {
-        const normalized = normalizeVariantsPayload({ variants: variantsInput });
-        await replaceAllVariants(tx, id, normalized);
-      }
-    });
-
-    res.json({ ok: true });
-  } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      // unique constraint violation
-      const target = Array.isArray((err as any).meta?.target) ? (err as any).meta.target.join(',') : (err as any).meta?.target;
-      if (String(target).includes('sku')) {
-        return res.status(409).json({ error: 'Variant SKU must be unique. Please change duplicate SKUs or leave blank to auto-assign.' });
-      }
-    }
-    next(err);
-  }
-};
-
-
-// 2) mount both PUT and PATCH on the same path (NOTE the path is just '/:id')
-router
-  .route('/:id')
-  .put(requireAdmin, updateProduct)
-  .patch(requireAdmin, updateProduct);
-router.post('/:id', requireAdmin, updateProduct);
-
-/* ---------------- Zod Schemas ---------------- */
-const IdSchema = z.string().min(1, 'id is required');
-
-const AddAttrValueSchema = z.object({
-  attributeId: z.string().min(1),
-  valueId: z.string().min(1),
-});
-
-const UpsertTextAttrSchema = z.object({
-  attributeId: z.string().min(1),
-  value: z.string().min(1),
-});
-
-const CreateVariantSchema = z.object({
-  sku: z.string().min(1),
-  price: z.number().optional(),
-  inStock: z.boolean().optional(),
-  imagesJson: z.array(z.string().url()).optional(),
-  options: z.array(z.object({
-    attributeId: z.string().min(1),
-    valueId: z.string().min(1),
-  })).default([]),
-});
-
-
-const StatusSchema = z.object({
-  status: z.enum(['PENDING', 'PUBLISHED', 'REJECTED']),
-});
-
-// POST /api/admin/products/:id/status  -> { status: "PENDING" | "PUBLISHED" | "REJECTED" }
-router.post('/:id/status', requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = StatusSchema.parse(req.body ?? {});
-
-    const updated = await prisma.product.update({
-      where: { id },
-      data: { status },
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        price: true,
-        sku: true,
-        inStock: true,
-        imagesJson: true,
-      },
-    });
-
-    res.json({ data: updated });
-  } catch (e: any) {
-    // Not found (Prisma P2025) -> 404, otherwise 400
-    if (e?.code === 'P2025') return res.status(404).json({ error: 'Product not found' });
-    return res.status(400).json({ error: e?.message || 'Failed to update status' });
-  }
-});
-
-// BULK replace: POST /api/admin/products/:productId/variants/bulk
-router.post('/:productId/variants/bulk', requireAdmin, wrap(async (req, res) => {
-  const productId = IdSchema.parse(req.params.productId);
-  const normalized = normalizeVariantsPayload(req.body);
-  await prisma.$transaction(async (tx) => {
-    await replaceAllVariants(tx, productId, normalized);
-  });
-  res.json({ ok: true, count: normalized.length });
-}));
-
-
-router.post('/:productId/variants', requireAdmin, async (req, res, next) => {
-  try {
-    const productId = IdSchema.parse(req.params.productId);
-    const payload = CreateVariantSchema.parse(req.body ?? {});
-    const options = (payload.options || [])
-      .map(o => ({ attributeId: o.attributeId, valueId: o.valueId }))
-      .filter(o => o.attributeId && o.valueId);
-    const seen = new Set<string>();
-    const sku = await makeUniqueSku(prisma, payload.sku, seen);
-    const created = await prisma.$transaction(async (tx) => {
-      const variant = await tx.productVariant.create({
-        data: {
-          productId,
-          sku: payload.sku,
-          price: payload.price != null ? new Prisma.Decimal(payload.price) : null,
-          inStock: payload.inStock ?? true,
-          imagesJson: payload.imagesJson ?? [],
-        },
-      });
-
-      if (options.length) {
-        await tx.productVariantOption.createMany({
-          data: options.map(o => ({ variantId: variant.id, attributeId: o.attributeId!, valueId: o.valueId! })),
-          skipDuplicates: true,
-        });
-      }
-
-      return tx.productVariant.findUnique({
-        where: { id: variant.id },
-        include: { options: { include: { attribute: true, value: true } } },
-      });
-    });
-
-    res.status(201).json({ ok: true, data: created });
-  } catch (err: any) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      const target = Array.isArray((err as any).meta?.target) ? (err as any).meta.target.join(',') : (err as any).meta?.target;
-      if (String(target).includes('sku')) {
-        return res.status(409).json({ error: 'Variant SKU must be unique. Please change duplicate SKUs or leave blank to auto-assign.' });
-      }
-    }
-    next(err);
-  }
-});
-
-
-/* ---------------- attributes on product ---------------- */
-
-// GET /api/admin/products/:productId/attributes
-router.get('/:productId/attributes', requireAdmin, wrap(async (req, res) => {
-  const productId = IdSchema.parse(req.params.productId);
-
-  const [values, texts] = await Promise.all([
-    prisma.productAttributeValue.findMany({
-      where: { productId },
-      include: { attribute: true, value: true },
-      orderBy: [{ attribute: { name: 'asc' } }, { value: { position: 'asc' } }],
-    }),
-    prisma.productAttributeText.findMany({
-      where: { productId },
-      include: { attribute: true },
-      orderBy: [{ attribute: { name: 'asc' } }],
-    }),
-  ]);
-
-  res.json({ data: { values, texts } });
-}));
-
-// POST /api/admin/products/:productId/attributes  (SELECT value)
-router.post('/:productId/attributes', requireAdmin, wrap(async (req, res) => {
-  const productId = IdSchema.parse(req.params.productId);
-  const { attributeId, valueId } = AddAttrValueSchema.parse(req.body ?? {});
-  const value = await prisma.attributeValue.findUnique({ where: { id: valueId }, select: { id: true, attributeId: true } });
-  if (!value) return res.status(404).json({ error: 'Attribute value not found' });
-  if (value.attributeId !== attributeId) return res.status(400).json({ error: 'valueId does not belong to attributeId' });
-
-  const existing = await prisma.productAttributeValue.findFirst({ where: { productId, attributeId, valueId } });
-  if (existing) return res.json({ ok: true, data: existing, exists: true });
-
-  const created = await prisma.productAttributeValue.create({ data: { productId, attributeId, valueId } });
-  res.status(201).json({ ok: true, data: created });
-}));
-
-// DELETE /api/admin/products/:productId/attributes/:pavId
-router.delete('/:productId/attributes/:pavId', requireAdmin, wrap(async (req, res) => {
-  const productId = IdSchema.parse(req.params.productId);
-  const pavId = IdSchema.parse(req.params.pavId);
-  const pav = await prisma.productAttributeValue.findUnique({ where: { id: pavId }, select: { id: true, productId: true } });
-  if (!pav || pav.productId !== productId) return res.status(404).json({ error: 'Product attribute value not found' });
-  await prisma.productAttributeValue.delete({ where: { id: pavId } });
-  res.json({ ok: true });
-}));
-
-// POST /api/admin/products/:productId/attributes/text  (TEXT value upsert)
-router.post('/:productId/attributes/text', requireAdmin, wrap(async (req, res) => {
-  const productId = IdSchema.parse(req.params.productId);
-  const { attributeId, value } = UpsertTextAttrSchema.parse(req.body ?? {});
-  const existing = await prisma.productAttributeText.findFirst({ where: { productId, attributeId } });
-  const row = existing
-    ? await prisma.productAttributeText.update({ where: { id: existing.id }, data: { value } })
-    : await prisma.productAttributeText.create({ data: { productId, attributeId, value } });
-  res.json({ ok: true, data: row });
-}));
-
-router.delete('/:productId/attributes/text/:id', requireAdmin, wrap(async (req, res) => {
-  const productId = IdSchema.parse(req.params.productId);
-  const id = IdSchema.parse(req.params.id);
-  const row = await prisma.productAttributeText.findUnique({ where: { id }, select: { id: true, productId: true } });
-  if (!row || row.productId !== productId) return res.status(404).json({ error: 'Text attribute not found' });
-  await prisma.productAttributeText.delete({ where: { id } });
-  res.json({ ok: true });
-}));
-
-/* ---------------- variants ---------------- */
-
-/* ---------- GET /api/admin/products/:productId/variants ---------- */
-router.get(
-  '/:productId/variants',
-  requireAuth, requireAdmin,
-  async (req , res) => {
-
-    const { productId } = req.params;
-    const variants = await prisma.productVariant.findMany({
-      where: { productId },
-      select: { 
-        id: true, sku: true, inStock: true ,
-         options: { include: { attribute: true, value: true } }
-      },
-      orderBy: { createdAt: 'asc' },
-    });
-    return res.json({ data: variants });
-  }
-);
-
-router.post('/:productId/variants', requireAdmin, wrap(async (req, res) => {
-  const productId = IdSchema.parse(req.params.productId);
-  const payload = CreateVariantSchema.parse(req.body ?? {});
-
-  // Validate options
-  for (const opt of payload.options) {
-    const val = await prisma.attributeValue.findUnique({ where: { id: opt.valueId }, select: { id: true, attributeId: true } });
-    if (!val) return res.status(404).json({ error: `Attribute value not found: ${opt.valueId}` });
-    if (val.attributeId !== opt.attributeId) return res.status(400).json({ error: `valueId ${opt.valueId} does not belong to attributeId ${opt.attributeId}` });
-  }
-
-  const created = await prisma.$transaction(async (tx) => {
-    const variant = await tx.productVariant.create({
-      data: {
-        productId,
-        sku: payload.sku,
-        price: payload.price != null ? new Prisma.Decimal(payload.price) : undefined,
-        inStock: payload.inStock ?? true,
-        imagesJson: payload.imagesJson ?? [],
-      },
-    });
-
-    if (payload.options.length) {
-      await tx.productVariantOption.createMany({
-        data: payload.options.map(o => ({ variantId: variant.id, attributeId: o.attributeId, valueId: o.valueId })),
-        skipDuplicates: true,
-      });
-    }
-
-    return tx.productVariant.findUnique({
-      where: { id: variant.id },
-      include: { options: { include: { attribute: true, value: true } } },
-    });
-  });
-
-  res.status(201).json({ ok: true, data: created });
-}));
-
-// DELETE /api/admin/products/:id
-router.delete('/:id', requireAdmin, wrap(async (req, res) => {
-  const { id } = req.params;
-  const orderItemCount = await prisma.orderItem.count({ where: { productId: id } });
-  if (orderItemCount > 0) return res.status(409).json({ error: 'Cannot delete product in use (has order items).' });
-  await prisma.product.delete({ where: { id } });
-  res.json({ ok: true });
-}));
-
-
-// ---- Flexible option & variant schemas (coerce numbers; allow multiple shapes)
-const OptionLooseSchema = z.object({
-  attributeId: z.string().optional(),
-  valueId: z.string().optional(),
-  attribute: z.object({ id: z.string() }).optional(),
-  value: z.object({ id: z.string() }).optional(),
-  attributeValueId: z.string().optional(),
-}).transform(o => ({
-  attributeId: o.attributeId ?? o.attribute?.id,
-  valueId: o.valueId ?? o.attributeValueId ?? o.value?.id,
-}));
-
-const VariantLooseSchema = z.object({
-  sku: z.string().min(1),
-  price: z.coerce.number().nullable().optional(),
-  inStock: z.coerce.boolean().optional(),
-  imagesJson: z.array(z.string()).optional(), // allow any string (urls, data:, /path)
-  options: z.array(OptionLooseSchema).default([]),
-});
-
-function normalizeVariantsPayload(body: any) {
-  const raw =
-    body?.variants ??
-    body?.data?.variants ??
-    (Array.isArray(body) ? body : undefined);
-
-  if (!raw) return [];
-
-  const parsed = z.array(VariantLooseSchema).parse(raw);
-
-  return parsed.map(v => ({
-    sku: v.sku,
-    price: v.price ?? null,
-    inStock: v.inStock ?? true,
-    imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-    options: (v.options || [])
-      .map(o => ({ attributeId: o.attributeId, valueId: o.valueId }))
-      .filter(o => o.attributeId && o.valueId),
-  }));
-}
-
-async function replaceAllVariants(tx: Tx, productId: string, variants: any[]) {
-  const existing = await tx.productVariant.findMany({ where: { productId }, select: { id: true } });
-  if (existing.length) {
-    await tx.productVariantOption.deleteMany({ where: { variantId: { in: existing.map(v => v.id) } } });
-    await tx.productVariant.deleteMany({ where: { id: { in: existing.map(v => v.id) } } });
-  }
-
-  const seen = new Set<string>(); // track SKUs within this request
-
-  for (const v of variants) {
-    const uniqueSku = await makeUniqueSku(tx, v.sku, seen);
-
-    const created = await tx.productVariant.create({
-      data: {
-        productId,
-        sku: uniqueSku || '', // 👈 enforce uniqueness
-        price: v.price != null ? new Prisma.Decimal(v.price) : null,
-        inStock: v.inStock !== false,
-        imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-      },
-    });
-
-    if (Array.isArray(v.options) && v.options.length) {
-      await tx.productVariantOption.createMany({
-        data: v.options.map((o: any) => ({
-          variantId: created.id,
-          attributeId: o.attributeId,
-          valueId: o.valueId,
-        })),
-        skipDuplicates: true,
-      });
-    }
-  }
-}
-
-
-
-const toDecimal = (v: any) => new Prisma.Decimal(String(v));
-
-/* ---------- GET /api/admin/products/:productId/offers ---------- */
-router.get(
-  '/:productId/offers',
-  requireAuth, requireAdmin,
-  async (req, res) => {
-
-    const { productId } = req.params;
+    // Optional: filter by variantId or active status
+    const { variantId, active } = req.query as { variantId?: string; active?: string };
 
     const offers = await prisma.supplierOffer.findMany({
-      where: { productId },
-      include: {
-        supplier: { select: { id: true, name: true, whatsappPhone: true, contactEmail: true, status: true } },
-        variant:  { select: { id: true, sku: true, inStock: true } },
+      where: {
+        productId,
+        ...(variantId ? { variantId } : {}),
+        ...(active != null ? { isActive: active === 'true' } : {}),
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }],
+      include: {
+        supplier: { select: { id: true, name: true } },
+        variant: { select: { id: true, sku: true } },
+      },
     });
 
-    return res.json({ data: offers });
+    // shape to your frontend’s expected keys (supplierName, etc.)
+    const data = offers.map((o) => ({
+      id: o.id,
+      productId: o.productId,
+      variantId: o.variantId,
+      supplierId: o.supplierId,
+      supplierName: o.supplier?.name,
+      price: Number(o.price),
+      currency: o.currency,
+      availableQty: o.availableQty,
+      leadDays: o.leadDays,
+      isActive: o.isActive,
+      variantSku: o.variant?.sku,
+    }));
+
+    res.json({ data });
+  } catch (err) {
+    next(err);
   }
-);
+});
 
-/* ---------- POST /api/admin/products/:productId/offers ---------- */
-router.post(
-  '/:productId/offers',
-  requireAuth,requireAdmin,
-  async (req,res) => {
-
+// ---------- POST: create offer for a product ----------
+router.post('/:productId/supplier-offers', requireAdmin, async (req, res, next) => {
+  try {
     const { productId } = req.params;
-    const {
-      supplierId,
-      variantId,   // optional
-      price,
-      currency = 'NGN',
-      inStock = true,
-      leadDays,
-      isActive = true,
-    } = req.body ?? {};
 
-    if (!supplierId || price == null) {
-      return res.status(400).json({ error: 'supplierId and price are required' });
-    }
+    // Support both raw body and { data: ... }
+    const raw = (req.body?.data ?? req.body) as unknown;
+    const parsed = offerCreateSchema.parse(raw);
 
-    // Validate supplier exists
-    const supplier = await prisma.supplier.findUnique({ where: { id: supplierId }, select: { id: true } });
-    if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
+    // tolerate "PRODUCT" sentinel => null variantId
+    const variantId =
+      parsed.variantId && parsed.variantId !== 'PRODUCT' ? parsed.variantId : null;
 
-    // Validate product exists
-    const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true } });
+    // (Optional) verify product and supplier exist
+    const [product, supplier] = await Promise.all([
+      prisma.product.findUnique({ where: { id: productId }, select: { id: true } }),
+      prisma.supplier.findUnique({ where: { id: parsed.supplierId }, select: { id: true } }),
+    ]);
     if (!product) return res.status(404).json({ error: 'Product not found' });
+    if (!supplier) return res.status(400).json({ error: 'Invalid supplierId' });
 
-    // If variantId is provided, ensure it belongs to this product
-    if (variantId) {
-      const variant = await prisma.productVariant.findUnique({
-        where: { id: variantId },
-        select: { id: true, productId: true },
-      });
-      if (!variant || variant.productId !== productId) {
-        return res.status(400).json({ error: 'variantId does not belong to this product' });
-      }
-    }
-
-    try {
-      const created = await prisma.supplierOffer.create({
-        data: {
-          supplierId,
-          productId,
-          variantId: variantId || null,
-          price: toDecimal(price),
-          currency,
-          inStock: !!inStock,
-          leadDays: leadDays == null || leadDays === '' ? null : Number(leadDays),
-          isActive: !!isActive,
-        },
-      });
-      return res.status(201).json({ data: created });
-    } catch (e: any) {
-      // Unique tuple violation
-      if (e?.code === 'P2002') {
-        return res.status(409).json({ error: 'An offer for this (supplier, product, variant) already exists' });
-      }
-      console.error('Create offer failed:', e);
-      return res.status(500).json({ error: 'Could not create offer' });
-    }
-  }
-);
-
-/* ---------- PUT /api/admin/products/:productId/offers/:offerId ---------- */
-router.put(
-  '/:productId/offers/:offerId',
-  requireAuth,requireAdmin,
-  async (req,res) => {
-
-    const { productId, offerId } = req.params;
-    const payload = req.body ?? {};
-
-    // Fetch existing offer ensure it belongs to product
-    const existing = await prisma.supplierOffer.findUnique({
-      where: { id: offerId },
-      select: { id: true, productId: true },
+    // inside POST /:productId/supplier-offers
+    const created = await prisma.supplierOffer.create({
+      data: {
+        productId,
+        variantId,
+        supplierId: parsed.supplierId,
+        price: new Prisma.Decimal(parsed.price), // or your toDecimal(parsed.price)
+        currency: parsed.currency ?? 'NGN',
+        availableQty: parsed.availableQty ?? 0,
+        leadDays: parsed.leadDays ?? 0,
+        isActive: parsed.isActive ?? true,
+      },
+      include: {
+        supplier: { select: { id: true, name: true } },
+        variant: { select: { id: true, sku: true } },
+      },
     });
-    if (!existing || existing.productId !== productId) {
-      return res.status(404).json({ error: 'Offer not found for this product' });
-    }
 
-    // If variantId is being changed, validate it belongs to product
-    if (payload.variantId) {
-      const variant = await prisma.productVariant.findUnique({
-        where: { id: payload.variantId },
-        select: { id: true, productId: true },
-      });
-      if (!variant || variant.productId !== productId) {
-        return res.status(400).json({ error: 'variantId does not belong to this product' });
-      }
-    }
 
-    const data: Prisma.SupplierOfferUpdateInput = {};
-    if (payload.supplierId) data.supplier = { connect: { id: payload.supplierId } };
-    if (payload.variantId !== undefined) {
-      data.variant = payload.variantId ? { connect: { id: payload.variantId } } : { disconnect: true };
-    }
-    if (payload.price != null) data.price = toDecimal(payload.price);
-    if (payload.currency != null) data.currency = String(payload.currency);
-    if (payload.inStock != null) data.inStock = !!payload.inStock;
-    if (payload.leadDays !== undefined) {
-      data.leadDays = payload.leadDays === '' || payload.leadDays == null ? null : Number(payload.leadDays);
-    }
-    if (payload.isActive != null) data.isActive = !!payload.isActive;
-
-    try {
-      const updated = await prisma.supplierOffer.update({
-        where: { id: offerId },
-        data,
-      });
-      return res.json({ data: updated });
-    } catch (e: any) {
-      if (e?.code === 'P2002') {
-        return res.status(409).json({ error: 'Another offer already exists with this (supplier, product, variant)' });
-      }
-      console.error('Update offer failed:', e);
-      return res.status(500).json({ error: 'Could not update offer' });
-    }
-  }
-);
-
-/* ---------- DELETE /api/admin/products/:productId/offers/:offerId ---------- */
-router.delete(
-  '/:productId/offers/:offerId',
-  requireAuth, requireAdmin,
-  async (req,res) => {
-
-    const { productId, offerId } = req.params;
-
-    // Make sure the offer belongs to the product before deleting
-    const existing = await prisma.supplierOffer.findUnique({
-      where: { id: offerId },
-      select: { id: true, productId: true },
+    res.status(201).json({
+      data: {
+        id: created.id,
+        productId: created.productId,
+        variantId: created.variantId,
+        supplierId: created.supplierId,
+        supplierName: created.supplier?.name,
+        price: Number(created.price),
+        currency: created.currency,
+        availableQty: created.availableQty,
+        leadDays: created.leadDays,
+        isActive: created.isActive,
+        variantSku: created.variant?.sku,
+      },
     });
-    if (!existing || existing.productId !== productId) {
-      return res.status(404).json({ error: 'Offer not found for this product' });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid payload', details: err.issues });
+    }
+    next(err);
+  }
+});
+
+// ---------- PATCH: update offer ----------
+router.patch('/:productId/supplier-offers/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const { productId, id } = req.params;
+    const raw = (req.body?.data ?? req.body) as unknown;
+    const patch = offerUpdateSchema.parse(raw);
+
+    // normalize variantId
+    const normalized: Record<string, any> = { ...patch };
+    if ('variantId' in patch) {
+      normalized.variantId =
+        patch.variantId && patch.variantId !== 'PRODUCT' ? patch.variantId : null;
     }
 
-    await prisma.supplierOffer.delete({ where: { id: offerId } });
-    return res.json({ ok: true });
+    // ensure offer belongs to product
+    const existing = await prisma.supplierOffer.findFirst({ where: { id, productId } });
+    if (!existing) return res.status(404).json({ error: 'Offer not found for this product' });
+
+    const updated = await prisma.supplierOffer.update({
+      where: { id },
+      data: normalized,
+      include: {
+        supplier: { select: { id: true, name: true } },
+        variant: { select: { id: true, sku: true } },
+      },
+    });
+
+    res.json({
+      data: {
+        id: updated.id,
+        productId: updated.productId,
+        variantId: updated.variantId,
+        supplierId: updated.supplierId,
+        supplierName: updated.supplier?.name,
+        price: Number(updated.price),
+        currency: updated.currency,
+        availableQty: updated.availableQty,
+        leadDays: updated.leadDays,
+        isActive: updated.isActive,
+        variantSku: updated.variant?.sku,
+      },
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid payload', details: err.issues });
+    }
+    next(err);
   }
-);
+});
+
+// ---------- DELETE: remove offer ----------
+router.delete('/:productId/supplier-offers/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const { productId, id } = req.params;
+    const existing = await prisma.supplierOffer.findFirst({ where: { id, productId } });
+    if (!existing) return res.status(404).json({ error: 'Offer not found for this product' });
+
+    await prisma.supplierOffer.delete({ where: { id } });
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
 
 export default router;
-

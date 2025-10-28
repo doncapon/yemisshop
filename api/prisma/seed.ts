@@ -27,14 +27,18 @@ const PRICE_BUCKETS = [
   { min: 5000, max: 9999 },
   { min: 10000, max: 99999 },
 ] as const;
+function randomAvailable() {
+  // tweak range as you like
+  return randInt(0, 180);
+}
 
 function randomPrice(): Prisma.Decimal {
   const b =
     Math.random() < 0.35
       ? PRICE_BUCKETS[0]
       : Math.random() < 0.75
-      ? PRICE_BUCKETS[1]
-      : PRICE_BUCKETS[2];
+        ? PRICE_BUCKETS[1]
+        : PRICE_BUCKETS[2];
   return new Prisma.Decimal(randInt(b.min, b.max));
 }
 
@@ -79,7 +83,7 @@ function supplierOfferFromRetail(retail: number) {
 async function main() {
   console.log('🧹 Clearing existing data …');
 
-  // Delete dependents first (safely guard optional tables)
+  // Delete dependents first (many tables are optional; guard each call)
   await prisma.$transaction(
     [
       prisma.paymentEvent?.deleteMany?.() as any,
@@ -89,11 +93,12 @@ async function main() {
       prisma.orderItem?.deleteMany?.() as any,
       prisma.payment?.deleteMany?.() as any,
 
-      prisma.supplierOffer?.deleteMany?.() as any, // <-- IMPORTANT
+      prisma.supplierOffer?.deleteMany?.() as any,
       prisma.productVariantOption?.deleteMany?.() as any,
       prisma.productVariant?.deleteMany?.() as any,
-      prisma.productAttributeValue?.deleteMany?.() as any,
+
       prisma.productAttributeText?.deleteMany?.() as any,
+      prisma.productAttributeOption?.deleteMany?.() as any, // ← new link table
 
       prisma.favorite?.deleteMany?.() as any,
       prisma.wishlist?.deleteMany?.() as any,
@@ -109,8 +114,23 @@ async function main() {
       prisma.otp?.deleteMany?.() as any,
       prisma.user?.deleteMany?.() as any,
       prisma.address?.deleteMany?.() as any,
+      prisma.setting?.deleteMany?.() as any, // optional
     ].filter(Boolean)
   );
+
+  console.log('⚙️  Seeding settings (if table exists)…');
+  try {
+    await prisma.setting.createMany({
+      data: [
+        { key: 'taxMode', value: 'INCLUDED' },   // or ADDED / NONE
+        { key: 'taxRatePct', value: '7.5' },
+        { key: 'commsUnitCostNGN', value: '100' },
+      ],
+      skipDuplicates: true,
+    });
+  } catch {
+    // settings table may not exist yet; ignore
+  }
 
   console.log('👥 Seeding users…');
   const adminPwd = await bcrypt.hash('Admin123!', 10);
@@ -182,7 +202,7 @@ async function main() {
     },
   });
 
-  console.log('🏭 Seeding suppliers… )');
+  console.log('🏭 Seeding suppliers…');
   const suppliers = await prisma.$transaction([
     prisma.supplier.create({
       data: {
@@ -349,13 +369,14 @@ async function main() {
       data: {
         title,
         description:
-          'Quality product from YemiShop—reliable, durable and designed for everyday use. Great value at the right price.',
+          'Quality product from DaySpring—reliable, durable and designed for everyday use. Great value at the right price.',
         price: randomPrice(),
         sku: `SKU-${String(i).padStart(5, '0')}`,
         inStock: i <= TOTAL_IN_STOCK,
-        vatFlag: true,
         status: 'PUBLISHED',
         imagesJson: productImages(i),
+        communicationCost: new Prisma.Decimal(50),
+
         supplier: { connect: { id: sup.id } },
         category: { connect: { id: cat.id } },
         brand: { connect: { id: brand.id } },
@@ -367,14 +388,13 @@ async function main() {
     createdProducts.push({ id: p.id, i });
   }
 
-  // Pending products (also get offers later)
+  // Pending products too
   const TOTAL_PENDING = 30;
   console.log(`⏳ Seeding ${TOTAL_PENDING} pending products…`);
   for (let j = 1; j <= TOTAL_PENDING; j++) {
     const cat = categories[(j - 1) % categories.length];
     const brand = brands[(j - 1) % brands.length];
     const title = `${titlePool[(j * 3) % titlePool.length]} (Pending #${j})`;
-
     const sup2 = suppliers[(j - 1) % suppliers.length];
 
     await prisma.product.create({
@@ -384,7 +404,6 @@ async function main() {
         price: randomPrice(),
         sku: `SKU-PEND-${String(j).padStart(4, '0')}`,
         inStock: Math.random() > 0.4,
-        vatFlag: true,
         status: 'PENDING',
         imagesJson: productImages(`pending-${j}`),
         supplier: { connect: { id: sup2.id } },
@@ -395,23 +414,33 @@ async function main() {
     });
   }
 
-  console.log('🏷️  Tagging products with attributes…');
-  // Broadly apply attributes to many published products
+  console.log('🏷️  Tagging products with allowed attribute options…');
+  // Link Color/Size values to products via ProductAttributeOption
   for (const { id, i } of createdProducts) {
-    // Colors (1–3)
+    // Colors (1–3 allowed values)
     const colors = pickSome(colorValues, 1, 3);
     for (const c of colors) {
-      await prisma.productAttributeValue.create({
-        data: { productId: id, attributeId: colorAttr.id, valueId: c.id },
+      await prisma.productAttributeOption.create({
+        data: {
+          productId: id,
+          attributeId: c.attributeId,
+          valueId: c.id,
+        },
       });
     }
 
-    // Sizes (1–2)
-    const sizes = pickSome(sizeValues, 1, 2);
-    for (const s of sizes) {
-      await prisma.productAttributeValue.create({
-        data: { productId: id, attributeId: sizeAttr.id, valueId: s.id },
-      });
+    // Sizes (0–2 allowed values)
+    if (chance(0.75)) {
+      const sizes = pickSome(sizeValues, 1, 2);
+      for (const s of sizes) {
+        await prisma.productAttributeOption.create({
+          data: {
+            productId: id,
+            attributeId: s.attributeId,
+            valueId: s.id,
+          },
+        });
+      }
     }
 
     // Material text on ~40%
@@ -427,7 +456,6 @@ async function main() {
   }
 
   console.log('🔀 Creating random variants…');
-  // Build up a map of variants per product for later offers
   const variantsByProduct: Record<string, { id: string; sku: string }[]> = {};
 
   for (const { id, i } of createdProducts) {
@@ -439,21 +467,49 @@ async function main() {
     const baseSku = (product?.sku || `SKU-V-${String(i).padStart(4, '0')}`).toUpperCase();
 
     const localVariants: { id: string; sku: string }[] = [];
-    const colors = pickSome(colorValues, 1, 3);
-    const sizes = pickSome(sizeValues, 1, 2);
+
+    // Use the product's allowed options (if any); fallback to global values
+    const allowedColorIds = (
+      await prisma.productAttributeOption.findMany({
+        where: { productId: id, attributeId: colorAttr.id },
+        select: { valueId: true },
+      })
+    ).map((r) => r.valueId);
+    const allowedSizeIds = (
+      await prisma.productAttributeOption.findMany({
+        where: { productId: id, attributeId: sizeAttr.id },
+        select: { valueId: true },
+      })
+    ).map((r) => r.valueId);
+
+    const colors = (allowedColorIds.length
+      ? colorValues.filter((v) => allowedColorIds.includes(v.id))
+      : colorValues);
+
+    const sizes = (allowedSizeIds.length
+      ? sizeValues.filter((v) => allowedSizeIds.includes(v.id))
+      : sizeValues);
+
+    if (!colors.length || !sizes.length) {
+      // If there is no overlap, just skip making variants for this product
+      variantsByProduct[id] = [];
+      continue;
+    }
 
     // Generate up to makeVariants combinations
     outer: for (const c of colors) {
       for (const s of sizes) {
         if (localVariants.length >= makeVariants) break outer;
 
+        const base = Number(product?.price || 0);
         const bump = [0, 200, 300, 500][randInt(0, 3)];
         const sku = `${baseSku}-${(c.code || c.name).toUpperCase()}-${(s.code || s.name).toUpperCase()}`;
+
         const v = await prisma.productVariant.create({
           data: {
             productId: id,
             sku,
-            price: bump ? new Prisma.Decimal(Number(product?.price || 0) + bump) : undefined,
+            price: bump ? new Prisma.Decimal(base + bump) : undefined, // nullable => uses product price
             inStock: chance(0.8),
             imagesJson: productImages(`${i}-${sku}`),
           },
@@ -474,7 +530,6 @@ async function main() {
   }
 
   console.log('💸 Creating supplier offers (at least one per product)…');
-  // Add offers for ALL products (published + pending)
   const allProducts = await prisma.product.findMany({
     select: { id: true, price: true },
   });
@@ -485,6 +540,7 @@ async function main() {
 
     // Always at least ONE product-wide offer
     const supForProductWide = sample(suppliers);
+    const avail1 = randomAvailable();
     await prisma.supplierOffer.create({
       data: {
         supplierId: supForProductWide.id,
@@ -492,11 +548,13 @@ async function main() {
         variantId: null,
         price: supplierOfferFromRetail(retail),
         currency: 'NGN',
-        inStock: true,
+        availableQty: avail1,            // 👈 NEW
+        inStock: avail1 > 0,          // 👈 derive from available
         leadDays: randInt(1, 5),
         isActive: true,
       },
     });
+
 
     // Maybe add more product-wide offers (0–2 more)
     const extraPw = randInt(0, 2);
@@ -506,25 +564,29 @@ async function main() {
       extraPw
     );
     for (const sup of extraSuppliers) {
+      const avail2 = randomAvailable();
       await prisma.supplierOffer.create({
         data: {
           supplierId: sup.id,
           productId: p.id,
           variantId: null,
-          price: supplierOfferFromRetail(retail * (0.95 + Math.random() * 0.1)), // slight variance
+          price: supplierOfferFromRetail(retail * (0.95 + Math.random() * 0.1)),
           currency: 'NGN',
-          inStock: chance(0.9),
+          availableQty: avail2,           // 👈 NEW
+          inStock: avail2 > 0,         // 👈 derive from available
           leadDays: randInt(2, 7),
           isActive: true,
         },
       });
     }
 
+
     // Variant-specific offers for some products (~50%)
     if (vList.length && chance(0.5)) {
       const chosenVariants = pickSome(vList, 1, Math.min(3, vList.length));
       for (const v of chosenVariants) {
         const sup = sample(suppliers);
+        const availV = randomAvailable();
         await prisma.supplierOffer.create({
           data: {
             supplierId: sup.id,
@@ -532,13 +594,15 @@ async function main() {
             variantId: v.id,
             price: supplierOfferFromRetail(retail * (0.95 + Math.random() * 0.15)),
             currency: 'NGN',
-            inStock: chance(0.85),
+            availableQty: availV,         // 👈 NEW
+            inStock: availV > 0,       // 👈 derive from available
             leadDays: randInt(2, 8),
             isActive: true,
           },
         });
       }
     }
+
   }
 
   console.log('✅ Seed complete.');

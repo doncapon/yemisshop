@@ -1,6 +1,8 @@
 // src/pages/Cart.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import api from '../api/client'; // <-- your axios instance (same you use elsewhere)
 
 type SelectedOption = {
   attributeId: string;
@@ -11,13 +13,13 @@ type SelectedOption = {
 
 type CartItem = {
   productId: string;
-  variantId?: string | null; // ← NEW
+  variantId?: string | null;
   title: string;
-  qty: number;               // integer, editable
-  unitPrice: number;         // ← NEW: single unit price (variant or base)
-  totalPrice: number;        // total for this line (qty * unit)
-  selectedOptions?: SelectedOption[]; // ← NEW
-  image?: string;            // ← NEW
+  qty: number;
+  unitPrice: number;
+  totalPrice: number;
+  selectedOptions?: SelectedOption[];
+  image?: string;
 };
 
 const ngn = new Intl.NumberFormat('en-NG', {
@@ -26,7 +28,7 @@ const ngn = new Intl.NumberFormat('en-NG', {
   maximumFractionDigits: 2,
 });
 
-// ---- Persistence helpers ----------------------------------------------------
+/* ---------------- Persistence helpers ---------------- */
 
 function toArray<T = any>(x: any): T[] {
   if (!x) return [];
@@ -34,7 +36,6 @@ function toArray<T = any>(x: any): T[] {
 }
 
 function normalizeCartShape(parsed: any[]): CartItem[] {
-  // Back-compat and normalization of mixed shapes.
   return parsed.map((it: any) => {
     const qtyNum = Math.max(1, Number(it.qty) || 1);
 
@@ -46,8 +47,8 @@ function normalizeCartShape(parsed: any[]): CartItem[] {
     const unitPrice = hasUnit
       ? Number(it.unitPrice)
       : hasPrice
-      ? Number(it.price)
-      : unitFromTotal ?? 0;
+        ? Number(it.price)
+        : unitFromTotal ?? 0;
 
     const totalPrice = hasTotal ? Number(it.totalPrice) : unitPrice * qtyNum;
 
@@ -90,15 +91,112 @@ function saveCart(items: CartItem[]) {
   localStorage.setItem('cart', JSON.stringify(items));
 }
 
-// ---- Utilities --------------------------------------------------------------
+/* ---------------- Utilities ---------------- */
 
 const keyFor = (productId: string, variantId?: string | null) =>
-  `${productId}::${variantId ?? ''}`;
+  `${productId}::${variantId ?? 'null'}`;
 
 const sameLine = (a: CartItem, productId: string, variantId?: string | null) =>
   a.productId === productId && (a.variantId ?? null) === (variantId ?? null);
 
-// ---- Component --------------------------------------------------------------
+/** Availability result per (productId, variantId) */
+type Availability = {
+  totalAvailable: number;          // sum of SupplierOffer.availableQty for that product/variant
+  cheapestSupplierUnit?: number | null; // optional, cheapest supplier unit cost (for UI hints)
+};
+
+/* ---------------- Availability fetcher (batched) ---------------- */
+
+async function fetchAvailabilityForCart(items: CartItem[]): Promise<Record<string, Availability>> {
+  if (!items.length) return {};
+  const pairs = items.map(i => ({ productId: i.productId, variantId: i.variantId ?? null }));
+  const uniqPairs: { productId: string; variantId: string | null }[] = [];
+  const seen = new Set<string>();
+  for (const p of pairs) {
+    const k = keyFor(p.productId, p.variantId);
+    if (!seen.has(k)) { seen.add(k); uniqPairs.push(p); }
+  }
+
+  // Build a simple signature for queryKey and for query params
+  const itemsParam = uniqPairs.map(p => `${p.productId}:${p.variantId ?? ''}`).join(',');
+
+  // 1) Try a bulk availability endpoint (recommended to add server-side)
+  const attempts = [
+    `/api/catalog/availability?items=${encodeURIComponent(itemsParam)}`,
+    `/api/products/availability?items=${encodeURIComponent(itemsParam)}`,
+    `/api/supplier-offers/availability?items=${encodeURIComponent(itemsParam)}`,
+  ];
+
+  for (const url of attempts) {
+    try {
+      const { data } = await api.get(url);
+      // Expect shape: { data: Array<{ productId, variantId?, totalAvailable, cheapestSupplierUnit? }> } OR plain array
+      const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+      if (Array.isArray(arr)) {
+        const out: Record<string, Availability> = {};
+        for (const row of arr) {
+          const k = keyFor(String(row.productId), row.variantId == null ? null : String(row.variantId));
+          out[k] = {
+            totalAvailable: Math.max(0, Number(row.totalAvailable) || 0),
+            cheapestSupplierUnit: Number.isFinite(Number(row.cheapestSupplierUnit))
+              ? Number(row.cheapestSupplierUnit)
+              : null,
+          };
+        }
+        return out;
+      }
+    } catch { /* try fallback */ }
+  }
+
+  // 2) Fallback: fetch supplier offers per product and sum on the client.
+  const out: Record<string, Availability> = {};
+  for (const pair of uniqPairs) {
+    const perAttempts = [
+      `/api/products/${pair.productId}/supplier-offers`,
+      `/api/admin/products/${pair.productId}/supplier-offers`,
+      `/api/admin/products/${pair.productId}/offers`,
+    ];
+    let list: any[] | null = null;
+    for (const url of perAttempts) {
+      try {
+        const { data } = await api.get(url);
+        const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+        if (Array.isArray(arr)) { list = arr; break; }
+      } catch { /* next */ }
+    }
+        if (!list) {
+      // We couldn’t fetch any offers for this product — leave it unknown (no cap).
+      continue;
+    }
+
+    const filtered = list.filter((o: any) => {
+      const offerVid = o.variantId ?? null;
+      const wantVid = pair.variantId ?? null;
+      return offerVid === wantVid || (wantVid !== null && offerVid === null);
+    });
+
+    // If we fetched OK but there are truly no offers, then the cap is 0.
+    let totalAvailable = 0;
+    let cheapest: number | null = null;
+
+    for (const o of filtered) {
+      const qty = Math.max(0, Number(o.availableQty ?? o.available ?? 0) || 0);
+      totalAvailable += qty;
+      const c = Number(o.price);
+      if (Number.isFinite(c)) cheapest = cheapest == null ? c : Math.min(cheapest, c);
+    }
+
+    out[keyFor(pair.productId, pair.variantId)] = {
+      totalAvailable,
+      cheapestSupplierUnit: cheapest,
+    };
+
+  }
+
+  return out;
+}
+
+/* ---------------- Component ---------------- */
 
 export default function Cart() {
   const [cart, setCart] = useState<CartItem[]>(() => loadCart());
@@ -108,13 +206,29 @@ export default function Cart() {
     saveCart(cart);
   }, [cart]);
 
+  // Batch availability for current cart lines
+  const availabilityQ = useQuery({
+    queryKey: ['catalog', 'availability', cart.map(i => keyFor(i.productId, i.variantId)).sort().join(',')],
+    enabled: cart.length > 0,
+    refetchOnWindowFocus: false,
+    staleTime: 15_000,
+    queryFn: () => fetchAvailabilityForCart(cart),
+  });
+
   const total = useMemo(
     () => cart.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0),
     [cart]
   );
 
+  const clampToMax = (productId: string, variantId: string | null | undefined, wantQty: number) => {
+    const k = keyFor(productId, variantId ?? null);
+    const max = availabilityQ.data?.[k]?.totalAvailable;
+    if (typeof max === 'number' && max >= 0) return Math.min(wantQty, Math.max(1, max));
+    return Math.max(1, wantQty); // unknown → no cap
+  };
+
   const updateQty = (productId: string, variantId: string | null | undefined, newQtyRaw: number) => {
-    const newQty = Math.max(1, Math.floor(Number(newQtyRaw) || 1));
+    const clamped = clampToMax(productId, variantId, Math.floor(Number(newQtyRaw) || 1));
     setCart((prev) =>
       prev.map((it) => {
         if (!sameLine(it, productId, variantId)) return it;
@@ -123,9 +237,9 @@ export default function Cart() {
           : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
         return {
           ...it,
-          qty: newQty,
-          totalPrice: unit * newQty,
-          unitPrice: unit, // keep unitPrice stable
+          qty: clamped,
+          totalPrice: unit * clamped,
+          unitPrice: unit,
         };
       })
     );
@@ -134,20 +248,23 @@ export default function Cart() {
   const inc = (productId: string, variantId?: string | null) => {
     const item = cart.find((c) => sameLine(c, productId, variantId));
     if (!item) return;
-    updateQty(productId, variantId, item.qty + 1);
+    const k = keyFor(productId, variantId ?? null);
+    const max = availabilityQ.data?.[k]?.totalAvailable ?? Infinity;
+    if (item.qty >= max) return; // hit the cap; optionally show a toast
+    updateQty(productId, variantId ?? null, item.qty + 1);
   };
 
   const dec = (productId: string, variantId?: string | null) => {
     const item = cart.find((c) => sameLine(c, productId, variantId));
     if (!item) return;
-    updateQty(productId, variantId, Math.max(1, item.qty - 1));
+    updateQty(productId, variantId ?? null, Math.max(1, item.qty - 1));
   };
 
   const remove = (productId: string, variantId?: string | null) => {
     setCart((prev) => prev.filter((it) => !sameLine(it, productId, variantId)));
   };
 
-  // Empty state (glassy card + gradient CTA)
+  // Empty state
   if (cart.length === 0) {
     return (
       <div className="min-h-[88vh] bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden grid place-items-center px-4">
@@ -198,14 +315,17 @@ export default function Cart() {
               const unit = Number.isFinite(Number(it.unitPrice))
                 ? Number(it.unitPrice)
                 : currentQty > 0
-                ? (Number(it.totalPrice) || 0) / currentQty
-                : Number(it.totalPrice) || 0;
+                  ? (Number(it.totalPrice) || 0) / currentQty
+                  : Number(it.totalPrice) || 0;
 
-              const key = keyFor(it.productId, it.variantId);
+              const k = keyFor(it.productId, it.variantId ?? null);
+              const maxAvail = availabilityQ.data?.[k]?.totalAvailable;
+              const capKnown = typeof maxAvail === 'number';
+              const cap = capKnown ? Math.max(1, maxAvail!) : undefined;
 
               return (
                 <article
-                  key={key}
+                  key={k}
                   className="group rounded-2xl border border-white/60 bg-white/70 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)] p-4 md:p-5
                              transition hover:shadow-[0_12px_40px_rgba(0,0,0,0.08)]"
                 >
@@ -232,16 +352,24 @@ export default function Cart() {
                             {it.title}
                           </h3>
 
-                          {/* Selected variant options */}
                           {!!it.selectedOptions?.length && (
                             <div className="mt-1 text-xs text-ink-soft">
-                              {it.selectedOptions
-                                .map((o) => `${o.attribute}: ${o.value}`)
-                                .join(' • ')}
+                              {it.selectedOptions.map((o) => `${o.attribute}: ${o.value}`).join(' • ')}
                             </div>
                           )}
 
                           <p className="mt-1 text-xs text-ink-soft">Unit price: {ngn.format(unit)}</p>
+
+                          {/* Availability helper text */}
+                          <p className="mt-1 text-[11px] text-ink-soft">
+                            {availabilityQ.isLoading
+                              ? 'Checking availability…'
+                              : capKnown
+                                ? cap! > 0
+                                  ? `Max you can buy now: ${cap}`
+                                  : 'Out of stock'
+                                : ''}
+                          </p>
                         </div>
 
                         <button
@@ -268,17 +396,24 @@ export default function Cart() {
                             <input
                               type="number"
                               min={1}
+                              {...(capKnown ? { max: cap } : {})}
                               step={1}
                               value={it.qty}
                               onChange={(e) =>
                                 updateQty(it.productId, it.variantId ?? null, Number(e.target.value))
                               }
+                              onBlur={(e) => {
+                                // Ensure it doesn't exceed after manual typing
+                                updateQty(it.productId, it.variantId ?? null, Number(e.target.value));
+                              }}
                               className="w-16 text-center outline-none px-2 py-2 bg-white"
                             />
                             <button
                               aria-label="Increase quantity"
-                              className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
+                              className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition disabled:opacity-40"
                               onClick={() => inc(it.productId, it.variantId ?? null)}
+                              disabled={capKnown ? it.qty >= (cap ?? Infinity) : false}
+                              title={capKnown && it.qty >= (cap ?? Infinity) ? 'No more stock' : 'Increase quantity'}
                             >
                               +
                             </button>

@@ -2,7 +2,7 @@
 import { Router, type Request } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
-import { authMiddleware, requireRole } from '../middleware/auth.js';
+import { requireAdmin, requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -17,8 +17,8 @@ const PurchaseOrderStatus = z.enum([
 
 router.get(
   '/',
-  authMiddleware,
-  requireRole(['ADMIN']),
+  requireAuth,
+  requireAdmin,
   async (_req, res, next) => {
     try {
       const pos = await prisma.purchaseOrder.findMany({

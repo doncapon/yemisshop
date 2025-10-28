@@ -81,7 +81,7 @@ function CardHeader({
 export default function VerifyEmail() {
   const location = useLocation();
   const { token } = useAuthStore();
-  const setAuthUser = useAuthStore((s) => s.setAuthUser); // if your store has a helper to update user snapshot (optional)
+  const setAuthUser = useAuthStore((s) => s.setAuth); // if your store has a helper to update user snapshot (optional)
   const storeUser = useAuthStore((s) => s.user);
 
   const qs = new URLSearchParams(location.search);
@@ -581,7 +581,7 @@ export default function VerifyEmail() {
                   </li>
                   <li>Wait a minute — some providers can be a bit slow.</li>
                   <li>
-                    Add <code className="px-1 rounded bg-zinc-100">no-reply@yemishop.com</code> to your contacts.
+                    Add <code className="px-1 rounded bg-zinc-100">no-reply@dayspring.com</code> to your contacts.
                   </li>
                   <li>
                     Use the <b>Resend email</b> button above (cooldown applies).

@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import api from '../api/client';
+import api from '../api/client.js';
 import { useAuthStore } from '../store/auth';
 import React from 'react';
 
@@ -18,7 +18,7 @@ type OrderItem = {
   lineTotal?: number | string | null;
   status?: string | null;
   product?: { title?: string | null } | null;
-
+  chosenSupplierUnitPrice?: number | string | null;
   // NEW:
   selectedOptions?: Array<{ attribute?: string; value?: string }>;
   variant?: { id: string; sku?: string | null; imagesJson?: string[] | null } | null;
@@ -213,6 +213,8 @@ export default function OrdersPage() {
     );
   };
 
+
+
   /* ---------------- Derived: filtered + sorted ---------------- */
   const filteredSorted = useMemo(() => {
     // filter
@@ -284,9 +286,35 @@ export default function OrdersPage() {
       return String(a.id).localeCompare(String(b.id), undefined, { sensitivity: 'base' }) * dir;
     });
 
-
     return ordered;
   }, [orders, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
+
+
+  const aggregates = useMemo(() => {
+    if (role !== 'SUPER_ADMIN') return null;
+    const num = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+    let revenuePaid = 0, refunds = 0, fees = 0, comms = 0;
+
+    for (const o of filteredSorted) {
+      const pays: PaymentRow[] = Array.isArray(o.payments) ? o.payments : (o.payment ? [o.payment] : []);
+      for (const p of pays) {
+        const st = String(p.status || '').toUpperCase();
+        if (st === 'PAID') {
+          revenuePaid += num(p.amount);
+          fees += num((p as any).feeAmount);
+        } else if (st === 'REFUNDED') {
+          refunds += num(p.amount);
+        }
+      }
+      comms += num((o as any).commsTotal ?? 0); // preload from backend or fetch per order
+    }
+
+    const revenueNet = revenuePaid - refunds;
+    const grossProfit = comms - fees; // ✅ 
+
+    return { revenuePaid, refunds, revenueNet, comms, fees, grossProfit };
+  }, [filteredSorted, role]);
 
   // actions
   const onToggle = (id: string) => setExpandedId((curr) => (curr === id ? null : id));
@@ -353,6 +381,56 @@ export default function OrdersPage() {
     }
   };
 
+  // Sum item lines (uses lineTotal when present; else unitPrice * quantity)
+  function sumItemLines(o: OrderRow): number {
+    return (o.items ?? []).reduce((s, it) => {
+      const qty = Number(it.quantity ?? 1);
+      const unit = Number(it.unitPrice ?? it.lineTotal ?? 0); // fallbacks are cheap; corrected below
+      const line = it.lineTotal != null ? Number(it.lineTotal) : Number(it.unitPrice) * qty;
+      const n = Number.isFinite(line) ? line : 0;
+      return s + n;
+    }, 0);
+  }
+
+  // Try direct fields first; else compute: total - items - tax - shipping
+  function orderServiceFee(o: OrderRow): number {
+    const direct =
+      Number((o as any).serviceFee) ||
+      Number((o as any).serviceFeeTotal) ||
+      Number((o as any).commsTotal) ||
+      Number((o as any).comms) ||
+      0;
+
+    if (Number.isFinite(direct) && direct > 0) return direct;
+
+    const total = Number(o.total) || 0;
+    const tax = Number((o as any).tax) || 0;
+    const shipping = Number((o as any).shipping) || 0;
+    const items = sumItemLines(o);
+
+    const approx = total - items - tax - shipping;
+    return approx > 0 ? approx : 0;
+  }
+
+  // Helpers to build yyyy-mm-dd safely
+  const toYMD = (s?: string) => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '');
+
+  const profitRangeQ = useQuery({
+    queryKey: ['metrics', 'profit-summary', { from: toYMD(from), to: toYMD(to) }],
+    enabled: role === 'SUPER_ADMIN',  // only super admins see it
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (toYMD(from)) params.set('from', toYMD(from)!);
+      if (toYMD(to)) params.set('to', toYMD(to)!);
+      const { data } = await api.get(`/api/admin/metrics/profit-summary${params.toString() ? `?${params.toString()}` : ''}`);
+      // shape: { range: {from,to}, profitSum, profitToday, eventsCount }
+      return data as { profitSum: number; profitToday: number; eventsCount: number; range: { from: string; to: string } };
+    },
+    // refetch when the date filters change
+    refetchOnWindowFocus: false,
+    staleTime: 10_000,
+  });
+const profitToday = profitRangeQ.data?.profitToday;
 
   return (
     <div className="max-w-6xl mx-auto px-4 md:px-6 py-6">
@@ -456,7 +534,7 @@ export default function OrdersPage() {
             aria-pressed={isTodayActive}
             onClick={toggleToday}
             className={`rounded-lg px-3 py-2 text-sm border transition
-      ${isTodayActive
+       ${isTodayActive
                 ? 'bg-zinc-900 text-white border-zinc-900'
                 : 'bg-white hover:bg-black/5'}`}
             title="Show only today’s orders"
@@ -471,6 +549,23 @@ export default function OrdersPage() {
         </div>
 
       </div>
+
+      {role === 'SUPER_ADMIN' && aggregates && (
+        <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+          <div className="rounded-xl border p-3 bg-white">
+            <div className="text-ink-soft">Revenue (net)</div>
+            <div className="font-semibold">{ngn.format(aggregates.revenueNet)}</div>
+            <div className="text-[11px] text-ink-soft">
+              Paid {ngn.format(aggregates.revenuePaid)} • Refunds {ngn.format(aggregates.refunds)}
+            </div>
+          </div>
+          <div className="rounded-xl border p-3 bg-white">
+            <div className="text-ink-soft">Gross Profit</div>
+            <div className="font-semibold">{ngn.format(Number(profitToday))}</div>
+          </div>
+        </div>
+      )}
+
 
       {/* ---------------- Table ---------------- */}
       <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
@@ -754,13 +849,31 @@ export default function OrdersPage() {
 
                                   <tfoot>
                                     <tr className="bg-zinc-50">
-                                      <td className="px-3 py-2 font-medium" colSpan={3}>Total</td>
+                                      {/* Make the "Total" label span Item + Qty */}
+                                      <td className="px-3 py-2 font-medium" colSpan={2}>Total</td>
+
+                                      {/* NEW: Service fee cell (shows before the final total price) */}
+                                      <td className="px-3 py-2">
+                                        <div className="flex items-center justify-between text-sm">
+                                          <span className="text-ink-soft">Service fee</span>
+                                          <span className="font-medium">
+                                            <span /* suppressHydrationWarning */>
+                                              {ngn.format(orderServiceFee(o))}
+                                            </span>
+                                          </span>
+                                        </div>
+                                      </td>
+
+                                      {/* Existing final total price */}
                                       <td className="px-3 py-2 font-semibold">
                                         <span /* suppressHydrationWarning */>{ngn.format(fmtN(o.total))}</span>
                                       </td>
+
+                                      {/* Empty cell to align with Status column */}
                                       <td />
                                     </tr>
                                   </tfoot>
+
 
                                 </table>
                               </div>

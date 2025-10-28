@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma.js';
-import { authMiddleware, type AuthedRequest,  } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -20,7 +20,7 @@ const addressSchema = z.object({
  * GET /api/profile/me
  * (You said you already have this; keeping here for completeness)
  */
-router.get('/me', authMiddleware, async (req: AuthedRequest, res) => {
+router.get('/me', requireAuth, async (req, res) => {
   const userId = req.user!.id;
 
   const user = await prisma.user.findUnique({
@@ -72,7 +72,7 @@ router.get('/me', authMiddleware, async (req: AuthedRequest, res) => {
  * POST /api/profile/address
  * Save (upsert) HOME address and attach to user
  */
-router.post('/address', authMiddleware, async (req: AuthedRequest, res, next) => {
+router.post('/address', requireAuth, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const data = addressSchema.parse(req.body);
@@ -98,7 +98,7 @@ router.post('/address', authMiddleware, async (req: AuthedRequest, res, next) =>
  * POST /api/profile/shipping
  * Save (upsert) SHIPPING address and attach to user
  */
-router.post('/shipping', authMiddleware, async (req: AuthedRequest, res, next) => {
+router.post('/shipping', requireAuth, async (req, res, next) => {
   try {
     const userId = req.user!.id;
     const data = addressSchema.parse(req.body);

@@ -1,6 +1,6 @@
 // api/src/routes/admin.ts
 import express, { Router } from 'express';
-import { requireAuth, requireAdmin , requireSuperAdmin, authMiddleware} from '../middleware/auth.js';
+import { requireAuth, requireAdmin , requireSuperAdmin} from '../middleware/auth.js';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 
@@ -61,7 +61,7 @@ const wrap = (
 
 r.post(
   '/users/:id/role',
-  authMiddleware,
+  requireAdmin, requireAuth,
   wrap(async (req, res) => {
     const me = (req as any).user as { id: string; role?: string } | undefined;
     if (!me || me.role !== 'SUPER_ADMIN') {

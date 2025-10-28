@@ -1,21 +1,19 @@
-// config/paystack.ts
-export const PAYSTACK_ENABLE_CARD =
-  (process.env.PAYSTACK_ENABLE_CARD ?? 'true').toLowerCase() !== 'false';
+// src/config/paystack.ts
+const on = (v?: string | null) => ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
 
-export const PAYSTACK_ENABLE_BANK_TRANSFER =
-  (process.env.PAYSTACK_ENABLE_BANK_TRANSFER ?? 'true').toLowerCase() !== 'false';
+/** Which channels the checkout UI can present */
+export const ENABLE_CARD = process.env.PAYSTACK_ENABLE_CARD === undefined ? true : on(process.env.PAYSTACK_ENABLE_CARD);
+export const ENABLE_BANK_TRANSFER = on(process.env.PAYSTACK_ENABLE_BANK_TRANSFER);
 
-// Which channels to request on initialize:
-export function getInitChannels(): Array<'card' | 'bank_transfer'> {
-  if (PAYSTACK_ENABLE_CARD && PAYSTACK_ENABLE_BANK_TRANSFER) return ['card', 'bank_transfer'];
-  if (PAYSTACK_ENABLE_CARD) return ['card'];
-  if (PAYSTACK_ENABLE_BANK_TRANSFER) return ['bank_transfer'];
-  // fallback: card (or throw)
-  return ['card'];
+/** Which webhook events you will accept (helps while developing) */
+export const WEBHOOK_ACCEPT_CARD = on(process.env.PAYSTACK_WEBHOOK_ACCEPT_CARD) || ENABLE_CARD;
+export const WEBHOOK_ACCEPT_BANK_TRANSFER = on(process.env.PAYSTACK_WEBHOOK_ACCEPT_BANK_TRANSFER) && ENABLE_BANK_TRANSFER;
+
+/** Build Paystack init channels array */
+export function getInitChannels(): string[] {
+  const channels: string[] = [];
+  if (ENABLE_CARD) channels.push('card');
+  if (ENABLE_BANK_TRANSFER) channels.push('bank_transfer');
+  // don't return empty — default to card to avoid Paystack init errors
+  return channels.length ? channels : ['bank_transfer'];
 }
-
-// For webhook filtering (you can turn off handling for a channel if you want)
-export const WEBHOOK_ACCEPT_CARD =
-  (process.env.PAYSTACK_WEBHOOK_ACCEPT_CARD ?? 'true').toLowerCase() !== 'false';
-export const WEBHOOK_ACCEPT_BANK_TRANSFER =
-  (process.env.PAYSTACK_WEBHOOK_ACCEPT_BANK_TRANSFER ?? 'true').toLowerCase() !== 'false';

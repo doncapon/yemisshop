@@ -1,5 +1,5 @@
 // api/src/services/admin.service.ts
-import { Prisma } from '@prisma/client';
+import { Prisma, PrismaClient, PaymentStatus } from '@prisma/client';
 import type { Role } from '../types/role.js';
 import { prisma } from '../lib/prisma.js';
 import { startOfDay, addDays } from 'date-fns';
@@ -7,28 +7,6 @@ import { startOfDay, addDays } from 'date-fns';
 /* ------------------------------------------------------------------ */
 /* Types returned by the service                                       */
 /* ------------------------------------------------------------------ */
-
-export type Overview = {
-  totalUsers: number;
-  totalSuperAdmins: number;
-  totalAdmins: number;
-  totalCustomers: number;
-
-  productsPending: number;
-  productsPublished: number;
-  productsLive: number;
-  productsOffline: number;
-  productsTotal: number;
-  productsInStock: number;
-  productsRejected: number;
-  productsOutStock: number;
-
-  ordersToday: number;
-  revenueToday: number;
-
-  sparklineRevenue7d: number[];
-};
-
 export type AdminUser = {
   id: string;
   email: string;
@@ -57,117 +35,170 @@ export type AdminPayment = {
   createdAt?: Date | string;
 };
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
 
-function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
+
+
+// ----------------------------------------------------------------------------
+
+const N = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+type ProfitBreakdown = {
+  revenuePaid: number;
+  refunds: number;
+  revenueNet: number;
+  gatewayFees: number;
+  taxCollected: number;
+  commsNet: number;
+  grossProfit: number;
+};
+
+export async function computeProfitForWindow(prismaArg: PrismaClient, from: Date, to: Date): Promise<ProfitBreakdown> {
+  const prisma = prismaArg || ({} as PrismaClient);
+
+  // Pull paid/refunded payments in the window (with createdAt fallback)
+  const payments = await prisma.payment.findMany({
+    where: {
+      OR: [
+        {
+          status: { in: [PaymentStatus.PAID] },
+          OR: [
+            { paidAt: { gte: from, lte: to } },
+            { paidAt: null, createdAt: { gte: from, lte: to } },
+          ],
+        },
+        {
+          status: { in: [PaymentStatus.REFUNDED] },
+          OR: [
+            { refundedAt: { gte: from, lte: to } },
+            { refundedAt: null, createdAt: { gte: from, lte: to } },
+          ],
+        },
+      ],
+    },
+    select: { status: true, amount: true, feeAmount: true, orderId: true },
+  });
+
+  let revenuePaid = 0, refunds = 0, gatewayFees = 0;
+  const paidByOrder = new Map<string, number>();
+  const refundedByOrder = new Map<string, number>();
+
+  for (const p of payments) {
+    if (p.status === PaymentStatus.PAID) {
+      revenuePaid += N(p.amount);
+      gatewayFees += N(p.feeAmount);
+      if (p.orderId) paidByOrder.set(p.orderId, N(paidByOrder.get(p.orderId)) + N(p.amount));
+    } else if (p.status === PaymentStatus.REFUNDED) {
+      refunds += N(p.amount);
+      if (p.orderId) refundedByOrder.set(p.orderId, N(refundedByOrder.get(p.orderId)) + N(p.amount));
+    }
+  }
+  const revenueNet = revenuePaid - refunds;
+
+  // For pro-rating tax/serviceFee, fetch the impacted orders
+  const orderIds = Array.from(new Set([...paidByOrder.keys(), ...refundedByOrder.keys()]));
+
+  const effectiveFactorFor = (orderTotal: number, orderId: string) => {
+    const paid = N(paidByOrder.get(orderId));
+    const refunded = N(refundedByOrder.get(orderId));
+    return orderTotal > 0 ? Math.max(0, Math.min(1, (paid - refunded) / orderTotal)) : 0;
+  };
+
+  // Tax collected (pass-through; net of refunds)
+  let taxCollected = 0;
+  if (orderIds.length) {
+    const orders = await prisma.order.findMany({
+      where: { id: { in: orderIds } },
+      select: { id: true, tax: true, total: true },
+    });
+    for (const o of orders) {
+      const factor = effectiveFactorFor(N(o.total), o.id);
+      taxCollected += N(o.tax) * factor;
+    }
+  }
+
+  // Comms: sum actual OrderComms within the window (preferred)
+  const commsRows = await prisma.orderComms.findMany({
+    where: { createdAt: { gte: from, lte: to } },
+    select: { amount: true },
+  });
+  let commsNet = commsRows.reduce((s, r) => s + N(r.amount), 0);
+
+  // Fallback: if you haven't logged OrderComms yet, use pro-rated serviceFee
+  if (commsRows.length === 0 && orderIds.length) {
+    const orders = await prisma.order.findMany({
+      where: { id: { in: orderIds } },
+      select: { id: true, total: true, serviceFee: true },
+    });
+    for (const o of orders) {
+      const factor = effectiveFactorFor(N(o.total), o.id);
+      commsNet += N(o.serviceFee) * factor;
+    }
+  }
+
+  const grossProfit = commsNet - gatewayFees;
+
+  return { revenuePaid, refunds, revenueNet, gatewayFees, taxCollected, commsNet, grossProfit };
 }
 
-/* ------------------------------------------------------------------ */
-/* Overview                                                            */
-/* ------------------------------------------------------------------ */
 
+export async function getOverview(): Promise<Overview> { 
+  const [
+    productsTotal,
+    productsPending,
+    productsRejected,
+    productsPublished,
 
-// helpers you can keep at top of the file
-const variantAwareAvailable = {
-  OR: [
-    { inStock: true },
-    { ProductVariant: { some: { inStock: true } } }, // <-- relation name
-  ],
-} as const;
+    productsAvailable,
+    productsPublishedAvailable,
 
-const anyOffer = {
-  OR: [
-    { supplierOffers: { some: {} } }, // product-wide
-    { ProductVariant: { some: { offers: { some: {} } } } }, // variant-level
-  ],
-} as const;
+    productsWithOffers,
+    productsWithoutOffers,
+    productsPublishedWithOffers,
+    productsPublishedWithoutOffers,
 
-const anyActiveOffer = {
-  OR: [
-    { supplierOffers: { some: { isActive: true, inStock: true } } },
-    { ProductVariant: { some: { offers: { some: { isActive: true, inStock: true } } } } },
-  ],
-} as const;
+    productsWithActiveOffer,
+    productsPublishedWithActiveOffer,
 
-const noOffer = {
-  AND: [
-    { supplierOffers: { none: {} } },
-    { ProductVariant: { none: { offers: { some: {} } } } },
-  ],
-} as const;
+    // "Live" = published, available, and has at least one active in-stock offer
+    productsLive,
 
-const noActiveOffer = {
-  AND: [
-    { supplierOffers: { none: { isActive: true, inStock: true } } },
-    { ProductVariant: { none: { offers: { some: { isActive: true, inStock: true } } } } },
-  ],
-} as const;
+    productsWithVariants,
+    productsSimple,
 
-  export async function getOverview() {
-    const [
-  // core status
-  productsTotal,
-  productsPending,
-  productsRejected,
-  productsPublished,
+    productsPublishedInStockBaseOnly,
+    productsPublishedOutOfStockBaseOnly,
+  ] = await Promise.all([
+    prisma.product.count(),
+    prisma.product.count({ where: { status: 'PENDING' as any } }),
+    prisma.product.count({ where: { status: 'REJECTED' as any } }),
+    prisma.product.count({ where: { status: 'PUBLISHED' as any } }),
 
-  // availability (variant-aware)
-  productsAvailable,                 // across all statuses
-  productsPublishedAvailable,        // only published
+    prisma.product.count({ where: variantAwareAvailable }),
+    prisma.product.count({ where: { status: 'PUBLISHED' as any, AND: [variantAwareAvailable] } }),
 
-  // offers coverage
-  productsWithOffers,
-  productsWithoutOffers,
-  productsPublishedWithOffers,
-  productsPublishedWithoutOffers,
+    prisma.product.count({ where: anyOffer }),
+    prisma.product.count({ where: noOffer }),
+    prisma.product.count({ where: { status: 'PUBLISHED' as any, AND: [anyOffer] } }),
+    prisma.product.count({ where: { status: 'PUBLISHED' as any, AND: [noOffer] } }),
 
-  // active offers (sellable)
-  productsWithActiveOffer,
-  productsPublishedWithActiveOffer,
+    prisma.product.count({ where: anyActiveOffer }),
+    prisma.product.count({ where: { status: 'PUBLISHED' as any, AND: [anyActiveOffer] } }),
 
-  // "live" = published & available & active offer
-  productsLive,
+    prisma.product.count({
+      where: { status: 'PUBLISHED' as any, AND: [variantAwareAvailable, anyActiveOffer] },
+    }),
 
-  // variant mix
-  productsWithVariants,
-  productsSimple,
+    prisma.product.count({ where: { ProductVariant: { some: {} } } }),
+    prisma.product.count({ where: { ProductVariant: { none: {} } } }),
 
-  // base stock split (non variant-aware, quick look)
-  productsPublishedInStockBaseOnly,
-  productsPublishedOutOfStockBaseOnly,
-] = await Promise.all([
-  prisma.product.count(),
-  prisma.product.count({ where: { status: 'PENDING' } }),
-  prisma.product.count({ where: { status: 'REJECTED' } }),
-  prisma.product.count({ where: { status: 'PUBLISHED' } }),
+    // base (non-variant-aware) stock among published
+    prisma.product.count({ where: { status: 'PUBLISHED' as any, inStock: true } }),
+    prisma.product.count({ where: { status: 'PUBLISHED' as any, inStock: false } }),
+  ]);
 
-  prisma.product.count({ where: variantAwareAvailable }),
-  prisma.product.count({ where: { status: 'PUBLISHED', ...variantAwareAvailable } }),
+  const productsOffline = Math.max(0, productsPublished - productsLive);
 
-  prisma.product.count({ where: anyOffer }),
-  prisma.product.count({ where: noOffer }),
-  prisma.product.count({ where: { status: 'PUBLISHED', ...anyOffer } }),
-  prisma.product.count({ where: { status: 'PUBLISHED', ...noOffer } }),
-
-  prisma.product.count({ where: anyActiveOffer }),
-  prisma.product.count({ where: { status: 'PUBLISHED', ...anyActiveOffer } }),
-
-  prisma.product.count({
-    where: { status: 'PUBLISHED', AND: [variantAwareAvailable, anyActiveOffer] },
-  }),
-
-  prisma.product.count({ where: { ProductVariant: { some: {} } } }),
-  prisma.product.count({ where: { ProductVariant: { none: {} } } }),
-
-  prisma.product.count({ where: { status: 'PUBLISHED', inStock: true } }),
-  prisma.product.count({ where: { status: 'PUBLISHED', inStock: false } }),
-]);
-
+  // Users
   const [totalUsers, totalCustomers, totalAdmins, totalSuperAdmins] = await Promise.all([
     prisma.user.count(),
     prisma.user.count({ where: { role: 'SHOPPER' } }),
@@ -175,71 +206,75 @@ const noActiveOffer = {
     prisma.user.count({ where: { role: 'SUPER_ADMIN' } }),
   ]);
 
-  
   // Orders today
   const todayStart = startOfDay(new Date());
-  const todayEnd = addDays(todayStart, 1);
-
+  const todayEnd = endOfDay(new Date());
   const ordersToday = await prisma.order.count({
-    where: {
-      createdAt: { gte: todayStart, lt: todayEnd },
-      // optional: exclude canceled orders
-      NOT: { status: 'CANCELED' }, // remove this line if you want all orders
-    },
+    where: { createdAt: { gte: todayStart, lte: todayEnd }, NOT: { status: 'CANCELED' } },
   });
 
 
-
-  const today = new Date();
-  const from = new Date(today); from.setHours(0, 0, 0, 0);
-  const to = new Date(today); to.setHours(23, 59, 59, 999);
-
-
-
-
-  const paidToday = await prisma.payment.aggregate({
-    _sum: { amount: true as any },
-    where: {
-      status: 'PAID',
-      paidAt: { gte: from, lte: to },   // ✅ use paidAt
-    },
-  });
-  const revenueToday = Number(paidToday._sum ? paidToday._sum.amount : 0) || 0;
-
-
-  // Revenue sparkline for last 7 full days (including today)
+  // Sparklines (7d)
   const sparklineRevenue7d: number[] = [];
+  const sparklineProfit7d: number[] = [];
   for (let i = 6; i >= 0; i--) {
-    const day = new Date();
-    day.setDate(day.getDate() - i);
-    const agg = await prisma.payment.aggregate({
-      _sum: { amount: true as any },
-      where: {
-        status: 'PAID',
-        createdAt: { gte: startOfDay(day), lte: endOfDay(day) },
-      },
-    });
-    sparklineRevenue7d.push(Number(agg._sum.amount ?? 0) || 0);
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const { revenueNet: rev, grossProfit: gp } = await computeProfitForWindow(
+      prisma,
+      startOfDay(d),
+      endOfDay(d),
+    );
+    sparklineRevenue7d.push(rev);
+    sparklineProfit7d.push(gp);
   }
 
+  // Whatever you already compute (examples shown; keep yours)
+  const [
+    ordersCount,
+    usersCount,
+    revenueTodayAgg,
+    profitEventsToday,
+  ] = await Promise.all([
+    prisma.order.count(),
+    prisma.user.count(),
+    prisma.payment.aggregate({
+      _sum: { amount: true },
+      where: { status: 'PAID', paidAt: { gte: todayStart } },
+    }),
+    prisma.paymentEvent.findMany({
+      where: { type: 'PROFIT_COMPUTED', createdAt: { gte: todayStart } },
+      select: { data: true },
+    }),
+  ]);
+
+  // Sum profit from JSON payloads
+  const profitToday = profitEventsToday.reduce((sum: number, ev: any) => {
+    const p = Number((ev as any).data?.profit ?? 0);
+    return Number.isFinite(p) ? sum + p : sum;
+  }, 0);
+
+  const revenueToday = Number(revenueTodayAgg._sum.amount || 0);
+
   return {
-    
     ordersToday,
     revenueToday,
     sparklineRevenue7d,
+    sparklineProfit7d,
+    profitToday,
     users: {
-
       totalUsers,
-      totalSuperAdmins,
-      totalAdmins,
       totalCustomers,
+      totalAdmins,
+      totalSuperAdmins,
     },
     products: {
+      offline: productsOffline,
       total: productsTotal,
       pending: productsPending,
       rejected: productsRejected,
-      published: productsPublished,                 // approval state
-      live: productsLive,                           // sellable & discoverable
+      published: productsPublished,
+      live: productsLive,
       availability: {
         allStatusesAvailable: productsAvailable,
         publishedAvailable: productsPublishedAvailable,
@@ -263,6 +298,73 @@ const noActiveOffer = {
     },
   };
 }
+
+export async function createCoupon(args: { code: string; pct: number; maxUses: number }) {
+  const code = args.code.trim().toUpperCase();
+  if (!code) throw new Error('Coupon code is required');
+  if (args.pct < 1 || args.pct > 90) throw new Error('Percent must be between 1 and 90');
+  if (args.maxUses < 1) throw new Error('Max uses must be at least 1');
+
+  try {
+    const created = await prisma.coupon.create({
+      data: {
+        code,
+        pct: Math.round(args.pct),
+        maxUses: Math.round(args.maxUses),
+        usedCount: 0,
+        status: 'ACTIVE',
+      },
+      select: { id: true, code: true, pct: true, maxUses: true, usedCount: true, status: true, createdAt: true },
+    });
+    return created;
+  } catch (err: any) {
+    if (err?.code === 'P2021' || /prisma\.coupon/i.test(String(err))) {
+      throw new Error('Coupon model not found. Please add a Coupon model to your Prisma schema.');
+    }
+    throw err;
+  }
+}
+
+
+
+
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+// --- helpers (top of file, once) ---
+function endOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+// Variant-aware & offer-aware filters (use your relation names)
+const noActiveOffer = {
+  AND: [
+    { supplierOffers: { none: { isActive: true, inStock: true } } },
+    { ProductVariant: { none: { offers: { some: { isActive: true, inStock: true } } } } },
+  ],
+} as const;
+
+const variantAwareAvailable: Prisma.ProductWhereInput = {
+  OR: [
+    { inStock: true },
+    { ProductVariant: { some: { inStock: true } } },
+  ],
+};
+
+const anyOffer: Prisma.ProductWhereInput = {
+  // any SupplierOffer attached to the product (includes variant-specific offers)
+  supplierOffers: { some: {} },
+};
+
+const noOffer: Prisma.ProductWhereInput = {
+  supplierOffers: { none: {} },
+};
+
+const anyActiveOffer: Prisma.ProductWhereInput = {
+  supplierOffers: { some: { isActive: true, inStock: true } },
+};
 
 /* ------------------------------------------------------------------ */
 /* Users                                                               */
@@ -293,6 +395,50 @@ export async function findUsers(q?: string): Promise<AdminUser[]> {
 
   return users;
 }
+/* ---- Overview payload types (match your getOverview) ---- */
+type Overview = {
+  ordersToday: number;
+  revenueToday: number;
+  profitToday: number;
+  sparklineRevenue7d: number[];
+  sparklineProfit7d: number[];
+
+  users: {
+    totalUsers: number;
+    totalCustomers: number;
+    totalAdmins: number;
+    totalSuperAdmins: number;
+  };
+  products: {
+    offline: number;
+    total: number;
+    pending: number;
+    rejected: number;
+    published: number;         // approval state
+    live: number;              // published & available (variant-aware) & active offers
+    availability: {
+      allStatusesAvailable: number;
+      publishedAvailable: number;
+    };
+    offers: {
+      withAny: number;
+      withoutAny: number;
+      publishedWithAny: number;
+      publishedWithoutAny: number;
+      withActive: number;
+      publishedWithActive: number;
+    };
+    variantMix: {
+      withVariants: number;
+      simple: number;
+    };
+    publishedBaseStock: {
+      inStock: number;
+      outOfStock: number;
+    };
+  };
+};
+
 
 
 /**
@@ -485,6 +631,8 @@ export async function listPayments(q?: string): Promise<AdminPayment[]> {
   }));
 }
 
+
+
 /* ================================================================== */
 /* ===================  NEW: Ops / Security  ======================= */
 /* ================================================================== */
@@ -495,29 +643,39 @@ export async function listPayments(q?: string): Promise<AdminPayment[]> {
  */
 export async function opsSnapshot(): Promise<{
   paymentProvider: string;
-  shippingRate: number | string | null;
   backupsEnabled: boolean;
   securityEvents: Array<{ message: string; level: string; createdAt?: Date | string }>;
+  commsUnitCost?: number;
+  taxRatePct?: number;
 }> {
   let paymentProvider = process.env.PAYMENT_PROVIDER || 'PAYSTACK';
-  let shippingRate: number | string | null = null;
   let backupsEnabled = false;
   let securityEvents: Array<{ message: string; level: string; createdAt?: Date | string }> = [];
+  let commsUnitCost: number | undefined;
+  let taxRatePct: number | undefined;
+
+
+
+
 
   // Optional: a Settings table — if present, prefer its values
   try {
     const settings = await prisma.setting?.findMany?.({
-      where: { key: { in: ['paymentProvider', 'shippingRate', 'backupsEnabled'] } },
+      where: { key: { in: ['paymentProvider', 'backupsEnabled'] } },
       select: { key: true, value: true },
     });
 
     if (Array.isArray(settings)) {
       const map = new Map(settings.map((s: any) => [s.key, s.value]));
       paymentProvider = (map.get('paymentProvider') ?? paymentProvider) as string;
-      const sr = map.get('shippingRate');
-      shippingRate = sr != null ? sr : shippingRate;
       const be = map.get('backupsEnabled');
       backupsEnabled = be === 'true' || be === true;
+
+      const c = Number(map.get('commsUnitCost'));
+      commsUnitCost = Number.isFinite(c) ? c : 0;
+
+      const t = Number(map.get('taxRatePct'));
+      taxRatePct = Number.isFinite(t) ? t : 0;
     }
   } catch {
     // ignore and use defaults
@@ -537,42 +695,5 @@ export async function opsSnapshot(): Promise<{
     // ignore, return empty events
   }
 
-  return { paymentProvider, shippingRate, backupsEnabled, securityEvents };
+  return { paymentProvider, backupsEnabled, securityEvents, commsUnitCost, taxRatePct };
 }
-
-/* ================================================================== */
-/* =======================  NEW: Coupons  =========================== */
-/* ================================================================== */
-
-/**
- * Create a coupon/discount code.
- * Expects a Coupon model with fields: code (unique), pct (Int), maxUses (Int), usedCount (Int), status (String), createdAt (DateTime)
- * If you don't have one yet, you can add it in Prisma and migrate.
- */
-export async function createCoupon(args: { code: string; pct: number; maxUses: number }) {
-  const code = args.code.trim().toUpperCase();
-  if (!code) throw new Error('Coupon code is required');
-  if (args.pct < 1 || args.pct > 90) throw new Error('Percent must be between 1 and 90');
-  if (args.maxUses < 1) throw new Error('Max uses must be at least 1');
-
-  try {
-    const created = await prisma.coupon.create({
-      data: {
-        code,
-        pct: Math.round(args.pct),
-        maxUses: Math.round(args.maxUses),
-        usedCount: 0,
-        status: 'ACTIVE',
-      },
-      select: { id: true, code: true, pct: true, maxUses: true, usedCount: true, status: true, createdAt: true },
-    });
-    return created;
-  } catch (err: any) {
-    // Fallback: if the table doesn't exist, produce a clear message
-    if (err?.code === 'P2021' || /prisma\.coupon/i.test(String(err))) {
-      throw new Error('Coupon model not found. Please add a Coupon model to your Prisma schema.');
-    }
-    throw err;
-  }
-}
-

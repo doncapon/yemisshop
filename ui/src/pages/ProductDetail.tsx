@@ -781,8 +781,11 @@ function ImageCarousel({
           style={{ transform: `translateX(-${idx * 100}%)` }}
         >
           {images.map((src, i) => (
-            <div key={src + i} className="min-w-full h-full grid place-items-center bg-white relative">
-              {/* invisible tracking layer */}
+            <div
+              key={src + i}
+              className="min-w-full h-full bg-white relative overflow-hidden"
+            >
+              {/* invisible tracking layer (keeps your zoom working) */}
               <div
                 ref={i === idx ? imgAreaRef : null}
                 className="absolute inset-0"
@@ -790,14 +793,18 @@ function ImageCarousel({
                 onMouseLeave={() => setZooming(false)}
                 onMouseMove={onMouseMove}
               />
+
+              {/* FILL the box: no margins/padding; scale up small images; crop if needed */}
               <img
                 src={src}
                 alt={`${title} – image ${i + 1}`}
-                className="max-h-full max-w-full object-contain pointer-events-none select-none"
+                className="h-full w-full object-cover block m-0 p-0 pointer-events-none select-none"
                 draggable={false}
               />
             </div>
           ))}
+
+
         </div>
 
         {/* Prev / Next controls */}

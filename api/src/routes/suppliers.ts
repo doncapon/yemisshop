@@ -4,11 +4,9 @@ import {
   type Request,
   type Response,
   type NextFunction,
-  type RequestHandler,
 } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
-import { requireRole } from '../middleware/roles.js';
 import { requireAdmin } from '../middleware/auth.js';
 
 const router = Router();
