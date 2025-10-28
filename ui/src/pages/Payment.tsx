@@ -40,6 +40,10 @@ export default function Payment() {
     try { return localStorage.getItem(AUTO_REDIRECT_KEY) === '1'; } catch { return false; }
   });
 
+  const gotoOrders = ()  => {
+    nav("/orders");
+  }
+
   // Kick off init (once)
   useEffect(() => {
     if (!orderId) return;
@@ -208,7 +212,7 @@ export default function Payment() {
           </div>
 
           <div className="px-5 py-4 border-t flex items-center justify-end gap-2">
-            <button className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 text-sm" onClick={() => setShowHosted(false)}>
+            <button className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 text-sm" onClick={() => gotoOrders()}>
               Pay later
             </button>
             <button className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm" onClick={goToPaystack}>

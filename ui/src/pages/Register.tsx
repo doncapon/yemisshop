@@ -203,7 +203,7 @@ export default function Register() {
           <div className="mb-6 text-center">
             <div className="inline-flex items-center gap-2 rounded-full bg-white/15 text-white px-3 py-1 text-xs font-medium border border-white/30 backdrop-blur">
               <span className="inline-block size-2 rounded-full bg-emerald-400 animate-pulse" />
-              Join YemiShop
+              Join DaySpring
             </div>
             <h1 className="mt-3 text-3xl font-semibold text-white drop-shadow-[0_1px_0_rgba(0,0,0,0.3)]">
               Create your account

@@ -9,8 +9,8 @@ import { prisma } from '../lib/prisma.js';
 import { randomOtp, randomToken, hash } from '../lib/crypto.js';
 import { sendVerifyEmail, sendResetorForgotPasswordEmail } from '../lib/email.js';
 import { sendSmsOtp } from '../lib/sms.js';
-import { signJwt, signAccessJwt, signVerifyJwt } from '../lib/jwt.js';
-import { authMiddleware, requireAuth } from '../middleware/auth.js';
+import { signJwt, signAccessJwt } from '../lib/jwt.js';
+import {  requireAuth } from '../middleware/auth.js';
 
 // ---------------- ENV / constants ----------------
 const WEB_BASE_URL = process.env.WEB_BASE_URL || 'http://localhost:5173';
@@ -49,12 +49,6 @@ const ResetSchema = z.object({
   password: z.string().min(8),
 });
 
-// Small async wrapper so handlers match RequestHandler
-export const wrap =
-  (fn: (req: Request, res: Response, next: NextFunction) => Promise<any>): RequestHandler =>
-    (req, res, next) => {
-      fn(req, res, next).catch(next);
-    };
 
 const router = Router();
 
@@ -64,6 +58,85 @@ async function issueAndEmailEmailVerification(userId: string, email: string) {
   const verifyUrl = `${API_BASE_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
   await sendVerifyEmail(email, verifyUrl);
 }
+
+// ---------------- helpers ----------------
+const wrap =
+  (fn: (req: Request, res: Response, next: NextFunction) => Promise<any>): RequestHandler =>
+    (req, res, next) => { fn(req, res, next).catch(next); };
+
+// ---------------- LOGIN ----------------
+/**
+ * Old workflow: allow unverified users to log in.
+ */
+router.post('/login', wrap(async (req, res) => {
+  const { email, password } = (req.body || {}) as { email?: string; password?: string };
+  if (!email?.trim() || !password?.trim()) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+  const ok = await bcrypt.compare(password, user.password || '');
+  if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+
+  const profile = {
+    id: user.id,
+    email: user.email,
+    role: user.role as any,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    emailVerified: !!user.emailVerifiedAt,
+    phoneVerified: !!user.phoneVerifiedAt,
+  };
+
+  // ✅ Sign with the SAME secret attachUser verifies
+  const token = signAccessJwt({ id: user.id, email: user.email, role: user.role }, '7d');
+
+  return res.json({
+    token,
+    profile,
+    needsVerification: !(profile.emailVerified && profile.phoneVerified),
+  });
+}));
+
+// ---------------- ME ----------------
+// Keep /api/auth/me here (then remove the separate authMe router)
+router.get('/me', requireAuth, wrap(async (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true, email: true, role: true,
+      firstName: true, middleName: true, lastName: true,
+      status: true, phone: true,
+      emailVerifiedAt: true, phoneVerifiedAt: true,
+      joinedAt: true,
+      address: true, shippingAddress: true,
+    },
+  });
+
+  if (!u) return res.status(404).json({ error: 'User not found' });
+
+  res.json({
+    id: u.id,
+    email: u.email,
+    role: u.role,
+    status: u.status ?? 'PENDING',
+    firstName: u.firstName,
+    middleName: u.middleName,
+    lastName: u.lastName,
+    phone: u.phone,
+    joinedAt: u.joinedAt,
+    emailVerified: Boolean(u.emailVerifiedAt),
+    phoneVerified: Boolean(u.phoneVerifiedAt),
+    address: u.address,
+    shippingAddress: (u as any).shippingAddress ?? null,
+  });
+}));
+
 
 // ============ PUBLIC helpers used by VerifyEmail page ============
 router.get('/email-status', async (req, res) => {
@@ -207,7 +280,7 @@ router.post(
         });
 
         try {
-          await sendSmsOtp(phone, `Your YemiShop code: ${otp}. It expires in 10 minutes.`);
+          await sendSmsOtp(phone, `Your DaySpring code: ${otp}. It expires in 10 minutes.`);
           result.smsSent = true;
         } catch (e) {
           console.warn('sendSmsOtp failed (continuing):', (e as any)?.message);
@@ -222,38 +295,6 @@ router.post(
   })
 );
 
-// ============ LOGIN ============
-/**
- * Old workflow: allow unverified users to log in.
- * UI shows prompts to verify, but does not block access.
- */
-router.post('/login', async (req, res) => {
-  const { email, password } = (req.body || {}) as { email?: string; password?: string };
-  if (!email?.trim() || !password?.trim()) {
-    return res.status(400).json({ error: 'Email and password are required' });
-  }
-
-  const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-
-  const ok = await bcrypt.compare(password, user.password || '');
-  if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
-
-  const profile = {
-    id: user.id,
-    email: user.email,
-    role: user.role as any,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    emailVerified: !!user.emailVerifiedAt,
-    phoneVerified: !!user.phoneVerifiedAt,
-  };
-
-  const baseClaims = { id: user.id, email: user.email, role: user.role };
-  const token = signAccessJwt(baseClaims, '7d'); // always issue full access token
-
-  return res.json({ token, profile, needsVerification: !(profile.emailVerified && profile.phoneVerified) });
-});
 
 // ============ VERIFY EMAIL CALLBACK (supports JWT and legacy DB tokens) ============
 router.get('/verify-email', async (req, res) => {
@@ -335,7 +376,7 @@ router.get('/verify-email', async (req, res) => {
 // ============ AUTHED resend-email (issues JWT link) ============
 router.post(
   '/resend-email',
-  authMiddleware,
+  requireAuth,
   wrap(async (req, res) => {
     const userId = (req as any).user?.id as string | undefined;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -374,47 +415,6 @@ router.post(
   })
 );
 
-// ============ ME ============
-router.get('/me', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const userId = (req as any).user?.id as string | undefined;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true, email: true, role: true,
-        firstName: true, middleName: true, lastName: true,
-        status: true, phone: true,
-        emailVerifiedAt: true, phoneVerifiedAt: true,
-        joinedAt: true,
-        emailVerifyLastSentAt: true, phoneOtpLastSentAt: true,
-        address: true, shippingAddress: true,
-      },
-    });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    res.json({
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-      phone: user.phone,
-      firstName: user.firstName,
-      middleName: user.middleName,
-      lastName: user.lastName,
-      joinedAt: user.joinedAt,
-      emailVerified: !!user.emailVerifiedAt,
-      phoneVerified: !!user.phoneVerifiedAt,
-      emailVerifyLastSentAt: user.emailVerifyLastSentAt,
-      phoneOtpLastSentAt: user.phoneOtpLastSentAt,
-      address: user.address,
-      shippingAddress: user.shippingAddress,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
 
 // ============ Forgot / Reset password ============
 router.post('/forgot-password', async (req, res, next) => {
@@ -432,7 +432,7 @@ router.post('/forgot-password', async (req, res, next) => {
     });
 
     const resetUrl = `${WEB_BASE_URL}/reset-password?token=${encodeURIComponent(token)}`;
-    await sendResetorForgotPasswordEmail(user.email, resetUrl, 'Reset your YemiShop password', 'Click the link to reset your password:');
+    await sendResetorForgotPasswordEmail(user.email, resetUrl, 'Reset your DaySpring password', 'Click the link to reset your password:');
 
     res.json({ ok: true });
   } catch (e) {
@@ -616,7 +616,7 @@ const RESEND_COOLDOWN_SEC = 60;
 const DAILY_CAP = 50;
 const OTP_TTL_MIN = 10;
 
-router.post('/resend-otp', authMiddleware, wrap(async (req, res) => {
+router.post('/resend-otp', requireAuth, wrap(async (req, res) => {
   const userId = (req as any).user?.id as string | undefined;
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -658,7 +658,7 @@ router.post('/resend-otp', authMiddleware, wrap(async (req, res) => {
   });
 
   if (user.phone) {
-    await sendSmsOtp(user.phone, `Your YemiShop code: ${code}. It expires in ${OTP_TTL_MIN} minutes.`);
+    await sendSmsOtp(user.phone, `Your DaySpring code: ${code}. It expires in ${OTP_TTL_MIN} minutes.`);
   }
 
   res.json({ ok: true, nextResendAfterSec: RESEND_COOLDOWN_SEC, expiresInSec: OTP_TTL_MIN * 60 });

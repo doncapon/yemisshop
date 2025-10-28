@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
-import { authMiddleware, requireRole } from '../middleware/auth.js';
+import { requireAdmin, requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -25,8 +25,8 @@ const categorySchema = z.object({
 
 router.post(
   '/',
-  authMiddleware,
-  requireRole(['ADMIN']),
+  requireAuth,
+  requireAdmin,
   async (req, res, next) => {
     try {
       const data = categorySchema.parse(req.body);
@@ -40,8 +40,8 @@ router.post(
 
 router.put(
   '/:id',
-  authMiddleware,
-  requireRole(['ADMIN']),
+  requireAuth,
+  requireAdmin,
   async (req, res, next) => {
     try {
       const data = categorySchema.partial().parse(req.body);
@@ -55,8 +55,8 @@ router.put(
 
 router.delete(
   '/:id',
-  authMiddleware,
-  requireRole(['ADMIN']),
+  requireAuth,
+  requireAdmin,
   async (req, res, next) => {
     try {
       await prisma.category.delete({ where: { id: req.params.id } });

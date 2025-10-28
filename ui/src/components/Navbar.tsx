@@ -131,9 +131,9 @@ export default function Navbar() {
           <Link
             to="/"
             className="text-ink-invert text-lg font-bold tracking-tight hover:opacity-95"
-            aria-label="YemiShop home"
+            aria-label="DaySpring home"
           >
-            YemiShop
+            DaySpring
           </Link>
         </div>
 
@@ -182,7 +182,7 @@ export default function Navbar() {
             </NavLink>
           )}
 
-           {token && (
+          {token && (
             <NavLink
               to="/orders"
               end
@@ -204,6 +204,15 @@ export default function Navbar() {
               Admin
             </NavLink>
           )}
+          {(userRole === 'SUPER_ADMIN') && (
+
+          <NavLink to="/admin/settings" className={({ isActive }) =>
+                `${linkBase} ${isActive ? linkActive : linkInactive}`
+              }>
+            Admin_Settings
+          </NavLink>
+          )}
+
         </nav>
 
         {/* Spacer */}

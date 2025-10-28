@@ -7,7 +7,7 @@ export interface ModalProps {
   onClose: () => void;
 }
 
-const Modal: React.FC<ModalProps> = ({ isOpen, title, message, onClose }) => {
+export const Modal: React.FC<ModalProps> = ({ isOpen, title, message, onClose }) => {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose?.();
     document.addEventListener("keydown", onKey);

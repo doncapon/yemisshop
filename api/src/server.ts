@@ -1,14 +1,23 @@
-// src/server.ts (or index.ts)
+// src/server.ts
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import path from 'path';
+import * as fs from 'fs';
+
 import { env } from './config/env.js';
-import paymentsRouter from './routes/payments.js';
-import profileRouter from './routes/profile.js';
+
+// 🔑 auth middleware (the one you showed earlier)
+import { attachUser } from './middleware/auth.js';
+
+// Routers
 import authRouter from './routes/auth.js';
+import profileRouter from './routes/profile.js';
 import productsRouter from './routes/products.js';
 import ordersRouter from './routes/orders.js';
 import wishlistRouter from './routes/wishlist.js';
 import favoritesRouter from './routes/favorites.js';
+
 import adminRouter from './routes/admin.js';
 import adminCatalogRouter from './routes/adminCatalog.js';
 import adminCategoriesRouter from './routes/adminCategories.js';
@@ -18,12 +27,17 @@ import adminProductsRouter from './routes/adminProducts.js';
 import adminSuppliers from './routes/adminSuppliers.js';
 import adminActivitiesRouter from './routes/adminActivities.js';
 import adminOrdersRouter from './routes/adminOrders.js';
-import path from 'path';
-import uploadsRouter from './routes/uploads.js';
-import * as fs from 'fs';
-import adminPaymentsRouter from './routes/adminPayments.js';
 import adminReports from './routes/adminReports.js';
+import adminBanks from './routes/adminBanks.js';
+import settings from './routes/settings.js';
+import adminOrderComms from './routes/adminOrderComms.js';
 
+import uploadsRouter from './routes/uploads.js';
+import paymentsRouter from './routes/payments.js';
+import adminMetricsRouter from './routes/adminMetrics.js';
+import availabiltyRouter from './routes/availability.js'
+import supplierOffersList from './routes/supplierOfferList.js'
+import publicProductOffers from './routes/productOffers.js';
 
 const app = express();
 
@@ -46,12 +60,21 @@ app.use(
 );
 app.options('*', cors());
 
-/* 2) JSON body for normal routes */
-app.use(express.json());
+/* 2) Common middleware */
+app.use(cookieParser());      // so attachUser can read cookies if you ever set them
+app.use(express.json());      // JSON body for normal routes
 
-/* 3) Auth & profile */
+/* 3) 🔑 Auth attach — MUST be before any router that uses requireAuth */
+app.use(attachUser);
+
+/* 4) Health (handy for debugging) */
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+/* 5) Auth & profile */
 app.use('/api/auth', authRouter);
 app.use('/api/profile', profileRouter);
+
+/* 6) Admin modules */
 app.use('/api/admin', adminRouter);
 app.use('/api/admin/catalog', adminCatalogRouter);
 app.use('/api/admin/categories', adminCategoriesRouter);
@@ -61,43 +84,42 @@ app.use('/api/admin/products', adminProductsRouter);
 app.use('/api/admin/suppliers', adminSuppliers);
 app.use('/api/admin/order-activities', adminActivitiesRouter);
 app.use('/api/admin/orders', adminOrdersRouter);
-app.use('/api', adminPaymentsRouter);
-app.use('/api/admin/reports',  adminReports);
+app.use('/api/admin/reports', adminReports);
+app.use('/api/admin/banks', adminBanks);
+app.use('/api/settings', settings);
+app.use('/api/admin/orders', adminOrderComms); // if this is a separate subrouter under the same path, consider nesting inside adminOrdersRouter to avoid route clashes
+app.use('/api/admin/metrics', adminMetricsRouter);
+app.use('/api', availabiltyRouter);
+/* 7) Payments: JSON endpoints + raw webhook */
+app.use('/api', publicProductOffers);
+app.use('/api/payments', paymentsRouter); // e.g. /init, /verify
 
 
-const UPLOADS_DIR =
-  process.env.UPLOADS_DIR ?? path.resolve(process.cwd(), 'uploads');
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-
-// Serve files publicly
-app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d', index: false }));
-// mount the router
-app.use('/api/uploads', uploadsRouter);
-
-/* 4) Payments:
-   - Mount normal JSON endpoints at /api/payments
-   - Keep a dedicated raw-body route for the webhook
-*/
-app.use('/api/payments', paymentsRouter); // e.g. /init, /verify (expects JSON)
 app.post(
   '/api/payments/webhook',
-  express.raw({ type: '*/*' }),          // raw body only here
-  paymentsRouter                         // router should handle POST /webhook
+  express.raw({ type: '*/*' }), // raw body only here
+  paymentsRouter                 // router should handle POST /webhook
 );
 
-// 5) products
+/* 8) Public uploads */
+const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.resolve(process.cwd(), 'uploads');
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d', index: false }));
+app.use('/api/uploads', uploadsRouter);
+app.use('/api', supplierOffersList);
+
+/* 9) Domain routes */
 app.use('/api/products', productsRouter);
-
-// 6) orders
 app.use('/api/orders', ordersRouter);
-
-
-//7) wishlist
 app.use('/api/wishlist', wishlistRouter);
-
-// 8) favourites
 app.use('/api/favorites', favoritesRouter);
 
+/* 10) Error handler */
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // turn on extra logs via AUTH_DEBUG=true to see jwt failures from attachUser
+  console.error(err);
+  res.status(500).json({ error: 'Internal Server Error' });
+});
 
 app.listen(env.port, () => {
   console.log(`API on http://localhost:${env.port}`);

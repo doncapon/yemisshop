@@ -1,7 +1,7 @@
 // src/pages/Catalog.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import api from '../api/client';
+import api from '../api/client.js';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { useModal } from '../components/ModalProvider';
@@ -292,10 +292,7 @@ export default function Catalog() {
           return p;
         }) as Product[];
 
-      // ← Only return products that have at least one (active & in-stock) supplier offer
-      const withOffersOnly = normalizedAll.filter(p => p.hasOffers);
-
-      return withOffersOnly;
+      return normalizedAll;
     },
   });
 

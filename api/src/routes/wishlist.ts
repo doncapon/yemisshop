@@ -1,19 +1,19 @@
 // api/src/routes/favorites.ts
 import { Router } from 'express';
 import { z } from 'zod';
-import { authMiddleware, AuthedRequest } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 
 const router = Router();
 
 // All routes require auth
-router.use(authMiddleware);
+router.use(requireAuth);
 
 /**
  * GET /api/favorites/mine
  * Returns a compact list of product ids in the user's wishlist.
  */
-router.get('/mine', async (req: AuthedRequest, res, next) => {
+router.get('/mine', async (req, res, next) => {
   try {
     const rows = await prisma.favorite.findMany({
       where: { userId: req.user!.id },
@@ -35,7 +35,7 @@ const ToggleSchema = z.object({
   productId: z.string().min(1, 'productId required'),
 });
 
-router.post('/toggle', async (req: AuthedRequest, res, next) => {
+router.post('/toggle', async (req, res, next) => {
   try {
     const { productId } = ToggleSchema.parse(req.body);
 

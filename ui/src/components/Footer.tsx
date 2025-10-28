@@ -12,7 +12,7 @@ export default function Footer() {
               <span className="inline-grid place-items-center w-9 h-9 rounded-xl bg-primary-600 text-white font-semibold">
                 YS
               </span>
-              <span className="font-semibold text-lg">YemiShop</span>
+              <span className="font-semibold text-lg">DaySpring</span>
             </Link>
             <p className="mt-3 text-sm text-ink-soft">
               Quality products from trusted suppliers. Fast delivery. Secure checkout.
@@ -45,7 +45,7 @@ export default function Footer() {
                 <li><Link to="/help" className="hover:text-ink">Help Center</Link></li>
                 <li><Link to="/returns" className="hover:text-ink">Returns & refunds</Link></li>
                 <li><Link to="/shipping" className="hover:text-ink">Shipping info</Link></li>
-                <li><a href="mailto:support@yemisshop.com" className="hover:text-ink">support@yemisshop.com</a></li>
+                <li><a href="mailto:support@dayspring.com" className="hover:text-ink">support@dayspring.com</a></li>
               </ul>
             </div>
 
@@ -94,7 +94,7 @@ export default function Footer() {
 
         {/* Bottom bar */}
         <div className="mt-8 pt-6 border-t border-[--color-surface-ring] flex flex-col sm:flex-row items-center gap-3 justify-between text-sm text-ink-soft">
-          <p>© {new Date().getFullYear()} YemiShop. All rights reserved.</p>
+          <p>© {new Date().getFullYear()} DaySpring. All rights reserved.</p>
           <div className="flex items-center gap-4">
             <Link to="/privacy" className="hover:text-ink">Privacy</Link>
             <Link to="/terms" className="hover:text-ink">Terms</Link>

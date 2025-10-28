@@ -77,7 +77,7 @@ export default function PaymentCallback() {
         { orderId, reference },
         { headers }
       );
-
+      
       if (data.status === 'PAID') {
         localStorage.removeItem('cart');
         setPhase('success');
@@ -153,7 +153,6 @@ export default function PaymentCallback() {
       {
         phase === 'success' && (
           <>
-            {console.log('I am in ', isAdmin, orderId)}
             {isAdmin && orderId && (
 
               <button
@@ -161,7 +160,6 @@ export default function PaymentCallback() {
                 onClick={async () => {
                   try {
                     const res = await api.post(`/api/admin/orders/${orderId}/notify-suppliers`, {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
-                    console.log("res: ", res);
                     alert('Notifications (re)triggered.');
                   } catch (e: any) {
                     alert(e?.response?.data?.error || 'Could not notify suppliers.');

@@ -1,11 +1,11 @@
 // src/routes/authMe.ts
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { prisma } from '../lib/prisma.js';
-import { authMiddleware } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
-router.get('/', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = (req as any).user?.id as string | undefined;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });

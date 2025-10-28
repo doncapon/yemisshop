@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { logOrderActivity } from '../services/activity.service.js';
-import { notifySuppliersForOrder } from '../services/notifySuppliers.js';
+import { notifySuppliersForOrder } from '../services/notify.js';
 
 const router = Router();
 

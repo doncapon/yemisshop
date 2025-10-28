@@ -1,197 +1,119 @@
 // src/lib/authMiddleware.ts
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
-import { verifyJwt, AccessClaims, VerifyClaims } from '../lib/jwt.js';
-import type { Role } from '../types/role.js'; // ← no ".ts" extension
+import { prisma } from '../lib/prisma.js';
 
-// ---- Roles & claims --------------------------------------------------------
+export type Role = 'SHOPPER' | 'ADMIN' | 'SUPER_ADMIN';
 
-export type JwtClaims = {
-  id: string;          // we put user id in JWT as `id`
-  email?: string;
-  role?: Role;
-  sub?: string;        // optional (if you also set sub)
-};
-
-// What we attach to req.user
 export type AuthedUser = {
   id: string;
-  email?: string;
-  role?: Role;
-  scope?: string;
+  email: string; // non-nullable per Option A
+  role: Role;    // non-nullable per Option A
 };
-
-
-export type AuthedRequest = Request & {
-  user?: { id: string; email?: string; role?: Role };
-};
-
-// ---- Global Express augmentation (so req.user is known everywhere) ----------
 
 declare global {
   namespace Express {
-    // This merges with express-serve-static-core's Request
     interface Request {
       user?: AuthedUser;
     }
   }
 }
 
-// ---- Middleware -------------------------------------------------------------
+const AUTH_DEBUG = String(process.env.AUTH_DEBUG || '').toLowerCase() === 'true';
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+
+/* ---------- helpers ---------- */
+
+function normalizeRole(r?: string | null): Role | null {
+  if (!r) return null;
+  const v = r.replace(/[\s-]/g, '').toUpperCase();
+  if (v === 'SUPERADMIN' || v === 'SUPER_ADMIN') return 'SUPER_ADMIN';
+  if (v === 'ADMIN') return 'ADMIN';
+  if (v === 'SHOPPER' || v === 'USER') return 'SHOPPER';
+  return null;
+}
+
+function getToken(req: Request): string | null {
+  // 1) Authorization: Bearer
+  const h = req.headers.authorization;
+  if (h && /^Bearer\s+/i.test(h)) return h.replace(/^Bearer\s+/i, '').trim();
+
+  // 2) cookies (requires app.use(cookieParser()))
+  const c1 = (req as any).cookies?.access_token;
+  const c2 = (req as any).cookies?.token;
+  return c1 || c2 || null;
+}
 
 /**
- * Strict auth: requires a valid Bearer token.
- * Attaches req.user = { id, email?, role? } from JWT claims.
+ * Verify JWT and (optionally) reload user from DB to get current role/email.
+ * Ensures we always return an AuthedUser with non-nullable email & role.
  */
-export const authMiddleware: RequestHandler = (req: Request, res: Response, next: NextFunction) => {
-  const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ error: 'Missing Authorization header' });
-
-  const [scheme, token] = header.split(' ');
-  if (scheme?.toLowerCase() !== 'bearer' || !token) {
-    return res.status(401).json({ error: 'Invalid Authorization header' });
-  }
-
+async function verifyAndHydrate(token: string): Promise<AuthedUser | null> {
   try {
-    const claims = verifyJwt(token);
-    const userId = claims?.id || claims?.id;
-    if (!userId) return res.status(401).json({ error: 'Invalid token payload' });
+    const payload = jwt.verify(token, JWT_SECRET) as any;
+    const id = payload.id ?? payload.userId ?? payload.sub;
+    if (!id) return null;
 
-    req.user = { id: userId, email: claims.email, role: claims.role };
-    next();
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+    // Refresh from DB to avoid stale role/email
+    const db = await prisma.user.findUnique({
+      where: { id },
+      select: { id: true, email: true, role: true },
+    });
+
+    const emailFromToken =
+      payload.email ?? payload.upn ?? payload.preferred_username;
+
+    const email = (db?.email ?? emailFromToken ?? '').toString();
+
+    const roleFromDb = normalizeRole(db?.role);
+    const roleFromToken = normalizeRole(payload.role);
+    const role: Role = (roleFromDb ?? roleFromToken ?? 'SHOPPER') as Role;
+
+    return { id, email, role };
+  } catch (e) {
+    if (AUTH_DEBUG) console.warn('[auth] jwt verify failed:', (e as any)?.message);
+    return null;
   }
-};
+}
+
+/* ---------- middlewares ---------- */
 
 /**
- * Optional auth: attaches req.user if Bearer token is present & valid,
- * otherwise continues unauthenticated.
+ * Non-blocking: attach req.user if token present & valid; otherwise continue anonymous.
+ * Use this first, then add `requireAuth` or `requireAdmin` on routes that need it.
  */
-export const optionalAuth: RequestHandler = (req, _res, next) => {
-  const header = req.headers.authorization;
-  if (!header) return next();
+export const attachUser: RequestHandler = async (req, _res, next) => {
+  const token = getToken(req);
+  if (!token) return next();
 
-  const [scheme, token] = header.split(' ');
-  if (scheme?.toLowerCase() !== 'bearer' || !token) return next();
-
-  try {
-    const claims = verifyJwt(token);
-    const userId = claims?.id || claims?.id;
-    if (userId) {
-      req.user = { id: userId, email: claims.email, role: claims.role };
-    }
-  } catch {
-    // ignore invalid token in optional mode
+  const user = await verifyAndHydrate(token);
+  if (user) {
+    req.user = user;
+    if (AUTH_DEBUG) console.log('[auth] user attached:', user);
+  } else if (AUTH_DEBUG) {
+    console.log('[auth] token present but invalid');
   }
   next();
 };
 
-/**
- * Role guard: require one of the given roles (after authMiddleware).
- *
- * Example:
- *   router.get('/admin', authMiddleware, requireRole(['ADMIN']), handler)
- */
-export function requireRole(roles: Role[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const role = req.user?.role;
-    if (!role || !roles.includes(role)) return res.status(403).json({ error: 'Forbidden' });
-    next();
-  };
-}
-
-/* ---------- Config ---------- */
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
-
-/* ---------- Helpers ---------- */
-function getBearerToken(req: Request): string | null {
-  const hdr = req.headers.authorization || '';
-  if (!hdr) return null;
-  const m = hdr.match(/^Bearer\s+(.+)$/i);
-  return m ? m[1] : null;
-}
-
-/* ---------- Middleware ---------- */
-// authMiddleware.ts
-
+/** Hard requirement: must be authenticated. */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const hdr = req.headers.authorization || '';
-  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : '';
-  if (!token) return res.status(401).json({ error: 'Unauthorized' });
-
-  try {
-    const payload = jwt.verify(token, JWT_SECRET) as any;
-
-    const id =
-      payload.id ??
-      payload.userId ??
-      payload.sub; // support common shapes
-
-    const email =
-      payload.email ??
-      payload.upn ??
-      payload.preferred_username ??
-      '';
-
-    const role = payload.role;
-
-    if (!id || !role) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    req.user = { id, email, role };
-    next();
-  } catch {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+  if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+  next();
 }
 
-
-export function requireAccess(req: Request, res: Response, next: NextFunction) {
-  const hdr = req.headers.authorization || '';
-  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : '';
-  if (!token) return res.status(401).json({ error: 'Unauthorized' });
-
-  try {
-    const claims = verifyJwt<AccessClaims>(token);
-    if (claims.scope !== 'access') return res.status(401).json({ error: 'Unauthorized' });
-
-    // ✅ role is Role here (from AccessClaims). If your build still sees string, cast once:
-    req.user = { id: claims.id, email: claims.email, role: claims.role as Role, scope: 'access' };
-    next();
-  } catch {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+/** Admin or Super Admin only. */
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+  const role = normalizeRole(req.user.role);
+  if (role === 'ADMIN' || role === 'SUPER_ADMIN') return next();
+  return res.status(403).json({ error: 'Forbidden' });
 }
 
-export function requireVerifyScope(req: Request, res: Response, next: NextFunction) {
-  const hdr = req.headers.authorization || '';
-  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : '';
-  if (!token) return res.status(401).json({ error: 'Unauthorized' });
-
-  try {
-    const claims = verifyJwt<VerifyClaims>(token);
-    if (claims.scope !== 'verify') return res.status(401).json({ error: 'Unauthorized' });
-
-    req.user = { id: claims.id, email: claims.email, role: claims.role as Role, scope: 'verify' };
-    next();
-  } catch {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+/** Super Admin only. */
+export function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+  const role = normalizeRole(req.user.role);
+  if (role === 'SUPER_ADMIN') return next();
+  return res.status(403).json({ error: 'Forbidden' });
 }
-
-//----------------------------
-
-// declare global {
-  namespace Express {
-    interface Request {
-      user?: { id: string; email: string; role?: string; scope?: 'access' | 'verify' };
-    }
-  }
-
-export const requireAdmin = requireRole(['ADMIN', 'SUPER_ADMIN']);
-export const requireSuperAdmin = requireRole(['SUPER_ADMIN']);
-
-
-export {};

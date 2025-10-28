@@ -1,5 +1,5 @@
 // src/pages/AdminDashboard.tsx
-import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useCallback, type ReactNode, type JSX } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
@@ -18,18 +18,23 @@ import {
     Check,
     ChevronDown,
     ChevronRight,
-    Image as ImageIcon,
 } from 'lucide-react';
+
 import React from 'react';
 
-import api from '../../api/client';
+import api from '../../api/client.js';
 import { useAuthStore } from '../../store/auth.js';
 import { useToast } from '../../components/ToastProvider.js';
 import { useModal } from '../../components/ModalProvider.js';
 import { getHttpErrorMessage } from '../../utils/httpError.js';
 import ActivitiesPanel from '../../components/admin/ActivitiesPanel.js';
 import { SuppliersPricingEditor } from '../../components/SuppliersPricingEditor.js';
-import OverviewStats from '../../components/OverviewStats.js';
+
+import { useMemo } from 'react';
+import { VariantsSection } from '../../components/admin/VariantSection.js';
+import { AttributeForm } from '../../components/admin/AttributeForm.js';
+import AdminProductAttributes from '../../components/admin/AdminProductAttributes.js';
+import { SuppliersOfferManager } from '../../components/admin/SupplierOfferManager.js';
 
 
 /** ===== tweak this if your backend upload route differs ===== */
@@ -48,7 +53,9 @@ type Me = {
 /* ---- Overview payload types (match your getOverview) ---- */
 type Overview = {
     ordersToday: number;
+    profitToday: number;
     revenueToday: number;
+    sparklineProfit7d: number[];
     sparklineRevenue7d: number[];
     users: {
         totalUsers: number;
@@ -107,7 +114,6 @@ type AdminProduct = {
     supplierId?: string | null;
     sku?: string | null;
     inStock?: boolean;
-    vatFlag?: boolean;
 };
 
 type AdminPaymentItem = {
@@ -150,13 +156,8 @@ type AdminBrand = {
     isActive: boolean;
 };
 
-type AdminAttribute = {
-    id: string;
-    name: string;
-    type: 'TEXT' | 'SELECT' | 'MULTISELECT';
-    isActive: boolean;
-    values?: AdminAttributeValue[];
-};
+type AdminAttribute = any;
+
 type AdminAttributeValue = {
     id: string;
     name: string;
@@ -166,14 +167,6 @@ type AdminAttributeValue = {
     isActive: boolean;
 };
 
-type AdminSupplier = {
-    id: string;
-    name: string;
-    type: 'PHYSICAL' | 'ONLINE' | string;
-    status: string; // 'ACTIVE' | 'INACTIVE'
-    contactEmail?: string | null;
-    whatsappPhone?: string | null;
-};
 
 /* ---------------- Utils ---------------- */
 const ngn = new Intl.NumberFormat('en-NG', {
@@ -199,7 +192,7 @@ function fmtDate(s?: string) {
 }
 
 /* ---------------- Tiny inline sparkline ---------------- */
-function Sparkline({ points = [] as number[] }) {
+function Sparkline({ points = [] as number[] }): JSX.Element | null {
     if (!points.length) return null;
     const max = Math.max(...points);
     const min = Math.min(...points);
@@ -216,6 +209,15 @@ function Sparkline({ points = [] as number[] }) {
     );
 }
 
+const stopHashNav = (evt: React.SyntheticEvent) => {
+    const el = (evt.target as HTMLElement)?.closest?.('a[href="#"],a[href=""]');
+    if (el) {
+        evt.preventDefault();
+        evt.stopPropagation();
+    }
+};
+
+
 /* ---------------- Tabs ---------------- */
 type TabKey = 'overview' | 'users' | 'products' | 'transactions' | 'catalog' | 'ops' | 'marketing' | 'analytics';
 
@@ -231,7 +233,7 @@ export default function AdminDashboard() {
 
     // inner products tab state
     type ProductsInnerTab = 'moderation' | 'manage';
-    const [pTab, setPTab] = useState<ProductsInnerTab>('moderation');
+    const [pTab, setPTab] = useState<ProductsInnerTab>('manage');
 
     // NEW state at the top alongside other useStates
     const [prodSearch, setProdSearch] = useState('');
@@ -415,23 +417,49 @@ export default function AdminDashboard() {
         },
     });
 
+    // CREATE value (already optimistic — keep your onMutate)
+    // CREATE value (optimistic)
     const createAttrValue = useMutation({
-        mutationFn: async ({
-            attributeId,
-            ...payload
-        }: {
-            attributeId: string;
-            name: string;
-            code?: string | null;
-            position?: number | null;
-            isActive?: boolean;
-        }) =>
-            (await api.post(`/api/admin/attributes/${attributeId}/values`, payload, { headers: { Authorization: `Bearer ${token}` } }))
-                .data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+        mutationFn: async (payload: { attributeId: string; name: string; code?: string }) => {
+            const { data } = await api.post(`/api/admin/attributes/${payload.attributeId}/values`, payload, {
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            });
+            return data;
+        },
+        onMutate: async (vars) => {
+            const key = ['admin', 'attributes'];
+            await qc.cancelQueries({ queryKey: key });
+            const prev = qc.getQueryData<any[]>(key) || [];
+            const idx = prev.findIndex((a: any) => a.id === vars.attributeId);
+            if (idx >= 0) {
+                const optimistic = structuredClone(prev);
+                const a = optimistic[idx];
+                a.values = [...(a.values ?? []), { id: 'tmp-' + Date.now(), name: vars.name, code: vars.code ?? '', isActive: true }];
+                qc.setQueryData(key, optimistic);
+            }
+            return { prev };
+        },
+        onError: (_e, _vars, ctx) => {
+            if (ctx?.prev) qc.setQueryData(['admin', 'attributes'], ctx.prev);
+            toast.push({ title: 'Attributes', message: 'Failed to add value.', duration: 2500 });
+        },
+        onSuccess: (created, vars) => {
+            qc.setQueryData(['admin', 'attributes'], (prev: any[] = []) => {
+                const idx = prev.findIndex((a: any) => a.id === vars.attributeId);
+                if (idx < 0) return prev;
+                const a = { ...prev[idx] };
+                a.values = (a.values || []).map((v: any) =>
+                    v.id.startsWith('tmp-') && v.name === vars.name ? created : v
+                );
+                const next = [...prev];
+                next[idx] = a;
+                return next;
+            });
+            toast.push({ title: 'Attributes', message: 'Value added.', duration: 1800 });
         },
     });
+
+    // UPDATE value
     const updateAttrValue = useMutation({
         mutationFn: async ({
             attributeId,
@@ -445,21 +473,32 @@ export default function AdminDashboard() {
             position?: number | null;
             isActive?: boolean;
         }) =>
-            (await api.put(`/api/admin/attributes/${attributeId}/values/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } }))
-                .data,
+            (await api.put(`/api/admin/attributes/${attributeId}/values/${id}`, payload, {
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            })).data,
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+            toast.push({ title: 'Attributes', message: 'Value updated.', duration: 1600 });
         },
-    });
-    const deleteAttrValue = useMutation({
-        mutationFn: async ({ attributeId, id }: { attributeId: string; id: string }) =>
-            (await api.delete(`/api/admin/attributes/${attributeId}/values/${id}`, { headers: { Authorization: `Bearer ${token}` } }))
-                .data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+        onError: () => {
+            toast.push({ title: 'Attributes', message: 'Failed to update value.', duration: 2500 });
         },
     });
 
+    // DELETE value
+    const deleteAttrValue = useMutation({
+        mutationFn: async ({ attributeId, id }: { attributeId: string; id: string }) =>
+            (await api.delete(`/api/admin/attributes/${attributeId}/values/${id}`, {
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            })).data,
+        onSuccess: () => {
+            qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
+            toast.push({ title: 'Attributes', message: 'Value deleted.', duration: 1600 });
+        },
+        onError: () => {
+            toast.push({ title: 'Attributes', message: 'Failed to delete value.', duration: 2500 });
+        },
+    });
     /* -------- Usage (for disable delete) -------- */
     const usageQ = useQuery({
         queryKey: ['admin', 'catalog', 'usage'],
@@ -811,7 +850,11 @@ export default function AdminDashboard() {
     };
 
     return (
-        <div className="max-w-[1400px] mx-auto px-4 md:px-6 py-6">
+        <div
+            className="max-w-[1400px] mx-auto px-4 md:px-6 py-6"
+            onClickCapture={stopHashNav}
+            onMouseDownCapture={stopHashNav}
+        >
             {/* Hero */}
             <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-sky-700 via-sky-600 to-indigo-700 text-white">
                 <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(255,255,255,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,0,0,0.15),transparent_60%)]" />
@@ -838,7 +881,6 @@ export default function AdminDashboard() {
                 </div>
             </div>
 
-            {/* KPIs */}
             {/* KPIs */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
                 <KpiCard
@@ -872,6 +914,17 @@ export default function AdminDashboard() {
                     Icon={BarChart3}
                     chart={<Sparkline points={overview.data?.sparklineRevenue7d || []} />}
                 />
+
+                {/* NEW: Profit (only for SUPER_ADMIN) */}
+                {role === 'SUPER_ADMIN' && (
+                    <KpiCard
+                        title="Profit Today"
+                        value={ngn.format(fmtN(overview.data?.profitToday))}
+                        hint="Last 7 days"
+                        Icon={BarChart3}
+                        chart={<Sparkline points={overview.data?.sparklineProfit7d || []} />}
+                    />
+                )}
             </div>
 
             {/* Tabs */}
@@ -1397,7 +1450,7 @@ function KpiCardOverview({ title, total, value, hint, res, Icon, chart }: { titl
     );
 }
 
-function StatusDot({ label }: { label: string }) {
+function StatusDot({ label }: { label?: string | null }) {
     const s = (label || '').toUpperCase();
     const cls =
         s === 'VERIFIED'
@@ -1442,9 +1495,7 @@ function QuickAction({ toAction, icon: Icon, label, desc }: { toAction: () => vo
     );
 }
 
-/* =========================================================
-   Catalog Settings Section
-   ========================================================= */
+
 function CatalogSettingsSection(props: {
     token?: string | null;
     canEdit: boolean;
@@ -1498,46 +1549,11 @@ function CatalogSettingsSection(props: {
     const attributeUsage: Record<string, number> = usageQ.data?.attributes || {};
     const brandUsage: Record<string, number> = usageQ.data?.brands || {};
 
-    const [valuePendings, setValuePendings] = useState<Record<string, { name: string; code?: string }>>({});
-    // Add with your other useState hooks
-    const [openSupplierId, setOpenSupplierId] = useState<string | null>(null);
-    const [supplierEdits, setSupplierEdits] = useState<
-        Record<
-            string,
-            {
-                name?: string;
-                type?: 'PHYSICAL' | 'ONLINE';
-                status?: string;
-                contactEmail?: string | null;
-                whatsappPhone?: string | null;
-                apiBaseUrl?: string | null;
-                apiAuthType?: string | null;
-                apiKey?: string | null;
-            }
-        >
-    >({});
-
-    function startSupplierEdit(s: any) {
-        setOpenSupplierId(s.id);
-        setSupplierEdits(prev => ({
-            ...prev,
-            [s.id]: {
-                name: s.name ?? '',
-                type: s.type ?? 'PHYSICAL',
-                status: s.status ?? 'ACTIVE',
-                contactEmail: s.contactEmail ?? '',
-                whatsappPhone: s.whatsappPhone ?? '',
-                apiBaseUrl: s.apiBaseUrl ?? '',
-                apiAuthType: s.apiAuthType ?? '',
-                apiKey: s.apiKey ?? '',
-            }
-        }));
-    }
-
     const [editingSupplier, setEditingSupplier] = useState<AdminSupplier | null>(null);
 
     const qc = useQueryClient();
     const { openModal } = useModal();
+
     function SectionCard({
         title,
         subtitle,
@@ -1563,14 +1579,95 @@ function CatalogSettingsSection(props: {
         );
     }
 
+    // --- focus/anchor guards (stop global hotkeys + # anchors) ---
+    const stopHashNav = (evt: React.SyntheticEvent) => {
+        const el = (evt.target as HTMLElement)?.closest?.('a[href="#"],a[href=""]');
+        if (el) {
+            evt.preventDefault();
+            evt.stopPropagation();
+        }
+    };
+    const stopKeyBubblingFromInputs = (e: React.KeyboardEvent) => {
+        const t = e.target as HTMLElement;
+        const tag = t.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+            e.stopPropagation(); // don’t let globals grab it
+        }
+    };
+
+    // --- isolated, memoized mini-adder: prevents remount/focus loss ---
+    const AttributeValueAdder = React.memo(function AttributeValueAdder({
+        attributeId,
+        onCreate,
+    }: {
+        attributeId: string;
+        onCreate: (vars: { attributeId: string; name: string; code?: string }) => void;
+    }) {
+        const [name, setName] = useState('');
+        const [code, setCode] = useState('');
+
+        const submit = () => {
+            const n = name.trim();
+            if (!n) return;
+            onCreate({ attributeId, name: n, code: code.trim() || undefined });
+            setName('');
+            setCode('');
+        };
+
+        return (
+            <div
+                role="form"
+                className="grid grid-cols-3 gap-2"
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                    // let typing flow; only capture Enter and stop bubbling of all keys
+                    e.stopPropagation();
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        submit();
+                    }
+                }}
+            >
+                <input
+                    type="text"
+                    autoComplete="off"
+                    placeholder="Value name"
+                    className="border rounded-lg px-3 py-2 col-span-2"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                />
+                <input
+                    type="text"
+                    autoComplete="off"
+                    placeholder="Code (optional)"
+                    className="border rounded-lg px-3 py-2"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                />
+                <div className="col-span-3 justify-self-end">
+                    <button type="button" onClick={submit} className="px-3 py-2 rounded-lg bg-emerald-600 text-white">
+                        Add value
+                    </button>
+                </div>
+            </div>
+        );
+    });
+
     return (
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div
+            className="grid grid-cols-1 xl:grid-cols-3 gap-6"
+            onClickCapture={stopHashNav}
+            onMouseDownCapture={stopHashNav}
+            onKeyDownCapture={stopKeyBubblingFromInputs}
+        >
             {/* Categories */}
             <SectionCard
                 title="Categories"
                 subtitle="Organize your catalog hierarchy"
                 right={
                     <button
+                        type="button"
                         onClick={async () => {
                             try {
                                 await api.post('/api/admin/catalog/backfill');
@@ -1588,7 +1685,9 @@ function CatalogSettingsSection(props: {
                     </button>
                 }
             >
-                {canEdit && <CategoryForm categories={categoriesQ.data ?? []} onCreate={(payload) => createCategory.mutate(payload)} />}
+                {canEdit && (
+                    <CategoryForm categories={categoriesQ.data ?? []} onCreate={(payload) => createCategory.mutate(payload)} />
+                )}
 
                 <div className="border rounded-xl overflow-x-auto">
                     <table className="w-full text-sm">
@@ -1608,17 +1707,25 @@ function CatalogSettingsSection(props: {
                                     <tr key={c.id}>
                                         <td className="px-3 py-2">{c.name}</td>
                                         <td className="px-3 py-2">{c.slug}</td>
-                                        <td className="px-3 py-2">{(categoriesQ.data ?? []).find((x: AdminCategory) => x.id === c.parentId)?.name || '—'}</td>
+                                        <td className="px-3 py-2">
+                                            {(categoriesQ.data ?? []).find((x: AdminCategory) => x.id === c.parentId)?.name || '—'}
+                                        </td>
                                         <td className="px-3 py-2">{used}</td>
                                         <td className="px-3 py-2 text-right">
                                             {canEdit && (
                                                 <div className="inline-flex gap-2">
-                                                    <button onClick={() => updateCategory.mutate({ id: c.id, isActive: !c.isActive })} className="px-2 py-1 rounded border">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => updateCategory.mutate({ id: c.id, isActive: !c.isActive })}
+                                                        className="px-2 py-1 rounded border"
+                                                    >
                                                         {c.isActive ? 'Disable' : 'Enable'}
                                                     </button>
                                                     <button
+                                                        type="button"
                                                         onClick={() => used === 0 && deleteCategory.mutate(c.id)}
-                                                        className={`px-2 py-1 rounded ${used === 0 ? 'bg-rose-600 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
+                                                        className={`px-2 py-1 rounded ${used === 0 ? 'bg-rose-600 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'
+                                                            }`}
                                                         disabled={used > 0}
                                                         title={used > 0 ? 'Cannot delete: category is in use' : 'Delete category'}
                                                     >
@@ -1639,13 +1746,12 @@ function CatalogSettingsSection(props: {
                             )}
                         </tbody>
                     </table>
-                </div >
-            </SectionCard >
+                </div>
+            </SectionCard>
 
             {/* Brands */}
-            < SectionCard title="Brands" subtitle="Manage brand metadata" >
-                {canEdit && <BrandForm onCreate={(payload) => createBrand.mutate(payload)} />
-                }
+            <SectionCard title="Brands" subtitle="Manage brand metadata">
+                {canEdit && <BrandForm onCreate={(payload) => createBrand.mutate(payload)} />}
                 <div className="border rounded-xl overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead className="bg-zinc-50">
@@ -1671,13 +1777,19 @@ function CatalogSettingsSection(props: {
                                         <td className="px-3 py-2 text-right">
                                             {canEdit && (
                                                 <div className="inline-flex gap-2">
-                                                    <button onClick={() => updateBrand.mutate({ id: b.id, isActive: !b.isActive })} className="px-2 py-1 rounded border">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => updateBrand.mutate({ id: b.id, isActive: !b.isActive })}
+                                                        className="px-2 py-1 rounded border"
+                                                    >
                                                         {b.isActive ? 'Disable' : 'Enable'}
                                                     </button>
 
                                                     <button
+                                                        type="button"
                                                         onClick={() => used === 0 && deleteBrand.mutate(b.id)}
-                                                        className={`px-2 py-1 rounded ${used === 0 ? 'bg-rose-600 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
+                                                        className={`px-2 py-1 rounded ${used === 0 ? 'bg-rose-600 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'
+                                                            }`}
                                                         disabled={used > 0}
                                                         title={used > 0 ? 'Cannot delete: brand is in use' : 'Delete brand'}
                                                     >
@@ -1699,10 +1811,10 @@ function CatalogSettingsSection(props: {
                         </tbody>
                     </table>
                 </div>
-            </SectionCard >
+            </SectionCard>
 
             {/* Suppliers */}
-            < SectionCard title="Suppliers" subtitle="Manage suppliers available to assign to products" >
+            <SectionCard title="Suppliers" subtitle="Manage suppliers available to assign to products">
                 {canEdit && (
                     <SupplierForm
                         editing={editingSupplier}
@@ -1740,17 +1852,28 @@ function CatalogSettingsSection(props: {
                                     <td className="px-3 py-2 text-right">
                                         {canEdit && (
                                             <div className="inline-flex gap-2">
-                                                <button onClick={() => updateSupplier.mutate({ id: s.id, status: s.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' })} className="px-2 py-1 rounded border">
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        updateSupplier.mutate({ id: s.id, status: s.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' })
+                                                    }
+                                                    className="px-2 py-1 rounded border"
+                                                >
                                                     {s.status === 'ACTIVE' ? 'Disable' : 'Enable'}
                                                 </button>
                                                 <button
+                                                    type="button"
                                                     onClick={() => setEditingSupplier(s)}
                                                     className="px-2 py-1 rounded border"
                                                     title="Edit supplier"
                                                 >
                                                     Edit
                                                 </button>
-                                                <button onClick={() => deleteSupplier.mutate(s.id)} className="px-2 py-1 rounded bg-rose-600 text-white">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => deleteSupplier.mutate(s.id)}
+                                                    className="px-2 py-1 rounded bg-rose-600 text-white"
+                                                >
                                                     Delete
                                                 </button>
                                             </div>
@@ -1768,16 +1891,15 @@ function CatalogSettingsSection(props: {
                         </tbody>
                     </table>
                 </div>
-            </SectionCard >
+            </SectionCard>
 
             {/* Attributes & Values */}
-            < SectionCard title="Attributes" subtitle="Define attribute schema & options" >
+            <SectionCard title="Attributes" subtitle="Define attribute schema & options">
                 {canEdit && <AttributeForm onCreate={(payload) => createAttribute.mutate(payload)} />}
 
                 <div className="grid gap-3">
                     {(attributesQ.data ?? []).map((a: AdminAttribute) => {
                         const used = attributeUsage[a.id] || 0;
-                        const pending = valuePendings[a.id] ?? { name: '', code: '' };
 
                         return (
                             <div key={a.id} className="border rounded-xl">
@@ -1793,12 +1915,18 @@ function CatalogSettingsSection(props: {
                                     </div>
                                     {canEdit && (
                                         <div className="inline-flex gap-2">
-                                            <button onClick={() => updateAttribute.mutate({ id: a.id, isActive: !a.isActive })} className="px-2 py-1 rounded border">
+                                            <button
+                                                type="button"
+                                                onClick={() => updateAttribute.mutate({ id: a.id, isActive: !a.isActive })}
+                                                className="px-2 py-1 rounded border"
+                                            >
                                                 {a.isActive ? 'Disable' : 'Enable'}
                                             </button>
                                             <button
+                                                type="button"
                                                 onClick={() => used === 0 && deleteAttribute.mutate(a.id)}
-                                                className={`px-2 py-1 rounded ${used === 0 ? 'bg-rose-600 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'}`}
+                                                className={`px-2 py-1 rounded ${used === 0 ? 'bg-rose-600 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'
+                                                    }`}
                                                 disabled={used > 0}
                                                 title={used > 0 ? 'Cannot delete: attribute is in use' : 'Delete attribute'}
                                             >
@@ -1811,17 +1939,31 @@ function CatalogSettingsSection(props: {
                                 {/* Values */}
                                 <div className="border-t p-3">
                                     <div className="text-xs text-ink-soft mb-2">Values</div>
-                                    {(a.values ?? []).length === 0 && <div className="text-xs text-zinc-500 mb-2">No values</div>}
+
+                                    {(a.values ?? []).length === 0 && (
+                                        <div className="text-xs text-zinc-500 mb-2">No values</div>
+                                    )}
+
                                     <div className="flex flex-wrap gap-2 mb-3">
-                                        {(a.values ?? []).map((v) => (
+                                        {(a.values ?? []).map((v: { id: React.Key | null | undefined; name: string | number | bigint | boolean | React.ReactElement<unknown, string | React.JSXElementConstructor<any>> | Iterable<ReactNode> | React.ReactPortal | Promise<string | number | bigint | boolean | React.ReactPortal | React.ReactElement<unknown, string | React.JSXElementConstructor<any>> | Iterable<ReactNode> | null | undefined> | null | undefined; isActive: any; }) => (
                                             <div key={v.id} className="px-2 py-1 rounded border bg-white inline-flex items-center gap-2">
                                                 <span className="text-sm">{v.name}</span>
                                                 {canEdit && (
                                                     <>
-                                                        <button className="text-xs underline" onClick={() => updateAttrValue.mutate({ attributeId: a.id, id: v.id, isActive: !v.isActive })}>
+                                                        <button
+                                                            type="button"
+                                                            className="text-xs underline"
+                                                            onClick={() =>
+                                                                updateAttrValue.mutate({ attributeId: a.id, id: v.id, isActive: !v.isActive })
+                                                            }
+                                                        >
                                                             {v.isActive ? 'Disable' : 'Enable'}
                                                         </button>
-                                                        <button className="text-xs text-rose-600 underline" onClick={() => deleteAttrValue.mutate({ attributeId: a.id, id: v.id })}>
+                                                        <button
+                                                            type="button"
+                                                            className="text-xs text-rose-600 underline"
+                                                            onClick={() => deleteAttrValue.mutate({ attributeId: a.id, id: v.id })}
+                                                        >
                                                             Delete
                                                         </button>
                                                     </>
@@ -1831,44 +1973,40 @@ function CatalogSettingsSection(props: {
                                     </div>
 
                                     {canEdit && (
-                                        <div className="grid grid-cols-3 gap-2">
-                                            <input
-                                                placeholder="Value name"
-                                                className="border rounded-lg px-3 py-2 col-span-2"
-                                                value={pending.name}
-                                                onChange={(e) => setValuePendings((d) => ({ ...d, [a.id]: { ...(d[a.id] || {}), name: e.target.value } }))}
-                                            />
-                                            <input
-                                                placeholder="Code (optional)"
-                                                className="border rounded-lg px-3 py-2"
-                                                value={pending.code ?? ''}
-                                                onChange={(e) => setValuePendings((d) => ({ ...d, [a.id]: { ...(d[a.id] || {}), code: e.target.value } }))}
-                                            />
-                                            <button
-                                                className="col-span-3 justify-self-end px-3 py-2 rounded-lg bg-emerald-600 text-white"
-                                                onClick={() => {
-                                                    const n = (valuePendings[a.id]?.name || '').trim();
-                                                    if (!n) return;
-                                                    createAttrValue.mutate(
-                                                        { attributeId: a.id, name: n, code: valuePendings[a.id]?.code },
-                                                        { onSuccess: () => setValuePendings((d) => ({ ...d, [a.id]: { name: '', code: '' } })) }
-                                                    );
-                                                }}
-                                            >
-                                                Add value
-                                            </button>
-                                        </div>
+                                        <AttributeValueAdder
+                                            attributeId={a.id}
+                                            onCreate={(vars) =>
+                                                createAttrValue.mutate(vars, {
+                                                    onSuccess: () =>
+                                                        qc.invalidateQueries({ queryKey: ['admin', 'attributes'] }),
+                                                })
+                                            }
+                                        />
                                     )}
                                 </div>
                             </div>
                         );
                     })}
-                    {(attributesQ.data ?? []).length === 0 && <div className="text-center text-zinc-500 text-sm py-4">No attributes</div>}
+                    {(attributesQ.data ?? []).length === 0 && (
+                        <div className="text-center text-zinc-500 text-sm py-4">No attributes</div>
+                    )}
                 </div>
-            </SectionCard >
-        </div >
+
+                {/* Product ↔ attributes linking UI + Variants manager row */}
+                <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mt-6">
+                    <div className="xl:col-span-3">
+                        <AdminProductAttributes />
+                    </div>
+                </div>
+            </SectionCard>
+
+            {/* Variants Section */}
+            <VariantsSection />
+        </div>
     );
 }
+
+
 
 /* ---------------- Small, typing-safe form components ---------------- */
 function CategoryForm({
@@ -1947,207 +2085,386 @@ function BrandForm({ onCreate }: { onCreate: (payload: { name: string; slug: str
     );
 }
 
-function AttributeForm({ onCreate }: { onCreate: (payload: { name: string; type: 'TEXT' | 'SELECT' | 'MULTISELECT'; isActive: boolean }) => void }) {
-    const [name, setName] = useState('');
-    const [type, setType] = useState<'TEXT' | 'SELECT' | 'MULTISELECT'>('SELECT');
-    const [isActive, setIsActive] = useState(true);
+type SupplierFormValues = {
+    name: string;
+    type: 'PHYSICAL' | 'ONLINE';
+    status?: string;
+    contactEmail?: string | null;
+    whatsappPhone?: string | null;
 
-    const submit = useCallback(() => {
-        if (!name.trim()) return;
-        onCreate({ name: name.trim(), type, isActive });
-        setName('');
-        setType('SELECT');
-        setIsActive(true);
-    }, [name, type, isActive, onCreate]);
+    apiBaseUrl?: string | null;
+    apiAuthType?: 'NONE' | 'BEARER' | 'BASIC' | '' | null;
+    apiKey?: string | null;
 
-    return (
-        <div className="mb-3 grid grid-cols-2 gap-2">
-            <input placeholder="Name" className="border rounded-lg px-3 py-2" value={name} onChange={(e) => setName(e.target.value)} />
-            <select className="border rounded-lg px-3 py-2" value={type} onChange={(e) => setType(e.target.value as any)}>
-                <option value="TEXT">TEXT</option>
-                <option value="SELECT">SELECT</option>
-                <option value="MULTISELECT">MULTISELECT</option>
-            </select>
-            <label className="flex items-center gap-2">
-                <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
-                <span className="text-sm">Active</span>
-            </label>
-            <button onClick={submit} className="justify-self-end px-3 py-2 rounded-lg bg-emerald-600 text-white">
-                Add
-            </button>
-        </div>
-    );
-}
+    payoutMethod?: 'SPLIT' | 'TRANSFER' | '' | null;
+    bankCountry?: string | null;   // e.g. "NG"
+    bankCode?: string | null;      // bank sort code
+    bankName?: string | null;      // bank display name
+    accountNumber?: string | null; // long field
+    accountName?: string | null;   // long field
+    isPayoutEnabled?: boolean | null;
+};
+
+type AdminSupplier = {
+    id: string;
+    name: string;
+    type: 'PHYSICAL' | 'ONLINE';
+    status: string;
+    contactEmail?: string | null;
+    whatsappPhone?: string | null;
+
+    apiBaseUrl?: string | null;
+    apiAuthType?: 'NONE' | 'BEARER' | 'BASIC' | null;
+    apiKey?: string | null;
+
+    payoutMethod?: 'SPLIT' | 'TRANSFER' | null;
+    bankCountry?: string | null;
+    bankCode?: string | null;
+    bankName?: string | null;
+    accountNumber?: string | null;
+    accountName?: string | null;
+    isPayoutEnabled?: boolean | null;
+};
+
+type BankOption = { country: string; code: string; name: string };
+
+const FALLBACK_BANKS: BankOption[] = [
+    { country: 'NG', code: '044', name: 'Access Bank' },
+    { country: 'NG', code: '011', name: 'First Bank of Nigeria' },
+    { country: 'NG', code: '058', name: 'Guaranty Trust Bank' },
+    { country: 'NG', code: '221', name: 'Stanbic IBTC Bank' },
+    { country: 'NG', code: '232', name: 'Sterling Bank' },
+    { country: 'NG', code: '033', name: 'United Bank for Africa' },
+    { country: 'NG', code: '035', name: 'Wema Bank' },
+];
 
 function SupplierForm({
-    onCreate,
-    onUpdate,
     editing,
     onCancelEdit,
+    onCreate,
+    onUpdate,
 }: {
-    onCreate: (payload: any) => void;
-    onUpdate: (payload: any) => void;
-    editing?: any | null;              // pass the supplier being edited or null/undefined
-    onCancelEdit?: () => void;
+    editing: AdminSupplier | null;
+    onCancelEdit: () => void;
+    onCreate: (payload: SupplierFormValues) => void;
+    onUpdate: (payload: SupplierFormValues & { id: string }) => void;
 }) {
-    const defaultForm = {
+    const { token } = useAuthStore();
+
+    // One source of truth for banks (uses admin list, falls back locally)
+    const banksQ = useQuery({
+        queryKey: ['admin', 'banks'],
+        queryFn: async () => {
+            const { data } = await api.get<{ data: BankOption[] }>('/api/admin/banks', {
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            });
+            return Array.isArray(data?.data) && data.data.length > 0 ? data.data : FALLBACK_BANKS;
+        },
+        staleTime: 10 * 60 * 1000,
+        retry: 1,
+    });
+    const banks = banksQ.data ?? FALLBACK_BANKS;
+
+    const [values, setValues] = useState<SupplierFormValues>({
         name: '',
         type: 'PHYSICAL',
         status: 'ACTIVE',
         contactEmail: '',
         whatsappPhone: '',
         apiBaseUrl: '',
-        apiAuthType: '',
+        apiAuthType: 'NONE',
         apiKey: '',
-    };
 
-    const [form, setForm] = useState(defaultForm);
+        payoutMethod: '',
+        bankCountry: 'NG',
+        bankCode: '',
+        bankName: '',
+        accountNumber: '',
+        accountName: '',
+        isPayoutEnabled: false,
+    });
 
-    // when editing changes, prefill; otherwise reset to defaults
+    // Hydrate when editing
     useEffect(() => {
-        if (editing) {
-            setForm({
-                name: editing.name ?? '',
-                type: editing.type ?? 'PHYSICAL',
-                status: editing.status ?? 'ACTIVE',
-                contactEmail: editing.contactEmail ?? '',
-                whatsappPhone: editing.whatsappPhone ?? '',
-                apiBaseUrl: editing.apiBaseUrl ?? '',
-                apiAuthType: editing.apiAuthType ?? '',
-                apiKey: editing.apiKey ?? '',
-            });
-        } else {
-            setForm(defaultForm);
+        if (!editing) return;
+        setValues({
+            name: editing.name ?? '',
+            type: editing.type ?? 'PHYSICAL',
+            status: editing.status ?? 'ACTIVE',
+            contactEmail: editing.contactEmail ?? '',
+            whatsappPhone: editing.whatsappPhone ?? '',
+            apiBaseUrl: editing.apiBaseUrl ?? '',
+            apiAuthType: editing.apiAuthType ?? 'NONE',
+            apiKey: editing.apiKey ?? '',
+
+            payoutMethod: editing.payoutMethod ?? '',
+            bankCountry: editing.bankCountry ?? 'NG',
+            bankCode: editing.bankCode ?? '',
+            bankName: editing.bankName ?? '',
+            accountNumber: editing.accountNumber ?? '',
+            accountName: editing.accountName ?? '',
+            isPayoutEnabled: !!editing.isPayoutEnabled,
+        });
+    }, [editing]);
+
+    // Filter banks by selected country
+    const countryBanks = useMemo(
+        () => banks.filter((b) => (values.bankCountry || 'NG') === b.country),
+        [banks, values.bankCountry]
+    );
+
+    // Keep Bank Name <-> Bank Code in sync
+    function setBankByName(name: string) {
+        const match = countryBanks.find((b) => b.name === name);
+        setValues((v) => ({
+            ...v,
+            bankName: name || '',
+            bankCode: match?.code || '',
+        }));
+    }
+    function setBankByCode(code: string) {
+        const match = countryBanks.find((b) => b.code === code);
+        setValues((v) => ({
+            ...v,
+            bankCode: code || '',
+            bankName: match?.name || '',
+        }));
+    }
+
+    function submit() {
+        if (!values.name.trim()) {
+            alert('Supplier name is required');
+            return;
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [editing?.id]);
-
-    const submit = () => {
-        const name = form.name.trim();
-        if (!name) return alert('Name is required');
-
-        const payload = {
-            name,
-            type: form.type,
-            status: form.status,
-            contactEmail: form.contactEmail.trim() || null,
-            whatsappPhone: form.whatsappPhone.trim() || null,
-            apiBaseUrl: form.apiBaseUrl.trim() || null,
-            apiAuthType: form.apiAuthType.trim() || null,
-            apiKey: form.apiKey.trim() || null,
-        };
-
-        if (editing?.id) {
-            onUpdate({ id: editing.id, ...payload });
-        } else {
-            onCreate(payload);
-        }
-    };
-
-    const cancel = () => {
-        onCancelEdit?.();
-        setForm(defaultForm);
-    };
-
-    const isEditing = !!editing?.id;
+        if (editing) onUpdate({ id: editing.id, ...values });
+        else onCreate(values);
+    }
 
     return (
-        <div className="mb-3 grid gap-2 rounded-xl border bg-white p-3">
-            <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">
-                    {isEditing ? 'Edit Supplier' : 'Add Supplier'}
-                </div>
-                {isEditing && (
-                    <button className="text-sm underline" onClick={cancel}>
+        <div className="rounded-2xl border bg-white/95 p-4 md:p-6 mb-4 w-full">
+            <div className="flex items-center justify-between mb-3">
+                <h4 className="text-ink font-semibold">{editing ? 'Edit Supplier' : 'Add Supplier'}</h4>
+                {editing && (
+                    <button className="text-sm text-zinc-600 hover:underline" onClick={onCancelEdit}>
                         Cancel edit
                     </button>
                 )}
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                <input
-                    className="border rounded-lg px-3 py-2"
-                    placeholder="Supplier name"
-                    value={form.name}
-                    onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                />
-                <select
-                    className="border rounded-lg px-3 py-2"
-                    value={form.type}
-                    onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}
-                >
-                    <option value="PHYSICAL">PHYSICAL</option>
-                    <option value="ONLINE">ONLINE</option>
-                </select>
-                <select
-                    className="border rounded-lg px-3 py-2"
-                    value={form.status}
-                    onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}
-                >
-                    <option value="ACTIVE">ACTIVE</option>
-                    <option value="INACTIVE">INACTIVE</option>
-                </select>
-
-                <input
-                    className="border rounded-lg px-3 py-2"
-                    placeholder="Contact email"
-                    type="email"
-                    value={form.contactEmail ?? ''}
-                    onChange={(e) =>
-                        setForm((f) => ({ ...f, contactEmail: e.target.value }))
-                    }
-                />
-                <input
-                    className="border rounded-lg px-3 py-2"
-                    placeholder="WhatsApp phone (E.164)"
-                    value={form.whatsappPhone ?? ''}
-                    onChange={(e) =>
-                        setForm((f) => ({ ...f, whatsappPhone: e.target.value }))
-                    }
-                />
-                <input
-                    className="border rounded-lg px-3 py-2 md:col-span-3"
-                    placeholder="API Base URL (optional)"
-                    value={form.apiBaseUrl ?? ''}
-                    onChange={(e) =>
-                        setForm((f) => ({ ...f, apiBaseUrl: e.target.value }))
-                    }
-                />
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 md:col-span-3">
+            {/* 12-col grid; long fields span 8 on md+ */}
+            <div className="grid grid-cols-12 gap-3">
+                <div className="col-span-12 md:col-span-6">
+                    <label className="block text-xs text-ink-soft mb-1">Name</label>
                     <input
-                        className="border rounded-lg px-3 py-2"
-                        placeholder="API Auth Type (optional)"
-                        value={form.apiAuthType ?? ''}
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.name}
+                        onChange={(e) => setValues({ ...values, name: e.target.value })}
+                        placeholder="Supplier name"
+                    />
+                </div>
+
+                <div className="col-span-6 md:col-span-3">
+                    <label className="block text-xs text-ink-soft mb-1">Type</label>
+                    <select
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.type}
+                        onChange={(e) => setValues({ ...values, type: e.target.value as any })}
+                    >
+                        <option value="PHYSICAL">PHYSICAL</option>
+                        <option value="ONLINE">ONLINE</option>
+                    </select>
+                </div>
+
+                <div className="col-span-6 md:col-span-3">
+                    <label className="block text-xs text-ink-soft mb-1">Status</label>
+                    <select
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.status || 'ACTIVE'}
+                        onChange={(e) => setValues({ ...values, status: e.target.value })}
+                    >
+                        <option value="ACTIVE">ACTIVE</option>
+                        <option value="INACTIVE">INACTIVE</option>
+                    </select>
+                </div>
+
+                <div className="col-span-12 md:col-span-6">
+                    <label className="block text-xs text-ink-soft mb-1">Contact Email</label>
+                    <input
+                        type="email"
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.contactEmail ?? ''}
+                        onChange={(e) => setValues({ ...values, contactEmail: e.target.value })}
+                        placeholder="e.g. vendors@company.com"
+                    />
+                </div>
+
+                <div className="col-span-12 md:col-span-6">
+                    <label className="block text-xs text-ink-soft mb-1">WhatsApp Phone</label>
+                    <input
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.whatsappPhone ?? ''}
+                        onChange={(e) => setValues({ ...values, whatsappPhone: e.target.value })}
+                        placeholder="+2348xxxxxxxxx"
+                    />
+                </div>
+                {/* API credentials */}
+                {values.type === 'ONLINE' &&
+                    (<>
+                        <div className="col-span-12 md:col-span-4">
+                            <label className="block text-xs text-ink-soft mb-1">API Base URL</label>
+                            <input
+                                className="w-full border rounded-lg px-3 py-2"
+                                value={values.apiBaseUrl ?? ''}
+                                onChange={(e) => setValues({ ...values, apiBaseUrl: e.target.value })}
+                                placeholder="https://api.supplier.com"
+                            />
+                        </div>
+                        <div className="col-span-6 md:col-span-4">
+                            <label className="block text-xs text-ink-soft mb-1">API Auth Type</label>
+                            <select
+                                className="w-full border rounded-lg px-3 py-2"
+                                value={values.apiAuthType ?? 'NONE'}
+                                onChange={(e) => setValues({ ...values, apiAuthType: e.target.value as any })}
+                            >
+                                <option value="NONE">NONE</option>
+                                <option value="BEARER">BEARER</option>
+                                <option value="BASIC">BASIC</option>
+                            </select>
+                        </div>
+                        <div className="col-span-6 md:col-span-4">
+                            <label className="block text-xs text-ink-soft mb-1">API Key / Token</label>
+                            <input
+                                className="w-full border rounded-lg px-3 py-2"
+                                value={values.apiKey ?? ''}
+                                onChange={(e) => setValues({ ...values, apiKey: e.target.value })}
+                                placeholder="••••••••••••"
+                            />
+                        </div>
+                    </>)
+                }
+                {/* Payout & Bank info */}
+                <div className="col-span-6 md:col-span-4">
+                    <label className="block text-xs text-ink-soft mb-1">Payout Method</label>
+                    <select
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.payoutMethod ?? ''}
+                        onChange={(e) => setValues({ ...values, payoutMethod: (e.target.value || '') as any })}
+                    >
+                        <option value="">—</option>
+                        <option value="TRANSFER">TRANSFER</option>
+                        <option value="SPLIT">SPLIT</option>
+                    </select>
+                </div>
+
+                <div className="col-span-6 md:col-span-4">
+                    <label className="block text-xs text-ink-soft mb-1">Bank Country</label>
+                    <select
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.bankCountry ?? 'NG'}
                         onChange={(e) =>
-                            setForm((f) => ({ ...f, apiAuthType: e.target.value }))
+                            setValues((v) => ({
+                                ...v,
+                                bankCountry: e.target.value || 'NG',
+                                bankCode: '',
+                                bankName: '',
+                            }))
                         }
-                    />
+                    >
+                        <option value="NG">Nigeria (NG)</option>
+                    </select>
+                </div>
+
+                <div className="col-span-12 md:col-span-4 flex items-end">
+                    <div className="text-xs text-zinc-500">
+                        {banksQ.isFetching ? 'Loading banks…' : ''}
+                    </div>
+                </div>
+
+                {/* Bank Name dropdown */}
+                <div className="col-span-12 md:col-span-6">
+                    <label className="block text-xs text-ink-soft mb-1">Bank Name</label>
+                    <select
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.bankName ?? ''}
+                        onChange={(e) => setBankByName(e.target.value)}
+                    >
+                        <option value="">Select bank…</option>
+                        {countryBanks.map((b) => (
+                            <option key={`${b.country}-${b.code}`} value={b.name}>
+                                {b.name}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+
+                {/* Bank Code dropdown (kept in sync with name) */}
+                <div className="col-span-12 md:col-span-6">
+                    <label className="block text-xs text-ink-soft mb-1">Bank Code</label>
+                    <select
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.bankCode ?? ''}
+                        onChange={(e) => setBankByCode(e.target.value)}
+                    >
+                        <option value="">Select bank…</option>
+                        {countryBanks.map((b) => (
+                            <option key={`${b.country}-${b.code}`} value={b.code}>
+                                {b.code} — {b.name}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+
+                {/* Long fields (twice wider) */}
+                <div className="col-span-12 md:col-span-8">
+                    <label className="block text-xs text-ink-soft mb-1">Account Number</label>
                     <input
-                        className="border rounded-lg px-3 py-2 md:col-span-2"
-                        placeholder="API Key / Token (optional)"
-                        value={form.apiKey ?? ''}
-                        onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.accountNumber ?? ''}
+                        onChange={(e) => setValues({ ...values, accountNumber: e.target.value })}
+                        placeholder="0123456789"
+                        inputMode="numeric"
                     />
+                </div>
+
+                <div className="col-span-12 md:col-span-8">
+                    <label className="block text-xs text-ink-soft mb-1">Account Name</label>
+                    <input
+                        className="w-full border rounded-lg px-3 py-2"
+                        value={values.accountName ?? ''}
+                        onChange={(e) => setValues({ ...values, accountName: e.target.value })}
+                        placeholder="e.g. ACME DISTRIBUTION LTD"
+                    />
+                </div>
+
+                <div className="col-span-12 md:col-span-4 flex items-end">
+                    <label className="inline-flex items-center gap-2 text-sm">
+                        <input
+                            type="checkbox"
+                            checked={!!values.isPayoutEnabled}
+                            onChange={(e) => setValues({ ...values, isPayoutEnabled: e.target.checked })}
+                        />
+                        Enable payouts for this supplier
+                    </label>
                 </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2">
-                {isEditing && (
-                    <button className="px-3 py-2 rounded-lg border" onClick={cancel}>
+            <div className="mt-4 flex flex-wrap gap-2 justify-end">
+                {editing && (
+                    <button className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5" onClick={onCancelEdit}>
                         Cancel
                     </button>
                 )}
                 <button
-                    className="px-3 py-2 rounded-lg bg-zinc-900 text-white"
+                    className="px-3 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90"
                     onClick={submit}
                 >
-                    {isEditing ? 'Save changes' : 'Add supplier'}
+                    {editing ? 'Update Supplier' : 'Add Supplier'}
                 </button>
             </div>
         </div>
     );
 }
+
 
 /* ---------------- Image helpers ---------------- */
 function isUrlish(s?: string) {
@@ -2183,10 +2500,10 @@ function extractImageUrls(p: any): string[] {
     return candidates.filter(isUrlish);
 }
 
-function useDebounced<T>(value: T, delay = 350) {
-    const [d, setD] = React.useState(value);
-    React.useEffect(() => { const t = setTimeout(() => setD(value), delay); return () => clearTimeout(t); }, [value, delay]);
-    return d;
+function useDebounced<T>(value: T, delay = 300) {
+    const [v, setV] = useState(value);
+    useEffect(() => { const t = setTimeout(() => setV(value), delay); return () => clearTimeout(t); }, [value, delay]);
+    return v;
 }
 
 function ModerationSection({ token, onInspect }: { token?: string | null; onInspect: (p: any) => void }) {
@@ -2256,11 +2573,51 @@ function ModerationSection({ token, onInspect }: { token?: string | null; onInsp
 /* =========================================================
    Moderation / Manage
    ========================================================= */
-function ModerationGrid({ search, setSearch, productsQ, onApprove, onReject, onInspect }: any) {
+type ModerationGridProps = {
+    search: string;
+    setSearch: (s: string) => void;
+    productsQ: { data?: AdminProduct[]; isLoading?: boolean };
+    onApprove: (id: string) => void;
+    onReject: (id: string) => void;
+    onInspect: (p: Pick<AdminProduct, 'id' | 'title' | 'sku'>) => void;
+};
+
+function ModerationGrid({
+    search,
+    setSearch,
+    productsQ,
+    onApprove,
+    onReject,
+    onInspect,
+}: ModerationGridProps) {
+    // helpers
+    function isPublished(p: any) {
+        const s = String(p?.status || '').toUpperCase();
+        return s === 'PUBLISHED' || s === 'LIVE';
+    }
+
+    function hasSupplierOffer(p: any) {
+        // try several common shapes your app might provide
+        const offersCount =
+            Number(p?.offersCount ?? p?.activeOffers ?? 0) ||
+            (Array.isArray(p?.supplierOffers) ? p.supplierOffers.length : 0);
+
+        const totalAvailable = Number(p?.totalAvailable ?? p?.available ?? 0);
+
+        return offersCount > 0 || totalAvailable > 0;
+    }
+
+    function canApprove(p: any) {
+        return isPublished(p) && hasSupplierOffer(p);
+    }
+
     return (
         <>
             <div className="relative mb-3">
-                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+                <Search
+                    size={16}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+                />
                 <input
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
@@ -2270,81 +2627,135 @@ function ModerationGrid({ search, setSearch, productsQ, onApprove, onReject, onI
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {(productsQ.data ?? []).map((p: any) => (
-                    <div key={p.id} className="rounded-2xl border bg-white overflow-hidden shadow-sm">
-                        {/* Thumbnails */}
-                        <div className="p-3">
-                            {(() => {
-                                const urls = extractImageUrls(p);
-                                return urls.length ? (
-                                    <div className="grid grid-cols-5 sm:grid-cols-6 gap-1">
-                                        {urls.map((src: string, idx: number) => (
-                                            <div
-                                                key={`${p.id}-img-${idx}`}
-                                                className="relative w-full pt-[100%] bg-zinc-100 overflow-hidden rounded"
-                                            >
-                                                <img
-                                                    src={src}
-                                                    alt={`${p.title || 'Product'} image ${idx + 1}`}
-                                                    className="absolute inset-0 w-full h-full object-cover"
-                                                    loading="lazy"
-                                                    onError={(e) => {
-                                                        (e.currentTarget.parentElement as HTMLElement).style.display = 'none';
-                                                    }}
-                                                />
-                                            </div>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <div className="h-28 rounded bg-zinc-100 grid place-items-center text-xs text-zinc-500">
-                                        No images
-                                    </div>
-                                );
-                            })()}
-                        </div>
+                {(productsQ.data ?? []).map((p: any) => {
+                    const eligible = canApprove(p);
 
-                        {/* Actions (restored) */}
-                        <div className="px-3 pb-3">
-                            <div className="mt-1 flex items-center justify-between">
-                                <div className="inline-flex gap-2">
-                                    <button
-                                        onClick={() => onApprove(p.id)}
-                                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-                                        title="Approve product"
-                                    >
-                                        <PackageCheck size={16} /> Approve
-                                    </button>
+                    return (
+                        <div
+                            key={p.id}
+                            className="rounded-2xl border bg-white overflow-hidden shadow-sm"
+                        >
+                            {/* Thumbnails */}
+                            <div className="p-3">
+                                {(() => {
+                                    const urls = extractImageUrls(p);
+                                    return urls.length ? (
+                                        <div className="grid grid-cols-5 sm:grid-cols-6 gap-1">
+                                            {urls.map((src: string, idx: number) => (
+                                                <div
+                                                    key={`${p.id}-img-${idx}`}
+                                                    className="relative w-full pt-[100%] bg-zinc-100 overflow-hidden rounded"
+                                                >
+                                                    <img
+                                                        src={src}
+                                                        alt={`${p.title || 'Product'} image ${idx + 1}`}
+                                                        className="absolute inset-0 w-full h-full object-cover"
+                                                        loading="lazy"
+                                                        onError={(e) => {
+                                                            (e.currentTarget.parentElement as HTMLElement).style.display =
+                                                                'none';
+                                                        }}
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="h-28 rounded bg-zinc-100 grid place-items-center text-xs text-zinc-500">
+                                            No images
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+
+                            {/* Actions (with approval gating) */}
+                            <div className="px-3 pb-3">
+                                <div className="mt-1 flex items-center justify-between">
+                                    <div className="inline-flex gap-2">
+                                        <button
+                                            onClick={() => {
+                                                if (!eligible) {
+                                                    // Hard guard as well as UI disable
+                                                    window.alert(
+                                                        'Cannot approve: product must be PUBLISHED and have at least one supplier offer.'
+                                                    );
+                                                    return;
+                                                }
+                                                onApprove(p.id);
+                                            }}
+                                            disabled={!eligible}
+                                            className={[
+                                                'inline-flex items-center gap-1 px-3 py-1.5 rounded-lg',
+                                                eligible
+                                                    ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                                    : 'bg-emerald-600/30 text-white/70 cursor-not-allowed',
+                                            ].join(' ')}
+                                            title={
+                                                eligible
+                                                    ? 'Approve product'
+                                                    : 'Disabled — needs to be PUBLISHED and have a supplier offer'
+                                            }
+                                        >
+                                            <PackageCheck size={16} /> Approve
+                                        </button>
+
+                                        <button
+                                            onClick={() => onInspect(p)}
+                                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
+                                            title="Go to Manage and open this item"
+                                        >
+                                            <Search size={16} /> Inspect
+                                        </button>
+                                    </div>
 
                                     <button
-                                        onClick={() => onInspect(p)}
-                                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
-                                        title="Go to Manage and open this item"
+                                        onClick={() => onReject(p.id)}
+                                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700"
+                                        title="Reject product"
                                     >
-                                        <Search size={16} /> Inspect
+                                        <PackageX size={16} /> Reject
                                     </button>
                                 </div>
 
-                                <button
-                                    onClick={() => onReject(p.id)}
-                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700"
-                                    title="Reject product"
-                                >
-                                    <PackageX size={16} /> Reject
-                                </button>
+                                {/* Tiny eligibility hint row */}
+                                <div className="mt-2 text-[11px] text-zinc-600 space-x-2">
+                                    <span
+                                        className={
+                                            isPublished(p)
+                                                ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700'
+                                                : 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700'
+                                        }
+                                    >
+                                        Status: {String(p?.status ?? '—')}
+                                    </span>
+                                    <span
+                                        className={
+                                            hasSupplierOffer(p)
+                                                ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700'
+                                                : 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700'
+                                        }
+                                    >
+                                        Supplier offer:{' '}
+                                        {hasSupplierOffer(p) ? 'present' : 'missing'}
+                                    </span>
+                                </div>
                             </div>
-                        </div>
 
-                        {/* Basic details */}
-                        <div className="px-3 pb-3">
-                            <div className="font-medium truncate">{p.title || 'Untitled product'}</div>
-                            <div className="text-xs text-zinc-500">
-                                {p.sku ? `SKU: ${p.sku}` : ''}
-                                {p.sku && p.price != null ? ' • ' : ''}
-                                {p.price != null ? `₦${Number(p.price || 0).toLocaleString()}` : ''}
+                            {/* Basic details */}
+                            <div className="px-3 pb-3">
+                                <div className="font-medium truncate">
+                                    {p.title || 'Untitled product'}
+                                </div>
+                                <div className="text-xs text-zinc-500">
+                                    {p.sku ? `SKU: ${p.sku}` : ''}
+                                    {p.sku && p.price != null ? ' • ' : ''}
+                                    {p.price != null
+                                        ? `₦${Number(p.price || 0).toLocaleString()}`
+                                        : ''}
+                                </div>
                             </div>
                         </div>
-                    </div>
-                ))}
+                    );
+                })}
 
                 {!productsQ.isLoading && (productsQ.data ?? []).length === 0 && (
                     <div className="col-span-full text-center text-zinc-500 py-8">
@@ -2356,11 +2767,37 @@ function ModerationGrid({ search, setSearch, productsQ, onApprove, onReject, onI
     );
 }
 
+function toInt(x: any, d = 0) {
+    const n = Number(x);
+    return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : d;
+}
+
+type SupplierOfferLite = {
+    id: string;
+    productId: string;
+    variantId?: string | null;
+    supplierId: string;
+    supplierName?: string;
+    isActive?: boolean;
+    inStock?: boolean;
+
+
+    // any of these may exist depending on backend:
+    available?: number;
+    qty?: number;
+    stock?: number;
+};
+
 /* ---------------- ManageProducts with full attribute support + images + suppliers ---------------- */
+
+
+type VariantChoice = { attributeId: string; valueId: string; label: string };
+
 function ManageProducts({
     role,
     token,
     search,
+    setSearch,
     focusId,
     onFocusedConsumed,
 }: {
@@ -2371,7 +2808,6 @@ function ManageProducts({
     focusId: string | null;
     onFocusedConsumed: () => void;
 }) {
-
     const { openModal } = useModal();
     const isSuper = role === 'SUPER_ADMIN';
     const isAdmin = role === 'ADMIN';
@@ -2382,8 +2818,6 @@ function ManageProducts({
     // local input for smooth typing
     const [searchInput, setSearchInput] = React.useState(search);
     React.useEffect(() => setSearchInput(search), [search]);
-
-
     const debouncedSearch = useDebounced(searchInput, 350);
 
     const listQ = useQuery<AdminProduct[]>({
@@ -2392,7 +2826,10 @@ function ManageProducts({
         queryFn: async () => {
             const { data } = await api.get('/api/admin/products', {
                 headers: { Authorization: `Bearer ${token}` },
-                params: { status: 'ANY', q: debouncedSearch, take: 50, skip: 0 },
+                params: {
+                    status: 'ANY', q: debouncedSearch, take: 50, skip: 0,
+                    include: 'owner' // 👈 ask backend to hydrate owner relation
+                },
             });
             const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
             return arr ?? [];
@@ -2400,25 +2837,104 @@ function ManageProducts({
         staleTime: staleTImeInSecs,
         gcTime: 300_000,
         refetchOnWindowFocus: false,
-        placeholderData: keepPreviousData, // v5 way to keep previous rows
+        placeholderData: keepPreviousData,
     });
 
-    // v5: handle errors via state
     useEffect(() => {
         if (listQ.isError) {
             const e: any = listQ.error;
-            console.error(
-                'Products list failed:',
-                e?.response?.status,
-                e?.response?.data || e?.message
-            );
+            console.error('Products list failed:', e?.response?.status, e?.response?.data || e?.message);
         }
     }, [listQ.isError, listQ.error]);
 
-
     const rows = listQ.data ?? [];
 
-    // In AdminDashboard.tsx – replace your updateStatusM with this:
+    // --- Supplier-offer availability (derived)
+    const offersSummaryQ = useQuery({
+        queryKey: ['admin', 'products', 'offers-summary', { ids: rows.map(r => r.id) }],
+        enabled: !!token && rows.length > 0,
+        refetchOnWindowFocus: false,
+        staleTime: 30_000,
+        queryFn: async () => {
+            const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
+            const productIds = rows.map(r => r.id);
+            const qs = new URLSearchParams();
+            qs.set('productIds', productIds.join(','));
+
+            const attempts = [
+                `/api/admin/supplier-offers?${qs}`,
+                `/api/supplier-offers?${qs}`,
+                `/api/admin/products/offers?${qs}`,
+            ];
+
+            let all: SupplierOfferLite[] | null = null;
+
+            for (const url of attempts) {
+                try {
+                    const { data } = await api.get(url, { headers: hdr });
+                    const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+                    if (Array.isArray(arr)) { all = arr as SupplierOfferLite[]; break; }
+                } catch { /* try next */ }
+            }
+
+            if (!all) {
+                // fallback: per product
+                const per: SupplierOfferLite[] = [];
+                for (const pid of productIds) {
+                    const perAttempts = [
+                        `/api/admin/products/${pid}/supplier-offers`,
+                        `/api/admin/products/${pid}/offers`,
+                        `/api/products/${pid}/supplier-offers`,
+                    ];
+                    let got: SupplierOfferLite[] | null = null;
+                    for (const u of perAttempts) {
+                        try {
+                            const { data } = await api.get(u, { headers: hdr });
+                            const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+                            if (Array.isArray(arr)) { got = arr as SupplierOfferLite[]; break; }
+                        } catch { }
+                    }
+                    if (got) per.push(...got.map(o => ({ ...o, productId: o.productId || pid })));
+                }
+                all = per;
+            }
+
+            const offers = Array.isArray(all) ? all : [];
+
+            const byProduct: Record<string, {
+                totalAvailable: number;
+                activeOffers: number;
+                perSupplier: Array<{ supplierId: string; supplierName?: string; availableQty: number }>;
+                inStock: boolean;
+            }> = {};
+
+            for (const o of offers) {
+                const isActive = o.isActive !== false;
+                if (!isActive) continue;
+
+                const availableQty = Math.max(0, toInt((o as any).availableQty, 0)); // compatibility
+
+                const pid = o.productId;
+                if (!pid) continue;
+
+                if (!byProduct[pid]) {
+                    byProduct[pid] = { totalAvailable: 0, activeOffers: 0, perSupplier: [], inStock: false };
+                }
+                byProduct[pid].totalAvailable += availableQty;
+                byProduct[pid].activeOffers += 1;
+                byProduct[pid].perSupplier.push({
+                    supplierId: o.supplierId,
+                    supplierName: o.supplierName,
+                    availableQty,
+                });
+            }
+
+            Object.values(byProduct).forEach((s) => { s.inStock = s.totalAvailable > 0; });
+
+            return byProduct;
+        },
+    });
+
     const updateStatusM = useMutation({
         mutationFn: async ({ id, status }: { id: string; status: 'PUBLISHED' | 'PENDING' | 'REJECTED' }) =>
             (await api.post(`/api/admin/products/${id}/status`, { status }, { headers: { Authorization: `Bearer ${token}` } })).data,
@@ -2429,32 +2945,21 @@ function ManageProducts({
         onError: (e) => openModal({ title: 'Products', message: getHttpErrorMessage(e, 'Status update failed') }),
     });
 
-
-    /* ---------- lookups for creation & editing ---------- */
-    /* ---------- lookups for creation & editing (resilient) ---------- */
+    /* ---------- lookups ---------- */
     const catsQ = useQuery<AdminCategory[]>({
         queryKey: ['admin', 'products', 'cats'],
-        enabled: !!token, // only fetch when we have a token
-
+        enabled: !!token,
         queryFn: async () => {
             const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
-            // Try admin route first, then public fallbacks; normalize shapes
-            const tryAll = async (): Promise<AdminCategory[]> => {
-                const attempts = [
-                    '/api/admin/categories',
-                    '/api/categories',
-                    '/api/catalog/categories',
-                ];
-                for (const url of attempts) {
-                    try {
-                        const { data } = await api.get(url, { headers: hdr });
-                        const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
-                        if (Array.isArray(arr)) return arr;
-                    } catch { }
-                }
-                return [];
-            };
-            return await tryAll();
+            const attempts = ['/api/admin/categories', '/api/categories', '/api/catalog/categories'];
+            for (const url of attempts) {
+                try {
+                    const { data } = await api.get(url, { headers: hdr });
+                    const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+                    if (Array.isArray(arr)) return arr;
+                } catch { }
+            }
+            return [];
         },
         staleTime: staleTImeInSecs,
         refetchOnWindowFocus: false,
@@ -2502,14 +3007,14 @@ function ManageProducts({
         queryKey: ['admin', 'products', 'attributes'],
         enabled: !!token,
         queryFn: async () => {
-            const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
+            const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
             const attempts = ['/api/admin/attributes', '/api/attributes'];
             for (const url of attempts) {
                 try {
-                    const { data } = await api.get(url, { headers: hdr });
+                    const { data } = await api.get(url, { headers });
                     const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
                     if (Array.isArray(arr)) return arr;
-                } catch { }
+                } catch { /* try next */ }
             }
             return [];
         },
@@ -2518,15 +3023,6 @@ function ManageProducts({
     });
 
     /* ---------- mutations ---------- */
-    function wrapBodies(payload: any) {
-        return [payload, { product: payload }, { data: payload }];
-    }
-
-    // Update
-    // import at top if not present:
-    // import { AxiosError } from 'axios';
-
-    // CREATE (backend now accepts attributeSelections + variants)
     const createM = useMutation({
         mutationFn: async (payload: any) =>
             (await api.post('/api/admin/products', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
@@ -2537,7 +3033,6 @@ function ManageProducts({
         onError: (e) => openModal({ title: 'Products', message: getHttpErrorMessage(e, 'Create failed') }),
     });
 
-    // UPDATE (single, canonical route)
     const updateM = useMutation({
         mutationFn: async ({ id, ...payload }: any) =>
             (await api.patch(`/api/admin/products/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
@@ -2548,25 +3043,17 @@ function ManageProducts({
         onError: (e) => openModal({ title: 'Products', message: getHttpErrorMessage(e, 'Update failed') }),
     });
 
-
-
     async function saveVariantsFallback(productId: string, variants: any[]) {
-        if (!variants?.length) return true; // nothing to do
+        if (!variants?.length) return true;
         const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
 
-        // send several plausible shapes
-        const bodies = [
-            { variants },
-            { data: { variants } },
-            { productId, variants },
-            variants,
-        ];
+        const bodies = [{ variants }, { data: { variants } }, { productId, variants }, variants];
         const urls = [
             `/api/admin/products/${productId}/variants/bulk?admin=1`,
             `/api/admin/products/${productId}/variants?admin=1`,
             `/api/admin/products/${productId}/variants`,
             `/api/admin/products/${productId}/variants/bulk`,
-            `/api/admin/products/${productId}?include=variants,attributes,brand`,           // ← try admin first
+            `/api/admin/products/${productId}?include=variants,attributes,brand`,
             `/api/admin/products/${productId}?admin=1&include=variants,attributes,brand`,
         ];
 
@@ -2583,7 +3070,6 @@ function ManageProducts({
         return false;
     }
 
-
     const deleteM = useMutation({
         mutationFn: async (id: string) =>
             (await api.delete(`/api/admin/products/${id}`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
@@ -2599,21 +3085,16 @@ function ManageProducts({
         brandId: '',
         supplierId: '',
         sku: '',
-        inStock: true,
-        vatFlag: true,
+        // inStock removed — derived from offers
         imageUrls: '',
+        communicationCost: '',  // per-order ops cost (₦)
     });
 
     const [selectedAttrs, setSelectedAttrs] = useState<Record<string, string | string[]>>({});
     const [files, setFiles] = useState<File[]>([]);
 
-
-    function parseUrlList(s: string) {
-        return s.split(/[\n,]/g).map(t => t.trim()).filter(Boolean);
-    }
-    function isUrlish(s?: string) {
-        return !!s && /^(https?:\/\/|data:image\/|\/)/i.test(s);
-    }
+    function parseUrlList(s: string) { return s.split(/[\n,]/g).map(t => t.trim()).filter(Boolean); }
+    function isUrlish(s?: string) { return !!s && /^(https?:\/\/|data:image\/|\/)/i.test(s); }
     function toArray(x: any): any[] { return Array.isArray(x) ? x : x == null ? [] : [x]; }
     function extractImageUrls(p: any): string[] {
         if (Array.isArray(p?.imagesJson)) return p.imagesJson.filter(isUrlish);
@@ -2628,8 +3109,6 @@ function ManageProducts({
         ].filter(Boolean);
         return cands.filter(isUrlish);
     }
-
-
 
     async function uploadLocalFiles(): Promise<string[]> {
         if (!files.length) return [];
@@ -2650,7 +3129,7 @@ function ManageProducts({
         }
     }
 
-    // attribute helpers (creation)
+    // attribute helpers
     function setAttrSelect(attributeId: string, valueId: string) {
         setSelectedAttrs((prev) => ({ ...prev, [attributeId]: valueId }));
     }
@@ -2662,7 +3141,7 @@ function ManageProducts({
         setSelectedAttrs((prev) => ({ ...prev, [attributeId]: text }));
     }
 
-    /* ---------- variant builder (two selectable select-type attributes) ---------- */
+    /* ---------- variant builder ---------- */
     const selectableAttrs = (attrsQ.data || []).filter((a) => a.type === 'SELECT' && a.isActive);
     const [variantAttrIds, setVariantAttrIds] = useState<string[]>([]);
     const [variantValueIds, setVariantValueIds] = useState<Record<string, string[]>>({});
@@ -2671,7 +3150,6 @@ function ManageProducts({
         combo: Array<{ attributeId: string; valueId: string }>;
         skuSuffix: string;
         priceBump: string;
-        inStock: boolean;
     };
     const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
 
@@ -2683,9 +3161,7 @@ function ManageProducts({
             const keep = new Set(next);
             setVariantValueIds((curr) => {
                 const copy: Record<string, string[]> = {};
-                Object.entries(curr).forEach(([k, v]) => {
-                    if (keep.has(k)) copy[k] = v;
-                });
+                Object.entries(curr).forEach(([k, v]) => { if (keep.has(k)) copy[k] = v; });
                 return copy;
             });
             return next;
@@ -2693,6 +3169,11 @@ function ManageProducts({
     }
     function setVariantValues(attrId: string, vals: string[]) {
         setVariantValueIds((prev) => ({ ...prev, [attrId]: vals }));
+    }
+
+    // Update variant row fields
+    function updateVariantRow(key: string, patch: Partial<Pick<VariantRow, 'skuSuffix' | 'priceBump'>>) {
+        setVariantRows(prev => prev.map(r => r.key === key ? { ...r, ...patch } : r));
     }
 
     useEffect(() => {
@@ -2709,7 +3190,7 @@ function ManageProducts({
         const chosen = variantAttrIds
             .map((attrId) => {
                 const a = selectableAttrs.find((x) => x.id === attrId);
-                const values = (a?.values || []).filter((v) => (variantValueIds[attrId] || []).includes(v.id));
+                const values = (a?.values || []).filter((v: { id: string }) => (variantValueIds[attrId] || []).includes(v.id));
                 return { attrId, values };
             })
             .filter((x) => x.values.length > 0);
@@ -2719,21 +3200,29 @@ function ManageProducts({
             return;
         }
 
-        const valueSets = chosen.map((c) => c.values.map((v) => ({ attributeId: c.attrId, valueId: v.id, label: v.name })));
-        const combos = cartesian(valueSets);
+        const valueSets: VariantChoice[][] = chosen.map((c) =>
+            c.values.map((v: { id: string; name: string }) => ({
+                attributeId: String(c.attrId),
+                valueId: String(v.id),
+                label: String(v.name),
+            }))
+        );
+
+        const combos: VariantChoice[][] = cartesian<VariantChoice>(valueSets);
 
         setVariantRows((prevRows) =>
             combos.map((combo) => {
                 const suffix = combo
                     .map((c) => {
-                        const a = selectableAttrs.find((x) => x.id === c.attributeId);
-                        const v = a?.values?.find((vv) => vv.id === c.valueId);
-                        const code = v?.code || v?.name || '';
-                        return code.toString().toUpperCase().replace(/\s+/g, '');
+                        const a = selectableAttrs.find((x: { id: string }) => x.id === c.attributeId);
+                        const v = a?.values?.find((vv: { id: string }) => vv.id === c.valueId);
+                        const code = (v?.code ?? v?.name ?? '') as string;
+                        return code.toUpperCase().replace(/\s+/g, '');
                     })
                     .join('-');
 
                 const key = combo.map((c) => `${c.attributeId}:${c.valueId}`).join('|');
+
                 const prev = prevRows.find((r) => r.key === key);
 
                 return {
@@ -2741,14 +3230,22 @@ function ManageProducts({
                     combo: combo.map(({ attributeId, valueId }) => ({ attributeId, valueId })),
                     skuSuffix: prev?.skuSuffix || suffix,
                     priceBump: prev?.priceBump || '',
-                    inStock: prev?.inStock ?? true,
                 };
             })
         );
     }, [variantAttrIds, variantValueIds, attrsQ.data]);
 
-    const defaultPending = { title: '', price: '', status: 'PENDING', categoryId: '', brandId: '', supplierId: '', sku: '', inStock: true, vatFlag: true, imageUrls: '' };
-
+    const defaultPending = {
+        title: '',
+        price: '',
+        status: 'PENDING',
+        categoryId: '',
+        brandId: '',
+        supplierId: '',
+        sku: '',
+        imageUrls: '',
+        communicationCost: '',
+    };
 
     const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -2757,38 +3254,30 @@ function ManageProducts({
         setPending({
             title: p.title || '',
             price: String(p.price ?? ''),
-            // accept LIVE from older records, but display PUBLISHED
             status: /^(LIVE|PUBLISHED)$/i.test(p.status) ? 'PUBLISHED' : 'PENDING',
             categoryId: p.categoryId || '',
             brandId: p.brandId || '',
             supplierId: p.supplierId || '',
             sku: p.sku || '',
-            inStock: !!p.inStock,
-            vatFlag: p.vatFlag !== false,
             imageUrls: (extractImageUrls(p) || []).join('\n'),
+            communicationCost: p.communicationCost != null ? String(p.communicationCost) : '',
         });
         setFiles([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
     }
 
-    /** Make the payload compatible with multiple backends */
-    function buildProductPayload({
-        base,
-        selectedAttrs,
-        variantRows,
-        attrsAll,
-    }: {
+    /** payload builder */
+    function buildProductPayload({ base, selectedAttrs, variantRows, attrsAll }: {
         base: {
             title: string;
             price: number;
             status: string;
             sku?: string;
-            inStock: boolean;
-            vatFlag: boolean;
             categoryId?: string;
             brandId?: string;
             supplierId?: string;
             imagesJson?: string[];
+            communicationCost?: number;
         };
         selectedAttrs: Record<string, string | string[]>;
         variantRows: Array<{
@@ -2796,13 +3285,12 @@ function ManageProducts({
             combo: Array<{ attributeId: string; valueId: string }>;
             skuSuffix: string;
             priceBump: string;
-            inStock: boolean;
         }>;
         attrsAll: AdminAttribute[];
     }) {
         const payload: any = { ...base };
 
-        // ---- Non-variant attributes: provide multiple shapes ----
+        // attributes
         const attributeSelections: any[] = [];
         const attributeValues: Array<{ attributeId: string; valueId?: string; valueIds?: string[] }> = [];
         const attributeTexts: Array<{ attributeId: string; value: string }> = [];
@@ -2829,7 +3317,7 @@ function ManageProducts({
         if (attributeValues.length) payload.attributeValues = attributeValues;
         if (attributeTexts.length) payload.attributeTexts = attributeTexts;
 
-        // ---- Variants: provide multiple shapes for options ----
+        // variants
         if (variantRows.length > 0) {
             const basePrice = Number(base.price) || 0;
             payload.variants = variantRows.map((r) => {
@@ -2839,22 +3327,25 @@ function ManageProducts({
 
                 const options = r.combo.map((c) => ({
                     attributeId: c.attributeId,
-                    valueId: c.valueId,                 // common
-                    attributeValueId: c.valueId,        // alt key (some backends use this)
+                    valueId: c.valueId,
+                    attributeValueId: c.valueId,
                 }));
 
                 return {
                     sku,
-                    inStock: r.inStock,
                     ...(price != null ? { price } : {}),
-                    options,                            // common
-                    optionSelections: options,          // alt naming
-                    attributes: options.map(o => ({ attributeId: o.attributeId, valueId: o.valueId })), // another alt
+                    options,
+                    optionSelections: options,
+                    attributes: options.map(o => ({ attributeId: o.attributeId, valueId: o.valueId })),
                 };
             });
 
-            // Some backends also accept a flat list:
             payload.variantOptions = payload.variants.map((v: any) => v.options);
+        }
+
+        if (!pending.supplierId) {
+            openModal({ title: 'Products', message: 'Supplier is required.' });
+            return;
         }
 
         return payload;
@@ -2865,10 +3356,7 @@ function ManageProducts({
             headers: { Authorization: `Bearer ${token}` },
             params: { include: 'variants,attributes,brand' },
         });
-        // <-- unwrap shape { data: product } OR allow raw product
         const prod = data?.data ?? data;
-
-        // guard against undefineds so the form never breaks
         return {
             ...prod,
             imagesJson: Array.isArray(prod?.imagesJson) ? prod.imagesJson : [],
@@ -2890,7 +3378,6 @@ function ManageProducts({
             const full = await fetchProductFull(p.id);
             populateCreateFormFromProduct(full);
 
-            // seed non-variant attributes
             const nextSel: Record<string, string | string[]> = {};
             (full.attributeValues || full.attributeSelections || []).forEach((av: any) => {
                 if (Array.isArray(av.valueIds)) nextSel[av.attributeId] = av.valueIds;
@@ -2899,7 +3386,6 @@ function ManageProducts({
             (full.attributeTexts || []).forEach((at: any) => { nextSel[at.attributeId] = at.value; });
             setSelectedAttrs(nextSel);
 
-            // seed variant axes/rows from existing variants (supports options/optionSelections)
             const allOpts = new Map<string, Set<string>>();
             (full.variants || []).forEach((v: any) => {
                 (v.options || v.optionSelections || []).forEach((o: any) => {
@@ -2928,7 +3414,6 @@ function ManageProducts({
                     combo,
                     skuSuffix: toSkuSuffix(full.sku, v.sku),
                     priceBump: v.price != null ? String((Number(v.price) || 0) - base) : '',
-                    inStock: v.inStock !== false,
                 };
             });
             setVariantRows(rowsFromExisting);
@@ -2938,33 +3423,74 @@ function ManageProducts({
         }
     }
 
+    // --- Auth → ownerEmail (and optional ownerId)
+    function base64UrlDecode(str: string) {
+        const pad = str.length % 4 === 2 ? '==' : str.length % 4 === 3 ? '=' : '';
+        const b64 = str.replace(/-/g, '+').replace(/_/g, '/') + pad;
+        const bin = atob(b64);
+        const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+        const dec = new TextDecoder('utf-8');
+        return dec.decode(bytes);
+    }
+    function parseJwtClaims(jwt?: string | null): Record<string, any> | undefined {
+        if (!jwt) return;
+        try {
+            const parts = jwt.split('.');
+            if (parts.length < 2) return;
+            const json = base64UrlDecode(parts[1]);
+            return JSON.parse(json);
+        } catch { return; }
+    }
 
-    /* ---------- creation submit ---------- */
+    const claims = React.useMemo(() => parseJwtClaims(token), [token]);
 
+    const meQ = useQuery<{ id?: string; email?: string }>({
+        queryKey: ['auth', 'me'],
+        enabled: !!token,
+        refetchOnWindowFocus: false,
+        queryFn: async () => {
+            try {
+                const { data } = await api.get('/api/auth/me', {
+                    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                });
+                const d = data?.data ?? data ?? {};
+                return {
+                    id: d.id || d.user?.id || d.profile?.id || d.account?.id,
+                    email: d.email || d.user?.email || d.profile?.email || d.account?.email,
+                };
+            } catch {
+                return {};
+            }
+        },
+        staleTime: 5 * 60 * 1000,
+    });
+
+    const userId = claims?.sub || claims?.id || meQ.data?.id;
+
+    /* ---------- submit create/update ---------- */
     const saveOrCreate = async () => {
-        const base = {
+        const base: any = {
             title: pending.title.trim(),
             price: Number(pending.price) || 0,
             status: pending.status,
-            sku: pending.sku.trim() || undefined,
-            inStock: !!pending.inStock,
-            vatFlag: !!pending.vatFlag,
-        } as any;
-
+            sku: pending.sku.trim() || undefined
+        };
+        if (userId) base.ownerEmail = userId;
+        if (userId) base.ownerId = userId;
         if (!base.title) return;
+
+        const comm = Number(pending.communicationCost);
+        if (Number.isFinite(comm) && comm >= 0) base.communicationCost = comm;
 
         if (pending.categoryId) base.categoryId = pending.categoryId;
         if (pending.brandId) base.brandId = pending.brandId;
         if (pending.supplierId) base.supplierId = pending.supplierId;
 
-        // images: textarea + uploaded files
         const urlList = parseUrlList(pending.imageUrls);
         const uploaded = await uploadLocalFiles();
         const imagesJson = [...urlList, ...uploaded].filter(Boolean);
         if (imagesJson.length) base.imagesJson = imagesJson;
 
-
-        // reset helper
         const resetForm = () => {
             setEditingId(null);
             setPending(defaultPending);
@@ -2979,9 +3505,7 @@ function ManageProducts({
         const payload = buildProductPayload({
             base, selectedAttrs, variantRows, attrsAll: attrsQ.data || [],
         });
-        if (import.meta.env.DEV) {
-            console.log('[products] submit payload', payload);
-        }
+
         if (editingId) {
             updateM.mutate(
                 { id: editingId, ...payload },
@@ -2989,7 +3513,7 @@ function ManageProducts({
                     onSuccess: async (res) => {
                         const productId = editingId;
                         if (payload.variants?.length) {
-                            const variantsPersisted = Array.isArray(res?.variants) && res.variants.length > 0;
+                            const variantsPersisted = Array.isArray((res as any)?.variants) && (res as any).variants.length > 0;
                             if (!variantsPersisted) {
                                 await saveVariantsFallback(productId, payload.variants);
                             }
@@ -2998,11 +3522,7 @@ function ManageProducts({
                         qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
                         resetForm();
                     },
-                    onError: (e) => openModal({
-                        title: 'Products',
-                        message: getHttpErrorMessage(e, 'Update failed'),
-                    }),
-
+                    onError: (e) => openModal({ title: 'Products', message: getHttpErrorMessage(e, 'Update failed') }),
                 }
             );
         } else {
@@ -3020,16 +3540,12 @@ function ManageProducts({
                     qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
                     resetForm();
                 },
-                onError: (e) => openModal({
-                    title: 'Products',
-                    message: getHttpErrorMessage(e, 'Create failed'),
-                }),
+                onError: (e) => openModal({ title: 'Products', message: getHttpErrorMessage(e, 'Create failed') }),
             });
-
         }
-    }
+    };
 
-    /* ---------- EDITING EXISTING (inline row editor) ---------- */
+    /* ---------- inline editor ---------- */
     type EditPending = {
         id: string;
         title: string;
@@ -3038,9 +3554,8 @@ function ManageProducts({
         brandId: string;
         supplierId?: string;
         sku?: string;
-        inStock: boolean;
-        vatFlag?: boolean;
         status?: string;
+        communicationCost?: string;
     };
     const [openEditorId, setOpenEditorId] = useState<string | null>(null);
     const [editPendings, setEditPendings] = useState<Record<string, EditPending>>({});
@@ -3054,6 +3569,47 @@ function ManageProducts({
         setOpenEditorId(null);
     }
 
+    // ---- Image URL helpers (edit/remove/reorder) for create form
+    function urlList(): string[] { return parseUrlList(pending.imageUrls); }
+    function setUrlAt(i: number, newUrl: string) {
+        const list = urlList();
+        list[i] = newUrl.trim();
+        setPending(d => ({ ...d, imageUrls: list.filter(Boolean).join('\n') }));
+    }
+    function removeUrlAt(i: number) {
+        const list = urlList();
+        list.splice(i, 1);
+        setPending(d => ({ ...d, imageUrls: list.join('\n') }));
+    }
+    function moveUrl(i: number, dir: -1 | 1) {
+        const list = urlList();
+        const j = i + dir;
+        if (j < 0 || j >= list.length) return;
+        [list[i], list[j]] = [list[j], list[i]];
+        setPending(d => ({ ...d, imageUrls: list.join('\n') }));
+    }
+
+    // ---- Local file helpers (replace/remove/reorder)
+    function removeFileAt(i: number) {
+        setFiles(prev => prev.filter((_, idx) => idx !== i));
+    }
+    function replaceFileAt(i: number, f: File) {
+        setFiles(prev => {
+            const copy = [...prev];
+            copy[i] = f;
+            return copy;
+        });
+    }
+    function moveFile(i: number, dir: -1 | 1) {
+        setFiles(prev => {
+            const j = i + dir;
+            if (j < 0 || j >= prev.length) return prev;
+            const copy = [...prev];
+            [copy[i], copy[j]] = [copy[j], copy[i]];
+            return copy;
+        });
+    }
+
     function submitEdit(pId: string, intent: 'save' | 'submitForReview' | 'approvePublished' | 'movePending') {
         const d = editPendings[pId];
         if (!d) return;
@@ -3064,64 +3620,39 @@ function ManageProducts({
             brandId: d.brandId || null,
             supplierId: d.supplierId || null,
             sku: (d.sku || '').trim() || undefined,
-            inStock: !!d.inStock,
-            vatFlag: d.vatFlag !== false,
         };
-        if (editImages[pId]) {
-            base.imagesJson = editImages[pId];
-        }
-        if (intent === 'submitForReview') {
-            base.status = 'PENDING';
-        } else if (intent === 'approvePublished') {
-            base.status = 'PUBLISHED';
-        } else if (intent === 'movePending') {
-            base.status = 'PENDING';
-        } else if (isSuper && d.status) {
-            base.status = d.status;
-        }
 
-        updateM.mutate(
-            { id: pId, ...base },
-            {
-                onSuccess: () => {
-                    setOpenEditorId(null);
-                },
-            }
-        );
+        const comm = Number(d.communicationCost);
+        if (Number.isFinite(comm) && comm >= 0) base.communicationCost = comm;
+
+        if (editImages[pId]) base.imagesJson = editImages[pId];
+
+        if (intent === 'submitForReview') base.status = 'PENDING';
+        else if (intent === 'approvePublished') base.status = 'PUBLISHED';
+        else if (intent === 'movePending') base.status = 'PENDING';
+        else if (isSuper && d.status) base.status = d.status;
+
+        updateM.mutate({ id: pId, ...base }, { onSuccess: () => setOpenEditorId(null) });
     }
 
-    /* ---------- LIST: all products (any status) ---------- */
-    // v5: import keepPreviousData
-    // import { useQuery, keepPreviousData } from '@tanstack/react-query';
-
-    // v4: remove the placeholderData line and instead use: keepPreviousData: true
-
+    /* ---------- focus/edit via form ---------- */
     useEffect(() => {
         if (!focusId || !rows?.length) return;
         const target = rows.find((r: any) => r.id === focusId);
         if (!target) return;
-
         populateCreateFormFromProduct(target);
         onFocusedConsumed();
-
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [focusId, rows]);
 
-    const filePreviews = React.useMemo(() => {
-        const urls = files.map((f) => ({ f, url: URL.createObjectURL(f) }));
-        return urls;
-
-
-        // (React will clean up on unmount, but you can also revoke on image load)
-    }, [files]);
+    const filePreviews = React.useMemo(() => files.map((f) => ({ f, url: URL.createObjectURL(f) })), [files]);
     const urlPreviews = React.useMemo(() => parseUrlList(pending.imageUrls), [pending.imageUrls]);
 
     const variantsQ = useQuery({
         queryKey: ['admin', 'product', editingId, 'variants'],
         enabled: !!token && !!editingId,
         queryFn: async () => {
-            const { data } = await api.get<{ data: any[] }>(
-                `/api/admin/products/${editingId}/variants`,
+            const { data } = await api.get<{ data: any[] }>(`/api/admin/products/${editingId}/variants`,
                 { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
             );
             return data?.data ?? [];
@@ -3129,9 +3660,9 @@ function ManageProducts({
         staleTime: 60_000,
         refetchOnWindowFocus: false,
     });
+
     return (
         <div className="space-y-3">
-
             {editingId && (
                 <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2">
                     Editing: <span className="font-semibold">{(pending.title || '').trim() || 'Untitled product'}</span>
@@ -3139,8 +3670,30 @@ function ManageProducts({
                 </div>
             )}
 
-            {/* quick add form */}
+            {/* Supplier offers (panel shown when editing) */}
+            {editingId && (
+                <div className="rounded-2xl border bg-white shadow-sm mt-3">
+                    <div className="px-4 md:px-5 py-3 border-b">
+                        <h3 className="text-ink font-semibold">Supplier offers</h3>
+                        <p className="text-xs text-ink-soft">
+                            Manage price, <strong>availableQty</strong>, variant links, activity and lead time.
+                        </p>
+                    </div>
+                    <div className="p-4 md:p-5">
+                        <SuppliersOfferManager
+                            productId={editingId}
+                            variants={(variantsQ.data ?? []).map((v: any) => ({ id: v.id, sku: v.sku }))}
+                            token={token}
+                            readOnly={!(isSuper || isAdmin)}
+                        />
+                    </div>
+                </div>
+            )}
+
+            {/* quick add / product form */}
             <div id="create-form" className="grid gap-2">
+
+                {/* Basic fields */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                     <input className="border rounded-lg px-3 py-2" placeholder="Title" value={pending.title} onChange={(e) => setPending((d) => ({ ...d, title: e.target.value }))} />
                     <input className="border rounded-lg px-3 py-2" placeholder="Price" inputMode="decimal" value={pending.price} onChange={(e) => setPending((d) => ({ ...d, price: e.target.value }))} />
@@ -3151,286 +3704,376 @@ function ManageProducts({
                     </select>
                 </div>
 
+
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                     <select className="border rounded-lg px-3 py-2" value={pending.categoryId} onChange={(e) => setPending((d) => ({ ...d, categoryId: e.target.value }))}>
                         <option value="">{catsQ.isLoading ? 'Loading…' : '— Category —'}</option>
-                        {catsQ.data?.map((c) => (
-                            <option key={c.id} value={c.id}>
-                                {c.name}
-                            </option>
-                        ))}
+                        {catsQ.data?.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
                     </select>
 
                     <select className="border rounded-lg px-3 py-2" value={pending.brandId} onChange={(e) => setPending((d) => ({ ...d, brandId: e.target.value }))}>
                         <option value="">— Brand —</option>
-                        {brandsQ.data?.map((b) => (
-                            <option key={b.id} value={b.id}>
-                                {b.name}
-                            </option>
-                        ))}
+                        {brandsQ.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
                     </select>
+
                     <select className="border rounded-lg px-3 py-2" value={pending.supplierId} onChange={(e) => setPending((d) => ({ ...d, supplierId: e.target.value }))}>
                         <option value="">— Supplier —</option>
-                        {suppliersQ.data?.map((s) => (
-                            <option key={s.id} value={s.id}>
-                                {s.name}
-                            </option>
-                        ))}
+                        {suppliersQ.data?.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
                     </select>
-                    <label className="flex items-center gap-2 border rounded-lg px-3 py-2">
-                        <input type="checkbox" checked={pending.inStock} onChange={(e) => setPending((d) => ({ ...d, inStock: e.target.checked }))} />
-                        <span className="text-sm">In Stock</span>
-                    </label>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <label className="flex items-center gap-2 border rounded-lg px-3 py-2">
-                        <input type="checkbox" checked={pending.vatFlag} onChange={(e) => setPending((d) => ({ ...d, vatFlag: e.target.checked }))} />
-                        <span className="text-sm">Charge VAT</span>
-                    </label>
                 </div>
 
-                {/* images for create */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <div className="border rounded-lg p-3 bg-white">
-                        <div className="text-xs text-zinc-500 mb-1">Image URLs (comma or new line)</div>
-                        <textarea className="border rounded-lg px-3 py-2 w-full h-[74px]" placeholder="https://example.com/1.jpg, https://example.com/2.png" value={pending.imageUrls} onChange={(e) => setPending((d) => ({ ...d, imageUrls: e.target.value }))} />
+
+                {/* 🔶 Attributes */}
+                <div className="rounded-2xl border bg-white p-4 md:p-5">
+                    <h3 className="font-semibold">Attributes</h3>
+                    <p className="text-xs text-zinc-600 mb-2">Fill text attributes, pick single- or multi-select values.</p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {(attrsQ.data || []).map((a: any) => (
+                            <div key={a.id} className="space-y-1">
+                                <label className="text-xs font-medium text-zinc-700">{a.name}</label>
+
+                                {a.type === 'TEXT' && (
+                                    <input
+                                        className="border rounded-lg px-3 py-2 w-full"
+                                        value={(selectedAttrs[a.id] as string) ?? ''}
+                                        onChange={(e) => setAttrText(a.id, e.target.value)}
+                                        placeholder={`Enter ${a.name}`}
+                                    />
+                                )}
+
+                                {a.type === 'SELECT' && (
+                                    <select
+                                        className="border rounded-lg px-3 py-2 w-full"
+                                        value={(selectedAttrs[a.id] as string) ?? ''}
+                                        onChange={(e) => setAttrSelect(a.id, e.target.value)}
+                                    >
+                                        <option value="">— Select —</option>
+                                        {(a.values || []).map((v: any) => (
+                                            <option key={v.id} value={v.id}>{v.name}</option>
+                                        ))}
+                                    </select>
+                                )}
+
+                                {a.type === 'MULTISELECT' && (
+                                    <select
+                                        multiple
+                                        className="border rounded-lg px-3 py-2 w-full h-28"
+                                        value={((selectedAttrs[a.id] as string[]) ?? []) as any}
+                                        onChange={(e) => setAttrMulti(a.id, e)}
+                                    >
+                                        {(a.values || []).map((v: any) => (
+                                            <option key={v.id} value={v.id}>{v.name}</option>
+                                        ))}
+                                    </select>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+
+                {/* 🔷 Product Images (single source of truth) */}
+                <div className="rounded-2xl border border-white/60 bg-white/70 backdrop-blur p-4 md:p-5 shadow-[0_6px_30px_rgba(0,0,0,0.06)]">
+                    <h3 className="text-ink font-semibold">Images</h3>
+                    <p className="text-xs text-ink-soft mb-3">
+                        Paste image URLs (one per line) or upload local files. These save to <code>imagesJson</code> on the product.
+                    </p>
+
+                    {/* URL textarea */}
+                    <label className="block text-xs text-ink-soft mb-1">Image URLs (one per line)</label>
+                    <textarea
+                        className="w-full border rounded-lg px-3 py-2 mb-3"
+                        rows={3}
+                        placeholder="https://.../image1.jpg&#10;https://.../image2.png"
+                        value={pending.imageUrls}
+                        onChange={(e) => setPending(d => ({ ...d, imageUrls: e.target.value }))}
+                    />
+
+                    {/* File upload (more visible) */}
+                    <div className="flex items-center gap-3">
+                        <input
+                            ref={fileInputRef}
+                            id="product-file-input"
+                            type="file"
+                            multiple
+                            accept="image/*"
+                            onChange={(e) => setFiles(Array.from(e.target.files || []))}
+                            className="sr-only"
+                        />
+                        <label
+                            htmlFor="product-file-input"
+                            className="inline-flex items-center gap-2 rounded-xl px-4 py-2 font-semibold text-white
+                                bg-gradient-to-r from-blue-600 to-fuchsia-600 shadow-sm hover:shadow-md
+                                active:scale-[0.99] cursor-pointer focus:outline-none focus:ring-4 focus:ring-blue-200"
+                            title="Choose image files"
+                        >
+                            Choose Files
+                        </label>
+
+                        {!!files.length && (
+                            <span className="text-xs text-ink-soft">
+                                {files.length} file{files.length === 1 ? '' : 's'} selected
+                            </span>
+                        )}
+
+                        <button
+                            type="button"
+                            onClick={async () => { await uploadLocalFiles(); }}
+                            className="ml-auto inline-flex items-center rounded-xl border px-3 py-2 text-ink
+               hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50"
+                            disabled={uploading || files.length === 0}
+                            title={uploading ? 'Uploading…' : 'Upload selected files now'}
+                        >
+                            {uploading ? 'Uploading…' : 'Upload Selected'}
+                        </button>
                     </div>
 
-                    {/* under the URL textarea */}
-                    {urlPreviews.length > 0 && (
-                        <div className="mt-2">
-                            <div className="text-xs text-zinc-500 mb-1">Preview of URL images</div>
-                            <div className="grid grid-cols-6 gap-1">
-                                {urlPreviews.map((src, i) => (
-                                    <div key={`urlprev-${i}`} className="relative w-full pt-[100%] bg-zinc-100 overflow-hidden rounded">
-                                        <img
-                                            src={src}
-                                            alt={`url ${i + 1}`}
-                                            className="absolute inset-0 w-full h-full object-cover"
-                                            loading="lazy"
-                                            onError={(e) => ((e.currentTarget.parentElement as HTMLElement).style.display = 'none')}
-                                        />
+                    {(files.length > 0 || urlPreviews.length > 0) && (
+                        <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* URL previews — editable & removable */}
+                            {urlPreviews.length > 0 && (
+                                <div className="rounded-lg border bg-white">
+                                    <div className="px-3 py-2 border-b font-medium">Pasted URLs</div>
+                                    <div className="p-3 space-y-3">
+                                        {urlPreviews.map((u, i) => (
+                                            <div key={`u:${u}:${i}`} className="flex items-start gap-3">
+                                                <div className="w-24 h-16 rounded border overflow-hidden bg-zinc-50 shrink-0">
+                                                    <img src={u} alt="Image preview" className="w-full h-full object-cover" onError={(e) => (e.currentTarget.style.opacity = '0.2')} />
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <input
+                                                        className="w-full border rounded-lg px-2 py-1 text-xs"
+                                                        value={u}
+                                                        onChange={(e) => setUrlAt(i, e.target.value)}
+                                                        placeholder="https://..."
+                                                    />
+                                                    <div className="mt-1 flex gap-2">
+                                                        <button className="px-2 py-1 text-xs rounded border" onClick={() => moveUrl(i, -1)} disabled={i === 0} title="Move up">↑</button>
+                                                        <button className="px-2 py-1 text-xs rounded border" onClick={() => moveUrl(i, +1)} disabled={i === urlPreviews.length - 1} title="Move down">↓</button>
+                                                        <button className="ml-auto px-2 py-1 text-xs rounded bg-rose-600 text-white" onClick={() => removeUrlAt(i)} title="Remove URL">Remove</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
                                     </div>
-                                ))}
-                            </div>
+                                </div>
+                            )}
+
+                            {/* Local file previews — replace/remove/reorder */}
+                            {filePreviews.length > 0 && (
+                                <div className="rounded-lg border bg-white">
+                                    <div className="px-3 py-2 border-b font-medium">Selected Files (not uploaded yet)</div>
+                                    <div className="p-3 space-y-3">
+                                        {filePreviews.map(({ f, url }, i) => (
+                                            <div key={`f:${url}:${i}`} className="flex items-start gap-3">
+                                                <div className="w-24 h-16 rounded border overflow-hidden bg-zinc-50 shrink-0">
+                                                    <img src={url} alt="File preview" className="w-full h-full object-cover" />
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="text-xs font-medium truncate">{f.name}</div>
+                                                    <div className="text-[11px] text-zinc-500">
+                                                        {(f.size / 1024).toFixed(0)} KB • {f.type || 'image/*'}
+                                                    </div>
+                                                    <div className="mt-2 flex gap-2">
+                                                        <label className="px-2 py-1 text-xs rounded border cursor-pointer hover:bg-black/5">
+                                                            Replace
+                                                            <input
+                                                                type="file"
+                                                                accept="image/*"
+                                                                className="hidden"
+                                                                onChange={(e) => {
+                                                                    const nf = e.target.files?.[0];
+                                                                    if (nf) replaceFileAt(i, nf);
+                                                                    e.currentTarget.value = '';
+                                                                }}
+                                                            />
+                                                        </label>
+                                                        <button className="px-2 py-1 text-xs rounded border" onClick={() => moveFile(i, -1)} disabled={i === 0} title="Move up">↑</button>
+                                                        <button className="px-2 py-1 text-xs rounded border" onClick={() => moveFile(i, +1)} disabled={i === filePreviews.length - 1} title="Move down">↓</button>
+                                                        <button className="ml-auto px-2 py-1 text-xs rounded bg-rose-600 text-white" onClick={() => removeFileAt(i)} title="Remove file">Remove</button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        <div className="pt-2 border-t flex items-center justify-end">
+                                            <button className="px-3 py-1.5 text-xs rounded border" onClick={() => setFiles([])} title="Clear all selected files">
+                                                Clear All Files
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
 
-                    <div className="border rounded-lg p-3 bg-white">
-                        <div className="text-xs text-zinc-500 mb-2">Upload images from your computer</div>
-                        <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer bg-zinc-50 hover:bg-zinc-100">
-                            <ImageIcon size={16} />
-                            <span className="text-sm">Add images…</span>
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                multiple
-                                accept="image/*"
-                                className="hidden"
-                                onChange={(e) => {
-                                    const picked = Array.from(e.target.files || []);
-                                    if (picked.length === 0) return;
+                    <p className="mt-2 text-[11px] text-ink-soft">
+                        Files will be uploaded when you click <strong>{editingId ? 'Save Changes' : 'Add Product'}</strong>.
+                    </p>
+                </div>
 
-                                    // append + de-dupe
-                                    setFiles((prev) => {
-                                        const next = [...prev, ...picked];
-                                        const seen = new Set<string>();
-                                        const deduped: File[] = [];
-                                        for (const f of next) {
-                                            const key = `${f.name}-${f.size}-${(f as any).lastModified || ''}`;
-                                            if (!seen.has(key)) {
-                                                seen.add(key);
-                                                deduped.push(f);
-                                            }
-                                        }
-                                        return deduped;
-                                    });
+                {/* Attributes Manager */}
+                <div className="rounded-2xl border bg-white p-4 md:p-5">
+                    <h3 className="text-ink font-semibold">Attributes</h3>
+                    <p className="text-xs text-ink-soft mb-3">Set values that describe the product. SELECT/MULTISELECT values can also be used as variant axes.</p>
 
-                                    // allow selecting the same file name again later
-                                    if (fileInputRef.current) fileInputRef.current.value = '';
-                                }}
-                            />
-                        </label>
+                    {attrsQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
+                    {!attrsQ.isLoading && (attrsQ.data || []).length === 0 && (
+                        <div className="text-sm text-zinc-500">No attributes available.</div>
+                    )}
 
-                        {/* small list of chosen files with remove buttons */}
-                        {files.length > 0 && (
-                            <ul className="mt-2 space-y-1 text-xs">
-                                {files.map((f, idx) => (
-                                    <li key={`${f.name}-${f.size}-${(f as any).lastModified || idx}`} className="flex items-center justify-between">
-                                        <span className="truncate">{f.name} — {(f.size / 1024).toFixed(1)} KB</span>
-                                        <button
-                                            type="button"
-                                            className="ml-3 px-2 py-0.5 rounded border"
-                                            onClick={() =>
-                                                setFiles((prev) => prev.filter((_, i) => i !== idx))
-                                            }
-                                            aria-label="Remove file"
-                                            title="Remove"
-                                        >
-                                            ×
-                                        </button>
-                                    </li>
-                                ))}
-                            </ul>
-                        )}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {(attrsQ.data || []).map((a) => (
+                            <div key={a.id} className="space-y-1">
+                                <label className="text-xs font-medium text-ink">{a.name}</label>
+                                {a.type === 'TEXT' && (
+                                    <input
+                                        className="border rounded-lg px-3 py-2 w-full"
+                                        value={(selectedAttrs[a.id] as string) || ''}
+                                        onChange={(e) => setAttrText(a.id, e.target.value)}
+                                        placeholder={a.placeholder || ''}
+                                    />
+                                )}
+                                {a.type === 'SELECT' && (
+                                    <select
+                                        className="border rounded-lg px-3 py-2 w-full"
+                                        value={(selectedAttrs[a.id] as string) || ''}
+                                        onChange={(e) => setAttrSelect(a.id, e.target.value)}
+                                    >
+                                        <option value="">— Select —</option>
+                                        {(a.values || []).map((v: any) => (
+                                            <option key={v.id} value={v.id}>{v.name}</option>
+                                        ))}
+                                    </select>
+                                )}
 
-                        {filePreviews.length > 0 && (
-                            <div className="mt-2">
-                                <div className="text-xs text-zinc-500 mb-1">Selected file previews</div>
-                                <div className="grid grid-cols-6 gap-1">
-                                    {filePreviews.map(({ url, f }, idx) => (
-                                        <div key={`${f.name}-${f.size}-${(f as any).lastModified || idx}`} className="relative w-full pt-[100%] bg-zinc-100 overflow-hidden rounded">
-                                            <img
-                                                src={url}
-                                                alt={f.name}
-                                                className="absolute inset-0 w-full h-full object-cover"
-                                                onLoad={() => URL.revokeObjectURL(url)}
-                                            />
-                                        </div>
-                                    ))}
-                                </div>
+                                {a.type === 'MULTISELECT' && (
+                                    <select
+                                        multiple
+                                        className="border rounded-lg px-3 py-2 w-full h-28"
+                                        value={(selectedAttrs[a.id] as string[]) || []}
+                                        onChange={(e) => setAttrMulti(a.id, e)}
+                                    >
+                                        {(a.values || []).map((v: any) => (
+                                            <option key={v.id} value={v.id}>{v.name}</option>
+                                        ))}
+                                    </select>
+                                )}
                             </div>
-                        )}
-
-
+                        ))}
                     </div>
                 </div>
 
-                {/* non-variant attributes for create */}
+                {/* 🔷 Variants */}
+                <div className="rounded-2xl border bg-white p-4 md:p-5">
+                    <h3 className="font-semibold">Variants</h3>
+                    <p className="text-xs text-zinc-600 mb-2">
+                        Choose up to two SELECT attributes as variant axes, pick values, then edit SKU suffix / price bumps.
+                    </p>
 
-                {attrsQ.data != null && (
-                    <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-2">
-                        {attrsQ.data?.map((a) => {
-                            if (variantAttrIds.includes(a.id)) return null;
-                            if (a.type === 'SELECT')
-                                return (
-                                    <div key={a.id} className="border rounded-lg p-2 bg-white">
-                                        <div className="text-xs text-zinc-500 mb-1">{a.name} (select)</div>
-                                        <select className="w-full border rounded-md px-2 py-2" value={(selectedAttrs[a.id] as string) || ''} onChange={(e) => setAttrSelect(a.id, e.target.value)}>
-                                            <option value="">— Select {a.name} —</option>
-                                            {(a.values || []).map((v) => (
-                                                <option key={v.id} value={v.id}>
-                                                    {v.name}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                );
-                            if (a.type === 'MULTISELECT') {
-                                const current = (selectedAttrs[a.id] as string[]) || [];
-                                return (
-                                    <div key={a.id} className="border rounded-lg p-2 bg-white">
-                                        <div className="text-xs text-zinc-500 mb-1">{a.name} (multi)</div>
-                                        <select multiple className="w-full border rounded-md px-2 py-2 h-[96px]" value={current} onChange={(e) => setAttrMulti(a.id, e)}>
-                                            {(a.values || []).map((v) => (
-                                                <option key={v.id} value={v.id}>
-                                                    {v.name}
-                                                </option>
-                                            ))}
-                                        </select>
-                                        <div className="text-[11px] text-zinc-500 mt-1">Tip: Hold Ctrl/Cmd to multi-select</div>
-                                    </div>
-                                );
-                            }
+                    {/* Axis selector */}
+                    <div className="flex flex-wrap gap-2 mb-3">
+                        {selectableAttrs.map((a: any) => {
+                            const checked = variantAttrIds.includes(a.id);
                             return (
-                                <div key={a.id} className="border rounded-lg p-2 bg-white">
-                                    <div className="text-xs text-zinc-500 mb-1">{a.name} (text)</div>
-                                    <input className="w-full border rounded-md px-2 py-2" placeholder={`Enter ${a.name}`} value={(selectedAttrs[a.id] as string) || ''} onChange={(e) => setAttrText(a.id, e.target.value)} />
-                                </div>
+                                <label key={a.id} className="inline-flex items-center gap-2 border rounded-lg px-3 py-1.5 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() => toggleVariantAttr(a.id)}
+                                        disabled={!checked && variantAttrIds.length >= 2}
+                                    />
+                                    <span>{a.name}</span>
+                                </label>
                             );
                         })}
                     </div>
-                )}
 
-                {/* Variant builder toggles */}
-                {selectableAttrs.length > 0 && (
-                    <div className="border rounded-lg p-3 bg-white">
-                        <div className="font-medium mb-2">Variants (choose up to 2 attributes)</div>
-                        <div className="flex flex-wrap gap-2 mb-2">
-                            {selectableAttrs.map((a) => {
-                                const active = variantAttrIds.includes(a.id);
-                                return (
-                                    <button key={a.id} type="button" onClick={() => toggleVariantAttr(a.id)} className={`px-2 py-1 rounded border ${active ? 'bg-zinc-900 text-white' : 'bg-white'}`}>
-                                        {a.name}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                        {variantAttrIds.map((attrId) => {
-                            const a = selectableAttrs.find((x) => x.id === attrId);
-                            if (!a) return null;
-                            const vals = a.values || [];
-                            const chosen = variantValueIds[attrId] || [];
+                    {/* Values per selected axis */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {variantAttrIds.map((aid) => {
+                            const a = selectableAttrs.find((x: any) => x.id === aid);
                             return (
-                                <div key={attrId} className="mb-2">
-                                    <div className="text-xs text-zinc-500 mb-1">Values for {a.name}</div>
-                                    <select multiple className="w-full border rounded-md px-2 py-2 h-[96px]" value={chosen} onChange={(e) => setVariantValues(attrId, Array.from(e.target.selectedOptions).map((o) => o.value))}>
-                                        {vals.map((v) => (
-                                            <option key={v.id} value={v.id}>
-                                                {v.name}
-                                            </option>
+                                <div key={aid}>
+                                    <div className="text-xs font-medium text-zinc-700 mb-1">{a?.name} values</div>
+                                    <select
+                                        multiple
+                                        className="border rounded-lg px-3 py-2 w-full h-28"
+                                        value={((variantValueIds[aid] as string[]) ?? []) as any}
+                                        onChange={(e) =>
+                                            setVariantValues(
+                                                aid,
+                                                Array.from(e.target.selectedOptions).map((o) => o.value)
+                                            )
+                                        }
+                                    >
+                                        {(a?.values || []).map((v: any) => (
+                                            <option key={v.id} value={v.id}>{v.name}</option>
                                         ))}
                                     </select>
                                 </div>
                             );
                         })}
-                        {variantRows.length > 0 && (
-                            <div className="mt-3">
-                                <div className="text-xs text-zinc-500 mb-2">Generated combinations</div>
-                                <div className="border rounded-lg overflow-hidden">
-                                    <table className="w-full text-sm">
-                                        <thead className="bg-zinc-50">
-                                            <tr>
-                                                <th className="text-left px-3 py-2">SKU Suffix</th>
-                                                <th className="text-left px-3 py-2">Price bump</th>
-                                                <th className="text-left px-3 py-2">In Stock</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y">
-                                            {variantRows.map((r) => (
-                                                <tr key={r.key}>
-                                                    <td className="px-3 py-2">{r.skuSuffix}</td>
-                                                    <td className="px-3 py-2">
-                                                        <input className="border rounded px-2 py-1 w-28" placeholder="+0" value={r.priceBump} onChange={(e) => setVariantRows((rows) => rows.map((x) => (x.key === r.key ? { ...x, priceBump: e.target.value } : x)))} />
-                                                    </td>
-                                                    <td className="px-3 py-2">
-                                                        <label className="inline-flex items-center gap-2">
-                                                            <input type="checkbox" checked={r.inStock} onChange={(e) => setVariantRows((rows) => rows.map((x) => (x.key === r.key ? { ...x, inStock: e.target.checked } : x)))} />
-                                                            <span className="text-xs">In Stock</span>
-                                                        </label>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                        )}
                     </div>
-                )}
 
-                {/* Supplier pricing editor (only when editing an existing product) */}
-                {editingId && (
-                    <div className="rounded-2xl border bg-white shadow-sm mt-3">
-                        <div className="px-4 md:px-5 py-3 border-b">
-                            <h3 className="text-ink font-semibold">Supplier pricing</h3>
-                            <p className="text-xs text-ink-soft">
-                                Configure supplier offers for this product (choose supplier(s), set their cost, variant overrides, stock, etc.)
-                            </p>
+                    {/* Generated variant rows */}
+                    {variantRows.length > 0 && (
+                        <div className="mt-4 overflow-auto rounded border">
+                            <table className="w-full text-sm">
+                                <thead className="bg-zinc-50">
+                                    <tr>
+                                        <th className="text-left px-3 py-2">Combination</th>
+                                        <th className="text-left px-3 py-2">SKU Suffix</th>
+                                        <th className="text-left px-3 py-2">Price Bump</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {variantRows.map((r) => (
+                                        <tr key={r.key}>
+                                            <td className="px-3 py-2">
+                                                {r.combo.map((c) => {
+                                                    const a = selectableAttrs.find((x: any) => x.id === c.attributeId);
+                                                    const v = a?.values?.find((vv: any) => vv.id === c.valueId);
+                                                    return `${a?.name}: ${v?.name}`;
+                                                }).join(' • ')}
+                                            </td>
+                                            <td className="px-3 py-2">
+                                                <input
+                                                    className="border rounded px-2 py-1 w-40"
+                                                    value={r.skuSuffix}
+                                                    onChange={(e) =>
+                                                        setVariantRows((rows) =>
+                                                            rows.map((rr) => rr.key === r.key ? { ...rr, skuSuffix: e.target.value } : rr
+                                                            )
+                                                        )
+                                                    }
+                                                />
+                                            </td>
+                                            <td className="px-3 py-2">
+                                                <input
+                                                    className="border rounded px-2 py-1 w-32"
+                                                    inputMode="decimal"
+                                                    value={r.priceBump}
+                                                    onChange={(e) =>
+                                                        setVariantRows((rows) =>
+                                                            rows.map((rr) => rr.key === r.key ? { ...rr, priceBump: e.target.value } : rr
+                                                            )
+                                                        )
+                                                    }
+                                                    placeholder="+0"
+                                                />
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
                         </div>
-                        <div className="p-4 md:p-5">
-                            <SuppliersPricingEditor
-                                productId={editingId}
-                                variants={variantsQ.data ?? []}
-                                readOnly={!(isSuper || isAdmin)}
-                            />
-                        </div>
-                    </div>
-                )}
+                    )}
+                </div>
 
             </div>
 
-            {/* create button */}
+            {/* actions */}
             <div className="flex gap-2 items-center">
                 <button
                     onClick={saveOrCreate}
@@ -3460,29 +4103,32 @@ function ManageProducts({
                     </button>
                 )}
 
-                <button
-                    onClick={() => qc.invalidateQueries({ queryKey: ['admin', 'products'] })}
-                    className="px-3 py-2 rounded-xl bg-blue-500 text-white disabled:opacity-60"
-                >
+                <button onClick={() => qc.invalidateQueries({ queryKey: ['admin', 'products'] })} className="px-3 py-2 rounded-xl bg-blue-500 text-white">
                     Reload Data
                 </button>
+
+                <button onClick={() => { setSearchInput(''); setSearch(''); }} className="px-3 py-2 rounded-xl bg-zinc-400 text-white">
+                    Reset Search
+                </button>
             </div>
+
             {/* search */}
             <div className="flex gap-2 items-center">
                 <div className="relative flex-1">
                     <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
                     <input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Search title, sku…" className="pl-9 pr-3 py-2 rounded-xl border bg-white w-full" />
-
                 </div>
             </div>
 
-            {/* product list with inline editors */}
+            {/* list */}
             <div className="border rounded-xl overflow-auto">
                 <table className="w-full text-sm">
                     <thead className="bg-zinc-50">
                         <tr>
                             <th className="text-left px-3 py-2">Title</th>
                             <th className="text-left px-3 py-2">Price</th>
+                            <th className="text-left px-3 py-2">Avail.</th>
+                            <th className="text-left px-3 py-2">Stock</th>
                             <th className="text-left px-3 py-2">Status</th>
                             {isSuper && <th className="text-left px-3 py-2">Owner</th>}
                             <th className="text-right px-3 py-2">Actions</th>
@@ -3490,183 +4136,157 @@ function ManageProducts({
                     </thead>
                     <tbody className="divide-y">
                         {listQ.isLoading && (
-                            <tr>
-                                <td className="px-3 py-3" colSpan={isSuper ? 5 : 4}>
-                                    Loading products…
-                                </td>
-                            </tr>
+                            <tr><td className="px-3 py-3" colSpan={isSuper ? 6 : 5}>Loading products…</td></tr>
                         )}
 
-                        {!listQ.isLoading &&
-                            rows.map((p: any) => {
-                                const open = openEditorId === p.id;
-                                const d = editPendings[p.id];
+                        {!listQ.isLoading && rows.map((p: any) => {
+                            const open = openEditorId === p.id;
+                            const d = editPendings[p.id] ?? {
+                                id: p.id,
+                                title: p.title ?? '',
+                                price: String(p.price ?? ''),
+                                categoryId: p.categoryId ?? '',
+                                brandId: p.brandId ?? '',
+                                supplierId: p.supplierId ?? '',
+                                sku: p.sku ?? '',
+                                status: p.status,
+                                communicationCost: p.communicationCost != null ? String(p.communicationCost) : '',
+                            } as EditPending;
 
-                                return (
-                                    <React.Fragment key={p.id}>
-                                        <tr>
-                                            <td className="px-3 py-2">{p.title}</td>
-                                            <td className="px-3 py-2">{ngn.format(fmtN(p.price))}</td>
+                            const stockCell = (() => {
+                                const s = offersSummaryQ.data?.[p.id];
+                                if (!s) return <span className="text-zinc-400">—</span>;
+                                return s.inStock ? (
+                                    <span className="inline-flex items-center gap-1 text-emerald-700">
+                                        <span className="inline-block w-2 h-2 rounded-full bg-emerald-600" />
+                                        In stock
+                                    </span>
+                                ) : (
+                                    <span className="inline-flex items-center gap-1 text-rose-700">
+                                        <span className="inline-block w-2 h-2 rounded-full bg-rose-600" />
+                                        Out of stock
+                                    </span>
+                                );
+                            })();
+
+                            return (
+                                <React.Fragment key={p.id}>
+                                    <tr>
+                                        <td className="px-3 py-2">{p.title}</td>
+                                        <td className="px-3 py-2">{ngn.format(fmtN(p.price))}</td>
+                                        <td className="px-3 py-2">
+                                            {offersSummaryQ.isLoading ? (
+                                                <span className="text-zinc-500 text-xs">…</span>
+                                            ) : (
+                                                (() => {
+                                                    const s = offersSummaryQ.data?.[p.id];
+                                                    if (!s) return <span className="text-zinc-400">—</span>;
+                                                    return (
+                                                        <span className="inline-flex items-center gap-1">
+                                                            <span className="font-medium">{s.totalAvailable}</span>
+                                                            <span className="text-xs text-zinc-500">({s.activeOffers} offer{s.activeOffers === 1 ? '' : 's'})</span>
+                                                        </span>
+                                                    );
+                                                })()
+                                            )}
+                                        </td>
+                                        <td className="px-3 py-2">{stockCell}</td>
+                                        <td className="px-3 py-2"><StatusDot label={p.status} /></td>
+                                        {isSuper && (
                                             <td className="px-3 py-2">
-                                                <StatusDot label={p.status} />
+                                                {p.owner?.email || p.ownerEmail || p.createdByEmail || p.createdBy?.email || '—'}
                                             </td>
-                                            {isSuper && <td className="px-3 py-2">{p.ownerEmail || '—'}</td>}
-                                            <td className="px-3 py-2 text-right">
-                                                <div className="inline-flex gap-2">
-                                                    <button onClick={() => startEdit(p)} className="px-2 py-1 rounded border">
-                                                        Edit in form
+                                        )}
+                                        <td className="px-3 py-2 text-right">
+                                            <div className="inline-flex gap-2">
+                                                <button onClick={() => startEdit(p)} className="px-2 py-1 rounded border">Edit in form</button>
+
+                                                {isAdmin && (
+                                                    <button onClick={() => updateStatusM.mutate({ id: p.id, status: 'PENDING' })} className="px-2 py-1 rounded bg-amber-600 text-white">
+                                                        Submit for Review
                                                     </button>
+                                                )}
 
-                                                    {/* Admin flow */}
-                                                    {isAdmin && (
-                                                        <button onClick={() => updateStatusM.mutate({ id: p.id, status: 'PENDING' })} className="px-2 py-1 rounded bg-amber-600 text-white">
-                                                            Submit for Review
-                                                        </button>
-                                                    )}
+                                                {isSuper && (
+                                                    <>
+                                                        {p.status === 'PENDING' ? (
+                                                            <button onClick={() => updateStatusM.mutate({ id: p.id, status: 'PUBLISHED' })} className="px-2 py-1 rounded bg-emerald-600 text-white">
+                                                                Approve PUBLISHED
+                                                            </button>
+                                                        ) : (
+                                                            <button onClick={() => updateStatusM.mutate({ id: p.id, status: 'PENDING' })} className="px-2 py-1 rounded border">
+                                                                Move to PENDING
+                                                            </button>
+                                                        )}
+                                                    </>
+                                                )}
 
-                                                    {/* Super Admin controls */}
+                                                <button onClick={() => deleteM.mutate(p.id)} className="px-2 py-1 rounded bg-rose-600 text-white">
+                                                    Delete
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+
+                                    {open && (
+                                        <tr id={`prod-editor-${p.id}`} className="bg-zinc-50/50">
+                                            <td colSpan={isSuper ? 6 : 5} className="px-3 py-3">
+                                                <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
+                                                    <input className="border rounded-lg px-3 py-2 md:col-span-2" placeholder="Title" value={d?.title || ''} onChange={(e) => changeEdit(p.id, { title: e.target.value })} />
+                                                    <input className="border rounded-lg px-3 py-2" placeholder="Price" inputMode="decimal" value={d?.price || ''} onChange={(e) => changeEdit(p.id, { price: e.target.value })} />
+                                                    <input className="border rounded-lg px-3 py-2" placeholder="SKU" value={d?.sku || ''} onChange={(e) => changeEdit(p.id, { sku: e.target.value })} />
+
+                                                    <select className="border rounded-lg px-3 py-2" value={d?.categoryId || ''} onChange={(e) => changeEdit(p.id, { categoryId: e.target.value })}>
+                                                        <option value="">— Category —</option>
+                                                        {catsQ.data?.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                                                    </select>
+                                                    <select className="border rounded-lg px-3 py-2" value={d?.brandId || ''} onChange={(e) => changeEdit(p.id, { brandId: e.target.value })}>
+                                                        <option value="">— Brand —</option>
+                                                        {brandsQ.data?.map((b) => (<option key={b.id} value={b.id}>{b.name}</option>))}
+                                                    </select>
+                                                    <select className="border rounded-lg px-3 py-2" value={d?.supplierId || ''} onChange={(e) => changeEdit(p.id, { supplierId: e.target.value })}>
+                                                        <option value="">— Supplier —</option>
+                                                        {suppliersQ.data?.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
+                                                    </select>
+
                                                     {isSuper && (
-                                                        <>
-                                                            {p.status === 'PENDING' ? (
-                                                                <button onClick={() => updateStatusM.mutate({ id: p.id, status: 'PUBLISHED' })} className="px-2 py-1 rounded bg-emerald-600 text-white">
-                                                                    Approve PUBLISHED
-                                                                </button>
-                                                            )
-                                                                :
-                                                                (
-                                                                    <button onClick={() => updateStatusM.mutate({ id: p.id, status: 'PENDING' })} className="px-2 py-1 rounded border">
-                                                                        Move to PENDING
-                                                                    </button>
-                                                                )
-                                                            }
-                                                        </>
+                                                        <select className="border rounded-lg px-3 py-2" value={d?.status || 'PENDING'} onChange={(e) => changeEdit(p.id, { status: e.target.value })}>
+                                                            <option value="PENDING">PENDING</option>
+                                                            <option value="PUBLISHED">PUBLISHED</option>
+                                                        </select>
                                                     )}
 
-                                                    <button onClick={() => deleteM.mutate(p.id)} className="px-2 py-1 rounded bg-rose-600 text-white">
-                                                        Delete
-                                                    </button>
+                                                    {/* Images are managed in the main form above */}
+                                                    <div className="md:col-span-6 flex items-center justify-end gap-2">
+                                                        <button onClick={cancelEdit} className="px-3 py-2 rounded-lg border">Cancel</button>
+                                                        <button onClick={() => submitEdit(p.id, 'save')} className="px-3 py-2 rounded-lg bg-zinc-900 text-white">Save Changes</button>
+                                                        {isAdmin && (
+                                                            <button onClick={() => submitEdit(p.id, 'submitForReview')} className="px-3 py-2 rounded-lg bg-amber-600 text-white" title="Set status to PENDING for approval">
+                                                                Submit for Review
+                                                            </button>
+                                                        )}
+                                                        {isSuper && (
+                                                            <>
+                                                                <button onClick={() => submitEdit(p.id, 'approvePublished')} className="px-3 py-2 rounded-lg bg-emerald-600 text-white">Approve PUBLISHED</button>
+                                                                <button onClick={() => submitEdit(p.id, 'movePending')} className="px-3 py-2 rounded-lg border">Move to PENDING</button>
+                                                            </>
+                                                        )}
+                                                    </div>
                                                 </div>
                                             </td>
                                         </tr>
-
-                                        {open && (
-                                            <tr id={`prod-editor-${p.id}`} className="bg-zinc-50/50">
-                                                <td colSpan={isSuper ? 5 : 4} className="px-3 py-3">
-                                                    <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
-                                                        <input className="border rounded-lg px-3 py-2 md:col-span-2" placeholder="Title" value={d?.title || ''} onChange={(e) => changeEdit(p.id, { title: e.target.value })} />
-                                                        <input className="border rounded-lg px-3 py-2" placeholder="Price" inputMode="decimal" value={d?.price || ''} onChange={(e) => changeEdit(p.id, { price: e.target.value })} />
-                                                        <input className="border rounded-lg px-3 py-2" placeholder="SKU" value={d?.sku || ''} onChange={(e) => changeEdit(p.id, { sku: e.target.value })} />
-
-
-                                                        <select className="border rounded-lg px-3 py-2" value={d?.categoryId || ''} onChange={(e) => changeEdit(p.id, { categoryId: e.target.value })}>
-                                                            <option value="">— Category —</option>
-                                                            {catsQ.data?.map((c) => (
-                                                                <option key={c.id} value={c.id}>
-                                                                    {c.name}
-                                                                </option>
-                                                            ))}
-                                                        </select>
-                                                        <select className="border rounded-lg px-3 py-2" value={d?.brandId || ''} onChange={(e) => changeEdit(p.id, { brandId: e.target.value })}>
-                                                            <option value="">— Brand —</option>
-                                                            {brandsQ.data?.map((b) => (
-                                                                <option key={b.id} value={b.id}>
-                                                                    {b.name}
-                                                                </option>
-                                                            ))}
-                                                        </select>
-                                                        <select className="border rounded-lg px-3 py-2" value={d?.supplierId || ''} onChange={(e) => changeEdit(p.id, { supplierId: e.target.value })}>
-                                                            <option value="">— Supplier —</option>
-                                                            {suppliersQ.data?.map((s) => (
-                                                                <option key={s.id} value={s.id}>
-                                                                    {s.name}
-                                                                </option>
-                                                            ))}
-                                                        </select>
-
-                                                        <label className="flex items-center gap-2 border rounded-lg px-3 py-2">
-                                                            <input type="checkbox" checked={!!d?.inStock} onChange={(e) => changeEdit(p.id, { inStock: e.target.checked })} />
-                                                            <span className="text-sm">In Stock</span>
-                                                        </label>
-
-                                                        {isSuper && (
-                                                            <select className="border rounded-lg px-3 py-2" value={d?.status || 'PENDING'} onChange={(e) => changeEdit(p.id, { status: e.target.value })}>
-                                                                <option value="PENDING">PENDING</option>
-                                                                <option value="PUBLISHED">PUBLISHED</option>
-                                                            </select>
-                                                        )}
-
-                                                        {/* Images: preview + editable URLs */}
-                                                        <div className="md:col-span-6 border rounded-lg p-3 bg-white">
-                                                            <div className="text-sm font-medium mb-2">Images</div>
-                                                            <div className="grid grid-cols-6 gap-1 mb-2">
-                                                                {(editImages[p.id] || []).map((src, i) => (
-                                                                    <div key={`${p.id}-img-${i}`} className="relative w-full pt-[100%] bg-zinc-100 overflow-hidden rounded">
-                                                                        <img src={src}
-                                                                            alt={`image ${i + 1}`}
-                                                                            className="absolute inset-0 w-full h-full object-cover"
-                                                                            onError={(e) => ((e.currentTarget.parentElement as HTMLElement).style.display = 'none')} />
-                                                                    </div>
-                                                                ))}
-                                                                {(editImages[p.id] || []).length === 0 && (
-                                                                    <div className="col-span-6 h-20 grid place-items-center text-xs text-zinc-500 bg-zinc-50 rounded">
-                                                                        No images
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                            <textarea className="w-full border rounded-lg px-3 py-2 text-xs"
-                                                                placeholder="Paste image URLs separated by comma or newline"
-                                                                value={(editImages[p.id] || []).join('\n')}
-                                                                onChange={(e) => {
-                                                                    const list = e.target.value
-                                                                        .split(/[\n,]/g)
-                                                                        .map((t) => t.trim())
-                                                                        .filter(isUrlish);
-                                                                    setEditImages((prev) => ({ ...prev, [p.id]: list }));
-                                                                }}
-                                                            />
-                                                            <div className="text-[11px] text-zinc-500 mt-1">Tip: broken links are hidden automatically.</div>
-                                                        </div>
-                                                        <div className="md:col-span-6 flex items-center justify-end gap-2">
-                                                            <button onClick={cancelEdit} className="px-3 py-2 rounded-lg border">
-                                                                Cancel
-                                                            </button>
-                                                            <button onClick={() => submitEdit(p.id, 'save')} className="px-3 py-2 rounded-lg bg-zinc-900 text-white">
-                                                                Save Changes
-                                                            </button>
-                                                            {isAdmin && (
-                                                                <button onClick={() => submitEdit(p.id, 'submitForReview')} className="px-3 py-2 rounded-lg bg-amber-600 text-white" title="Set status to PENDING for approval">
-                                                                    Submit for Review
-                                                                </button>
-                                                            )}
-                                                            {isSuper && (
-                                                                <>
-                                                                    <button onClick={() => submitEdit(p.id, 'approvePublished')} className="px-3 py-2 rounded-lg bg-emerald-600 text-white">
-                                                                        Approve PUBLISHED
-                                                                    </button>
-                                                                    <button onClick={() => submitEdit(p.id, 'movePending')} className="px-3 py-2 rounded-lg border">
-                                                                        Move to PENDING
-                                                                    </button>
-                                                                </>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        )}
-                                    </React.Fragment>
-                                );
-                            })}
+                                    )}
+                                </React.Fragment>
+                            );
+                        })}
 
                         {!listQ.isLoading && rows.length === 0 && (
-                            <tr>
-                                <td colSpan={isSuper ? 5 : 4} className="px-3 py-4 text-center text-zinc-500">
-                                    No products
-                                </td>
-                            </tr>
+                            <tr><td colSpan={isSuper ? 6 : 5} className="px-3 py-4 text-center text-zinc-500">No products</td></tr>
                         )}
                     </tbody>
                 </table>
             </div>
-        </div>
+        </div >
     );
 }
+

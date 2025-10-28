@@ -18,7 +18,6 @@ export type WhatsAppSendResult = { ok: boolean; id?: string; error?: string };
 
 export async function sendWhatsApp(toE164: string, text: string): Promise<WhatsAppSendResult> {
   const provider = (WHATSAPP_PROVIDER as Provider) || 'log';
-  console.log("in the whatsapp methoe")
   // Guard: require leading "whatsapp:" for Twilio, or ensure E.164 +234... format
   const toTwilio = TWILIO_WHATSAPP_FROM ? `whatsapp:${toE164}` : toE164;
 

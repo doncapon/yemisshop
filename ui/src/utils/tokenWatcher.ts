@@ -1,24 +1,43 @@
-// src/utils/tokenWatcher.ts
-let expiryTimer: number | null = null;
+let timer: number | undefined;
 
-export function scheduleTokenExpiryLogout(token: string | null, onExpire: () => void) {
-  if (expiryTimer) {
-    window.clearTimeout(expiryTimer);
-    expiryTimer = null;
+/**
+ * Schedules a logout callback shortly before a JWT expires.
+ * Returns a cancel function.
+ */
+export function scheduleTokenExpiryLogout(
+  token: string | null | undefined,
+  onExpire: () => void
+) {
+  if (timer) {
+    clearTimeout(timer);
+    timer = undefined;
   }
-  if (!token) return;
+  if (!token) return () => {};
 
   try {
-    const [, payloadB64] = token.split('.');
-    const payload = JSON.parse(atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/')));
-    const expMs = (payload?.exp ?? 0) * 1000;
-    if (!expMs) return;
+    const parts = token.split('.');
+    if (parts.length !== 3) return () => {}; // not a JWT? ignore
+    const payloadJson = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+    const payload = JSON.parse(payloadJson) as { exp?: number };
 
-    const msUntil = Math.max(0, expMs - Date.now() - 10_000); // 10s grace
-    expiryTimer = window.setTimeout(() => {
-      onExpire();
-    }, msUntil);
+    const expMs = (payload.exp ?? 0) * 1000;
+    const delay = Math.max(0, expMs - Date.now() - 5000); // 5s early
+
+    if (delay > 0) {
+      // @ts-ignore — Node vs DOM typings
+      timer = setTimeout(() => {
+        timer = undefined;
+        onExpire();
+      }, delay);
+    } else {
+      onExpire(); // already expired
+    }
   } catch {
-    // ignore malformed token
+    // If decode fails, do nothing — don’t kill the session
   }
+
+  return () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
 }
