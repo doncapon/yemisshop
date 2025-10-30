@@ -843,8 +843,8 @@ export default function Checkout() {
                 </div>
 
                 {/* Service fee breakdown */}
-                <div className="mt-4 pt-3 border-t border-border">
-                  <div className="flex items-center justify-between">
+                 <div className="mt-4 pt-3 border-t border-border">
+                 {/* <div className="flex items-center justify-between">
                     <span className="text-ink-soft">Base service fee</span>
                     <span className="font-medium">{ngn.format(baseFee)}</span>
                   </div>
@@ -866,7 +866,7 @@ export default function Checkout() {
                   <div className="flex items-center justify-between">
                     <span className="text-ink-soft">Estimated gateway fee</span>
                     <span className="font-medium">{ngn.format(gatewayEstimate)}</span>
-                  </div>
+                  </div> */}
 
                   <div className="flex items-center justify-between mt-2">
                     <span className="text-ink">Service fee (total)</span>

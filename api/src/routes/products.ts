@@ -125,22 +125,44 @@ const variantSelectBase = {
 router.get('/', async (req, res) => {
   const inc = parseInclude(req.query);
 
-  // 1) parse status with safe defaults
+  // ---- 1) Status parsing ---------------------------------------------------
   const ALLOWED = new Set(['ANY', 'LIVE', 'PUBLISHED', 'PENDING', 'REJECTED', 'ARCHIVED']);
   const rawStatus = String(req.query.status ?? 'LIVE').toUpperCase();
   const wantStatus = ALLOWED.has(rawStatus) ? rawStatus : 'LIVE';
 
-  // 2) common filters: price guard + optional status (we’ll try LIVE; if that explodes, we’ll retry with PUBLISHED)
-  const commonWhere: any = {
+  // ---- 2) Base guards (price > 0 either at product or any variant) --------
+  const priceGuard: any = {
     OR: [
       { price: { gt: new Prisma.Decimal(0) } },
-      { ProductVariant: { some: { price: { not: null, gt: new Prisma.Decimal(0) } } } },
+      {
+        ProductVariant: {
+          some: { price: { not: null, gt: new Prisma.Decimal(0) } },
+        },
+      },
     ],
   };
-  const withStatus = (status: string) =>
-    status === 'ANY' ? commonWhere : { ...commonWhere, status: status as any };
 
-  // 3) common include
+  // ---- 3) Availability guard (ONLY valid columns) -------------------------
+  const availabilityGuard: any = {
+    OR: [
+      { inStock: true },
+      { ProductVariant: { some: { inStock: true } } },
+      {
+        supplierOffers: {
+          some: {
+            isActive: true,
+            inStock: true,
+            availableQty: { gt: 0 }, // ✅ only field that exists per your seed
+          },
+        },
+      },
+    ],
+  };
+
+  // ---- 4) Include builder --------------------------------------------------
+  const variantSelectBase = {
+    id: true, sku: true, price: true, inStock: true, imagesJson: true,
+  };
   const include: any = {
     category: { select: { id: true, name: true, slug: true } },
     ...(inc.brand ? { brand: { select: { id: true, name: true } } } : {}),
@@ -166,10 +188,19 @@ router.get('/', async (req, res) => {
           },
         }
       : {}),
+    // Do NOT include supplierOffers relation directly; we stitch it when requested
   };
 
-  // tiny mapper for response
-  const mapRow = (p: any, offersByProduct: Map<string, any[]>, offersByVariant: Map<string, any[]>, includeVariants: boolean, includeAttrs: boolean, includeBrand: boolean, includeOffers: boolean) => {
+  // ---- 5) Helper: map row to payload --------------------------------------
+  function mapRow(
+    p: any,
+    offersByProduct: Map<string, any[]>,
+    offersByVariant: Map<string, any[]>,
+    includeVariants: boolean,
+    includeAttrs: boolean,
+    includeBrand: boolean,
+    includeOffers: boolean
+  ) {
     const variants =
       includeVariants &&
       (p.ProductVariant ?? []).map((v: any) => ({
@@ -202,8 +233,9 @@ router.get('/', async (req, res) => {
       imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
       categoryId: p.categoryId ?? p.category?.id ?? null,
       categoryName: p.category?.name ?? null,
-      brandId: p.brandId ?? null,
-      ...(includeBrand && p.brand ? { brand: { id: p.brand.id, name: p.brand.name }, brandName: p.brand.name } : { brand: null, brandName: null }),
+      ...(includeBrand && p.brand
+        ? { brand: { id: p.brand.id, name: p.brand.name }, brandName: p.brand.name }
+        : { brand: null, brandName: null }),
       ...(includeVariants ? { variants } : {}),
       ...(includeOffers
         ? {
@@ -230,24 +262,24 @@ router.get('/', async (req, res) => {
           ]
         : undefined,
     };
-  };
+  }
 
-  // function to fetch + (optionally) stitch offers
-  async function runQueryWith(whereObj: any) {
+  // ---- 6) Runner with optional offer stitching ----------------------------
+  async function runQuery(status: string) {
+    const statusGuard = status === 'ANY' ? {} : { status: status as any };
     const rows = await prisma.product.findMany({
-      where: whereObj,
+      where: { AND: [priceGuard, availabilityGuard, statusGuard] },
       orderBy: { createdAt: 'desc' },
       include,
     });
 
-    // If offers were requested, fetch them with separate queries to avoid relying on relation field names.
     let offersByProduct = new Map<string, any[]>();
     let offersByVariant = new Map<string, any[]>();
 
     if (inc.offers && rows.length > 0) {
-      const productIds = rows.map((r: any) => String(r.id));
+      const productIds = rows.map((r) => String(r.id));
       const variantIds = inc.variants
-        ? rows.flatMap((r: any) => (r.ProductVariant ?? []).map((v: any) => String(v.id)))
+        ? rows.flatMap((r) => (r.ProductVariant ?? []).map((v: any) => String(v.id)))
         : [];
 
       const offers = await prisma.supplierOffer.findMany({
@@ -283,29 +315,23 @@ router.get('/', async (req, res) => {
       }
     }
 
-    const data = rows.map((p: any) =>
+    return rows.map((p) =>
       mapRow(p, offersByProduct, offersByVariant, !!inc.variants, !!inc.attributes, !!inc.brand, !!inc.offers)
     );
-
-    return data;
   }
 
   try {
-    // Try with requested status (default LIVE)
-    const data = await runQueryWith(withStatus(wantStatus));
+    // Primary attempt
+    const data = await runQuery(wantStatus);
     return res.json({ data });
   } catch (e: any) {
-    // If LIVE isn't in your enum yet, Prisma throws an invalid enum error.
     const msg = String(e?.message || '');
-    const looksLikeEnumError =
-      msg.includes('Invalid enum') || msg.includes('Argument status:') || msg.includes('invalid input value');
+    const looksEnum = msg.includes('Invalid enum') || msg.includes('Argument status:') || msg.includes('invalid input value');
 
-    // graceful fallback: if the client asked for LIVE but your DB doesn’t know it yet,
-    // retry with PUBLISHED so the page doesn’t 500. Remove this once LIVE exists in your enum.
-    if (wantStatus === 'LIVE' && looksLikeEnumError) {
-      console.warn('[products] LIVE status not present in DB enum, falling back to PUBLISHED');
+    if (wantStatus === 'LIVE' && looksEnum) {
+      console.warn('[products] LIVE not in enum; falling back to PUBLISHED');
       try {
-        const data = await runQueryWith(withStatus('PUBLISHED'));
+        const data = await runQuery('PUBLISHED');
         return res.json({ data, note: 'Fell back to PUBLISHED because LIVE enum not found' });
       } catch (e2) {
         console.error('GET /api/products fallback failed:', e2);
@@ -317,6 +343,7 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Could not load products' });
   }
 });
+
 
 /* ---------------- SIMILAR: must be before '/:id' ---------------- */
 router.get('/:id/similar', async (req, res, next) => {
@@ -369,27 +396,24 @@ router.get('/:id/similar', async (req, res, next) => {
   }
 });
 
-/* ---------------- DETAIL: GET /api/products/:id ---------------- */
-router.get('/:id', async (req, res, next) => {
+// GET /api/products/:id?include=brand,variants,attributes,offers
+router.get('/:id', async (req, res) => {
   try {
     const inc = parseInclude(req.query);
-    const p = await prisma.product.findFirst({
-      where: { id: req.params.id, status: 'PUBLISHED' as any },
+    const id = String(req.params.id);
+
+    // 1) Fetch by id ONLY — no status/price gating in the DB query
+    const row = await prisma.product.findUnique({
+      where: { id },
       include: {
-        category: { select: { id: true, name: true } },
+        category: { select: { id: true, name: true, slug: true } },
         ...(inc.brand ? { brand: { select: { id: true, name: true } } } : {}),
         ...(inc.variants
           ? {
+              // keep your relation field name as used elsewhere (ProductVariant)
               ProductVariant: {
-                include: {
-                  options: {
-                    include: {
-                      attribute: { select: { id: true, name: true, type: true } },
-                      value: { select: { id: true, name: true, code: true } },
-                    },
-                  },
-                },
                 orderBy: { createdAt: 'asc' },
+                select: { id: true, sku: true, price: true, inStock: true, imagesJson: true },
               },
             }
           : {}),
@@ -400,24 +424,101 @@ router.get('/:id', async (req, res, next) => {
                   attribute: { select: { id: true, name: true, type: true } },
                   value: { select: { id: true, name: true, code: true } },
                 },
-                orderBy: [{ attribute: { name: 'asc' } }],
               },
               ProductAttributeText: {
-                include: {
-                  attribute: { select: { id: true, name: true, type: true } },
-                },
+                include: { attribute: { select: { id: true, name: true, type: true } } },
                 orderBy: [{ attribute: { name: 'asc' } }],
+              },
+            }
+          : {}),
+        ...(inc.offers
+          ? {
+              SupplierOffer: {
+                where: { isActive: true },
+                select: {
+                  id: true,
+                  supplierId: true,
+                  variantId: true,
+                  price: true,
+                  currency: true,
+                  availableQty: true,
+                  inStock: true,
+                  leadDays: true,
+                  isActive: true,
+                },
               },
             }
           : {}),
       },
     });
 
-    if (!p) return res.status(404).json({ error: 'Not found' });
-    res.json(mapProduct(p, inc));
+    // 2) Not found at all
+    if (!row) return res.status(404).json({ error: 'Product not found' });
+
+    // 3) Public visibility rule — strict LIVE only
+    if (String(row.status).toUpperCase() !== 'LIVE') {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    // 4) Map payload (no price/variant-price gating here to avoid false 404s)
+    const variants =
+      inc.variants &&
+      (row as any).ProductVariant?.map((v: any) => ({
+        id: v.id,
+        sku: v.sku ?? null,
+        price: v.price != null ? Number(v.price) : null,
+        inStock: v.inStock !== false,
+        imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+      }));
+
+    const data: any = {
+      id: row.id,
+      title: row.title,
+      description: row.description,
+      price: row.price != null ? Number(row.price) : null,
+      inStock: row.inStock !== false,
+      imagesJson: Array.isArray(row.imagesJson) ? row.imagesJson : [],
+      categoryId: row.categoryId ?? row.category?.id ?? null,
+      categoryName: row.category?.name ?? null,
+      brandId: row.brandId ?? null,
+      brand: inc.brand && row.brand ? { id: row.brand.id, name: row.brand.name } : null,
+      brandName: inc.brand && row.brand ? row.brand.name : null,
+      ...(inc.variants ? { variants } : {}),
+      attributesSummary: inc.attributes
+        ? [
+            ...((row as any).attributeOptions ?? []).map((x: any) => ({
+              attribute: x.attribute?.name ?? '',
+              value: x.value?.name ?? '',
+            })),
+            ...((row as any).ProductAttributeText ?? []).map((x: any) => ({
+              attribute: x.attribute?.name ?? '',
+              value: String(x.value ?? ''),
+            })),
+          ]
+        : undefined,
+    };
+
+    if (inc.offers) {
+      data.supplierOffers =
+        (row as any).SupplierOffer?.map((o: any) => ({
+          id: o.id,
+          supplierId: o.supplierId,
+          variantId: o.variantId,
+          price: o.price != null ? Number(o.price) : null,
+          currency: o.currency,
+          availableQty: o.availableQty ?? 0,
+          inStock: o.inStock !== false,
+          leadDays: o.leadDays ?? null,
+          isActive: o.isActive !== false,
+        })) ?? [];
+    }
+
+    return res.json({ data });
   } catch (e) {
-    next(e);
+    console.error('GET /api/products/:id failed:', e);
+    return res.status(500).json({ error: 'Could not load product' });
   }
 });
+
 
 export default router;

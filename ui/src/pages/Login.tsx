@@ -15,8 +15,8 @@ type MeResponse = {
 
 export default function Login() {
   // seeded creds for testing — remove later
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState('superadmin@example.com');
+  const [password, setPassword] = useState('SuperAdmin123!');
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);

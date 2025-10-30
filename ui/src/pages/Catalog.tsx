@@ -18,7 +18,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 
-/* ---------------- Types (tolerant to optional richer payloads) ---------------- */
+/* ---------------- Types ---------------- */
 type SupplierOfferLite = {
   id: string;
   isActive?: boolean;
@@ -27,11 +27,10 @@ type SupplierOfferLite = {
 
 type Variant = {
   id: string;
-  sku?: string;
+  sku?: string | null;
   price?: number | null;
   inStock?: boolean;
   imagesJson?: string[];
-  // NEW: include offers at variant level (if your API returns them)
   offers?: SupplierOfferLite[];
 };
 
@@ -47,29 +46,12 @@ type Product = {
   brandName?: string | null;
   brand?: { id: string; name: string } | null;
   variants?: Variant[];
-
-  // NEW: direct product-level offers
   supplierOffers?: SupplierOfferLite[];
-
-  // computed
   ratingAvg?: number | null;
   ratingCount?: number | null;
   attributesSummary?: { attribute: string; value: string }[];
-  status?: string;
-  // NEW: computed convenience flag
-  hasOffers?: boolean;
+  status?: string; // 'LIVE' | ...
 };
-
-function productHasOffers(x: { supplierOffers?: SupplierOfferLite[]; variants?: Variant[] }) {
-  const direct = (x.supplierOffers || []).some(o => (o?.isActive ?? true) && (o?.inStock ?? true));
-  const viaVariants =
-    (x.variants || []).some(v => (v.offers || []).some(o => (o?.isActive ?? true) && (o?.inStock ?? true)));
-  return direct || viaVariants;
-}
-
-const isLive = (x: { status?: string } | undefined | null) =>
-  String(x?.status ?? '').trim().toUpperCase() === 'LIVE';
-
 
 const ngn = new Intl.NumberFormat('en-NG', {
   style: 'currency',
@@ -77,15 +59,52 @@ const ngn = new Intl.NumberFormat('en-NG', {
   maximumFractionDigits: 2,
 });
 
-// types stay the same
 type PriceBucket = { label: string; min: number; max?: number };
+type SortKey = 'relevance' | 'price-asc' | 'price-desc';
 
-const formatN = (n: number) => '₦' + n.toLocaleString();
+/* ---------------- Helpers ---------------- */
+const isLive = (x?: { status?: string | null }) =>
+  String(x?.status ?? '').trim().toUpperCase() === 'LIVE';
 
-/** Builds buckets like: 1k–4,999; 5k–9,999; 10k–49,999; 50k–99,999; 100k–499,999; 500k–999,999; ... */
+const getBrandName = (p: Product) => (p.brand?.name || p.brandName || '').trim();
+
+const readClicks = (): Record<string, number> => {
+  try {
+    return JSON.parse(localStorage.getItem('productClicks:v1') || '{}') || {};
+  } catch {
+    return {};
+  }
+};
+
+const bumpClick = (productId: string) => {
+  try {
+    const m = readClicks();
+    m[productId] = (m[productId] || 0) + 1;
+    localStorage.setItem('productClicks:v1', JSON.stringify(m));
+  } catch { }
+};
+
+const safeNum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : NaN);
+
+function getMinPrice(p: Product): number {
+  const base = safeNum(p.price);
+  const variantPrices = (p.variants ?? [])
+    .map(v => safeNum(v.price))
+    .filter(n => Number.isFinite(n) && n > 0) as number[];
+  const candidates: number[] = [];
+  if (Number.isFinite(base) && base! > 0) candidates.push(base as number);
+  candidates.push(...variantPrices);
+  return candidates.length ? Math.min(...candidates) : 0;
+}
+
+const hasVariantInStock = (p: Product) => (p.variants || []).some(v => v.inStock !== false);
+const availableFlag = (p: Product) => (p.inStock !== false) || hasVariantInStock(p);
+const availabilityRank = (p: Product) => (availableFlag(p) ? 1 : 0);
+
+const formatN = (n: number) => '₦' + (Number.isFinite(n) ? n : 0).toLocaleString();
+
 function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceBucket[] {
   if (!Number.isFinite(maxPrice) || maxPrice <= 0) {
-    // sensible default if dataset is empty
     return [
       { label: '₦1,000 – ₦4,999', min: 1_000, max: 4_999 },
       { label: '₦5,000 – ₦9,999', min: 5_000, max: 9_999 },
@@ -94,17 +113,13 @@ function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceB
       { label: '₦100,000+', min: 100_000 },
     ];
   }
-
-  // thresholds: 1k, 5k, 10k, 50k, 100k, 500k, 1m, 5m, ...
   const thresholds: number[] = [baseStep];
-  let mult = 5; // alternate ×5 then ×2  → 1,5,10,50,100,500,...
+  let mult = 5;
   while (thresholds[thresholds.length - 1] < maxPrice) {
     const next = thresholds[thresholds.length - 1] * mult;
     thresholds.push(next);
     mult = mult === 5 ? 2 : 5;
   }
-
-  // build [t[i] .. (t[i+1]-1)] and final open-ended
   const buckets: PriceBucket[] = [];
   for (let i = 0; i < thresholds.length; i++) {
     const start = thresholds[i];
@@ -115,129 +130,51 @@ function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceB
   }
   return buckets;
 }
+const inBucket = (price: number, b: PriceBucket) =>
+  b.max == null ? price >= b.min : price >= b.min && price <= b.max;
 
-/** Keep your inBucket helper */
-function inBucket(price: number, b: PriceBucket) {
-  return b.max == null ? price >= b.min : price >= b.min && price <= b.max;
-}
-
-type SortKey = 'relevance' | 'price-asc' | 'price-desc';
-
-
-function availabilityRank(p: Product) {
-  return (p.inStock || hasVariantInStock(p)) ? 1 : 0; // 1 = in stock, 0 = out
-}
-
-/* ---------------- Recommendation weights ---------------- */
-const W_FAV = 2.5;
-const W_PURCHASE = 3.0;
-const W_CLICK = 1.5;
-const W_CAT_MATCH = 1.0;
-const W_PRICE_PROX = 0.15;
-
-/* ---------------- Lightweight click tracking ---------------- */
-type ClickMap = Record<string, number>;
-const CLICKS_KEY = 'productClicks:v1';
-
-function bumpClick(productId: string) {
-  try {
-    const m = readClicks();
-    m[productId] = (m[productId] || 0) + 1;
-    localStorage.setItem(CLICKS_KEY, JSON.stringify(m));
-  } catch { }
-}
-
-/* ---------------- Purchased counts (orders) ---------------- */
+/* ---------------- Orders → purchases (for relevance) ---------------- */
 type OrdersResp = {
-  data: Array<{
+  data?: Array<{
     id: string;
-    createdAt: string;
-    items?: Array<{ product?: { id: string } | null; productId?: string | null; qty?: number | null }>;
+    createdAt?: string;
+    items?: Array<{ product?: { id?: string } | null; productId?: string | null; qty?: number | null }>;
   }>;
-  totalItems: number;
-  page: number;
-  pageSize: number;
-  totalPages: number;
+  totalPages?: number;
 };
-
-type Scored = {
-  p: Product;
-  score: number;
-};
-
 function usePurchasedCounts() {
   const token = useAuthStore((s) => s.token);
   return useQuery({
     queryKey: ['orders', 'mine', 'for-recs'],
     enabled: !!token,
     retry: 0,
+    staleTime: 30_000,
     queryFn: async () => {
       const PAGE_SIZE = 100;
       let page = 1;
       let totalPages = 1;
       const map: Record<string, number> = {};
-
       while (page <= totalPages) {
         const { data } = await api.get<OrdersResp>(
           `/api/orders/mine?page=${page}&pageSize=${PAGE_SIZE}`,
-          { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+          { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
         );
-
-        const list = Array.isArray(data?.data) ? data.data : [];
+        const list = Array.isArray(data?.data) ? data!.data! : [];
         for (const o of list) {
           for (const it of o.items || []) {
-            const pid = (it.product as any)?.id || it.productId;
+            const pid = it.product?.id || it.productId || '';
             if (!pid) continue;
             const qty = Number(it.qty || 1);
             map[pid] = (map[pid] || 0) + (Number.isFinite(qty) ? qty : 1);
           }
         }
-
         totalPages = Math.max(1, Number(data?.totalPages ?? 1));
         page += 1;
         if (page > 50) break;
       }
-
       return map;
     },
-    staleTime: 30_000,
   });
-}
-
-/* ---------------- Helpers ---------------- */
-function getBrandName(p: Product) {
-  return (p.brand?.name || p.brandName || '').trim();
-}
-
-function readClicks(): Record<string, number> {
-  try {
-    return JSON.parse(localStorage.getItem('productClicks:v1') || '{}') || {};
-  } catch {
-    return {};
-  }
-}
-
-function getMinPrice(p: Product): number {
-  const base = Number(p.price ?? 0);
-  const variantPrices = (p.variants ?? [])
-    .map(v => Number(v?.price ?? NaN))
-    .filter(n => Number.isFinite(n)) as number[];
-
-  if (variantPrices.length === 0) return base;
-
-  return Math.min(
-    ...variantPrices,
-    Number.isFinite(base) && base > 0 ? base : Infinity
-  );
-}
-
-function hasVariantInStock(p: Product) {
-  return (p.variants || []).some(v => v.inStock !== false);
-}
-
-function requiresVariantSelection(p: Product) {
-  // safest rule: any variants -> pick on detail page
-  return Array.isArray(p.variants) && p.variants.length > 0;
 }
 
 /* ---------------- Component ---------------- */
@@ -247,60 +184,69 @@ export default function Catalog() {
   const { openModal } = useModal();
   const nav = useNavigate();
 
-const productsQ = useQuery<Product[]>({
-  queryKey: ['products', { include: 'brand,variants,attributes,offers', status: 'LIVE' }],
-  queryFn: async () => {
-    const res = await api.get('/api/products', {
-      params: { include: 'brand,variants,attributes,offers', status: 'LIVE' },
-    });
+  // Fetch LIVE products (server enforces sellable, client double-checks LIVE)
+  const productsQ = useQuery<Product[]>({
+    queryKey: ['products', { include: 'brand,variants,attributes,offers', status: 'LIVE' }],
+    staleTime: 30_000,
+    queryFn: async () => {
+      // small helper: normalizes server payload -> Product[]
+      const normalize = (rawData: any): Product[] => {
+        const raw: any[] = Array.isArray(rawData) ? rawData : (Array.isArray(rawData?.data) ? rawData.data : []);
+        return (raw || [])
+          .filter((x) => x && x.id != null)
+          .map((x) => {
+            const variants: Variant[] = Array.isArray(x.variants)
+              ? x.variants.map((v: any) => ({
+                id: String(v.id),
+                sku: v.sku ?? null,
+                price: Number.isFinite(Number(v.price)) ? Number(v.price) : null,
+                inStock: v.inStock !== false,
+                imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+                offers: Array.isArray(v.offers) ? v.offers : [],
+              }))
+              : [];
+            return {
+              id: String(x.id),
+              title: String(x.title ?? ''),
+              description: x.description ?? '',
+              price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
+              inStock: x.inStock !== false,
+              imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
+              categoryId: x.categoryId ?? null,
+              categoryName: x.categoryName ?? null,
+              brandName: x.brandName ?? x.brand?.name ?? null,
+              brand: x.brand ? { id: String(x.brand.id), name: String(x.brand.name) } : null,
+              variants,
+              ratingAvg: Number.isFinite(Number(x.ratingAvg)) ? Number(x.ratingAvg) : null,
+              ratingCount: Number.isFinite(Number(x.ratingCount)) ? Number(x.ratingCount) : null,
+              attributesSummary: Array.isArray(x.attributesSummary) ? x.attributesSummary : [],
+              supplierOffers: Array.isArray(x.supplierOffers) ? x.supplierOffers : [],
+              status: (x.status ?? x.state ?? '').toString(),
+            } as Product;
+          });
+      };
 
-    const payload = res.data;
-    const raw: any[] = Array.isArray(payload) ? payload : (payload?.data ?? []);
+      // try LIVE → PUBLISHED → ANY
+      const paramsBase = { include: 'brand,variants,attributes,offers' as const };
+      const attempts = ['LIVE', 'PUBLISHED', 'ANY'] as const;
 
-    const normalizedAll = raw
-      .filter((x) => x && typeof x.id === 'string')
-      .map((x) => {
-        const variants = Array.isArray(x.variants)
-          ? x.variants.map((v: any) => ({
-              id: String(v.id),
-              sku: v.sku,
-              price: Number.isFinite(Number(v.price)) ? Number(v.price) : undefined,
-              inStock: v.inStock !== false,
-              imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-              offers: Array.isArray(v.offers) ? v.offers : [],
-            }))
-          : [];
-
-        const supplierOffers = Array.isArray(x.supplierOffers) ? x.supplierOffers : [];
-
-        const p: Product = {
-          id: String(x.id),
-          title: String(x.title ?? ''),
-          description: x.description ?? '',
-          price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
-          inStock: x.inStock !== false,
-          imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
-          categoryId: x.categoryId ?? null,
-          categoryName: x.categoryName ?? null,
-          brandName: x.brandName ?? x.brand?.name ?? null,
-          brand: x.brand ? { id: String(x.brand.id), name: String(x.brand.name) } : null,
-          variants,
-          ratingAvg: x.ratingAvg ?? null,
-          ratingCount: x.ratingCount ?? null,
-          attributesSummary: Array.isArray(x.attributesSummary) ? x.attributesSummary : [],
-          supplierOffers,
-          // capture status exactly as provided by API
-          status: (x.status ?? x.state ?? '').toString(),
-        };
-
-        return p;
-      }) as Product[];
-
-    // FINAL GUARANTEE: only show LIVE
-    return normalizedAll.filter(isLive);
-  },
-});
-
+      let lastErr: any = null;
+      for (const status of attempts) {
+        try {
+          const { data } = await api.get('/api/products', { params: { ...paramsBase, status } });
+          const list = normalize(data);
+          // If we fell back to PUBLISHED/ANY, still prefer showing LIVE where possible
+          const out = status === 'LIVE' ? list : list.filter((x) => String(x.status).toUpperCase() === 'LIVE') || list;
+          return out;
+        } catch (e: any) {
+          lastErr = e;
+          // continue to next attempt
+        }
+      }
+      // if all attempts fail, surface the original error
+      throw lastErr ?? new Error('Failed to load products');
+    },
+  });
 
 
   // Favorites
@@ -311,13 +257,11 @@ const productsQ = useQuery<Product[]>({
       const { data } = await api.get<{ productIds: string[] }>('/api/favorites/mine', {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
-      return new Set(data.productIds);
+      return new Set(data.productIds || []);
     },
     initialData: new Set<string>(),
   });
-
-  // Purchased map (productId -> totalQty)
-  const purchasedQ = usePurchasedCounts();
+  const isFav = (id: string) => !!favQuery.data?.has(id);
 
   // Toggle favorite
   const toggleFav = useMutation({
@@ -327,26 +271,25 @@ const productsQ = useQuery<Product[]>({
         { productId },
         token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
       );
-      return { productId, favorited: data.favorited };
+      return { productId, favorited: !!data.favorited };
     },
     onMutate: async ({ productId }) => {
       const key = ['favorites', 'mine'] as const;
       const prev = qc.getQueryData<Set<string>>(key);
       if (prev) {
         const next = new Set(prev);
-        if (next.has(productId)) next.delete(productId);
-        else next.add(productId);
+        next.has(productId) ? next.delete(productId) : next.add(productId);
         qc.setQueryData(key, next);
       }
       return { prev };
     },
-    onError: (_err, _vars, ctx) => {
+    onError: (_e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(['favorites', 'mine'], ctx.prev);
       openModal({ title: 'Wishlist', message: 'Could not update wishlist. Please try again.' });
     },
   });
 
-  /* ---------------- Quick Add-to-Cart (consistent with Checkout/ProductDetail) ---------------- */
+  /* -------- Quick Add-to-Cart (only simple products here) -------- */
   const addToCart = (p: Product) => {
     try {
       const unit = getMinPrice(p);
@@ -354,8 +297,6 @@ const productsQ = useQuery<Product[]>({
         openModal({ title: 'Cart', message: 'This product has no valid price yet.' });
         return;
       }
-
-      // Choose a representative image
       const primaryImg =
         p.imagesJson?.[0] ||
         p.variants?.find(v => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
@@ -364,11 +305,7 @@ const productsQ = useQuery<Product[]>({
       const raw = localStorage.getItem('cart');
       const cart: any[] = raw ? JSON.parse(raw) : [];
 
-      // Catalog adds the "base" product (no variant selection here)
-      const variantId = null;
-      const keyMatch = (x: any) => x.productId === p.id && (!x.variantId || x.variantId === variantId);
-
-      const idx = cart.findIndex(keyMatch);
+      const idx = cart.findIndex((x: any) => x.productId === p.id && (!x.variantId || x.variantId === null));
       if (idx >= 0) {
         const qty = Math.max(1, Number(cart[idx].qty) || 1) + 1;
         cart[idx] = {
@@ -377,20 +314,19 @@ const productsQ = useQuery<Product[]>({
           qty,
           unitPrice: unit,
           totalPrice: unit * qty,
-          price: unit,               // legacy mirror
+          price: unit,
           image: primaryImg ?? cart[idx].image ?? null,
-          // keep any existing fields (selectedOptions, etc.)
         };
       } else {
         cart.push({
           productId: p.id,
-          variantId,                 // base product here
+          variantId: null,
           title: p.title,
           qty: 1,
-          unitPrice: unit,           // preferred field
+          unitPrice: unit,
           totalPrice: unit,
-          price: unit,               // legacy mirror for older pages
-          selectedOptions: [],       // none at catalog level
+          price: unit,
+          selectedOptions: [],
           image: primaryImg,
         });
       }
@@ -402,52 +338,39 @@ const productsQ = useQuery<Product[]>({
     }
   };
 
-  // Filters
+  /* ---------------- UI state ---------------- */
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [selectedBucketIdxs, setSelectedBucketIdxs] = useState<number[]>([]);
   const [selectedBrands, setSelectedBrands] = useState<string[]>([]);
   const [onlyInStock, setOnlyInStock] = useState<boolean>(false);
   const [sortKey, setSortKey] = useState<SortKey>('relevance');
 
-  // Search (instant)
   const [query, setQuery] = useState('');
   const [showSuggest, setShowSuggest] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const suggestRef = useRef<HTMLDivElement | null>(null);
 
-  // Pagination
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<6 | 9 | 12>(9);
 
-  // Clean list
-  const products = useMemo(
-    () => productsQ.data ?? [],
-    [productsQ.data]
-  );
+  const products = useMemo(() => productsQ.data ?? [], [productsQ.data]);
 
-  // AFTER products are normalized:
   const maxPriceSeen = useMemo(() => {
-    const prices = (products ?? [])
-      .map(getMinPrice)
-      .filter((n) => Number.isFinite(n) && n > 0) as number[];
+    const prices = (products ?? []).map(getMinPrice).filter(n => Number.isFinite(n) && n > 0) as number[];
     return prices.length ? Math.max(...prices) : 0;
   }, [products]);
 
-  const PRICE_BUCKETS = useMemo(
-    () => generateDynamicPriceBuckets(maxPriceSeen, 1_000), // base step = ₦1,000
-    [maxPriceSeen]
-  );
+  const PRICE_BUCKETS = useMemo(() => generateDynamicPriceBuckets(maxPriceSeen, 1_000), [maxPriceSeen]);
 
-  // Optional: if buckets change, clear selected ranges to avoid stale indexes
   useEffect(() => {
+    // If the bucket set changes (dataset changed), clear selections to avoid stale indexes
     setSelectedBucketIdxs([]);
   }, [PRICE_BUCKETS.length]);
 
-  // Normalizers
-  const norm = (s: string) => s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const norm = (s: string) =>
+    s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
-  // Suggestions (across all products)
   const suggestions = useMemo(() => {
     const q = norm(query.trim());
     if (!q) return [];
@@ -465,19 +388,14 @@ const productsQ = useQuery<Product[]>({
       return { p, score };
     });
     return scored
-      .filter((x: { score: number; }) => x.score > 0)
-      .sort((a: { score: number; }, b: { score: number; }) => b.score - a.score)
+      .filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score)
       .slice(0, 8)
-      .map((x: { p: any; }) => x.p);
+      .map(x => x.p);
   }, [products, query]);
 
-  /* -------- FACETS & FILTERED LIST (respects query) -------- */
-  const {
-    categories,
-    brands,
-    visiblePriceBuckets,
-    filtered,
-  } = useMemo(() => {
+  /* -------- FACETS + FILTERING -------- */
+  const { categories, brands, visiblePriceBuckets, filtered } = useMemo(() => {
     const q = norm(query.trim());
     const baseByQuery = products.filter((p) => {
       if (!q) return true;
@@ -489,16 +407,14 @@ const productsQ = useQuery<Product[]>({
     });
 
     const activeCats = new Set(selectedCategories);
-    const activeBuckets = selectedBucketIdxs.map((i) => PRICE_BUCKETS[i]);
+    const activeBuckets = selectedBucketIdxs.map(i => PRICE_BUCKETS[i]).filter(Boolean);
     const activeBrands = new Set(selectedBrands);
 
-    // Category facet counts
+    // Category counts
     const baseForCategoryCounts = baseByQuery.filter((p) => {
-      const price = getMinPrice(p);
-      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const brandName = getBrandName(p);
-      const brandOk = activeBrands.size === 0 ? true : activeBrands.has(brandName);
-      const stockOk = onlyInStock ? (p.inStock || hasVariantInStock(p)) : true;
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some(b => inBucket(getMinPrice(p), b));
+      const brandOk = activeBrands.size === 0 ? true : activeBrands.has(getBrandName(p));
+      const stockOk = onlyInStock ? availableFlag(p) : true;
       return priceOk && brandOk && stockOk;
     });
     const catMap = new Map<string, { id: string; name: string; count: number }>();
@@ -510,119 +426,93 @@ const productsQ = useQuery<Product[]>({
       catMap.set(id, entry);
     }
     const categories = Array.from(catMap.values())
-      .filter((c) => c.count > 0)
+      .filter(c => c.count > 0)
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
-    // Brand facet counts
+    // Brand counts
     const baseForBrandCounts = baseByQuery.filter((p) => {
-      const price = getMinPrice(p);
-      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const catId = p.categoryId ?? 'uncategorized';
-      const catOk = activeCats.size === 0 ? true : activeCats.has(catId);
-      const stockOk = onlyInStock ? (p.inStock || hasVariantInStock(p)) : true;
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some(b => inBucket(getMinPrice(p), b));
+      const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? 'uncategorized');
+      const stockOk = onlyInStock ? availableFlag(p) : true;
       return priceOk && catOk && stockOk;
     });
     const brandMap = new Map<string, { name: string; count: number }>();
     for (const p of baseForBrandCounts) {
       const name = getBrandName(p);
       if (!name) continue;
-      const entry = brandMap.get(name) ?? { name, count: 0 };
-      entry.count += 1;
-      brandMap.set(name, entry);
+      brandMap.set(name, { name, count: (brandMap.get(name)?.count || 0) + 1 });
     }
-    const brands = Array.from(brandMap.values()).sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-    );
+    const brands = Array.from(brandMap.values())
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
-    // Price facet counts
+    // Price bucket counts
     const baseForPriceCounts = baseByQuery.filter((p) => {
-      const catId = p.categoryId ?? 'uncategorized';
-      const catOk = activeCats.size === 0 ? true : activeCats.has(catId);
-      const brandName = getBrandName(p);
-      const brandOk = activeBrands.size === 0 ? true : activeBrands.has(brandName);
-      const stockOk = onlyInStock ? (p.inStock || hasVariantInStock(p)) : true;
+      const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? 'uncategorized');
+      const brandOk = activeBrands.size === 0 ? true : activeBrands.has(getBrandName(p));
+      const stockOk = onlyInStock ? availableFlag(p) : true;
       return catOk && brandOk && stockOk;
     });
     const priceCounts = PRICE_BUCKETS.map((b) =>
-      baseForPriceCounts.filter((p: Product) => inBucket(getMinPrice(p), b)).length
+      baseForPriceCounts.filter(p => inBucket(getMinPrice(p), b)).length
     );
     const visiblePriceBuckets = PRICE_BUCKETS
       .map((b, i) => ({ bucket: b, idx: i, count: priceCounts[i] || 0 }))
-      .filter((x) => x.count > 0);
+      .filter(x => x.count > 0);
 
-    // Final filtered list (pre-sort)
+    // Final filtered list
     const filteredCore = baseByQuery.filter((p) => {
-      const price = getMinPrice(p);
-      const catId = p.categoryId ?? 'uncategorized';
-      const brandName = getBrandName(p);
-      const catOk = activeCats.size === 0 ? true : activeCats.has(catId);
-      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const brandOk = activeBrands.size === 0 ? true : activeBrands.has(brandName);
-      const stockOk = onlyInStock ? (p.inStock || hasVariantInStock(p)) : true;
+      const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? 'uncategorized');
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some(b => inBucket(getMinPrice(p), b));
+      const brandOk = activeBrands.size === 0 ? true : activeBrands.has(getBrandName(p));
+      const stockOk = onlyInStock ? availableFlag(p) : true;
       return catOk && priceOk && brandOk && stockOk;
     });
 
     return { categories, brands, visiblePriceBuckets, filtered: filteredCore };
-  }, [products, selectedCategories, selectedBucketIdxs, selectedBrands, onlyInStock, query]);
+  }, [products, selectedCategories, selectedBucketIdxs, selectedBrands, onlyInStock, query, PRICE_BUCKETS]);
 
-  /* ---------------- Recommendation score for relevance ---------------- */
+  /* -------- Sorting -------- */
+  const purchasedQ = usePurchasedCounts();
+
   const recScored = useMemo(() => {
     if (sortKey !== 'relevance') return filtered;
-
-    // const favSet = favQuery.data ?? new Set<string>();
     const purchased: Record<string, number> = purchasedQ.data ?? {};
-    const clicks: Record<string, number> = readClicks();
+    const clicks = readClicks();
 
-    const scored: Scored[] = filtered.map((p) => {
-      // const fav = favSet.has(p.id) ? 1 : 0;
-      const buy = Math.log1p(purchased[p.id] || 0);
-      const clk = Math.log1p(clicks[p.id] || 0);
-      const catMatch = 0;
-      const prox = 0;
-
-      const score = 2.5 * buy + 1.5 * clk + 1.0 * catMatch + 0.15 * prox;
-      return { p, score };
-    });
-
-    return scored
+    return filtered
+      .map((p) => {
+        const buy = Math.log1p(purchased[p.id] || 0);
+        const clk = Math.log1p(clicks[p.id] || 0);
+        const score = 2.5 * buy + 1.5 * clk;
+        return { p, score };
+      })
       .sort((a, b) => {
-        // In-stock first
+        // Stock first
         const av = availabilityRank(a.p), bv = availabilityRank(b.p);
         if (bv !== av) return bv - av;
-
-        // Then your existing relevance ordering
+        // Then score
         if (b.score !== a.score) return b.score - a.score;
-
-        const ap = (purchased[a.p.id] || 0) + (clicks[a.p.id] || 0);
-        const bp = (purchased[b.p.id] || 0) + (clicks[b.p.id] || 0);
+        // Tie-breaker: “popularity” & lower price
+        const ap = (purchasedQ.data?.[a.p.id] || 0) + (readClicks()[a.p.id] || 0);
+        const bp = (purchasedQ.data?.[b.p.id] || 0) + (readClicks()[b.p.id] || 0);
         if (bp !== ap) return bp - ap;
-
-        return getMinPrice(b.p) - getMinPrice(a.p);
+        return getMinPrice(a.p) - getMinPrice(b.p);
       })
-      .map((x) => x.p);
+      .map(x => x.p);
+  }, [filtered, sortKey, purchasedQ.data]);
 
-  }, [filtered, sortKey, favQuery.data, purchasedQ.data]);
-
-  // Which list to show
   const sorted = useMemo(() => {
     if (sortKey === 'relevance') return recScored;
-
     const arr = [...filtered].sort((a, b) => {
-      // In-stock first
       const av = availabilityRank(a), bv = availabilityRank(b);
       if (bv !== av) return bv - av;
-
-      // Then price
       if (sortKey === 'price-asc') return getMinPrice(a) - getMinPrice(b);
       if (sortKey === 'price-desc') return getMinPrice(b) - getMinPrice(a);
       return 0;
     });
-
     return arr;
   }, [filtered, recScored, sortKey]);
 
-
-  // Reset page when inputs change
   useEffect(() => {
     setPage(1);
   }, [selectedCategories, selectedBucketIdxs, selectedBrands, onlyInStock, pageSize, sortKey, query]);
@@ -632,15 +522,13 @@ const productsQ = useQuery<Product[]>({
   const start = (currentPage - 1) * pageSize;
   const pageItems = sorted.slice(start, start + pageSize);
 
-  // Close suggestions on click outside
+  // click outside to close suggestions
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
       const t = e.target as Node;
       if (
-        suggestRef.current &&
-        !suggestRef.current.contains(t) &&
-        inputRef.current &&
-        !inputRef.current.contains(t)
+        suggestRef.current && !suggestRef.current.contains(t) &&
+        inputRef.current && !inputRef.current.contains(t)
       ) {
         setShowSuggest(false);
       }
@@ -652,13 +540,12 @@ const productsQ = useQuery<Product[]>({
   if (productsQ.isLoading) return <p className="p-6">Loading…</p>;
   if (productsQ.error) return <p className="p-6 text-rose-600">Error loading products</p>;
 
-  // UI helpers
   const toggleCategory = (id: string) =>
-    setSelectedCategories((curr) => (curr.includes(id) ? curr.filter((x) => x !== id) : [...curr, id]));
+    setSelectedCategories(curr => (curr.includes(id) ? curr.filter(x => x !== id) : [...curr, id]));
   const toggleBucket = (idx: number) =>
-    setSelectedBucketIdxs((curr) => (curr.includes(idx) ? curr.filter((i) => i !== idx) : [...curr, idx]));
+    setSelectedBucketIdxs(curr => (curr.includes(idx) ? curr.filter(i => i !== idx) : [...curr, idx]));
   const toggleBrand = (name: string) =>
-    setSelectedBrands((curr) => (curr.includes(name) ? curr.filter((n) => n !== name) : [...curr, name]));
+    setSelectedBrands(curr => (curr.includes(name) ? curr.filter(n => n !== name) : [...curr, name]));
   const clearFilters = () => {
     setSelectedCategories([]);
     setSelectedBucketIdxs([]);
@@ -670,7 +557,6 @@ const productsQ = useQuery<Product[]>({
     setPage(clamped);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
-  const isFav = (id: string) => favQuery.data?.has(id);
   const Shimmer = () => <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />;
 
   return (
@@ -755,7 +641,7 @@ const productsQ = useQuery<Product[]>({
               </ul>
             </div>
 
-            {/* Brands (auto-hides if none) */}
+            {/* Brands */}
             {brands.length > 0 && (
               <div className="mb-6">
                 <div className="flex items-center gap-3 mb-3">
@@ -828,7 +714,7 @@ const productsQ = useQuery<Product[]>({
             <h2 className="text-2xl font-semibold text-zinc-900">Products</h2>
           </div>
 
-          {/* Controls: Search + Sort + Per page */}
+          {/* Search / Sort / Per page */}
           <div className="flex flex-wrap items-center gap-4 mb-5">
             <div className="relative w-[36rem] max-w-full">
               <div className="relative">
@@ -874,7 +760,7 @@ const productsQ = useQuery<Product[]>({
                   className="absolute left-0 right-0 mt-3 bg-white border rounded-2xl shadow-2xl z-20 overflow-hidden"
                 >
                   <ul className="max-h-[80vh] overflow-auto p-3">
-                    {suggestions.map((p, i: number) => {
+                    {suggestions.map((p, i) => {
                       const active = i === activeIdx;
                       const minPrice = getMinPrice(p);
                       return (
@@ -924,7 +810,7 @@ const productsQ = useQuery<Product[]>({
               <label className="opacity-70">Per page</label>
               <select
                 value={pageSize}
-                onChange={(e) => setPageSize(Number(e.target.value) as any)}
+                onChange={(e) => setPageSize(Number(e.target.value) as 6 | 9 | 12)}
                 className="border rounded-xl px-3 py-2 bg-white/90"
               >
                 <option value={6}>6</option>
@@ -945,7 +831,9 @@ const productsQ = useQuery<Product[]>({
                   const brand = getBrandName(p);
                   const primaryImg = p.imagesJson?.[0];
                   const hoverImg = p.imagesJson?.[1] || p.variants?.[0]?.imagesJson?.[0];
-                  const available = p.inStock || hasVariantInStock(p);
+                  const available = availableFlag(p);
+
+                  const needsOptions = Array.isArray(p.variants) && p.variants.length > 0;
 
                   return (
                     <motion.article
@@ -966,11 +854,10 @@ const productsQ = useQuery<Product[]>({
                             <div className="w-full h-48 grid place-items-center text-zinc-400">No image</div>
                           )}
 
-                          {/* Stock badge */}
                           <span
                             className={`absolute left-3 top-3 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium ${available
-                              ? 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20'
-                              : 'bg-rose-600/10 text-rose-700 border border-rose-600/20'
+                                ? 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20'
+                                : 'bg-rose-600/10 text-rose-700 border border-rose-600/20'
                               }`}
                           >
                             <CheckCircle2 size={12} />
@@ -987,12 +874,11 @@ const productsQ = useQuery<Product[]>({
                             {p.categoryName || 'Uncategorized'}
                           </div>
                           <p className="text-base mt-1 font-semibold">{ngn.format(minPrice)}</p>
-                          {p.variants && p.variants.length > 0 && minPrice < Number(p.price) && (
+                          {Array.isArray(p.variants) && p.variants.length > 0 && Number.isFinite(Number(p.price)) && minPrice < Number(p.price) && (
                             <div className="text-[11px] text-zinc-500">From variants</div>
                           )}
                         </Link>
 
-                        {/* Optional rating line */}
                         {Number(p.ratingCount) > 0 && (
                           <div className="mt-2 text-[12px] text-amber-700 inline-flex items-center gap-1">
                             <Star size={14} />
@@ -1003,9 +889,7 @@ const productsQ = useQuery<Product[]>({
                         <div className="mt-3 flex items-center justify-between">
                           <button
                             aria-label={fav ? 'Remove from wishlist' : 'Add to wishlist'}
-                            className={`inline-flex items-center gap-1 text-sm rounded-full border px-3 py-1.5 transition ${fav
-                              ? 'bg-rose-50 text-rose-600 border-rose-200'
-                              : 'bg-white hover:bg-zinc-50 text-zinc-700'
+                            className={`inline-flex items-center gap-1 text-sm rounded-full border px-3 py-1.5 transition ${fav ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-white hover:bg-zinc-50 text-zinc-700'
                               }`}
                             onClick={() => {
                               if (!token) {
@@ -1020,8 +904,7 @@ const productsQ = useQuery<Product[]>({
                             <span>{fav ? 'Wishlisted' : 'Wishlist'}</span>
                           </button>
 
-                          {requiresVariantSelection(p) ? (
-                            // Variant products: guide to detail page
+                          {needsOptions ? (
                             <Link
                               to={`/product/${p.id}`}
                               className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm border bg-zinc-500 text-white border-zinc-900 hover:opacity-90"
@@ -1032,13 +915,11 @@ const productsQ = useQuery<Product[]>({
                               Choose options
                             </Link>
                           ) : (
-                            // Simple products: quick add
                             <button
                               disabled={!available}
                               onClick={() => addToCart(p)}
-                              className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm border transition ${available
-                                ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
-                                : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
+                              className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm border transition ${available ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
+                                  : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
                                 }`}
                               aria-label="Add to cart"
                               title="Add to cart"
@@ -1089,6 +970,6 @@ const productsQ = useQuery<Product[]>({
           )}
         </section>
       </div>
-    </div >
+    </div>
   );
 }
