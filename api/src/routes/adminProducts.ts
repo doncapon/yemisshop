@@ -3,6 +3,7 @@ import express, { Router, type RequestHandler } from 'express';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { requireAdmin, requireAuth } from '../middleware/auth.js';
 import { z } from 'zod';
+import { prismaSoft } from '../lib/prismaSoft.js';
 
 const prisma = new PrismaClient();
 const router = Router();
@@ -173,6 +174,18 @@ async function writeAttributesAndVariants(
   }
 }
 
+export async function autoDemoteIfUnavailable(productId: string) {
+  const [p, avail] = await Promise.all([
+    prisma.product.findUnique({ where: { id: productId }, select: { id: true, status: true } }),
+    isProductAvailable(prisma, productId), // this version can accept PrismaClient
+  ]);
+  if (!p) return;
+  if (p.status === 'PUBLISHED' && !avail) {
+    await prisma.product.update({ where: { id: productId }, data: { status: 'PENDING' } });
+  }
+}
+
+
 
 /* ------------------------------- Zod ------------------------------------ */
 
@@ -232,13 +245,67 @@ function normalizeVariantsPayload(body: any) {
   }));
 }
 
+// helper
+async function isProductAvailable(prismaTx: typeof prisma, productId: string) {
+  const product = await prismaTx.product.findUnique({
+    where: { id: productId },
+    select: { inStock: true },
+  });
+  if (!product) return false;
+
+  // any in-stock variant?
+  const variantInStock = await prismaTx.productVariant.count({
+    where: { productId, inStock: true },
+  });
+
+  // any active, in-stock offer with qty > 0 (or unknown qty)?
+  const offerInStock = await prismaTx.supplierOffer.count({
+    where: {
+      productId,
+      isActive: true,
+      inStock: true,
+      OR: [{ availableQty: { gt: 0 } }],
+    },
+  });
+
+  return !!product.inStock || variantInStock > 0 || offerInStock > 0;
+}
+
+router.post('/:id/status', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = StatusSchema.parse(req.body ?? {});
+
+    if (status === 'PUBLISHED') {
+      const ok = await isProductAvailable(prisma, id);
+      if (!ok) {
+        return res
+          .status(409)
+          .json({ error: 'Cannot publish a product that is not in stock.' });
+      }
+    }
+
+    const updated = await prisma.product.update({
+      where: { id },
+      data: { status },
+      select: {
+        id: true, title: true, status: true, price: true, sku: true, inStock: true, imagesJson: true,
+      },
+    });
+
+    res.json({ data: updated });
+  } catch (e: any) {
+    if (e?.code === 'P2025') return res.status(404).json({ error: 'Product not found' });
+    return res.status(400).json({ error: e?.message || 'Failed to update status' });
+  }
+});
 
 router.post('/:productId/approve', requireAdmin, async (req, res) => {
   try {
     const { productId } = req.params;
     const data = await prisma.product.update({
       where: { id: productId },
-      data: { status: 'PUBLISHED' },
+      data: { status: 'LIVE' },
       select: { id: true, title: true, status: true, price: true, imagesJson: true, createdAt: true },
     });
     res.json({ data });
@@ -333,18 +400,37 @@ router.delete('/:id', requireAdmin, async (req, res) => {
   }
 });
 
+// DELETE /api/admin/products/:id  → becomes soft delete
+
+router.delete('/:id/soft-delete', async (req, res) => {
+  const { id } = req.params;
+  const updated = await prismaSoft.product.update({
+    where: { id },
+    data: { isDeleted: true, deletedAt: new Date() },
+  });
+  res.json({ ok: true, data: updated });
+});
+
+
+router.get('/:id/has-orders', async (req, res) => {
+  const { id } = req.params;
+  const count = await prisma.orderItem.count({ where: { productId: id } });
+  res.json({ has: count > 0, count });
+});
+
+
 
 /* ------------------------------- Routes ---------------------------------- */
 
 // GET /api/admin/products/pending
-const listPending: RequestHandler = async (req, res, next) => {
+const listPublished: RequestHandler = async (req, res, next) => {
   try {
     const q = String(req.query.q ?? '').trim();
     const take = Math.min(100, Math.max(1, Number(req.query.take) || 50));
     const skip = Math.max(0, Number(req.query.skip) || 0);
 
     const where: Prisma.ProductWhereInput = {
-      status: 'PENDING' as any,
+      status: 'PUBLISHED' as any,
       ...(q && {
         OR: [
           { title: { contains: q, mode: 'insensitive' } },
@@ -365,6 +451,7 @@ const listPending: RequestHandler = async (req, res, next) => {
           title: true,
           price: true,
           status: true,
+          supplierOffers: true,
           sku: true,
           inStock: true,
           imagesJson: true,
@@ -381,6 +468,7 @@ const listPending: RequestHandler = async (req, res, next) => {
         price: Number(p.price),
         status: p.status,
         sku: p.sku,
+        supplierOffer: p.supplierOffers,
         inStock: p.inStock,
         imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
         createdAt: p.createdAt,
@@ -392,7 +480,7 @@ const listPending: RequestHandler = async (req, res, next) => {
   }
 };
 
-router.get('/pending', requireAdmin, listPending);
+router.get('/published', requireAdmin, listPublished);
 
 
 // GET /api/admin/products/search?q=wireless headphones
@@ -832,33 +920,6 @@ router.route('/:id')
   .put(requireAdmin, updateProduct)
   .patch(requireAdmin, updateProduct);
 
-/* ---------- Status ---------- */
-router.post('/:id/status', requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { status } = StatusSchema.parse(req.body ?? {});
-
-    const updated = await prisma.product.update({
-      where: { id },
-      data: { status },
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        price: true,
-        sku: true,
-        inStock: true,
-        imagesJson: true,
-      },
-    });
-
-    res.json({ data: updated });
-  } catch (e: any) {
-    if (e?.code === 'P2025') return res.status(404).json({ error: 'Product not found' });
-    return res.status(400).json({ error: e?.message || 'Failed to update status' });
-  }
-});
-
 /* ---------- Variants (bulk replace) ---------- */
 router.post('/:productId/variants/bulk', requireAdmin, wrap(async (req, res) => {
   const productId = IdSchema.parse(req.params.productId);
@@ -866,6 +927,7 @@ router.post('/:productId/variants/bulk', requireAdmin, wrap(async (req, res) => 
   await prisma.$transaction(async (tx) => {
     await replaceAllVariants(tx, productId, normalized);
   });
+  await autoDemoteIfUnavailable(productId);
   res.json({ ok: true, count: normalized.length });
 }));
 
@@ -880,6 +942,8 @@ router.get('/:productId/variants', requireAuth, requireAdmin, async (req, res) =
     },
     orderBy: { createdAt: 'asc' },
   });
+  await autoDemoteIfUnavailable(productId);
+
   return res.json({ data: variants });
 });
 
@@ -1122,6 +1186,7 @@ router.get('/', requireAdmin, async (req, res, next) => {
           categoryId: true,
           brandId: true,
           supplierId: true,
+          isDeleted: true,
           communicationCost: true,
           owner: { select: { id: true, email: true } },
           category: { select: { id: true, name: true } },
@@ -1139,6 +1204,7 @@ router.get('/', requireAdmin, async (req, res, next) => {
       status: p.status,
       sku: p.sku,
       inStock: p.inStock,
+      isDeleted: p.isDeleted,
       createdAt: p.createdAt,
       imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
       categoryId: p.categoryId,
@@ -1278,6 +1344,7 @@ router.post('/:productId/supplier-offers', requireAdmin, async (req, res, next) 
       },
     });
 
+    await autoDemoteIfUnavailable(productId);
 
     res.status(201).json({
       data: {
@@ -1328,7 +1395,7 @@ router.patch('/:productId/supplier-offers/:id', requireAdmin, async (req, res, n
         variant: { select: { id: true, sku: true } },
       },
     });
-
+    await autoDemoteIfUnavailable(productId);
     res.json({
       data: {
         id: updated.id,
@@ -1360,11 +1427,60 @@ router.delete('/:productId/supplier-offers/:id', requireAdmin, async (req, res, 
     if (!existing) return res.status(404).json({ error: 'Offer not found for this product' });
 
     await prisma.supplierOffer.delete({ where: { id } });
+    await autoDemoteIfUnavailable(productId);
     res.status(204).end();
   } catch (err) {
     next(err);
   }
 });
 
+
+// // src/routes/admin.products.ts
+// import { Router, Request, Response } from 'express';
+// import { prisma } from '../lib/prisma.js';
+// import { strictAuth, requireRole } from '../lib/authz.js'; // adjust to your auth middleware
+
+// const router = Router();
+
+router.post(
+  '/:id/restore',
+  requireAdmin, requireAuth,
+  async (req, res) => {
+    const { id } = req.params;
+    try {
+      const product = await prisma.product.findUnique({
+        where: { id },
+        select: { id: true, isDeleted: true, status: true },
+      });
+
+      if (!product) {
+        return res.status(404).json({ ok: false, error: 'Product not found' });
+      }
+
+      if (!product.isDeleted) {
+        // Already restored / not archived — no-op
+        return res.json({ ok: true, data: product, note: 'Product was not archived' });
+      }
+
+      // Optional: allow caller to pick status on restore (?status=PENDING|PUBLISHED)
+      const qsStatusRaw = String(req.query.status || '').toUpperCase();
+      const allowedStatuses = new Set(['PENDING', 'PUBLISHED']);
+      const nextStatus = allowedStatuses.has(qsStatusRaw) ? qsStatusRaw : undefined;
+
+      const updated = await prisma.product.update({
+        where: { id },
+        data: {
+          isDeleted: false,
+          ...(nextStatus ? { status: nextStatus as 'PENDING' | 'PUBLISHED' } : {}),
+        },
+      });
+
+      return res.json({ ok: true, data: updated });
+    } catch (err: any) {
+      console.error('restore product failed:', err?.message || err);
+      return res.status(500).json({ ok: false, error: 'Restore failed' });
+    }
+  }
+);
 
 export default router;

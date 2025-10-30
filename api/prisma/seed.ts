@@ -44,9 +44,9 @@ function randomPrice(): Prisma.Decimal {
 
 function productImages(seed: string | number): string[] {
   return [
-    `https://picsum.photos/seed/yemishop-${seed}/800/600`,
-    `https://picsum.photos/seed/yemishop-${seed}-b/800/600`,
-    `https://picsum.photos/seed/yemishop-${seed}-c/800/600`,
+    `https://picsum.photos/seed/dayspring-${seed}/800/600`,
+    `https://picsum.photos/seed/dayspring-${seed}-b/800/600`,
+    `https://picsum.photos/seed/dayspring-${seed}-c/800/600`,
   ];
 }
 
@@ -206,10 +206,10 @@ async function main() {
   const suppliers = await prisma.$transaction([
     prisma.supplier.create({
       data: {
-        name: 'YemiShop Wholesale',
+        name: 'Dayspring Wholesale',
         type: SupplierType.PHYSICAL,
         status: 'ACTIVE',
-        contactEmail: 'wholesale@yemishop.com',
+        contactEmail: 'wholesale@dayspring.com',
         whatsappPhone: '+2348100000000',
       },
     }),
@@ -289,7 +289,7 @@ async function main() {
   );
 
   console.log('🏷️  Seeding brands…');
-  const brandSeeds = ['YemiBasics', 'NaijaTech', 'GreenFarm', 'FitLife'];
+  const brandSeeds = ['DaySpring', 'NaijaTech', 'GreenFarm', 'FitLife'];
   const brands = await Promise.all(
     brandSeeds.map((b) =>
       prisma.brand.create({
@@ -354,6 +354,7 @@ async function main() {
     'Herbal Green Tea (50 bags)',
   ];
 
+  const TOTAL_LIVE = 50;
   const TOTAL_IN_STOCK = 60;
   const TOTAL_OUT_OF_STOCK = 30;
   const TOTAL = TOTAL_IN_STOCK + TOTAL_OUT_OF_STOCK;
@@ -373,7 +374,7 @@ async function main() {
         price: randomPrice(),
         sku: `SKU-${String(i).padStart(5, '0')}`,
         inStock: i <= TOTAL_IN_STOCK,
-        status: 'PUBLISHED',
+         status: i <= TOTAL_LIVE ? 'LIVE' : 'PUBLISHED',
         imagesJson: productImages(i),
         communicationCost: new Prisma.Decimal(50),
 

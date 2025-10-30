@@ -55,7 +55,7 @@ type Product = {
   ratingAvg?: number | null;
   ratingCount?: number | null;
   attributesSummary?: { attribute: string; value: string }[];
-
+  status?: string;
   // NEW: computed convenience flag
   hasOffers?: boolean;
 };
@@ -66,6 +66,9 @@ function productHasOffers(x: { supplierOffers?: SupplierOfferLite[]; variants?: 
     (x.variants || []).some(v => (v.offers || []).some(o => (o?.isActive ?? true) && (o?.inStock ?? true)));
   return direct || viaVariants;
 }
+
+const isLive = (x: { status?: string } | undefined | null) =>
+  String(x?.status ?? '').trim().toUpperCase() === 'LIVE';
 
 
 const ngn = new Intl.NumberFormat('en-NG', {
@@ -244,57 +247,60 @@ export default function Catalog() {
   const { openModal } = useModal();
   const nav = useNavigate();
 
-  // All products
-  const productsQ = useQuery<Product[]>({
-    queryKey: ['products', { include: 'brand,variants,attributes,offers' }], // ← add "offers"
-    queryFn: async () => {
-      // Pass include as a param so the backend can expand relations
-      const res = await api.get('/api/products', { params: { include: 'brand,variants,attributes,offers' } });
-      const payload = res.data;
-      const raw: any[] = Array.isArray(payload) ? payload : (payload?.data ?? []);
+const productsQ = useQuery<Product[]>({
+  queryKey: ['products', { include: 'brand,variants,attributes,offers', status: 'LIVE' }],
+  queryFn: async () => {
+    const res = await api.get('/api/products', {
+      params: { include: 'brand,variants,attributes,offers', status: 'LIVE' },
+    });
 
-      const normalizedAll = raw
-        .filter((x) => x && typeof x.id === 'string')
-        .map((x) => {
-          // ensure variants carry offers array if provided
-          const variants = Array.isArray(x.variants)
-            ? x.variants.map((v: any) => ({
+    const payload = res.data;
+    const raw: any[] = Array.isArray(payload) ? payload : (payload?.data ?? []);
+
+    const normalizedAll = raw
+      .filter((x) => x && typeof x.id === 'string')
+      .map((x) => {
+        const variants = Array.isArray(x.variants)
+          ? x.variants.map((v: any) => ({
               id: String(v.id),
               sku: v.sku,
               price: Number.isFinite(Number(v.price)) ? Number(v.price) : undefined,
               inStock: v.inStock !== false,
               imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-              offers: Array.isArray(v.offers) ? v.offers : [], // ← keep variant offers
+              offers: Array.isArray(v.offers) ? v.offers : [],
             }))
-            : [];
+          : [];
 
-          const supplierOffers = Array.isArray(x.supplierOffers) ? x.supplierOffers : []; // ← keep product offers
+        const supplierOffers = Array.isArray(x.supplierOffers) ? x.supplierOffers : [];
 
-          const p: Product = {
-            id: String(x.id),
-            title: String(x.title ?? ''),
-            description: x.description ?? '',
-            price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
-            inStock: x.inStock !== false,
-            imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
-            categoryId: x.categoryId ?? null,
-            categoryName: x.categoryName ?? null,
-            brandName: x.brandName ?? x.brand?.name ?? null,
-            brand: x.brand ? { id: String(x.brand.id), name: String(x.brand.name) } : null,
-            variants,
-            ratingAvg: x.ratingAvg ?? null,
-            ratingCount: x.ratingCount ?? null,
-            attributesSummary: Array.isArray(x.attributesSummary) ? x.attributesSummary : [],
-            supplierOffers,
-          };
+        const p: Product = {
+          id: String(x.id),
+          title: String(x.title ?? ''),
+          description: x.description ?? '',
+          price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
+          inStock: x.inStock !== false,
+          imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
+          categoryId: x.categoryId ?? null,
+          categoryName: x.categoryName ?? null,
+          brandName: x.brandName ?? x.brand?.name ?? null,
+          brand: x.brand ? { id: String(x.brand.id), name: String(x.brand.name) } : null,
+          variants,
+          ratingAvg: x.ratingAvg ?? null,
+          ratingCount: x.ratingCount ?? null,
+          attributesSummary: Array.isArray(x.attributesSummary) ? x.attributesSummary : [],
+          supplierOffers,
+          // capture status exactly as provided by API
+          status: (x.status ?? x.state ?? '').toString(),
+        };
 
-          p.hasOffers = productHasOffers(p);
-          return p;
-        }) as Product[];
+        return p;
+      }) as Product[];
 
-      return normalizedAll;
-    },
-  });
+    // FINAL GUARANTEE: only show LIVE
+    return normalizedAll.filter(isLive);
+  },
+});
+
 
 
   // Favorites
@@ -563,18 +569,18 @@ export default function Catalog() {
   const recScored = useMemo(() => {
     if (sortKey !== 'relevance') return filtered;
 
-    const favSet = favQuery.data ?? new Set<string>();
+    // const favSet = favQuery.data ?? new Set<string>();
     const purchased: Record<string, number> = purchasedQ.data ?? {};
     const clicks: Record<string, number> = readClicks();
 
     const scored: Scored[] = filtered.map((p) => {
-      const fav = favSet.has(p.id) ? 1 : 0;
+      // const fav = favSet.has(p.id) ? 1 : 0;
       const buy = Math.log1p(purchased[p.id] || 0);
       const clk = Math.log1p(clicks[p.id] || 0);
       const catMatch = 0;
       const prox = 0;
 
-      const score = 2.5 * fav + 3.0 * buy + 1.5 * clk + 1.0 * catMatch + 0.15 * prox;
+      const score = 2.5 * buy + 1.5 * clk + 1.0 * catMatch + 0.15 * prox;
       return { p, score };
     });
 

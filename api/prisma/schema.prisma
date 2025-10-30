@@ -255,7 +255,7 @@ model SupplierOffer {
   isActive Boolean @default(true)
 
   // NEW — authoritative inventory for this offer
-  availableQty Int     @default(0) // editable in admin UI
+  availableQty Int @default(0) // editable in admin UI
   // (optional) for future holds/reservations
   // reservedQty  Int     @default(0)
 
@@ -270,7 +270,6 @@ model SupplierOffer {
   @@index([supplierId])
   @@index([isActive, inStock])
 }
-
 
 model Category {
   id       String     @id @default(cuid())
@@ -432,11 +431,18 @@ model Product {
   // Back-relation to ProductAttributeOption.product
   attributeOptions ProductAttributeOption[] @relation("Product_ProductAttributeOptions")
 
+  // Soft delete
+  isDeleted Boolean   @default(false)
+  deletedAt DateTime?
+
   createdAt DateTime @default(now())
 
+  // 🔁 important indexes
+  @@unique([sku, isDeleted]) // allow reusing SKU after soft delete
   @@index([brandId])
   @@index([categoryId])
   @@index([supplierId])
+  @@index([isDeleted, createdAt])
 }
 
 enum PaymentStatus {

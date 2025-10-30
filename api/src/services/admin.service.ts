@@ -185,7 +185,7 @@ export async function getOverview(): Promise<Overview> {
     prisma.product.count({ where: { status: 'PUBLISHED' as any, AND: [anyActiveOffer] } }),
 
     prisma.product.count({
-      where: { status: 'PUBLISHED' as any, AND: [variantAwareAvailable, anyActiveOffer] },
+      where: { status: 'LIVE' as any, AND: [variantAwareAvailable] },
     }),
 
     prisma.product.count({ where: { ProductVariant: { some: {} } } }),

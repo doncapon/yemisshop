@@ -65,7 +65,6 @@ export default function Navbar() {
         const { data } = await api.get<MeResponse>('/api/auth/me', {
           headers: { Authorization: `Bearer ${token}` },
         });
-
         const f = data.firstName?.trim() || null;
         const m = data.middleName?.trim() || null;
         const l = data.lastName?.trim() || null;
@@ -204,15 +203,6 @@ export default function Navbar() {
               Admin
             </NavLink>
           )}
-          {(userRole === 'SUPER_ADMIN') && (
-
-          <NavLink to="/admin/settings" className={({ isActive }) =>
-                `${linkBase} ${isActive ? linkActive : linkInactive}`
-              }>
-            Admin_Settings
-          </NavLink>
-          )}
-
         </nav>
 
         {/* Spacer */}
@@ -285,6 +275,18 @@ export default function Navbar() {
                     >
                       Purchase history
                     </button>
+                    {userRole === 'SUPER_ADMIN' &&
+                    <button
+                      className="w-full text-left px-3 py-2 hover:bg-black/5 transition"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        nav('/admin/settings');
+                      }}
+                      role="menuitem"
+                    >
+                      Admin Settings
+                    </button>
+                    }
                     <div className="my-1 border-t border-border" />
                     <button
                       className="w-full text-left px-3 py-2 text-danger hover:bg-red-50 transition"
@@ -419,6 +421,19 @@ export default function Navbar() {
                 >
                   Purchase history
                 </button>
+
+                {userRole === 'SUPER_ADMIN' && <button
+                  className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
+                  onClick={() => {
+                    nav("/admin/settings")
+                    setMobileOpen(false);
+                    nav('/orders');
+                  }}
+                >
+                  Admin Settings
+                </button>
+                }
+
                 <button
                   className="w-full text-left px-3 py-2 rounded-md text-red-100 hover:bg-white/10"
                   onClick={() => {

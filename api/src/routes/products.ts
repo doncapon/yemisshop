@@ -2,18 +2,11 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 
 const router = Router();
 
-/* ---------------- helpers ---------------- */
-function parseInclude(q: any) {
-  const inc = String(q?.include || '').toLowerCase();
-  return {
-    brand: inc.includes('brand'),
-    variants: inc.includes('variants'),
-    attributes: inc.includes('attributes'),
-  };
-}
+
 function toNumber(n: any) {
   const v = Number(n);
   return Number.isFinite(v) ? v : 0;
@@ -105,87 +98,223 @@ const ListQuery = z.object({
   include: z.string().optional(),
 });
 
-// GET /api/products?include=brand,variants,attributes
+// --- tiny helper: parse include flags ---
+function parseInclude(q: any) {
+  const incStr = String(q?.include ?? '').trim();
+  const parts = incStr ? incStr.split(',').map((s: string) => s.trim().toLowerCase()) : [];
+  const set = new Set(parts);
+  return {
+    brand: set.has('brand'),
+    variants: set.has('variants'),
+    attributes: set.has('attributes'),
+    offers: set.has('offers'),
+  };
+}
+
+// --- reusable select builder for variants ---
+const variantSelectBase = {
+  id: true,
+  sku: true,
+  price: true,
+  inStock: true,
+  imagesJson: true,
+} as const;
+
+// --- main route ---
+// GET /api/products?include=brand,variants,attributes,offers&status=LIVE
 router.get('/', async (req, res) => {
-  try {
-    const inc = parseInclude(req.query);
+  const inc = parseInclude(req.query);
 
+  // 1) parse status with safe defaults
+  const ALLOWED = new Set(['ANY', 'LIVE', 'PUBLISHED', 'PENDING', 'REJECTED', 'ARCHIVED']);
+  const rawStatus = String(req.query.status ?? 'LIVE').toUpperCase();
+  const wantStatus = ALLOWED.has(rawStatus) ? rawStatus : 'LIVE';
+
+  // 2) common filters: price guard + optional status (we’ll try LIVE; if that explodes, we’ll retry with PUBLISHED)
+  const commonWhere: any = {
+    OR: [
+      { price: { gt: new Prisma.Decimal(0) } },
+      { ProductVariant: { some: { price: { not: null, gt: new Prisma.Decimal(0) } } } },
+    ],
+  };
+  const withStatus = (status: string) =>
+    status === 'ANY' ? commonWhere : { ...commonWhere, status: status as any };
+
+  // 3) common include
+  const include: any = {
+    category: { select: { id: true, name: true, slug: true } },
+    ...(inc.brand ? { brand: { select: { id: true, name: true } } } : {}),
+    ...(inc.variants
+      ? {
+          ProductVariant: {
+            orderBy: { createdAt: 'asc' },
+            select: variantSelectBase,
+          },
+        }
+      : {}),
+    ...(inc.attributes
+      ? {
+          attributeOptions: {
+            include: {
+              attribute: { select: { id: true, name: true, type: true } },
+              value: { select: { id: true, name: true, code: true } },
+            },
+          },
+          ProductAttributeText: {
+            include: { attribute: { select: { id: true, name: true, type: true } } },
+            orderBy: [{ attribute: { name: 'asc' } }],
+          },
+        }
+      : {}),
+  };
+
+  // tiny mapper for response
+  const mapRow = (p: any, offersByProduct: Map<string, any[]>, offersByVariant: Map<string, any[]>, includeVariants: boolean, includeAttrs: boolean, includeBrand: boolean, includeOffers: boolean) => {
+    const variants =
+      includeVariants &&
+      (p.ProductVariant ?? []).map((v: any) => ({
+        id: v.id,
+        sku: v.sku ?? null,
+        price: v.price != null ? Number(v.price) : null,
+        inStock: v.inStock !== false,
+        imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+        ...(includeOffers
+          ? {
+              offers: (offersByVariant.get(String(v.id)) || []).map((o: any) => ({
+                id: o.id,
+                isActive: o.isActive !== false,
+                inStock: o.inStock !== false,
+                availableQty: o.availableQty != null ? Number(o.availableQty) : null,
+                productId: o.productId ?? null,
+                variantId: o.variantId ?? null,
+              })),
+            }
+          : {}),
+      }));
+
+    return {
+      id: p.id,
+      title: p.title,
+      description: p.description,
+      status: p.status ?? null,
+      price: p.price != null ? Number(p.price) : null,
+      inStock: p.inStock !== false,
+      imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
+      categoryId: p.categoryId ?? p.category?.id ?? null,
+      categoryName: p.category?.name ?? null,
+      brandId: p.brandId ?? null,
+      ...(includeBrand && p.brand ? { brand: { id: p.brand.id, name: p.brand.name }, brandName: p.brand.name } : { brand: null, brandName: null }),
+      ...(includeVariants ? { variants } : {}),
+      ...(includeOffers
+        ? {
+            supplierOffers: (offersByProduct.get(String(p.id)) || []).map((o: any) => ({
+              id: o.id,
+              isActive: o.isActive !== false,
+              inStock: o.inStock !== false,
+              availableQty: o.availableQty != null ? Number(o.availableQty) : null,
+              productId: o.productId ?? null,
+              variantId: o.variantId ?? null,
+            })),
+          }
+        : {}),
+      attributesSummary: includeAttrs
+        ? [
+            ...(p.attributeOptions ?? []).map((x: any) => ({
+              attribute: x.attribute?.name ?? '',
+              value: x.value?.name ?? '',
+            })),
+            ...(p.ProductAttributeText ?? []).map((x: any) => ({
+              attribute: x.attribute?.name ?? '',
+              value: String(x.value ?? ''),
+            })),
+          ]
+        : undefined,
+    };
+  };
+
+  // function to fetch + (optionally) stitch offers
+  async function runQueryWith(whereObj: any) {
     const rows = await prisma.product.findMany({
-      where: { status: 'PUBLISHED' as any },
+      where: whereObj,
       orderBy: { createdAt: 'desc' },
-      include: {
-        category: { select: { id: true, name: true, slug: true} },
-        ...(inc.brand ? { brand: { select: { id: true, name: true } } } : {}),
-        ...(inc.variants
-          ? {
-              ProductVariant: {
-                orderBy: { createdAt: 'asc' },
-                select: {
-                  id: true, sku: true, price: true, inStock: true, imagesJson: true,
-                },
-              },
-            }
-          : {}),
-        ...(inc.attributes
-          ? {
-              attributeOptions: {
-                include: {
-                  attribute: { select: { id: true, name: true, type: true } },
-                  value: { select: { id: true, name: true, code: true } },
-                },
-              },
-              ProductAttributeText: {
-                include: { attribute: { select: { id: true, name: true, type: true } } },
-                orderBy: [{ attribute: { name: 'asc' } }],
-              },
-            }
-          : {}),
-      },
+      include,
     });
 
-    const data = rows.map((p: any) => {
-      const variants =
-        inc.variants &&
-        (p.ProductVariant ?? []).map((v: any) => ({
-          id: v.id,
-          sku: v.sku ?? null,
-          price: v.price != null ? Number(v.price) : null,
-          inStock: v.inStock !== false,
-          imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-        }));
+    // If offers were requested, fetch them with separate queries to avoid relying on relation field names.
+    let offersByProduct = new Map<string, any[]>();
+    let offersByVariant = new Map<string, any[]>();
 
-      return {
-        id: p.id,
-        title: p.title,
-        description: p.description,
-        price: p.price != null ? Number(p.price) : null,
-        inStock: p.inStock !== false,
-        imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
-        categoryId: p.categoryId ?? p.category?.id ?? null,
-        categoryName: p.category?.name ?? null,
-        brandId: p.brandId ?? null,
-        brand: inc.brand && p.brand ? { id: p.brand.id, name: p.brand.name } : null,
-        brandName: inc.brand && p.brand ? p.brand.name : null,
-        ...(inc.variants ? { variants } : {}),
-        attributesSummary: inc.attributes
-          ? [
-              ...(p.attributeOptions ?? []).map((x: any) => ({
-                attribute: x.attribute?.name ?? '',
-                value: x.value?.name ?? '',
-              })),
-              ...(p.ProductAttributeText ?? []).map((x: any) => ({
-                attribute: x.attribute?.name ?? '',
-                value: String(x.value ?? ''),
-              })),
-            ]
-          : undefined,
-      };
-    });
+    if (inc.offers && rows.length > 0) {
+      const productIds = rows.map((r: any) => String(r.id));
+      const variantIds = inc.variants
+        ? rows.flatMap((r: any) => (r.ProductVariant ?? []).map((v: any) => String(v.id)))
+        : [];
 
-    res.json({ data });
-  } catch (e) {
+      const offers = await prisma.supplierOffer.findMany({
+        where: {
+          OR: [
+            { productId: { in: productIds } },
+            ...(variantIds.length ? [{ variantId: { in: variantIds } }] : []),
+          ],
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          isActive: true,
+          inStock: true,
+          availableQty: true,
+          productId: true,
+          variantId: true,
+        },
+      });
+
+      for (const o of offers) {
+        if (o.variantId) {
+          const key = String(o.variantId);
+          const arr = offersByVariant.get(key) || [];
+          arr.push(o);
+          offersByVariant.set(key, arr);
+        } else if (o.productId) {
+          const key = String(o.productId);
+          const arr = offersByProduct.get(key) || [];
+          arr.push(o);
+          offersByProduct.set(key, arr);
+        }
+      }
+    }
+
+    const data = rows.map((p: any) =>
+      mapRow(p, offersByProduct, offersByVariant, !!inc.variants, !!inc.attributes, !!inc.brand, !!inc.offers)
+    );
+
+    return data;
+  }
+
+  try {
+    // Try with requested status (default LIVE)
+    const data = await runQueryWith(withStatus(wantStatus));
+    return res.json({ data });
+  } catch (e: any) {
+    // If LIVE isn't in your enum yet, Prisma throws an invalid enum error.
+    const msg = String(e?.message || '');
+    const looksLikeEnumError =
+      msg.includes('Invalid enum') || msg.includes('Argument status:') || msg.includes('invalid input value');
+
+    // graceful fallback: if the client asked for LIVE but your DB doesn’t know it yet,
+    // retry with PUBLISHED so the page doesn’t 500. Remove this once LIVE exists in your enum.
+    if (wantStatus === 'LIVE' && looksLikeEnumError) {
+      console.warn('[products] LIVE status not present in DB enum, falling back to PUBLISHED');
+      try {
+        const data = await runQueryWith(withStatus('PUBLISHED'));
+        return res.json({ data, note: 'Fell back to PUBLISHED because LIVE enum not found' });
+      } catch (e2) {
+        console.error('GET /api/products fallback failed:', e2);
+        return res.status(500).json({ error: 'Could not load products (fallback failed)' });
+      }
+    }
+
     console.error('GET /api/products failed:', e);
-    res.status(500).json({ error: 'Could not load products' });
+    return res.status(500).json({ error: 'Could not load products' });
   }
 });
 
