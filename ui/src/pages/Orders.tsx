@@ -430,7 +430,7 @@ export default function OrdersPage() {
     refetchOnWindowFocus: false,
     staleTime: 10_000,
   });
-const profitToday = profitRangeQ.data?.profitToday;
+  const profitToday = profitRangeQ.data?.profitToday;
 
   return (
     <div className="max-w-6xl mx-auto px-4 md:px-6 py-6">
@@ -710,7 +710,16 @@ const profitToday = profitRangeQ.data?.profitToday;
 
                             </div>
                           ) : (
-                            <span className="text-xs text-ink-soft">—</span>
+                            <span className="text-xs text-ink-soft">
+                              
+                                <button
+                                  className="inline-flex items-center justify-center rounded-xl border bg-green-200 px-3 py-1.5 hover:bg-black/5"
+                                  >
+                                  View details
+                                </button>
+                              
+                            </span>
+
                           )}
                         </td>
 

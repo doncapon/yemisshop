@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { requireAdmin, requireAuth } from '../middleware/auth.js';
+import { Prisma } from '@prisma/client';
 const r = Router();
 
 r.get('/products', requireAuth, requireAdmin, async (req, res) => {
@@ -9,30 +10,51 @@ r.get('/products', requireAuth, requireAdmin, async (req, res) => {
 
   // --- re-use the same definitions you used for counts ---
   const variantAwareAvailable = {
-    OR: [{ inStock: true }, { variants: { some: { inStock: true } } }],
+    OR: [{ inStock: true }, { variants: { some: { inStock: true, price: { not: null, gt: new Prisma.Decimal(0) } } } }],
   } as const;
   const anyOffer = {
     OR: [
       { supplierOffers: { some: {} } },
-      { variants: { some: { offers: { some: {} } } } },
+      { variants: { some: { price: { not: null, gt: new Prisma.Decimal(0) }, offers: { some: {} } } } },
     ],
   } as const;
   const anyActiveOffer = {
     OR: [
       { supplierOffers: { some: { isActive: true, inStock: true } } },
-      { variants: { some: { offers: { some: { isActive: true, inStock: true } } } } },
+      { variants: { some: { price: { not: null, gt: new Prisma.Decimal(0) }, offers: { some: { isActive: true, inStock: true } } } } },
+    ],
+  } as const;
+
+
+  const positivePrice = {
+    OR: [
+      { price: { gt: new Prisma.Decimal(0) } },
+      { variants: { some: { price: { not: null, gt: new Prisma.Decimal(0) } } } },
     ],
   } as const;
 
   let where: any = {};
-  if (bucket === 'published') where = { status: 'PUBLISHED' };
-  if (bucket === 'live') where = { status: 'PUBLISHED', AND: [variantAwareAvailable, anyActiveOffer] };
-  if (bucket === 'published-available') where = { status: 'PUBLISHED', ...variantAwareAvailable };
-  if (bucket === 'published-with-offer') where = { status: 'PUBLISHED', ...anyOffer };
-  if (bucket === 'published-no-offer') where = { status: 'PUBLISHED', AND: [{ supplierOffers: { none: {} } }, { variants: { none: { offers: { some: {} } } } }] };
-  if (bucket === 'published-with-active-offer') where = { status: 'PUBLISHED', ...anyActiveOffer };
-  if (bucket === 'with-variants') where = { variants: { some: {} } };
-  if (bucket === 'simple') where = { variants: { none: {} } };
+  if (bucket === 'published') where = { status: 'PUBLISHED', ...positivePrice };
+  if (bucket === 'live') where = { status: 'PUBLISHED', AND: [positivePrice, variantAwareAvailable, anyActiveOffer] };
+  if (bucket === 'published-available') where = { status: 'PUBLISHED', AND: [positivePrice, variantAwareAvailable] };
+  if (bucket === 'published-with-offer') where = { status: 'PUBLISHED', AND: [positivePrice, anyOffer] };
+  if (bucket === 'published-no-offer') where = {
+    status: 'PUBLISHED',
+    AND: [
+      positivePrice,
+      { supplierOffers: { none: {} } },
+      { variants: { none: { offers: { some: {} } } } },
+    ],
+  };
+  if (bucket === 'published-with-active-offer') where = { status: 'PUBLISHED', AND: [positivePrice, anyActiveOffer] };
+  // “with-variants” should mean: has at least one positively-priced variant
+  if (bucket === 'with-variants') where = { variants: { some: { price: { not: null, gt: new Prisma.Decimal(0) } } } };
+  if (bucket === 'simple') where = {
+    // either truly no variants, or all variants are non-positive — depending on your preference.
+    // Most commonly: "no variants at all":
+    variants: { none: {} },
+  };
+
 
   const rows = await prisma.product.findMany({
     where,

@@ -173,9 +173,99 @@ export default function ProductDetail() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['product', id, { include: 'brand,variants,attributes' }],
-    queryFn: async () => (await api.get(`/api/products/${id}?include=brand,variants,attributes`)).data as Product,
     enabled: !!id,
     staleTime: 30_000,
+    queryFn: async () => {
+      // Ask server for brand, variants, attributes, (offers are optional for this page)
+      const res = await api.get(`/api/products/${id}?include=brand,variants,attributes`);
+      const payload = res.data;
+      const raw = payload?.data ?? payload; // tolerate either {data} or raw
+
+      // If the server enforced LIVE-only and hid the product, raw may be empty
+      if (!raw || !raw.id) {
+        // make react-query go to "error" branch so the page shows the nice 404 UI
+        const e = new Error('Product not found');
+        (e as any).status = 404;
+        throw e;
+      }
+
+      // Normalize variants (support either `ProductVariant` or `variants`)
+      const rawVariants: any[] = Array.isArray(raw.ProductVariant)
+        ? raw.ProductVariant
+        : Array.isArray(raw.variants)
+          ? raw.variants
+          : [];
+
+      const variants: Variant[] = rawVariants.map((v: any) => ({
+        id: String(v.id),
+        sku: v.sku ?? null,
+        price: v.price != null ? Number(v.price) : null,
+        inStock: v.inStock !== false,
+        imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+        // If your API ever returns variant options, map them here:
+        options: Array.isArray(v.options)
+          ? v.options.map((o: any) => ({
+            attribute: {
+              id: String(o?.attribute?.id ?? ''),
+              name: String(o?.attribute?.name ?? ''),
+              type: o?.attribute?.type ?? null,
+            },
+            value: {
+              id: String(o?.value?.id ?? ''),
+              name: String(o?.value?.name ?? ''),
+              code: o?.value?.code ?? null,
+            },
+          }))
+          : undefined,
+      }));
+
+      // Map product-level attributes to UI-friendly tables
+      const attributeValues =
+        Array.isArray(raw.attributeOptions)
+          ? raw.attributeOptions.map((x: any, idx: number) => ({
+            id: String(x?.id ?? `val-${idx}`),
+            attribute: {
+              id: String(x?.attribute?.id ?? ''),
+              name: String(x?.attribute?.name ?? ''),
+              type: x?.attribute?.type ?? null,
+            },
+            value: {
+              id: String(x?.value?.id ?? ''),
+              name: String(x?.value?.name ?? ''),
+              code: x?.value?.code ?? null,
+            },
+          }))
+          : undefined;
+
+      const attributeTexts =
+        Array.isArray(raw.ProductAttributeText)
+          ? raw.ProductAttributeText.map((x: any, idx: number) => ({
+            id: String(x?.id ?? `txt-${idx}`),
+            attribute: {
+              id: String(x?.attribute?.id ?? ''),
+              name: String(x?.attribute?.name ?? ''),
+              type: x?.attribute?.type ?? null,
+            },
+            value: String(x?.value ?? ''),
+          }))
+          : undefined;
+
+      const product: Product = {
+        id: String(raw.id),
+        title: String(raw.title ?? ''),
+        description: String(raw.description ?? ''),
+        inStock: raw.inStock !== false,
+        price: Number(raw.price ?? 0),
+        imagesJson: Array.isArray(raw.imagesJson) ? raw.imagesJson : [],
+        brand: raw.brand ? { id: String(raw.brand.id), name: String(raw.brand.name) } : null,
+        brandName: raw.brandName ?? raw.brand?.name ?? null,
+        variants,
+        attributeValues,
+        attributeTexts,
+      };
+
+      return product;
+    },
   });
 
   // My favorites
@@ -255,11 +345,28 @@ export default function ProductDetail() {
     return findVariant(data.variants || [], selection);
   }, [data, selection, axes.length]);
 
+  // 1) Replace your `available` with these two helpers:
+  const anyVariantInStock = useMemo(
+    () => (data?.variants ?? []).some(v => v.inStock !== false),
+    [data?.variants]
+  );
+
+  const canSell = useMemo(() => {
+    if (!data) return false;
+    // If there are variants, allow the button as long as at least one is in stock.
+    // If no variants, rely on the product-level flag.
+    return (Array.isArray(data.variants) && data.variants.length > 0)
+      ? anyVariantInStock
+      : data.inStock !== false;
+  }, [data, anyVariantInStock]);
+
+  // Keep this if you still want to show the green/red "In stock" pill smartly:
   const available = useMemo(() => {
     if (!data) return false;
     if (axes.length === 0) return data.inStock !== false;
-    return matchedVariant ? isVariantAvailable(matchedVariant) : false;
-  }, [data, matchedVariant, axes.length]);
+    return matchedVariant ? isVariantAvailable(matchedVariant) : anyVariantInStock;
+  }, [data, matchedVariant, axes.length, anyVariantInStock]);
+
 
   const price = useMemo(() => {
     if (!data) return 0;
@@ -283,19 +390,23 @@ export default function ProductDetail() {
   }, [data, price]);
 
   /* ---------- Add to cart ---------- */
-  const addToCart = () => {
-    if (!data) return;
+  // 3) Keep the guard *inside* addToCart so we still enforce a complete selection:
+const addToCart = () => {
+  if (!data) return;
 
-    // If variants exist, ensure we have a fully matched variant
-    if (axes.length > 0 && !matchedVariant) {
-      toast.push({ title: 'Select options', message: 'Please choose all required options.', duration: 3500 });
-      return;
-    }
-    if (!available) {
-      toast.push({ title: 'Unavailable', message: 'That combination is not in stock.', duration: 3500 });
-      return;
-    }
-
+  if (axes.length > 0 && !matchedVariant) {
+    toast.push({ title: 'Select options', message: 'Please choose all required options.', duration: 3500 });
+    return;
+  }
+  if (axes.length > 0 && matchedVariant && matchedVariant.inStock === false) {
+    toast.push({ title: 'Unavailable', message: 'That combination is not in stock.', duration: 3500 });
+    return;
+  }
+  if (axes.length === 0 && data.inStock === false) {
+    toast.push({ title: 'Unavailable', message: 'This product is out of stock.', duration: 3500 });
+    return;
+  }
+  
     // Build a rich selectedOptions[] for checkout display
     const selectedOptions =
       axes.length > 0
@@ -487,7 +598,6 @@ export default function ProductDetail() {
             </div>
           )}
 
-
           {/* Variant pickers */}
           {axes.length > 0 && (
             <div className="mt-5 space-y-4">
@@ -582,7 +692,7 @@ export default function ProductDetail() {
               className={`inline-flex items-center gap-2 rounded-xl px-5 py-3 font-semibold shadow-sm
                 ${available ? 'bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200' : 'bg-zinc-200 text-zinc-500 cursor-not-allowed'}`}
               onClick={addToCart}
-              disabled={!available}
+              disabled={!canSell}
             >
               Add to cart
             </button>
@@ -720,8 +830,8 @@ function ImageCarousel({
 
   useEffect(() => {
     if (!zooming) return;
-    positionPane();
     const onWin = () => positionPane();
+    positionPane();
     window.addEventListener('resize', onWin);
     window.addEventListener('scroll', onWin, { passive: true });
     return () => {
@@ -803,8 +913,6 @@ function ImageCarousel({
               />
             </div>
           ))}
-
-
         </div>
 
         {/* Prev / Next controls */}

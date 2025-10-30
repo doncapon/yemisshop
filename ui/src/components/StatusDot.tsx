@@ -38,13 +38,13 @@ export const StatusDot: React.FC<Props> = ({
 
   const tone =
     toneOverride ??
-    (raw.includes('PUBLISH') || raw === 'ACTIVE' || raw === 'PAID' || raw === 'COMPLETED'
+    (raw.includes('LIVE') || raw === 'ACTIVE' || raw === 'PAID' || raw === 'COMPLETED'
       ? 'success'
       : raw.includes('PEND') || raw === 'PROCESSING'
       ? 'warning'
       : raw.includes('REJECT') || raw === 'FAILED' || raw === 'CANCELLED' || raw === 'INACTIVE'
       ? 'danger'
-      : raw === 'REFUNDED'
+      : raw.includes('PUBLISHED') || raw.includes('INFO')
       ? 'info'
       : 'muted');
 
