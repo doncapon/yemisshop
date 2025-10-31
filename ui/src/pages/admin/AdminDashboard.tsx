@@ -1,6 +1,6 @@
 // src/pages/AdminDashboard.tsx
-import { useEffect, useRef, useState, useCallback, type ReactNode, type JSX } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useEffect, useRef, useState, type ReactNode, type JSX } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import {
@@ -14,11 +14,8 @@ import {
     BellRing,
     BarChart3,
     Search,
-    Check,
-    ChevronDown,
-    ChevronRight,
+    // add any other icons you actually use
 } from 'lucide-react';
-
 import React from 'react';
 
 import api from '../../api/client.js';
@@ -27,16 +24,12 @@ import { useToast } from '../../components/ToastProvider.js';
 import { useModal } from '../../components/ModalProvider.js';
 import ActivitiesPanel from '../../components/admin/ActivitiesPanel.js';
 
-import { useMemo } from 'react';
-import { VariantsSection } from '../../components/admin/VariantSection.js';
-import { AttributeForm } from '../../components/admin/AttributeForm.js';
-import AdminProductAttributes from '../../components/admin/AdminProductAttributes.js';
 import { ModerationGrid } from '../../components/admin/ModerationGrid.js';
 import { ManageProducts } from '../../components/admin/ManageProducts.js';
+import { TransactionRow } from '../../components/admin/TransactionRow.js';
+import { CatalogSettingsSection } from '../../components/admin/CatalogSettingSection.js';
 
-
-/** ===== tweak this if your backend upload route differs ===== */
-/** =========================================================== */
+/* ---------------- constants ---------------- */
 const staleTImeInSecs = 300_000;
 
 /* ---------------- Types ---------------- */
@@ -47,7 +40,7 @@ type Me = {
     firstName?: string | null;
     lastName?: string | null;
 };
-/* ---- Overview payload types (match your getOverview) ---- */
+
 type Overview = {
     ordersToday: number;
     profitToday: number;
@@ -64,8 +57,8 @@ type Overview = {
         total: number;
         pending: number;
         rejected: number;
-        published: number;         // approval state
-        live: number;              // published & available (variant-aware) & active offers
+        published: number;
+        live: number;
         availability: {
             allStatusesAvailable: number;
             publishedAvailable: number;
@@ -89,13 +82,26 @@ type Overview = {
     };
 };
 
-
 type AdminUser = {
     id: string;
     email: string;
     role: string;
     status: string;
     createdAt?: string;
+};
+
+type SupplierOfferLite = {
+    id: string;
+    productId: string;
+    variantId?: string | null;
+    supplierId: string;
+    supplierName?: string;
+    isActive?: boolean;
+    inStock?: boolean;
+    // any of these may exist depending on backend:
+    available?: number;
+    qty?: number;
+    stock?: number;
 };
 
 type AdminProduct = {
@@ -108,7 +114,7 @@ type AdminProduct = {
     isDelete?: boolean;
     ownerId?: boolean;
     availableQty: number;
-    supplierOffers: SupplierOfferLite[],
+    supplierOffers: SupplierOfferLite[];
     ownerEmail?: string | null;
     categoryId?: string | null;
     brandId?: string | null;
@@ -117,22 +123,25 @@ type AdminProduct = {
     inStock?: boolean;
 };
 
-
-
-type SupplierOfferLite = {
+type AdminSupplier = {
     id: string;
-    productId: string;
-    variantId?: string | null;
-    supplierId: string;
-    supplierName?: string;
-    isActive?: boolean;
-    inStock?: boolean;
+    name: string;
+    type: 'PHYSICAL' | 'ONLINE';
+    status: string;
+    contactEmail?: string | null;
+    whatsappPhone?: string | null;
 
+    apiBaseUrl?: string | null;
+    apiAuthType?: 'NONE' | 'BEARER' | 'BASIC' | null;
+    apiKey?: string | null;
 
-    // any of these may exist depending on backend:
-    available?: number;
-    qty?: number;
-    stock?: number;
+    payoutMethod?: 'SPLIT' | 'TRANSFER' | null;
+    bankCountry?: string | null;
+    bankCode?: string | null;
+    bankName?: string | null;
+    accountNumber?: string | null;
+    accountName?: string | null;
+    isPayoutEnabled?: boolean | null;
 };
 
 type AdminPaymentItem = {
@@ -176,6 +185,34 @@ type AdminBrand = {
 };
 
 type AdminAttribute = any;
+
+type TabKey = 'overview' | 'users' | 'products' | 'transactions' | 'catalog' | 'ops' | 'marketing' | 'analytics';
+type ProductsInnerTab = 'moderation' | 'manage';
+
+/** Filters that your Manage tab can use (central place) */
+type ManageFilters = {
+    status: 'ANY' | 'LIVE' | 'PUBLISHED' | 'PENDING' | 'REJECTED' | 'ARCHIVED';
+    stock: 'ANY' | 'AVAILABLE' | 'OUT';
+    offers: 'ANY' | 'ANY_PRESENT' | 'ACTIVE_ONLY' | 'NONE';
+    variants: 'ANY' | 'WITH' | 'SIMPLE';
+    q?: string;
+};
+
+type FilterPreset =
+    | 'all'
+    | 'no-offer'
+    | 'live'
+    | 'published-with-offer'
+    | 'published-no-offer'
+    | 'published-with-active'
+    | 'published-base-in'
+    | 'published-base-out'
+    | 'with-variants'
+    | 'simple'
+    | 'published-with-availability'
+    | 'published'
+    | 'pending'
+    | 'rejected';
 
 /* ---------------- Utils ---------------- */
 const ngn = new Intl.NumberFormat('en-NG', {
@@ -225,16 +262,6 @@ const stopHashNav = (evt: React.SyntheticEvent) => {
         evt.stopPropagation();
     }
 };
-    type TabKey = 'overview' | 'users' | 'products' | 'transactions' | 'catalog' | 'ops' | 'marketing' | 'analytics';
-
-
-
-
-
-
-
-
-
 
 /* =========================================================
    AdminDashboard
@@ -245,14 +272,27 @@ export default function AdminDashboard() {
     const toast = useToast();
     const { openModal } = useModal();
     const qc = useQueryClient();
+    const location = useLocation();
 
-    // inner products tab state
-    type ProductsInnerTab = 'moderation' | 'manage';
+    // Tabs
+    const [tab, setTab] = useState<TabKey>('overview');
     const [pTab, setPTab] = useState<ProductsInnerTab>('manage');
 
-    // NEW state at the top alongside other useStates
+    // Products search + focus handoff from Moderation
     const [prodSearch, setProdSearch] = useState('');
     const [focusProductId, setFocusProductId] = useState<string | null>(null);
+
+    // Transactions search
+    const [q, setQ] = useState('');
+
+    // Manage filters (source of truth for Manage tab)
+    const [manageFilters, setManageFilters] = useState<ManageFilters>({
+        status: 'ANY',
+        stock: 'ANY',
+        offers: 'ANY',
+        variants: 'ANY',
+        q: '',
+    });
 
     // Role-gate
     const me = useQuery({
@@ -276,9 +316,6 @@ export default function AdminDashboard() {
     useEffect(() => {
         if (me.isFetched && !canAdmin) nav('/', { replace: true });
     }, [me.isFetched, canAdmin, nav]);
-
-    const [tab, setTab] = useState<TabKey>('overview');
-    const [q, setQ] = useState('');
 
     /* -------- Overview -------- */
     const overview = useQuery<Overview>({
@@ -339,8 +376,7 @@ export default function AdminDashboard() {
         queryKey: ['admin', 'categories'],
         enabled: !!canAdmin && tab === 'catalog',
         queryFn: async () =>
-            (await api.get<{ data: AdminCategory[] }>('/api/admin/categories', { headers: { Authorization: `Bearer ${token}` } })).data
-                .data,
+            (await api.get<{ data: AdminCategory[] }>('/api/admin/categories', { headers: { Authorization: `Bearer ${token}` } })).data.data,
         refetchOnWindowFocus: false,
         staleTime: staleTImeInSecs,
     });
@@ -355,7 +391,7 @@ export default function AdminDashboard() {
 
     const updateCategory = useMutation({
         mutationFn: async ({ id, ...payload }: Partial<AdminCategory> & { id: string }) =>
-            (await api.put(`/api/admin/categories/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+            (await api.put(`/api/admin/categories/${id}`, payload, { headers: { Authorization: { Authorization: `Bearer ${token}` } } as any })).data,
         onSuccess: () => {
             qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
         },
@@ -404,8 +440,7 @@ export default function AdminDashboard() {
         queryKey: ['admin', 'attributes'],
         enabled: !!canAdmin && tab === 'catalog',
         queryFn: async () =>
-            (await api.get<{ data: AdminAttribute[] }>('/api/admin/attributes', { headers: { Authorization: `Bearer ${token}` } }))
-                .data.data,
+            (await api.get<{ data: AdminAttribute[] }>('/api/admin/attributes', { headers: { Authorization: `Bearer ${token}` } })).data.data,
         refetchOnWindowFocus: false,
         staleTime: staleTImeInSecs,
     });
@@ -432,8 +467,7 @@ export default function AdminDashboard() {
         },
     });
 
-    // CREATE value (already optimistic — keep your onMutate)
-    // CREATE value (optimistic)
+    // Attribute values
     const createAttrValue = useMutation({
         mutationFn: async (payload: { attributeId: string; name: string; code?: string }) => {
             const { data } = await api.post(`/api/admin/attributes/${payload.attributeId}/values`, payload, {
@@ -463,9 +497,7 @@ export default function AdminDashboard() {
                 const idx = prev.findIndex((a: any) => a.id === vars.attributeId);
                 if (idx < 0) return prev;
                 const a = { ...prev[idx] };
-                a.values = (a.values || []).map((v: any) =>
-                    v.id.startsWith('tmp-') && v.name === vars.name ? created : v
-                );
+                a.values = (a.values || []).map((v: any) => (v.id.startsWith('tmp-') && v.name === vars.name ? created : v));
                 const next = [...prev];
                 next[idx] = a;
                 return next;
@@ -474,7 +506,6 @@ export default function AdminDashboard() {
         },
     });
 
-    // UPDATE value
     const updateAttrValue = useMutation({
         mutationFn: async ({
             attributeId,
@@ -500,7 +531,6 @@ export default function AdminDashboard() {
         },
     });
 
-    // DELETE value
     const deleteAttrValue = useMutation({
         mutationFn: async ({ attributeId, id }: { attributeId: string; id: string }) =>
             (await api.delete(`/api/admin/attributes/${attributeId}/values/${id}`, {
@@ -512,28 +542,6 @@ export default function AdminDashboard() {
         },
         onError: () => {
             toast.push({ title: 'Attributes', message: 'Failed to delete value.', duration: 2500 });
-        },
-    });
-
-    const createSupplier = useMutation({
-        mutationFn: async (payload: Partial<AdminSupplier>) =>
-            (await api.post('/api/admin/suppliers', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
-        },
-    });
-    const updateSupplier = useMutation({
-        mutationFn: async ({ id, ...payload }: Partial<AdminSupplier> & { id: string }) =>
-            (await api.put(`/api/admin/suppliers/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
-        },
-    });
-    const deleteSupplier = useMutation({
-        mutationFn: async (id: string) =>
-            (await api.delete(`/api/admin/suppliers/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
         },
     });
 
@@ -556,7 +564,7 @@ export default function AdminDashboard() {
         })();
     }, [tab, canAdmin, token, qc]);
 
-    /* ---------------- UI helpers ---------------- */
+    /* ---------------- UI bits ---------------- */
     function TabButton({ k, label, Icon }: { k: TabKey; label: string; Icon: any }) {
         const active = tab === k;
         return (
@@ -634,8 +642,7 @@ export default function AdminDashboard() {
         );
     }
 
-
-    /** --------- LOCALIZED Users section (Fix B) --------- */
+    /* -------- Users (localized) -------- */
     function UsersSection({ token, canAdmin }: { token?: string | null; canAdmin: boolean }) {
         const qc = useQueryClient();
         const { openModal } = useModal();
@@ -794,186 +801,65 @@ export default function AdminDashboard() {
 
     const explain = (title: string, message: string) => openModal({ title, message });
 
-    // Navigate to Products → Manage. If you later add real filters there
-
-    const navigate = useNavigate();
-    function normalizePreset(view?: string) {
-        if (!view) return undefined;
-        // accept both wordings
-        if (view === 'published-with-any') return 'published-with-offer';
-        return view;
-    }
-
-    function goProductsManage(view?: string) {
-        setTab('products');
-        setPTab('manage');
-        const v = normalizePreset(view);
-        navigate({
-            pathname: '/admin/products',                 // 👈 ABSOLUTE, not relative
-            search: v ? `?view=${encodeURIComponent(v)}` : ''
-        });
-    }
-
     const goProductsModeration = () => {
         setTab('products');
         setPTab('moderation');
+        // reflect in URL (optional)
+        const s = new URLSearchParams(location.search);
+        s.set('tab', 'products');
+        s.set('pTab', 'moderation');
+        nav(`/admin?${s.toString()}`, { replace: false });
     };
 
-    
-    type FilterPreset =
-        | 'all'
-        | 'no-offer'
-        | 'live'
-        | 'published-with-offer'
-        | 'published-no-offer'
-        | 'published-with-active'
-        | 'published-base-in'
-        | 'published-base-out'
-        | 'with-variants'
-        | 'simple'
-        | 'published-with-availability'
-        | 'published'         // general status-only
-        | 'pending'
-        | 'rejected';
+    // normalize a tile label into a slug for the URL
+    const toViewSlug = (s: string) => s.trim().toLowerCase().replace(/\s+/g, '-');
 
-    // preset <-> URL sync
-    const [searchParams, setSearchParams] = useSearchParams();
-    const urlPreset = (searchParams.get('view') as FilterPreset) || 'all';
-    const [preset, setPreset] = useState<FilterPreset>(urlPreset);
-
-    useEffect(() => {
-        setPreset((searchParams.get('view') as FilterPreset) || 'all');
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [searchParams.toString()]);
-
-    function setPresetAndUrl(next: FilterPreset) {
-        setPreset(next);
-        const sp = new URLSearchParams(searchParams);
-        if (next && next !== 'all') sp.set('view', next);
-        else sp.delete('view');
-        setSearchParams(sp, { replace: true });
-    }
-
-     function statusFromPreset(p: FilterPreset): 'ANY' | 'PUBLISHED' | 'PENDING' | 'REJECTED' {
-        if (p.startsWith('published')) return 'PUBLISHED';
-        if (p === 'published') return 'PUBLISHED';
-        if (p === 'pending') return 'PENDING';
-        if (p === 'rejected') return 'REJECTED';
-        return 'ANY';
-    }
-
-    type SortKey = 'title' | 'price' | 'avail' | 'stock' | 'status' | 'owner';
-    type SortDir = 'asc' | 'desc';
-    // ✅ single source of truth for sorting
-    const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'title', dir: 'asc' });
-    const toggleSort = (key: SortKey) =>
-        setSort(prev => (prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }));
-
-    const SortIndicator = ({ k }: { k: SortKey }) => {
-        if (sort.key !== k) return <span className="opacity-50">↕</span>;
-        return <span>{sort.dir === 'asc' ? '↑' : '↓'}</span>;
+    // map any tile label to a Manage status
+    const mapViewToStatus = (label: string): ManageFilters['status'] => {
+        const v = toViewSlug(label);
+        switch (v) {
+            case 'published':
+            case 'published-available':
+            case 'published-with-any':
+            case 'published-without-any':
+            case 'published-with-active':
+            case 'published-base-in':
+            case 'published-base-out':
+                return 'PUBLISHED';
+            case 'live':
+                return 'LIVE';
+            case 'pending':
+                return 'PENDING';
+            case 'rejected':
+                return 'REJECTED';
+            // informational / cross-status filters → keep status wide-open
+            case 'all-statuses-available':
+            case 'with-any':
+            case 'without-any':
+            case 'with-active':
+            case 'with-variants':
+            case 'simple':
+                return 'ANY';
+            default:
+                return 'ANY';
+        }
     };
 
-    const statusParam = statusFromPreset(preset);
+    /** Click handler used by snapshot tiles: accepts the human label exactly as shown on the tile */
+    function goProductsManageFromTile(label: string) {
+        setTab('products');
+        setPTab('manage');
 
-    /* -------- Usage (for disable delete) -------- */
-    const usageQ = useQuery({
-        queryKey: ['admin', 'catalog', 'usage'],
-        enabled: !!canAdmin && tab === 'catalog',
-        queryFn: async () => {
-            try {
-                const { data } = await api.get('/api/admin/catalog/usage', { headers: { Authorization: `Bearer ${token}` } });
-                return data || { categories: {}, attributes: {}, brands: {} };
-            } catch {
-                try {
-                    const { data } = await api.get('/api/products?include=attributes,variants', {
-                        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-                    });
-                    const arr: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-                    const categories: Record<string, number> = {};
-                    const attributes: Record<string, number> = {};
-                    const brands: Record<string, number> = {};
+        const status = mapViewToStatus(label);
+        setManageFilters((f) => ({ ...f, status }));
 
-                    for (const p of arr) {
-                        if (p.categoryId) categories[p.categoryId] = (categories[p.categoryId] || 0) + 1;
-                        if (p.brandId) brands[p.brandId] = (brands[p.brandId] || 0) + 1;
-
-                        const avs = p.attributeValues || [];
-                        for (const av of avs) {
-                            const attrId = av?.attributeId || av?.attribute?.id;
-                            if (attrId) attributes[attrId] = (attributes[attrId] || 0) + 1;
-                        }
-                        const variants = p.variants || [];
-                        for (const v of variants) {
-                            const opts = v.options || [];
-                            for (const opt of opts) {
-                                const attrId = opt?.attributeId || opt?.attribute?.id;
-                                if (attrId) attributes[attrId] = (attributes[attrId] || 0) + 1;
-                            }
-                        }
-                    }
-                    return { categories, attributes, brands };
-                } catch {
-                    return { categories: {}, attributes: {}, brands: {} };
-                }
-            }
-        },
-        refetchOnWindowFocus: false,
-        staleTime: staleTImeInSecs,
-    });
-
-    /* -------- Suppliers (Catalog) -------- */
-    const suppliersQ = useQuery({
-        queryKey: ['admin', 'suppliers'],
-        enabled: !!canAdmin && tab === 'catalog',
-        queryFn: async () =>
-            (await api.get<{ data: AdminSupplier[] }>('/api/admin/suppliers', { headers: { Authorization: `Bearer ${token}` } })).data
-                .data,
-        refetchOnWindowFocus: false,
-        staleTime: staleTImeInSecs,
-    });
-
-    //local input for smooth typing
-    const [searchInput, setSearchInput] = React.useState(prodSearch);
-    React.useEffect(() => setSearchInput(prodSearch), [prodSearch]);
-    const debouncedSearch = useDebounced(searchInput, 350);
-
-    const listQ = useQuery<AdminProduct[]>({
-        queryKey: ['admin', 'products', 'manage', { q: debouncedSearch, statusParam }],
-        enabled: !!token,
-        queryFn: async () => {
-            const { data } = await api.get('/api/admin/products', {
-                headers: { Authorization: `Bearer ${token}` },
-                params: { status: statusParam, q: debouncedSearch, take: 50, skip: 0, include: 'owner' },
-            });
-            const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
-            return arr ?? [];
-        },
-        staleTime: staleTImeInSecs,
-        gcTime: 300_000,
-        refetchOnWindowFocus: false,
-        placeholderData: keepPreviousData,
-    });
-
-
-
-    useEffect(() => {
-        if (listQ.isError) {
-            const e: any = listQ.error;
-            console.error('Products list failed:', e?.response?.status, e?.response?.data || e?.message);
-        }
-    }, [listQ.isError, listQ.error]);
-
-
-    useEffect(() => {
-        if (listQ.isError) {
-            const e: any = listQ.error;
-            console.error('Products list failed:', e?.response?.status, e?.response?.data || e?.message);
-        }
-    }, [listQ.isError, listQ.error]);
-
-    const rows = listQ.data ?? [];
-
+        const s = new URLSearchParams(location.search);
+        s.set('tab', 'products');
+        s.set('pTab', 'manage');
+        s.set('status', status);
+        s.set('view', toViewSlug(label)); // view mirrors the visible label
+        nav(`/admin?${s.toString()}`, { replace: false });
+    }
 
 
     return (
@@ -1020,10 +906,8 @@ export default function AdminDashboard() {
                 <KpiCardOverview
                     title="Products"
                     total={`${overview.data?.products.total ?? 0} total`}
-                    // show Published + Live prominently (your chosen meaning)
                     value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0} Live`}
                     hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0} Rejected`}
-                    // extra line: quick availability snapshot (variant-aware published)
                     res={`${overview.data?.products.availability.publishedAvailable ?? 0} Published available`}
                     Icon={PackageCheck}
                 />
@@ -1042,7 +926,6 @@ export default function AdminDashboard() {
                     chart={<Sparkline points={overview.data?.sparklineRevenue7d || []} />}
                 />
 
-                {/* NEW: Profit (only for SUPER_ADMIN) */}
                 {role === 'SUPER_ADMIN' && (
                     <KpiCard
                         title="Profit Today"
@@ -1068,14 +951,15 @@ export default function AdminDashboard() {
 
             {/* Content */}
             <div className="mt-4 space-y-6">
-                {/* -------- Users (localized Fix B) -------- */}
+                {/* Users */}
                 {tab === 'users' && <UsersSection token={token} canAdmin={canAdmin} />}
 
                 {tab === 'analytics' && <ActivitiesPanel />}
 
+                {/* Overview */}
                 {tab === 'overview' && (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        {/* Left column: Quick Actions, etc. Keep your existing left cards */}
+                        {/* Quick Actions */}
                         <SectionCard title="Quick Actions" subtitle="Common admin tasks at a glance">
                             <div className="grid sm:grid-cols-2 gap-3">
                                 <QuickAction toAction={() => setTab('users')} icon={UserCheck} label="Approve Super Users" desc="Review & approve applicants" />
@@ -1085,7 +969,7 @@ export default function AdminDashboard() {
                             </div>
                         </SectionCard>
 
-                        {/* Right column: Attention */}
+                        {/* Attention */}
                         <SectionCard title="What needs attention" subtitle="Pending items & alerts">
                             <ul className="space-y-3 text-sm">
                                 <li className="flex items-center justify-between border rounded-xl px-3 py-2">
@@ -1103,7 +987,7 @@ export default function AdminDashboard() {
                             </ul>
                         </SectionCard>
 
-                        {/* NEW: Products snapshot (full breakdown, clickable chips) */}
+                        {/* Catalog snapshot */}
                         <SectionCard
                             title="Catalog snapshot"
                             subtitle="Availability & offers are variant-aware; Live = Published + Available + Active offer"
@@ -1113,29 +997,23 @@ export default function AdminDashboard() {
                                 <div className="rounded-xl border p-3">
                                     <div className="text-xs text-ink-soft mb-2">Status</div>
                                     <div className="flex flex-wrap gap-2">
-                                        <StatChip
-                                            label="Published"
+                                        {/* Status */}
+                                        <StatChip label="Published"
                                             value={overview.data?.products.published ?? 0}
-                                            onClick={() => goProductsManage("published")}
+                                            onClick={() => goProductsManageFromTile('Published')}
                                         />
-                                        <StatChip
-                                            label="Live"
+                                        <StatChip label="Live"
                                             value={overview.data?.products.live ?? 0}
-                                            onClick={() => explain(
-                                                'Live products',
-                                                'Published AND (base inStock OR any variant inStock) AND has at least one active, in-stock supplier offer.'
-                                            )}
+                                            onClick={() => goProductsManageFromTile('Live')}
                                             emphasis
                                         />
-                                        <StatChip
-                                            label="Pending"
+                                        <StatChip label="Pending"
                                             value={overview.data?.products.pending ?? 0}
-                                            onClick={() => goProductsModeration()}
+                                            onClick={() => goProductsManageFromTile('Pending')}
                                         />
-                                        <StatChip
-                                            label="Rejected"
+                                        <StatChip label="Rejected"
                                             value={overview.data?.products.rejected ?? 0}
-                                            onClick={() => explain('Rejected', 'Products that failed moderation. You can re-enable after fixes.')}
+                                            onClick={() => goProductsManageFromTile('Rejected')}
                                         />
                                     </div>
                                 </div>
@@ -1144,21 +1022,14 @@ export default function AdminDashboard() {
                                 <div className="rounded-xl border p-3">
                                     <div className="text-xs text-ink-soft mb-2">Availability (variant-aware)</div>
                                     <div className="flex flex-wrap gap-2">
-                                        <StatChip
-                                            label="All statuses available"
+                                        {/* Availability */}
+                                        <StatChip label="All statuses available"
                                             value={overview.data?.products.availability.allStatusesAvailable ?? 0}
-                                            onClick={() => explain(
-                                                'Available (all statuses)',
-                                                'Products (any status) where base inStock=true OR at least one variant is inStock.'
-                                            )}
+                                            onClick={() => goProductsManageFromTile('All statuses available')}
                                         />
-                                        <StatChip
-                                            label="Published available"
+                                        <StatChip label="Published available"
                                             value={overview.data?.products.availability.publishedAvailable ?? 0}
-                                            onClick={() => explain(
-                                                'Published available',
-                                                'Published products that are available (base or variant).'
-                                            )}
+                                            onClick={() => goProductsManageFromTile('Published available')}
                                         />
                                     </div>
                                 </div>
@@ -1167,35 +1038,30 @@ export default function AdminDashboard() {
                                 <div className="rounded-xl border p-3">
                                     <div className="text-xs text-ink-soft mb-2">Supplier offers</div>
                                     <div className="flex flex-wrap gap-2">
-                                        <StatChip
-                                            label="With any"
+                                        {/* Offers coverage */}
+                                        <StatChip label="With any"
                                             value={overview.data?.products.offers.withAny ?? 0}
-                                            onClick={() => explain('Any offer', 'Products with at least one product-wide or variant-level offer.')}
+                                            onClick={() => goProductsManageFromTile('With any')}
                                         />
-                                        <StatChip
-                                            label="Without any"
+                                        <StatChip label="Without any"
                                             value={overview.data?.products.offers.withoutAny ?? 0}
-                                            onClick={() => goProductsManage('no-offer')}
+                                            onClick={() => goProductsManageFromTile('Without any')}
                                         />
-                                        <StatChip
-                                            label="Published with any"
+                                        <StatChip label="Published with any"
                                             value={overview.data?.products.offers.publishedWithAny ?? 0}
-                                            onClick={() => goProductsManage('published-with-offer')}
+                                            onClick={() => goProductsManageFromTile('Published with any')}
                                         />
-                                        <StatChip
-                                            label="Published without any"
+                                        <StatChip label="Published without any"
                                             value={overview.data?.products.offers.publishedWithoutAny ?? 0}
-                                            onClick={() => goProductsManage('published-no-offer')}
+                                            onClick={() => goProductsManageFromTile('Published without any')}
                                         />
-                                        <StatChip
-                                            label="With active"
+                                        <StatChip label="With active"
                                             value={overview.data?.products.offers.withActive ?? 0}
-                                            onClick={() => explain('Active offer', 'At least one active & in-stock offer (product-wide or variant).')}
+                                            onClick={() => goProductsManageFromTile('With active')}
                                         />
-                                        <StatChip
-                                            label="Published with active"
+                                        <StatChip label="Published with active"
                                             value={overview.data?.products.offers.publishedWithActive ?? 0}
-                                            onClick={() => goProductsManage('published-with-active')}
+                                            onClick={() => goProductsManageFromTile('Published with active')}
                                         />
                                     </div>
                                 </div>
@@ -1204,42 +1070,43 @@ export default function AdminDashboard() {
                                 <div className="rounded-xl border p-3">
                                     <div className="text-xs text-ink-soft mb-2">Variants</div>
                                     <div className="flex flex-wrap gap-2">
-                                        <StatChip
-                                            label="With variants"
+
+                                        {/* Variants */}
+                                        <StatChip label="With variants"
                                             value={overview.data?.products.variantMix.withVariants ?? 0}
-                                            onClick={() => goProductsManage('with-variants')}
+                                            onClick={() => goProductsManageFromTile('With variants')}
                                         />
-                                        <StatChip
-                                            label="Simple"
+                                        <StatChip label="Simple"
                                             value={overview.data?.products.variantMix.simple ?? 0}
-                                            onClick={() => goProductsManage('simple')}
+                                            onClick={() => goProductsManageFromTile('Simple')}
                                         />
                                     </div>
                                 </div>
 
-                                {/* Published base stock (quick split) */}
+                                {/* Published base stock */}
                                 <div className="rounded-xl border p-3 sm:col-span-2">
                                     <div className="text-xs text-ink-soft mb-2">Published base stock (non-variant-aware)</div>
                                     <div className="flex flex-wrap gap-2">
-                                        <StatChip
-                                            label="Base in-stock"
+
+                                        {/* Published base stock */}
+                                        <StatChip label="Base in-stock"
                                             value={overview.data?.products.publishedBaseStock.inStock ?? 0}
-                                            onClick={() => goProductsManage('published-base-in')}
+                                            onClick={() => goProductsManageFromTile('Base in-stock')}
                                         />
-                                        <StatChip
-                                            label="Base out-of-stock"
+                                        <StatChip label="Base out-of-stock"
                                             value={overview.data?.products.publishedBaseStock.outOfStock ?? 0}
-                                            onClick={() => goProductsManage('published-base-out')}
+                                            onClick={() => goProductsManageFromTile('Base out-of-stock')}
                                         />
                                     </div>
                                 </div>
+
                             </div>
+
                         </SectionCard>
                     </div>
                 )}
 
-
-                {/* -------- Products (Moderation + Manage) -------- */}
+                {/* Products (Moderation + Manage) */}
                 {tab === 'products' && (
                     <SectionCard
                         title="Products"
@@ -1247,13 +1114,25 @@ export default function AdminDashboard() {
                         right={
                             <div className="inline-flex rounded-xl border overflow-hidden">
                                 <button
-                                    onClick={() => setPTab('moderation')}
+                                    onClick={() => {
+                                        setPTab('moderation');
+                                        const s = new URLSearchParams(location.search);
+                                        s.set('tab', 'products');
+                                        s.set('pTab', 'moderation');
+                                        nav(`/admin?${s.toString()}`, { replace: false });
+                                    }}
                                     className={`px-3 py-1.5 text-sm ${pTab === 'moderation' ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5'}`}
                                 >
                                     Moderation
                                 </button>
                                 <button
-                                    onClick={() => setPTab('manage')}
+                                    onClick={() => {
+                                        setPTab('manage');
+                                        const s = new URLSearchParams(location.search);
+                                        s.set('tab', 'products');
+                                        s.set('pTab', 'manage');
+                                        nav(`/admin?${s.toString()}`, { replace: false });
+                                    }}
                                     className={`px-3 py-1.5 text-sm ${pTab === 'manage' ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5'}`}
                                 >
                                     Manage
@@ -1269,6 +1148,12 @@ export default function AdminDashboard() {
                                     setFocusProductId(p.id);
                                     setPTab('manage');
                                     setTab('products');
+
+                                    const s = new URLSearchParams(location.search);
+                                    s.set('tab', 'products');
+                                    s.set('pTab', 'manage');
+                                    if (p.title || p.sku) s.set('q', p.title || p.sku || '');
+                                    nav(`/admin?${s.toString()}`, { replace: false });
                                 }}
                             />
                         ) : (
@@ -1279,12 +1164,14 @@ export default function AdminDashboard() {
                                 setSearch={setProdSearch}
                                 focusId={focusProductId}
                                 onFocusedConsumed={() => setFocusProductId(null)}
+                            // If your ManageProducts can consume filters or URL, you can pass them:
+                            // filters={manageFilters}
                             />
                         )}
                     </SectionCard>
                 )}
 
-                {/* -------- Catalog Settings -------- */}
+                {/* Catalog Settings */}
                 {tab === 'catalog' && (
                     <CatalogSettingsSection
                         token={token}
@@ -1292,7 +1179,52 @@ export default function AdminDashboard() {
                         categoriesQ={categoriesQ}
                         brandsQ={brandsQ}
                         attributesQ={attributesQ}
-                        usageQ={usageQ}
+                        usageQ={
+                            useQuery({
+                                queryKey: ['admin', 'catalog', 'usage'],
+                                enabled: !!canAdmin && tab === 'catalog',
+                                queryFn: async () => {
+                                    try {
+                                        const { data } = await api.get('/api/admin/catalog/usage', { headers: { Authorization: `Bearer ${token}` } });
+                                        return data || { categories: {}, attributes: {}, brands: {} };
+                                    } catch {
+                                        try {
+                                            const { data } = await api.get('/api/products?include=attributes,variants', {
+                                                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                                            });
+                                            const arr: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+                                            const categories: Record<string, number> = {};
+                                            const attributes: Record<string, number> = {};
+                                            const brands: Record<string, number> = {};
+
+                                            for (const p of arr) {
+                                                if (p.categoryId) categories[p.categoryId] = (categories[p.categoryId] || 0) + 1;
+                                                if (p.brandId) brands[p.brandId] = (brands[p.brandId] || 0) + 1;
+
+                                                const avs = p.attributeValues || [];
+                                                for (const av of avs) {
+                                                    const attrId = av?.attributeId || av?.attribute?.id;
+                                                    if (attrId) attributes[attrId] = (attributes[attrId] || 0) + 1;
+                                                }
+                                                const variants = p.variants || [];
+                                                for (const v of variants) {
+                                                    const opts = v.options || [];
+                                                    for (const opt of opts) {
+                                                        const attrId = opt?.attributeId || opt?.attribute?.id;
+                                                        if (attrId) attributes[attrId] = (attributes[attrId] || 0) + 1;
+                                                    }
+                                                }
+                                            }
+                                            return { categories, attributes, brands };
+                                        } catch {
+                                            return { categories: {}, attributes: {}, brands: {} };
+                                        }
+                                    }
+                                },
+                                refetchOnWindowFocus: false,
+                                staleTime: staleTImeInSecs,
+                            })
+                        }
                         createCategory={createCategory}
                         updateCategory={updateCategory}
                         deleteCategory={deleteCategory}
@@ -1306,14 +1238,40 @@ export default function AdminDashboard() {
                         updateAttrValue={updateAttrValue}
                         deleteAttrValue={deleteAttrValue}
                         /* Suppliers */
-                        suppliersQ={suppliersQ}
-                        createSupplier={createSupplier}
-                        updateSupplier={updateSupplier}
-                        deleteSupplier={deleteSupplier}
+                        suppliersQ={useQuery({
+                            queryKey: ['admin', 'suppliers'],
+                            enabled: !!canAdmin && tab === 'catalog',
+                            queryFn: async () =>
+                                (await api.get<{ data: AdminSupplier[] }>('/api/admin/suppliers', { headers: { Authorization: `Bearer ${token}` } }))
+                                    .data.data,
+                            refetchOnWindowFocus: false,
+                            staleTime: staleTImeInSecs,
+                        })}
+                        createSupplier={useMutation({
+                            mutationFn: async (payload: Partial<AdminSupplier>) =>
+                                (await api.post('/api/admin/suppliers', payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+                            onSuccess: () => {
+                                qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
+                            },
+                        })}
+                        updateSupplier={useMutation({
+                            mutationFn: async ({ id, ...payload }: Partial<AdminSupplier> & { id: string }) =>
+                                (await api.put(`/api/admin/suppliers/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+                            onSuccess: () => {
+                                qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
+                            },
+                        })}
+                        deleteSupplier={useMutation({
+                            mutationFn: async (id: string) =>
+                                (await api.delete(`/api/admin/suppliers/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
+                            onSuccess: () => {
+                                qc.invalidateQueries({ queryKey: ['admin', 'suppliers'] });
+                            },
+                        })}
                     />
                 )}
 
-                {/* -------- Transactions -------- */}
+                {/* Transactions */}
                 {tab === 'transactions' && (
                     <TransactionsSection
                         q={q}
@@ -1325,10 +1283,9 @@ export default function AdminDashboard() {
                     />
                 )}
             </div>
-        </div>
+        </div >
     );
 }
-
 
 /* ---------------- Transactions section & row ---------------- */
 function TransactionsSection({
@@ -1444,98 +1401,6 @@ function TransactionsSection({
     );
 }
 
-function TransactionRow({ tx, onVerify, onRefund }: { tx: AdminPayment; onVerify: () => void; onRefund: () => void }) {
-    const [open, setOpen] = useState(false);
-    const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
-    return (
-        <>
-            <tr className="hover:bg-black/5">
-                <td className="px-3 py-3 font-mono">
-                    <div className="flex items-center gap-2">
-                        {hasItems ? (
-                            <button onClick={() => setOpen((v) => !v)} className="inline-flex items-center justify-center w-6 h-6 rounded-md border hover:bg-black/5">
-                                {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                            </button>
-                        ) : (
-                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-md border text-zinc-300">•</span>
-                        )}
-                        <span>{tx.id}</span>
-                    </div>
-                    {tx.reference && <div className="text-[11px] text-zinc-500 mt-0.5">Ref: {tx.reference}</div>}
-                </td>
-                <td className="px-3 py-3">
-                    <Link to={`/orders?open=${tx.orderId}`} className="text-primary-700 underline">
-                        {tx.orderId}
-                    </Link>
-                </td>
-                <td className="px-3 py-3">{tx.userEmail || '—'}</td>
-                <td className="px-3 py-3">{ngn.format(fmtN(tx.amount))}</td>
-                <td className="px-3 py-3">
-                    <StatusDot label={tx.status} />
-                </td>
-                <td className="px-3 py-3">{fmtDate(tx.createdAt)}</td>
-                <td className="px-3 py-3 text-right">
-                    <div className="inline-flex items-center gap-2">
-                        <button
-                            onClick={onVerify}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-                            disabled={['PAID', 'VERIFIED', 'CANCELED', 'REFUNDED'].includes((tx.status || '').toUpperCase())}
-                            title={tx.status === 'PAID' ? 'Already verified' : 'Verify payment'}
-                        >
-                            <Check size={16} /> Verify
-                        </button>
-                        <button onClick={onRefund} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5" title="Refund">
-                            <CreditCard size={16} /> Refund
-                        </button>
-                    </div>
-                </td>
-            </tr>
-
-            {open && hasItems && (
-                <tr className="bg-zinc-50/60">
-                    <td colSpan={7} className="px-3 py-3">
-                        <div className="rounded-xl border bg-white">
-                            <table className="w-full text-xs">
-                                <thead>
-                                    <tr className="bg-zinc-50">
-                                        <th className="text-left px-3 py-2">Item</th>
-                                        <th className="text-left px-3 py-2">Qty</th>
-                                        <th className="text-left px-3 py-2">Unit Price</th>
-                                        <th className="text-left px-3 py-2">Line Total</th>
-                                        <th className="text-left px-3 py-2">Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y">
-                                    {tx.items!.map((it) => (
-                                        <tr key={it.id}>
-                                            <td className="px-3 py-2">{it.title}</td>
-                                            <td className="px-3 py-2">{it.quantity}</td>
-                                            <td className="px-3 py-2">{ngn.format(fmtN(it.unitPrice))}</td>
-                                            <td className="px-3 py-2">{ngn.format(fmtN(it.lineTotal))}</td>
-                                            <td className="px-3 py-2">
-                                                <StatusDot label={it.status || '—'} />
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                                <tfoot>
-                                    <tr className="bg-zinc-50">
-                                        <td colSpan={3} className="px-3 py-2 text-right font-medium">
-                                            Order total:
-                                        </td>
-                                        <td className="px-3 py-2 font-semibold">{ngn.format(fmtN(tx.amount))}</td>
-                                        <td />
-                                    </tr>
-                                </tfoot>
-                            </table>
-                        </div>
-                    </td>
-                </tr>
-            )}
-        </>
-    );
-}
-
 /* ---------------- Small presentational bits ---------------- */
 function KpiCard({ title, value, hint, Icon, chart }: { title: string; value: string; hint?: string; Icon: any; chart?: ReactNode }) {
     return (
@@ -1554,7 +1419,6 @@ function KpiCard({ title, value, hint, Icon, chart }: { title: string; value: st
         </div>
     );
 }
-
 
 function KpiCardOverview({ title, total, value, hint, res, Icon, chart }: { title: string; total: string; value: string; hint?: string; res?: string; Icon: any; chart?: ReactNode }) {
     return (
@@ -1622,991 +1486,24 @@ function QuickAction({ toAction, icon: Icon, label, desc }: { toAction: () => vo
     );
 }
 
-
-function CatalogSettingsSection(props: {
-    token?: string | null;
-    canEdit: boolean;
-    categoriesQ: any;
-    brandsQ: any;
-    attributesQ: any;
-    usageQ: any;
-    createCategory: any;
-    updateCategory: any;
-    deleteCategory: any;
-    createBrand: any;
-    updateBrand: any;
-    deleteBrand: any;
-    createAttribute: any;
-    updateAttribute: any;
-    deleteAttribute: any;
-    createAttrValue: any;
-    updateAttrValue: any;
-    deleteAttrValue: any;
-    /* Suppliers */
-    suppliersQ: any;
-    createSupplier: any;
-    updateSupplier: any;
-    deleteSupplier: any;
-}) {
-    const {
-        canEdit,
-        categoriesQ,
-        brandsQ,
-        attributesQ,
-        usageQ,
-        createCategory,
-        updateCategory,
-        deleteCategory,
-        createBrand,
-        updateBrand,
-        deleteBrand,
-        createAttribute,
-        updateAttribute,
-        deleteAttribute,
-        createAttrValue,
-        updateAttrValue,
-        deleteAttrValue,
-        suppliersQ,
-        createSupplier,
-        updateSupplier,
-        deleteSupplier,
-    } = props;
-
-    const categoryUsage: Record<string, number> = usageQ.data?.categories || {};
-    const attributeUsage: Record<string, number> = usageQ.data?.attributes || {};
-    const brandUsage: Record<string, number> = usageQ.data?.brands || {};
-
-    const [editingSupplier, setEditingSupplier] = useState<AdminSupplier | null>(null);
-
-    const qc = useQueryClient();
-    const { openModal } = useModal();
-
-    function SectionCard({
-        title,
-        subtitle,
-        right,
-        children,
-    }: {
-        title: string;
-        subtitle?: string;
-        right?: ReactNode;
-        children: ReactNode;
-    }) {
-        return (
-            <div className="rounded-2xl border bg-white shadow-sm overflow-visible">
-                <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
-                    <div>
-                        <h3 className="text-ink font-semibold">{title}</h3>
-                        {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
-                    </div>
-                    {right}
-                </div>
-                <div className="p-4 md:p-5">{children}</div>
-            </div>
-        );
-    }
-
-    // --- focus/anchor guards (stop global hotkeys + # anchors) ---
-    const stopHashNav = (evt: React.SyntheticEvent) => {
-        const el = (evt.target as HTMLElement)?.closest?.('a[href="#"],a[href=""]');
-        if (el) {
-            evt.preventDefault();
-            evt.stopPropagation();
-        }
-    };
-    const stopKeyBubblingFromInputs = (e: React.KeyboardEvent) => {
-        const t = e.target as HTMLElement;
-        const tag = t.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
-            e.stopPropagation(); // don’t let globals grab it
-        }
-    };
-
-    // --- isolated, memoized mini-adder: prevents remount/focus loss ---
-    const AttributeValueAdder = React.memo(function AttributeValueAdder({
-        attributeId,
-        onCreate,
-    }: {
-        attributeId: string;
-        onCreate: (vars: { attributeId: string; name: string; code?: string }) => void;
-    }) {
-        const [name, setName] = useState('');
-        const [code, setCode] = useState('');
-
-        const submit = () => {
-            const n = name.trim();
-            if (!n) return;
-            onCreate({ attributeId, name: n, code: code.trim() || undefined });
-            setName('');
-            setCode('');
-        };
-
-        return (
-            <div
-                role="form"
-                className="grid grid-cols-3 gap-2"
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                onKeyDown={(e) => {
-                    // let typing flow; only capture Enter and stop bubbling of all keys
-                    e.stopPropagation();
-                    if (e.key === 'Enter') {
-                        e.preventDefault();
-                        submit();
-                    }
-                }}
-            >
-                <input
-                    type="text"
-                    autoComplete="off"
-                    placeholder="Value name"
-                    className="border rounded-lg px-3 py-2 col-span-2"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                />
-                <input
-                    type="text"
-                    autoComplete="off"
-                    placeholder="Code (optional)"
-                    className="border rounded-lg px-3 py-2"
-                    value={code}
-                    onChange={(e) => setCode(e.target.value)}
-                />
-                <div className="col-span-3 justify-self-end">
-                    <button type="button" onClick={submit} className="px-3 py-2 rounded-lg bg-emerald-600 text-white">
-                        Add value
-                    </button>
-                </div>
-            </div>
-        );
-    });
-
-    return (
-        <div
-            className="grid grid-cols-1 xl:grid-cols-3 gap-6"
-            onClickCapture={stopHashNav}
-            onMouseDownCapture={stopHashNav}
-            onKeyDownCapture={stopKeyBubblingFromInputs}
-        >
-            {/* Categories */}
-            <SectionCard
-                title="Categories"
-                subtitle="Organize your catalog hierarchy"
-                right={
-                    <button
-                        type="button"
-                        onClick={async () => {
-                            try {
-                                await api.post('/api/admin/catalog/backfill');
-                                qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
-                                qc.invalidateQueries({ queryKey: ['admin', 'brands'] });
-                                qc.invalidateQueries({ queryKey: ['admin', 'attributes'] });
-                                qc.invalidateQueries({ queryKey: ['admin', 'catalog', 'usage'] });
-                            } catch (e: any) {
-                                openModal({ title: 'Backfill', message: e?.response?.data?.error || 'Failed to backfill' });
-                            }
-                        }}
-                        className="px-3 py-2 rounded-lg bg-emerald-600 text-white"
-                    >
-                        Backfill & Relink
-                    </button>
-                }
-            >
-                {canEdit && (
-                    <CategoryForm categories={categoriesQ.data ?? []} onCreate={(payload) => createCategory.mutate(payload)} />
-                )}
-
-                <div className="border rounded-xl overflow-x-auto">
-                    <table className="w-full text-sm">
-                        <thead className="bg-zinc-50">
-                            <tr>
-                                <th className="text-left px-3 py-2">Name</th>
-                                <th className="text-left px-3 py-2">Slug</th>
-                                <th className="text-left px-3 py-2">Parent</th>
-                                <th className="text-left px-3 py-2">In use</th>
-                                <th className="text-right px-3 py-2">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y">
-                            {(categoriesQ.data ?? []).map((c: AdminCategory) => {
-                                const used = categoryUsage[c.id] || 0;
-                                return (
-                                    <tr key={c.id}>
-                                        <td className="px-3 py-2">{c.name}</td>
-                                        <td className="px-3 py-2">{c.slug}</td>
-                                        <td className="px-3 py-2">
-                                            {(categoriesQ.data ?? []).find((x: AdminCategory) => x.id === c.parentId)?.name || '—'}
-                                        </td>
-                                        <td className="px-3 py-2">{used}</td>
-                                        <td className="px-3 py-2 text-right">
-                                            {canEdit && (
-                                                <div className="inline-flex gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => updateCategory.mutate({ id: c.id, isActive: !c.isActive })}
-                                                        className="px-2 py-1 rounded border"
-                                                    >
-                                                        {c.isActive ? 'Disable' : 'Enable'}
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => used === 0 && deleteCategory.mutate(c.id)}
-                                                        className={`px-2 py-1 rounded ${used === 0 ? 'bg-rose-600 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'
-                                                            }`}
-                                                        disabled={used > 0}
-                                                        title={used > 0 ? 'Cannot delete: category is in use' : 'Delete category'}
-                                                    >
-                                                        Delete
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </td>
-                                    </tr>
-                                );
-                            })}
-                            {(categoriesQ.data ?? []).length === 0 && (
-                                <tr>
-                                    <td colSpan={5} className="px-3 py-4 text-center text-zinc-500">
-                                        No categories
-                                    </td>
-                                </tr>
-                            )}
-                        </tbody>
-                    </table>
-                </div>
-            </SectionCard>
-
-            {/* Brands */}
-            <SectionCard title="Brands" subtitle="Manage brand metadata">
-                {canEdit && <BrandForm onCreate={(payload) => createBrand.mutate(payload)} />}
-                <div className="border rounded-xl overflow-x-auto">
-                    <table className="w-full text-sm">
-                        <thead className="bg-zinc-50">
-                            <tr>
-                                <th className="text-left px-3 py-2">Name</th>
-                                <th className="text-left px-3 py-2">Slug</th>
-                                <th className="text-left px-3 py-2">Active</th>
-                                <th className="text-left px-3 py-2">In use</th>
-                                <th className="text-right px-3 py-2">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y">
-                            {(brandsQ.data ?? []).map((b: AdminBrand) => {
-                                const used = brandUsage[b.id] || 0;
-                                return (
-                                    <tr key={b.id}>
-                                        <td className="px-3 py-2">{b.name}</td>
-                                        <td className="px-3 py-2">{b.slug}</td>
-                                        <td className="px-3 py-2">
-                                            <StatusDot label={b.isActive ? 'ACTIVE' : 'INACTIVE'} />
-                                        </td>
-                                        <td className="px-3 py-2">{used}</td>
-                                        <td className="px-3 py-2 text-right">
-                                            {canEdit && (
-                                                <div className="inline-flex gap-2">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => updateBrand.mutate({ id: b.id, isActive: !b.isActive })}
-                                                        className="px-2 py-1 rounded border"
-                                                    >
-                                                        {b.isActive ? 'Disable' : 'Enable'}
-                                                    </button>
-
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => used === 0 && deleteBrand.mutate(b.id)}
-                                                        className={`px-2 py-1 rounded ${used === 0 ? 'bg-rose-600 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'
-                                                            }`}
-                                                        disabled={used > 0}
-                                                        title={used > 0 ? 'Cannot delete: brand is in use' : 'Delete brand'}
-                                                    >
-                                                        Delete
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </td>
-                                    </tr>
-                                );
-                            })}
-                            {(brandsQ.data ?? []).length === 0 && (
-                                <tr>
-                                    <td colSpan={5} className="px-3 py-4 text-center text-zinc-500">
-                                        No brands
-                                    </td>
-                                </tr>
-                            )}
-                        </tbody>
-                    </table>
-                </div>
-            </SectionCard>
-
-            {/* Suppliers */}
-            <SectionCard title="Suppliers" subtitle="Manage suppliers available to assign to products">
-                {canEdit && (
-                    <SupplierForm
-                        editing={editingSupplier}
-                        onCancelEdit={() => setEditingSupplier(null)}
-                        onCreate={(payload) =>
-                            createSupplier.mutate(payload, {
-                                onSuccess: () => setEditingSupplier(null),
-                            })
-                        }
-                        onUpdate={(payload: any) =>
-                            updateSupplier.mutate(payload, {
-                                onSuccess: () => setEditingSupplier(null),
-                            })
-                        }
-                    />
-                )}
-                <div className="border rounded-xl overflow-x-auto">
-                    <table className="w-full text-sm">
-                        <thead className="bg-zinc-50">
-                            <tr>
-                                <th className="text-left px-3 py-2">Name</th>
-                                <th className="text-left px-3 py-2">Type</th>
-                                <th className="text-left px-3 py-2">Status</th>
-                                <th className="text-right px-3 py-2">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y">
-                            {(suppliersQ.data ?? []).map((s: AdminSupplier) => (
-                                <tr key={s.id}>
-                                    <td className="px-3 py-2">{s.name}</td>
-                                    <td className="px-3 py-2">{s.type}</td>
-                                    <td className="px-3 py-2">
-                                        <StatusDot label={s.status || 'INACTIVE'} />
-                                    </td>
-                                    <td className="px-3 py-2 text-right">
-                                        {canEdit && (
-                                            <div className="inline-flex gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                        updateSupplier.mutate({ id: s.id, status: s.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' })
-                                                    }
-                                                    className="px-2 py-1 rounded border"
-                                                >
-                                                    {s.status === 'ACTIVE' ? 'Disable' : 'Enable'}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setEditingSupplier(s)}
-                                                    className="px-2 py-1 rounded border"
-                                                    title="Edit supplier"
-                                                >
-                                                    Edit
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => deleteSupplier.mutate(s.id)}
-                                                    className="px-2 py-1 rounded bg-rose-600 text-white"
-                                                >
-                                                    Delete
-                                                </button>
-                                            </div>
-                                        )}
-                                    </td>
-                                </tr>
-                            ))}
-                            {(suppliersQ.data ?? []).length === 0 && (
-                                <tr>
-                                    <td colSpan={5} className="px-3 py-4 text-center text-zinc-500">
-                                        No suppliers
-                                    </td>
-                                </tr>
-                            )}
-                        </tbody>
-                    </table>
-                </div>
-            </SectionCard>
-
-            {/* Attributes & Values */}
-            <SectionCard title="Attributes" subtitle="Define attribute schema & options">
-                {canEdit && <AttributeForm onCreate={(payload) => createAttribute.mutate(payload)} />}
-
-                <div className="grid gap-3">
-                    {(attributesQ.data ?? []).map((a: AdminAttribute) => {
-                        const used = attributeUsage[a.id] || 0;
-
-                        return (
-                            <div key={a.id} className="border rounded-xl">
-                                <div className="flex items-center justify-between px-3 py-2">
-                                    <div className="min-w-0">
-                                        <div className="font-medium">
-                                            {a.name} <span className="text-xs text-zinc-500">({a.type})</span>
-                                        </div>
-                                        <div className="text-xs flex items-center gap-2">
-                                            <StatusDot label={a.isActive ? 'ACTIVE' : 'INACTIVE'} />
-                                            <span className="text-zinc-500">In use: {used}</span>
-                                        </div>
-                                    </div>
-                                    {canEdit && (
-                                        <div className="inline-flex gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => updateAttribute.mutate({ id: a.id, isActive: !a.isActive })}
-                                                className="px-2 py-1 rounded border"
-                                            >
-                                                {a.isActive ? 'Disable' : 'Enable'}
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => used === 0 && deleteAttribute.mutate(a.id)}
-                                                className={`px-2 py-1 rounded ${used === 0 ? 'bg-rose-600 text-white' : 'bg-zinc-100 text-zinc-400 cursor-not-allowed'
-                                                    }`}
-                                                disabled={used > 0}
-                                                title={used > 0 ? 'Cannot delete: attribute is in use' : 'Delete attribute'}
-                                            >
-                                                Delete
-                                            </button>
-                                        </div>
-                                    )}
-                                </div>
-
-                                {/* Values */}
-                                <div className="border-t p-3">
-                                    <div className="text-xs text-ink-soft mb-2">Values</div>
-
-                                    {(a.values ?? []).length === 0 && (
-                                        <div className="text-xs text-zinc-500 mb-2">No values</div>
-                                    )}
-
-                                    <div className="flex flex-wrap gap-2 mb-3">
-                                        {(a.values ?? []).map((v: { id: React.Key | null | undefined; name: string | number | bigint | boolean | React.ReactElement<unknown, string | React.JSXElementConstructor<any>> | Iterable<ReactNode> | React.ReactPortal | Promise<string | number | bigint | boolean | React.ReactPortal | React.ReactElement<unknown, string | React.JSXElementConstructor<any>> | Iterable<ReactNode> | null | undefined> | null | undefined; isActive: any; }) => (
-                                            <div key={v.id} className="px-2 py-1 rounded border bg-white inline-flex items-center gap-2">
-                                                <span className="text-sm">{v.name}</span>
-                                                {canEdit && (
-                                                    <>
-                                                        <button
-                                                            type="button"
-                                                            className="text-xs underline"
-                                                            onClick={() =>
-                                                                updateAttrValue.mutate({ attributeId: a.id, id: v.id, isActive: !v.isActive })
-                                                            }
-                                                        >
-                                                            {v.isActive ? 'Disable' : 'Enable'}
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            className="text-xs text-rose-600 underline"
-                                                            onClick={() => deleteAttrValue.mutate({ attributeId: a.id, id: v.id })}
-                                                        >
-                                                            Delete
-                                                        </button>
-                                                    </>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-
-                                    {canEdit && (
-                                        <AttributeValueAdder
-                                            attributeId={a.id}
-                                            onCreate={(vars) =>
-                                                createAttrValue.mutate(vars, {
-                                                    onSuccess: () =>
-                                                        qc.invalidateQueries({ queryKey: ['admin', 'attributes'] }),
-                                                })
-                                            }
-                                        />
-                                    )}
-                                </div>
-                            </div>
-                        );
-                    })}
-                    {(attributesQ.data ?? []).length === 0 && (
-                        <div className="text-center text-zinc-500 text-sm py-4">No attributes</div>
-                    )}
-                </div>
-
-                {/* Product ↔ attributes linking UI + Variants manager row */}
-                <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mt-6">
-                    <div className="xl:col-span-3">
-                        <AdminProductAttributes />
-                    </div>
-                </div>
-            </SectionCard>
-
-            {/* Variants Section */}
-            <VariantsSection />
-        </div>
-    );
-}
-
-
-
-/* ---------------- Small, typing-safe form components ---------------- */
-function CategoryForm({
-    onCreate,
-    categories,
-}: {
-    onCreate: (payload: { name: string; slug: string; parentId: string | null; isActive: boolean }) => void;
-    categories: Array<{ id: string; name: string }>;
-}) {
-    const [name, setName] = useState('');
-    const [slug, setSlug] = useState('');
-    const [parentId, setParentId] = useState<string | null>(null);
-    const [isActive, setIsActive] = useState(true);
-
-    const submit = useCallback(() => {
-        if (!name.trim() || !slug.trim()) return;
-        onCreate({ name: name.trim(), slug: slug.trim(), parentId, isActive });
-        setName('');
-        setSlug('');
-        setParentId(null);
-        setIsActive(true);
-    }, [name, slug, parentId, isActive, onCreate]);
-
-    return (
-        <div className="mb-3 grid grid-cols-2 gap-2">
-            <input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} className="border rounded-lg px-3 py-2" />
-            <input placeholder="Slug" value={slug} onChange={(e) => setSlug(e.target.value)} className="border rounded-lg px-3 py-2" />
-            <select value={parentId ?? ''} onChange={(e) => setParentId(e.target.value || null)} className="border rounded-lg px-3 py-2 col-span-2">
-                <option value="">No parent</option>
-                {categories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                        {c.name}
-                    </option>
-                ))}
-            </select>
-            <label className="flex items-center gap-2">
-                <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
-                <span className="text-sm">Active</span>
-            </label>
-            <button onClick={submit} className="justify-self-end px-3 py-2 rounded-lg bg-emerald-600 text-white">
-                Add
-            </button>
-        </div>
-    );
-}
-
-
-function BrandForm({ onCreate }: { onCreate: (payload: { name: string; slug: string; logoUrl?: string; isActive: boolean }) => void }) {
-    const [name, setName] = useState('');
-    const [slug, setSlug] = useState('');
-    const [logoUrl, setLogoUrl] = useState('');
-    const [isActive, setIsActive] = useState(true);
-
-    const submit = useCallback(() => {
-        if (!name.trim() || !slug.trim()) return;
-        onCreate({ name: name.trim(), slug: slug.trim(), logoUrl: logoUrl.trim() || undefined, isActive });
-        setName('');
-        setSlug('');
-        setLogoUrl('');
-        setIsActive(true);
-    }, [name, slug, logoUrl, isActive, onCreate]);
-
-    return (
-        <div className="mb-3 grid grid-cols-2 gap-2">
-            <input placeholder="Name" className="border rounded-lg px-3 py-2" value={name} onChange={(e) => setName(e.target.value)} />
-            <input placeholder="Slug" className="border rounded-lg px-3 py-2" value={slug} onChange={(e) => setSlug(e.target.value)} />
-            <input placeholder="Logo URL (optional)" className="border rounded-lg px-3 py-2 col-span-2" value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} />
-            <label className="flex items-center gap-2">
-                <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
-                <span className="text-sm">Active</span>
-            </label>
-            <button onClick={submit} className="justify-self-end px-3 py-2 rounded-lg bg-emerald-600 text-white">
-                Add
-            </button>
-        </div>
-    );
-}
-
-type SupplierFormValues = {
-    name: string;
-    type: 'PHYSICAL' | 'ONLINE';
-    status?: string;
-    contactEmail?: string | null;
-    whatsappPhone?: string | null;
-
-    apiBaseUrl?: string | null;
-    apiAuthType?: 'NONE' | 'BEARER' | 'BASIC' | '' | null;
-    apiKey?: string | null;
-
-    payoutMethod?: 'SPLIT' | 'TRANSFER' | '' | null;
-    bankCountry?: string | null;   // e.g. "NG"
-    bankCode?: string | null;      // bank sort code
-    bankName?: string | null;      // bank display name
-    accountNumber?: string | null; // long field
-    accountName?: string | null;   // long field
-    isPayoutEnabled?: boolean | null;
-};
-
-type AdminSupplier = {
-    id: string;
-    name: string;
-    type: 'PHYSICAL' | 'ONLINE';
-    status: string;
-    contactEmail?: string | null;
-    whatsappPhone?: string | null;
-
-    apiBaseUrl?: string | null;
-    apiAuthType?: 'NONE' | 'BEARER' | 'BASIC' | null;
-    apiKey?: string | null;
-
-    payoutMethod?: 'SPLIT' | 'TRANSFER' | null;
-    bankCountry?: string | null;
-    bankCode?: string | null;
-    bankName?: string | null;
-    accountNumber?: string | null;
-    accountName?: string | null;
-    isPayoutEnabled?: boolean | null;
-};
-
-type BankOption = { country: string; code: string; name: string };
-
-const FALLBACK_BANKS: BankOption[] = [
-    { country: 'NG', code: '044', name: 'Access Bank' },
-    { country: 'NG', code: '011', name: 'First Bank of Nigeria' },
-    { country: 'NG', code: '058', name: 'Guaranty Trust Bank' },
-    { country: 'NG', code: '221', name: 'Stanbic IBTC Bank' },
-    { country: 'NG', code: '232', name: 'Sterling Bank' },
-    { country: 'NG', code: '033', name: 'United Bank for Africa' },
-    { country: 'NG', code: '035', name: 'Wema Bank' },
-];
-
-function SupplierForm({
-    editing,
-    onCancelEdit,
-    onCreate,
-    onUpdate,
-}: {
-    editing: AdminSupplier | null;
-    onCancelEdit: () => void;
-    onCreate: (payload: SupplierFormValues) => void;
-    onUpdate: (payload: SupplierFormValues & { id: string }) => void;
-}) {
-    const { token } = useAuthStore();
-
-    // One source of truth for banks (uses admin list, falls back locally)
-    const banksQ = useQuery({
-        queryKey: ['admin', 'banks'],
-        queryFn: async () => {
-            const { data } = await api.get<{ data: BankOption[] }>('/api/admin/banks', {
-                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-            });
-            return Array.isArray(data?.data) && data.data.length > 0 ? data.data : FALLBACK_BANKS;
-        },
-        staleTime: 10 * 60 * 1000,
-        retry: 1,
-    });
-    const banks = banksQ.data ?? FALLBACK_BANKS;
-
-    const [values, setValues] = useState<SupplierFormValues>({
-        name: '',
-        type: 'PHYSICAL',
-        status: 'ACTIVE',
-        contactEmail: '',
-        whatsappPhone: '',
-        apiBaseUrl: '',
-        apiAuthType: 'NONE',
-        apiKey: '',
-
-        payoutMethod: '',
-        bankCountry: 'NG',
-        bankCode: '',
-        bankName: '',
-        accountNumber: '',
-        accountName: '',
-        isPayoutEnabled: false,
-    });
-
-    // Hydrate when editing
-    useEffect(() => {
-        if (!editing) return;
-        setValues({
-            name: editing.name ?? '',
-            type: editing.type ?? 'PHYSICAL',
-            status: editing.status ?? 'ACTIVE',
-            contactEmail: editing.contactEmail ?? '',
-            whatsappPhone: editing.whatsappPhone ?? '',
-            apiBaseUrl: editing.apiBaseUrl ?? '',
-            apiAuthType: editing.apiAuthType ?? 'NONE',
-            apiKey: editing.apiKey ?? '',
-
-            payoutMethod: editing.payoutMethod ?? '',
-            bankCountry: editing.bankCountry ?? 'NG',
-            bankCode: editing.bankCode ?? '',
-            bankName: editing.bankName ?? '',
-            accountNumber: editing.accountNumber ?? '',
-            accountName: editing.accountName ?? '',
-            isPayoutEnabled: !!editing.isPayoutEnabled,
-        });
-    }, [editing]);
-
-    // Filter banks by selected country
-    const countryBanks = useMemo(
-        () => banks.filter((b) => (values.bankCountry || 'NG') === b.country),
-        [banks, values.bankCountry]
-    );
-
-    // Keep Bank Name <-> Bank Code in sync
-    function setBankByName(name: string) {
-        const match = countryBanks.find((b) => b.name === name);
-        setValues((v) => ({
-            ...v,
-            bankName: name || '',
-            bankCode: match?.code || '',
-        }));
-    }
-    function setBankByCode(code: string) {
-        const match = countryBanks.find((b) => b.code === code);
-        setValues((v) => ({
-            ...v,
-            bankCode: code || '',
-            bankName: match?.name || '',
-        }));
-    }
-
-    function submit() {
-        if (!values.name.trim()) {
-            alert('Supplier name is required');
-            return;
-        }
-        if (editing) onUpdate({ id: editing.id, ...values });
-        else onCreate(values);
-    }
-
-    return (
-        <div className="rounded-2xl border bg-white/95 p-4 md:p-6 mb-4 w-full">
-            <div className="flex items-center justify-between mb-3">
-                <h4 className="text-ink font-semibold">{editing ? 'Edit Supplier' : 'Add Supplier'}</h4>
-                {editing && (
-                    <button className="text-sm text-zinc-600 hover:underline" onClick={onCancelEdit}>
-                        Cancel edit
-                    </button>
-                )}
-            </div>
-
-            {/* 12-col grid; long fields span 8 on md+ */}
-            <div className="grid grid-cols-12 gap-3">
-                <div className="col-span-12 md:col-span-6">
-                    <label className="block text-xs text-ink-soft mb-1">Name</label>
-                    <input
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.name}
-                        onChange={(e) => setValues({ ...values, name: e.target.value })}
-                        placeholder="Supplier name"
-                    />
-                </div>
-
-                <div className="col-span-6 md:col-span-3">
-                    <label className="block text-xs text-ink-soft mb-1">Type</label>
-                    <select
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.type}
-                        onChange={(e) => setValues({ ...values, type: e.target.value as any })}
-                    >
-                        <option value="PHYSICAL">PHYSICAL</option>
-                        <option value="ONLINE">ONLINE</option>
-                    </select>
-                </div>
-
-                <div className="col-span-6 md:col-span-3">
-                    <label className="block text-xs text-ink-soft mb-1">Status</label>
-                    <select
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.status || 'ACTIVE'}
-                        onChange={(e) => setValues({ ...values, status: e.target.value })}
-                    >
-                        <option value="ACTIVE">ACTIVE</option>
-                        <option value="INACTIVE">INACTIVE</option>
-                    </select>
-                </div>
-
-                <div className="col-span-12 md:col-span-6">
-                    <label className="block text-xs text-ink-soft mb-1">Contact Email</label>
-                    <input
-                        type="email"
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.contactEmail ?? ''}
-                        onChange={(e) => setValues({ ...values, contactEmail: e.target.value })}
-                        placeholder="e.g. vendors@company.com"
-                    />
-                </div>
-
-                <div className="col-span-12 md:col-span-6">
-                    <label className="block text-xs text-ink-soft mb-1">WhatsApp Phone</label>
-                    <input
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.whatsappPhone ?? ''}
-                        onChange={(e) => setValues({ ...values, whatsappPhone: e.target.value })}
-                        placeholder="+2348xxxxxxxxx"
-                    />
-                </div>
-                {/* API credentials */}
-                {values.type === 'ONLINE' &&
-                    (<>
-                        <div className="col-span-12 md:col-span-4">
-                            <label className="block text-xs text-ink-soft mb-1">API Base URL</label>
-                            <input
-                                className="w-full border rounded-lg px-3 py-2"
-                                value={values.apiBaseUrl ?? ''}
-                                onChange={(e) => setValues({ ...values, apiBaseUrl: e.target.value })}
-                                placeholder="https://api.supplier.com"
-                            />
-                        </div>
-                        <div className="col-span-6 md:col-span-4">
-                            <label className="block text-xs text-ink-soft mb-1">API Auth Type</label>
-                            <select
-                                className="w-full border rounded-lg px-3 py-2"
-                                value={values.apiAuthType ?? 'NONE'}
-                                onChange={(e) => setValues({ ...values, apiAuthType: e.target.value as any })}
-                            >
-                                <option value="NONE">NONE</option>
-                                <option value="BEARER">BEARER</option>
-                                <option value="BASIC">BASIC</option>
-                            </select>
-                        </div>
-                        <div className="col-span-6 md:col-span-4">
-                            <label className="block text-xs text-ink-soft mb-1">API Key / Token</label>
-                            <input
-                                className="w-full border rounded-lg px-3 py-2"
-                                value={values.apiKey ?? ''}
-                                onChange={(e) => setValues({ ...values, apiKey: e.target.value })}
-                                placeholder="••••••••••••"
-                            />
-                        </div>
-                    </>)
-                }
-                {/* Payout & Bank info */}
-                <div className="col-span-6 md:col-span-4">
-                    <label className="block text-xs text-ink-soft mb-1">Payout Method</label>
-                    <select
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.payoutMethod ?? ''}
-                        onChange={(e) => setValues({ ...values, payoutMethod: (e.target.value || '') as any })}
-                    >
-                        <option value="">—</option>
-                        <option value="TRANSFER">TRANSFER</option>
-                        <option value="SPLIT">SPLIT</option>
-                    </select>
-                </div>
-
-                <div className="col-span-6 md:col-span-4">
-                    <label className="block text-xs text-ink-soft mb-1">Bank Country</label>
-                    <select
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.bankCountry ?? 'NG'}
-                        onChange={(e) =>
-                            setValues((v) => ({
-                                ...v,
-                                bankCountry: e.target.value || 'NG',
-                                bankCode: '',
-                                bankName: '',
-                            }))
-                        }
-                    >
-                        <option value="NG">Nigeria (NG)</option>
-                    </select>
-                </div>
-
-                <div className="col-span-12 md:col-span-4 flex items-end">
-                    <div className="text-xs text-zinc-500">
-                        {banksQ.isFetching ? 'Loading banks…' : ''}
-                    </div>
-                </div>
-
-                {/* Bank Name dropdown */}
-                <div className="col-span-12 md:col-span-6">
-                    <label className="block text-xs text-ink-soft mb-1">Bank Name</label>
-                    <select
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.bankName ?? ''}
-                        onChange={(e) => setBankByName(e.target.value)}
-                    >
-                        <option value="">Select bank…</option>
-                        {countryBanks.map((b) => (
-                            <option key={`${b.country}-${b.code}`} value={b.name}>
-                                {b.name}
-                            </option>
-                        ))}
-                    </select>
-                </div>
-
-                {/* Bank Code dropdown (kept in sync with name) */}
-                <div className="col-span-12 md:col-span-6">
-                    <label className="block text-xs text-ink-soft mb-1">Bank Code</label>
-                    <select
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.bankCode ?? ''}
-                        onChange={(e) => setBankByCode(e.target.value)}
-                    >
-                        <option value="">Select bank…</option>
-                        {countryBanks.map((b) => (
-                            <option key={`${b.country}-${b.code}`} value={b.code}>
-                                {b.code} — {b.name}
-                            </option>
-                        ))}
-                    </select>
-                </div>
-
-                {/* Long fields (twice wider) */}
-                <div className="col-span-12 md:col-span-8">
-                    <label className="block text-xs text-ink-soft mb-1">Account Number</label>
-                    <input
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.accountNumber ?? ''}
-                        onChange={(e) => setValues({ ...values, accountNumber: e.target.value })}
-                        placeholder="0123456789"
-                        inputMode="numeric"
-                    />
-                </div>
-
-                <div className="col-span-12 md:col-span-8">
-                    <label className="block text-xs text-ink-soft mb-1">Account Name</label>
-                    <input
-                        className="w-full border rounded-lg px-3 py-2"
-                        value={values.accountName ?? ''}
-                        onChange={(e) => setValues({ ...values, accountName: e.target.value })}
-                        placeholder="e.g. ACME DISTRIBUTION LTD"
-                    />
-                </div>
-
-                <div className="col-span-12 md:col-span-4 flex items-end">
-                    <label className="inline-flex items-center gap-2 text-sm">
-                        <input
-                            type="checkbox"
-                            checked={!!values.isPayoutEnabled}
-                            onChange={(e) => setValues({ ...values, isPayoutEnabled: e.target.checked })}
-                        />
-                        Enable payouts for this supplier
-                    </label>
-                </div>
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-2 justify-end">
-                {editing && (
-                    <button className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5" onClick={onCancelEdit}>
-                        Cancel
-                    </button>
-                )}
-                <button
-                    className="px-3 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90"
-                    onClick={submit}
-                >
-                    {editing ? 'Update Supplier' : 'Add Supplier'}
-                </button>
-            </div>
-        </div>
-    );
-}
-
-
-/* ---------------- Image helpers ---------------- */
+/* ---------------- hooks ---------------- */
 function useDebounced<T>(value: T, delay = 300) {
     const [v, setV] = useState(value);
-    useEffect(() => { const t = setTimeout(() => setV(value), delay); return () => clearTimeout(t); }, [value, delay]);
+    useEffect(() => {
+        const t = setTimeout(() => setV(value), delay);
+        return () => clearTimeout(t);
+    }, [value, delay]);
     return v;
 }
 
+/* ---------------- Moderation section wrapper ---------------- */
 function ModerationSection({ token, onInspect }: { token?: string | null; onInspect: (p: any) => void }) {
     const qc = useQueryClient();
     const [searchInput, setSearchInput] = React.useState('');
     const debounced = useDebounced(searchInput, 350);
     const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
 
-    // fetch PUBLISHED items (unified endpoint)
+    // (Optional) example query you can keep for counts; the grid does its own fetching
     const productsQ = useQuery<AdminProduct[]>({
         queryKey: ['admin', 'products', 'pending', { q: debounced }],
         enabled: !!token,
@@ -2625,24 +1522,14 @@ function ModerationSection({ token, onInspect }: { token?: string | null; onInsp
         },
     });
 
-    // approve / reject
     const approveM = useMutation({
-        mutationFn: async (id: string) =>
-            (await api.post(`/api/admin/products/${id}/approve`, {}, { headers: hdr })).data,
+        mutationFn: async (id: string) => (await api.post(`/api/admin/products/${id}/approve`, {}, { headers: hdr })).data,
         onSuccess: () => {
-            // you were missing this 👇
             qc.invalidateQueries({ queryKey: ['admin', 'products', 'pending'] });
-            // keep these:
             qc.invalidateQueries({ queryKey: ['admin', 'products', 'published'] });
             qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
         },
-        onError: (e) => {
-            const msg =
-                (e as any)?.response?.data?.error || (e as any)?.message || 'Approve failed';
-            console.error('Approve failed:', msg);
-        },
     });
-
 
     return (
         <ModerationGrid

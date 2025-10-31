@@ -277,9 +277,9 @@ router.get('/', async (req, res) => {
     let offersByVariant = new Map<string, any[]>();
 
     if (inc.offers && rows.length > 0) {
-      const productIds = rows.map((r) => String(r.id));
+      const productIds = rows.map((r: { id: any; }) => String(r.id));
       const variantIds = inc.variants
-        ? rows.flatMap((r) => (r.ProductVariant ?? []).map((v: any) => String(v.id)))
+        ? rows.flatMap((r: { ProductVariant: any; }) => (r.ProductVariant ?? []).map((v: any) => String(v.id)))
         : [];
 
       const offers = await prisma.supplierOffer.findMany({
@@ -315,7 +315,7 @@ router.get('/', async (req, res) => {
       }
     }
 
-    return rows.map((p) =>
+    return rows.map((p: any) =>
       mapRow(p, offersByProduct, offersByVariant, !!inc.variants, !!inc.attributes, !!inc.brand, !!inc.offers)
     );
   }
