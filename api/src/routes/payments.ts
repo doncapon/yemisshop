@@ -21,6 +21,9 @@ import PDFDocument from 'pdfkit';
 
 const router = Router();
 
+// NEW: dynamic split computation
+import { computePaystackSplitForOrder } from '../lib/splits.js';
+
 /* ----------------------------- Config ----------------------------- */
 
 const isTrue = (v?: string | null) =>
@@ -31,10 +34,7 @@ const APP_URL = process.env.APP_URL || 'http://localhost:5173';
 
 const ACTIVE_PENDING_TTL_MIN = Number(process.env.PAYMENT_PENDING_TTL_MIN ?? 60);
 
-// Single source of truth for modes
-const INLINE_APPROVAL = (process.env.INLINE_APPROVAL || 'auto').toLowerCase() as
-  | 'auto'
-  | 'manual';
+const INLINE_APPROVAL = (process.env.INLINE_APPROVAL || 'auto').toLowerCase() as 'auto' | 'manual';
 
 const BANK_NAME = process.env.BANK_NAME || '';
 const BANK_ACCOUNT_NAME = process.env.BANK_ACCOUNT_NAME || '';
@@ -55,33 +55,11 @@ function isValidSignature(rawBody: Buffer, signature: string | undefined, secret
 }
 
 function calcPaystackFee(amountNaira: number, opts?: { international?: boolean }) {
-  // Local: 1.5% + ₦100 (> ₦2,500), cap ₦2,000
-  // Intl: 3.9% + ₦100 (fallback heuristic)
   const isIntl = !!opts?.international;
   if (isIntl) return amountNaira * 0.039 + 100;
   const percent = amountNaira * 0.015;
   const extra = amountNaira > 2500 ? 100 : 0;
   return Math.min(percent + extra, 2000);
-}
-
-// Setting helpers (super admin can set these keys in Setting table)
-async function getSettingNumber(key: string, defaultVal = 0): Promise<number> {
-  try {
-    const row = await prisma.setting.findUnique({ where: { key } });
-    const n = Number(row?.value);
-    return Number.isFinite(n) ? n : defaultVal;
-  } catch {
-    return defaultVal;
-  }
-}
-async function getBaseServiceFeeNGN(): Promise<number> {
-  // Check a few common keys (first positive wins)
-  const keys = ['serviceFeeBaseNGN', 'service_fee_base', 'platformBaseFeeNGN'];
-  for (const k of keys) {
-    const v = await getSettingNumber(k, 0);
-    if (v > 0) return v;
-  }
-  return 0;
 }
 
 async function readSetting(key: string): Promise<string | null> {
@@ -91,18 +69,93 @@ async function readSetting(key: string): Promise<string | null> {
   } catch { return null; }
 }
 
-/* ----------------------------- Core finalize ----------------------------- */
+/* ----------------------------- Split & Transfers ----------------------------- */
 
-/**
- * Single source of truth for post-paid side effects:
- * - cancel sibling pendings
- * - set order status
- * - record OrderComms pro-rated slice (svc * amount/total)  ← keeps your older behavior
- * - notify suppliers
- * - create POs
- * - issue receipt
- * - recompute profit (independent of serviceFee)
- */
+async function lookupBankCode(bankName?: string | null) {
+  // TODO: Map "GTBank"->"058" etc. If you already store the numeric code, return it as-is.
+  return (bankName || '').trim();
+}
+
+async function paySuppliersByTransfer(orderId: string, paymentId: string) {
+  const items = await prisma.orderItem.findMany({
+    where: { orderId },
+    select: { chosenSupplierId: true, chosenSupplierUnitPrice: true, quantity: true },
+  });
+
+  const bySupplier = new Map<string, number>();
+  for (const it of items) {
+    if (!it.chosenSupplierId) continue;
+    const qty = Math.max(1, Number(it.quantity || 0));
+    const cost = Number(it.chosenSupplierUnitPrice || 0) * qty;
+    bySupplier.set(it.chosenSupplierId, (bySupplier.get(it.chosenSupplierId) || 0) + cost);
+  }
+  if (bySupplier.size === 0) return;
+
+  const suppliers = await prisma.supplier.findMany({
+    where: { id: { in: Array.from(bySupplier.keys()) } },
+    select: {
+      id: true,
+      name: true,
+      paystackRecipientCode: true,
+      bankName: true,
+      accountNumber: true,
+      accountName: true,
+    },
+  });
+
+  for (const s of suppliers) {
+    const amount = bySupplier.get(s.id) || 0;
+    if (!(amount > 0)) continue;
+
+    try {
+      let recipientCode = s.paystackRecipientCode || null;
+
+      if (!recipientCode) {
+        const bank_code = await lookupBankCode(s.bankName);
+        const r = await ps.post('/transferrecipient', {
+          type: 'nuban',
+          name: s.bankAccountName || s.name || 'Supplier',
+          account_number: s.bankAccountNumber,
+          bank_code,
+          currency: 'NGN',
+        });
+        recipientCode = r.data?.data?.recipient_code || null;
+        if (recipientCode) {
+          await prisma.supplier.update({
+            where: { id: s.id },
+            data: { paystackRecipientCode: recipientCode },
+          });
+        }
+      }
+
+      if (!recipientCode) {
+        await prisma.paymentEvent.create({
+          data: { paymentId, type: 'TRANSFER_SKIPPED', data: { supplierId: s.id, reason: 'no recipient' } },
+        });
+        continue;
+      }
+
+      const tr = await ps.post('/transfer', {
+        source: 'balance',
+        amount: Math.round(amount * 100),
+        recipient: recipientCode,
+        reason: `Order ${orderId} supplier payout`,
+      });
+
+      await prisma.paymentEvent.create({
+        data: { paymentId, type: 'TRANSFER_INIT', data: { supplierId: s.id, amount, transfer: tr.data?.data } },
+      });
+    } catch (e: any) {
+      console.error('transfer failed', e?.response?.data || e?.message);
+      await prisma.paymentEvent.create({
+        data: { paymentId, type: 'TRANSFER_ERROR', data: { supplierId: s.id, amount, error: e?.message } },
+      });
+    }
+  }
+}
+
+// ----------------------------- Core finalize ----------------------------- //
+
 async function finalizePaidFlow(paymentId: string) {
   console.log('[finalizePaidFlow] start', { paymentId });
   const result = await prisma.$transaction(async (tx: any) => {
@@ -122,17 +175,14 @@ async function finalizePaidFlow(paymentId: string) {
 
     if (!p || p.status !== 'PAID' || !p.orderId) return null;
 
-    // cancel sibling pending attempts
     await tx.payment.updateMany({
       where: { orderId: p.orderId, status: 'PENDING', NOT: { id: p.id } },
       data: { status: 'CANCELED' },
     });
 
-    // bump order workflow
     const next = process.env.TURN_OFF_AWAIT_CONF === 'true' ? 'PAID' : 'AWAITING_FULFILLMENT';
     await tx.order.update({ where: { id: p.orderId }, data: { status: next } });
 
-    // (Legacy) commission slice by service fee proportion – keep for continuity
     const total = Number(p.order?.total) || 0;
     const svc = Number(p.order?.serviceFee) || 0;
     const amt = Number(p.amount) || 0;
@@ -140,19 +190,9 @@ async function finalizePaidFlow(paymentId: string) {
     if (total > 0 && svc > 0 && amt > 0) {
       const slice = svc * Math.max(0, Math.min(1, amt / total));
       await tx.orderComms.upsert({
-        where: { paymentId: p.id }, // paymentId is @unique on OrderComms
-        create: {
-          orderId: p.orderId,
-          paymentId: p.id,
-          amount: slice,
-          channel: p.channel ?? null,
-          reason: 'SERVICE_FEE_SLICE',
-        },
-        update: {
-          amount: slice,
-          channel: p.channel ?? null,
-          reason: 'SERVICE_FEE_SLICE',
-        },
+        where: { paymentId: p.id },
+        create: { orderId: p.orderId, paymentId: p.id, amount: slice, channel: p.channel ?? null, reason: 'SERVICE_FEE_SLICE' },
+        update: { amount: slice, channel: p.channel ?? null, reason: 'SERVICE_FEE_SLICE' },
       });
     }
 
@@ -165,7 +205,7 @@ async function finalizePaidFlow(paymentId: string) {
 
   if (!result) return;
 
-  // ---- side effects (outside txn) ----
+  // supplier notifications
   const alreadyNotified = await prisma.paymentEvent.findFirst({
     where: { paymentId: result.paymentId, type: 'SUPPLIER_NOTIFIED' },
   });
@@ -179,20 +219,264 @@ async function finalizePaidFlow(paymentId: string) {
     }
   }
 
+  // payouts: if no split was used at init, do transfers
+  const usedSplit = await prisma.paymentEvent.findFirst({
+    where: { paymentId: result.paymentId, type: 'SPLIT_USED' },
+  });
+
+  if (!usedSplit) {
+    if (TRIAL_MODE) {
+      // Option B: in trial/test mode, DO NOT call Paystack; just log a skip
+      await prisma.paymentEvent.create({
+        data: {
+          paymentId: result.paymentId,
+          type: 'TRANSFER_SKIPPED',
+          data: { reason: 'TRIAL_MODE' },
+        },
+      });
+    } else {
+      try {
+        await paySuppliersByTransfer(result.orderId, result.paymentId);
+      } catch (e) {
+        console.error('paySuppliersByTransfer failed', e);
+      }
+    }
+  }
+
   // Create POs after supplier notification
   setImmediate(() => createPurchaseOrdersForOrder(result.orderId).catch(console.error));
 
   // Receipt
   try { await issueReceiptIfNeeded(result.paymentId); } catch (e) { console.error('issueReceiptIfNeeded failed', e); }
 
-  // Profit recomputation (now that comms rows exist from notifySuppliersForOrder)
+  // Profit recomputation
   try { await recomputeProfitForPayment(result.paymentId); } catch (e) { console.error('recomputeProfitForPayment failed', e); }
 
   console.log('[finalizePaidFlow] done', result);
 }
 
-// Create POs grouped by supplier; uses chosenSupplierUnitPrice × quantity
-async function createPurchaseOrdersForOrder(orderId: string) {
+
+// unchanged: createPurchaseOrdersForOrder & recomputeProfitForPayment
+// (keep your existing implementations here, omitted for brevity in this snippet)
+
+/* ----------------------------- Public endpoints ----------------------------- */
+
+// ... /summary unchanged ...
+
+/**
+ * POST /api/payments/init  { orderId, channel? }
+ * Adds: dynamic split creation & logging SPLIT_USED
+ */
+router.post('/init', requireAuth, async (req: Request, res: Response) => {
+  const { orderId } = req.body ?? {};
+  let { channel } = req.body ?? {};
+  const userId = req.user!.id;
+  const userEmail = req.user!.email;
+
+  channel = String(channel || 'paystack').toLowerCase();
+
+  const order = await prisma.order.findFirst({
+    where: { id: orderId, userId },
+    select: { id: true, total: true, createdAt: true },
+  });
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+
+  const paid = await prisma.payment.findFirst({
+    where: { orderId, status: 'PAID' },
+    select: { id: true },
+  });
+  if (paid) return res.status(409).json({ error: 'Order already paid' });
+
+  let pay = await prisma.payment.findFirst({
+    where: { orderId, status: 'PENDING', channel },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, reference: true, createdAt: true, channel: true, providerPayload: true, status: true },
+  });
+
+  if (pay && isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN) && channel === 'paystack') {
+    const authUrl = (pay.providerPayload as any)?.authorization_url;
+    if (authUrl) {
+      await logOrderActivity(orderId, 'PAYMENT_RESUME', 'Resumed existing Paystack attempt', { reference: pay.reference });
+      return res.json({ mode: 'paystack', reference: pay.reference, authorization_url: authUrl });
+    }
+  }
+
+  if (pay && !isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN)) {
+    await prisma.payment.update({ where: { id: pay.id }, data: { status: 'CANCELED' } });
+    pay = null as any;
+  }
+
+  if (!pay) {
+    const created = await prisma.payment.create({
+      data: { orderId, reference: generateRef8(), channel, amount: order.total, status: 'PENDING', provider: channel === 'paystack' ? 'PAYSTACK' : null },
+    });
+    pay = { id: created.id, reference: created.reference, createdAt: created.createdAt, channel: created.channel, providerPayload: created.providerPayload, status: created.status } as any;
+  }
+
+  if (TRIAL_MODE) {
+    await logOrderActivity(orderId, 'PAYMENT_INIT', `Trial init (${channel})`, { reference: pay.reference, channel, amount: toNumber(order.total) });
+    return res.json({
+      mode: 'trial',
+      reference: pay.reference,
+      amount: toNumber(order.total),
+      currency: 'NGN',
+      autoPaid: INLINE_APPROVAL === 'auto',
+      bank: { bank_name: 'Demo Bank', account_name: 'DaySpring', account_number: '0123456789' },
+    });
+  }
+
+  if (channel === 'paystack') {
+    const channels = getInitChannels();
+    const callback_url = `${APP_URL}/payment-callback?orderId=${orderId}&reference=${pay.reference}&gateway=paystack`;
+
+    // NEW: try to create a dynamic split plan based on supplier COGS
+    let split_code: string | undefined;
+    try {
+      const split = await computePaystackSplitForOrder(orderId);
+      if (split) {
+        const subaccounts = split.parts.map((p: { subaccount: any; amount: number; }) => ({
+          subaccount: p.subaccount,
+          share: Math.round(p.amount * 100), // use as weight; Paystack "percentage" type reads "share" as weights
+        }));
+
+        const splitResp = await ps.post('/split', {
+          name: `Order ${orderId} ${pay.reference}`,
+          type: 'percentage',
+          currency: 'NGN',
+          subaccounts,
+          bearer_type: 'account',
+          active: true,
+        });
+
+        split_code = splitResp.data?.data?.split_code;
+        if (split_code) {
+          await prisma.paymentEvent.create({ data: { paymentId: pay.id, type: 'SPLIT_USED', data: { split_code } } });
+        }
+      }
+    } catch (e: any) {
+      console.error('paystack split create failed', e?.response?.data || e?.message);
+    }
+
+    const initPayload: any = {
+      email: userEmail,
+      amount: toKobo(order.total),
+      reference: pay.reference,
+      currency: 'NGN',
+      callback_url,
+      channels,
+      metadata: {
+        orderId,
+        userId: req.user!.id,
+        splitApplied: !!split_code,
+        custom_fields: [{ display_name: 'Order Ref', variable_name: 'order_ref', value: pay.reference }],
+      },
+      customizations: {
+        title: 'DaySpring',
+        description: `Order ${order.id} • Use Payment Ref: ${pay.reference}`,
+        logo: process.env.PAYSTACK_LOGO_URL || undefined,
+      },
+    };
+    if (split_code) initPayload.split_code = split_code;
+
+    const resp = await ps.post('/transaction/initialize', initPayload);
+    const data = resp.data?.data;
+
+    await prisma.payment.update({
+      where: { id: pay.id },
+      data: { providerPayload: data, initPayload, provider: 'PAYSTACK', channel: 'paystack' },
+    });
+
+    await logOrderActivity(orderId, 'PAYMENT_INIT', 'Paystack init', { reference: pay.reference, amount: toNumber(order.total) });
+
+    return res.json({ mode: 'paystack', reference: pay.reference, authorization_url: data?.authorization_url, data });
+  }
+
+  await logOrderActivity(orderId, 'PAYMENT_INIT', 'Inline bank init', { reference: pay.reference, amount: toNumber(order.total) });
+  return res.json({
+    mode: 'paystack_inline_bank',
+    reference: pay.reference,
+    amount: toNumber(order.total),
+    currency: 'NGN',
+    bank: {
+      bank_name: BANK_NAME || 'GTB Banks Virtual',
+      account_name: BANK_ACCOUNT_NAME || 'DaySpring',
+      account_number: BANK_ACCOUNT_NUMBER || '0123456789',
+    },
+  });
+});
+
+// ... keep /verify, webhook, receipts, status, list endpoints as in your file,
+// but DO NOT remove `finalizePaidFlow` calls after marking a payment PAID.
+
+
+/* ----------------------------- Config ----------------------------- */
+
+// Setting helpers (super admin can set these keys in Setting table)
+async function getSettingNumber(key: string, defaultVal = 0): Promise<number> {
+  try {
+    const row = await prisma.setting.findUnique({ where: { key } });
+    const n = Number(row?.value);
+    return Number.isFinite(n) ? n : defaultVal;
+  } catch {
+    return defaultVal;
+  }
+}
+
+// ---- helper: stable, readable supplier-order reference ----
+function generateSupplierOrderRef() {
+  // e.g. "SPO-7G5Q-2K9M"
+  const chunk = () => Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `SPO-${chunk()}-${chunk()}`;
+}
+
+// ---- helper: ensure we have a supplierOrderRef per (orderId, supplierId) ----
+// Reuse if any exists (from older PO or activity); otherwise generate+log once.
+async function ensureSupplierOrderRef(
+  tx: any,
+  orderId: string,
+  supplierId: string
+): Promise<string> {
+  // 1) If there’s already a PO for this (orderId, supplierId), reuse its ref
+  const existingPO = await tx.purchaseOrder.findFirst({
+    where: { orderId, supplierId },
+    orderBy: { createdAt: 'asc' },
+    select: { supplierOrderRef: true },
+  });
+  if (existingPO?.supplierOrderRef) return existingPO.supplierOrderRef;
+
+  // 2) Or if you previously logged the ref in activities, reuse it
+  const refAct = await tx.orderActivity.findFirst({
+    where: { orderId, supplierId, type: 'SUPPLIER_REF_CREATED' },
+    orderBy: { createdAt: 'asc' },
+    select: { meta: true },
+  });
+  const fromAct =
+    (refAct?.meta as any)?.supplierOrderRef ||
+    (refAct?.meta as any)?.supplierRef; // legacy key support
+  if (fromAct && typeof fromAct === 'string' && fromAct.trim()) {
+    return fromAct.trim();
+  }
+
+  // 3) None found → generate a fresh reference and log it
+  const ref = generateSupplierOrderRef();
+  try {
+    await tx.orderActivity.create({
+      data: {
+        orderId,
+        supplierId,
+        type: 'SUPPLIER_REF_CREATED',
+        message: `Supplier reference created for supplier ${supplierId}`,
+        meta: { supplierOrderRef: ref },
+      },
+    });
+  } catch {
+    // If activities table is locked or fails, we still proceed; ref is returned
+  }
+  return ref;
+}
+
+// ---- main: create POs grouped by supplier and attach supplierOrderRef ----
+export async function createPurchaseOrdersForOrder(orderId: string) {
   await prisma.$transaction(async (tx: any) => {
     const items = await tx.orderItem.findMany({
       where: { orderId },
@@ -214,23 +498,53 @@ async function createPurchaseOrdersForOrder(orderId: string) {
 
     for (const [supplierId, group] of bySupplier) {
       const subtotal = group.reduce(
-        (sum: number, it: { chosenSupplierUnitPrice: any; quantity: any; }) =>
+        (sum: number, it: { chosenSupplierUnitPrice: any; quantity: any }) =>
           sum +
-          (Number(it.chosenSupplierUnitPrice ?? 0) * Math.max(1, Number(it.quantity ?? 1))),
+          Number(it.chosenSupplierUnitPrice ?? 0) *
+            Math.max(1, Number(it.quantity ?? 1)),
         0
       );
 
-      const po = await tx.purchaseOrder.create({
-        data: {
-          orderId,
-          supplierId,
-          subtotal,
-          platformFee: 0,
-          supplierAmount: subtotal,
-          status: 'CREATED',
-        },
-      });
+      // Ensure we have a stable supplierOrderRef for this (orderId, supplierId)
+      const supplierOrderRef = await ensureSupplierOrderRef(tx, orderId, supplierId);
 
+      // Create PO with retry on rare unique collisions of supplierOrderRef
+      let po: { id: string } | null = null;
+      for (let i = 0; i < 5; i++) {
+        try {
+          po = await tx.purchaseOrder.create({
+            data: {
+              orderId,
+              supplierId,
+              subtotal,
+              platformFee: 0,
+              supplierAmount: subtotal,
+              status: 'CREATED',
+              supplierOrderRef, // <-- stored in DB
+            },
+            select: { id: true },
+          });
+          break; // success
+        } catch (e: any) {
+          const isUniqueRef =
+            e?.code === 'P2002' &&
+            Array.isArray(e?.meta?.target) &&
+            e.meta.target.includes('supplierOrderRef');
+          if (isUniqueRef) {
+            // extremely unlikely — someone else used that ref; mint a new one and try again
+            const newRef = generateSupplierOrderRef();
+            // keep activity meta stable (first ref) — do NOT overwrite activity on collision
+            // just retry creation with a new ref
+            continue;
+          }
+          throw e;
+        }
+      }
+      if (!po) {
+        throw new Error('Could not create purchase order (ref collisions).');
+      }
+
+      // Link items to the PO
       for (const it of group) {
         await tx.purchaseOrderItem.create({
           data: {
@@ -244,6 +558,8 @@ async function createPurchaseOrdersForOrder(orderId: string) {
     }
   });
 }
+
+
 
 /* ----------------------------- Profit recompute ----------------------------- */
 
@@ -410,170 +726,6 @@ async function createPendingAttempt(args: {
     },
   });
 }
-
-router.post('/init', requireAuth, async (req: Request, res: Response) => {
-  const { orderId } = req.body ?? {};
-  let { channel } = req.body ?? {};
-  const userId = req.user!.id;
-  const userEmail = req.user!.email;
-
-  channel = String(channel || 'paystack').toLowerCase();
-
-  const order = await prisma.order.findFirst({
-    where: { id: orderId, userId },
-    select: { id: true, total: true, createdAt: true },
-  });
-  if (!order) return res.status(404).json({ error: 'Order not found' });
-
-  const paid = await prisma.payment.findFirst({
-    where: { orderId, status: 'PAID' },
-    select: { id: true },
-  });
-  if (paid) return res.status(409).json({ error: 'Order already paid' });
-
-  let pay = await prisma.payment.findFirst({
-    where: { orderId, status: 'PENDING', channel },
-    orderBy: { createdAt: 'desc' },
-    select: {
-      id: true,
-      reference: true,
-      createdAt: true,
-      channel: true,
-      providerPayload: true,
-      status: true,
-    },
-  });
-
-  if (pay && isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN) && channel === 'paystack') {
-    const authUrl = (pay.providerPayload as any)?.authorization_url;
-    if (authUrl) {
-      await logOrderActivity(orderId, 'PAYMENT_RESUME', 'Resumed existing Paystack attempt', {
-        reference: pay.reference,
-      });
-      return res.json({
-        mode: 'paystack',
-        reference: pay.reference,
-        authorization_url: authUrl,
-      });
-    }
-  }
-
-  if (pay && !isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN)) {
-    await prisma.payment.update({
-      where: { id: pay.id },
-      data: { status: 'CANCELED' },
-    });
-    pay = null as any;
-  }
-
-  if (!pay) {
-    const created = await createPendingAttempt({
-      orderId,
-      channel,
-      amountDecimal: order.total,
-      provider: channel === 'paystack' ? 'PAYSTACK' : null,
-    });
-    pay = {
-      id: created.id,
-      reference: created.reference,
-      createdAt: created.createdAt,
-      channel: created.channel,
-      providerPayload: created.providerPayload,
-      status: created.status,
-    } as any;
-  }
-
-  if (TRIAL_MODE) {
-    await logOrderActivity(orderId, 'PAYMENT_INIT', `Trial init (${channel})`, {
-      reference: pay.reference,
-      channel,
-      amount: toNumber(order.total),
-    });
-    return res.json({
-      mode: 'trial',
-      reference: pay.reference,
-      amount: toNumber(order.total),
-      currency: 'NGN',
-      autoPaid: INLINE_APPROVAL === 'auto',
-      bank: {
-        bank_name: 'Demo Bank',
-        account_name: 'DaySpring',
-        account_number: '0123456789',
-      },
-    });
-  }
-
-  if (channel === 'paystack') {
-    const channels = getInitChannels();
-    const callback_url = `${APP_URL}/payment-callback?orderId=${orderId}&reference=${pay.reference}&gateway=paystack`;
-
-    const initPayload = {
-      email: userEmail,
-      amount: toKobo(order.total),
-      reference: pay.reference,
-      currency: 'NGN',
-      callback_url,
-      channels,
-      metadata: {
-        orderId,
-        userId: req.user!.id,
-        custom_fields: [
-          {
-            display_name: 'Order Ref',
-            variable_name: 'order_ref',
-            value: pay.reference,
-          },
-        ],
-      },
-      customizations: {
-        title: 'DaySpring',
-        description: `Order ${order.id} • Use Payment Ref: ${pay.reference}`,
-        logo: process.env.PAYSTACK_LOGO_URL || undefined,
-      },
-    };
-
-    const resp = await ps.post('/transaction/initialize', initPayload);
-    const data = resp.data?.data;
-
-    await prisma.payment.update({
-      where: { id: pay.id },
-      data: {
-        providerPayload: data,
-        initPayload,
-        provider: 'PAYSTACK',
-        channel: 'paystack',
-      },
-    });
-
-    await logOrderActivity(orderId, 'PAYMENT_INIT', 'Paystack init', {
-      reference: pay.reference,
-      amount: toNumber(order.total),
-    });
-
-    return res.json({
-      mode: 'paystack',
-      reference: pay.reference,
-      authorization_url: data?.authorization_url,
-      data,
-    });
-  }
-
-  await logOrderActivity(orderId, 'PAYMENT_INIT', 'Inline bank init', {
-    reference: pay.reference,
-    amount: toNumber(order.total),
-  });
-  return res.json({
-    mode: 'paystack_inline_bank',
-    reference: pay.reference,
-    amount: toNumber(order.total),
-    currency: 'NGN',
-    bank: {
-      bank_name: BANK_NAME || 'GTB Banks Virtual',
-      account_name: BANK_ACCOUNT_NAME || 'DaySpring',
-      account_number: BANK_ACCOUNT_NUMBER || '0123456789',
-    },
-  });
-});
 
 /* ----------------------------- Verification ----------------------------- */
 

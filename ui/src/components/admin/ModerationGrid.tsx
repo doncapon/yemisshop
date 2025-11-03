@@ -1,6 +1,6 @@
 import { PackageCheck, PackageX, Search } from 'lucide-react';
 import api from '../../api/client';
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React from 'react';
 
 /* ===================== Types ===================== */
@@ -24,7 +24,7 @@ type AdminProduct = {
   title: string;
   price: number | string | null;
   status: string;
-  imagesJson?: string[];
+  imagesJson?: string[] | string;
   createdAt?: string;
   isDeleted?: boolean;
   ownerId?: string | null;
@@ -45,8 +45,8 @@ const isUrlish = (s?: string) => !!s && /^(https?:\/\/|data:image\/|\/)/i.test(s
 
 // safe available units from many shapes
 function availableUnits(o: SupplierOfferLite | any) {
-  const n =
-    Number(o?.availableQty ?? o?.available ?? o?.qty ?? o?.stock ?? 0);
+  const raw = o?.availableQty ?? o?.available ?? o?.qty ?? o?.stock ?? 0;
+  const n = Number(raw);
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -69,7 +69,7 @@ function extractImageUrls(p: any): string[] {
     p?.primaryImage,
     p?.coverUrl,
   ].filter(Boolean);
-  return candidates.filter(isUrlish);
+  return (candidates as string[]).filter(isUrlish);
 }
 
 // tiny debounce hook
@@ -83,32 +83,49 @@ function useDebounced<T>(value: T, delay = 350) {
 }
 
 /* ===================== Data ===================== */
-function usePendingProductsQuery(token: string | null | undefined, q: string) {
-  const debouncedQ = useDebounced(q, 350);
+function normalizeStatus(s: any) {
+  return String(s ?? '').toUpperCase();
+}
+
+// sorting: PUBLISHED first (rank 0), then PENDING-like (rank 1), then others (rank 2)
+// within same rank, newest first by createdAt
+function statusRank(s: string) {
+  const u = normalizeStatus(s);
+  if (u === 'PUBLISHED') return 0;
+  if (u === 'PENDING' || u === 'PENDING_APPROVAL') return 1;
+  return 2;
+}
+function timeVal(iso?: string) {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
+function useModeratableProductsQuery(token: string | null | undefined, q: string) {
   return useQuery<AdminProduct[]>({
-    queryKey: ['admin', 'products', 'pending', { q: debouncedQ }],
+    queryKey: ['admin', 'products', 'moderation', { q }],
     enabled: !!token,
     staleTime: STALE_TIME,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
-    placeholderData: keepPreviousData,
+    refetchOnMount: 'always',
     queryFn: async () => {
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+      // no status filter server-side so we can collect multiple states
       const params = {
-        status: 'PENDING',
-        q: debouncedQ || undefined,
+        q: q || undefined,
         take: 50,
         skip: 0,
         include: 'supplierOffers,owner',
       };
       const { data } = await api.get('/api/admin/products', { headers, params });
       const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+
       const rows: AdminProduct[] = (arr ?? []).map((p: any) => ({
         id: String(p.id),
         title: String(p.title ?? ''),
         price: p.price != null ? p.price : null,
-        status: String(p.status ?? 'PENDING'),
-        imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
+        status: String(p.status ?? ''),
+        imagesJson: Array.isArray(p.imagesJson) || typeof p.imagesJson === 'string' ? p.imagesJson : [],
         createdAt: p.createdAt ?? null,
         isDeleted: !!p.isDeleted,
         ownerId: p.ownerId ?? p.owner?.id ?? null,
@@ -120,7 +137,20 @@ function usePendingProductsQuery(token: string | null | undefined, q: string) {
         inStock: p.inStock !== false,
         supplierOffers: Array.isArray(p.supplierOffers) ? p.supplierOffers : [],
       }));
-      return rows;
+
+      // 1) Only NOT LIVE
+      const nonLive = rows.filter((p) => normalizeStatus(p.status) !== 'LIVE');
+
+      // 2) Sort: PUBLISHED first, then PENDING-like, then others; and newest first inside each bucket
+      nonLive.sort((a, b) => {
+        const ra = statusRank(a.status);
+        const rb = statusRank(b.status);
+        if (ra !== rb) return ra - rb;
+        // newest first
+        return timeVal(b.createdAt) - timeVal(a.createdAt);
+      });
+
+      return nonLive;
     },
   });
 }
@@ -141,35 +171,33 @@ export function ModerationGrid({
   onApprove,
   onInspect,
 }: ModerationGridProps) {
-  // ------ Status helpers ------
-  const statusOf = (p: any) => String(p?.status || '').toUpperCase();
-  const isPending = (p: any) => statusOf(p) === 'PENDING';
-  const isPublished = (p: any) => statusOf(p) === 'PUBLISHED'; // for badges only
+  const statusOf = (p: any) => normalizeStatus(p?.status);
+  const isPublished = (p: any) => statusOf(p) === 'PUBLISHED';
 
+  // Supplier-offer check:
+  // - default active to true when missing
+  // - if inStock is missing, derive from available units
   function hasSupplierOffer(p: any) {
     const offers: SupplierOfferLite[] = Array.isArray(p?.supplierOffers) ? p.supplierOffers : [];
-    return offers.some(
-      (o) => (o?.isActive ?? true) && (o?.inStock ?? true) && availableUnits(o) > 0
-    );
+    return offers.some((o) => {
+      const active = o?.isActive !== false; // treat undefined as active
+      const units = availableUnits(o);
+      const stockFlag = typeof o?.inStock === 'boolean' ? o.inStock : units > 0;
+      return active && stockFlag && units > 0;
+    });
   }
 
-  // Can approve only when the item is PENDING and has at least one active, available offer
-  function canApprove(p: any) {
-    return isPending(p) && hasSupplierOffer(p);
-  }
-
-  // ------ Search (single source + debounce) ------
+  // ------ Search (single debounce in the component) ------
   const [searchLocal, setSearchLocal] = React.useState(search);
   React.useEffect(() => setSearchLocal(search), [search]);
   const debouncedLocal = useDebounced(searchLocal, 350);
   React.useEffect(() => {
-    // lift debounced value up so parent stays aware (URLs, etc.)
     if (debouncedLocal !== search) setSearch(debouncedLocal);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedLocal]);
 
-  // Products
-  const productsQ = usePendingProductsQuery(token, debouncedLocal);
+  // Products (non-LIVE, sorted Published → Pending → Others)
+  const productsQ = useModeratableProductsQuery(token, debouncedLocal);
   const qc = useQueryClient();
 
   const gridRows = productsQ.data ?? [];
@@ -197,7 +225,6 @@ export function ModerationGrid({
             `/api/admin/products/${encodeURIComponent(id)}/has-orders`,
             { headers: hdr }
           );
-          // Accept multiple shapes:
           const has =
             typeof data === 'boolean'
               ? data
@@ -219,7 +246,6 @@ export function ModerationGrid({
       for (const r of settled) {
         if (r.status === 'fulfilled') entries.push(r.value);
       }
-      // default missing to false (safer UX: allow reject if truly no orders)
       const map = Object.fromEntries(entries);
       for (const id of fetchIds) if (!(id in map)) map[id] = false;
       return map;
@@ -257,8 +283,23 @@ export function ModerationGrid({
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {gridRows.map((p) => {
-          const eligible = canApprove(p);
+          const published = isPublished(p);
+          const offersPresent = hasSupplierOffer(p);
+          const ordersPresent = hasOrder(p.id);
           const checkingOrders = hasOrdersQ.isLoading;
+
+          // Disable if: NOT published OR no supplier offer OR has orders (also disable while checking)
+          const disableApprove = !published || !offersPresent || checkingOrders || ordersPresent;
+
+          const approveTitle = checkingOrders
+            ? 'Checking orders…'
+            : !published
+            ? 'Only PUBLISHED items can be approved'
+            : !offersPresent
+            ? 'Needs at least one active supplier offer with available quantity'
+            : ordersPresent
+            ? 'Cannot approve: product already has orders'
+            : 'Approve product';
 
           return (
             <div key={p.id} className="rounded-2xl border bg-white overflow-hidden shadow-sm">
@@ -299,32 +340,26 @@ export function ModerationGrid({
                   <div className="inline-flex gap-2">
                     <button
                       onClick={() => {
-                        if (!eligible) {
-                          window.alert(
-                            'Cannot approve: product must be PENDING and have at least one active supplier offer with available quantity.'
-                          );
+                        if (disableApprove) {
+                          window.alert(approveTitle);
                           return;
                         }
                         onApprove(p.id);
                       }}
-                      disabled={!eligible}
+                      disabled={disableApprove}
                       className={[
                         'inline-flex items-center gap-1 px-3 py-1.5 rounded-lg',
-                        eligible
+                        !disableApprove
                           ? 'bg-emerald-600 text-white hover:bg-emerald-700'
                           : 'bg-emerald-600/30 text-white/70 cursor-not-allowed',
                       ].join(' ')}
-                      title={
-                        eligible
-                          ? 'Approve product'
-                          : 'Disabled — needs to be PENDING and have a supplier offer with available quantity'
-                      }
+                      title={approveTitle}
                     >
                       <PackageCheck size={16} /> Approve
                     </button>
 
                     <button
-                      onClick={() => onInspect({ id: p.id, title: p.title, sku: p.sku ?? null as any })}
+                      onClick={() => onInspect({ id: p.id, title: p.title, sku: p.sku ?? (null as any) })}
                       className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
                       title="Go to Manage and open this item"
                     >
@@ -338,11 +373,11 @@ export function ModerationGrid({
                     title={
                       checkingOrders
                         ? 'Checking orders…'
-                        : hasOrder(p.id)
+                        : ordersPresent
                         ? 'Cannot reject: product already has orders'
                         : 'Reject product'
                     }
-                    disabled={checkingOrders || hasOrder(p.id)}
+                    disabled={checkingOrders || ordersPresent}
                   >
                     <PackageX size={16} /> Reject
                   </button>
@@ -352,32 +387,32 @@ export function ModerationGrid({
                 <div className="mt-2 text-[11px] text-zinc-600 space-x-2">
                   <span
                     className={
-                      isPublished(p)
+                      published
                         ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700'
                         : 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700'
                     }
                   >
-                    Status: {productsQ.isLoading ? '…' : p?.status}
+                    Status: {productsQ.isLoading ? '…' : p?.status || '—'}
                   </span>
 
                   <span
                     className={
-                      hasSupplierOffer(p)
+                      offersPresent
                         ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700'
                         : 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700'
                     }
                   >
-                    Supplier offer: {productsQ.isLoading ? '…' : hasSupplierOffer(p) ? 'present' : 'missing'}
+                    Supplier offer: {productsQ.isLoading ? '…' : offersPresent ? 'present' : 'missing'}
                   </span>
 
                   <span
                     className={
-                      hasOrder(p.id)
+                      ordersPresent
                         ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700'
                         : 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700'
                     }
                   >
-                    Orders: {checkingOrders ? '…' : hasOrder(p.id) ? 'present' : 'none'}
+                    Orders: {hasOrdersQ.isLoading ? '…' : ordersPresent ? 'present' : 'none'}
                   </span>
                 </div>
               </div>

@@ -1,20 +1,15 @@
 // api/src/routes/orders.ts
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma.js';
-import { requireAuth, requireSuperAdmin } from '../middleware/auth.js';
-import { Prisma } from '@prisma/client';
-import { logOrderActivity } from '../services/activity.service.js';
-import { readNumberSetting } from '../lib/settings.js';
-
-// 🔽 Derive + cache inStock from SupplierOffer.availableQty sums
-// (See prior message where we defined these helpers.)
+import { requireAdmin, requireAuth, requireSuperAdmin } from '../middleware/auth.js';
+import { logOrderActivityTx } from '../services/activity.service.js';
 import { syncProductInStockCacheTx } from '../services/inventory.service.js';
 
 const router = Router();
 
 const isAdmin = (role?: string) => role === 'ADMIN' || role === 'SUPER_ADMIN';
 
-/* ------------------------ Helpers ------------------------ */
+/* ------------------------ Helpers & Types ------------------------ */
 function asNumber(v: any, def = 0): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : def;
@@ -30,410 +25,532 @@ type Address = {
   country: string;
 };
 
-type IncomingItem = {
+type CartItem = {
   productId: string;
   variantId?: string | null;
+  offerId?: string | null;
   qty: number;
-  title?: string;
-  unitPrice?: number; // client-side shown price (retail)
-  selectedOptions?: any[]; // JSON
-  supplierId?: string | null; // OPTIONAL: if you already pre-picked
+  price: number; // retail unit price from client (aliases accepted)
+  selectedOptions?: Array<{ attributeId: string; attribute: string; valueId?: string; value: string }>;
 };
 
-/** Minimal auth helper – replace with your real extraction if needed */
-function getUserId(req: any): string {
-  return req.user?.id || req.auth?.userId;
-}
+type CreateOrderBody = {
+  items: CartItem[];
+  shippingAddressId?: string;
+  shippingAddress?: Address;
+  billingAddressId?: string;
+  billingAddress?: Address;
+  notes?: string | null;
+};
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-/** Safe equality for variant matching (null === null counts as equal) */
-function eqVar(a?: string | null, b?: string | null) {
-  return (a ?? null) === (b ?? null);
+function getUserId(req: any): string | undefined {
+  return req.user?.id || req.auth?.userId || undefined;
+}
+
+const ACT = {
+  ORDER_CREATED: 'ORDER_CREATED',
+  NOTE: 'NOTE',
+  STATUS_CHANGE: 'STATUS_CHANGE',
+} as const;
+
+/** Compute current availableQty / inStock for pairs */
+async function computeInStockForPairs(
+  pairs: Array<{ productId: string; variantId: string | null }>
+): Promise<Record<string, { availableQty: number; inStock: boolean }>> {
+  const key = (p: string, v: string | null) => `${p}::${v ?? 'NULL'}`;
+  const out: Record<string, { availableQty: number; inStock: boolean }> = {};
+  if (pairs.length === 0) return out;
+
+  const uniq = Array.from(new Map(pairs.map(p => [key(p.productId, p.variantId), p])).values());
+
+  try {
+    const grouped = await prisma.supplierOffer.groupBy({
+      by: ['productId', 'variantId', 'isActive'],
+      where: {
+        OR: uniq.map(p => ({ productId: p.productId, variantId: p.variantId })),
+        isActive: true,
+      },
+      _sum: { availableQty: true },
+    });
+
+    for (const g of grouped as any[]) {
+      const k = key(g.productId, g.variantId ?? null);
+      const sum = asNumber(g._sum?.availableQty, 0);
+      const prev = out[k]?.availableQty ?? 0;
+      const total = prev + Math.max(0, sum);
+      out[k] = { availableQty: total, inStock: total > 0 };
+    }
+  } catch {
+    const offers = await prisma.supplierOffer.findMany({
+      where: {
+        OR: uniq.map(p => ({ productId: p.productId, variantId: p.variantId, isActive: true })),
+      },
+      select: { productId: true, variantId: true, availableQty: true },
+    });
+    const acc = new Map<string, number>();
+    for (const o of offers) {
+      const k = key(o.productId, o.variantId ?? null);
+      acc.set(k, (acc.get(k) || 0) + Math.max(0, asNumber(o.availableQty, 0)));
+    }
+    for (const [k, sum] of acc.entries()) {
+      out[k] = { availableQty: sum, inStock: sum > 0 };
+    }
+  }
+
+  for (const p of uniq) {
+    const k = key(p.productId, p.variantId);
+    if (!out[k]) out[k] = { availableQty: 0, inStock: false };
+  }
+
+  return out;
+}
+
+// helper: fetch active offers with price, then sort cheap → more stock
+async function fetchActiveOffersTx(
+  tx: any,
+  where: any
+): Promise<Array<{ id: string; supplierId: string | null; availableQty: number; price: number }>> {
+  const list = await tx.supplierOffer.findMany({
+    where: { ...where, isActive: true },
+    select: { id: true, supplierId: true, availableQty: true, price: true, productId: true, variantId: true, isActive: true },
+  });
+
+  const usable = list
+    .map((o: any) => ({
+      id: o.id,
+      supplierId: o.supplierId ?? null,
+      availableQty: Math.max(0, Number(o.availableQty ?? 0)),
+      price: Number(o.price ?? 0),
+    }))
+    .filter((o: any) => o.availableQty > 0 && Number.isFinite(o.price) && o.price > 0);
+
+  usable.sort((a: { price: number; availableQty: number; }, b: { price: number; availableQty: number; }) => (a.price !== b.price ? a.price - b.price : b.availableQty - a.availableQty));
+  return usable;
 }
 
 /* =========================================================
-   POST /api/orders
-   Body: {
-     items: [{ productId, variantId?, qty, unitPrice, title?, selectedOptions? }],
-     homeAddress?: Address,
-     shippingAddress?: Address
-   }
+   POST /api/orders — create + allocate across offers
 ========================================================= */
-router.post('/', requireAuth, async (req, res, next) => {
+router.post('/', requireAuth, async (req: Request, res: Response) => {
+  const body = req.body as CreateOrderBody;
+  const items = Array.isArray(body.items) ? body.items : [];
+
+  if (items.length === 0) return res.status(400).json({ error: 'No items.' });
+  if (!body.shippingAddressId && !body.shippingAddress) {
+    return res.status(400).json({ error: 'shippingAddress or shippingAddressId is required.' });
+  }
+
+  const userId = getUserId(req);
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
   try {
-    const userId = getUserId(req);
-    const body = req.body as {
-      items: IncomingItem[];
-      homeAddress?: Address;
-      shippingAddress?: Address;
-    };
-
-    if (!Array.isArray(body.items) || body.items.length === 0) {
-      return res.status(400).json({ error: 'No items in order' });
-    }
-
-    // Normalize + validate items
-    const items = body.items.map((it, idx) => {
-      const qty = Math.max(1, Number(it.qty) || 1);
-      const unit = Number(it.unitPrice ?? 0);
-      if (!Number.isFinite(unit) || unit <= 0) {
-        throw new Error(`Invalid unitPrice for item at index ${idx}`);
-      }
-      return {
-        productId: String(it.productId),
-        variantId: it.variantId ?? null,
-        qty,
-        title: it.title ?? '',
-        unitPrice: unit, // retail unit
-        selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : [],
-      };
-    });
-
-    // Require shipping address (you can relax if you use home)
-    const shippingAddrInput: Address | undefined =
-      body.shippingAddress ?? body.homeAddress ?? undefined;
-    if (!shippingAddrInput) {
-      return res.status(400).json({ error: 'shippingAddress is required' });
-    }
-
-    // Global settings
-    const unitServiceFee = await readNumberSetting('commsServiceFeeNGN', 0);
-    const taxRatePct = await readNumberSetting('taxRatePct', 0);
-
-    // Compute customer-facing amounts (independent of allocation)
-    const shippingNum = 0; // included by suppliers
-    const subtotalRaw = items.reduce((s, it) => s + it.unitPrice * it.qty, 0);
-    const subtotalNum = round2(subtotalRaw);
-    const taxNum = round2(subtotalNum * (taxRatePct / 100));
-
-    // ---- Place everything atomically ----
-    const created = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      // 0) Load all usable SupplierOffers for all products in this order
-      const productIds = [...new Set(items.map(i => i.productId))];
-
-      const offers = await tx.supplierOffer.findMany({
-        where: {
-          productId: { in: productIds },
-          isActive: true,
-          availableQty: { gt: 0 },
-        },
-        select: {
-          id: true,
-          productId: true,
-          variantId: true,
-          supplierId: true,
-          price: true,         // supplier's unit cost (Decimal)
-          availableQty: true,
-          createdAt: true,
-        },
-        orderBy: [
-          { price: 'asc' },    // prefer cheaper supplier first
-          { createdAt: 'asc' } // stable tie-break
-        ],
-      });
-
-      // Index offers by (productId, variantId?) for quick allocation
-      const keyOf = (pid: string, vid: string | null) => `${pid}::${vid ?? 'null'}`;
-      const offersMap = new Map<string, typeof offers>();
-
-      for (const pid of productIds) {
-        const related = offers.filter(o => o.productId === pid);
-        // Build 2 buckets: exact variantId and null variant
-        // We'll reuse during allocation
-        const byVariant = new Map<string, typeof offers>();
-        related.forEach(o => {
-          const k = keyOf(o.productId, o.variantId ?? null);
-          const curr = byVariant.get(k) || [];
-          curr.push(o);
-          byVariant.set(k, curr);
-        });
-        // Flatten into offersMap
-        for (const [k, arr] of byVariant) offersMap.set(k, arr);
-      }
-
-      // 1) Allocation plan per cart line (may split into several allocations)
-      type Allocation = {
-        itemIdx: number;
-        productId: string;
-        variantId: string | null;
-        qty: number;                   // chunk allocated from a single offer
-        orderUnitPrice: number;        // retail unit (what customer pays)
-        title: string;
-        selectedOptions: any[];
-
-        offerId: string;
-        supplierId: string;
-        supplierUnitPrice: number;     // supplier’s unit (COGS)
+    const created = await prisma.$transaction(async (tx: any) => {
+      // 1) Create order shell
+      const data: any = {
+        subtotal: 0,
+        tax: 0,
+        total: 0,
+        status: 'CREATED',
+        user: { connect: { id: userId } },
       };
 
-      const allocations: Allocation[] = [];
-      const decrementsByOffer = new Map<string, number>(); // offerId -> total allocated
+      if (body.shippingAddressId) {
+        data.shippingAddress = { connect: { id: body.shippingAddressId } };
+      } else {
+        const a = body.shippingAddress!;
+        data.shippingAddress = {
+          create: {
+            houseNumber: a.houseNumber,
+            streetName: a.streetName,
+            postCode: a.postCode ?? null,
+            town: a.town ?? null,
+            city: a.city,
+            state: a.state,
+            country: a.country,
+          },
+        };
+      }
 
-      for (let idx = 0; idx < items.length; idx++) {
-        const it = items[idx];
-        let remaining = it.qty;
+      if (body.billingAddressId) {
+        data.billingAddress = { connect: { id: body.billingAddressId } };
+      } else if (body.billingAddress) {
+        const b = body.billingAddress;
+        data.billingAddress = {
+          create: {
+            houseNumber: b.houseNumber,
+            streetName: b.streetName,
+            postCode: b.postCode ?? null,
+            town: b.town ?? null,
+            city: b.city,
+            state: b.state,
+            country: b.country,
+          },
+        };
+      }
 
-        // Prefer exact variant offers; if none, allow product-level (variantId null) offers
-        const exactKey = keyOf(it.productId, it.variantId ?? null);
-        const nullKey  = keyOf(it.productId, null);
+      const order = await tx.order.create({ data });
 
-        const exact = (offersMap.get(exactKey) || []).slice(); // copy
-        const generic = (offersMap.get(nullKey) || []).slice();
+      await logOrderActivityTx(tx, order.id, ACT.ORDER_CREATED as any, 'Order created');
+      if (body.notes && String(body.notes).trim()) {
+        await logOrderActivityTx(tx, order.id, ACT.NOTE as any, String(body.notes).trim());
+      }
 
-        // Merge lists but keep sort order (price asc already)
-        const pool = [...exact, ...generic];
+      // 2) Allocate from supplier offers (cheapest-first + merged)
+      let runningSubtotal = 0;
 
-        for (const off of pool) {
-          if (remaining <= 0) break;
-          if (off.availableQty <= 0) continue;
+      for (const line of items) {
+        const productId = String((line as any).productId || '');
+        const variantId = (line as any).variantId != null ? String((line as any).variantId) : null;
 
-          const take = Math.min(remaining, off.availableQty);
-          if (take <= 0) continue;
+        const qtyNeeded = Number((line as any).qty ?? (line as any).quantity ?? 0);
+        let retailUnit = asNumber(
+          (line as any).price ?? (line as any).unitPrice ?? (line as any).unit_amount,
+          0
+        );
+        const explicitOfferId = (line as any).offerId ?? (line as any).supplierOfferId ?? null;
+        const selectedOptionsRaw =
+          (line as any).selectedOptions ?? (line as any).selectedOptionsJson ?? null;
 
-          allocations.push({
-            itemIdx: idx,
-            productId: it.productId,
-            variantId: it.variantId ?? null,
-            qty: take,
-            orderUnitPrice: it.unitPrice,
-            title: it.title,
-            selectedOptions: it.selectedOptions,
+        if (!productId || !Number.isFinite(qtyNeeded) || qtyNeeded <= 0) {
+          throw new Error('Invalid line item.');
+        }
 
-            offerId: off.id,
-            supplierId: off.supplierId,
-            supplierUnitPrice: Number(off.price || 0),
+        if (!(retailUnit > 0)) {
+          try {
+            const prod = await tx.product.findUnique({
+              where: { id: productId },
+              select: {
+                title: true,
+                price: true,
+                variants: variantId ? { where: { id: variantId }, select: { price: true } } : false,
+              },
+            });
+            retailUnit = asNumber(variantId ? (prod?.variants as any)?.[0]?.price : prod?.price, 0);
+          } catch {}
+        }
+        if (!(retailUnit > 0)) throw new Error('Invalid line item.');
+
+        // candidate offers
+        let candidates: Array<{ id: string; supplierId: string | null; availableQty: number; price: number }> = [];
+        if (explicitOfferId) {
+          const one = await tx.supplierOffer.findFirst({
+            where: { id: explicitOfferId, isActive: true },
+            select: { id: true, availableQty: true, price: true, supplierId: true, isActive: true },
+          });
+          if (!one || !Number(one.availableQty) || Number(one.availableQty) <= 0) {
+            throw new Error(`Offer unavailable for product ${productId}.`);
+          }
+          candidates = [{
+            id: one.id,
+            supplierId: one.supplierId ?? null,
+            availableQty: Math.max(0, Number(one.availableQty || 0)),
+            price: Number(one.price || 0),
+          }];
+        } else {
+          const variantOffers = variantId ? await fetchActiveOffersTx(tx, { productId, variantId }) : [];
+          const baseOffers = await fetchActiveOffersTx(tx, { productId, variantId: null });
+          const seen = new Set<string>();
+          const merged: typeof variantOffers = [];
+          for (const o of [...variantOffers, ...baseOffers]) {
+            if (seen.has(o.id)) continue;
+            seen.add(o.id);
+            merged.push(o);
+          }
+          merged.sort((a, b) => (a.price !== b.price ? a.price - b.price : b.availableQty - a.availableQty));
+          candidates = merged;
+        }
+
+        const totalAvailable = candidates.reduce((s, o) => s + o.availableQty, 0);
+        if (totalAvailable < qtyNeeded) {
+          throw new Error(`Insufficient stock for product ${productId}. Need ${qtyNeeded}, available ${totalAvailable}.`);
+        }
+
+        // allocate cheapest-first
+        let need = qtyNeeded;
+        const allocations: Array<{ offerId: string; supplierId: string | null; qty: number; price: number }> = [];
+        for (const o of candidates) {
+          if (need <= 0) break;
+          if (o.availableQty <= 0) continue;
+          const take = Math.min(need, o.availableQty);
+
+          const updated = await tx.supplierOffer.update({
+            where: { id: o.id },
+            data: { availableQty: { decrement: take } },
+            select: { id: true, availableQty: true },
+          });
+          if (Number(updated.availableQty) < 0) throw new Error('Concurrent stock update detected.');
+          if (Number(updated.availableQty) === 0) {
+            await tx.supplierOffer.update({ where: { id: o.id }, data: { inStock: false } });
+          }
+
+          allocations.push({ offerId: o.id, supplierId: o.supplierId ?? null, qty: take, price: o.price });
+          need -= take;
+        }
+
+        // create order items (retail fields + supplier metadata)
+        const productRow = await tx.product.findUnique({ where: { id: productId }, select: { title: true } });
+        const productTitle = productRow?.title || productId;
+
+        for (const alloc of allocations) {
+          await tx.orderItem.create({
+            data: {
+              orderId: order.id,
+              productId,
+              variantId: variantId ?? null,
+
+              // supplier metadata
+              chosenSupplierOfferId: alloc.offerId,
+              chosenSupplierId: alloc.supplierId,
+              chosenSupplierUnitPrice: alloc.price,
+
+              // shopper-facing (retail)
+              title: productTitle,
+              unitPrice: retailUnit,
+              quantity: alloc.qty,
+              lineTotal: retailUnit * alloc.qty,
+
+              // options stored as JSON string
+              selectedOptions:
+                typeof selectedOptionsRaw === 'string'
+                  ? selectedOptionsRaw
+                  : JSON.stringify(selectedOptionsRaw ?? []),
+            },
           });
 
-          remaining -= take;
-
-          // Reduce in the working pool as well
-          off.availableQty -= take;
-
-          // Track decrement per offer
-          decrementsByOffer.set(off.id, (decrementsByOffer.get(off.id) || 0) + take);
+          runningSubtotal += retailUnit * alloc.qty;
         }
 
-        if (remaining > 0) {
-          // Not enough stock across all suppliers for this item
-          throw Object.assign(new Error('Insufficient stock for one or more items'), { status: 409 });
-        }
+        await syncProductInStockCacheTx(tx, productId);
       }
 
-      // Distinct suppliers actually used for this order (for service fee)
-      const suppliersUsed = new Set<string>(allocations.map(a => a.supplierId));
-      const serviceFeeNum = round2(unitServiceFee * suppliersUsed.size);
+      // 3) totals
+      const subtotal = round2(runningSubtotal);
+      const tax = 0;
+      const total = round2(subtotal + tax);
 
-      // Final total
-      const totalNum = round2(subtotalNum + taxNum + serviceFeeNum + shippingNum);
-
-      // 2) Persist concrete shipping address
-      const shipAddr = await tx.address.create({
-        data: {
-          houseNumber: String(shippingAddrInput.houseNumber || ''),
-          streetName: String(shippingAddrInput.streetName || ''),
-          postCode: shippingAddrInput.postCode || null,
-          town: shippingAddrInput.town || null,
-          city: String(shippingAddrInput.city || ''),
-          state: String(shippingAddrInput.state || ''),
-          country: String(shippingAddrInput.country || ''),
-        },
-        select: { id: true },
+      const updatedOrder = await tx.order.update({
+        where: { id: order.id },
+        data: { subtotal, tax, total },
+        select: { id: true, subtotal: true, tax: true, total: true, status: true, createdAt: true },
       });
 
-      // 3) Create order (without items first to get order.id)
-      const order = await tx.order.create({
-        data: {
-          user: { connect: { id: userId } },
-          shippingAddress: { connect: { id: shipAddr.id } },
-          status: 'PENDING',
+      return updatedOrder;
+    }, { isolationLevel: 'Serializable' });
 
-          subtotal: new Prisma.Decimal(subtotalNum),
-          tax: new Prisma.Decimal(taxNum),
-          serviceFee: new Prisma.Decimal(serviceFeeNum),
-          total: new Prisma.Decimal(totalNum),
-        },
-        select: { id: true },
-      });
-
-      // 4) Create one OrderItem per allocation chunk (captures chosen supplier)
-      //    Note: lineTotal is optional in schema; if you compute it elsewhere, you can omit.
-      for (const a of allocations) {
-        await tx.orderItem.create({
-          data: {
-            orderId: order.id,
-            productId: a.productId,
-            variantId: a.variantId,
-            quantity: a.qty,
-            title: a.title,
-            unitPrice: new Prisma.Decimal(a.orderUnitPrice),         // retail unit (what buyer pays)
-            selectedOptions: a.selectedOptions as any,
-
-            chosenSupplierId: a.supplierId,
-            chosenSupplierOfferId: a.offerId,
-            chosenSupplierUnitPrice: new Prisma.Decimal(a.supplierUnitPrice), // COGS
-          },
-        });
-      }
-
-      // 5) Atomically decrement SupplierOffer.availableQty for all offers used
-      //    Use conditional updateMany to prevent going negative.
-      for (const [offerId, dec] of decrementsByOffer.entries()) {
-        const updated = await tx.supplierOffer.updateMany({
-          where: { id: offerId, availableQty: { gte: dec } },
-          data: { availableQty: { decrement: dec } },
-        });
-        if (updated.count !== 1) {
-          // Rollback by throwing: a race condition likely consumed the stock
-          throw Object.assign(new Error('Inventory changed, please retry checkout'), { status: 409 });
-        }
-      }
-
-      // 6) Sync product inStock cache for all affected products
-      const affectedProductIds = [...new Set(allocations.map(a => a.productId))];
-      for (const pid of affectedProductIds) {
-        await syncProductInStockCacheTx(tx, pid);
-      }
-
-      // 7) Activity log (including allocation summary)
-      await tx.orderActivity.create({
-        data: {
-          orderId: order.id,
-          type: 'ORDER_CREATED',
-          message: 'Order placed',
-          meta: {
-            itemsRequested: items.map((it) => ({ productId: it.productId, variantId: it.variantId, qty: it.qty })),
-            allocations: allocations.map(a => ({
-              productId: a.productId,
-              variantId: a.variantId,
-              offerId: a.offerId,
-              supplierId: a.supplierId,
-              qty: a.qty,
-              supplierUnitPrice: a.supplierUnitPrice,
-            })),
-            pricing: {
-              subtotal: subtotalNum,
-              tax: taxNum,
-              serviceFee: serviceFeeNum,
-              total: totalNum,
-            },
-            suppliersUsed: suppliersUsed.size,
-          },
-        },
-      });
-
-      return order;
-    });
-
-    return res.json({ id: created.id });
+    return res.status(201).json({ data: created });
   } catch (e: any) {
-    if (e?.status) {
-      return res.status(e.status).json({ error: e.message || 'Error' });
-    }
-    next(e);
+    console.error('create order failed:', e);
+    return res.status(400).json({ error: e?.message || 'Could not create order' });
   }
 });
 
+/* ---------------- Shared enrichment for views ---------------- */
+async function enrichItemsWithCurrentStock(items: Array<{ productId: string; variantId: string | null }>) {
+  const pairs = items.map(i => ({ productId: i.productId, variantId: i.variantId ?? null }));
+  const map = await computeInStockForPairs(pairs);
+  const key = (p: string, v: string | null) => `${p}::${v ?? 'NULL'}`;
+  return (productId: string, variantId: string | null) => map[key(productId, variantId)] || { availableQty: 0, inStock: false };
+}
+
 /* =========================================================
-   GET /api/orders  (Admin only)
+   GET /api/orders (admins only) — matches POST schema
 ========================================================= */
-router.get('/', requireAuth, async (req, res, next) => {
+router.get('/', requireAuth, async (req, res) => {
   try {
-    if (!isAdmin(req.user?.role)) {
-      return res.status(403).json({ error: 'Admins only' });
-    }
+    if (!isAdmin(req.user?.role)) return res.status(403).json({ error: 'Admins only' });
 
     const limitRaw = Number(req.query.limit);
     const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 50;
-    const q = String(req.query.q ?? '').trim().toLowerCase();
+    const q = String(req.query.q ?? '').trim();
 
-    const where: any = q
-      ? {
-          OR: [{ id: { contains: q } }, { user: { email: { contains: q } } }],
-        }
+    const asNum = (v: any, d = 0) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : d;
+    };
+
+    const whereWithUser = q
+      ? { OR: [{ id: { contains: q } }, { user: { email: { contains: q, mode: 'insensitive' as const } } }] }
       : {};
+    const whereSimple = q ? { id: { contains: q } } : {};
 
-    const orders = await prisma.order.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take,
-      select: {
-        id: true,
-        status: true,
-        total: true,
-        createdAt: true,
-        user: { select: { email: true } },
-        items: {
-          select: {
-            id: true,
-            title: true,
-            quantity: true,
-            unitPrice: true,
-            chosenSupplierUnitPrice: true,
-            productId: true,
-            variantId: true,
-            product: {
-              select: {
-                title: true,
-                communicationCost: true,
-                supplierOffers: {
-                  orderBy: { price: 'asc' },
-                  take: 1,
-                  select: { price: true },
-                },
-              },
-            },
-          },
+    let baseOrders: Array<{ id: string; status: string; subtotal?: any; tax?: any; total: any; createdAt: any }> = [];
+    try {
+      baseOrders = await prisma.order.findMany({
+        where: whereWithUser as any,
+        orderBy: { createdAt: 'desc' },
+        take,
+        select: { id: true, status: true, subtotal: true as any, tax: true as any, total: true, createdAt: true },
+      });
+    } catch {
+      baseOrders = await prisma.order.findMany({
+        where: whereSimple as any,
+        orderBy: { createdAt: 'desc' },
+        take,
+        select: { id: true, status: true, subtotal: true as any, tax: true as any, total: true, createdAt: true },
+      });
+    }
+
+    const orderIds = baseOrders.map(o => o.id);
+
+    const userByOrder: Record<string, { email: string | null }> = {};
+    try {
+      const withUsers = await prisma.order.findMany({
+        where: { id: { in: orderIds } },
+        select: { id: true, user: { select: { email: true } } },
+      });
+      for (const o of withUsers) {
+        userByOrder[o.id] = { email: (o as any).user?.email ?? null };
+      }
+    } catch {}
+
+    const paidAmountByOrder: Record<string, number> = {};
+    try {
+      const paid = await prisma.payment.findMany({
+        where: { orderId: { in: orderIds }, status: 'PAID' as any },
+        select: { orderId: true, amount: true },
+      });
+      for (const p of paid) {
+        const id = (p as any).orderId;
+        paidAmountByOrder[id] = (paidAmountByOrder[id] || 0) + asNum(p.amount, 0);
+      }
+    } catch {
+      try {
+        const anyPayments = await prisma.payment.findMany({
+          where: { orderId: { in: orderIds } },
+          select: { orderId: true, amount: true },
+        });
+        for (const p of anyPayments) {
+          const id = (p as any).orderId;
+          paidAmountByOrder[id] = (paidAmountByOrder[id] || 0) + asNum(p.amount, 0);
+        }
+      } catch {}
+    }
+
+    // Items — select ONLY fields we actually write in POST
+    const itemsByOrder: Record<string, Array<{
+      id: string;
+      productId: string;
+      variantId: string | null;
+      title: string;
+      unitPrice: number;
+      quantity: number;
+      lineTotal: number;
+      chosenSupplierOfferId: string | null;
+      chosenSupplierId: string | null;
+      chosenSupplierUnitPrice: number | null;
+      selectedOptions: any;
+      currentAvailableQty?: number;
+      currentInStock?: boolean;
+    }>> = {};
+
+    let allItems: any[] = [];
+    try {
+      allItems = await prisma.orderItem.findMany({
+        where: { orderId: { in: orderIds } },
+        select: {
+          id: true,
+          orderId: true,
+          productId: true,
+          variantId: true,
+          title: true,
+          unitPrice: true,
+          quantity: true,
+          lineTotal: true,
+          chosenSupplierOfferId: true,
+          chosenSupplierId: true,
+          chosenSupplierUnitPrice: true,
+          selectedOptions: true, // stored as JSON string
         },
-        payments: {
-          orderBy: { createdAt: 'desc' },
-          select: {
-            id: true,
-            status: true,
-            amount: true,
-            reference: true,
-            feeAmount: true,
-          },
-        },
-      },
+        orderBy: [{ orderId: 'asc' }, { id: 'asc' }],
+      });
+
+      const getter = await enrichItemsWithCurrentStock(
+        allItems.map(it => ({ productId: it.productId, variantId: it.variantId ?? null }))
+      );
+
+      for (const it of allItems) {
+        const oid = it.orderId as string;
+        const unitPrice = asNum(it.unitPrice, 0);
+        const quantity = asNum(it.quantity, 1);
+        const lineTotal = asNum(it.lineTotal ?? it.lineTotal, unitPrice * quantity);
+
+        let selectedOptions: any = null;
+        try {
+          if (typeof it.selectedOptions === 'string') {
+            selectedOptions = JSON.parse(it.selectedOptions);
+          } else if (it.selectedOptions) {
+            selectedOptions = it.selectedOptions;
+          }
+        } catch { selectedOptions = null; }
+
+        const { availableQty, inStock } = getter(it.productId, it.variantId ?? null);
+
+        (itemsByOrder[oid] ||= []).push({
+          id: it.id,
+          productId: it.productId,
+          variantId: it.variantId ?? null,
+          title: it.title ?? '—',
+          unitPrice,
+          quantity,
+          lineTotal,
+          chosenSupplierOfferId: it.chosenSupplierOfferId ?? null,
+          chosenSupplierId: it.chosenSupplierId ?? null,
+          chosenSupplierUnitPrice: it.chosenSupplierUnitPrice != null ? asNumber(it.chosenSupplierUnitPrice, null as any) : null,
+          selectedOptions,
+          currentAvailableQty: availableQty,
+          currentInStock: inStock,
+        });
+      }
+    } catch {}
+
+    const metricsByOrder: Record<string, { revenue: number; cogs: number; profit: number }> = {};
+    try {
+      const grouped = await prisma.orderItemProfit.groupBy({
+        by: ['orderId'],
+        where: { orderId: { in: orderIds } },
+        _sum: { revenue: true, cogs: true, profit: true },
+      });
+      for (const g of grouped as any[]) {
+        metricsByOrder[g.orderId] = {
+          revenue: asNum(g._sum?.revenue, 0),
+          cogs: asNum(g._sum?.cogs, 0),
+          profit: asNum(g._sum?.profit, 0),
+        };
+      }
+    } catch {}
+
+    const data = baseOrders.map(o => {
+      const email = userByOrder[o.id]?.email ?? null;
+      const paidAmount = paidAmountByOrder[o.id] || 0;
+      const metrics = metricsByOrder[o.id] || { revenue: 0, cogs: 0, profit: 0 };
+
+      return {
+        id: o.id,
+        userEmail: email,
+        status: o.status,
+        subtotal: asNum((o as any).subtotal, 0),
+        tax: asNum((o as any).tax, 0),
+        total: asNum(o.total, 0),
+        paidAmount,
+        metrics,
+        createdAt: (o as any).createdAt?.toISOString?.() ?? (o as any).createdAt,
+        items: itemsByOrder[o.id] || [],
+      };
     });
 
-    const data = orders.map((o: any) => ({
-      id: o.id,
-      userEmail: o.user?.email ?? null,
-      status: o.status,
-      total: Number(o.total ?? 0),
-      createdAt: o.createdAt?.toISOString?.() ?? o.createdAt,
-      items: o.items.map((it: any) => ({
-        id: it.id,
-        productId: it.productId,
-        variantId: it.variantId ?? null,
-        title: it.title ?? it.product?.title ?? '—',
-        unitPrice: asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0),
-        quantity: asNumber(it.quantity ?? it.qty, 1),
-        lineTotal: asNumber(
-          it.lineTotal ??
-            asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0) *
-              asNumber(it.quantity ?? it.qty, 1),
-          0
-        ),
-        status: it.status ?? '—',
-        selectedOptions:
-          it.selectedOptions ?? it.selectedOptionsJson ?? it?.metaJson?.selectedOptions ?? null,
-      })),
-      payment: o.payments[0] || null,
-    }));
-
     res.json({ data });
-  } catch (e) {
-    next(e);
+  } catch (e: any) {
+    console.error('GET /api/orders failed hard:', e?.message, e?.stack);
+    res.status(500).json({ error: e?.message || 'Failed to fetch orders' });
   }
 });
 
 /* =========================================================
-   GET /api/orders/mine
+   GET /api/orders/mine — matches POST schema
 ========================================================= */
-router.get('/mine', requireAuth, async (req, res, next) => {
+router.get('/mine', requireAuth, async (req, res) => {
   try {
     const limitRaw = Number(req.query.limit);
     const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 50;
@@ -445,149 +562,189 @@ router.get('/mine', requireAuth, async (req, res, next) => {
       select: {
         id: true,
         status: true,
+        subtotal: true,
+        tax: true,
         total: true,
         createdAt: true,
-        user: { select: { email: true } },
         items: {
           select: {
             id: true,
-            title: true,
-            quantity: true,
-            unitPrice: true,
-            chosenSupplierUnitPrice: true,
             productId: true,
             variantId: true,
-            product: {
-              select: {
-                title: true,
-                communicationCost: true,
-                supplierOffers: {
-                  orderBy: { price: 'asc' },
-                  take: 1,
-                  select: { price: true },
-                },
-              },
-            },
+            title: true,
+            unitPrice: true,
+            quantity: true,
+            lineTotal: true,
+            chosenSupplierOfferId: true,
+            chosenSupplierId: true,
+            chosenSupplierUnitPrice: true,
+            selectedOptions: true,
           },
         },
         payments: {
           orderBy: { createdAt: 'desc' },
-          select: {
-            id: true,
-            status: true,
-            amount: true,
-            reference: true,
-            feeAmount: true,
-          },
+          select: { id: true, status: true, amount: true, reference: true, feeAmount: true, createdAt: true },
         },
       },
     });
 
+    const asNum = (x: any, d = 0) => {
+      const n = Number(x);
+      return Number.isFinite(n) ? n : d;
+    };
+
+    const allPairs = orders.flatMap((o: any) =>
+      (Array.isArray(o.items) ? o.items : []).map((it: any) => ({ productId: it?.productId ?? null, variantId: it?.variantId ?? null }))
+    );
+    const getter = await enrichItemsWithCurrentStock(allPairs as any);
+
     const data = orders.map((o: any) => ({
       id: o.id,
       status: o.status,
-      total: Number(o.total ?? 0),
-      createdAt: o.createdAt?.toISOString?.() ?? o.createdAt,
-      items: o.items.map((it: any) => ({
-        id: it.id,
-        productId: it.productId,
-        variantId: it.variantId ?? null,
-        title: it.title ?? it.product?.title ?? '—',
-        unitPrice: asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0),
-        quantity: asNumber(it.quantity ?? it.qty, 1),
-        lineTotal: asNumber(
-          it.lineTotal ??
-            asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0) *
-              asNumber(it.quantity ?? it.qty, 1),
-          0
-        ),
-        status: it.status ?? '—',
-        selectedOptions:
-          it.selectedOptions ?? it.selectedOptionsJson ?? it?.metaJson?.selectedOptions ?? null,
-      })),
-      payment: o.payments[0] || null,
+      subtotal: asNum(o.subtotal, 0),
+      tax: asNum(o.tax, 0),
+      total: asNum(o.total, 0),
+      createdAt: (o as any).createdAt?.toISOString?.() ?? (o as any).createdAt,
+      items: (Array.isArray(o.items) ? o.items : []).map((it: any) => {
+        const qty = asNum(it?.quantity, 1);
+        const unitPrice = asNum(it?.unitPrice, 0);
+        const rawLine = it?.lineTotal?? unitPrice * qty;
+        const lineTotal = asNum(rawLine, unitPrice * qty);
+
+        let selectedOptions: any = null;
+        try {
+          if (typeof it?.selectedOptions === 'string') {
+            selectedOptions = JSON.parse(it.selectedOptions);
+          } else if (it?.selectedOptions) {
+            selectedOptions = it.selectedOptions;
+          }
+        } catch { selectedOptions = null; }
+
+        const { availableQty, inStock } = getter(it?.productId, it?.variantId ?? null);
+
+        return {
+          id: it?.id,
+          productId: it?.productId,
+          variantId: it?.variantId ?? null,
+          title: it?.title ?? '—',
+          unitPrice,
+          quantity: qty,
+          lineTotal,
+          chosenSupplierOfferId: it?.chosenSupplierOfferId ?? null,
+          chosenSupplierId: it?.chosenSupplierId ?? null,
+          chosenSupplierUnitPrice: it?.chosenSupplierUnitPrice != null ? asNum(it.chosenSupplierUnitPrice, 0) : null,
+          currentAvailableQty: availableQty,
+          currentInStock: inStock,
+          selectedOptions,
+        };
+      }),
+      payment: (Array.isArray(o.payments) ? o.payments : [])[0] ?? null,
     }));
 
     res.json({ data });
-  } catch (e) {
-    next(e);
+  } catch (e: any) {
+    console.error('list my orders failed:', e);
+    res.status(500).json({ error: e?.message || 'Failed to fetch your orders' });
   }
 });
 
 /* =========================================================
-   GET /api/orders/:id
-   Admin: any; User: only own
+   GET /api/orders/:id — matches POST schema
 ========================================================= */
-router.get('/:id', requireAuth, async (req, res, next) => {
+router.get('/:id', requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
+
     const order = await prisma.order.findUnique({
       where: { id },
       include: {
         user: { select: { id: true, email: true } },
         items: {
-          include: {
-            product: { select: { id: true, title: true, price: true } },
+          select: {
+            id: true,
+            productId: true,
+            variantId: true,
+            title: true,
+            unitPrice: true,
+            quantity: true,
+            lineTotal: true,
+            chosenSupplierOfferId: true,
+            chosenSupplierId: true,
+            chosenSupplierUnitPrice: true,
+            selectedOptions: true,
           },
         },
         payments: {
           orderBy: { createdAt: 'desc' },
-          select: {
-            id: true,
-            status: true,
-            provider: true,
-            channel: true,
-            reference: true,
-            amount: true,
-            createdAt: true,
-          },
+          select: { id: true, status: true, provider: true, channel: true, reference: true, amount: true, feeAmount: true, createdAt: true },
         },
       },
     });
-    if (!order) return res.status(404).json({ error: 'Order not found' });
 
-    if (!isAdmin(req.user?.role) && String(order.userId) !== String(req.user?.id)) {
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (!isAdmin(req.user?.role) && String(order.user?.id) !== String(req.user?.id)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
+    const getter = await enrichItemsWithCurrentStock(order.items.map((it: any) => ({ productId: it.productId, variantId: it.variantId })) as any);
+
+    const asNum = (v: any, d = 0) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : d;
+    };
+
     const data = {
       id: order.id,
-      userEmail: (order as any).user?.email ?? null,
+      userEmail: order.user?.email ?? null,
       status: order.status,
+      subtotal: Number(order.subtotal ?? 0),
+      tax: Number(order.tax ?? 0),
       total: Number(order.total ?? 0),
       createdAt: (order as any).createdAt?.toISOString?.() ?? (order as any).createdAt,
-      items: (order as any).items.map((it: any) => ({
-        id: it.id,
-        productId: it.productId,
-        variantId: it.variantId ?? null,
-        title: it.title ?? it.product?.title ?? '—',
-        unitPrice: asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0),
-        quantity: asNumber(it.quantity ?? it.qty, 1),
-        lineTotal: asNumber(
-          it.lineTotal ??
-            asNumber(it.unitPrice ?? it.product?.price ?? it.price, 0) *
-              asNumber(it.quantity ?? it.qty, 1),
-          0
-        ),
-        status: it.status ?? '—',
-        selectedOptions:
-          it.selectedOptions ?? it.selectedOptionsJson ?? it?.metaJson?.selectedOptions ?? null,
-      })),
+      items: order.items.map((it: any) => {
+        const { availableQty, inStock } = getter(it.productId, it.variantId ?? null);
+
+        let selectedOptions: any = null;
+        try {
+          if (typeof it?.selectedOptions === 'string') {
+            selectedOptions = JSON.parse(it.selectedOptions);
+          } else if (it?.selectedOptions) {
+            selectedOptions = it.selectedOptions;
+          }
+        } catch { selectedOptions = null; }
+
+        return {
+          id: it.id,
+          productId: it.productId,
+          variantId: it.variantId ?? null,
+          title: it.title ?? '—',
+          unitPrice: asNum(it.unitPrice, 0),
+          quantity: asNum(it.quantity, 1),
+          lineTotal: asNum(it.lineTotal ?? it.totalPrice, asNum(it.unitPrice, 0) * asNum(it.quantity, 1)),
+          chosenSupplierOfferId: it.chosenSupplierOfferId ?? null,
+          chosenSupplierId: it.chosenSupplierId ?? null,
+          chosenSupplierUnitPrice: it.chosenSupplierUnitPrice != null ? asNum(it.chosenSupplierUnitPrice, 0) : null,
+          currentAvailableQty: availableQty,
+          currentInStock: inStock,
+          selectedOptions,
+        };
+      }),
       payments: order.payments,
     };
 
-    res.json(data);
-  } catch (e) {
-    next(e);
+    res.json({ data });
+  } catch (e: any) {
+    console.error('get order failed:', e);
+    res.status(500).json({ error: e?.message || 'Failed to fetch order' });
   }
 });
 
 /* =========================================================
-   GET /api/orders/summary
+   GET /api/orders/summary (end user)
 ========================================================= */
-router.get('/summary', requireAuth, async (req, res, next) => {
+router.get('/summary', requireAuth, async (req, res) => {
   try {
-    const userId = getUserId(req);
+    const userId = getUserId(req)!;
 
     const [countAll, paidAgg, latest] = await prisma.$transaction([
       prisma.order.count({ where: { userId } }),
@@ -597,7 +754,7 @@ router.get('/summary', requireAuth, async (req, res, next) => {
       }),
       prisma.order.findMany({
         where: { userId },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: 'asc' },
         take: 5,
         select: { id: true, status: true, total: true, createdAt: true },
       }),
@@ -605,19 +762,24 @@ router.get('/summary', requireAuth, async (req, res, next) => {
 
     res.json({
       ordersCount: countAll,
-      totalSpent: paidAgg._sum.total ?? '0',
-      recent: latest,
+      totalSpent: Number(paidAgg._sum.total ?? 0),
+      recent: latest.map((o: any) => ({
+        id: o.id,
+        status: o.status,
+        total: Number(o.total ?? 0),
+        createdAt: (o as any).createdAt?.toISOString?.() ?? (o as any).createdAt,
+      })),
     });
-  } catch (err) {
-    next(err);
+  } catch (err: any) {
+    console.error('orders summary failed:', err);
+    res.status(500).json({ error: err?.message || 'Failed to fetch summary' });
   }
 });
 
-/**
- * GET /api/admin/orders/:orderId/profit
- * Returns order-level and per-item metrics.
- */
-router.get('/:orderId/profit', requireSuperAdmin, async (req, res, next) => {
+/* =========================================================
+   GET /api/orders/:orderId/profit (super admin)
+========================================================= */
+router.get('/:orderId/profit', requireSuperAdmin, async (req, res) => {
   try {
     const { orderId } = req.params;
 
@@ -650,8 +812,8 @@ router.get('/:orderId/profit', requireSuperAdmin, async (req, res, next) => {
       },
     });
 
-    const sum = itemMetrics.reduce(
-      (s: { revenue: number; cogs: number; gateway: number; comms: number; base: number; profit: number; }, x: { revenue: any; cogs: any; allocatedGatewayFee: any; allocatedCommsFee: any; allocatedBaseServiceFee: any; profit: any; }) => {
+    const summary = itemMetrics.reduce(
+      (s: any, x: any) => {
         s.revenue += Number(x.revenue || 0);
         s.cogs += Number(x.cogs || 0);
         s.gateway += Number(x.allocatedGatewayFee || 0);
@@ -669,14 +831,15 @@ router.get('/:orderId/profit', requireSuperAdmin, async (req, res, next) => {
         status: order.status,
         total: Number(order.total || 0),
         serviceFeeRecorded: Number(order.serviceFee || 0),
-        paidAmount: payments.reduce((a: number, p: { amount: any; }) => a + Number(p.amount || 0), 0),
-        gatewayFeeActual: payments.reduce((a: number, p: { feeAmount: any; }) => a + Number(p.feeAmount || 0), 0),
+        paidAmount: payments.reduce((a: number, p: any) => a + Number(p.amount || 0), 0),
+        gatewayFeeActual: payments.reduce((a: number, p: any) => a + Number(p.feeAmount || 0), 0),
       },
-      summary: sum,
+      summary,
       items: itemMetrics,
     });
-  } catch (e) {
-    next(e);
+  } catch (e: any) {
+    console.error('profit endpoint failed:', e);
+    res.status(500).json({ error: e?.message || 'Failed to fetch profit' });
   }
 });
 

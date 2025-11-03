@@ -177,6 +177,7 @@ model OrderItem {
   purchaseOrderItems PurchaseOrderItem[]
 
   title           String
+
   unitPrice       Decimal  @db.Decimal(10, 2)
   quantity        Int
   lineTotal       Decimal? @db.Decimal(10, 2)
@@ -471,6 +472,8 @@ model PurchaseOrder {
 
   supplier   Supplier @relation(fields: [supplierId], references: [id])
   supplierId String
+  
+  supplierOrderRef    String?   @unique
 
   subtotal       Decimal  @db.Decimal(10, 2)
   platformFee    Decimal  @db.Decimal(10, 2)
@@ -499,6 +502,7 @@ model PurchaseOrderItem {
 model OrderActivity {
   id        String   @id @default(cuid())
   orderId   String
+  supplierId String?
   type      String
   message   String?
   meta      Json?

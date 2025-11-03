@@ -756,7 +756,7 @@ export default function OrdersPage() {
                                 </div>
 
                                 <div className="flex gap-2">
-                                  {String(o.status).toUpperCase() === 'PENDING' && (
+                                  {(String(o.status).toUpperCase() === 'PENDING' || String(o.status).toUpperCase() === 'CREATED') && (
                                     <>
                                       <button
                                         className="rounded-lg bg-emerald-600 text-white px-4 py-2 hover:bg-emerald-700"

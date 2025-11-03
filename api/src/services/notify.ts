@@ -1,84 +1,33 @@
 // api/src/services/notify.ts
-import { prisma } from '../lib/prisma.js'
+import { prisma } from '../lib/prisma.js';
 import { Prisma } from '@prisma/client';
 
-// Build per-supplier WhatsApp text
-function renderSupplierText(po: any, items: any[], order: any) {
-  const lines = items.map((it: any) =>
-    `• ${it.title} x${it.quantity} — ${it.variantSku ? `SKU ${it.variantSku} — ` : ''}₦${Number(it.unitPrice).toLocaleString()}`
-  ).join('\n');
+/* ----------------------------- Helpers ----------------------------- */
 
-  const addr = order.shippingAddress
-    ? `${order.shippingAddress.houseNumber || ''} ${order.shippingAddress.streetName || ''}, ${order.shippingAddress.city || ''}, ${order.shippingAddress.state || ''}`
-    : '—';
-
-  return [
-    `New order #${order.id}`,
-    '',
-    lines,
-    '',
-    `Deliver to: ${addr}`,
-    `Total from you: ₦${Number(po.supplierAmount).toLocaleString()}`,
-  ].join('\n');
-}
-
-function coerceNullishVariantId(v?: string | null) {
-  const t = typeof v === 'string' ? v.trim() : v;
-  return t ? t : null; // "" → null
-}
-
-async function findBestOffer(productId: string, variantId?: string | null) {
-  const base = { productId, isActive: true, inStock: true } as const;
-  const vi = coerceNullishVariantId(variantId);
-
-  // 1) try variant-specific
-  if (vi) {
-    const exact = await prisma.supplierOffer.findFirst({
-      where: { ...base, variantId: vi },
-      include: {
-        supplier: { select: { id: true, name: true, whatsappPhone: true } },
-        variant: { select: { id: true, sku: true } },
-      },
-      orderBy: { price: 'asc' },
-    });
-    if (exact) return exact;
-  }
-
-  // 2) fallback to product-wide (variantId NULL or "")
-  const productWide = await prisma.supplierOffer.findFirst({
-    where: {
-      ...base,
-      OR: [{ variantId: null }, { variantId: '' }],
-    },
-    include: {
-      supplier: { select: { id: true, name: true, whatsappPhone: true } },
-      variant: { select: { id: true, sku: true } },
-    },
-    orderBy: { price: 'asc' },
-  });
-  if (productWide) return productWide;
-
-  // 3) debug dump so you can see what's stored
-  const dump = await prisma.supplierOffer.findMany({
-    where: { productId },
-    select: { id: true, variantId: true, price: true, isActive: true, inStock: true },
-    orderBy: { price: 'asc' },
-  });
-  console.warn('No supplier offer matched', { productId, variantId: vi, dump });
-  return null;
-}
-
-// If you already have helpers, keep using them
 const personName = (u?: { firstName?: string | null; lastName?: string | null }) =>
   [u?.firstName, u?.lastName].filter(Boolean).join(' ') || 'Customer';
-const formatAddress = (a?: any) =>
-  a ? `${a.houseNumber || ''} ${a.streetName || ''}, ${a.city || ''}, ${a.state || ''}, ${a.country || ''}`.trim() : '—';
+
 const normalizePhone = (p?: string | null) => (p || '').trim();
+
+const formatAddress = (a?: any) => {
+  if (!a) return '—';
+  const parts = [
+    a.houseNumber,
+    a.streetName,
+    a.town,
+    a.city,
+    a.state,
+    a.country,
+  ].filter(Boolean);
+  return parts.join(', ');
+};
+
 async function sendWhatsApp(to: string, msg: string) {
+  // Plug your provider here. Current dev logger:
   console.log(`[whatsapp][DEV] => ${to}\n${msg}\n---`);
 }
+
 async function getCommsUnitCostNGN(): Promise<number> {
-  // Try a couple keys you've used in this project
   const keys = ['commsUnitCostNGN', 'commsServiceFeeNGN', 'commsUnitCost'];
   for (const key of keys) {
     const row = await prisma.setting.findUnique({ where: { key } }).catch(() => null);
@@ -87,7 +36,61 @@ async function getCommsUnitCostNGN(): Promise<number> {
   }
   return 0;
 }
+
+// e.g. "DS-AB12CD34"
+function generateSupplierOrderRef() {
+  const base = () => Math.random().toString(36).slice(2, 10).toUpperCase();
+  return `DS-${base()}`;
+}
+
+/**
+ * Ensure we have a stable supplierOrderRef per (orderId, supplierId).
+ * Reuse from earliest PO, or from an activity, otherwise generate + log once.
+ */
+async function ensureSupplierOrderRef(tx: any, orderId: string, supplierId: string): Promise<string> {
+  // 1) Reuse the oldest PO reference if it exists
+  const existingPO = await tx.purchaseOrder.findFirst({
+    where: { orderId, supplierId },
+    orderBy: { createdAt: 'asc' },
+    select: { supplierOrderRef: true },
+  });
+  if (existingPO?.supplierOrderRef) return existingPO.supplierOrderRef;
+
+  // 2) Or reuse from activities
+  const act = await tx.orderActivity.findFirst({
+    where: { orderId, supplierId, type: 'SUPPLIER_REF_CREATED' },
+    orderBy: { createdAt: 'asc' },
+    select: { meta: true },
+  });
+  const fromAct =
+    (act?.meta as any)?.supplierOrderRef ||
+    (act?.meta as any)?.supplierRef; // legacy key
+  if (fromAct && typeof fromAct === 'string' && fromAct.trim()) {
+    return fromAct.trim();
+  }
+
+  // 3) Generate and store once
+  const ref = generateSupplierOrderRef();
+  try {
+    await tx.orderActivity.create({
+      data: {
+        orderId,
+        supplierId,
+        type: 'SUPPLIER_REF_CREATED',
+        message: `Supplier reference created for supplier ${supplierId}`,
+        meta: { supplierOrderRef: ref },
+      },
+    });
+  } catch {
+    // ignore logging errors; still return ref
+  }
+  return ref;
+}
+
+/* ----------------------------- Main notify ----------------------------- */
+
 export async function notifySuppliersForOrder(orderId: string) {
+  // Pull order with all data we need to build per-supplier lines
   const order = await prisma.order.findUnique({
     where: { id: orderId },
     include: {
@@ -104,105 +107,94 @@ export async function notifySuppliersForOrder(orderId: string) {
   if (!order) throw new Error('Order not found');
   if (!order.items.length) return { ok: true, suppliers: [] };
 
-  // Build chosen offers per item
-  const chosen: Array<{
+  // Build lines with chosen supplier data (set during /orders POST)
+  type Chosen = {
     orderItemId: string;
     title: string;
-    quantity: number;
-    unitPrice: Prisma.Decimal;
+    variantSku?: string | null;
+    qty: number;
     supplierId: string;
     supplierName?: string | null;
     supplierPhone?: string | null;
-    variantSku?: string | null;
-    offerId: string;
-    offerPrice: Prisma.Decimal;
-  }> = [];
+    supplierOfferId?: string | null;
+    supplierUnit: number;   // chosenSupplierUnitPrice
+  };
 
+  const chosen: Chosen[] = [];
   for (const it of order.items) {
-    if (!it.productId) continue;
+    const supplierId = (it as any).chosenSupplierId as string | null;
+    if (!supplierId) continue;
 
-    // 1) variant-specific offer
-    let offer = it.variant?.id
-      ? await prisma.supplierOffer.findFirst({
-          where: {
-            productId: it.productId,
-            variantId: it.variant.id,
-            isActive: true,
-            inStock: true,
-          },
-          include: {
-            supplier: { select: { id: true, name: true, whatsappPhone: true } },
-            variant: { select: { id: true, sku: true } },
-          },
-          orderBy: { price: 'asc' },
-        })
-      : null;
-
-    // 2) fallback to product-wide
-    if (!offer) {
-      offer = await prisma.supplierOffer.findFirst({
+    // Use the saved supplier unit (COGS); fall back (rare) to cheapest active offer
+    let supplierUnit = Number((it as any).chosenSupplierUnitPrice ?? 0);
+    if (!(supplierUnit > 0)) {
+      const cheapest = await prisma.supplierOffer.findFirst({
+        where: {
+          productId: it.productId,
+          variantId: it.variant?.id ?? null,
+          isActive: true,
+          inStock: true,
+        },
+        orderBy: { price: 'asc' },
+        select: { price: true, id: true, supplierId: true, supplier: { select: { name: true, whatsappPhone: true } } },
+      }) || await prisma.supplierOffer.findFirst({
         where: {
           productId: it.productId,
           variantId: null,
           isActive: true,
           inStock: true,
         },
-        include: {
-          supplier: { select: { id: true, name: true, whatsappPhone: true } },
-          variant: { select: { id: true, sku: true } },
-        },
         orderBy: { price: 'asc' },
+        select: { price: true, id: true, supplierId: true, supplier: { select: { name: true, whatsappPhone: true } } },
       });
+
+      if (cheapest) {
+        supplierUnit = Number(cheapest.price || 0);
+      }
     }
 
-    if (!offer || !offer.supplier) continue;
+    // get supplier profile
+    const supplier = await prisma.supplier.findUnique({
+      where: { id: supplierId },
+      select: { id: true, name: true, whatsappPhone: true },
+    });
 
     chosen.push({
       orderItemId: it.id,
       title: it.product?.title || 'Item',
-      quantity: Number(it.quantity || 1),
-      unitPrice: it.unitPrice,
-      supplierId: offer.supplier.id,
-      supplierName: offer.supplier.name,
-      supplierPhone: normalizePhone(offer.supplier.whatsappPhone),
       variantSku: it.variant?.sku || null,
-      offerId: offer.id,
-      offerPrice: offer.price,
+      qty: Math.max(1, Number(it.quantity || 1)),
+      supplierId,
+      supplierName: supplier?.name ?? null,
+      supplierPhone: normalizePhone(supplier?.whatsappPhone),
+      supplierOfferId: (it as any).chosenSupplierOfferId ?? null,
+      supplierUnit,
     });
   }
 
-  // Group by supplier (distinct suppliers)
+  // Group by supplier (one WhatsApp per supplier)
   const groups = chosen.reduce((m, c) => {
     (m[c.supplierId] ||= []).push(c);
     return m;
-  }, {} as Record<string, typeof chosen>);
+  }, {} as Record<string, Chosen[]>);
 
-  // Charge one comms row per distinct supplier (idempotent)
-  const unitCost = await getCommsUnitCostNGN(); // ₦ per supplier notification
+  // Charge one comms row per supplier (idempotent)
+  const unitCost = await getCommsUnitCostNGN();
   if (unitCost > 0) {
     const supplierIds = Object.keys(groups);
-
-    // find already-charged suppliers for this order
     const existing = await prisma.orderComms.findMany({
-      where: {
-        orderId,
-        supplierId: { in: supplierIds },
-        reason: 'SUPPLIER_NOTIFY', // use a stable reason to dedupe
-      },
+      where: { orderId, supplierId: { in: supplierIds }, reason: 'SUPPLIER_NOTIFY' },
       select: { supplierId: true },
     });
     const already = new Set(existing.map((e: { supplierId: any; }) => e.supplierId));
-
     for (const supplierId of supplierIds) {
       if (already.has(supplierId)) continue;
-
-      // One row per supplier, amount = unitCost * 1 (units = 1)
       await prisma.orderComms.create({
         data: {
           orderId,
           supplierId,
           units: 1,
-          amount: new Prisma.Decimal(unitCost), // store full charge for transparency
+          amount: new Prisma.Decimal(unitCost),
           reason: 'SUPPLIER_NOTIFY',
           channel: 'WHATSAPP',
           recipient: groups[supplierId]?.[0]?.supplierPhone || null,
@@ -211,37 +203,60 @@ export async function notifySuppliersForOrder(orderId: string) {
     }
   }
 
-  // (Optional) send messages + activity logs
+  // Shopper/contact block (ALWAYS present in every message)
   const shopper = personName(order.user);
-  const shopperPhone = order.user?.phone || '';
+  const shopperPhone = order.user?.phone || '—';
+  const shopperEmail = order.user?.email || '—';
   const shipTo = formatAddress(order.shippingAddress);
 
+  // For each supplier, ensure a stable supplierOrderRef, build lines, and send
   for (const [supplierId, items] of Object.entries(groups)) {
+    // supplier ref for this supplier
+    const supplierOrderRef = await prisma.$transaction(async (tx: any) =>
+      ensureSupplierOrderRef(tx, order.id, supplierId)
+    );
+
     const supplierPhone = items[0]?.supplierPhone || null;
     const supplierName = items[0]?.supplierName || 'Supplier';
 
+    // Item lines (unit = supplier cost)
     const lines = items.map((c) => {
-      const n = Number(c.offerPrice || c.unitPrice || 0);
-      const price = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 }).format(n);
+      const price = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 })
+        .format(Number(c.supplierUnit || 0));
       const sku = c.variantSku ? ` (SKU: ${c.variantSku})` : '';
-      return `• ${c.title}${sku} × ${c.quantity} — ${price}`;
+      return `• ${c.title}${sku} × ${c.qty} — ${price}`;
     }).join('\n');
 
+    // Sum of this supplier’s items at supplier unit
+    const supplierTotal = items.reduce((sum, c) => sum + Number(c.supplierUnit || 0) * Math.max(1, c.qty || 1), 0);
+    const supplierTotalFmt = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 })
+      .format(supplierTotal);
+
+    // The message — includes customer phone + email + address for every supplier
     const msg = `New order from DaySpring
 
-Order: ${order.id}
+Your ref: ${supplierOrderRef}
+
 Customer: ${shopper}
-Customer phone: ${shopperPhone || '—'}
+Customer phone: ${shopperPhone}
+Customer email: ${shopperEmail}
 Ship to: ${shipTo}
 
 Items:
 ${lines}
 
+Total to supply: ${supplierTotalFmt}
+
 Please confirm availability and delivery timeline. Thank you!`;
 
     if (!supplierPhone) {
       await prisma.orderActivity.create({
-        data: { orderId: order.id, type: 'SUPPLIER_NOTIFY_SKIPPED', message: `Missing WhatsApp for ${supplierName}`, meta: { supplierId } },
+        data: {
+          orderId: order.id,
+          type: 'SUPPLIER_NOTIFY_SKIPPED',
+          message: `Missing WhatsApp for ${supplierName}`,
+          meta: { supplierId },
+        },
       });
       continue;
     }
@@ -249,15 +264,27 @@ Please confirm availability and delivery timeline. Thank you!`;
     try {
       await sendWhatsApp(supplierPhone, msg);
       await prisma.orderActivity.create({
-        data: { orderId: order.id, type: 'SUPPLIER_NOTIFIED', message: `Sent to ${supplierName}`, meta: { supplierId, supplierPhone } },
+        data: {
+          orderId: order.id,
+          type: 'SUPPLIER_NOTIFIED',
+          message: `Sent to ${supplierName}`,
+          meta: { supplierId, supplierPhone, supplierOrderRef },
+        },
       });
     } catch (err: any) {
       await prisma.orderActivity.create({
-        data: { orderId: order.id, type: 'SUPPLIER_NOTIFY_ERROR', message: `Failed to send to ${supplierName}`, meta: { supplierId, err: String(err?.message || err) } },
+        data: {
+          orderId: order.id,
+          type: 'SUPPLIER_NOTIFY_ERROR',
+          message: `Failed to send to ${supplierName}`,
+          meta: { supplierId, err: String(err?.message || err), supplierOrderRef },
+        },
       });
     }
   }
 
-  return { ok: true, suppliers: Object.keys(groups).map(supplierId => ({ supplierId })) };
+  return {
+    ok: true,
+    suppliers: Object.keys(groups).map(supplierId => ({ supplierId })),
+  };
 }
-

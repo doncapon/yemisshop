@@ -1,9 +1,14 @@
+// src/pages/Checkout.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/client.js';
 import { useAuthStore } from '../store/auth';
 import { useModal } from '../components/ModalProvider';
+
+/* ----------------------------- Config ----------------------------- */
+// Adjust these if your app uses different routes for verification flows
+const VERIFY_PATH = '/verify';
 
 /* ----------------------------- Types ----------------------------- */
 type SelectedOption = {
@@ -39,11 +44,6 @@ type Address = {
   city: string;
   state: string;
   country: string;
-};
-
-type ProfileMe = {
-  address?: Address | null;
-  shippingAddress?: Address | null;
 };
 
 const EMPTY_ADDR: Address = {
@@ -86,6 +86,7 @@ function readCart(): CartLine[] {
         price: unit,                          // legacy
         totalPrice: num(x.totalPrice, unit * qty), // legacy
         image: x.image ?? null,
+        supplierId: x.supplierId ?? null,
       };
     });
   } catch {
@@ -121,15 +122,47 @@ function computeLineTotal(line: CartLine): number {
   return unit * qty;
 }
 
-/** Mirror of server heuristic for Paystack (local) fees.
- * Local: 1.5% + ₦100 (> ₦2,500), cap ₦2,000
- * (International path omitted here; estimation kept simple for checkout)
- */
+/** Paystack (local) fees estimate: 1.5% + ₦100 (> ₦2,500), cap ₦2,000 */
 function estimateGatewayFee(amountNaira: number) {
   if (!Number.isFinite(amountNaira) || amountNaira <= 0) return 0;
   const percent = amountNaira * 0.015;
   const extra = amountNaira > 2500 ? 100 : 0;
   return Math.min(percent + extra, 2000);
+}
+
+/* -------- Verification helpers (NO date dependency) -------- */
+type ProfileMe = {
+  // We only rely on booleans if you later expose them; for now we treat
+  // truthy `emailVerifiedAt` as verified (server can return string or null)
+  emailVerifiedAt?: unknown;
+  // We'll (mis)use phoneVerifiedAt as "password ok" signal per your last code
+  phoneVerifiedAt?: unknown;
+
+  // addresses
+  address?: Partial<Address> | null;
+  shippingAddress?: Partial<Address> | null;
+};
+
+// be tolerant to strings/nulls
+const normalizeStampPresent = (v: unknown) => {
+  if (v === undefined || v === null) return false;
+  const s = String(v).trim().toLowerCase();
+  if (!s || s === 'null' || s === 'undefined') return false;
+  // if backend already gives a boolean, respect it
+  if (typeof v === 'boolean') return v;
+  // any non-empty value we consider "present"
+  return true;
+};
+
+function computeVerificationFlags(p?: ProfileMe) {
+  // Email OK if server gave us a present stamp/flag
+  const emailOk = normalizeStampPresent(p?.emailVerifiedAt);
+
+  // Password OK — your earlier UI used phoneVerifiedAt as a proxy.
+  // If/when you expose an explicit `needsPasswordReset` boolean, switch to that.
+  const phoneOk = normalizeStampPresent(p?.phoneVerifiedAt);
+
+  return { emailOk, phoneOk };
 }
 
 /* ----------------------------- Small UI bits ----------------------------- */
@@ -236,24 +269,154 @@ function AddressPreview({ a }: { a: Address }) {
   );
 }
 
+
+// PATCH: replace fetchActiveOffersFor with this version
+async function fetchActiveOffersFor(
+  productId: string,
+  variantId?: string | null
+): Promise<PublicOffer[]> {
+  const buildParams = (pid: string, vid?: string | null) => {
+    const qs = new URLSearchParams();
+    qs.set('productId', pid);
+    if (vid) qs.set('variantId', vid);
+    qs.set('active', 'true');      // your API treats inactive as OOS
+    qs.set('limit', '100');
+    return qs.toString();
+  };
+
+  // primary: public listing
+  const primary = `/api/supplier-offers?${buildParams(productId, variantId ?? undefined)}`;
+
+  // fallback 1: same without variantId (use base product offers)
+  const fb1 = `/api/supplier-offers?${buildParams(productId)}`;
+
+  // fallback 2: product detail with embedded offers (variant + base)
+  const fb2 = `/api/products/${productId}?include=offers,variants`;
+
+  // helper to normalize any array of offers
+  const norm = (arr: any[]): PublicOffer[] =>
+    (arr || [])
+      .map((o) => ({
+        id: String(o.id),
+        productId: String(o.productId ?? productId),
+        variantId: o.variantId ?? null,
+        supplierId: String(o.supplierId),
+        price: asMoney(o.price, NaN),
+        currency: o.currency ?? 'NGN',
+        isActive: o.isActive === true,
+        // accept several possible names
+        availableQty: asInt(o.availableQty ?? o.available_quantity ?? o.qty ?? 0, 0),
+      }))
+      .filter((o) => o.isActive && o.availableQty > 0 && Number.isFinite(o.price) && o.price > 0);
+
+  // try primary
+  try {
+    const { data } = await api.get(primary);
+    const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+    const out = norm(list);
+    if (out.length) return out;
+  } catch { /* fall through */ }
+
+  // try fallback 1
+  try {
+    const { data } = await api.get(fb1);
+    const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+    const out = norm(list);
+    if (out.length) return out;
+  } catch { /* fall through */ }
+
+  // try fallback 2 (product detail with embedded offers)
+  try {
+    const { data } = await api.get(fb2);
+    const fromVariant =
+      variantId && Array.isArray(data?.variants)
+        ? norm(
+          data.variants
+            .filter((v: any) => String(v.id) === String(variantId))
+            .flatMap((v: any) => Array.isArray(v.offers) ? v.offers : [])
+        )
+        : [];
+    const fromProduct = Array.isArray(data?.supplierOffers) ? norm(data.supplierOffers) : [];
+    const combined = [...fromVariant, ...fromProduct];
+    if (combined.length) return combined;
+  } catch { /* noop */ }
+
+  return [];
+}
+
+type PublicOffer = {
+  id: string;
+  productId: string;
+  variantId: string | null;
+  supplierId: string;
+  price: number;
+  currency?: string;
+  isActive: boolean;
+  availableQty: number;
+};
+
+const asInt = (v: any, d = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : d;
+};
+const asMoney = (v: any, d = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+
+/** Split desired quantity across the cheapest active offers, obeying availableQty */
+function allocateAcrossOffers(
+  desiredQty: number,
+  offers: PublicOffer[]): Array<{ supplierOfferId: string; qty: number; unitPrice: number }> {
+  const desired = asInt(desiredQty, 0);
+  if (desired <= 0) return [];
+
+  const usable = (offers || [])
+    .filter(o => o && o.isActive === true && asInt(o.availableQty, 0) > 0 && asMoney(o.price, NaN) > 0);
+
+  usable.sort((a: { price: any; }, b: { price: any; }) => asMoney(a.price, 0) - asMoney(b.price, 0));
+
+  const parts: Array<{ supplierOfferId: string; qty: number; unitPrice: number }> = [];
+  let need = desired;
+
+  for (const o of usable) {
+    if (need <= 0) break;
+    const take = Math.min(need, asInt(o.availableQty, 0));
+    if (take > 0) {
+      parts.push({ supplierOfferId: o.id, qty: take, unitPrice: asMoney(o.price, 0) });
+      need -= take;
+    }
+  }
+
+  return parts;
+}
+
+
+
 /* ----------------------------- Component ----------------------------- */
 export default function Checkout() {
   const nav = useNavigate();
   const { openModal } = useModal();
   const token = useAuthStore((s) => s.token);
 
+  // Verification state
+  const [checkingVerification, setCheckingVerification] = useState(true);
+  const [emailOk, setEmailOk] = useState<boolean>(false);
+  const [phoneOk, setPhoneOk] = useState<boolean>(false);
+  const [showNotVerified, setShowNotVerified] = useState<boolean>(false);
+
   // require login for checkout
   useEffect(() => {
     if (!token) nav('/login', { state: { from: { pathname: '/checkout' } } });
   }, [token, nav]);
 
-  // CART — normalize & persist the normalized shape
+  // CART — normalize & persist
   const [cart, setCart] = useState<CartLine[]>(() => readCart());
   useEffect(() => {
     writeCart(cart);
   }, [cart]);
 
-  // 🔧 hydrate missing prices if any (safety net)
+  // Hydrate missing prices if any
   useEffect(() => {
     (async () => {
       const needs = cart.filter((l) => num(l.unitPrice, num(l.price, 0)) <= 0);
@@ -282,32 +445,30 @@ export default function Checkout() {
             unitPrice: unit,
             price: unit,
             totalPrice: unit * qty,
-            image: line.image ?? (Array.isArray(p?.imagesJson) ? p.imagesJson[0] : null),
+            image: line.image ?? (Array.isArray(p?.imagesJson) ? p?.imagesJson[0] : null),
           };
         }));
 
         setCart(updated);
         writeCart(updated);
       } catch {
-        // ignore; guard below prevents ordering with zero prices
+        // ignore
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Build distinct IDs from the cart
+  // Distinct ids
   const productIds = useMemo(
     () => Array.from(new Set(cart.map(l => l.productId))),
     [cart]
   );
-  // If you eventually track chosen supplier per line:
   const supplierIds = useMemo(
     () => Array.from(new Set(cart.map(l => l.supplierId).filter(Boolean) as string[])),
     [cart]
   );
 
-  // Ask the server to compute: unitFee × DISTINCT suppliers (explicit suppliers or product owners)
-  // Ask the server to compute: per-message unit fee × messages
+  // Server-computed comms/service fee
   const serviceFeeQ = useQuery({
     queryKey: ['checkout', 'service-fee', { productIds, supplierIds }],
     enabled: productIds.length > 0,
@@ -320,8 +481,8 @@ export default function Checkout() {
 
       return {
         unit: Number(data?.unitFee) || 0,
-        msgs: Number(data?.notificationsCount) || 0,   // 👈 messages multiplier
-        suppliers: Number(data?.suppliersCount) || 0,  // kept just in case
+        msgs: Number(data?.notificationsCount) || 0,
+        suppliers: Number(data?.suppliersCount) || 0,
         amount: Number(data?.serviceFee) || 0,
       };
     },
@@ -329,21 +490,18 @@ export default function Checkout() {
     refetchOnWindowFocus: false,
   });
 
-  // Safe fallbacks
-  const svcUnit = serviceFeeQ.data?.unit ?? 0;
-  const svcMsgs = serviceFeeQ.data?.msgs ?? 0;
-  const svcFee  = serviceFeeQ.data?.amount ?? 0;
+  // Safe fallback
+  const svcFee = serviceFeeQ.data?.amount ?? 0;
 
-  // ---------------- TAX & BASE SERVICE FEE (public settings) ----------------
+  // TAX & base service fee (public settings)
   const [baseFee, setBaseFee] = useState(0);
   const [taxMode, setTaxMode] = useState<'INCLUDED' | 'ADDED' | 'NONE'>('INCLUDED');
-  const [taxRatePct, setTaxRatePct] = useState(0); // e.g. 7.5 means 7.5%
+  const [taxRatePct, setTaxRatePct] = useState(0);
 
   useEffect(() => {
     (async () => {
       try {
         const { data } = await api.get('/api/settings/public');
-        // base fee
         const base =
           Number(data?.baseServiceFeeNGN) ||
           Number(data?.serviceFeeBaseNGN) ||
@@ -351,7 +509,6 @@ export default function Checkout() {
           0;
         if (Number.isFinite(base) && base >= 0) setBaseFee(base);
 
-        // tax mode & rate
         const tmRaw = String(data?.taxMode || '').toUpperCase();
         if (tmRaw === 'ADDED' || tmRaw === 'NONE' || tmRaw === 'INCLUDED') {
           setTaxMode(tmRaw as 'INCLUDED' | 'ADDED' | 'NONE');
@@ -364,7 +521,6 @@ export default function Checkout() {
     })();
   }, []);
 
-  // numeric rate 0..1
   const taxRate = useMemo(() => (Number.isFinite(taxRatePct) ? taxRatePct / 100 : 0), [taxRatePct]);
 
   // totals
@@ -373,29 +529,22 @@ export default function Checkout() {
     [cart]
   );
 
-  const shippingShownInUI = 0; // shipping included by supplier
-
-  // VAT *included* estimate (purely informational)
   const estimatedVATIncluded = useMemo(() => {
     if (taxMode !== 'INCLUDED' || taxRate <= 0) return 0;
     return itemsSubtotal - (itemsSubtotal / (1 + taxRate));
   }, [itemsSubtotal, taxMode, taxRate]);
 
-  // VAT *added* amount (charged on top)
   const vatAddOn = useMemo(() => {
     if (taxMode !== 'ADDED' || taxRate <= 0) return 0;
     return itemsSubtotal * taxRate;
   }, [itemsSubtotal, taxMode, taxRate]);
 
-  // Gateway fee estimate should be computed on the gross amount the customer pays:
-  // items + tax (if ADDED) + base + comms
   const gatewayEstimate = useMemo(() => {
     const grossBeforeGateway = itemsSubtotal + (taxMode === 'ADDED' ? vatAddOn : 0) + baseFee + svcFee;
     return estimateGatewayFee(grossBeforeGateway);
   }, [itemsSubtotal, taxMode, vatAddOn, baseFee, svcFee]);
 
   const serviceFeeTotal = baseFee + svcFee + gatewayEstimate;
-
   const payableTotal = itemsSubtotal + (taxMode === 'ADDED' ? vatAddOn : 0) + serviceFeeTotal;
 
   // ADDRESSES
@@ -412,38 +561,57 @@ export default function Checkout() {
   const [savingHome, setSavingHome] = useState(false);
   const [savingShip, setSavingShip] = useState(false);
 
-  // Load existing addresses
   const authHeader = token ? { Authorization: `Bearer ${token}` } : undefined;
 
+  // Verification + addresses load
   useEffect(() => {
     let mounted = true;
-    async function load() {
+    (async () => {
       if (!token) return;
+
+      setCheckingVerification(true);
       setLoadingProfile(true);
       setProfileErr(null);
+
       try {
-        const res = await api.get<ProfileMe>('/api/profile/me', {
-          headers: authHeader,
-        });
+        const res = await api.get<ProfileMe>('/api/profile/me', { headers: authHeader });
         if (!mounted) return;
 
-        const h = res.data?.address || null;
-        const s = res.data?.shippingAddress || null;
+        // verification flags (no date dependency; tolerant to strings/nulls)
+        const flags = computeVerificationFlags(res.data);
+        setEmailOk(flags.emailOk);
+        setPhoneOk(flags.phoneOk);
+
+        if (!flags.emailOk || !flags.phoneOk) {
+          setShowNotVerified(true);
+        }
+
+        // addresses (camel or snake)
+        const h = (res.data?.address ?? null) || (res.data as any)?.address || null;
+        const saddr =
+          (res.data?.shippingAddress ?? null) ||
+          (res.data as any)?.shipping_address ||
+          null;
 
         if (h) setHomeAddr({ ...EMPTY_ADDR, ...h });
-        if (s) setShipAddr({ ...EMPTY_ADDR, ...s });
+        if (saddr) setShipAddr({ ...EMPTY_ADDR, ...saddr });
 
         setShowHomeForm(!h);
-        setShowShipForm(!s);
-        setSameAsHome(!!h && !s);
+        setShowShipForm(!saddr);
+        setSameAsHome(!!h && !saddr);
       } catch (e: any) {
         if (!mounted) return;
+        setEmailOk(false);
+        setPhoneOk(false);
+        setShowNotVerified(true);
         setProfileErr(e?.response?.data?.error || 'Failed to load profile');
       } finally {
-        if (mounted) setLoadingProfile(false);
+        if (mounted) {
+          setCheckingVerification(false);
+          setLoadingProfile(false);
+        }
       }
-    }
-    load();
+    })();
     return () => { mounted = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
@@ -504,62 +672,73 @@ export default function Checkout() {
     }
   };
 
-  // Create order → go to payment
-  const createOrder = useMutation({
-    mutationFn: async () => {
-      if (cart.length === 0) throw new Error('Your cart is empty');
+const createOrder = useMutation({
+  mutationFn: async () => {
+    if (checkingVerification) throw new Error('Checking your account verification…');
+    if (!emailOk || !phoneOk) {
+      const msg = (!emailOk && !phoneOk)
+        ? 'Your email and password are not verified.'
+        : (!emailOk) ? 'Your email is not verified.' : 'You phone is not verified.';
+      throw new Error(msg);
+    }
 
-      // guard: any line still without price? stop
-      const bad = cart.find((l) => num(l.unitPrice, num(l.price, 0)) <= 0);
-      if (bad) throw new Error('One or more items have no price. Please remove and re-add them to cart.');
+    if (cart.length === 0) throw new Error('Your cart is empty');
 
-      const vaHome = validateAddress(homeAddr);
-      if (vaHome) throw new Error(vaHome);
+    const bad = cart.find((l) => num(l.unitPrice, num(l.price, 0)) <= 0);
+    if (bad) throw new Error('One or more items have no price. Please remove and re-add them to cart.');
 
-      const finalShip = sameAsHome ? homeAddr : shipAddr;
-      if (!sameAsHome) {
-        const vaShip = validateAddress(finalShip, true);
-        if (vaShip) throw new Error(vaShip);
-      }
+    const vaHome = validateAddress(homeAddr);
+    if (vaHome) throw new Error(vaHome);
 
-      // Build order items (includes variants & options if present)
-      const items = cart.map((it) => ({
-        productId: it.productId,
-        variantId: it.variantId || undefined,
-        qty: Math.max(1, num(it.qty, 1)),
-        title: it.title,
-        unitPrice: num(it.unitPrice, num(it.price, 0)),
-        selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : undefined,
-        imageUrl: it.image ?? undefined, // optional; backend may ignore
-      }));
+    const finalShip = sameAsHome ? homeAddr : shipAddr;
+    if (!sameAsHome) {
+      const vaShip = validateAddress(finalShip, true);
+      if (vaShip) throw new Error(vaShip);
+    }
 
-      // If tax mode is ADDED we send the computed VAT; otherwise 0
-      const taxToSend = taxMode === 'ADDED' ? vatAddOn : 0;
+    // EXACTLY what your backend expects:
+    const items = cart.map((it) => ({
+      productId: it.productId,
+      variantId: it.variantId || undefined,     // optional
+      qty: Math.max(1, num(it.qty, 1)),         // ✅ server expects `qty`
+      unitPrice: num(it.unitPrice, num(it.price, 0)),
+      selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : undefined,
+      // 🚫 do NOT send: supplierOfferId, quantity, title, imageUrl, selectedOptionsJson
+      // 🚫 do NOT pre-allocate; server does allocation itself
+    }));
 
-      const payload = {
-        items,
-        shipping: 0,
-        tax: taxToSend,
+    const payload = {
+      items,
+      shippingAddress: finalShip,               // ✅ required (or shippingAddressId)
+      // billingAddress: homeAddr,              // optional – include if you want
+      // notes: '...',                          // optional
+    };
+
+    let res;
+    try {
+      res = await api.post('/api/orders', payload, { headers: authHeader });
+    } catch (e: any) {
+      console.error('create order failed:', e?.response?.status, e?.response?.data);
+      throw new Error(e?.response?.data?.error || 'Failed to create order');
+    }
+
+    return res.data as { data: { id: string } };
+  },
+  onSuccess: (resp) => {
+    const orderId = (resp as any)?.data?.id;
+    localStorage.removeItem('cart');
+    nav(`/payment?orderId=${orderId}`, {
+      state: {
+        orderId,
+        total: payableTotal,
         homeAddress: homeAddr,
-        shippingAddress: finalShip,
-      };
+        shippingAddress: sameAsHome ? homeAddr : shipAddr,
+      },
+      replace: true,
+    });
+  },
+});
 
-      const res = await api.post('/api/orders', payload, { headers: authHeader });
-      return res.data as { id: string };
-    },
-    onSuccess: (order) => {
-      localStorage.removeItem('cart');
-      nav(`/payment?orderId=${order.id}`, {
-        state: {
-          orderId: order.id,
-          total: payableTotal, // reflect exactly what we show
-          homeAddress: homeAddr,
-          shippingAddress: sameAsHome ? homeAddr : shipAddr,
-        },
-        replace: true,
-      });
-    },
-  });
 
   if (cart.length === 0) {
     return (
@@ -578,8 +757,89 @@ export default function Checkout() {
     );
   }
 
+  // Not-verified modal (dismiss → /cart)
+  const NotVerifiedModal = () => {
+    const title = (!emailOk && !phoneOk)
+      ? 'Email and password not verified'
+      : (!emailOk)
+        ? 'Email not verified'
+        : 'Phone is not verified';
+
+    const lines: string[] = [];
+    if (!emailOk) lines.push('• Your email is not verified.');
+    if (!phoneOk) lines.push('• You phone is not verified.');
+    lines.push('Please fix this, then return to your cart/checkout.');
+
+    // Build deep links with `next` back to checkout
+    const next = encodeURIComponent('/checkout');
+    const verifyHref = `${VERIFY_PATH}?next=${next}`;
+
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        onClick={() => { setShowNotVerified(false); nav('/cart'); }}
+        className="fixed inset-0 z-50 grid place-items-center bg-black/40 px-4"
+      >
+        <div
+          className="w-full max-w-md rounded-2xl bg-white shadow-2xl border"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-5 py-4 border-b">
+            <h2 className="text-lg font-semibold">{title}</h2>
+          </div>
+
+          <div className="p-5 space-y-3 text-sm">
+            {lines.map((l, i) => (<p key={i}>{l}</p>))}
+
+            {/* Action links */}
+            <div className="mt-2 space-y-2">
+              {(!emailOk || !phoneOk) && (
+                <button
+                  className="w-full inline-flex items-center justify-center rounded-lg bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200"
+                  onClick={() => nav(verifyHref)}
+                >
+                  Verify email/phone now
+                </button>
+              )}
+
+              {/* Secondary text links (in case you prefer anchors) */}
+              <div className="text-xs text-ink-soft text-center">
+                {!emailOk && (
+                  <>
+                    Or <a className="underline" onClick={(e) => { e.preventDefault(); nav(verifyHref); }}>open verification page</a>.
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="px-5 py-4 border-t flex items-center justify-between gap-2">
+            <button
+              className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 text-sm"
+              onClick={() => { setShowNotVerified(false); nav('/cart'); }}
+            >
+              Back to cart
+            </button>
+            <button
+              className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
+              onClick={() => { /* keep modal open but still allow direct nav to flows */ }}
+              disabled
+              title="Complete the steps above"
+            >
+              Continue
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="bg-bg-soft bg-hero-radial">
+      {/* Only show after verification check completes */}
+      {!checkingVerification && showNotVerified && <NotVerifiedModal />}
+
       <div className="max-w-6xl mx-auto px-4 md:px-6 py-8">
         {/* Step header */}
         <div className="mb-6">
@@ -842,32 +1102,7 @@ export default function Checkout() {
                   <span className="font-medium">Included by supplier</span>
                 </div>
 
-                {/* Service fee breakdown */}
-                 <div className="mt-4 pt-3 border-t border-border">
-                 {/* <div className="flex items-center justify-between">
-                    <span className="text-ink-soft">Base service fee</span>
-                    <span className="font-medium">{ngn.format(baseFee)}</span>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <span className="text-ink-soft">
-                      Comms service fee
-                      {serviceFeeQ.isLoading
-                        ? ''
-                        : (svcMsgs > 0
-                          ? ` — ₦${svcUnit.toLocaleString()} × ${svcMsgs} msg${svcMsgs > 1 ? 's' : ''}`
-                          : '')}
-                    </span>
-                    <span className="font-medium">
-                      {serviceFeeQ.isLoading ? 'Calculating…' : ngn.format(svcFee)}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <span className="text-ink-soft">Estimated gateway fee</span>
-                    <span className="font-medium">{ngn.format(gatewayEstimate)}</span>
-                  </div> */}
-
+                <div className="mt-4 pt-3 border-t border-border">
                   <div className="flex items-center justify-between mt-2">
                     <span className="text-ink">Service fee (total)</span>
                     <span className="font-semibold">{ngn.format(serviceFeeTotal)}</span>
@@ -901,7 +1136,6 @@ export default function Checkout() {
                 </p>
               )}
 
-              {/* Back to cart */}
               <button
                 onClick={() => nav('/cart')}
                 className="mt-3 w-full inline-flex items-center justify-center rounded-lg border border-border bg-surface px-4 py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"

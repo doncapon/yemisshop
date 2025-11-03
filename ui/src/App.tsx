@@ -153,10 +153,12 @@ export default function App() {
                 />
 
                 {/* Orders list (inner tab name can be whatever your AdminDashboard expects; 'list' is common) */}
+                {/* Redirect orders → transactions (valid tab) */}
                 <Route
                   path="orders"
-                  element={<Navigate to="/admin?tab=orders&pTab=list" replace />}
+                  element={<Navigate to="/admin?tab=transactions" replace />}
                 />
+
 
                 {/* Settings (still a dedicated page) */}
                 <Route

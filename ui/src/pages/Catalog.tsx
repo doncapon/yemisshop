@@ -23,13 +23,15 @@ type SupplierOfferLite = {
   id: string;
   isActive?: boolean;
   inStock?: boolean;
+  /** NEW: real stock quantity (when provided by API) */
+  availableQty?: number | null;
 };
 
 type Variant = {
   id: string;
   sku?: string | null;
   price?: number | null;
-  inStock?: boolean;
+  inStock?: boolean | null;
   imagesJson?: string[];
   offers?: SupplierOfferLite[];
 };
@@ -38,8 +40,8 @@ type Product = {
   id: string;
   title: string;
   description?: string;
-  price?: number;
-  inStock?: boolean;
+  price?: number | null;
+  inStock?: boolean | null;
   imagesJson?: string[];
   categoryId?: string | null;
   categoryName?: string | null;
@@ -59,49 +61,42 @@ const ngn = new Intl.NumberFormat('en-NG', {
   maximumFractionDigits: 2,
 });
 
-type PriceBucket = { label: string; min: number; max?: number };
-type SortKey = 'relevance' | 'price-asc' | 'price-desc';
-
 /* ---------------- Helpers ---------------- */
 const isLive = (x?: { status?: string | null }) =>
   String(x?.status ?? '').trim().toUpperCase() === 'LIVE';
 
 const getBrandName = (p: Product) => (p.brand?.name || p.brandName || '').trim();
 
-const readClicks = (): Record<string, number> => {
-  try {
-    return JSON.parse(localStorage.getItem('productClicks:v1') || '{}') || {};
-  } catch {
-    return {};
-  }
-};
+/** Safe bool: only true if explicitly true; undefined/null/0/"false" → false */
+const trueOnly = (v: any) => v === true;
 
-const bumpClick = (productId: string) => {
-  try {
-    const m = readClicks();
-    m[productId] = (m[productId] || 0) + 1;
-    localStorage.setItem('productClicks:v1', JSON.stringify(m));
-  } catch { }
-};
+/** Safe number */
+const nnum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : NaN);
 
-const safeNum = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : NaN);
+/** Any active + inStock offer? (explicit only) */
+const hasActiveInStockOffer = (offers?: SupplierOfferLite[]) =>
+  Array.isArray(offers) && offers.some(o => trueOnly(o.isActive) && trueOnly(o.inStock));
 
+/** Minimum sellable price (prefers sellable variants, falls back to base if sellable) */
 function getMinPrice(p: Product): number {
-  const base = safeNum(p.price);
   const variantPrices = (p.variants ?? [])
-    .map(v => safeNum(v.price))
-    .filter(n => Number.isFinite(n) && n > 0) as number[];
+    .filter(variantSellable)
+    .map(v => nnum(v.price))
+    .filter(v => Number.isFinite(v) && v! > 0) as number[];
+
+  const basePrice = productBaseSellable(p) ? nnum(p.price) : NaN;
   const candidates: number[] = [];
-  if (Number.isFinite(base) && base! > 0) candidates.push(base as number);
+  if (Number.isFinite(basePrice) && basePrice! > 0) candidates.push(basePrice as number);
   candidates.push(...variantPrices);
   return candidates.length ? Math.min(...candidates) : 0;
 }
 
-const hasVariantInStock = (p: Product) => (p.variants || []).some(v => v.inStock !== false);
-const availableFlag = (p: Product) => (p.inStock !== false) || hasVariantInStock(p);
-const availabilityRank = (p: Product) => (availableFlag(p) ? 1 : 0);
+/* -------- NEW: Real availability based on availableQty -------- */
 
 const formatN = (n: number) => '₦' + (Number.isFinite(n) ? n : 0).toLocaleString();
+
+type PriceBucket = { label: string; min: number; max?: number };
+type SortKey = 'relevance' | 'price-asc' | 'price-desc';
 
 function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceBucket[] {
   if (!Number.isFinite(maxPrice) || maxPrice <= 0) {
@@ -133,48 +128,189 @@ function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceB
 const inBucket = (price: number, b: PriceBucket) =>
   b.max == null ? price >= b.min : price >= b.min && price <= b.max;
 
-/* ---------------- Orders → purchases (for relevance) ---------------- */
+function toInt(n: any, d = 0) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : d;
+}
+
 type OrdersResp = {
   data?: Array<{
-    id: string;
-    createdAt?: string;
-    items?: Array<{ product?: { id?: string } | null; productId?: string | null; qty?: number | null }>;
+    id?: string;
+    items?: Array<{
+      productId?: string;
+      qty?: number;
+      product?: { id?: string };
+    }>;
   }>;
   totalPages?: number;
+  total?: number;
+  nextPageToken?: string | null;
 };
+
+type Dialect = "page" | "offset";
+type PickedEndpoint = { url: string; dialect: Dialect };
+
+const LS_KEY = "ordersEndpoint:v1";
+
 function usePurchasedCounts() {
   const token = useAuthStore((s) => s.token);
-  return useQuery({
-    queryKey: ['orders', 'mine', 'for-recs'],
+
+  return useQuery<Record<string, number>>({
+    queryKey: ['orders', 'mine', 'purchased-counts'],
     enabled: !!token,
     retry: 0,
     staleTime: 30_000,
     queryFn: async () => {
-      const PAGE_SIZE = 100;
-      let page = 1;
-      let totalPages = 1;
-      const map: Record<string, number> = {};
-      while (page <= totalPages) {
-        const { data } = await api.get<OrdersResp>(
-          `/api/orders/mine?page=${page}&pageSize=${PAGE_SIZE}`,
-          { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
-        );
-        const list = Array.isArray(data?.data) ? data!.data! : [];
-        for (const o of list) {
-          for (const it of o.items || []) {
-            const pid = it.product?.id || it.productId || '';
+      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+      const LIMIT = 200;
+      try {
+        const { data } = await api.get('/api/orders/mine', {
+          headers,
+          params: { limit: LIMIT },
+        });
+
+        const orders: any[] = Array.isArray(data?.data)
+          ? data.data
+          : Array.isArray(data)
+          ? data
+          : [];
+
+        const map: Record<string, number> = {};
+
+        for (const o of orders) {
+          const items: any[] = Array.isArray(o?.items) ? o.items : [];
+          for (const it of items) {
+            const pid = it?.productId || it?.product?.id || '';
             if (!pid) continue;
-            const qty = Number(it.qty || 1);
+            const qtyRaw = it?.quantity ?? it?.qty ?? 1;
+            const qty = Number(qtyRaw);
             map[pid] = (map[pid] || 0) + (Number.isFinite(qty) ? qty : 1);
           }
         }
-        totalPages = Math.max(1, Number(data?.totalPages ?? 1));
-        page += 1;
-        if (page > 50) break;
+
+        return map;
+      } catch (e: any) {
+        const status = e?.response?.status;
+        const msg = e?.response?.data || e?.message;
+        console.error('usePurchasedCounts /api/orders/mine failed:', status, msg);
+        return {};
       }
-      return map;
     },
   });
+}
+
+
+/* -------- NEW: Real availability based on availableQty + activity -------- */
+
+/** Sum availableQty across *active* offers */
+function sumActiveQty(offers?: SupplierOfferLite[]) {
+  let sum = 0;
+  for (const o of offers ?? []) {
+    if (o?.isActive === true) {
+      const q = Number(o.availableQty);
+      if (Number.isFinite(q) && q > 0) sum += q;
+    }
+  }
+  return sum;
+}
+
+/** Does this product carry an explicit qty signal anywhere (variant or product level)? */
+function hasAnyQtySignal(p: Product): boolean {
+  for (const v of p.variants ?? []) {
+    for (const o of v.offers ?? []) {
+      if (Number.isFinite(Number(o?.availableQty))) return true;
+    }
+  }
+  for (const o of p.supplierOffers ?? []) {
+    if (Number.isFinite(Number(o?.availableQty))) return true;
+  }
+  return false;
+}
+
+/** Total active qty across both variant- and product-level offers */
+function availableQtyForProduct(p: Product): number {
+  let sum = 0;
+  for (const v of p.variants ?? []) sum += sumActiveQty(v.offers);
+  sum += sumActiveQty(p.supplierOffers);
+  return sum;
+}
+
+/** Variant has real stock only if active-offer qty > 0 when qty is signaled; otherwise fall back */
+function variantAvailableNow(v?: Variant): boolean {
+  if (!v) return false;
+  const hasQty = (v.offers ?? []).some(o => Number.isFinite(Number(o?.availableQty)));
+  if (hasQty) return sumActiveQty(v.offers) > 0;                 // STRICT: ignore v.inStock if qty is provided
+  return v.inStock === true || hasActiveInStockOffer(v.offers);   // legacy fallback
+}
+
+/** Product available now? If qty is signaled anywhere, ONLY active-offer qty counts */
+function availableNow(p: Product): boolean {
+  if (hasAnyQtySignal(p)) {
+    return availableQtyForProduct(p) > 0;                         // STRICT: ignore p.inStock if qty is provided
+  }
+  // fallback for older payloads without qty fields
+  return p.inStock === true || hasActiveInStockOffer(p.supplierOffers);
+}
+
+/** Variant is sellable if available now AND price > 0 */
+function variantSellable(v?: Variant): boolean {
+  if (!v) return false;
+  const price = nnum(v.price);
+  return variantAvailableNow(v) && Number.isFinite(price) && price > 0;
+}
+
+/** Base (no variant) is sellable: if qty is signaled on product-level offers, require active qty > 0 */
+function productBaseSellable(p: Product): boolean {
+  const price = nnum(p.price);
+  let stockOk: boolean;
+  const productHasQtySignal = (p.supplierOffers ?? []).some(o => Number.isFinite(Number(o?.availableQty)));
+  if (productHasQtySignal) {
+    stockOk = sumActiveQty(p.supplierOffers) > 0;                 // STRICT on product-level offers
+  } else {
+    stockOk = p.inStock === true || hasActiveInStockOffer(p.supplierOffers);
+  }
+  return stockOk && Number.isFinite(price) && price > 0;
+}
+
+/** Product is sellable if LIVE and either base or any variant is sellable */
+function productSellable(p: Product): boolean {
+  if (!isLive(p)) return false;
+  if (productBaseSellable(p)) return true;
+  return (p.variants ?? []).some(variantSellable);
+}
+
+/* -------- Analytics clicks (unchanged) -------- */
+const readClicks = (): Record<string, number> => {
+  try {
+    return JSON.parse(localStorage.getItem('productClicks:v1') || '{}') || {};
+  } catch {
+    return {};
+  }
+};
+const bumpClick = (productId: string) => {
+  try {
+    const m = readClicks();
+    m[productId] = (m[productId] || 0) + 1;
+    localStorage.setItem('productClicks:v1', JSON.stringify(m));
+  } catch {}
+};
+
+/* -------- Cart helpers (NEW): cap by availableQty -------- */
+function readCart(): Array<{ productId: string; variantId?: string | null; qty: number }> {
+  try {
+    const raw = localStorage.getItem('cart');
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+function qtyInCart(productId: string, variantId: string | null): number {
+  const cart = readCart();
+  return cart
+    .filter((x) => x.productId === productId && (variantId ? x.variantId === variantId : !x.variantId))
+    .reduce((s, x) => s + Math.max(0, Number(x.qty) || 0), 0);
 }
 
 /* ---------------- Component ---------------- */
@@ -184,12 +320,15 @@ export default function Catalog() {
   const { openModal } = useModal();
   const nav = useNavigate();
 
+  // Hide OOS items entirely from catalogue (true = hide)
+  const HIDE_OOS = true;
+
   // Fetch LIVE products (server enforces sellable, client double-checks LIVE)
   const productsQ = useQuery<Product[]>({
     queryKey: ['products', { include: 'brand,variants,attributes,offers', status: 'LIVE' }],
     staleTime: 30_000,
     queryFn: async () => {
-      // small helper: normalizes server payload -> Product[]
+      // normalizer: ensure explicit booleans & durable structures
       const normalize = (rawData: any): Product[] => {
         const raw: any[] = Array.isArray(rawData) ? rawData : (Array.isArray(rawData?.data) ? rawData.data : []);
         return (raw || [])
@@ -197,20 +336,41 @@ export default function Catalog() {
           .map((x) => {
             const variants: Variant[] = Array.isArray(x.variants)
               ? x.variants.map((v: any) => ({
-                id: String(v.id),
-                sku: v.sku ?? null,
-                price: Number.isFinite(Number(v.price)) ? Number(v.price) : null,
-                inStock: v.inStock !== false,
-                imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-                offers: Array.isArray(v.offers) ? v.offers : [],
-              }))
+                  id: String(v.id),
+                  sku: v.sku ?? null,
+                  price: Number.isFinite(Number(v.price)) ? Number(v.price) : null,
+                  // IMPORTANT: explicit only
+                  inStock: v.inStock === true,
+                  imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+                  offers: Array.isArray(v.offers)
+                    ? v.offers.map((o: any) => ({
+                        id: String(o.id),
+                        isActive: o.isActive === true,
+                        inStock: o.inStock === true,
+                        // NEW: carry availableQty if your API provides it
+                        availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                      }))
+                    : [],
+                }))
               : [];
+
+            const supplierOffers: SupplierOfferLite[] = Array.isArray(x.supplierOffers)
+              ? x.supplierOffers.map((o: any) => ({
+                  id: String(o.id),
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  // NEW: carry availableQty if present
+                  availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                }))
+              : [];
+
             return {
               id: String(x.id),
               title: String(x.title ?? ''),
               description: x.description ?? '',
-              price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
-              inStock: x.inStock !== false,
+              price: Number.isFinite(Number(x.price)) ? Number(x.price) : null,
+              // IMPORTANT: explicit only
+              inStock: x.inStock === true,
               imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
               categoryId: x.categoryId ?? null,
               categoryName: x.categoryName ?? null,
@@ -220,7 +380,7 @@ export default function Catalog() {
               ratingAvg: Number.isFinite(Number(x.ratingAvg)) ? Number(x.ratingAvg) : null,
               ratingCount: Number.isFinite(Number(x.ratingCount)) ? Number(x.ratingCount) : null,
               attributesSummary: Array.isArray(x.attributesSummary) ? x.attributesSummary : [],
-              supplierOffers: Array.isArray(x.supplierOffers) ? x.supplierOffers : [],
+              supplierOffers,
               status: (x.status ?? x.state ?? '').toString(),
             } as Product;
           });
@@ -235,19 +395,15 @@ export default function Catalog() {
         try {
           const { data } = await api.get('/api/products', { params: { ...paramsBase, status } });
           const list = normalize(data);
-          // If we fell back to PUBLISHED/ANY, still prefer showing LIVE where possible
           const out = status === 'LIVE' ? list : list.filter((x) => String(x.status).toUpperCase() === 'LIVE') || list;
           return out;
         } catch (e: any) {
           lastErr = e;
-          // continue to next attempt
         }
       }
-      // if all attempts fail, surface the original error
       throw lastErr ?? new Error('Failed to load products');
     },
   });
-
 
   // Favorites
   const favQuery = useQuery({
@@ -289,14 +445,31 @@ export default function Catalog() {
     },
   });
 
-  /* -------- Quick Add-to-Cart (only simple products here) -------- */
+  /* -------- Quick Add-to-Cart (only simple products here) --------
+     UPDATED: cap adds so users cannot exceed availableQty already in their cart. */
   const addToCart = (p: Product) => {
     try {
       const unit = getMinPrice(p);
-      if (!Number.isFinite(unit) || unit <= 0) {
-        openModal({ title: 'Cart', message: 'This product has no valid price yet.' });
+      // Must be sellable (priced) AND actually available now
+      if (!productSellable(p) || !availableNow(p) || !Number.isFinite(unit) || unit <= 0) {
+        openModal({ title: 'Cart', message: 'This product is not currently available.' });
         return;
       }
+
+      // NEW: enforce cap by availableQty (when your API provides it)
+      const hasQty = hasAnyQtySignal(p);
+      const totalAvailable = hasQty ? availableQtyForProduct(p) : null; // if null → unknown, don't cap
+      const inCart = qtyInCart(p.id, null);
+      const remaining = totalAvailable == null ? null : Math.max(0, totalAvailable - inCart);
+
+      if (remaining !== null && remaining <= 0) {
+        openModal({
+          title: 'Stock limit',
+          message: 'You already have the maximum available quantity of this product in your cart.',
+        });
+        return;
+      }
+
       const primaryImg =
         p.imagesJson?.[0] ||
         p.variants?.find(v => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
@@ -306,25 +479,38 @@ export default function Catalog() {
       const cart: any[] = raw ? JSON.parse(raw) : [];
 
       const idx = cart.findIndex((x: any) => x.productId === p.id && (!x.variantId || x.variantId === null));
+
       if (idx >= 0) {
-        const qty = Math.max(1, Number(cart[idx].qty) || 1) + 1;
+        const current = Math.max(1, Number(cart[idx].qty) || 1);
+        // allow +1 but not beyond remaining
+        const canAdd = remaining == null ? 1 : Math.min(1, remaining);
+        if (canAdd <= 0) {
+          openModal({ title: 'Stock limit', message: 'No more units available to add.' });
+          return;
+        }
+        const newQty = current + canAdd;
         cart[idx] = {
           ...cart[idx],
           title: p.title,
-          qty,
+          qty: newQty,
           unitPrice: unit,
-          totalPrice: unit * qty,
+          totalPrice: unit * newQty,
           price: unit,
           image: primaryImg ?? cart[idx].image ?? null,
         };
       } else {
+        const firstQty = remaining == null ? 1 : Math.min(1, remaining);
+        if (firstQty <= 0) {
+          openModal({ title: 'Stock limit', message: 'No more units available to add.' });
+          return;
+        }
         cart.push({
           productId: p.id,
           variantId: null,
           title: p.title,
-          qty: 1,
+          qty: firstQty,
           unitPrice: unit,
-          totalPrice: unit,
+          totalPrice: unit * firstQty,
           price: unit,
           selectedOptions: [],
           image: primaryImg,
@@ -342,7 +528,6 @@ export default function Catalog() {
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [selectedBucketIdxs, setSelectedBucketIdxs] = useState<number[]>([]);
   const [selectedBrands, setSelectedBrands] = useState<string[]>([]);
-  const [onlyInStock, setOnlyInStock] = useState<boolean>(false);
   const [sortKey, setSortKey] = useState<SortKey>('relevance');
 
   const [query, setQuery] = useState('');
@@ -350,9 +535,6 @@ export default function Catalog() {
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const suggestRef = useRef<HTMLDivElement | null>(null);
-
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<6 | 9 | 12>(9);
 
   const products = useMemo(() => productsQ.data ?? [], [productsQ.data]);
 
@@ -364,7 +546,6 @@ export default function Catalog() {
   const PRICE_BUCKETS = useMemo(() => generateDynamicPriceBuckets(maxPriceSeen, 1_000), [maxPriceSeen]);
 
   useEffect(() => {
-    // If the bucket set changes (dataset changed), clear selections to avoid stale indexes
     setSelectedBucketIdxs([]);
   }, [PRICE_BUCKETS.length]);
 
@@ -414,8 +595,7 @@ export default function Catalog() {
     const baseForCategoryCounts = baseByQuery.filter((p) => {
       const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some(b => inBucket(getMinPrice(p), b));
       const brandOk = activeBrands.size === 0 ? true : activeBrands.has(getBrandName(p));
-      const stockOk = onlyInStock ? availableFlag(p) : true;
-      return priceOk && brandOk && stockOk;
+      return priceOk && brandOk;
     });
     const catMap = new Map<string, { id: string; name: string; count: number }>();
     for (const p of baseForCategoryCounts) {
@@ -433,8 +613,7 @@ export default function Catalog() {
     const baseForBrandCounts = baseByQuery.filter((p) => {
       const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some(b => inBucket(getMinPrice(p), b));
       const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? 'uncategorized');
-      const stockOk = onlyInStock ? availableFlag(p) : true;
-      return priceOk && catOk && stockOk;
+      return priceOk && catOk;
     });
     const brandMap = new Map<string, { name: string; count: number }>();
     for (const p of baseForBrandCounts) {
@@ -449,8 +628,7 @@ export default function Catalog() {
     const baseForPriceCounts = baseByQuery.filter((p) => {
       const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? 'uncategorized');
       const brandOk = activeBrands.size === 0 ? true : activeBrands.has(getBrandName(p));
-      const stockOk = onlyInStock ? availableFlag(p) : true;
-      return catOk && brandOk && stockOk;
+      return catOk && brandOk;
     });
     const priceCounts = PRICE_BUCKETS.map((b) =>
       baseForPriceCounts.filter(p => inBucket(getMinPrice(p), b)).length
@@ -460,16 +638,20 @@ export default function Catalog() {
       .filter(x => x.count > 0);
 
     // Final filtered list
-    const filteredCore = baseByQuery.filter((p) => {
+    let filteredCore = baseByQuery.filter((p) => {
       const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? 'uncategorized');
       const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some(b => inBucket(getMinPrice(p), b));
       const brandOk = activeBrands.size === 0 ? true : activeBrands.has(getBrandName(p));
-      const stockOk = onlyInStock ? availableFlag(p) : true;
-      return catOk && priceOk && brandOk && stockOk;
+      return catOk && priceOk && brandOk;
     });
 
+    // Hide non-sellable or not-actually-available products entirely
+    if (HIDE_OOS) {
+      filteredCore = filteredCore.filter(p => productSellable(p) && availableNow(p));
+    }
+
     return { categories, brands, visiblePriceBuckets, filtered: filteredCore };
-  }, [products, selectedCategories, selectedBucketIdxs, selectedBrands, onlyInStock, query, PRICE_BUCKETS]);
+  }, [products, selectedCategories, selectedBucketIdxs, selectedBrands, query, PRICE_BUCKETS]);
 
   /* -------- Sorting -------- */
   const purchasedQ = usePurchasedCounts();
@@ -487,12 +669,10 @@ export default function Catalog() {
         return { p, score };
       })
       .sort((a, b) => {
-        // Stock first
-        const av = availabilityRank(a.p), bv = availabilityRank(b.p);
+        const av = productSellable(a.p) ? 1 : 0;
+        const bv = productSellable(b.p) ? 1 : 0;
         if (bv !== av) return bv - av;
-        // Then score
         if (b.score !== a.score) return b.score - a.score;
-        // Tie-breaker: “popularity” & lower price
         const ap = (purchasedQ.data?.[a.p.id] || 0) + (readClicks()[a.p.id] || 0);
         const bp = (purchasedQ.data?.[b.p.id] || 0) + (readClicks()[b.p.id] || 0);
         if (bp !== ap) return bp - ap;
@@ -504,7 +684,8 @@ export default function Catalog() {
   const sorted = useMemo(() => {
     if (sortKey === 'relevance') return recScored;
     const arr = [...filtered].sort((a, b) => {
-      const av = availabilityRank(a), bv = availabilityRank(b);
+      const av = productSellable(a) ? 1 : 0;
+      const bv = productSellable(b) ? 1 : 0;
       if (bv !== av) return bv - av;
       if (sortKey === 'price-asc') return getMinPrice(a) - getMinPrice(b);
       if (sortKey === 'price-desc') return getMinPrice(b) - getMinPrice(a);
@@ -513,9 +694,11 @@ export default function Catalog() {
     return arr;
   }, [filtered, recScored, sortKey]);
 
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<6 | 9 | 12>(9);
   useEffect(() => {
     setPage(1);
-  }, [selectedCategories, selectedBucketIdxs, selectedBrands, onlyInStock, pageSize, sortKey, query]);
+  }, [selectedCategories, selectedBucketIdxs, selectedBrands, pageSize, sortKey, query]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -537,6 +720,29 @@ export default function Catalog() {
     return () => document.removeEventListener('mousedown', onDocClick);
   }, []);
 
+  const goTo = (p: number) => {
+    const clamped = Math.min(Math.max(1, p), totalPages);
+    setPage(clamped);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // ---- Pagination helpers (windowed buttons + jump) ----
+  const windowedPages = (current: number, total: number, radius = 2) => {
+    const pages: number[] = [];
+    const start = Math.max(1, current - radius);
+    const end = Math.min(total, current + radius);
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (pages[0] !== 1) pages.unshift(1);
+    if (pages[pages.length - 1] !== total) pages.push(total);
+    return [...new Set(pages)].sort((a, b) => a - b);
+  };
+  const numberedPages = windowedPages(currentPage, totalPages, 2);
+
+  const [jumpVal, setJumpVal] = useState<string>('');
+  useEffect(() => {
+    setJumpVal('');
+  }, [totalPages]);
+
   if (productsQ.isLoading) return <p className="p-6">Loading…</p>;
   if (productsQ.error) return <p className="p-6 text-rose-600">Error loading products</p>;
 
@@ -550,13 +756,8 @@ export default function Catalog() {
     setSelectedCategories([]);
     setSelectedBucketIdxs([]);
     setSelectedBrands([]);
-    setOnlyInStock(false);
   };
-  const goTo = (p: number) => {
-    const clamped = Math.min(Math.max(1, p), totalPages);
-    setPage(clamped);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+
   const Shimmer = () => <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />;
 
   return (
@@ -593,20 +794,11 @@ export default function Catalog() {
               </div>
               {(selectedCategories.length > 0 ||
                 selectedBucketIdxs.length > 0 ||
-                selectedBrands.length > 0 ||
-                onlyInStock) && (
+                selectedBrands.length > 0 ) && (
                   <button className="text-sm text-fuchsia-700 hover:underline" onClick={clearFilters}>
                     Clear all
                   </button>
                 )}
-            </div>
-
-            {/* Availability */}
-            <div className="mb-4">
-              <label className="inline-flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={onlyInStock} onChange={(e) => setOnlyInStock(e.target.checked)} />
-                <span className="text-zinc-800">In stock only</span>
-              </label>
             </div>
 
             {/* Categories */}
@@ -831,9 +1023,15 @@ export default function Catalog() {
                   const brand = getBrandName(p);
                   const primaryImg = p.imagesJson?.[0];
                   const hoverImg = p.imagesJson?.[1] || p.variants?.[0]?.imagesJson?.[0];
-                  const available = availableFlag(p);
-
+                  const sellable = productSellable(p);
+                  const available = availableNow(p); // NEW: real availability for badge/button
                   const needsOptions = Array.isArray(p.variants) && p.variants.length > 0;
+
+                  // For tooltip: show remaining if we can compute it
+                  const hasQty = hasAnyQtySignal(p);
+                  const totalAvail = hasQty ? availableQtyForProduct(p) : null;
+                  const inCart = qtyInCart(p.id, null);
+                  const remaining = totalAvail == null ? null : Math.max(0, totalAvail - inCart);
 
                   return (
                     <motion.article
@@ -855,10 +1053,11 @@ export default function Catalog() {
                           )}
 
                           <span
-                            className={`absolute left-3 top-3 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium ${available
+                            className={`absolute left-3 top-3 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium ${
+                              available
                                 ? 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20'
                                 : 'bg-rose-600/10 text-rose-700 border border-rose-600/20'
-                              }`}
+                            }`}
                           >
                             <CheckCircle2 size={12} />
                             {available ? 'In stock' : 'Out of stock'}
@@ -889,8 +1088,9 @@ export default function Catalog() {
                         <div className="mt-3 flex items-center justify-between">
                           <button
                             aria-label={fav ? 'Remove from wishlist' : 'Add to wishlist'}
-                            className={`inline-flex items-center gap-1 text-sm rounded-full border px-3 py-1.5 transition ${fav ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-white hover:bg-zinc-50 text-zinc-700'
-                              }`}
+                            className={`inline-flex items-center gap-1 text-sm rounded-full border px-3 py-1.5 transition ${
+                              fav ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-white hover:bg-zinc-50 text-zinc-700'
+                            }`}
                             onClick={() => {
                               if (!token) {
                                 openModal({ title: 'Wishlist', message: 'Please login to use the wishlist.' });
@@ -916,13 +1116,21 @@ export default function Catalog() {
                             </Link>
                           ) : (
                             <button
-                              disabled={!available}
+                              disabled={!(sellable && available) || (hasQty && remaining !== null && remaining <= 0)}
                               onClick={() => addToCart(p)}
-                              className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm border transition ${available ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
+                              className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm border transition ${
+                                sellable && available && (!hasQty || (remaining ?? 1) > 0)
+                                  ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
                                   : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
-                                }`}
+                              }`}
                               aria-label="Add to cart"
-                              title="Add to cart"
+                              title={
+                                !sellable || !available
+                                  ? 'Unavailable'
+                                  : hasQty && remaining !== null
+                                    ? (remaining > 0 ? `Remaining: ${remaining}` : 'Stock limit reached')
+                                    : 'Add to cart'
+                              }
                             >
                               Add to cart
                             </button>
@@ -935,35 +1143,111 @@ export default function Catalog() {
               </div>
 
               {/* Pagination */}
-              <div className="mt-8 flex items-center justify-between">
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm text-zinc-600">
                   Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
-                    onClick={() => goTo(currentPage - 1)}
-                    disabled={currentPage <= 1}
-                    aria-label="Previous page"
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                  {/* Jump to page */}
+                  <form
+                    className="flex items-center gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const n = Number(jumpVal);
+                      if (Number.isFinite(n)) goTo(n);
+                    }}
                   >
-                    Prev
-                  </button>
+                    <label className="text-sm text-zinc-700">Go to</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={totalPages}
+                      value={jumpVal}
+                      onChange={(e) => setJumpVal(e.target.value)}
+                      className="w-20 border rounded-xl px-3 py-1.5 bg-white"
+                      aria-label="Jump to page"
+                    />
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                      disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
+                    >
+                      Go
+                    </button>
+                  </form>
 
-                  <span className="text-sm text-zinc-700" role="status" aria-live="polite">
-                    Page {currentPage} / {totalPages}
-                  </span>
+                  {/* Pagers */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                      onClick={() => goTo(1)}
+                      disabled={currentPage <= 1}
+                      aria-label="First page"
+                      title="First page"
+                    >
+                      First
+                    </button>
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                      onClick={() => goTo(currentPage - 1)}
+                      disabled={currentPage <= 1}
+                      aria-label="Previous page"
+                      title="Previous page"
+                    >
+                      Prev
+                    </button>
 
-                  <button
-                    type="button"
-                    className="px-3 py-1.5 border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
-                    onClick={() => goTo(currentPage + 1)}
-                    disabled={currentPage >= totalPages}
-                    aria-label="Next page"
-                  >
-                    Next
-                  </button>
+                    {/* Numbered window with ellipses */}
+                    <div className="flex items-center gap-1">
+                      {numberedPages.map((n, idx) => {
+                        const prev = numberedPages[idx - 1];
+                        const showEllipsis = prev != null && n - prev > 1;
+                        return (
+                          <span key={`p-${n}`} className="inline-flex items-center">
+                            {showEllipsis && <span className="px-1 text-sm text-zinc-500">…</span>}
+                            <button
+                              type="button"
+                              onClick={() => goTo(n)}
+                              className={`px-3 py-1.5 border rounded-xl ${
+                                n === currentPage
+                                  ? 'bg-zinc-900 text-white border-zinc-900'
+                                  : 'bg-white hover:bg-zinc-50'
+                              }`}
+                              aria-current={n === currentPage ? 'page' : undefined}
+                              aria-label={`Page ${n}`}
+                              title={`Page ${n}`}
+                            >
+                              {n}
+                            </button>
+                          </span>
+                        );
+                      })}
+                    </div>
+
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                      onClick={() => goTo(currentPage + 1)}
+                      disabled={currentPage >= totalPages}
+                      aria-label="Next page"
+                      title="Next page"
+                    >
+                      Next
+                    </button>
+                    <button
+                      type="button"
+                      className="px-3 py-1.5 border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                      onClick={() => goTo(totalPages)}
+                      disabled={currentPage >= totalPages}
+                      aria-label="Last page"
+                      title="Last page"
+                    >
+                      Last
+                    </button>
+                  </div>
                 </div>
               </div>
             </>

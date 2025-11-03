@@ -65,6 +65,9 @@ router.get('/me', requireAuth, async (req, res) => {
     role: user.role,
     firstName: user.firstName,
     lastName: user.lastName,
+      status: user.status,
+      emailVerifiedAt: user.emailVerifiedAt,
+      phoneVerifiedAt: user.phoneVerifiedAt,
   });
 });
 

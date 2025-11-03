@@ -164,7 +164,7 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Record<strin
         if (Array.isArray(arr)) { list = arr; break; }
       } catch { /* next */ }
     }
-        if (!list) {
+    if (!list) {
       // We couldn’t fetch any offers for this product — leave it unknown (no cap).
       continue;
     }
@@ -190,7 +190,6 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Record<strin
       totalAvailable,
       cheapestSupplierUnit: cheapest,
     };
-
   }
 
   return out;
@@ -215,9 +214,32 @@ export default function Cart() {
     queryFn: () => fetchAvailabilityForCart(cart),
   });
 
+  // Hide lines with known 0 availability from the cart (auto-prune storage)
+  useEffect(() => {
+    if (!availabilityQ.data || cart.length === 0) return;
+    const next = cart.filter((it) => {
+      const k = keyFor(it.productId, it.variantId ?? null);
+      const avail = availabilityQ.data?.[k]?.totalAvailable;
+      // remove only when known to be exactly 0
+      return !(typeof avail === 'number' && avail === 0);
+    });
+    if (next.length !== cart.length) setCart(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availabilityQ.data]);
+
+  // Visible cart (after pruning)
+  const visibleCart = useMemo(() => {
+    if (!availabilityQ.data) return cart; // until we know, show everything we have
+    return cart.filter((it) => {
+      const k = keyFor(it.productId, it.variantId ?? null);
+      const avail = availabilityQ.data?.[k]?.totalAvailable;
+      return !(typeof avail === 'number' && avail === 0);
+    });
+  }, [cart, availabilityQ.data]);
+
   const total = useMemo(
-    () => cart.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0),
-    [cart]
+    () => visibleCart.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0),
+    [visibleCart]
   );
 
   const clampToMax = (productId: string, variantId: string | null | undefined, wantQty: number) => {
@@ -264,8 +286,23 @@ export default function Cart() {
     setCart((prev) => prev.filter((it) => !sameLine(it, productId, variantId)));
   };
 
+  // Block checkout if any known rule fails
+  const cartBlockingReason = useMemo(() => {
+    if (!availabilityQ.data) return null; // unknown yet – allow, or return a message if you prefer strict
+    // any line whose qty > known available?
+    const over = visibleCart.find((it) => {
+      const k = keyFor(it.productId, it.variantId ?? null);
+      const avail = availabilityQ.data?.[k]?.totalAvailable;
+      return typeof avail === 'number' && avail >= 0 && it.qty > avail;
+    });
+    if (over) return 'Reduce quantities: some items exceed available stock.';
+    return null;
+  }, [visibleCart, availabilityQ.data]);
+
+  const canCheckout = cartBlockingReason == null;
+
   // Empty state
-  if (cart.length === 0) {
+  if (visibleCart.length === 0) {
     return (
       <div className="min-h-[88vh] bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden grid place-items-center px-4">
         <div className="pointer-events-none absolute -top-24 -left-24 size-80 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
@@ -310,7 +347,7 @@ export default function Cart() {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-6">
           {/* LEFT: Items */}
           <section className="space-y-4">
-            {cart.map((it) => {
+            {visibleCart.map((it) => {
               const currentQty = Math.max(1, Number(it.qty) || 1);
               const unit = Number.isFinite(Number(it.unitPrice))
                 ? Number(it.unitPrice)
@@ -366,7 +403,7 @@ export default function Cart() {
                               ? 'Checking availability…'
                               : capKnown
                                 ? cap! > 0
-                                  ? `Max you can buy now: ${cap}`
+                                  ? (it.qty > (cap ?? 0) ? `Only ${cap} available. Please reduce.` : `Max you can buy now: ${cap}`)
                                   : 'Out of stock'
                                 : ''}
                           </p>
@@ -443,7 +480,7 @@ export default function Cart() {
               <div className="mt-3 space-y-2 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-ink-soft">Items</span>
-                  <span className="font-medium">{cart.length}</span>
+                  <span className="font-medium">{visibleCart.length}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-ink-soft">Subtotal</span>
@@ -460,11 +497,20 @@ export default function Cart() {
                 <span className="text-2xl font-extrabold tracking-tight">{ngn.format(total)}</span>
               </div>
 
+              {!canCheckout && (
+                <p className="mt-2 text-[12px] text-rose-600">
+                  {cartBlockingReason}
+                </p>
+              )}
+
               <Link
-                to="/checkout"
-                className="mt-5 w-full inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white
-                           px-4 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.99]
-                           focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
+                to={canCheckout ? "/checkout" : "#"}
+                onClick={(e) => { if (!canCheckout) e.preventDefault(); }}
+                className={`mt-5 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 font-semibold shadow-sm transition
+                  ${canCheckout
+                    ? 'bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200'
+                    : 'bg-zinc-200 text-zinc-500 cursor-not-allowed'}`}
+                aria-disabled={!canCheckout}
               >
                 Proceed to checkout
               </Link>

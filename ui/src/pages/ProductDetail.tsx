@@ -1,3 +1,4 @@
+// src/pages/ProductDetail.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -18,7 +19,7 @@ type Variant = {
   id: string;
   sku?: string | null;
   price?: number | null; // nullable => falls back to product price
-  inStock?: boolean;
+  inStock?: boolean | null;
   imagesJson?: string[];
   options?: VariantOption[];
 };
@@ -27,17 +28,13 @@ type Product = {
   id: string;
   title: string;
   description: string;
-  inStock: boolean;
-  price: number; // base price
+  inStock: boolean | null;
+  price: number | null; // base price
   imagesJson?: string[];
   brand?: { id: string; name: string } | null;
   brandName?: string | null;
-
-  // Rich attributes (for spec table)
   attributeValues?: Array<{ id: string; attribute: Attr; value: AttrVal }>;
   attributeTexts?: Array<{ id: string; attribute: Attr; value: string }>;
-
-  // Variants
   variants?: Variant[];
 };
 
@@ -48,6 +45,12 @@ const ngn = new Intl.NumberFormat('en-NG', {
 });
 
 /* ---------------- Helpers ---------------- */
+const safeNum = (n: any, fallback = 0) => {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : fallback;
+};
+const gtZero = (n: any) => Number.isFinite(Number(n)) && Number(n) > 0;
+
 function getBrandName(p?: Product | null) {
   if (!p) return '';
   return (p.brand?.name || p.brandName || '').trim();
@@ -55,7 +58,7 @@ function getBrandName(p?: Product | null) {
 
 function priceOf(p: Product, v?: Variant | null) {
   const candidate = v?.price ?? p.price;
-  return Number.isFinite(Number(candidate)) ? Number(candidate) : 0;
+  return gtZero(candidate) ? Number(candidate) : 0;
 }
 
 function imagesOf(p: Product, v?: Variant | null) {
@@ -65,32 +68,44 @@ function imagesOf(p: Product, v?: Variant | null) {
 
 function isVariantAvailable(v?: Variant | null) {
   if (!v) return false;
-  return v.inStock !== false; // default truthy
+  return v.inStock !== false && gtZero(v.price ?? 0);
 }
 
 function hasAnyVariant(p: Product) {
   return Array.isArray(p.variants) && p.variants.length > 0;
 }
 
-/**
- * Build axes data structure from variants:
- * - axes: [{ attribute, values: [{value, present, available}] }]
- * - order axes by attribute name asc for stability
- */
+function variantSellable(v?: Variant | null, fallbackBasePrice?: number | null): boolean {
+  if (!v) return false;
+  const unit = gtZero(v.price) ? Number(v.price) : gtZero(fallbackBasePrice) ? Number(fallbackBasePrice) : 0;
+  return v.inStock !== false && unit > 0;
+}
+
+function productBaseSellable(p: Product): boolean {
+  return p.inStock !== false && gtZero(p.price);
+}
+
+function productSellable(p: Product): boolean {
+  if (!hasAnyVariant(p)) return productBaseSellable(p);
+  const basePrice = gtZero(p.price) ? Number(p.price) : null;
+  return (p.variants ?? []).some((v) => variantSellable(v, basePrice));
+}
+
+function firstSellableVariant(p: Product): Variant | null {
+  if (!hasAnyVariant(p)) return null;
+  const basePrice = gtZero(p.price) ? Number(p.price) : null;
+  return (p.variants ?? []).find((v) => variantSellable(v, basePrice)) ?? null;
+}
+
 function buildAxes(variants: Variant[]) {
   type AxisValue = { value: AttrVal; present: boolean; available: boolean };
   type Axis = { attribute: Attr; values: AxisValue[] };
-
   const map = new Map<string, Axis>();
 
   for (const v of variants) {
     for (const opt of v.options || []) {
       const aId = opt.attribute.id;
-      const axis = map.get(aId) || {
-        attribute: opt.attribute,
-        values: [],
-      };
-      // ensure value in axis.values (present=true, we'll compute available later)
+      const axis = map.get(aId) || { attribute: opt.attribute, values: [] };
       if (!axis.values.find((x) => x.value.id === opt.value.id)) {
         axis.values.push({ value: opt.value, present: true, available: true });
       }
@@ -98,18 +113,14 @@ function buildAxes(variants: Variant[]) {
     }
   }
 
-  // deduplicate & sort axis values by name
   const axes = Array.from(map.values()).map((ax) => ({
     ...ax,
     values: ax.values.sort((a, b) => a.value.name.localeCompare(b.value.name, undefined, { sensitivity: 'base' })),
   }));
-
-  // sort axes by attribute name
   axes.sort((a, b) => a.attribute.name.localeCompare(b.attribute.name, undefined, { sensitivity: 'base' }));
   return axes;
 }
 
-/** Given a selection { [attributeId]: valueId }, find the matching variant */
 function findVariant(variants: Variant[], selection: Record<string, string>) {
   return variants.find((v) => {
     const opts = v.options || [];
@@ -121,12 +132,13 @@ function findVariant(variants: Variant[], selection: Record<string, string>) {
   });
 }
 
-/** Recompute availability for each axis value, constrained by current selections */
 function computeAvailability(
+  product: Product,
   variants: Variant[],
   axes: ReturnType<typeof buildAxes>,
   selection: Record<string, string>
 ) {
+  const basePrice = gtZero(product.price) ? Number(product.price) : null;
   return axes.map((ax) => {
     const otherSelections = { ...selection };
     delete otherSelections[ax.attribute.id];
@@ -134,6 +146,9 @@ function computeAvailability(
     const nextValues = ax.values.map((val) => {
       const ok = variants.some((v) => {
         if (v.inStock === false) return false;
+        const unit = gtZero(v.price) ? Number(v.price) : gtZero(basePrice) ? Number(basePrice) : 0;
+        if (unit <= 0) return false;
+
         const opts = v.options || [];
         for (const [attrId, valId] of Object.entries(otherSelections)) {
           if (!opts.find((o) => o.attribute.id === attrId && o.value.id === valId)) return false;
@@ -148,19 +163,141 @@ function computeAvailability(
   });
 }
 
-function safeNum(n: any, fallback = 0) {
-  const v = Number(n);
-  return Number.isFinite(v) ? v : fallback;
-}
-
 function minMaxVariantPrice(p: Product) {
   if (!Array.isArray(p.variants) || p.variants.length === 0) {
-    return { min: p.price, max: p.price };
+    return { min: safeNum(p.price, 0), max: safeNum(p.price, 0) };
   }
-  const prices = p.variants.map(v => safeNum(v.price, p.price));
+  const base = gtZero(p.price) ? Number(p.price) : null;
+  const prices = p.variants
+    .map((v) => (gtZero(v.price) ? Number(v.price) : gtZero(base) ? base! : NaN))
+    .filter((n) => Number.isFinite(n) && n > 0) as number[];
+  if (prices.length === 0) {
+    const only = gtZero(p.price) ? Number(p.price) : 0;
+    return { min: only, max: only };
+  }
   return { min: Math.min(...prices), max: Math.max(...prices) };
 }
 
+/* ===== Availability helpers ===== */
+type SingleAvailability = {
+  totalAvailable: number;
+  cheapestSupplierUnit?: number | null;
+};
+
+const numLike = (...cands: any[]) => {
+  for (const c of cands) {
+    const v = Number(c);
+    if (Number.isFinite(v)) return v;
+  }
+  return undefined;
+};
+
+async function fetchSingleAvailability(productId: string, variantId: string | null): Promise<SingleAvailability | null> {
+  const itemsParam = `${productId}:${variantId ?? ''}`;
+
+  const tryPerProductSum = async () => {
+    const perProductCandidates = [
+      `/api/supplier-offers?productId=${encodeURIComponent(productId)}`,
+      `/api/admin/supplier-offers?productId=${encodeURIComponent(productId)}`,
+      `/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`,
+    ];
+    for (const url of perProductCandidates) {
+      try {
+        const { data } = await api.get(url);
+        const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+        if (!Array.isArray(arr)) continue;
+
+        const getVid = (o: any) => o?.variantId ?? o?.productVariantId ?? o?.variant_id ?? o?.variant?.id ?? null;
+
+        const filtered = arr.filter((o: any) => {
+          if (o?.isActive === false) return false;
+          const offerVid = getVid(o);
+          if (variantId == null) return offerVid == null;
+          return offerVid === variantId || offerVid == null;
+        });
+
+        let total = 0;
+        let cheapest: number | null = null;
+        for (const o of filtered) {
+          const qty = Math.max(0, Number(o?.availableQty ?? o?.available ?? o?.qty ?? o?.stock ?? 0) || 0);
+          total += qty;
+          const c = Number(o?.price ?? o?.unitPrice ?? o?.unit_price);
+          if (Number.isFinite(c)) cheapest = cheapest == null ? c : Math.min(cheapest, c);
+        }
+        return { totalAvailable: total, cheapestSupplierUnit: cheapest };
+      } catch {}
+    }
+    return null;
+  };
+
+  const bulkCandidates = [
+    `/api/catalog/availability?items=${encodeURIComponent(itemsParam)}`,
+    `/api/products/availability?items=${encodeURIComponent(itemsParam)}`,
+    `/api/supplier-offers/availability?items=${encodeURIComponent(itemsParam)}`,
+  ];
+
+  for (const url of bulkCandidates) {
+    try {
+      const { data } = await api.get(url);
+      const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+      if (Array.isArray(arr) && arr.length > 0) {
+        const row = arr[0];
+        const total = Number(row?.totalAvailable ?? row?.available ?? row?.availableQty ?? row?.qty ?? row?.total ?? row?.sum ?? 0) || 0;
+        let cheapest = Number(row?.cheapestSupplierUnit ?? row?.cheapest ?? row?.minPrice ?? row?.min);
+
+        if (variantId && total === 0) {
+          const merged = await tryPerProductSum();
+          if (merged) return merged;
+        }
+
+        return {
+          totalAvailable: Math.max(0, total),
+          cheapestSupplierUnit: Number.isFinite(cheapest) ? cheapest : null,
+        };
+      }
+    } catch {}
+  }
+
+  return await tryPerProductSum();
+}
+
+/** product-wide total availability = sum of ALL active offers’ availableQty */
+async function fetchProductTotalAvailability(productId: string): Promise<number | null> {
+  const candidates = [
+    `/api/supplier-offers?productId=${encodeURIComponent(productId)}`,
+    `/api/admin/supplier-offers?productId=${encodeURIComponent(productId)}`,
+    `/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`,
+  ];
+  for (const url of candidates) {
+    try {
+      const { data } = await api.get(url);
+      const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+      if (Array.isArray(arr)) {
+        return arr
+          .filter((o: any) => o?.isActive !== false)
+          .reduce((sum, o) => sum + Math.max(0, Number(o?.availableQty ?? o?.available ?? o?.qty ?? o?.stock ?? 0) || 0), 0);
+      }
+    } catch {}
+  }
+  return null;
+}
+
+/* ---- Cart helpers (localStorage) ---- */
+function readCart(): Array<{ productId: string; variantId?: string | null; qty: number }> {
+  try {
+    const raw = localStorage.getItem('cart');
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+function qtyInCart(productId: string, variantId: string | null): number {
+  const cart = readCart();
+  return cart
+    .filter((x) => x.productId === productId && (variantId ? x.variantId === variantId : !x.variantId))
+    .reduce((s, x) => s + Math.max(0, Number(x.qty) || 0), 0);
+}
 
 /* ======================= */
 /* Product Detail Component */
@@ -176,86 +313,68 @@ export default function ProductDetail() {
     enabled: !!id,
     staleTime: 30_000,
     queryFn: async () => {
-      // Ask server for brand, variants, attributes, (offers are optional for this page)
       const res = await api.get(`/api/products/${id}?include=brand,variants,attributes`);
       const payload = res.data;
-      const raw = payload?.data ?? payload; // tolerate either {data} or raw
+      const raw = payload?.data ?? payload;
 
-      // If the server enforced LIVE-only and hid the product, raw may be empty
       if (!raw || !raw.id) {
-        // make react-query go to "error" branch so the page shows the nice 404 UI
         const e = new Error('Product not found');
         (e as any).status = 404;
         throw e;
       }
 
-      // Normalize variants (support either `ProductVariant` or `variants`)
       const rawVariants: any[] = Array.isArray(raw.ProductVariant)
         ? raw.ProductVariant
         : Array.isArray(raw.variants)
-          ? raw.variants
-          : [];
+        ? raw.variants
+        : [];
 
       const variants: Variant[] = rawVariants.map((v: any) => ({
         id: String(v.id),
         sku: v.sku ?? null,
         price: v.price != null ? Number(v.price) : null,
-        inStock: v.inStock !== false,
+        inStock: v.inStock ?? null,
         imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-        // If your API ever returns variant options, map them here:
         options: Array.isArray(v.options)
           ? v.options.map((o: any) => ({
-            attribute: {
-              id: String(o?.attribute?.id ?? ''),
-              name: String(o?.attribute?.name ?? ''),
-              type: o?.attribute?.type ?? null,
-            },
-            value: {
-              id: String(o?.value?.id ?? ''),
-              name: String(o?.value?.name ?? ''),
-              code: o?.value?.code ?? null,
-            },
-          }))
+              attribute: {
+                id: String(o?.attribute?.id ?? ''),
+                name: String(o?.attribute?.name ?? ''),
+                type: o?.attribute?.type ?? null,
+              },
+              value: {
+                id: String(o?.value?.id ?? ''),
+                name: String(o?.value?.name ?? ''),
+                code: o?.value?.code ?? null,
+              },
+            }))
           : undefined,
       }));
 
-      // Map product-level attributes to UI-friendly tables
       const attributeValues =
         Array.isArray(raw.attributeOptions)
           ? raw.attributeOptions.map((x: any, idx: number) => ({
-            id: String(x?.id ?? `val-${idx}`),
-            attribute: {
-              id: String(x?.attribute?.id ?? ''),
-              name: String(x?.attribute?.name ?? ''),
-              type: x?.attribute?.type ?? null,
-            },
-            value: {
-              id: String(x?.value?.id ?? ''),
-              name: String(x?.value?.name ?? ''),
-              code: x?.value?.code ?? null,
-            },
-          }))
+              id: String(x?.id ?? `val-${idx}`),
+              attribute: { id: String(x?.attribute?.id ?? ''), name: String(x?.attribute?.name ?? ''), type: x?.attribute?.type ?? null },
+              value: { id: String(x?.value?.id ?? ''), name: String(x?.value?.name ?? ''), code: x?.value?.code ?? null },
+            }))
           : undefined;
 
       const attributeTexts =
         Array.isArray(raw.ProductAttributeText)
           ? raw.ProductAttributeText.map((x: any, idx: number) => ({
-            id: String(x?.id ?? `txt-${idx}`),
-            attribute: {
-              id: String(x?.attribute?.id ?? ''),
-              name: String(x?.attribute?.name ?? ''),
-              type: x?.attribute?.type ?? null,
-            },
-            value: String(x?.value ?? ''),
-          }))
+              id: String(x?.id ?? `txt-${idx}`),
+              attribute: { id: String(x?.attribute?.id ?? ''), name: String(x?.attribute?.name ?? ''), type: x?.attribute?.type ?? null },
+              value: String(x?.value ?? ''),
+            }))
           : undefined;
 
       const product: Product = {
         id: String(raw.id),
         title: String(raw.title ?? ''),
         description: String(raw.description ?? ''),
-        inStock: raw.inStock !== false,
-        price: Number(raw.price ?? 0),
+        inStock: raw.inStock ?? null,
+        price: raw.price != null ? Number(raw.price) : null,
         imagesJson: Array.isArray(raw.imagesJson) ? raw.imagesJson : [],
         brand: raw.brand ? { id: String(raw.brand.id), name: String(raw.brand.name) } : null,
         brandName: raw.brandName ?? raw.brand?.name ?? null,
@@ -268,7 +387,18 @@ export default function ProductDetail() {
     },
   });
 
-  // My favorites
+  const { data: totalAvail, isLoading: totalAvailLoading } = useQuery({
+    queryKey: ['product', 'availability-total', id],
+    enabled: !!id,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      const pid = String(id);
+      const sum = await fetchProductTotalAvailability(pid);
+      return typeof sum === 'number' ? Math.max(0, sum) : null;
+    },
+  });
+
   const favQuery = useQuery({
     queryKey: ['favorites', 'mine'],
     enabled: !!token,
@@ -315,21 +445,17 @@ export default function ProductDetail() {
 
   /* ---------- Variant selection state ---------- */
   const axes = useMemo(() => buildAxes(data?.variants || []), [data?.variants]);
-
-  // selection map: attributeId -> valueId
   const [selection, setSelection] = useState<Record<string, string>>({});
 
-  // seed selection with first available values (only once when data/axes arrive)
   useEffect(() => {
     if (!data || axes.length === 0) return;
-
     let nextSel: Record<string, string> = {};
-    let availAxes = computeAvailability(data.variants || [], axes, nextSel);
+    let availAxes = computeAvailability(data, data.variants || [], axes, nextSel);
     for (const ax of availAxes) {
       const firstAvail = ax.values.find((v) => v.available) || ax.values[0];
       if (firstAvail) {
         nextSel = { ...nextSel, [ax.attribute.id]: firstAvail.value.id };
-        availAxes = computeAvailability(data.variants || [], axes, nextSel);
+        availAxes = computeAvailability(data, data.variants || [], axes, nextSel);
       }
     }
     setSelection(nextSel);
@@ -337,91 +463,151 @@ export default function ProductDetail() {
 
   const availability = useMemo(() => {
     if (!data || axes.length === 0) return axes;
-    return computeAvailability(data.variants || [], axes, selection);
+    return computeAvailability(data, data.variants || [], axes, selection);
   }, [data, axes, selection]);
 
-  const matchedVariant = useMemo(() => {
-    if (!data || axes.length === 0) return undefined;
-    return findVariant(data.variants || [], selection);
-  }, [data, selection, axes.length]);
+  const autoVariant = useMemo(() => {
+    if (!data) return null;
+    if (axes.length > 0) return null;
+    return firstSellableVariant(data);
+  }, [data, axes.length]);
 
-  // 1) Replace your `available` with these two helpers:
-  const anyVariantInStock = useMemo(
-    () => (data?.variants ?? []).some(v => v.inStock !== false),
-    [data?.variants]
-  );
+  const matchedVariant = useMemo(() => {
+    if (!data) return undefined;
+    if (axes.length === 0) return autoVariant ?? undefined;
+    return findVariant(data.variants || [], selection);
+  }, [data, selection, axes.length, autoVariant]);
+
+  /* ---------- Single-pair availability ---------- */
+  const variantIdForAvailability = useMemo(() => {
+    if (!data) return null;
+    return matchedVariant?.id ?? (hasAnyVariant(data) ? null : null);
+  }, [data, matchedVariant]);
+
+  const { data: singleAvail, isLoading: availLoading } = useQuery({
+    queryKey: ['product', 'availability', id, variantIdForAvailability],
+    enabled: !!data,
+    staleTime: 15000,
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      if (data && axes.length > 0 && !matchedVariant) return null;
+      const pid = String(id);
+      const vid = matchedVariant?.id ?? null;
+      return await fetchSingleAvailability(pid, vid);
+    },
+  });
+
+  const availabilityKnownZero = !!singleAvail && singleAvail.totalAvailable === 0;
+
+  /* ---------- Stock remaining vs cart ---------- */
+  const maxAvailable = useMemo<number | null>(() => {
+    if (matchedVariant && singleAvail) return Math.max(0, Number(singleAvail.totalAvailable || 0));
+    if (!matchedVariant && typeof totalAvail === 'number') return Math.max(0, Number(totalAvail));
+    return null;
+  }, [matchedVariant, singleAvail, totalAvail]);
+
+  const inCartQty = useMemo(() => {
+    if (!data) return 0;
+    const vid = matchedVariant?.id ?? null;
+    return qtyInCart(data.id, vid);
+  }, [data, matchedVariant]);
+
+  const remainingQty = useMemo<number | null>(() => {
+    if (maxAvailable == null) return null;
+    return Math.max(0, maxAvailable - inCartQty);
+  }, [maxAvailable, inCartQty]);
+
+  const canSellBase = useMemo(() => {
+    if (!data) return false;
+    if (axes.length > 0) return productSellable(data);
+    return productSellable(data);
+  }, [data, axes.length]);
 
   const canSell = useMemo(() => {
+    if (!canSellBase || availabilityKnownZero) return false;
+    if (remainingQty === null) return true; // unknown availability => allow (we still hard-cap in addToCart)
+    return remainingQty > 0;
+  }, [canSellBase, availabilityKnownZero, remainingQty]);
+
+  const availablePill = useMemo(() => {
     if (!data) return false;
-    // If there are variants, allow the button as long as at least one is in stock.
-    // If no variants, rely on the product-level flag.
-    return (Array.isArray(data.variants) && data.variants.length > 0)
-      ? anyVariantInStock
-      : data.inStock !== false;
-  }, [data, anyVariantInStock]);
+    if (availabilityKnownZero) return false;
+    if (matchedVariant) return isVariantAvailable(matchedVariant);
+    return productSellable(data);
+  }, [data, matchedVariant, availabilityKnownZero]);
 
-  // Keep this if you still want to show the green/red "In stock" pill smartly:
-  const available = useMemo(() => {
-    if (!data) return false;
-    if (axes.length === 0) return data.inStock !== false;
-    return matchedVariant ? isVariantAvailable(matchedVariant) : anyVariantInStock;
-  }, [data, matchedVariant, axes.length, anyVariantInStock]);
-
-
-  const price = useMemo(() => {
-    if (!data) return 0;
-    return priceOf(data, matchedVariant);
-  }, [data, matchedVariant]);
-
-  const images = useMemo(() => {
-    if (!data) return [];
-    return imagesOf(data, matchedVariant);
-  }, [data, matchedVariant]);
-
-
+  const effectivePrice = useMemo(() => (data ? priceOf(data, matchedVariant ?? undefined) : 0), [data, matchedVariant]);
+  const effectiveImages = useMemo(() => (data ? imagesOf(data, matchedVariant ?? undefined) : []), [data, matchedVariant]);
   const { min, max } = useMemo(() => (data ? minMaxVariantPrice(data) : { min: 0, max: 0 }), [data]);
-
   const variantSku = matchedVariant?.sku ?? null;
   const isVariantPriceDifferent = useMemo(() => {
     if (!data) return false;
-    const pv = safeNum(data.price);
-    const cv = safeNum(price);
+    const pv = safeNum(data.price, 0);
+    const cv = safeNum(effectivePrice, 0);
     return pv !== 0 && cv !== pv;
-  }, [data, price]);
+  }, [data, effectivePrice]);
 
-  /* ---------- Add to cart ---------- */
-  // 3) Keep the guard *inside* addToCart so we still enforce a complete selection:
-const addToCart = () => {
-  if (!data) return;
+  /* ---------- Add to cart (hard-cap with fresh cart read) ---------- */
+  const [adding, setAdding] = useState(false);
 
-  if (axes.length > 0 && !matchedVariant) {
-    toast.push({ title: 'Select options', message: 'Please choose all required options.', duration: 3500 });
-    return;
-  }
-  if (axes.length > 0 && matchedVariant && matchedVariant.inStock === false) {
-    toast.push({ title: 'Unavailable', message: 'That combination is not in stock.', duration: 3500 });
-    return;
-  }
-  if (axes.length === 0 && data.inStock === false) {
-    toast.push({ title: 'Unavailable', message: 'This product is out of stock.', duration: 3500 });
-    return;
-  }
-  
-    // Build a rich selectedOptions[] for checkout display
+  const addToCart = () => {
+    if (adding) return; // ignore rapid bursts
+    if (!data) return;
+
+    // existing validations...
+    if (axes.length > 0) {
+      if (!matchedVariant) {
+        toast.push({ title: 'Select options', message: 'Please choose all required options.', duration: 3500 });
+        return;
+      }
+      if (!isVariantAvailable(matchedVariant)) {
+        toast.push({ title: 'Unavailable', message: 'That combination is not in stock.', duration: 3500 });
+        return;
+      }
+    } else {
+      if (hasAnyVariant(data)) {
+        if (!matchedVariant || !isVariantAvailable(matchedVariant)) {
+          toast.push({ title: 'Unavailable', message: 'This item is not currently available.', duration: 3500 });
+          return;
+        }
+      } else {
+        if (data.inStock === false || !gtZero(data.price)) {
+          toast.push({ title: 'Unavailable', message: 'This product is out of stock.', duration: 3500 });
+          return;
+        }
+      }
+    }
+    if (availabilityKnownZero) {
+      toast.push({ title: 'Out of stock', message: 'This item is currently unavailable.', duration: 3500 });
+      return;
+    }
+
+    const unit = effectivePrice;
+    if (!gtZero(unit)) {
+      toast.push({ title: 'Unavailable', message: 'This item has no valid price.', duration: 3500 });
+      return;
+    }
+
+    // ----- Fresh read from localStorage to avoid stale memo during rapid clicks
+    const vid = matchedVariant?.id ?? null;
+    const currentInCart = qtyInCart(data.id, vid);
+    const cap = maxAvailable == null ? 0 : Math.max(0, maxAvailable - currentInCart);
+
+    if (cap <= 0) {
+      toast.push({ title: 'Stock limit', message: 'No more units available to add.', duration: 3500 });
+      return;
+    }
+
     const selectedOptions =
       axes.length > 0
-        ? axes.map((ax) => {
-          const valId = selection[ax.attribute.id];
-          const v = ax.values.find((x) => x.value.id === valId)?.value;
-          return {
-            attributeId: ax.attribute.id,
-            attribute: ax.attribute.name,
-            valueId: v?.id,
-            value: v?.name || '',
-          };
-        })
+        ? availability.map((ax) => {
+            const valId = selection[ax.attribute.id];
+            const v = ax.values.find((x) => x.value.id === valId)?.value;
+            return { attributeId: ax.attribute.id, attribute: ax.attribute.name, valueId: v?.id, value: v?.name || '' };
+          })
         : [];
 
+    setAdding(true);
     try {
       const raw = localStorage.getItem('cart');
       const cart: Array<{
@@ -431,66 +617,67 @@ const addToCart = () => {
         qty: number;
         unitPrice: number;
         totalPrice: number;
-        price: number; // legacy mirror
+        price: number;
         selectedOptions?: Array<{ attributeId: string; attribute: string; valueId?: string; value: string }>;
         image?: string;
       }> = raw ? JSON.parse(raw) : [];
 
-      const variantId = matchedVariant?.id ?? null;
-      const unit = price; // resolved unit price (variant or product)
-      const img = images?.[0];
-
-      const keyMatch = (x: any) =>
-        x.productId === data.id && (variantId ? x.variantId === variantId : !x.variantId);
-
+      const image = effectiveImages?.[0];
+      const keyMatch = (x: any) => x.productId === data.id && (vid ? x.variantId === vid : !x.variantId);
       const idx = cart.findIndex(keyMatch);
 
       if (idx >= 0) {
-        const newQty = Math.max(1, Number(cart[idx].qty) || 1) + 1;
+        const current = Math.max(1, Number(cart[idx].qty) || 1);
+        const newQty = Math.min(current + 1, current + cap);
+        if (newQty === current) {
+          toast.push({ title: 'Stock limit', message: `Only ${cap} more available.`, duration: 3500 });
+          setAdding(false);
+          return;
+        }
         cart[idx] = {
           ...cart[idx],
           qty: newQty,
           unitPrice: unit,
           totalPrice: unit * newQty,
-          price: unit, // legacy
+          price: unit,
           title: data.title,
           selectedOptions,
-          image: img || cart[idx].image,
+          image: image || cart[idx].image,
         };
       } else {
+        const firstQty = Math.min(1, cap);
+        if (firstQty <= 0) {
+          toast.push({ title: 'Stock limit', message: 'No more units available to add.', duration: 3500 });
+          setAdding(false);
+          return;
+        }
         cart.push({
           productId: data.id,
-          variantId,
+          variantId: vid,
           title: data.title,
-          qty: 1,
+          qty: firstQty,
           unitPrice: unit,
-          totalPrice: unit,
-          price: unit, // legacy
+          totalPrice: unit * firstQty,
+          price: unit,
           selectedOptions,
-          image: img,
+          image,
         });
       }
 
       localStorage.setItem('cart', JSON.stringify(cart));
 
       const summary =
-        selectedOptions.length > 0
-          ? ` (${selectedOptions.map((o) => `${o.attribute}: ${o.value}`).join(', ')})`
-          : '';
-
-      toast.push({
-        title: 'Added to cart',
-        message: `${data.title}${summary} added to your cart.`,
-        duration: 4500,
-      });
+        selectedOptions.length > 0 ? ` (${selectedOptions.map((o) => `${o.attribute}: ${o.value}`).join(', ')})` : '';
+      toast.push({ title: 'Added to cart', message: `${data.title}${summary} added to your cart.`, duration: 4500 });
     } catch {
       toast.push({ title: 'Cart', message: 'Could not add to cart.', duration: 3500 });
+    } finally {
+      setAdding(false);
     }
   };
 
   /* ---------- UI ---------- */
 
-  // Loading state
   if (isLoading) {
     return (
       <div className="relative bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft overflow-hidden rounded-2xl p-4 md:p-6">
@@ -507,7 +694,6 @@ const addToCart = () => {
     );
   }
 
-  // Error state
   if (error || !data) {
     return (
       <div className="min-h-[40vh] grid place-items-center bg-hero-radial bg-bg-soft rounded-2xl">
@@ -529,6 +715,24 @@ const addToCart = () => {
   const fav = !!favQuery.data?.has(p.id);
   const brand = getBrandName(p);
 
+  const availabilityLine = (() => {
+    if (availLoading || totalAvailLoading) return 'Checking availability…';
+    if (matchedVariant && singleAvail) {
+      const total = singleAvail.totalAvailable || 0;
+      if (total <= 0) return 'Out of stock';
+      const current = qtyInCart(p.id, matchedVariant.id);
+      const rem = Math.max(0, total - current);
+      return `Max you can buy now: ${total}${current ? ` • In cart: ${current} • Remaining: ${rem}` : ''}`;
+    }
+    if (!matchedVariant && typeof totalAvail === 'number') {
+      const current = qtyInCart(p.id, null);
+      const total = totalAvail;
+      const rem = Math.max(0, total - current);
+      return `Total available: ${total}${current ? ` • In cart: ${current} • Remaining: ${rem}` : ''}`;
+    }
+    return '';
+  })();
+
   return (
     <div className="relative bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft rounded-2xl p-4 md:p-6 overflow-hidden">
       {/* decorative blobs */}
@@ -538,7 +742,7 @@ const addToCart = () => {
       <div className="relative grid md:grid-cols-2 gap-6">
         {/* LEFT: image */}
         <div className="w-full">
-          <ImageCarousel images={images} title={p.title} />
+          <ImageCarousel images={effectiveImages} title={p.title} />
         </div>
 
         {/* RIGHT: details */}
@@ -546,8 +750,8 @@ const addToCart = () => {
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
-                <span className={`inline-block size-1.5 rounded-full ${available ? 'bg-white/90' : 'bg-black/50'}`} />
-                {available ? 'In stock' : 'May be out of stock'}
+                <span className={`inline-block size-1.5 rounded-full ${availablePill ? 'bg-white/90' : 'bg-black/50'}`} />
+                {availabilityKnownZero ? 'Out of stock' : availablePill ? 'In stock' : 'May be out of stock'}
               </div>
               <h1 className="mt-3 text-2xl md:text-3xl font-extrabold tracking-tight text-ink">{p.title}</h1>
               {brand && <div className="text-sm text-ink-soft mt-1">{brand}</div>}
@@ -562,6 +766,8 @@ const addToCart = () => {
                   toast.push({ title: 'Login required', message: 'Please login to use wishlist.', duration: 3500 });
                   return;
                 }
+                // optimistic mutation already toggles UI
+                // server call dispatched here
                 toggleFav.mutate({ productId: p.id });
               }}
               title={fav ? 'Remove from wishlist' : 'Add to wishlist'}
@@ -570,33 +776,32 @@ const addToCart = () => {
             </button>
           </div>
 
-          {/* Price (reacts to variant selection) */}
+          {/* Price */}
           <div className="mt-2 flex items-baseline gap-2">
             <span className="text-2xl font-extrabold tracking-tight text-ink">
-              {ngn.format(price)}
+              {ngn.format(effectivePrice)}
             </span>
             {isVariantPriceDifferent && (
               <span className="text-sm text-ink-soft line-through">
-                {ngn.format(p.price)}
+                {ngn.format(safeNum(p.price, 0))}
               </span>
             )}
           </div>
 
-          {/* Range helper (visible when variants exist; useful on first render) */}
+          {/* Availability helper */}
+          <div className="text-xs text-ink-soft mt-1 min-h-[1rem]">
+            {availabilityLine}
+          </div>
+
+          {/* Range helper */}
           {hasAnyVariant(p) && (
             <div className="text-xs text-ink-soft mt-0.5">
-              {min === max
-                ? `Variants: ${p.variants?.length ?? 0}`
-                : `From ${ngn.format(min)} to ${ngn.format(max)} • Variants: ${p.variants?.length ?? 0}`}
+              {min === max ? `Variants: ${p.variants?.length ?? 0}` : `From ${ngn.format(min)} to ${ngn.format(max)} • Variants: ${p.variants?.length ?? 0}`}
             </div>
           )}
 
-          {/* Variant SKU (only if the matched one has a sku) */}
-          {variantSku && (
-            <div className="text-xs text-ink-soft mt-0.5">
-              SKU: {variantSku}
-            </div>
-          )}
+          {/* Variant SKU */}
+          {variantSku && <div className="text-xs text-ink-soft mt-0.5">SKU: {variantSku}</div>}
 
           {/* Variant pickers */}
           {axes.length > 0 && (
@@ -607,28 +812,18 @@ const addToCart = () => {
                   <div key={ax.attribute.id}>
                     <div className="text-sm font-semibold text-ink mb-2">
                       {ax.attribute.name}{' '}
-                      {current && (
-                        <span className="text-ink-soft font-normal">
-                          • {ax.values.find((v) => v.value.id === current)?.value.name}
-                        </span>
-                      )}
+                      {current && <span className="text-ink-soft font-normal">• {ax.values.find((v) => v.value.id === current)?.value.name}</span>}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {ax.values.map((v) => {
                         const checked = current === v.value.id;
                         const disabled = !v.available;
                         const isColor = /color/i.test(ax.attribute.name) && v.value.code;
-
                         return (
                           <button
                             key={v.value.id}
                             disabled={disabled}
-                            onClick={() =>
-                              setSelection((s) => ({
-                                ...s,
-                                [ax.attribute.id]: v.value.id,
-                              }))
-                            }
+                            onClick={() => setSelection((s) => ({ ...s, [ax.attribute.id]: v.value.id }))}
                             title={v.value.name}
                             className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition
                               ${checked ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white hover:bg-black/5'}
@@ -636,15 +831,10 @@ const addToCart = () => {
                           >
                             {isColor ? (
                               <>
-                                <span
-                                  className="inline-block w-4 h-4 rounded-full border"
-                                  style={{ background: v.value.code || '#ccc' }}
-                                />
+                                <span className="inline-block w-4 h-4 rounded-full border" style={{ background: v.value.code || '#ccc' }} />
                                 <span>{v.value.name}</span>
                               </>
-                            ) : (
-                              <span>{v.value.name}</span>
-                            )}
+                            ) : <span>{v.value.name}</span>}
                           </button>
                         );
                       })}
@@ -661,7 +851,7 @@ const addToCart = () => {
             <p className="mt-1 text-ink-soft leading-relaxed">{p.description}</p>
           </div>
 
-          {/* Specs (attribute values + texts) */}
+          {/* Specs */}
           {(p.attributeValues?.length || p.attributeTexts?.length) ? (
             <div className="mt-6">
               <h3 className="font-semibold text-ink mb-2">Specifications</h3>
@@ -690,17 +880,19 @@ const addToCart = () => {
           <div className="mt-6 flex flex-wrap items-center gap-3">
             <button
               className={`inline-flex items-center gap-2 rounded-xl px-5 py-3 font-semibold shadow-sm
-                ${available ? 'bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200' : 'bg-zinc-200 text-zinc-500 cursor-not-allowed'}`}
+                ${canSell && !adding ? 'bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200' : 'bg-zinc-200 text-zinc-500 cursor-not-allowed'}`}
               onClick={addToCart}
-              disabled={!canSell}
+              disabled={!canSell || adding}
+              title={
+                !canSell
+                  ? (availabilityKnownZero || remainingQty === 0 ? 'Out of stock' : 'Unavailable')
+                  : (adding ? 'Adding…' : 'Add to cart')
+              }
             >
-              Add to cart
+              {adding ? 'Adding…' : 'Add to cart'}
             </button>
 
-            <Link
-              to="/cart"
-              className="inline-flex items-center gap-2 rounded-xl border border-border bg-white px-5 py-3 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"
-            >
+            <Link to="/cart" className="inline-flex items-center gap-2 rounded-xl border border-border bg-white px-5 py-3 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition">
               Go to cart
             </Link>
 
@@ -720,7 +912,7 @@ const addToCart = () => {
 function ImageCarousel({
   images,
   title,
-  autoAdvanceMs = 4000, // set to 0 to disable auto-advance entirely
+  autoAdvanceMs = 4000,
 }: {
   images: string[];
   title: string;
@@ -742,17 +934,14 @@ function ImageCarousel({
   const imgAreaRef = useRef<HTMLDivElement | null>(null);
   const zoomPaneRef = useRef<HTMLDivElement | null>(null);
 
-  // rAF smoothing refs (for buttery cursor tracking)
   const frameRef = useRef<number | null>(null);
   const targetPosRef = useRef<{ x: number; y: number }>({ x: 50, y: 50 });
   const currentPosRef = useRef<{ x: number; y: number }>({ x: 50, y: 50 });
 
-  // tuning knobs
-  const ZOOM = 2.8;          // magnification
-  const PANE_REM = 28;       // zoom pane size (in rem)
-  const GAP_PX = 16;         // gap between image and zoom pane
+  const ZOOM = 2.8;
+  const PANE_REM = 28;
+  const GAP_PX = 16;
 
-  /* ---------- Auto-advance (pauses while hovering/zooming) ---------- */
   useEffect(() => {
     if (autoAdvanceMs <= 0) return;
     if (paused || images.length <= 1) return;
@@ -760,7 +949,6 @@ function ImageCarousel({
     return () => clearInterval(t);
   }, [paused, images.length, autoAdvanceMs]);
 
-  /* ---------- Touch swipe (mobile) ---------- */
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -768,14 +956,8 @@ function ImageCarousel({
     let startX = 0;
     let moved = false;
 
-    const onTouchStart = (e: TouchEvent) => {
-      startX = e.touches[0].clientX;
-      moved = false;
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      const dx = e.touches[0].clientX - startX;
-      if (Math.abs(dx) > 10) moved = true;
-    };
+    const onTouchStart = (e: TouchEvent) => { startX = e.touches[0].clientX; moved = false; };
+    const onTouchMove = (e: TouchEvent) => { const dx = e.touches[0].clientX - startX; if (Math.abs(dx) > 10) moved = true; };
     const onTouchEnd = (e: TouchEvent) => {
       if (!moved) return;
       const dx = e.changedTouches[0].clientX - startX;
@@ -785,7 +967,7 @@ function ImageCarousel({
 
     el.addEventListener('touchstart', onTouchStart, { passive: true });
     el.addEventListener('touchmove', onTouchMove, { passive: true });
-    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('touchend', onTouchEnd);
     return () => {
       el.removeEventListener('touchstart', onTouchStart);
       el.removeEventListener('touchmove', onTouchMove);
@@ -796,7 +978,6 @@ function ImageCarousel({
   const goPrev = () => setIdx((i) => (i - 1 + images.length) % images.length);
   const goNext = () => setIdx((i) => (i + 1) % images.length);
 
-  /* ---------- Keep zoom pane synced with current slide ---------- */
   useEffect(() => {
     const pane = zoomPaneRef.current;
     if (!pane) return;
@@ -805,7 +986,6 @@ function ImageCarousel({
     pane.style.backgroundSize = `${ZOOM * 100}%`;
   }, [idx, images]);
 
-  /* ---------- Position zoom pane to the right of the image ---------- */
   const positionPane = () => {
     const pane = zoomPaneRef.current;
     const container = containerRef.current;
@@ -817,7 +997,6 @@ function ImageCarousel({
     let left = rect.right + GAP_PX;
     let top = rect.top + (rect.height - paneSizePx) / 2;
 
-    // clamp inside viewport
     const margin = 8;
     left = Math.min(Math.max(margin, left), window.innerWidth - paneSizePx - margin);
     top = Math.min(Math.max(margin, top), window.innerHeight - paneSizePx - margin);
@@ -840,7 +1019,6 @@ function ImageCarousel({
     };
   }, [zooming]);
 
-  /* ---------- rAF loop to smoothly follow cursor ---------- */
   useEffect(() => {
     const pane = zoomPaneRef.current;
     if (!pane) return;
@@ -849,7 +1027,7 @@ function ImageCarousel({
     const animate = () => {
       const cur = currentPosRef.current;
       const tgt = targetPosRef.current;
-      const SMOOTH = 0.2; // lower = smoother/slower
+      const SMOOTH = 0.2;
       const nx = lerp(cur.x, tgt.x, SMOOTH);
       const ny = lerp(cur.y, tgt.y, SMOOTH);
       currentPosRef.current = { x: nx, y: ny };
@@ -863,7 +1041,6 @@ function ImageCarousel({
     };
   }, []);
 
-  /* ---------- Mouse tracking (sets the target for rAF) ---------- */
   const onMouseMove = (e: React.MouseEvent) => {
     const el = imgAreaRef.current;
     if (!el) return;
@@ -885,17 +1062,9 @@ function ImageCarousel({
         onBlur={() => setPaused(false)}
         aria-roledescription="carousel"
       >
-        {/* Slides (carousel stays put while zooming) */}
-        <div
-          className="h-full w-full flex transition-transform duration-500"
-          style={{ transform: `translateX(-${idx * 100}%)` }}
-        >
+        <div className="h-full w-full flex transition-transform duration-500" style={{ transform: `translateX(-${idx * 100}%)` }}>
           {images.map((src, i) => (
-            <div
-              key={src + i}
-              className="min-w-full h-full bg-white relative overflow-hidden"
-            >
-              {/* invisible tracking layer (keeps your zoom working) */}
+            <div key={src + i} className="min-w-full h-full bg-white relative overflow-hidden">
               <div
                 ref={i === idx ? imgAreaRef : null}
                 className="absolute inset-0"
@@ -903,78 +1072,32 @@ function ImageCarousel({
                 onMouseLeave={() => setZooming(false)}
                 onMouseMove={onMouseMove}
               />
-
-              {/* FILL the box: no margins/padding; scale up small images; crop if needed */}
-              <img
-                src={src}
-                alt={`${title} – image ${i + 1}`}
-                className="h-full w-full object-cover block m-0 p-0 pointer-events-none select-none"
-                draggable={false}
-              />
+              <img src={src} alt={`${title} – image ${i + 1}`} className="h-full w-full object-cover block m-0 p-0 pointer-events-none select-none" draggable={false} />
             </div>
           ))}
         </div>
 
-        {/* Prev / Next controls */}
         {images.length > 1 && (
           <>
-            <button
-              aria-label="Previous image"
-              onClick={goPrev}
-              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 text-white w-9 h-9 grid place-items-center hover:bg-black/70 focus:outline-none focus:ring-2 focus:ring-white/70"
-            >
-              ‹
-            </button>
-            <button
-              aria-label="Next image"
-              onClick={goNext}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 text-white w-9 h-9 grid place-items-center hover:bg-black/70 focus:outline-none focus:ring-2 focus:ring-white/70"
-            >
-              ›
-            </button>
+            <button aria-label="Previous image" onClick={goPrev} className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 text-white w-9 h-9 grid place-items-center hover:bg-black/70 focus:outline-none focus:ring-2 focus:ring-white/70">‹</button>
+            <button aria-label="Next image" onClick={goNext} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 text-white w-9 h-9 grid place-items-center hover:bg-black/70 focus:outline-none focus:ring-2 focus:ring-white/70">›</button>
           </>
         )}
 
-        {/* Dots */}
         {images.length > 1 && (
           <div className="absolute bottom-2 left-0 right-0 flex items-center justify-center gap-2">
             {images.map((_, i) => (
-              <button
-                key={i}
-                onClick={() => setIdx(i)}
-                aria-label={`Go to slide ${i + 1}`}
-                className={`h-2.5 w-2.5 rounded-full transition ${idx === i ? 'bg-primary-500 scale-110' : 'bg-black/30 hover:bg-black/50'}`}
-              />
+              <button key={i} onClick={() => setIdx(i)} aria-label={`Go to slide ${i + 1}`} className={`h-2.5 w-2.5 rounded-full transition ${idx === i ? 'bg-primary-500 scale-110' : 'bg-black/30 hover:bg-black/50'}`} />
             ))}
           </div>
         )}
       </div>
 
-      {/* Thumbnails */}
-      {images.length > 1 && (
-        <div className="flex items-center gap-2 overflow-x-auto pb-1">
-          {images.map((src, i) => (
-            <button
-              key={'thumb-' + i}
-              onClick={() => setIdx(i)}
-              className={`h-16 w-16 rounded-lg border overflow-hidden shrink-0 focus:outline-none ${idx === i ? 'ring-2 ring-primary-400' : 'opacity-80 hover:opacity-100'}`}
-            >
-              <img src={src} alt={`Thumbnail ${i + 1}`} className="h-full w-full object-cover" />
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Fixed zoom pane */}
       <div
         ref={zoomPaneRef}
         aria-hidden={!zooming}
-        className={`hidden md:block fixed z-40 rounded-xl border bg-white/90 backdrop-blur shadow-xl overflow-hidden transition
-                    ${zooming ? 'opacity-100 visible' : 'opacity-0 invisible'}`}
-        style={{
-          backgroundPosition: '50% 50%',
-          backgroundSize: `${ZOOM * 100}%`,
-        }}
+        className={`hidden md:block fixed z-40 rounded-xl border bg-white/90 backdrop-blur shadow-xl overflow-hidden transition ${zooming ? 'opacity-100 visible' : 'opacity-0 invisible'}`}
+        style={{ backgroundPosition: '50% 50%', backgroundSize: `${2.8 * 100}%` }}
       />
     </div>
   );

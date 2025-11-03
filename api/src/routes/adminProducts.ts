@@ -1150,7 +1150,8 @@ async function replaceAllVariants(tx: Tx, productId: string, variants: any[]) {
 /* ---------- List products  ---------- */
 router.get('/', requireAdmin, async (req, res, next) => {
   try {
-    const { status = 'ANY', q = '', take = '50', skip = '0' } = req.query as Record<string, string>;
+    const { status = 'ANY', q = '', take = '50', skip = '0' } =
+      req.query as Record<string, string>;
 
     const where: Prisma.ProductWhereInput = {};
     const s = String(status).toUpperCase();
@@ -1168,44 +1169,70 @@ router.get('/', requireAdmin, async (req, res, next) => {
     const takeNum = Math.max(1, Math.min(100, Number(take) || 50));
     const skipNum = Math.max(0, Number(skip) || 0);
 
+    const includeParams = req.query.include?.toString().split(',') ?? [];
+    const withOffers = includeParams.includes('supplierOffers');
+
+    // ---- Build select dynamically so we don't put false values under select
+    const select: Prisma.ProductSelect = {
+      id: true,
+      title: true,
+      price: true,
+      status: true,
+      sku: true,
+      inStock: true,
+      imagesJson: true,
+      createdAt: true,
+      categoryId: true,
+      brandId: true,
+      supplierId: true,
+      isDeleted: true,
+      communicationCost: true,
+      owner: { select: { id: true, email: true } },
+      category: { select: { id: true, name: true } },
+      brand: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true } },
+      _count: { select: { supplierOffers: true } },
+    };
+
+    if (withOffers) {
+      // add the relation only when requested
+      (select as any).supplierOffers = {
+        where: {
+          // put your relation-level filters here, e.g. isDeleted: false
+        },
+        select: {
+          id: true,
+          supplierId: true,
+          productId: true,
+          variantId: true,
+          isActive: true,
+          inStock: true,
+          availableQty: true,
+        },
+      };
+    }
+
     const [items, total] = await Promise.all([
       prisma.product.findMany({
         where,
         orderBy: { createdAt: 'desc' },
         take: takeNum,
         skip: skipNum,
-        select: {
-          id: true,
-          title: true,
-          price: true,
-          status: true,
-          sku: true,
-          inStock: true,
-          imagesJson: true,
-          createdAt: true,
-          categoryId: true,
-          brandId: true,
-          supplierId: true,
-          isDeleted: true,
-          communicationCost: true,
-          owner: { select: { id: true, email: true } },
-          category: { select: { id: true, name: true } },
-          brand: { select: { id: true, name: true } },
-          supplier: { select: { id: true, name: true } },
-        },
+        select,
       }),
       prisma.product.count({ where }),
     ]);
 
-    const data = items.map((p) => ({
+    const data = items.map((p: any) => ({
       id: p.id,
       title: p.title,
-      price: Number(p.price),
+      price: p.price != null ? Number(p.price) : null,
       status: p.status,
       sku: p.sku,
       inStock: p.inStock,
       isDeleted: p.isDeleted,
       createdAt: p.createdAt,
+
       imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
       categoryId: p.categoryId,
       brandId: p.brandId,
@@ -1215,8 +1242,12 @@ router.get('/', requireAdmin, async (req, res, next) => {
       supplierName: p.supplier?.name ?? null,
       ownerId: p.owner?.id ?? null,
       ownerEmail: p.owner?.email ?? null,
-      // NEW
+
       communicationCost: p.communicationCost != null ? Number(p.communicationCost) : null,
+
+      // expose offers ONLY if requested; otherwise omit or set to []
+      supplierOffers: withOffers ? (p.supplierOffers ?? []) : [],
+      supplierOffersCount: p._count?.supplierOffers ?? 0,
     }));
 
     res.json({ data, total });
@@ -1224,6 +1255,7 @@ router.get('/', requireAdmin, async (req, res, next) => {
     next(e);
   }
 });
+
 
 // ---------- validation ----------
 // ---------- validation (lenient & coercive) ----------
