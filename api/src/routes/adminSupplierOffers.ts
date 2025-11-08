@@ -34,32 +34,34 @@ const coerceBool = z.preprocess((v) => {
   return v;
 }, z.boolean());
 
-/**
- * Normalize incoming body:
- * - unwrap { data: ... } or { offer: ... }
- * - map leadTimeDays -> leadDays
- * - map available/qty/stock -> availableQty
- * - support legacy "variant" as variantId
- * - normalize variantId:
- *     "" / "PRODUCT" / undefined => not provided
- *     null => explicit generic (null)
- */
 function normalizeBody(raw: any) {
   const src = raw?.data ?? raw?.offer ?? raw ?? {};
   const out: any = { ...src };
+
+  // Did the client explicitly touch variant?
+  const hadVariantKey =
+    Object.prototype.hasOwnProperty.call(src, 'variantId') ||
+    Object.prototype.hasOwnProperty.call(src, 'variant');
 
   // alias: variant -> variantId
   if (out.variantId == null && out.variant != null) {
     out.variantId = out.variant;
   }
 
-  // treat "" / "PRODUCT" / undefined as "not provided" here
-  if (
-    out.variantId === '' ||
-    out.variantId === 'PRODUCT' ||
-    out.variantId === undefined
-  ) {
-    delete out.variantId;
+  // If client explicitly sent something for variant:
+  if (hadVariantKey) {
+    // UI uses "" or "PRODUCT" to mean "generic product-level offer"
+    if (
+      out.variantId === '' ||
+      out.variantId === 'PRODUCT' ||
+      out.variantId === undefined
+    ) {
+      // explicit "no variant"
+      out.variantId = null;
+    } else if (out.variantId != null) {
+      // normalize to string id
+      out.variantId = String(out.variantId);
+    }
   }
 
   // leadTimeDays -> leadDays
@@ -121,47 +123,7 @@ function toOfferDto(o: any) {
 }
 
 /* ----------------------------------------------------------------------------
- * LEGACY: POST /api/admin/suppliers/:supplierId/offers
- * --------------------------------------------------------------------------*/
-
-router.post('/suppliers/:supplierId/offers', requireAuth, async (req, res) => {
-  const me = req.user!;
-  if (!['ADMIN', 'SUPER_ADMIN'].includes(me.role)) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-
-  const { supplierId } = req.params;
-  const { productId, variantId = null, price } = req.body || {};
-  if (!productId || price == null) {
-    return res.status(400).json({ error: 'productId and price required' });
-  }
-
-  const data = await prisma.supplierOffer.upsert({
-    where: {
-      supplierId_productId_variantId: {
-        supplierId,
-        productId,
-        variantId: variantId || null,
-      },
-    },
-    create: {
-      supplierId,
-      productId,
-      variantId: variantId || null,
-      price,
-      inStock: true,
-      isActive: true,
-    },
-    update: {
-      price,
-    },
-  });
-
-  res.json({ ok: true, data: toOfferDto(data) });
-});
-
-/* ----------------------------------------------------------------------------
- * SUMMARY: GET /api/admin/supplier-offers?productIds=...
+ * SUMMARY: GET /api/admin/supplier-offers?productIds=...|productId=...
  * --------------------------------------------------------------------------*/
 
 router.get(
@@ -215,10 +177,10 @@ router.get(
 );
 
 /* ----------------------------------------------------------------------------
- * CORE: /api/admin/products/:productId/supplier-offers
+ * CORE LIST: GET /api/admin/products/:productId/supplier-offers
+ * Used by SuppliersOfferManager
  * --------------------------------------------------------------------------*/
 
-// GET list for SuppliersOfferManager
 router.get(
   '/products/:productId/supplier-offers',
   requireAuth,
@@ -251,7 +213,11 @@ router.get(
   }
 );
 
-// CREATE
+/* ----------------------------------------------------------------------------
+ * SINGLE CREATE: POST /api/admin/products/:productId/supplier-offers
+ * (includes proper variantId storage)
+ * --------------------------------------------------------------------------*/
+
 router.post(
   '/products/:productId/supplier-offers',
   requireAuth,
@@ -263,7 +229,6 @@ router.post(
       if (!raw.productId) raw.productId = productId;
 
       const parsed = offerCreateSchema.parse(raw);
-
       const [product, supplier] = await Promise.all([
         prisma.product.findUnique({
           where: { id: parsed.productId },
@@ -279,7 +244,7 @@ router.post(
       if (!supplier)
         return res.status(400).json({ error: 'Invalid supplierId' });
 
-      // normalize + validate variantId
+      // validate + normalize variantId (ensure it belongs to product)
       let variantId: string | null = null;
       if (parsed.variantId != null) {
         const vid = String(parsed.variantId);
@@ -296,12 +261,11 @@ router.post(
           variantId = vid;
         }
       }
-
       const created = await prisma.supplierOffer.create({
         data: {
           productId: parsed.productId,
           supplierId: parsed.supplierId,
-          variantId,
+          variantId, // ✅ link to ProductVariant or null for generic offer
           price: parsed.price,
           currency: parsed.currency ?? 'NGN',
           availableQty: parsed.availableQty ?? 0,
@@ -331,259 +295,7 @@ router.post(
 );
 
 /* ----------------------------------------------------------------------------
- * LEGACY: /api/admin/products/:productId/offers
- * (kept here to avoid mixing into adminProducts.ts)
- * --------------------------------------------------------------------------*/
-
-router.get(
-  '/products/:productId/offers',
-  requireAuth,
-  requireAdmin,
-  async (req, res) => {
-    const { productId } = req.params;
-    const offers = await prisma.supplierOffer.findMany({
-      where: { productId },
-      include: {
-        supplier: {
-          select: {
-            id: true,
-            name: true,
-            whatsappPhone: true,
-            contactEmail: true,
-            status: true,
-          },
-        },
-        variant: { select: { id: true, sku: true, inStock: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    return res.json({ data: offers });
-  }
-);
-
-router.post(
-  '/products/:productId/offers',
-  requireAuth,
-  requireAdmin,
-  async (req, res) => {
-    const { productId } = req.params;
-    const {
-      supplierId,
-      variantId,
-      price,
-      currency = 'NGN',
-      inStock = true,
-      leadDays,
-      isActive = true,
-    } = (req.body ?? {}) as any;
-
-    if (!supplierId || price == null) {
-      return res
-        .status(400)
-        .json({ error: 'supplierId and price are required' });
-    }
-
-    const supplier = await prisma.supplier.findUnique({
-      where: { id: supplierId },
-      select: { id: true },
-    });
-    if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
-
-    const product = await prisma.product.findUnique({
-      where: { id: productId },
-      select: { id: true },
-    });
-    if (!product) return res.status(404).json({ error: 'Product not found' });
-
-    let nextVariantId: string | null = null;
-    if (variantId) {
-      const v = await prisma.productVariant.findUnique({
-        where: { id: variantId },
-        select: { id: true, productId: true },
-      });
-      if (!v || v.productId !== productId) {
-        return res
-          .status(400)
-          .json({ error: 'variantId does not belong to this product' });
-      }
-      nextVariantId = v.id;
-    }
-
-    try {
-      const created = await prisma.supplierOffer.create({
-        data: {
-          supplierId,
-          productId,
-          variantId: nextVariantId,
-          price,
-          currency,
-          inStock: !!inStock,
-          leadDays:
-            leadDays == null || leadDays === '' ? null : Number(leadDays),
-          isActive: !!isActive,
-        },
-      });
-      return res.status(201).json({ data: created });
-    } catch (e: any) {
-      if (e?.code === 'P2002') {
-        return res.status(409).json({
-          error:
-            'An offer for this (supplier, product, variant) already exists',
-        });
-      }
-      console.error('Create offer failed:', e);
-      return res.status(500).json({ error: 'Could not create offer' });
-    }
-  }
-);
-
-router.put(
-  '/products/:productId/offers/:offerId',
-  requireAuth,
-  requireAdmin,
-  async (req, res) => {
-    const { productId, offerId } = req.params;
-    const raw = (req.body?.data ?? req.body ?? {}) as any;
-
-    const existing = await prisma.supplierOffer.findUnique({
-      where: { id: offerId },
-      select: {
-        id: true,
-        productId: true,
-        supplierId: true,
-        variantId: true,
-        price: true,
-        currency: true,
-        availableQty: true,
-        leadDays: true,
-        isActive: true,
-      },
-    });
-
-    if (!existing || existing.productId !== productId) {
-      return res
-        .status(404)
-        .json({ error: 'Offer not found for this product' });
-    }
-
-    const data: any = {};
-
-    if (raw.supplierId) {
-      const s = await prisma.supplier.findUnique({
-        where: { id: raw.supplierId },
-        select: { id: true },
-      });
-      if (!s) {
-        return res.status(400).json({ error: 'Invalid supplierId' });
-      }
-      data.supplierId = raw.supplierId;
-    }
-
-    if (Object.prototype.hasOwnProperty.call(raw, 'variantId')) {
-      if (!raw.variantId) {
-        data.variantId = null;
-      } else {
-        const v = await prisma.productVariant.findUnique({
-          where: { id: raw.variantId },
-          select: { id: true, productId: true },
-        });
-        if (!v || v.productId !== productId) {
-          return res
-            .status(400)
-            .json({ error: 'variantId does not belong to this product' });
-        }
-        data.variantId = v.id;
-      }
-    }
-
-    if (raw.price !== undefined) {
-      const n = Number(raw.price);
-      if (!Number.isFinite(n)) {
-        return res.status(400).json({ error: 'Invalid price' });
-      }
-      data.price = n;
-    }
-
-    if (raw.currency !== undefined) {
-      data.currency = String(raw.currency || 'NGN');
-    }
-
-    if (raw.availableQty !== undefined) {
-      const n = Number(raw.availableQty);
-      if (!Number.isFinite(n) || n < 0) {
-        return res.status(400).json({ error: 'Invalid availableQty' });
-      }
-      data.availableQty = Math.trunc(n);
-    }
-
-    if (raw.leadDays !== undefined) {
-      if (raw.leadDays === null || raw.leadDays === '') {
-        data.leadDays = null;
-      } else {
-        const n = Number(raw.leadDays);
-        if (!Number.isFinite(n) || n < 0) {
-          return res.status(400).json({ error: 'Invalid leadDays' });
-        }
-        data.leadDays = Math.trunc(n);
-      }
-    }
-
-    if (raw.isActive !== undefined) {
-      data.isActive = !!raw.isActive;
-    }
-
-    const nextAvailable =
-      data.availableQty != null
-        ? data.availableQty
-        : existing.availableQty ?? 0;
-    const nextIsActive =
-      data.isActive != null ? data.isActive : existing.isActive;
-
-    data.inStock = !!nextIsActive && nextAvailable > 0;
-
-    try {
-      const updated = await prisma.supplierOffer.update({
-        where: { id: offerId },
-        data,
-      });
-      return res.json({ data: updated });
-    } catch (e: any) {
-      if (e?.code === 'P2002') {
-        return res.status(409).json({
-          error:
-            'An offer for this (supplier, product, variant) already exists',
-        });
-      }
-      console.error('Update offer failed:', e);
-      return res.status(500).json({ error: 'Could not update offer' });
-    }
-  }
-);
-
-router.delete(
-  '/products/:productId/offers/:offerId',
-  requireAuth,
-  requireAdmin,
-  async (req, res) => {
-    const { productId, offerId } = req.params;
-
-    const existing = await prisma.supplierOffer.findUnique({
-      where: { id: offerId },
-      select: { id: true, productId: true },
-    });
-    if (!existing || existing.productId !== productId) {
-      return res
-        .status(404)
-        .json({ error: 'Offer not found for this product' });
-    }
-
-    await prisma.supplierOffer.delete({ where: { id: offerId } });
-    return res.json({ ok: true });
-  }
-);
-
-/* ----------------------------------------------------------------------------
- * GENERIC UPDATE/DELETE by id
+ * CORE UPDATE IMPLEMENTATION
  * --------------------------------------------------------------------------*/
 
 async function updateOfferCore(
@@ -632,9 +344,10 @@ async function updateOfferCore(
     data.supplierId = patch.supplierId;
   }
 
-  // variantId when explicitly present
+  // variantId (explicit only)
   if (Object.prototype.hasOwnProperty.call(patch, 'variantId')) {
     if (patch.variantId == null) {
+      // explicit generic product-level offer
       data.variantId = null;
     } else {
       const vid = String(patch.variantId);
@@ -649,7 +362,7 @@ async function updateOfferCore(
             { statusCode: 400 }
           );
         }
-        data.variantId = vid;
+        data.variantId = vid; // ✅ store valid variant linkage
       } else {
         data.variantId = null;
       }
@@ -689,55 +402,11 @@ async function updateOfferCore(
   return updated;
 }
 
-// PATCH /api/admin/products/:productId/supplier-offers/:id
-router.patch(
-  '/products/:productId/supplier-offers/:id',
-  requireAuth,
-  requireAdmin,
-  async (req, res, next) => {
-    try {
-      const { productId, id } = req.params;
-      const updated = await updateOfferCore(productId, id, req.body);
-      res.json({ data: toOfferDto(updated) });
-    } catch (err: any) {
-      if (err instanceof z.ZodError) {
-        return res
-          .status(400)
-          .json({ error: 'Invalid payload', details: err.issues });
-      }
-      if (err.statusCode) {
-        return res.status(err.statusCode).json({ error: err.message });
-      }
-      next(err);
-    }
-  }
-);
+/* ----------------------------------------------------------------------------
+ * SINGLE UPDATE: PATCH /api/admin/supplier-offers/:id
+ * (canonical update endpoint; includes variant handling)
+ * --------------------------------------------------------------------------*/
 
-// PUT /api/admin/products/:productId/supplier-offers/:id
-router.put(
-  '/products/:productId/supplier-offers/:id',
-  requireAuth,
-  requireAdmin,
-  async (req, res, next) => {
-    try {
-      const { productId, id } = req.params;
-      const updated = await updateOfferCore(productId, id, req.body);
-      res.json({ data: toOfferDto(updated) });
-    } catch (err: any) {
-      if (err instanceof z.ZodError) {
-        return res
-          .status(400)
-          .json({ error: 'Invalid payload', details: err.issues });
-      }
-      if (err.statusCode) {
-        return res.status(err.statusCode).json({ error: err.message });
-      }
-      next(err);
-    }
-  }
-);
-
-// PATCH /api/admin/supplier-offers/:id
 router.patch(
   '/supplier-offers/:id',
   requireAuth,
@@ -761,29 +430,9 @@ router.patch(
   }
 );
 
-// PUT /api/admin/supplier-offers/:id
-router.put(
-  '/supplier-offers/:id',
-  requireAuth,
-  requireAdmin,
-  async (req, res, next) => {
-    try {
-      const { id } = req.params;
-      const updated = await updateOfferCore(null, id, req.body);
-      res.json({ data: toOfferDto(updated) });
-    } catch (err: any) {
-      if (err instanceof z.ZodError) {
-        return res
-          .status(400)
-          .json({ error: 'Invalid payload', details: err.issues });
-      }
-      if (err.statusCode) {
-        return res.status(err.statusCode).json({ error: err.message });
-      }
-      next(err);
-    }
-  }
-);
+/* ----------------------------------------------------------------------------
+ * DELETE (kept as-is, no duplicates for create/update)
+ * --------------------------------------------------------------------------*/
 
 // DELETE /api/admin/products/:productId/supplier-offers/:id
 router.delete(

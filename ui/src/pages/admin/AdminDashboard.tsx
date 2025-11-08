@@ -1629,8 +1629,7 @@ export default function AdminDashboard() {
                     Products pending review
                   </span>
                   <span className="font-semibold">
-                    {overview.data?.products.pending ??
-                      0}
+                    {overview.data?.products.pending ?? 0}
                   </span>
                 </li>
                 <li className="flex items-center justify-between border rounded-xl px-3 py-2">
@@ -1678,8 +1677,7 @@ export default function AdminDashboard() {
                     <StatChip
                       label="Live"
                       value={
-                        overview.data?.products.live ??
-                        0
+                        overview.data?.products.live ?? 0
                       }
                       onClick={() =>
                         goProductsManageFromTile(
@@ -1725,8 +1723,7 @@ export default function AdminDashboard() {
                       value={
                         overview.data?.products
                           .availability
-                          .allStatusesAvailable ??
-                        0
+                          .allStatusesAvailable ?? 0
                       }
                       onClick={() =>
                         goProductsManageFromTile(
@@ -1739,8 +1736,7 @@ export default function AdminDashboard() {
                       value={
                         overview.data?.products
                           .availability
-                          .publishedAvailable ??
-                        0
+                          .publishedAvailable ?? 0
                       }
                       onClick={() =>
                         goProductsManageFromTile(
@@ -1798,8 +1794,7 @@ export default function AdminDashboard() {
                       value={
                         overview.data?.products
                           .offers
-                          .publishedWithoutAny ??
-                        0
+                          .publishedWithoutAny ?? 0
                       }
                       onClick={() =>
                         goProductsManageFromTile(
@@ -1811,8 +1806,7 @@ export default function AdminDashboard() {
                       label="With active"
                       value={
                         overview.data?.products
-                          .offers.withActive ??
-                        0
+                          .offers.withActive ?? 0
                       }
                       onClick={() =>
                         goProductsManageFromTile(
@@ -1961,7 +1955,8 @@ export default function AdminDashboard() {
               </div>
             }
           >
-            {pTab === 'moderation' ? (
+            {/* SOLE CHANGE: keep both mounted, toggle via CSS */}
+            <div className={pTab === 'moderation' ? 'block' : 'hidden'}>
               <ModerationSection
                 token={token}
                 onInspect={(p: {
@@ -1994,7 +1989,8 @@ export default function AdminDashboard() {
                   );
                 }}
               />
-            ) : (
+            </div>
+            <div className={pTab === 'manage' ? 'block' : 'hidden'}>
               <ManageProducts
                 role={role}
                 token={token}
@@ -2005,7 +2001,7 @@ export default function AdminDashboard() {
                   setFocusProductId(null)
                 }
               />
-            )}
+            </div>
           </SectionCard>
         )}
 

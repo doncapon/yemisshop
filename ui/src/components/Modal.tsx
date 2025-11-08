@@ -1,34 +1,66 @@
-import React, { useEffect } from "react";
+import React from "react";
 
-export interface ModalProps {
+type ModalProps = {
   isOpen: boolean;
   title: string;
   message?: React.ReactNode;
   onClose: () => void;
-}
+};
 
-export const Modal: React.FC<ModalProps> = ({ isOpen, title, message, onClose }) => {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose?.();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
+const Modal: React.FC<ModalProps> = ({
+  isOpen,
+  title,
+  message,
+  onClose,
+}) => {
   if (!isOpen) return null;
 
-  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) onClose?.();
+  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    onClose();
+  };
+
+  const stopPropagation = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
   };
 
   return (
-    <div className="modal-overlay" onClick={handleOverlayClick} role="dialog" aria-modal="true">
-      <div className="modal-panel relative">
-        <button className="modal-close" aria-label="Close modal" onClick={onClose}>✕</button>
-        <h2 className="modal-title">{title}</h2>
-        {message ? <p className="modal-message">{message}</p> : null}
-        <div className="modal-actions">
-          <button className="modal-btn ghost" onClick={onClose}>Cancel</button>
-          <button className="modal-btn primary" onClick={onClose}>OK</button>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={handleBackdropClick}
+    >
+      <div
+        className="bg-white rounded-xl shadow-lg max-w-md w-[90%] p-4"
+        onClick={stopPropagation} // prevent clicks inside from closing or bubbling
+      >
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <h2 className="font-semibold text-lg text-zinc-900">
+            {title}
+          </h2>
+          <button
+            type="button" // ✅ no implicit submit
+            onClick={onClose}
+            className="ml-2 text-zinc-500 hover:text-zinc-800"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        {message && (
+          <div className="text-sm text-zinc-700 mb-4">
+            {message}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button" // ✅ safe
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-md border border-zinc-300 text-sm text-zinc-800 hover:bg-zinc-50"
+          >
+            Close
+          </button>
         </div>
       </div>
     </div>

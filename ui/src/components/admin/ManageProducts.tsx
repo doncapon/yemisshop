@@ -183,7 +183,6 @@ async function persistVariantsStrict(
 ) {
     if (!variants?.length) return;
     const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
-
     const clean = (variants || []).map((v) => ({
         ...v,
         options: (v.options || []).map((o: any) => {
@@ -195,7 +194,6 @@ async function persistVariantsStrict(
             };
         }),
     }));
-
     try {
         const { data } = await api.post(
             `/api/admin/products/${encodeURIComponent(productId)}/variants/bulk`,
@@ -360,68 +358,21 @@ export function ManageProducts({
         queryFn: async () => {
             const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
             const productIds = rows.map((r) => r.id);
+            if (!productIds.length) return {};
+
+            // ✅ Use the canonical summary endpoint
             const qs = new URLSearchParams();
             qs.set("productIds", productIds.join(","));
 
-            const attempts = [
-                `/api/admin/supplier-offers?${qs}`,
-                `/api/supplier-offers?${qs}`,
-                `/api/admin/products/offers?${qs}`,
-            ];
+            const { data } = await api.get(`/api/admin/supplier-offers?${qs}`, { headers: hdr });
 
-            let all: SupplierOfferLite[] | null = null;
+            const arr = Array.isArray(data?.data)
+                ? data.data
+                : Array.isArray(data)
+                    ? data
+                    : [];
 
-            for (const url of attempts) {
-                try {
-                    const { data } = await api.get(url, { headers: hdr });
-                    const arr = Array.isArray(data?.data)
-                        ? data.data
-                        : Array.isArray(data)
-                            ? data
-                            : [];
-                    if (Array.isArray(arr)) {
-                        all = arr as SupplierOfferLite[];
-                        break;
-                    }
-                } catch {
-                    /* try next */
-                }
-            }
-
-            if (!all) {
-                const per: SupplierOfferLite[] = [];
-                for (const pid of productIds) {
-                    const perAttempts = [
-                        `/api/admin/products/${pid}/supplier-offers`,
-                        `/api/admin/products/${pid}/offers`,
-                        `/api/products/${pid}/supplier-offers`,
-                    ];
-                    for (const u of perAttempts) {
-                        try {
-                            const { data } = await api.get(u, { headers: hdr });
-                            const arr = Array.isArray(data?.data)
-                                ? data.data
-                                : Array.isArray(data)
-                                    ? data
-                                    : [];
-                            if (Array.isArray(arr)) {
-                                per.push(
-                                    ...arr.map((o: any) => ({
-                                        ...o,
-                                        productId: o.productId || pid,
-                                    }))
-                                );
-                                break;
-                            }
-                        } catch {
-                            /* next */
-                        }
-                    }
-                }
-                all = per;
-            }
-
-            const offers = Array.isArray(all) ? all : [];
+            const offers = (arr as SupplierOfferLite[]).filter((o) => !!o.productId);
 
             const byProduct: Record<
                 string,
@@ -438,13 +389,15 @@ export function ManageProducts({
             > = {};
 
             for (const o of offers) {
-                const pid = (o as any).productId;
-                if (!pid) continue;
-
+                const pid = o.productId;
                 const isActive = coerceBool((o as any).isActive, true);
-                if (!isActive) continue;
+                if (!pid || !isActive) continue;
 
-                const availableQty = availOf(o);
+                const availableQty =
+                    availOf(o) ||
+                    toInt((o as any).availableQty, 0) ||
+                    0;
+
                 if (!byProduct[pid]) {
                     byProduct[pid] = {
                         totalAvailable: 0,
@@ -457,8 +410,8 @@ export function ManageProducts({
                 byProduct[pid].totalAvailable += availableQty;
                 byProduct[pid].activeOffers += 1;
                 byProduct[pid].perSupplier.push({
-                    supplierId: (o as any).supplierId,
-                    supplierName: (o as any).supplierName,
+                    supplierId: o.supplierId,
+                    supplierName: o.supplierName,
                     availableQty,
                 });
             }
@@ -469,6 +422,7 @@ export function ManageProducts({
 
             return byProduct;
         },
+
     });
 
     const rowsWithDerived: AdminProduct[] = useMemo(() => {
@@ -826,6 +780,7 @@ export function ManageProducts({
         communicationCost: "",
         description: "",
     };
+    const [offersProductId, setOffersProductId] = useState<string | null>(null);
 
     const [pending, setPending] = useState(defaultPending);
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -907,8 +862,6 @@ export function ManageProducts({
     const [currentVariants, setCurrentVariants] = useState<
         any[]
     >([]);
-    const [showOffersPanel, setShowOffersPanel] =
-        useState(false);
 
     // Do NOT wipe variantRows when attributes flicker; only align keys when we have attrs
     useEffect(() => {
@@ -983,89 +936,8 @@ export function ManageProducts({
     function resetVariantState() {
         setVariantRows([]);
         setCurrentVariants([]);
-        setShowOffersPanel(false);
     }
 
-    // 🔁 AUTOSAVE for variant combinations (only this section touched)
-    const debouncedVariantRows = useDebounced(
-        variantRows,
-        600
-    );
-
-    useEffect(() => {
-        // Only autosave when editing an existing product
-        if (!editingId) return;
-        if (!selectableAttrs.length) return;
-        if (!debouncedVariantRows.length) return;
-
-        // Build variants payload from current rows
-        const variants: any[] = [];
-
-        for (const row of debouncedVariantRows) {
-            const picks = Object.entries(
-                row.selections || {}
-            ).filter(([, valueId]) => valueId);
-
-            if (picks.length === 0) continue;
-
-            const bumpNum = Number(row.priceBump);
-            const hasBump = Number.isFinite(bumpNum);
-
-            const options = picks.map(
-                ([attributeId, valueId]) => {
-                    const opt: any = {
-                        attributeId,
-                        valueId,
-                        attributeValueId: valueId,
-                    };
-                    if (hasBump) opt.priceBump = bumpNum;
-                    return opt;
-                }
-            );
-
-            // SKU: we DON’T recompute base SKU here; backend treats SKU optional.
-            // We focus on sending consistent options+priceBump so SupplierOffer variants line up.
-            variants.push({
-                options,
-                optionSelections: options,
-                attributes: options.map((o: any) => ({
-                    attributeId: o.attributeId,
-                    valueId: o.valueId,
-                })),
-            });
-        }
-
-        if (!variants.length) return;
-
-        (async () => {
-            try {
-                await persistVariantsStrict(
-                    editingId,
-                    variants,
-                    token
-                );
-                setCurrentVariants(variants);
-                qc.invalidateQueries({
-                    queryKey: [
-                        "admin",
-                        "product",
-                        editingId,
-                        "variants",
-                    ],
-                });
-            } catch (e) {
-                console.error(
-                    "Variant autosave failed",
-                    e
-                );
-            }
-        })();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [
-        debouncedVariantRows,
-        editingId,
-        selectableAttrs,
-    ]);
 
     /* ---------------- Attribute selections for top form ---------------- */
 
@@ -1415,7 +1287,7 @@ export function ManageProducts({
                 await fetchProductFull(
                     p.id
                 );
-
+            setOffersProductId(full.id);
             setEditingId(
                 full.id
             );
@@ -1625,9 +1497,7 @@ export function ManageProducts({
                 full.variants ||
                 []
             );
-            setShowOffersPanel(
-                false
-            );
+
         } catch (e) {
             console.error(e);
             openModal({
@@ -1642,29 +1512,20 @@ export function ManageProducts({
     /* ---------------- Supplier offers button / partial refresh ---------------- */
 
     async function handleOpenSupplierOffers() {
-        if (!editingId) return;
+        if (!offersProductId) return;
         try {
-            const full =
-                await fetchProductFull(
-                    editingId
-                );
-            setCurrentVariants(
-                full.variants ||
-                []
-            );
-            setShowOffersPanel(
-                true
-            );
+            const full = await fetchProductFull(offersProductId);
+            setCurrentVariants(full.variants || []);
         } catch (e) {
             console.error(e);
             openModal({
-                title:
-                    "Supplier offers",
-                message:
-                    "Could not refresh product variants for offers.",
+                title: "Supplier offers",
+                message: "Could not refresh product variants for offers.",
             });
         }
     }
+
+
 
     /* ---------------- Save / Create ---------------- */
 
@@ -2576,1315 +2437,1326 @@ export function ManageProducts({
     ============================ */
 
     return (
-        <div className="space-y-3">
-            {editingId && (
-                <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2">
-                    Editing:{" "}
-                    <span className="font-semibold">
-                        {(pending.title ||
-                            "").trim() ||
-                            "Untitled product"}
-                    </span>
-                    <span className="ml-2 text-xs text-amber-700/80">
-                        (ID:{" "}
-                        <span className="font-mono">
-                            {editingId}
+        <div
+            className="space-y-3"
+            onKeyDownCapture={(e) => {
+                if (e.key === "Enter") {
+                    const target = e.target as HTMLElement;
+                    const tag = target.tagName;
+                    const isTextArea = tag === "TEXTAREA";
+                    const isButton = tag === "BUTTON";
+                    if (!isTextArea && !isButton) {
+                        e.preventDefault();
+                    }
+                }
+            }}
+            onSubmitCapture={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            }}
+        >
+            <div className="space-y-3">
+                {editingId && (
+                    <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2">
+                        Editing:{" "}
+                        <span className="font-semibold">
+                            {(pending.title ||
+                                "").trim() ||
+                                "Untitled product"}
                         </span>
-                        )
-                    </span>
-                </div>
-            )}
-
-            {/* Supplier offers (button-triggered, partial refresh, keeps state) */}
-            {editingId && (
-                <div className="rounded-2xl border bg-white shadow-sm mt-3">
-                    <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
-                        <div>
-                            <h3 className="text-ink font-semibold">
-                                Supplier offers
-                            </h3>
-                            <p className="text-xs text-ink-soft">
-                                Link supplier offers
-                                to this product and
-                                its variants. Open
-                                when needed to
-                                refresh.
-                            </p>
-                        </div>
-                        <button
-                            type="button"
-                            onClick={
-                                handleOpenSupplierOffers
-                            }
-                            className="px-3 py-1.5 text-xs rounded-lg border bg-zinc-50 hover:bg-zinc-100"
-                        >
-                            {showOffersPanel
-                                ? "Refresh offers"
-                                : "Manage supplier offers"}
-                        </button>
+                        <span className="ml-2 text-xs text-amber-700/80">
+                            (ID:{" "}
+                            <span className="font-mono">
+                                {editingId}
+                            </span>
+                            )
+                        </span>
                     </div>
+                )}
 
-                    {showOffersPanel && (
-                        <div className="p-3">
-                            <SuppliersOfferManager
-                                productId={editingId}
-                                variants={(currentVariants || []).map((v: any) => {
-                                    // Try sku, then any label-like bits from options, finally id.
-                                    const fromOptions =
-                                        Array.isArray(v.options || v.optionSelections)
-                                            ? (v.options || v.optionSelections)
-                                                .map(
-                                                    (o: any) =>
-                                                        o?.value?.code ||
-                                                        o?.value?.name ||
-                                                        o?.attributeValue?.code ||
-                                                        o?.attributeValue?.name ||
-                                                        o?.valueId ||
-                                                        ""
-                                                )
-                                                .filter(Boolean)
-                                                .join(" / ")
-                                            : "";
+                {/* Supplier offers (button-triggered, partial refresh, keeps state) */}
+                {offersProductId && (
+                    <div className="rounded-2xl border bg-white shadow-sm mt-3">
+                        <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
+                            <div>
+                                <h3 className="text-ink font-semibold">Supplier offers</h3>
+                                <p className="text-xs text-ink-soft">
+                                    Link supplier offers to this product and its variants.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={handleOpenSupplierOffers}
+                                className="px-3 py-1.5 text-xs rounded-lg border bg-zinc-50 hover:bg-zinc-100"
+                            >
+                                Refresh offers
+                            </button>
+                        </div>
 
-                                    const label =
-                                        v.sku ||
-                                        v.label ||
-                                        v.name ||
+                        <SuppliersOfferManager
+                            productId={offersProductId}
+                            variants={(currentVariants || []).map((v: any, index: number) => {
+                                const fromOptions =
+                                    Array.isArray(v.options || v.optionSelections)
+                                        ? (v.options || v.optionSelections)
+                                            .map(
+                                                (o: any) =>
+                                                    o?.value?.code ||
+                                                    o?.value?.name ||
+                                                    o?.attributeValue?.code ||
+                                                    o?.attributeValue?.name ||
+                                                    o?.valueId ||
+                                                    ""
+                                            )
+                                            .filter(Boolean)
+                                            .join(" / ")
+                                        : "";
+
+                                const label =
+                                    v.sku ||
+                                    v.label ||
+                                    v.name ||
+                                    fromOptions ||
+                                    (v.id != null ? String(v.id) : `Variant ${index + 1}`);
+
+                                const safeId =
+                                    v.id != null && v.id !== ""
+                                        ? String(v.id)
+                                        : v.sku ||
                                         fromOptions ||
-                                        String(v.id);
+                                        `variant-${index}`;
 
-                                    return {
-                                        id: String(v.id),
-                                        sku: label,      // used as display
-                                        label,           // extra, SupplierOfferManager will also accept this
-                                    };
-                                })}
-                                suppliers={suppliersQ.data ?? []}
-                                token={token}
-                                readOnly={!(isSuper || isAdmin)}
-                            />
+                                return {
+                                    id: safeId,
+                                    sku: label,
+                                    label,
+                                };
+                            })}
+                            suppliers={suppliersQ.data ?? []}
+                            token={token}
+                            readOnly={!(isSuper || isAdmin)}
+                        />
 
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {/* Top form: add + edit */}
-            <div
-                id="create-form"
-                className="grid gap-2"
-            >
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                    <input
-                        className="border rounded-lg px-3 py-2"
-                        placeholder="Title"
-                        value={
-                            pending.title
-                        }
-                        onChange={(e) =>
-                            setPending(
-                                (d) => ({
-                                    ...d,
-                                    title:
-                                        e
-                                            .target
-                                            .value,
-                                })
-                            )
-                        }
-                    />
-                    <input
-                        className="border rounded-lg px-3 py-2"
-                        placeholder="Price"
-                        inputMode="decimal"
-                        value={
-                            pending.price
-                        }
-                        onChange={(e) =>
-                            setPending(
-                                (d) => ({
-                                    ...d,
-                                    price:
-                                        e
-                                            .target
-                                            .value,
-                                })
-                            )
-                        }
-                    />
-                    <input
-                        className="border rounded-lg px-3 py-2"
-                        placeholder="Base SKU"
-                        value={
-                            pending.sku
-                        }
-                        onChange={(e) =>
-                            setPending(
-                                (d) => ({
-                                    ...d,
-                                    sku: e
-                                        .target
-                                        .value,
-                                })
-                            )
-                        }
-                    />
-                    <select
-                        className="border rounded-lg px-3 py-2"
-                        value={
-                            pending.status
-                        }
-                        onChange={(e) =>
-                            setPending(
-                                (d) => ({
-                                    ...d,
-                                    status:
-                                        e
-                                            .target
-                                            .value,
-                                })
-                            )
-                        }
-                    >
-                        <option value="PUBLISHED">
-                            PUBLISHED
-                        </option>
-                        <option value="PENDING">
-                            PENDING
-                        </option>
-                    </select>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
-                    <select
-                        className="border rounded-lg px-3 py-2"
-                        value={
-                            pending
-                                .categoryId
-                        }
-                        onChange={(e) =>
-                            setPending(
-                                (d) => ({
-                                    ...d,
-                                    categoryId:
-                                        e
-                                            .target
-                                            .value,
-                                })
-                            )
-                        }
-                    >
-                        <option value="">
-                            {catsQ.isLoading
-                                ? "Loading…"
-                                : "— Category —"}
-                        </option>
-                        {catsQ.data?.map(
-                            (c) => (
-                                <option
-                                    key={c.id}
-                                    value={
-                                        c.id
-                                    }
-                                >
-                                    {
-                                        c.name
-                                    }
-                                </option>
-                            )
-                        )}
-                    </select>
-
-                    <select
-                        className="border rounded-lg px-3 py-2"
-                        value={
-                            pending.brandId
-                        }
-                        onChange={(e) =>
-                            setPending(
-                                (d) => ({
-                                    ...d,
-                                    brandId:
-                                        e
-                                            .target
-                                            .value,
-                                })
-                            )
-                        }
-                    >
-                        <option value="">
-                            — Brand —
-                        </option>
-                        {brandsQ.data?.map(
-                            (b) => (
-                                <option
-                                    key={b.id}
-                                    value={
-                                        b.id
-                                    }
-                                >
-                                    {
-                                        b.name
-                                    }
-                                </option>
-                            )
-                        )}
-                    </select>
-
-                    <select
-                        className="border rounded-lg px-3 py-2"
-                        value={
-                            pending
-                                .supplierId
-                        }
-                        onChange={(e) =>
-                            setPending(
-                                (d) => ({
-                                    ...d,
-                                    supplierId:
-                                        e
-                                            .target
-                                            .value,
-                                })
-                            )
-                        }
-                    >
-                        <option value="">
-                            — Supplier —
-                        </option>
-                        {suppliersQ.data?.map(
-                            (s) => (
-                                <option
-                                    key={s.id}
-                                    value={
-                                        s.id
-                                    }
-                                >
-                                    {
-                                        s.name
-                                    }
-                                </option>
-                            )
-                        )}
-                    </select>
-
-                    <input
-                        className="border rounded-lg px-3 py-2"
-                        placeholder="Communication cost"
-                        inputMode="decimal"
-                        value={
-                            pending
-                                .communicationCost
-                        }
-                        onChange={(e) =>
-                            setPending(
-                                (d) => ({
-                                    ...d,
-                                    communicationCost:
-                                        e
-                                            .target
-                                            .value,
-                                })
-                            )
-                        }
-                    />
-                </div>
-
-                {/* Description */}
-                <div className="rounded-lg border bg-white p-3">
-                    <label className="block text-xs font-semibold mb-1">
-                        Description
-                    </label>
-                    <textarea
-                        className="w-full border rounded-lg px-3 py-2 min-h-[80px]"
-                        placeholder="Enter product description…"
-                        value={
-                            pending
-                                .description
-                        }
-                        onChange={(e) =>
-                            setPending(
-                                (d) => ({
-                                    ...d,
-                                    description:
-                                        e
-                                            .target
-                                            .value,
-                                })
-                            )
-                        }
-                    />
-                </div>
-
-                {/* Images */}
-                <div className="rounded-lg border bg-white p-3">
-                    <div className="flex items-center justify-between mb-2">
-                        <div>
-                            <h3 className="font-semibold text-sm">
-                                Images
-                            </h3>
-                            <p className="text-[11px] text-zinc-500">
-                                Paste image URLs
-                                (one per line) or
-                                upload files.
-                                Stored in{" "}
-                                <code>
-                                    imagesJson
-                                </code>
-                                .
-                            </p>
-                        </div>
                     </div>
+                )}
 
-                    <label className="block text-xs text-zinc-600 mb-1">
-                        Image URLs (one per
-                        line)
-                    </label>
-                    <textarea
-                        className="w-full border rounded-lg px-3 py-2 text-xs mb-3"
-                        rows={3}
-                        placeholder={
-                            "https://.../image1.jpg\nhttps://.../image2.png"
-                        }
-                        value={
-                            pending
-                                .imageUrls
-                        }
-                        onChange={(e) =>
-                            setPending(
-                                (d) => ({
-                                    ...d,
-                                    imageUrls:
-                                        e
-                                            .target
-                                            .value,
-                                })
-                            )
-                        }
-                    />
 
-                    <div className="flex items-center gap-3 mb-2">
+
+                {/* Top form: add + edit */}
+                <div
+                    id="create-form"
+                    className="grid gap-2"
+                >
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
                         <input
-                            ref={
-                                fileInputRef
+                            className="border rounded-lg px-3 py-2"
+                            placeholder="Title"
+                            value={
+                                pending.title
                             }
-                            id="product-file-input"
-                            type="file"
-                            multiple
-                            accept="image/*"
                             onChange={(e) =>
-                                setFiles(
-                                    Array.from(
-                                        e
-                                            .target
-                                            .files ||
-                                        []
-                                    )
+                                setPending(
+                                    (d) => ({
+                                        ...d,
+                                        title:
+                                            e
+                                                .target
+                                                .value,
+                                    })
                                 )
                             }
-                            className="hidden"
                         />
-                        <label
-                            htmlFor="product-file-input"
-                            className="inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium border cursor-pointer bg-zinc-50 hover:bg-zinc-100"
-                        >
-                            Choose files
-                        </label>
-                        {!!files.length && (
-                            <span className="text-[11px] text-zinc-500">
-                                {
-                                    files.length
-                                }{" "}
-                                file
-                                {files.length ===
-                                    1
-                                    ? ""
-                                    : "s"}{" "}
-                                selected
-                            </span>
-                        )}
-                        <button
-                            type="button"
-                            onClick={
-                                uploadLocalFiles
+                        <input
+                            className="border rounded-lg px-3 py-2"
+                            placeholder="Price"
+                            inputMode="decimal"
+                            value={
+                                pending.price
                             }
-                            className="ml-auto inline-flex items-center rounded-md border px-3 py-1.5 text-xs hover:bg-zinc-50 disabled:opacity-50"
-                            disabled={
-                                uploading ||
-                                files.length ===
-                                0
+                            onChange={(e) =>
+                                setPending(
+                                    (d) => ({
+                                        ...d,
+                                        price:
+                                            e
+                                                .target
+                                                .value,
+                                    })
+                                )
+                            }
+                        />
+                        <input
+                            className="border rounded-lg px-3 py-2"
+                            placeholder="Base SKU"
+                            value={
+                                pending.sku
+                            }
+                            onChange={(e) =>
+                                setPending(
+                                    (d) => ({
+                                        ...d,
+                                        sku: e
+                                            .target
+                                            .value,
+                                    })
+                                )
+                            }
+                        />
+                        <select
+                            className="border rounded-lg px-3 py-2"
+                            value={
+                                pending.status
+                            }
+                            onChange={(e) =>
+                                setPending(
+                                    (d) => ({
+                                        ...d,
+                                        status:
+                                            e
+                                                .target
+                                                .value,
+                                    })
+                                )
                             }
                         >
-                            {uploading
-                                ? "Uploading…"
-                                : "Upload selected now"}
-                        </button>
+                            <option value="PUBLISHED">
+                                PUBLISHED
+                            </option>
+                            <option value="PENDING">
+                                PENDING
+                            </option>
+                        </select>
                     </div>
 
-                    {(urlPreviews.length >
-                        0 ||
-                        filePreviews.length >
-                        0) && (
-                            <div className="grid md:grid-cols-2 gap-3 mt-2">
-                                {urlPreviews.length >
-                                    0 && (
-                                        <div className="border rounded-md">
-                                            <div className="px-2 py-1.5 text-xs font-semibold border-b bg-zinc-50">
-                                                URL previews
-                                            </div>
-                                            <div className="p-2 space-y-2">
-                                                {urlPreviews.map(
-                                                    (
-                                                        u,
-                                                        i
-                                                    ) => (
-                                                        <div
-                                                            key={`url-${i}`}
-                                                            className="flex items-start gap-2"
-                                                        >
-                                                            <div className="w-16 h-12 bg-zinc-100 border rounded overflow-hidden shrink-0">
-                                                                <img
-                                                                    src={
-                                                                        u
-                                                                    }
-                                                                    alt=""
-                                                                    className="w-full h-full object-cover"
-                                                                />
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                        <select
+                            className="border rounded-lg px-3 py-2"
+                            value={
+                                pending
+                                    .categoryId
+                            }
+                            onChange={(e) =>
+                                setPending(
+                                    (d) => ({
+                                        ...d,
+                                        categoryId:
+                                            e
+                                                .target
+                                                .value,
+                                    })
+                                )
+                            }
+                        >
+                            <option value="">
+                                {catsQ.isLoading
+                                    ? "Loading…"
+                                    : "— Category —"}
+                            </option>
+                            {catsQ.data?.map(
+                                (c) => (
+                                    <option
+                                        key={c.id}
+                                        value={
+                                            c.id
+                                        }
+                                    >
+                                        {
+                                            c.name
+                                        }
+                                    </option>
+                                )
+                            )}
+                        </select>
+
+                        <select
+                            className="border rounded-lg px-3 py-2"
+                            value={
+                                pending.brandId
+                            }
+                            onChange={(e) =>
+                                setPending(
+                                    (d) => ({
+                                        ...d,
+                                        brandId:
+                                            e
+                                                .target
+                                                .value,
+                                    })
+                                )
+                            }
+                        >
+                            <option value="">
+                                — Brand —
+                            </option>
+                            {brandsQ.data?.map(
+                                (b) => (
+                                    <option
+                                        key={b.id}
+                                        value={
+                                            b.id
+                                        }
+                                    >
+                                        {
+                                            b.name
+                                        }
+                                    </option>
+                                )
+                            )}
+                        </select>
+
+                        <select
+                            className="border rounded-lg px-3 py-2"
+                            value={
+                                pending
+                                    .supplierId
+                            }
+                            onChange={(e) =>
+                                setPending(
+                                    (d) => ({
+                                        ...d,
+                                        supplierId:
+                                            e
+                                                .target
+                                                .value,
+                                    })
+                                )
+                            }
+                        >
+                            <option value="">
+                                — Supplier —
+                            </option>
+                            {suppliersQ.data?.map(
+                                (s) => (
+                                    <option
+                                        key={s.id}
+                                        value={
+                                            s.id
+                                        }
+                                    >
+                                        {
+                                            s.name
+                                        }
+                                    </option>
+                                )
+                            )}
+                        </select>
+
+                        <input
+                            className="border rounded-lg px-3 py-2"
+                            placeholder="Communication cost"
+                            inputMode="decimal"
+                            value={
+                                pending
+                                    .communicationCost
+                            }
+                            onChange={(e) =>
+                                setPending(
+                                    (d) => ({
+                                        ...d,
+                                        communicationCost:
+                                            e
+                                                .target
+                                                .value,
+                                    })
+                                )
+                            }
+                        />
+                    </div>
+
+                    {/* Description */}
+                    <div className="rounded-lg border bg-white p-3">
+                        <label className="block text-xs font-semibold mb-1">
+                            Description
+                        </label>
+                        <textarea
+                            className="w-full border rounded-lg px-3 py-2 min-h-[80px]"
+                            placeholder="Enter product description…"
+                            value={
+                                pending
+                                    .description
+                            }
+                            onChange={(e) =>
+                                setPending(
+                                    (d) => ({
+                                        ...d,
+                                        description:
+                                            e
+                                                .target
+                                                .value,
+                                    })
+                                )
+                            }
+                        />
+                    </div>
+
+                    {/* Images */}
+                    <div className="rounded-lg border bg-white p-3">
+                        <div className="flex items-center justify-between mb-2">
+                            <div>
+                                <h3 className="font-semibold text-sm">
+                                    Images
+                                </h3>
+                                <p className="text-[11px] text-zinc-500">
+                                    Paste image URLs
+                                    (one per line) or
+                                    upload files.
+                                    Stored in{" "}
+                                    <code>
+                                        imagesJson
+                                    </code>
+                                    .
+                                </p>
+                            </div>
+                        </div>
+
+                        <label className="block text-xs text-zinc-600 mb-1">
+                            Image URLs (one per
+                            line)
+                        </label>
+                        <textarea
+                            className="w-full border rounded-lg px-3 py-2 text-xs mb-3"
+                            rows={3}
+                            placeholder={
+                                "https://.../image1.jpg\nhttps://.../image2.png"
+                            }
+                            value={
+                                pending
+                                    .imageUrls
+                            }
+                            onChange={(e) =>
+                                setPending(
+                                    (d) => ({
+                                        ...d,
+                                        imageUrls:
+                                            e
+                                                .target
+                                                .value,
+                                    })
+                                )
+                            }
+                        />
+
+                        <div className="flex items-center gap-3 mb-2">
+                            <input
+                                ref={
+                                    fileInputRef
+                                }
+                                id="product-file-input"
+                                type="file"
+                                multiple
+                                accept="image/*"
+                                onChange={(e) =>
+                                    setFiles(
+                                        Array.from(
+                                            e
+                                                .target
+                                                .files ||
+                                            []
+                                        )
+                                    )
+                                }
+                                className="hidden"
+                            />
+                            <label
+                                htmlFor="product-file-input"
+                                className="inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium border cursor-pointer bg-zinc-50 hover:bg-zinc-100"
+                            >
+                                Choose files
+                            </label>
+                            {!!files.length && (
+                                <span className="text-[11px] text-zinc-500">
+                                    {
+                                        files.length
+                                    }{" "}
+                                    file
+                                    {files.length ===
+                                        1
+                                        ? ""
+                                        : "s"}{" "}
+                                    selected
+                                </span>
+                            )}
+                            <button
+                                type="button"
+                                onClick={
+                                    uploadLocalFiles
+                                }
+                                className="ml-auto inline-flex items-center rounded-md border px-3 py-1.5 text-xs hover:bg-zinc-50 disabled:opacity-50"
+                                disabled={
+                                    uploading ||
+                                    files.length ===
+                                    0
+                                }
+                            >
+                                {uploading
+                                    ? "Uploading…"
+                                    : "Upload selected now"}
+                            </button>
+                        </div>
+
+                        {(urlPreviews.length >
+                            0 ||
+                            filePreviews.length >
+                            0) && (
+                                <div className="grid md:grid-cols-2 gap-3 mt-2">
+                                    {urlPreviews.length >
+                                        0 && (
+                                            <div className="border rounded-md">
+                                                <div className="px-2 py-1.5 text-xs font-semibold border-b bg-zinc-50">
+                                                    URL previews
+                                                </div>
+                                                <div className="p-2 space-y-2">
+                                                    {urlPreviews.map(
+                                                        (
+                                                            u,
+                                                            i
+                                                        ) => (
+                                                            <div
+                                                                key={`url-${i}`}
+                                                                className="flex items-start gap-2"
+                                                            >
+                                                                <div className="w-16 h-12 bg-zinc-100 border rounded overflow-hidden shrink-0">
+                                                                    <img
+                                                                        src={
+                                                                            u
+                                                                        }
+                                                                        alt=""
+                                                                        className="w-full h-full object-cover"
+                                                                    />
+                                                                </div>
+                                                                <div className="flex-1 min-w-0">
+                                                                    <input
+                                                                        className="w-full border rounded px-2 py-1 text-[10px]"
+                                                                        value={
+                                                                            u
+                                                                        }
+                                                                        onChange={(
+                                                                            e
+                                                                        ) =>
+                                                                            setUrlAt(
+                                                                                i,
+                                                                                e
+                                                                                    .target
+                                                                                    .value
+                                                                            )
+                                                                        }
+                                                                    />
+                                                                    <div className="flex gap-1 mt-1">
+                                                                        <button
+                                                                            type="button"
+                                                                            className="px-1.5 py-0.5 text-[9px] border rounded"
+                                                                            onClick={() =>
+                                                                                moveUrl(
+                                                                                    i,
+                                                                                    -1
+                                                                                )
+                                                                            }
+                                                                            disabled={
+                                                                                i ===
+                                                                                0
+                                                                            }
+                                                                        >
+                                                                            ↑
+                                                                        </button>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="px-1.5 py-0.5 text-[9px] border rounded"
+                                                                            onClick={() =>
+                                                                                moveUrl(
+                                                                                    i,
+                                                                                    +1
+                                                                                )
+                                                                            }
+                                                                            disabled={
+                                                                                i ===
+                                                                                urlPreviews.length -
+                                                                                1
+                                                                            }
+                                                                        >
+                                                                            ↓
+                                                                        </button>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="ml-auto px-1.5 py-0.5 text-[9px] rounded bg-rose-600 text-white"
+                                                                            onClick={() =>
+                                                                                removeUrlAt(
+                                                                                    i
+                                                                                )
+                                                                            }
+                                                                        >
+                                                                            Remove
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
                                                             </div>
-                                                            <div className="flex-1 min-w-0">
-                                                                <input
-                                                                    className="w-full border rounded px-2 py-1 text-[10px]"
+                                                        )
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                    {filePreviews.length >
+                                        0 && (
+                                            <div className="border rounded-md">
+                                                <div className="px-2 py-1.5 text-xs font-semibold border-b bg-zinc-50">
+                                                    Local files
+                                                </div>
+                                                <div className="p-2 space-y-2">
+                                                    {filePreviews.map(
+                                                        (
+                                                            {
+                                                                f,
+                                                                url,
+                                                            },
+                                                            i
+                                                        ) => (
+                                                            <div
+                                                                key={`file-${i}`}
+                                                                className="flex items-start gap-2"
+                                                            >
+                                                                <div className="w-16 h-12 bg-zinc-100 border rounded overflow-hidden shrink-0">
+                                                                    <img
+                                                                        src={
+                                                                            url
+                                                                        }
+                                                                        alt=""
+                                                                        className="w-full h-full object-cover"
+                                                                    />
+                                                                </div>
+                                                                <div className="flex-1 min-w-0">
+                                                                    <div className="text-[10px] font-medium truncate">
+                                                                        {
+                                                                            f.name
+                                                                        }
+                                                                    </div>
+                                                                    <div className="text-[9px] text-zinc-500">
+                                                                        {(
+                                                                            f.size /
+                                                                            1024
+                                                                        ).toFixed(
+                                                                            0
+                                                                        )}{" "}
+                                                                        KB •{" "}
+                                                                        {f.type ||
+                                                                            "image/*"}
+                                                                    </div>
+                                                                    <div className="flex gap-1 mt-1">
+                                                                        <label className="px-1.5 py-0.5 text-[9px] border rounded cursor-pointer">
+                                                                            Replace
+                                                                            <input
+                                                                                type="file"
+                                                                                accept="image/*"
+                                                                                className="hidden"
+                                                                                onChange={(
+                                                                                    e
+                                                                                ) => {
+                                                                                    const nf =
+                                                                                        e
+                                                                                            .target
+                                                                                            .files?.[0];
+                                                                                    if (
+                                                                                        nf
+                                                                                    )
+                                                                                        replaceFileAt(
+                                                                                            i,
+                                                                                            nf
+                                                                                        );
+                                                                                }}
+                                                                            />
+                                                                        </label>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="px-1.5 py-0.5 text-[9px] border rounded"
+                                                                            onClick={() =>
+                                                                                moveFile(
+                                                                                    i,
+                                                                                    -1
+                                                                                )
+                                                                            }
+                                                                            disabled={
+                                                                                i ===
+                                                                                0
+                                                                            }
+                                                                        >
+                                                                            ↑
+                                                                        </button>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="px-1.5 py-0.5 text-[9px] border rounded"
+                                                                            onClick={() =>
+                                                                                moveFile(
+                                                                                    i,
+                                                                                    +1
+                                                                                )
+                                                                            }
+                                                                            disabled={
+                                                                                i ===
+                                                                                filePreviews.length -
+                                                                                1
+                                                                            }
+                                                                        >
+                                                                            ↓
+                                                                        </button>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="ml-auto px-1.5 py-0.5 text-[9px] rounded bg-rose-600 text-white"
+                                                                            onClick={() =>
+                                                                                removeFileAt(
+                                                                                    i
+                                                                                )
+                                                                            }
+                                                                        >
+                                                                            Remove
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        )
+                                                    )}
+                                                    <div className="pt-1 border-t flex justify-end">
+                                                        <button
+                                                            type="button"
+                                                            className="px-2 py-0.5 text-[9px] border rounded"
+                                                            onClick={() =>
+                                                                setFiles(
+                                                                    []
+                                                                )
+                                                            }
+                                                        >
+                                                            Clear all
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                </div>
+                            )}
+
+                        <p className="mt-1 text-[10px] text-zinc-500">
+                            Files (if any) are
+                            uploaded and URLs
+                            stored when you
+                            click{" "}
+                            <strong>
+                                {editingId
+                                    ? "Save Changes"
+                                    : "Add Product"}
+                            </strong>
+                            .
+                        </p>
+                    </div>
+
+                    {/* Variants: select-in-row + price bump, green dot on selected options */}
+                    <div className="rounded-lg border bg-white p-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h3 className="font-semibold text-sm">
+                                    Variant combinations
+                                </h3>
+                                <p className="text-[10px] text-zinc-500">
+                                    Each row: pick any
+                                    attribute values
+                                    you want for that
+                                    combo and set one
+                                    price bump.
+                                    Selected selects
+                                    show a green dot;
+                                    empty selects mean
+                                    that attribute is
+                                    ignored for that
+                                    row.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={addVariantRow}
+                                className="px-2 py-1.5 text-xs rounded-md border bg-zinc-50 hover:bg-zinc-100"
+                            >
+                                + Add variant row
+                            </button>
+                        </div>
+
+                        {selectableAttrs.length ===
+                            0 && (
+                                <p className="text-[10px] text-zinc-500">
+                                    No selectable
+                                    attributes found.
+                                    Configure
+                                    attributes in
+                                    Catalog Settings
+                                    first.
+                                </p>
+                            )}
+
+                        {variantRows.length >
+                            0 &&
+                            selectableAttrs.length >
+                            0 && (
+                                <div className="space-y-2">
+                                    {variantRows.map(
+                                        (row) => (
+                                            <div
+                                                key={
+                                                    row.id
+                                                }
+                                                className="flex flex-wrap items-center gap-2 border rounded-md px-2 py-2"
+                                            >
+                                                {selectableAttrs.map(
+                                                    (
+                                                        attr
+                                                    ) => {
+                                                        const valueId =
+                                                            row
+                                                                .selections[
+                                                            attr
+                                                                .id
+                                                            ] ||
+                                                            "";
+                                                        const hasSelection =
+                                                            !!valueId;
+                                                        return (
+                                                            <div
+                                                                key={
+                                                                    attr.id
+                                                                }
+                                                                className="flex items-center gap-1"
+                                                            >
+                                                                {hasSelection && (
+                                                                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+                                                                )}
+                                                                <select
+                                                                    className="border rounded px-2 py-1 text-[10px] bg-white"
                                                                     value={
-                                                                        u
+                                                                        valueId
                                                                     }
                                                                     onChange={(
                                                                         e
                                                                     ) =>
-                                                                        setUrlAt(
-                                                                            i,
+                                                                        updateVariantSelection(
+                                                                            row.id,
+                                                                            attr.id,
                                                                             e
                                                                                 .target
                                                                                 .value
                                                                         )
                                                                     }
-                                                                />
-                                                                <div className="flex gap-1 mt-1">
-                                                                    <button
-                                                                        className="px-1.5 py-0.5 text-[9px] border rounded"
-                                                                        onClick={() =>
-                                                                            moveUrl(
-                                                                                i,
-                                                                                -1
-                                                                            )
+                                                                >
+                                                                    <option value="">
+                                                                        {
+                                                                            attr.name
                                                                         }
-                                                                        disabled={
-                                                                            i ===
-                                                                            0
-                                                                        }
-                                                                    >
-                                                                        ↑
-                                                                    </button>
-                                                                    <button
-                                                                        className="px-1.5 py-0.5 text-[9px] border rounded"
-                                                                        onClick={() =>
-                                                                            moveUrl(
-                                                                                i,
-                                                                                +1
-                                                                            )
-                                                                        }
-                                                                        disabled={
-                                                                            i ===
-                                                                            urlPreviews.length -
-                                                                            1
-                                                                        }
-                                                                    >
-                                                                        ↓
-                                                                    </button>
-                                                                    <button
-                                                                        className="ml-auto px-1.5 py-0.5 text-[9px] rounded bg-rose-600 text-white"
-                                                                        onClick={() =>
-                                                                            removeUrlAt(
-                                                                                i
-                                                                            )
-                                                                        }
-                                                                    >
-                                                                        Remove
-                                                                    </button>
-                                                                </div>
+                                                                    </option>
+                                                                    {(attr.values ||
+                                                                        []
+                                                                    ).map(
+                                                                        (
+                                                                            v
+                                                                        ) => (
+                                                                            <option
+                                                                                key={
+                                                                                    v.id
+                                                                                }
+                                                                                value={
+                                                                                    v.id
+                                                                                }
+                                                                            >
+                                                                                {
+                                                                                    v.name
+                                                                                }
+                                                                            </option>
+                                                                        )
+                                                                    )}
+                                                                </select>
                                                             </div>
-                                                        </div>
-                                                    )
+                                                        );
+                                                    }
                                                 )}
-                                            </div>
-                                        </div>
-                                    )}
 
-                                {filePreviews.length >
-                                    0 && (
-                                        <div className="border rounded-md">
-                                            <div className="px-2 py-1.5 text-xs font-semibold border-b bg-zinc-50">
-                                                Local files
-                                            </div>
-                                            <div className="p-2 space-y-2">
-                                                {filePreviews.map(
-                                                    (
-                                                        {
-                                                            f,
-                                                            url,
-                                                        },
-                                                        i
-                                                    ) => (
-                                                        <div
-                                                            key={`file-${i}`}
-                                                            className="flex items-start gap-2"
-                                                        >
-                                                            <div className="w-16 h-12 bg-zinc-100 border rounded overflow-hidden shrink-0">
-                                                                <img
-                                                                    src={
-                                                                        url
-                                                                    }
-                                                                    alt=""
-                                                                    className="w-full h-full object-cover"
-                                                                />
-                                                            </div>
-                                                            <div className="flex-1 min-w-0">
-                                                                <div className="text-[10px] font-medium truncate">
-                                                                    {
-                                                                        f.name
-                                                                    }
-                                                                </div>
-                                                                <div className="text-[9px] text-zinc-500">
-                                                                    {(
-                                                                        f.size /
-                                                                        1024
-                                                                    ).toFixed(
-                                                                        0
-                                                                    )}{" "}
-                                                                    KB •{" "}
-                                                                    {f.type ||
-                                                                        "image/*"}
-                                                                </div>
-                                                                <div className="flex gap-1 mt-1">
-                                                                    <label className="px-1.5 py-0.5 text-[9px] border rounded cursor-pointer">
-                                                                        Replace
-                                                                        <input
-                                                                            type="file"
-                                                                            accept="image/*"
-                                                                            className="hidden"
-                                                                            onChange={(
-                                                                                e
-                                                                            ) => {
-                                                                                const nf =
-                                                                                    e
-                                                                                        .target
-                                                                                        .files?.[0];
-                                                                                if (
-                                                                                    nf
-                                                                                )
-                                                                                    replaceFileAt(
-                                                                                        i,
-                                                                                        nf
-                                                                                    );
-                                                                            }}
-                                                                        />
-                                                                    </label>
-                                                                    <button
-                                                                        className="px-1.5 py-0.5 text-[9px] border rounded"
-                                                                        onClick={() =>
-                                                                            moveFile(
-                                                                                i,
-                                                                                -1
-                                                                            )
-                                                                        }
-                                                                        disabled={
-                                                                            i ===
-                                                                            0
-                                                                        }
-                                                                    >
-                                                                        ↑
-                                                                    </button>
-                                                                    <button
-                                                                        className="px-1.5 py-0.5 text-[9px] border rounded"
-                                                                        onClick={() =>
-                                                                            moveFile(
-                                                                                i,
-                                                                                +1
-                                                                            )
-                                                                        }
-                                                                        disabled={
-                                                                            i ===
-                                                                            filePreviews.length -
-                                                                            1
-                                                                        }
-                                                                    >
-                                                                        ↓
-                                                                    </button>
-                                                                    <button
-                                                                        className="ml-auto px-1.5 py-0.5 text-[9px] rounded bg-rose-600 text-white"
-                                                                        onClick={() =>
-                                                                            removeFileAt(
-                                                                                i
-                                                                            )
-                                                                        }
-                                                                    >
-                                                                        Remove
-                                                                    </button>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    )
-                                                )}
-                                                <div className="pt-1 border-t flex justify-end">
-                                                    <button
-                                                        className="px-2 py-0.5 text-[9px] border rounded"
-                                                        onClick={() =>
-                                                            setFiles(
-                                                                []
+                                                <div className="flex items-center gap-1 ml-2">
+                                                    <span className="text-[10px] text-zinc-500">
+                                                        Price
+                                                        bump
+                                                    </span>
+                                                    <input
+                                                        className="w-20 border rounded px-1 py-1 text-[10px]"
+                                                        placeholder="+0"
+                                                        inputMode="decimal"
+                                                        value={
+                                                            row.priceBump
+                                                        }
+                                                        onChange={(
+                                                            e
+                                                        ) =>
+                                                            updateVariantPriceBump(
+                                                                row.id,
+                                                                e
+                                                                    .target
+                                                                    .value
                                                             )
                                                         }
-                                                    >
-                                                        Clear all
-                                                    </button>
+                                                    />
+                                                    <span className="text-[10px] text-zinc-400">
+                                                        (for this
+                                                        combo)
+                                                    </span>
                                                 </div>
-                                            </div>
-                                        </div>
-                                    )}
-                            </div>
-                        )}
 
-                    <p className="mt-1 text-[10px] text-zinc-500">
-                        Files (if any) are
-                        uploaded and URLs
-                        stored when you
-                        click{" "}
-                        <strong>
-                            {editingId
-                                ? "Save Changes"
-                                : "Add Product"}
-                        </strong>
-                        .
-                    </p>
-                </div>
-
-                {/* Variants: select-in-row + price bump, green dot on selected options */}
-                <div className="rounded-lg border bg-white p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <h3 className="font-semibold text-sm">
-                                Variant combinations
-                            </h3>
-                            <p className="text-[10px] text-zinc-500">
-                                Each row: pick any
-                                attribute values
-                                you want for that
-                                combo and set one
-                                price bump.
-                                Selected selects
-                                show a green dot;
-                                empty selects mean
-                                that attribute is
-                                ignored for that
-                                row.
-                            </p>
-                        </div>
-                        <button
-                            type="button"
-                            onClick={addVariantRow}
-                            className="px-2 py-1.5 text-xs rounded-md border bg-zinc-50 hover:bg-zinc-100"
-                        >
-                            + Add variant row
-                        </button>
-                    </div>
-
-                    {selectableAttrs.length ===
-                        0 && (
-                            <p className="text-[10px] text-zinc-500">
-                                No selectable
-                                attributes found.
-                                Configure
-                                attributes in
-                                Catalog Settings
-                                first.
-                            </p>
-                        )}
-
-                    {variantRows.length >
-                        0 &&
-                        selectableAttrs.length >
-                        0 && (
-                            <div className="space-y-2">
-                                {variantRows.map(
-                                    (row) => (
-                                        <div
-                                            key={
-                                                row.id
-                                            }
-                                            className="flex flex-wrap items-center gap-2 border rounded-md px-2 py-2"
-                                        >
-                                            {selectableAttrs.map(
-                                                (
-                                                    attr
-                                                ) => {
-                                                    const valueId =
-                                                        row
-                                                            .selections[
-                                                        attr
-                                                            .id
-                                                        ] ||
-                                                        "";
-                                                    const hasSelection =
-                                                        !!valueId;
-                                                    return (
-                                                        <div
-                                                            key={
-                                                                attr.id
-                                                            }
-                                                            className="flex items-center gap-1"
-                                                        >
-                                                            {hasSelection && (
-                                                                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
-                                                            )}
-                                                            <select
-                                                                className="border rounded px-2 py-1 text-[10px] bg-white"
-                                                                value={
-                                                                    valueId
-                                                                }
-                                                                onChange={(
-                                                                    e
-                                                                ) =>
-                                                                    updateVariantSelection(
-                                                                        row.id,
-                                                                        attr.id,
-                                                                        e
-                                                                            .target
-                                                                            .value
-                                                                    )
-                                                                }
-                                                            >
-                                                                <option value="">
-                                                                    {
-                                                                        attr.name
-                                                                    }
-                                                                </option>
-                                                                {(attr.values ||
-                                                                    []
-                                                                ).map(
-                                                                    (
-                                                                        v
-                                                                    ) => (
-                                                                        <option
-                                                                            key={
-                                                                                v.id
-                                                                            }
-                                                                            value={
-                                                                                v.id
-                                                                            }
-                                                                        >
-                                                                            {
-                                                                                v.name
-                                                                            }
-                                                                        </option>
-                                                                    )
-                                                                )}
-                                                            </select>
-                                                        </div>
-                                                    );
-                                                }
-                                            )}
-
-                                            <div className="flex items-center gap-1 ml-2">
-                                                <span className="text-[10px] text-zinc-500">
-                                                    Price
-                                                    bump
-                                                </span>
-                                                <input
-                                                    className="w-20 border rounded px-1 py-1 text-[10px]"
-                                                    placeholder="+0"
-                                                    inputMode="decimal"
-                                                    value={
-                                                        row.priceBump
-                                                    }
-                                                    onChange={(
-                                                        e
-                                                    ) =>
-                                                        updateVariantPriceBump(
-                                                            row.id,
-                                                            e
-                                                                .target
-                                                                .value
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        removeVariantRow(
+                                                            row.id
                                                         )
                                                     }
-                                                />
-                                                <span className="text-[10px] text-zinc-400">
-                                                    (for this
-                                                    combo)
-                                                </span>
+                                                    className="ml-auto px-2 py-1 text-[10px] rounded bg-rose-50 text-rose-700 border border-rose-200"
+                                                >
+                                                    Remove
+                                                </button>
                                             </div>
+                                        )
+                                    )}
+                                </div>
+                            )}
+                    </div>
+                </div>
 
-                                            <button
-                                                type="button"
-                                                onClick={() =>
-                                                    removeVariantRow(
-                                                        row.id
-                                                    )
-                                                }
-                                                className="ml-auto px-2 py-1 text-[10px] rounded bg-rose-50 text-rose-700 border border-rose-200"
-                                            >
-                                                Remove
-                                            </button>
-                                        </div>
+                <div className="flex gap-2 items-center">
+                    <button
+                        type="button"
+                        onClick={saveOrCreate}
+                        className="px-3 py-2 rounded-md bg-emerald-600 text-white text-sm disabled:opacity-60"
+                        disabled={
+                            uploading ||
+                            createM.isPending ||
+                            updateM.isPending
+                        }
+                    >
+                        {uploading
+                            ? "Uploading…"
+                            : editingId
+                                ? "Save Changes"
+                                : "Add Product"}
+                    </button>
+
+                    {editingId && (
+                        <>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setEditingId(null);
+                                    setOffersProductId(null);
+                                    setPending(defaultPending);
+                                    setSelectedAttrs({});
+                                    setFiles([]);
+                                    if (fileInputRef.current)
+                                        fileInputRef.current.value = "";
+                                    resetVariantState();
+
+                                }}
+                                className="px-3 py-2 rounded-md bg-zinc-900 text-white text-sm"
+                            >
+                                Confirm &amp; Close
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setEditingId(null);
+                                    setPending(defaultPending);
+                                    setSelectedAttrs({});
+                                    setFiles([]);
+                                    if (fileInputRef.current)
+                                        fileInputRef.current.value = "";
+                                    resetVariantState();
+                                }}
+                                className="px-3 py-2 rounded-md border text-sm"
+                            >
+                                Cancel
+                            </button>
+                        </>
+                    )}
+                </div>
+
+
+                {/* Search */}
+                <div className="flex gap-2 items-center">
+                    <div className="relative flex-1">
+                        <Search
+                            size={16}
+                            className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+                        />
+                        <input
+                            value={
+                                searchInput
+                            }
+                            onChange={(e) =>
+                                setSearchInput(
+                                    e.target
+                                        .value
+                                )
+                            }
+                            placeholder="Search title, sku…"
+                            className="pl-9 pr-3 py-2 rounded-md border bg-white w-full text-sm"
+                        />
+                    </div>
+                </div>
+
+                {/* Filter chips */}
+                <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-zinc-500">
+                        Filters:
+                    </span>
+                    {[
+                        ["all", "All"],
+                        ["live", "Live"],
+                        ["published", "Published"],
+                        ["pending", "Pending"],
+                        ["rejected", "Rejected"],
+                        [
+                            "published-with-active",
+                            "Published w/ Active",
+                        ],
+                        [
+                            "published-with-offer",
+                            "Published w/ Offer",
+                        ],
+                        [
+                            "published-no-offer",
+                            "Published no Offer",
+                        ],
+                        ["no-offer", "No Offer"],
+                        [
+                            "with-variants",
+                            "With variants",
+                        ],
+                        ["simple", "Simple"],
+                        [
+                            "published-base-in",
+                            "Published base in",
+                        ],
+                        [
+                            "published-base-out",
+                            "Published base out",
+                        ],
+                    ].map(
+                        ([
+                            key,
+                            label,
+                        ]) => (
+                            <button
+                                type="button"
+                                key={key}
+                                onClick={() =>
+                                    setPresetAndUrl(
+                                        key as FilterPreset
                                     )
-                                )}
-                            </div>
+                                }
+                                className={`px-2.5 py-1.5 rounded-full border text-xs ${preset ===
+                                    key
+                                    ? "bg-zinc-900 text-white"
+                                    : "bg-white hover:bg-zinc-50"
+                                    }`}
+                            >
+                                {label}
+                            </button>
+                        )
+                    )}
+                    {preset !==
+                        "all" && (
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    setPresetAndUrl(
+                                        "all"
+                                    )
+                                }
+                                className="ml-1 px-2 py-1.5 rounded-full text-xs border bg-white hover:bg-zinc-50"
+                            >
+                                Clear
+                            </button>
                         )}
                 </div>
-            </div>
 
-            {/* Top form actions */}
-            <div className="flex gap-2 items-center">
-                <button
-                    onClick={saveOrCreate}
-                    className="px-3 py-2 rounded-md bg-emerald-600 text-white text-sm disabled:opacity-60"
-                    disabled={
-                        uploading ||
-                        createM.isPending ||
-                        updateM.isPending
-                    }
-                >
-                    {uploading
-                        ? "Uploading…"
-                        : editingId
-                            ? "Save Changes"
-                            : "Add Product"}
-                </button>
-
-                {editingId && (
-                    <>
-                        <button
-                            onClick={() => {
-                                setEditingId(
-                                    null
-                                );
-                                setPending(
-                                    defaultPending
-                                );
-                                setSelectedAttrs(
-                                    {}
-                                );
-                                setFiles([]);
-                                if (
-                                    fileInputRef.current
-                                )
-                                    fileInputRef.current.value =
-                                        "";
-                                resetVariantState();
-                            }}
-                            className="px-3 py-2 rounded-md bg-zinc-900 text-white text-sm"
-                        >
-                            Confirm &amp;
-                            Close
-                        </button>
-                        <button
-                            onClick={() => {
-                                setEditingId(
-                                    null
-                                );
-                                setPending(
-                                    defaultPending
-                                );
-                                setSelectedAttrs(
-                                    {}
-                                );
-                                setFiles([]);
-                                if (
-                                    fileInputRef.current
-                                )
-                                    fileInputRef.current.value =
-                                        "";
-                                resetVariantState();
-                            }}
-                            className="px-3 py-2 rounded-md border text-sm"
-                        >
-                            Cancel
-                        </button>
-                    </>
-                )}
-            </div>
-
-            {/* Search */}
-            <div className="flex gap-2 items-center">
-                <div className="relative flex-1">
-                    <Search
-                        size={16}
-                        className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
-                    />
-                    <input
-                        value={
-                            searchInput
-                        }
-                        onChange={(e) =>
-                            setSearchInput(
-                                e.target
-                                    .value
-                            )
-                        }
-                        placeholder="Search title, sku…"
-                        className="pl-9 pr-3 py-2 rounded-md border bg-white w-full text-sm"
-                    />
-                </div>
-            </div>
-
-            {/* Filter chips */}
-            <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-zinc-500">
-                    Filters:
-                </span>
-                {[
-                    ["all", "All"],
-                    ["live", "Live"],
-                    ["published", "Published"],
-                    ["pending", "Pending"],
-                    ["rejected", "Rejected"],
-                    [
-                        "published-with-active",
-                        "Published w/ Active",
-                    ],
-                    [
-                        "published-with-offer",
-                        "Published w/ Offer",
-                    ],
-                    [
-                        "published-no-offer",
-                        "Published no Offer",
-                    ],
-                    ["no-offer", "No Offer"],
-                    [
-                        "with-variants",
-                        "With variants",
-                    ],
-                    ["simple", "Simple"],
-                    [
-                        "published-base-in",
-                        "Published base in",
-                    ],
-                    [
-                        "published-base-out",
-                        "Published base out",
-                    ],
-                ].map(
-                    ([
-                        key,
-                        label,
-                    ]) => (
-                        <button
-                            key={key}
-                            onClick={() =>
-                                setPresetAndUrl(
-                                    key as FilterPreset
-                                )
-                            }
-                            className={`px-2.5 py-1.5 rounded-full border text-xs ${preset ===
-                                key
-                                ? "bg-zinc-900 text-white"
-                                : "bg-white hover:bg-zinc-50"
-                                }`}
-                        >
-                            {label}
-                        </button>
-                    )
-                )}
-                {preset !==
-                    "all" && (
-                        <button
-                            onClick={() =>
-                                setPresetAndUrl(
-                                    "all"
-                                )
-                            }
-                            className="ml-1 px-2 py-1.5 rounded-full text-xs border bg-white hover:bg-zinc-50"
-                        >
-                            Clear
-                        </button>
-                    )}
-            </div>
-
-            {/* Products table */}
-            <div className="border rounded-md overflow-auto">
-                <table className="w-full text-sm">
-                    <thead className="bg-zinc-50">
-                        <tr>
-                            <th
-                                className="text-left px-3 py-2 cursor-pointer select-none"
-                                onClick={() =>
-                                    toggleSort(
-                                        "title"
-                                    )
-                                }
-                            >
-                                Title{" "}
-                                <SortIndicator k="title" />
-                            </th>
-                            <th
-                                className="text-left px-3 py-2 cursor-pointer select-none"
-                                onClick={() =>
-                                    toggleSort(
-                                        "price"
-                                    )
-                                }
-                            >
-                                Price{" "}
-                                <SortIndicator k="price" />
-                            </th>
-                            <th
-                                className="text-left px-3 py-2 cursor-pointer select-none"
-                                onClick={() =>
-                                    toggleSort(
-                                        "avail"
-                                    )
-                                }
-                            >
-                                Avail.{" "}
-                                <SortIndicator k="avail" />
-                            </th>
-                            <th
-                                className="text-left px-3 py-2 cursor-pointer select-none"
-                                onClick={() =>
-                                    toggleSort(
-                                        "stock"
-                                    )
-                                }
-                            >
-                                Stock{" "}
-                                <SortIndicator k="stock" />
-                            </th>
-                            <th
-                                className="text-left px-3 py-2 cursor-pointer select-none"
-                                onClick={() =>
-                                    toggleSort(
-                                        "status"
-                                    )
-                                }
-                            >
-                                Status{" "}
-                                <SortIndicator k="status" />
-                            </th>
-                            {isSuper && (
+                {/* Products table */}
+                <div className="border rounded-md overflow-auto">
+                    <table className="w-full text-sm">
+                        <thead className="bg-zinc-50">
+                            <tr>
                                 <th
                                     className="text-left px-3 py-2 cursor-pointer select-none"
                                     onClick={() =>
                                         toggleSort(
-                                            "owner"
+                                            "title"
                                         )
                                     }
                                 >
-                                    Owner{" "}
-                                    <SortIndicator k="owner" />
+                                    Title{" "}
+                                    <SortIndicator k="title" />
                                 </th>
-                            )}
-                            <th className="text-right px-3 py-2">
-                                Actions
-                            </th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                        {listQ.isLoading && (
-                            <tr>
-                                <td
-                                    className="px-3 py-3"
-                                    colSpan={
-                                        isSuper
-                                            ? 7
-                                            : 6
+                                <th
+                                    className="text-left px-3 py-2 cursor-pointer select-none"
+                                    onClick={() =>
+                                        toggleSort(
+                                            "price"
+                                        )
                                     }
                                 >
-                                    Loading
-                                    products…
-                                </td>
+                                    Price{" "}
+                                    <SortIndicator k="price" />
+                                </th>
+                                <th
+                                    className="text-left px-3 py-2 cursor-pointer select-none"
+                                    onClick={() =>
+                                        toggleSort(
+                                            "avail"
+                                        )
+                                    }
+                                >
+                                    Avail.{" "}
+                                    <SortIndicator k="avail" />
+                                </th>
+                                <th
+                                    className="text-left px-3 py-2 cursor-pointer select-none"
+                                    onClick={() =>
+                                        toggleSort(
+                                            "stock"
+                                        )
+                                    }
+                                >
+                                    Stock{" "}
+                                    <SortIndicator k="stock" />
+                                </th>
+                                <th
+                                    className="text-left px-3 py-2 cursor-pointer select-none"
+                                    onClick={() =>
+                                        toggleSort(
+                                            "status"
+                                        )
+                                    }
+                                >
+                                    Status{" "}
+                                    <SortIndicator k="status" />
+                                </th>
+                                {isSuper && (
+                                    <th
+                                        className="text-left px-3 py-2 cursor-pointer select-none"
+                                        onClick={() =>
+                                            toggleSort(
+                                                "owner"
+                                            )
+                                        }
+                                    >
+                                        Owner{" "}
+                                        <SortIndicator k="owner" />
+                                    </th>
+                                )}
+                                <th className="text-right px-3 py-2">
+                                    Actions
+                                </th>
                             </tr>
-                        )}
-
-                        {!listQ.isLoading &&
-                            displayRows.map(
-                                (p: any) => {
-                                    const stockCell =
-                                        p.inStock ===
-                                            true ? (
-                                            <span className="inline-flex items-center gap-1 text-emerald-700">
-                                                <span className="inline-block w-2 h-2 rounded-full bg-emerald-600" />
-                                                In stock
-                                            </span>
-                                        ) : (
-                                            <span className="inline-flex items-center gap-1 text-rose-700">
-                                                <span className="inline-block w-2 h-2 rounded-full bg-rose-600" />
-                                                Out of stock
-                                            </span>
-                                        );
-
-                                    return (
-                                        <tr
-                                            key={
-                                                p.id
-                                            }
-                                        >
-                                            <td className="px-3 py-2">
-                                                {
-                                                    p.title
-                                                }
-                                            </td>
-                                            <td className="px-3 py-2">
-                                                {ngn.format(
-                                                    fmtN(
-                                                        p.price
-                                                    )
-                                                )}
-                                            </td>
-                                            <td className="px-3 py-2">
-                                                {offersSummaryQ.isLoading ? (
-                                                    <span className="text-zinc-500 text-xs">
-                                                        …
-                                                    </span>
-                                                ) : (
-                                                    <span className="inline-flex items-center gap-1">
-                                                        <span className="font-medium">
-                                                            {p.availableQty ??
-                                                                0}
-                                                        </span>
-                                                        <span className="text-xs text-zinc-500">
-                                                            (
-                                                            {offersSummaryQ
-                                                                .data?.[
-                                                                p
-                                                                    .id
-                                                            ]
-                                                                ?.activeOffers ??
-                                                                0}{" "}
-                                                            offer
-                                                            {(offersSummaryQ
-                                                                .data?.[
-                                                                p
-                                                                    .id
-                                                            ]
-                                                                ?.activeOffers ??
-                                                                0) ===
-                                                                1
-                                                                ? ""
-                                                                : "s"}
-                                                            )
-                                                        </span>
-                                                    </span>
-                                                )}
-                                            </td>
-                                            <td className="px-3 py-2">
-                                                {stockCell}
-                                            </td>
-                                            <td className="px-3 py-2">
-                                                <StatusDot
-                                                    label={getStatus(
-                                                        p
-                                                    )}
-                                                />
-                                            </td>
-                                            {isSuper && (
-                                                <td className="px-3 py-2">
-                                                    {p.owner
-                                                        ?.email ||
-                                                        p.ownerEmail ||
-                                                        p.createdByEmail ||
-                                                        p
-                                                            .createdBy
-                                                            ?.email ||
-                                                        "—"}
-                                                </td>
-                                            )}
-                                            <td className="px-3 py-2 text-right">
-                                                <div className="inline-flex gap-2">
-                                                    <button
-                                                        onClick={() =>
-                                                            startEdit(
-                                                                p
-                                                            )
-                                                        }
-                                                        className="px-2 py-1 rounded border text-xs"
-                                                    >
-                                                        Edit in
-                                                        form
-                                                    </button>
-
-                                                    {isAdmin && (
-                                                        <button
-                                                            onClick={() =>
-                                                                updateStatusM.mutate(
-                                                                    {
-                                                                        id: p.id,
-                                                                        status:
-                                                                            "PENDING",
-                                                                    }
-                                                                )
-                                                            }
-                                                            className="px-2 py-1 rounded bg-amber-600 text-white text-xs"
-                                                        >
-                                                            Submit
-                                                            for
-                                                            Review
-                                                        </button>
-                                                    )}
-
-                                                    {isSuper &&
-                                                        (() => {
-                                                            const action =
-                                                                primaryActionForRow(
-                                                                    p
-                                                                );
-                                                            return (
-                                                                <button
-                                                                    onClick={
-                                                                        action.onClick
-                                                                    }
-                                                                    className={
-                                                                        action.className ||
-                                                                        "px-2 py-1 rounded border text-xs"
-                                                                    }
-                                                                    disabled={
-                                                                        deleteM.isPending ||
-                                                                        restoreM.isPending ||
-                                                                        action.disabled
-                                                                    }
-                                                                    title={
-                                                                        action.title
-                                                                    }
-                                                                >
-                                                                    {
-                                                                        action.label
-                                                                    }
-                                                                </button>
-                                                            );
-                                                        })()}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    );
-                                }
-                            )}
-
-                        {!listQ.isLoading &&
-                            displayRows.length ===
-                            0 && (
+                        </thead>
+                        <tbody className="divide-y">
+                            {listQ.isLoading && (
                                 <tr>
                                     <td
+                                        className="px-3 py-3"
                                         colSpan={
                                             isSuper
                                                 ? 7
                                                 : 6
                                         }
-                                        className="px-3 py-4 text-center text-zinc-500"
                                     >
-                                        No
-                                        products
+                                        Loading
+                                        products…
                                     </td>
                                 </tr>
                             )}
-                    </tbody>
-                </table>
+
+                            {!listQ.isLoading &&
+                                displayRows.map(
+                                    (p: any) => {
+                                        const stockCell =
+                                            p.inStock ===
+                                                true ? (
+                                                <span className="inline-flex items-center gap-1 text-emerald-700">
+                                                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-600" />
+                                                    In stock
+                                                </span>
+                                            ) : (
+                                                <span className="inline-flex items-center gap-1 text-rose-700">
+                                                    <span className="inline-block w-2 h-2 rounded-full bg-rose-600" />
+                                                    Out of stock
+                                                </span>
+                                            );
+
+                                        return (
+                                            <tr
+                                                key={
+                                                    p.id
+                                                }
+                                            >
+                                                <td className="px-3 py-2">
+                                                    {
+                                                        p.title
+                                                    }
+                                                </td>
+                                                <td className="px-3 py-2">
+                                                    {ngn.format(
+                                                        fmtN(
+                                                            p.price
+                                                        )
+                                                    )}
+                                                </td>
+                                                <td className="px-3 py-2">
+                                                    {offersSummaryQ.isLoading ? (
+                                                        <span className="text-zinc-500 text-xs">
+                                                            …
+                                                        </span>
+                                                    ) : (
+                                                        <span className="inline-flex items-center gap-1">
+                                                            <span className="font-medium">
+                                                                {p.availableQty ??
+                                                                    0}
+                                                            </span>
+                                                            <span className="text-xs text-zinc-500">
+                                                                (
+                                                                {offersSummaryQ
+                                                                    .data?.[
+                                                                    p
+                                                                        .id
+                                                                ]
+                                                                    ?.activeOffers ??
+                                                                    0}{" "}
+                                                                offer
+                                                                {(offersSummaryQ
+                                                                    .data?.[
+                                                                    p
+                                                                        .id
+                                                                ]
+                                                                    ?.activeOffers ??
+                                                                    0) ===
+                                                                    1
+                                                                    ? ""
+                                                                    : "s"}
+                                                                )
+                                                            </span>
+                                                        </span>
+                                                    )}
+                                                </td>
+                                                <td className="px-3 py-2">
+                                                    {stockCell}
+                                                </td>
+                                                <td className="px-3 py-2">
+                                                    <StatusDot
+                                                        label={getStatus(
+                                                            p
+                                                        )}
+                                                    />
+                                                </td>
+                                                {isSuper && (
+                                                    <td className="px-3 py-2">
+                                                        {p.owner
+                                                            ?.email ||
+                                                            p.ownerEmail ||
+                                                            p.createdByEmail ||
+                                                            p
+                                                                .createdBy
+                                                                ?.email ||
+                                                            "—"}
+                                                    </td>
+                                                )}
+                                                <td className="px-3 py-2 text-right">
+                                                    <div className="inline-flex gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                startEdit(
+                                                                    p
+                                                                )
+                                                            }
+                                                            className="px-2 py-1 rounded border text-xs"
+                                                        >
+                                                            Edit in
+                                                            form
+                                                        </button>
+
+                                                        {isAdmin && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() =>
+                                                                    updateStatusM.mutate(
+                                                                        {
+                                                                            id: p.id,
+                                                                            status:
+                                                                                "PENDING",
+                                                                        }
+                                                                    )
+                                                                }
+                                                                className="px-2 py-1 rounded bg-amber-600 text-white text-xs"
+                                                            >
+                                                                Submit
+                                                                for
+                                                                Review
+                                                            </button>
+                                                        )}
+
+                                                        {isSuper &&
+                                                            (() => {
+                                                                const action =
+                                                                    primaryActionForRow(
+                                                                        p
+                                                                    );
+                                                                return (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={
+                                                                            action.onClick
+                                                                        }
+                                                                        className={
+                                                                            action.className ||
+                                                                            "px-2 py-1 rounded border text-xs"
+                                                                        }
+                                                                        disabled={
+                                                                            deleteM.isPending ||
+                                                                            restoreM.isPending ||
+                                                                            action.disabled
+                                                                        }
+                                                                        title={
+                                                                            action.title
+                                                                        }
+                                                                    >
+                                                                        {
+                                                                            action.label
+                                                                        }
+                                                                    </button>
+                                                                );
+                                                            })()}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    }
+                                )}
+
+                            {!listQ.isLoading &&
+                                displayRows.length ===
+                                0 && (
+                                    <tr>
+                                        <td
+                                            colSpan={
+                                                isSuper
+                                                    ? 7
+                                                    : 6
+                                            }
+                                            className="px-3 py-4 text-center text-zinc-500"
+                                        >
+                                            No
+                                            products
+                                        </td>
+                                    </tr>
+                                )}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     );

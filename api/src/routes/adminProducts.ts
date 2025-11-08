@@ -48,20 +48,41 @@ const toDecimal = (v: any) => new Prisma.Decimal(String(v));
 const wrap = (fn: express.RequestHandler): express.RequestHandler =>
   (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-async function makeUniqueSku(tx: Tx, desired: string | null | undefined, seen: Set<string>) {
+async function makeUniqueSku(
+  tx: Tx,
+  desired: string | null | undefined,
+  seen: Set<string>,
+  fallbackBase?: string
+) {
+  // Prefer explicit desired SKU if provided
   let base = (desired || '').trim();
-  if (!base) return null; // allow null; DB usually permits multiple NULLs in unique index
+
+  // If nothing provided, use a stable fallback base
+  if (!base) {
+    base = (fallbackBase || 'VAR').trim();
+  }
+
+  if (!base) {
+    // This should basically never happen now, but keeps us safe.
+    throw new Error('Variant SKU base is required and could not be determined.');
+  }
 
   let candidate = base;
   let i = 1;
 
   const existsInDb = async (sku: string) =>
-    !!(await tx.productVariant.findUnique({ where: { sku }, select: { id: true } }));
+    !!(await tx.productVariant.findUnique({
+      where: { sku },
+      select: { id: true },
+    }));
 
+  // Ensure uniqueness across this batch AND DB
   while (seen.has(candidate) || (await existsInDb(candidate))) {
     i += 1;
     candidate = `${base}-${i}`;
-    if (i > 1000) throw new Error('Exceeded SKU uniquifier attempts');
+    if (i > 1000) {
+      throw new Error('Exceeded SKU uniquifier attempts while generating unique variant SKU');
+    }
   }
 
   seen.add(candidate);
@@ -148,17 +169,23 @@ async function writeAttributesAndVariants(
     const seen = new Set<string>(); // ensure SKUs unique in this batch
 
     for (const v of variants) {
-      const uniqueSku = await makeUniqueSku(tx, v?.sku ?? '', seen); // keep your existing helper
+      const uniqueSku = await makeUniqueSku(
+        tx,
+        v.sku,
+        seen,
+        `${productId}-VAR`
+      );
 
       const created = await tx.productVariant.create({
         data: {
           productId,
-          sku: uniqueSku || undefined, // let DB allow null/undefined if schema permits
-          price: v.price != null ? new Prisma.Decimal(v.price) : undefined, // optional price
+          sku: uniqueSku, // ✅ required
+          price: v.price != null ? new Prisma.Decimal(v.price) : null,
           inStock: v.inStock !== false,
           imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
         },
       });
+
 
       if (Array.isArray(v.options) && v.options.length) {
         await tx.productVariantOption.createMany({
@@ -849,12 +876,17 @@ const updateProduct: RequestHandler = async (req, res, next) => {
 
           for (const v of normalized as Array<any>) {
             const rawSku = (v?.sku ?? '').trim();
-            const skuUnique = await makeUniqueSku(tx as any, rawSku, seen);
+            const skuUnique = await makeUniqueSku(
+              tx as any,
+              rawSku,
+              seen,
+              `${id}-VAR`
+            );
 
             const created = await tx.productVariant.create({
               data: {
                 productId: id,
-                sku: skuUnique || undefined,
+                sku: skuUnique, // ✅ required
                 price:
                   v?.price != null && Number.isFinite(Number(v.price))
                     ? new Prisma.Decimal(Number(v.price))
@@ -1118,17 +1150,18 @@ router.post('/:productId/variants', requireAdmin, wrap(async (req, res) => {
 
   const created = await prisma.$transaction(async (tx) => {
     const seen = new Set<string>();
-    const sku = await makeUniqueSku(tx, payload.sku, seen);
+    const sku = await makeUniqueSku(tx, payload.sku, seen, `${productId}-VAR`);
 
     const variant = await tx.productVariant.create({
       data: {
         productId,
-        sku: sku || '',
+        sku, // ✅ guaranteed non-empty
         price: payload.price != null ? new Prisma.Decimal(payload.price) : undefined,
         inStock: payload.inStock ?? true,
         imagesJson: payload.imagesJson ?? [],
       },
     });
+
 
     if (payload.options.length) {
       await tx.productVariantOption.createMany({
@@ -1267,13 +1300,18 @@ async function replaceAllVariants(tx: Tx, productId: string, variants: any[]) {
   const seen = new Set<string>();
 
   for (const v of variants) {
-    const uniqueSku = await makeUniqueSku(tx, v.sku, seen);
+    const uniqueSku = await makeUniqueSku(
+      tx,
+      v?.sku,
+      seen,
+      `${productId}-VAR`
+    );
 
     const created = await tx.productVariant.create({
       data: {
         productId,
-        sku: uniqueSku || '',
-        price: v.price != null ? new Prisma.Decimal(v.price) : null,
+        sku: uniqueSku, // ✅ always non-empty
+        price: v.price != null ? new Prisma.Decimal(v.price) : undefined,
         inStock: v.inStock !== false,
         imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
       },

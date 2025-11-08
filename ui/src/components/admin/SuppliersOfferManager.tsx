@@ -25,6 +25,7 @@ type OfferWire = {
   supplierName?: string;
   variantId?: string | null;
   variantSku?: string | null;
+  sku?: string | null;
   price?: number | string | null;
   availableQty?: number | string | null;
   available?: number | string | null;
@@ -102,7 +103,7 @@ function normalizeOffer(w: OfferWire | any): RowDraft {
 }
 
 /* ===========================
-   API (robust payload shapes)
+   API
 =========================== */
 
 async function listOffers(
@@ -111,91 +112,13 @@ async function listOffers(
 ): Promise<OfferWire[]> {
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
 
-  try {
-    const { data } = await api.get(
-      `/api/admin/products/${productId}/supplier-offers`,
-      { headers }
-    );
-    const arr = Array.isArray(data?.data)
-      ? data.data
-      : Array.isArray(data)
-      ? data
-      : [];
-    return (arr ?? []) as OfferWire[];
-  } catch {
-    const tries = [
-      `/api/products/${productId}/supplier-offers`,
-      `/api/admin/supplier-offers?productId=${encodeURIComponent(productId)}`,
-      `/api/supplier-offers?productId=${encodeURIComponent(productId)}`,
-    ];
-    for (const url of tries) {
-      try {
-        const { data } = await api.get(url, { headers });
-        const arr = Array.isArray(data?.data)
-          ? data.data
-          : Array.isArray(data)
-          ? data
-          : [];
-        if (Array.isArray(arr)) return arr as OfferWire[];
-      } catch {
-        /* try next */
-      }
-    }
-  }
-  return [];
-}
+  const { data } = await api.get(
+    `/api/admin/products/${productId}/supplier-offers`,
+    { headers }
+  );
 
-/**
- * Try both { data: payload } and flat payload for maximum compatibility.
- */
-async function postWithFlexibleBody(
-  url: string,
-  payload: any,
-  headers: any
-): Promise<any> {
-  // 1) Try { data: payload }
-  try {
-    const res = await api.post(url, { data: payload }, { headers });
-    return (res as any).data ?? res;
-  } catch (e1) {
-    // 2) Try flat payload
-    try {
-      const res = await api.post(url, payload, { headers });
-      return (res as any).data ?? res;
-    } catch (e2) {
-      throw e2;
-    }
-  }
-}
-
-async function patchOrPutWithFlexibleBody(
-  url: string,
-  payload: any,
-  headers: any
-): Promise<any> {
-  // PATCH: { data: payload }
-  try {
-    const res = await api.patch(url, { data: payload }, { headers });
-    return (res as any).data ?? res;
-  } catch {
-    // PATCH: flat
-    try {
-      const res = await api.patch(url, payload, { headers });
-      return (res as any).data ?? res;
-    } catch {
-      // PUT: { data: payload }
-      try {
-        const res = await api.put(url, { data: payload }, { headers });
-        return (res as any).data ?? res;
-      } catch (ePutFlat) {
-        // PUT: flat
-        const res = await api.put(url, payload, { headers }).catch(() => {
-          throw ePutFlat;
-        });
-        return (res as any).data ?? res;
-      }
-    }
-  }
+  const arr = Array.isArray(data?.data) ? data.data : [];
+  return arr as OfferWire[];
 }
 
 async function createOffer(
@@ -204,47 +127,27 @@ async function createOffer(
   token?: string | null
 ) {
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-
-  const urls = [
+  const res = await api.post(
     `/api/admin/products/${productId}/supplier-offers`,
-    `/api/products/${productId}/supplier-offers`,
-    `/api/admin/supplier-offers`,
-    `/api/supplier-offers`,
-  ];
-
-  for (const u of urls) {
-    try {
-      return await postWithFlexibleBody(u, payload, headers);
-    } catch {
-      /* try next */
-    }
-  }
-  throw new Error("Failed to create supplier offer.");
+    payload,
+    { headers }
+  );
+  return (res as any).data ?? res;
 }
 
 async function updateOffer(
-  productId: string,
+  _productId: string, // kept for call sites, not used
   offerId: string,
   payload: any,
   token?: string | null
 ) {
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-
-  const urls = [
-    `/api/admin/products/${productId}/supplier-offers/${offerId}`,
-    `/api/products/${productId}/supplier-offers/${offerId}`,
+  const res = await api.patch(
     `/api/admin/supplier-offers/${offerId}`,
-    `/api/supplier-offers/${offerId}`,
-  ];
-
-  for (const u of urls) {
-    try {
-      return await patchOrPutWithFlexibleBody(u, payload, headers);
-    } catch {
-      /* try next */
-    }
-  }
-  throw new Error("Failed to update supplier offer.");
+    payload,
+    { headers }
+  );
+  return (res as any).data ?? res;
 }
 
 async function deleteOffer(
@@ -253,23 +156,11 @@ async function deleteOffer(
   token?: string | null
 ) {
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-
-  const urls = [
+  const res = await api.delete(
     `/api/admin/products/${productId}/supplier-offers/${offerId}`,
-    `/api/products/${productId}/supplier-offers/${offerId}`,
-    `/api/admin/supplier-offers/${offerId}`,
-    `/api/supplier-offers/${offerId}`,
-  ];
-
-  for (const u of urls) {
-    try {
-      const res = await api.delete(u, { headers });
-      return (res as any).data ?? res;
-    } catch {
-      /* try next */
-    }
-  }
-  throw new Error("Failed to delete supplier offer.");
+    { headers }
+  );
+  return (res as any).data ?? res;
 }
 
 /* ===========================
@@ -302,7 +193,7 @@ const SuppliersOfferManager = forwardRef<
     const m = new Map<string, string>();
 
     (variants || []).forEach((v) => {
-      if (v.id) m.set(String(v.id), v.sku || v.id);
+      if (v?.id) m.set(String(v.id), v.sku || v.id);
     });
 
     (offersQ.data || []).forEach((o: any) => {
@@ -362,21 +253,11 @@ const SuppliersOfferManager = forwardRef<
   };
 
   /* Mutations */
+
   const invalidateAll = async () => {
-    await Promise.all([
-      qc.invalidateQueries({
-        queryKey: ["admin", "products", productId, "supplier-offers"],
-      }),
-      qc.invalidateQueries({
-        queryKey: ["admin", "products", "offers-summary"],
-      }),
-    ]);
-    onChanged?.();
-    window.dispatchEvent(
-      new CustomEvent("supplier-offers:changed", {
-        detail: { productId },
-      })
-    );
+    await qc.invalidateQueries({
+      queryKey: ["admin", "products", productId, "supplier-offers"],
+    });
   };
 
   const createM = useMutation({
@@ -433,7 +314,6 @@ const SuppliersOfferManager = forwardRef<
 
   /* Save-all implementation */
   const [saving, setSaving] = useState(false);
-
   async function saveAllInternal() {
     if (readOnly) return;
     setSaving(true);
@@ -442,10 +322,11 @@ const SuppliersOfferManager = forwardRef<
       const editedExisting = Object.values(edits).filter(
         (d) => !!d.id && !!d.supplierId
       );
+
       const createCandidate =
         newRow.supplierId &&
-        newRow.price.trim() !== "" &&
-        newRow.availableQty.trim() !== ""
+          newRow.price.trim() !== "" &&
+          newRow.availableQty.trim() !== ""
           ? { ...newRow }
           : null;
 
@@ -479,29 +360,19 @@ const SuppliersOfferManager = forwardRef<
             `Some changes failed to save (${failed.length}/${results.length}).`,
         });
       } else {
-        openModal({
-          title: "Supplier Offers",
-          message: `Saved ${updated} update${updated === 1 ? "" : "s"}${
-            created ? ` and ${created} new offer` : ""
-          }.`,
-        });
+        alert(`Saved ${updated} update${updated === 1 ? "" : "s"}${created ? ` and ${created} new offer` : "" }.`,
+        );
         setEdits({});
-        setNewRow((n) => ({
-          ...n,
-          price: "",
-          availableQty: "",
-          leadDays: "",
-          notes: "",
-        }));
-        await invalidateAll();
+        // (optionally also reset newRow here if you want)
       }
     } finally {
       setSaving(false);
     }
   }
 
+
   useImperativeHandle(ref, () => ({
-    saveAll: saveAllInternal,
+    saveAll: () => saveAllInternal(),
   }));
 
   /* Formatting */
@@ -513,7 +384,15 @@ const SuppliersOfferManager = forwardRef<
 
   /* Render */
   return (
-    <div className="p-4 md:p-5">
+    <div
+      className="p-4 md:p-5"
+      onSubmitCapture={(e) => {
+        // safety: if any nested element ever acts like a form submit,
+        // don't let it bubble and reload / remount the page.
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
       <div className="overflow-x-auto rounded-xl border bg-white">
         <table className="min-w-full text-sm">
           <thead className="bg-zinc-50">
@@ -531,10 +410,7 @@ const SuppliersOfferManager = forwardRef<
           <tbody className="divide-y">
             {offersQ.isLoading && (
               <tr>
-                <td
-                  colSpan={8}
-                  className="px-3 py-4 text-zinc-500"
-                >
+                <td colSpan={8} className="px-3 py-4 text-zinc-500">
                   Loading offers…
                 </td>
               </tr>
@@ -542,10 +418,7 @@ const SuppliersOfferManager = forwardRef<
 
             {!offersQ.isLoading && rows.length === 0 && (
               <tr>
-                <td
-                  colSpan={8}
-                  className="px-3 py-4 text-zinc-500"
-                >
+                <td colSpan={8} className="px-3 py-4 text-zinc-500">
                   No supplier offers yet.
                 </td>
               </tr>
@@ -568,9 +441,9 @@ const SuppliersOfferManager = forwardRef<
                         }
                         disabled={readOnly}
                       >
-                        {suppliers.map((s) => (
+                        {suppliers.map((s, index) => (
                           <option
-                            key={s.id}
+                            key={s.id || `${s.name}-${index}`}
                             value={s.id}
                           >
                             {s.name}
@@ -586,24 +459,20 @@ const SuppliersOfferManager = forwardRef<
                         value={r.variantId ?? ""}
                         onChange={(e) =>
                           onEditChange(r.id!, {
-                            variantId:
-                              e.target.value || null,
+                            variantId: e.target.value || null,
                           })
                         }
                         disabled={readOnly}
                       >
-                        <option value="">
-                          — None (generic) —
-                        </option>
-                        {variants.map((v) => (
-                          <option
-                            key={v.id}
-                            value={v.id}
-                          >
-                            {variantSkuById.get(v.id) ||
-                              v.id}
-                          </option>
-                        ))}
+                        <option value="">— None (generic) —</option>
+                        {variants.map((v, index) => {
+                          const key = v.id || v.sku || `variant-${index}`;
+                          return (
+                            <option key={key} value={v.id}>
+                              {variantSkuById.get(v.id) || v.id || v.sku || key}
+                            </option>
+                          );
+                        })}
                       </select>
                     </td>
 
@@ -633,8 +502,7 @@ const SuppliersOfferManager = forwardRef<
                         value={r.availableQty}
                         onChange={(e) =>
                           onEditChange(r.id!, {
-                            availableQty:
-                              e.target.value,
+                            availableQty: e.target.value,
                           })
                         }
                         disabled={readOnly}
@@ -648,8 +516,7 @@ const SuppliersOfferManager = forwardRef<
                         checked={!!r.isActive}
                         onChange={(e) =>
                           onEditChange(r.id!, {
-                            isActive:
-                              e.target.checked,
+                            isActive: e.target.checked,
                           })
                         }
                         disabled={readOnly}
@@ -664,15 +531,14 @@ const SuppliersOfferManager = forwardRef<
                         value={r.leadDays ?? ""}
                         onChange={(e) =>
                           onEditChange(r.id!, {
-                            leadDays:
-                              e.target.value,
+                            leadDays: e.target.value,
                           })
                         }
                         disabled={readOnly}
                       />
                     </td>
 
-                    {/* Notes (local only) */}
+                    {/* Notes */}
                     <td className="px-3 py-2">
                       <input
                         className="border rounded-lg px-2 py-1 w-64"
@@ -722,9 +588,9 @@ const SuppliersOfferManager = forwardRef<
                   }
                   disabled={readOnly}
                 >
-                  {suppliers.map((s) => (
+                  {suppliers.map((s, index) => (
                     <option
-                      key={s.id}
+                      key={s.id || `${s.name}-${index}`}
                       value={s.id}
                     >
                       {s.name}
@@ -739,24 +605,20 @@ const SuppliersOfferManager = forwardRef<
                   onChange={(e) =>
                     setNewRow((n) => ({
                       ...n,
-                      variantId:
-                        e.target.value || null,
+                      variantId: e.target.value || null,
                     }))
                   }
                   disabled={readOnly}
                 >
-                  <option value="">
-                    — None (generic) —
-                  </option>
-                  {variants.map((v) => (
-                    <option
-                      key={v.id}
-                      value={v.id}
-                    >
-                      {variantSkuById.get(v.id) ||
-                        v.id}
-                    </option>
-                  ))}
+                  <option value="">— None (generic) —</option>
+                  {variants.map((v, index) => {
+                    const key = v.id || v.sku || `variant-${index}`;
+                    return (
+                      <option key={key} value={v.id}>
+                        {variantSkuById.get(v.id) || v.id || v.sku || key}
+                      </option>
+                    );
+                  })}
                 </select>
               </td>
               <td className="px-3 py-2 text-right">
@@ -784,8 +646,7 @@ const SuppliersOfferManager = forwardRef<
                   onChange={(e) =>
                     setNewRow((n) => ({
                       ...n,
-                      availableQty:
-                        e.target.value,
+                      availableQty: e.target.value,
                     }))
                   }
                   disabled={readOnly}
@@ -798,8 +659,7 @@ const SuppliersOfferManager = forwardRef<
                   onChange={(e) =>
                     setNewRow((n) => ({
                       ...n,
-                      isActive:
-                        e.target.checked,
+                      isActive: e.target.checked,
                     }))
                   }
                   disabled={readOnly}
@@ -813,8 +673,7 @@ const SuppliersOfferManager = forwardRef<
                   onChange={(e) =>
                     setNewRow((n) => ({
                       ...n,
-                      leadDays:
-                        e.target.value,
+                      leadDays: e.target.value,
                     }))
                   }
                   disabled={readOnly}
@@ -827,8 +686,7 @@ const SuppliersOfferManager = forwardRef<
                   onChange={(e) =>
                     setNewRow((n) => ({
                       ...n,
-                      notes:
-                        e.target.value,
+                      notes: e.target.value,
                     }))
                   }
                   disabled={readOnly}
@@ -845,41 +703,43 @@ const SuppliersOfferManager = forwardRef<
       </div>
 
       {/* Totals */}
-      {!offersQ.isLoading && rows.length > 0 && (
-        <div className="mt-3 text-xs text-ink-soft">
-          <strong>{rows.length}</strong>{" "}
-          offer{rows.length === 1 ? "" : "s"} • Total available (active
-          only):{" "}
-          {rows
-            .filter((r) => r.isActive)
-            .reduce(
-              (s, r) =>
-                s +
-                toInt(r.availableQty, 0),
-              0
-            )
-            .toLocaleString()}
-        </div>
-      )}
+      {
+        !offersQ.isLoading && rows.length > 0 && (
+          <div className="mt-3 text-xs text-ink-soft">
+            <strong>{rows.length}</strong>{" "}
+            offer{rows.length === 1 ? "" : "s"} • Total available (active only):{" "}
+            {rows
+              .filter((r) => r.isActive)
+              .reduce(
+                (s, r) => s + toInt(r.availableQty, 0),
+                0
+              )
+              .toLocaleString()}
+          </div>
+        )
+      }
 
       {/* Save all button */}
-      {!readOnly && rows.length > 0 && (
-        <div className="mt-3 flex justify-end">
-          <button
-            type="button"
-            onClick={saveAllInternal}
-            disabled={
-              saving ||
-              createM.isPending ||
-              updateM.isPending
-            }
-            className="px-3 py-2 rounded-md bg-emerald-600 text-white text-sm disabled:opacity-60"
-          >
-            {saving ? "Saving…" : "Save all changes"}
-          </button>
-        </div>
-      )}
-    </div>
+      {
+        !readOnly && (
+          <div className="mt-3 flex justify-end">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void saveAllInternal();
+              }}
+              disabled={saving || createM.isPending || updateM.isPending}
+              className="px-3 py-2 rounded-md bg-emerald-600 text-white text-sm disabled:opacity-60"
+            >
+              {saving ? "Saving…" : "Save all changes"}
+            </button>
+
+          </div>
+        )
+      }
+    </div >
   );
 });
 
