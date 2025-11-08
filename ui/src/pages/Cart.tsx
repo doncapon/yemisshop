@@ -1,8 +1,9 @@
-// src/pages/Cart.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import api from '../api/client'; // <-- your axios instance (same you use elsewhere)
+import api from '../api/client';
+
+/* ---------------- Types ---------------- */
 
 type SelectedOption = {
   attributeId: string;
@@ -22,13 +23,41 @@ type CartItem = {
   image?: string;
 };
 
+type Availability = {
+  totalAvailable: number;
+  cheapestSupplierUnit?: number | null;
+};
+
+type ProductPools = {
+  hasVariantSpecific: boolean;
+  genericTotal: number; // stock where offer.variantId === null
+  productTotal: number; // if variant-specific exists: sum of per-variant totals; else == genericTotal
+  perVariantTotals: Record<string, number>; // vid -> qty (only when variant-specific exists)
+};
+
+type AvailabilityPayload = {
+  lines: Record<string, Availability>; // per (productId, variantId)
+  products: Record<string, ProductPools>; // aggregated product-level pools
+};
+
 const ngn = new Intl.NumberFormat('en-NG', {
   style: 'currency',
   currency: 'NGN',
   maximumFractionDigits: 2,
 });
 
-/* ---------------- Persistence helpers ---------------- */
+/* ---------------- Helpers: numbers ---------------- */
+
+const asInt = (v: any, d = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : d;
+};
+const asMoney = (v: any, d = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+
+/* ---------------- Helpers: storage + shape ---------------- */
 
 function toArray<T = any>(x: any): T[] {
   if (!x) return [];
@@ -47,8 +76,8 @@ function normalizeCartShape(parsed: any[]): CartItem[] {
     const unitPrice = hasUnit
       ? Number(it.unitPrice)
       : hasPrice
-        ? Number(it.price)
-        : unitFromTotal ?? 0;
+      ? Number(it.price)
+      : unitFromTotal ?? 0;
 
     const totalPrice = hasTotal ? Number(it.totalPrice) : unitPrice * qtyNum;
 
@@ -91,36 +120,34 @@ function saveCart(items: CartItem[]) {
   localStorage.setItem('cart', JSON.stringify(items));
 }
 
-/* ---------------- Utilities ---------------- */
-
-const keyFor = (productId: string, variantId?: string | null) =>
-  `${productId}::${variantId ?? 'null'}`;
+const keyFor = (productId: string, variantId?: string | null) => `${productId}::${variantId ?? 'null'}`;
 
 const sameLine = (a: CartItem, productId: string, variantId?: string | null) =>
   a.productId === productId && (a.variantId ?? null) === (variantId ?? null);
 
-/** Availability result per (productId, variantId) */
-type Availability = {
-  totalAvailable: number;          // sum of SupplierOffer.availableQty for that product/variant
-  cheapestSupplierUnit?: number | null; // optional, cheapest supplier unit cost (for UI hints)
-};
+/* ---------------- Availability (batched) ---------------- */
 
-/* ---------------- Availability fetcher (batched) ---------------- */
-
-async function fetchAvailabilityForCart(items: CartItem[]): Promise<Record<string, Availability>> {
-  if (!items.length) return {};
-  const pairs = items.map(i => ({ productId: i.productId, variantId: i.variantId ?? null }));
+/**
+ * Availability uses sum of supplierOffers.availableQty across suppliers.
+ * Rules:
+ *  - If ANY variant-specific offers exist for a product, each variant has its own pool (no borrowing from generic).
+ *  - If ONLY generic offers exist, product has a shared pool; cart lines share this.
+ */
+async function fetchAvailabilityForCart(items: CartItem[]): Promise<AvailabilityPayload> {
+  if (!items.length) return { lines: {}, products: {} };
+  const pairs = items.map((i) => ({ productId: i.productId, variantId: i.variantId ?? null }));
   const uniqPairs: { productId: string; variantId: string | null }[] = [];
   const seen = new Set<string>();
   for (const p of pairs) {
     const k = keyFor(p.productId, p.variantId);
-    if (!seen.has(k)) { seen.add(k); uniqPairs.push(p); }
+    if (!seen.has(k)) {
+      seen.add(k);
+      uniqPairs.push(p);
+    }
   }
 
-  // Build a simple signature for queryKey and for query params
-  const itemsParam = uniqPairs.map(p => `${p.productId}:${p.variantId ?? ''}`).join(',');
+  const itemsParam = uniqPairs.map((p) => `${p.productId}:${p.variantId ?? ''}`).join(',');
 
-  // 1) Try a bulk availability endpoint (recommended to add server-side)
   const attempts = [
     `/api/catalog/availability?items=${encodeURIComponent(itemsParam)}`,
     `/api/products/availability?items=${encodeURIComponent(itemsParam)}`,
@@ -130,69 +157,223 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Record<strin
   for (const url of attempts) {
     try {
       const { data } = await api.get(url);
-      // Expect shape: { data: Array<{ productId, variantId?, totalAvailable, cheapestSupplierUnit? }> } OR plain array
-      const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+      const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
       if (Array.isArray(arr)) {
-        const out: Record<string, Availability> = {};
-        for (const row of arr) {
-          const k = keyFor(String(row.productId), row.variantId == null ? null : String(row.variantId));
-          out[k] = {
-            totalAvailable: Math.max(0, Number(row.totalAvailable) || 0),
-            cheapestSupplierUnit: Number.isFinite(Number(row.cheapestSupplierUnit))
-              ? Number(row.cheapestSupplierUnit)
+        const lines: Record<string, Availability> = {};
+        type Row = {
+          productId: string;
+          variantId?: string | null;
+          totalAvailable?: number;
+          cheapestSupplierUnit?: number | null;
+        };
+        const byProduct: Record<string, { generic: number; perVariant: Record<string, number> }> = {};
+
+        for (const r of arr as Row[]) {
+          const pid = String(r.productId);
+          const vid = r.variantId == null ? null : String(r.variantId);
+          const avail = Math.max(0, Number(r.totalAvailable) || 0);
+          const k = keyFor(pid, vid);
+
+          lines[k] = {
+            totalAvailable: avail,
+            cheapestSupplierUnit: Number.isFinite(Number(r.cheapestSupplierUnit))
+              ? Number(r.cheapestSupplierUnit)
               : null,
           };
+
+          if (!byProduct[pid]) byProduct[pid] = { generic: 0, perVariant: {} };
+          if (vid == null) {
+            byProduct[pid].generic += avail;
+          } else {
+            byProduct[pid].perVariant[vid] = (byProduct[pid].perVariant[vid] || 0) + avail;
+          }
         }
-        return out;
+
+        const products: Record<string, ProductPools> = {};
+        for (const [pid, agg] of Object.entries(byProduct)) {
+          const hasVariantSpecific = Object.keys(agg.perVariant).length > 0;
+          const productTotal = hasVariantSpecific
+            ? Object.values(agg.perVariant).reduce((s, n) => s + n, 0)
+            : agg.generic;
+
+          products[pid] = {
+            hasVariantSpecific,
+            genericTotal: agg.generic,
+            productTotal,
+            perVariantTotals: agg.perVariant,
+          };
+        }
+
+        return { lines, products };
       }
-    } catch { /* try fallback */ }
+    } catch {
+      /* fall through */
+    }
   }
 
-  // 2) Fallback: fetch supplier offers per product and sum on the client.
-  const out: Record<string, Availability> = {};
-  for (const pair of uniqPairs) {
+  // Fallback: build from supplier-offers per product
+  const lines: Record<string, Availability> = {};
+  const products: Record<string, ProductPools> = {};
+  const productCache: Record<string, any[] | null> = {};
+
+  async function getOffersForProduct(productId: string): Promise<any[] | null> {
+    if (productId in productCache) return productCache[productId];
     const perAttempts = [
-      `/api/products/${pair.productId}/supplier-offers`,
-      `/api/admin/products/${pair.productId}/supplier-offers`,
-      `/api/admin/products/${pair.productId}/offers`,
+      `/api/products/${productId}/supplier-offers`,
+      `/api/admin/products/${productId}/supplier-offers`,
+      `/api/admin/products/${productId}/offers`,
     ];
-    let list: any[] | null = null;
     for (const url of perAttempts) {
       try {
         const { data } = await api.get(url);
-        const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
-        if (Array.isArray(arr)) { list = arr; break; }
-      } catch { /* next */ }
+        const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+        if (Array.isArray(arr)) {
+          productCache[productId] = arr;
+          return arr;
+        }
+      } catch {
+        /* next */
+      }
     }
-    if (!list) {
-      // We couldn’t fetch any offers for this product — leave it unknown (no cap).
-      continue;
+    productCache[productId] = null;
+    return null;
+  }
+
+  const uniqProducts = Array.from(new Set(uniqPairs.map((p) => p.productId)));
+
+  for (const productId of uniqProducts) {
+    const offers = await getOffersForProduct(productId);
+    if (!offers) continue;
+
+    const perVariantTotals: Record<string, number> = {};
+    let genericTotal = 0;
+
+    for (const o of offers) {
+      const vid = o?.variantId ?? null;
+      const qty = Math.max(0, asInt(o?.availableQty ?? o?.available ?? o?.qty ?? 0, 0));
+      if (vid == null) {
+        genericTotal += qty;
+      } else {
+        const k = String(vid);
+        perVariantTotals[k] = (perVariantTotals[k] || 0) + qty;
+      }
     }
 
-    const filtered = list.filter((o: any) => {
-      const offerVid = o.variantId ?? null;
-      const wantVid = pair.variantId ?? null;
-      return offerVid === wantVid || (wantVid !== null && offerVid === null);
-    });
+    const hasVariantSpecific = Object.keys(perVariantTotals).length > 0;
+    const productTotal = hasVariantSpecific
+      ? Object.values(perVariantTotals).reduce((s, n) => s + n, 0)
+      : genericTotal;
 
-    // If we fetched OK but there are truly no offers, then the cap is 0.
-    let totalAvailable = 0;
-    let cheapest: number | null = null;
-
-    for (const o of filtered) {
-      const qty = Math.max(0, Number(o.availableQty ?? o.available ?? 0) || 0);
-      totalAvailable += qty;
-      const c = Number(o.price);
-      if (Number.isFinite(c)) cheapest = cheapest == null ? c : Math.min(cheapest, c);
-    }
-
-    out[keyFor(pair.productId, pair.variantId)] = {
-      totalAvailable,
-      cheapestSupplierUnit: cheapest,
+    products[productId] = {
+      hasVariantSpecific,
+      genericTotal,
+      productTotal,
+      perVariantTotals,
     };
   }
 
-  return out;
+  for (const pair of uniqPairs) {
+    const pools = products[pair.productId];
+    if (!pools) continue;
+
+    let totalAvailable = 0;
+
+    if (pools.hasVariantSpecific) {
+      if (pair.variantId != null) {
+        totalAvailable = Math.max(0, pools.perVariantTotals[String(pair.variantId)] || 0);
+      } else {
+        totalAvailable = 0;
+      }
+    } else {
+      totalAvailable = Math.max(0, pools.genericTotal);
+    }
+
+    lines[keyFor(pair.productId, pair.variantId)] = {
+      totalAvailable,
+      cheapestSupplierUnit: null,
+    };
+  }
+
+  return { lines, products };
+}
+
+/* ---------------- Price hydration (fix 0-price lines) ---------------- */
+
+async function hydrateLinePrice(line: CartItem): Promise<CartItem> {
+  const currentUnit = asMoney(line.unitPrice, asMoney((line as any).price, 0));
+  if (currentUnit > 0) return line;
+
+  try {
+    const { data } = await api.get(`/api/products/${line.productId}`, {
+      params: { include: 'variants,offers,supplierOffers' },
+    });
+    const p = data?.data ?? data ?? {};
+
+    let unit = 0;
+
+    // 1) Try product base price / variant price
+    const base = asMoney(p.price, 0);
+    unit = base;
+
+    if (line.variantId && Array.isArray(p.variants)) {
+      const v = p.variants.find((vv: any) => String(vv.id) === String(line.variantId));
+      if (v && asMoney(v.price, NaN) > 0) {
+        unit = asMoney(v.price, unit);
+      }
+    }
+
+    // 2) If still 0, fall back to cheapest active supplier offer (sum of all suppliers)
+    if (!(unit > 0)) {
+      const offersSrc = [
+        ...(Array.isArray(p.supplierOffers) ? p.supplierOffers : []),
+        ...(Array.isArray(p.offers) ? p.offers : []),
+      ];
+
+      const fromVariants =
+        Array.isArray(p.variants) &&
+        p.variants.flatMap((v: any) =>
+          Array.isArray(v.offers)
+            ? v.offers.map((o: any) => ({
+                ...o,
+                variantId: v.id,
+              }))
+            : []
+        );
+
+      const allOffers = [...offersSrc, ...(Array.isArray(fromVariants) ? fromVariants : [])];
+
+      const usable = allOffers
+        .map((o: any) => ({
+          price: asMoney(o.price, NaN),
+          availableQty: asInt(o.availableQty ?? o.available ?? o.qty ?? 0, 0),
+          isActive: o.isActive !== false,
+          variantId: o.variantId ?? null,
+        }))
+        .filter((o) => o.isActive && o.availableQty > 0 && o.price > 0);
+
+      const scoped = line.variantId
+        ? usable.filter((o) => String(o.variantId) === String(line.variantId))
+        : usable;
+
+      if (scoped.length) {
+        scoped.sort((a, b) => a.price - b.price);
+        unit = scoped[0].price;
+      }
+    }
+
+    const qty = Math.max(1, asInt(line.qty, 1));
+    if (unit > 0) {
+      return {
+        ...line,
+        unitPrice: unit,
+        totalPrice: unit * qty,
+      };
+    }
+  } catch {
+    // ignore; keep original
+  }
+
+  return line;
 }
 
 /* ---------------- Component ---------------- */
@@ -200,40 +381,59 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Record<strin
 export default function Cart() {
   const [cart, setCart] = useState<CartItem[]>(() => loadCart());
 
+  // Hydrate zero-price lines once on mount
+  useEffect(() => {
+    (async () => {
+      if (!cart.some((c) => asMoney(c.unitPrice, 0) <= 0)) return;
+      const updated = await Promise.all(cart.map(hydrateLinePrice));
+      setCart(updated);
+      saveCart(updated);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Keep localStorage synced
   useEffect(() => {
     saveCart(cart);
   }, [cart]);
 
-  // Batch availability for current cart lines
   const availabilityQ = useQuery({
-    queryKey: ['catalog', 'availability', cart.map(i => keyFor(i.productId, i.variantId)).sort().join(',')],
+    queryKey: ['catalog', 'availability:v2', cart.map((i) => keyFor(i.productId, i.variantId ?? null)).sort().join(',')],
     enabled: cart.length > 0,
     refetchOnWindowFocus: false,
     staleTime: 15_000,
     queryFn: () => fetchAvailabilityForCart(cart),
   });
 
-  // Hide lines with known 0 availability from the cart (auto-prune storage)
+  const sumOtherLinesQty = (productId: string, exceptVariantId: string | null | undefined) => {
+    return cart.reduce((s, it) => {
+      if (it.productId !== productId) return s;
+      if ((it.variantId ?? null) === (exceptVariantId ?? null)) return s;
+      return s + Math.max(0, Number(it.qty) || 0);
+    }, 0);
+  };
+
+  // Prune only when we are SURE totalAvailable === 0 (sum across suppliers)
   useEffect(() => {
-    if (!availabilityQ.data || cart.length === 0) return;
+    const data = availabilityQ.data as AvailabilityPayload | undefined;
+    if (!data || cart.length === 0) return;
+
     const next = cart.filter((it) => {
-      const k = keyFor(it.productId, it.variantId ?? null);
-      const avail = availabilityQ.data?.[k]?.totalAvailable;
-      // remove only when known to be exactly 0
-      return !(typeof avail === 'number' && avail === 0);
+      const line = data.lines[keyFor(it.productId, it.variantId ?? null)];
+      if (!line) return true; // unknown → keep
+      return !(typeof line.totalAvailable === 'number' && line.totalAvailable === 0);
     });
+
     if (next.length !== cart.length) setCart(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availabilityQ.data]);
 
-  // Visible cart (after pruning)
   const visibleCart = useMemo(() => {
-    if (!availabilityQ.data) return cart; // until we know, show everything we have
+    const data = availabilityQ.data as AvailabilityPayload | undefined;
+    if (!data) return cart;
     return cart.filter((it) => {
-      const k = keyFor(it.productId, it.variantId ?? null);
-      const avail = availabilityQ.data?.[k]?.totalAvailable;
-      return !(typeof avail === 'number' && avail === 0);
+      const line = data.lines[keyFor(it.productId, it.variantId ?? null)];
+      return !(line && line.totalAvailable === 0);
     });
   }, [cart, availabilityQ.data]);
 
@@ -242,26 +442,73 @@ export default function Cart() {
     [visibleCart]
   );
 
+  const computedCapForLine = (item: CartItem): number | undefined => {
+    const data = availabilityQ.data as AvailabilityPayload | undefined;
+    if (!data) return undefined;
+
+    const pools = data.products[item.productId];
+    const line = data.lines[keyFor(item.productId, item.variantId ?? null)];
+
+    if (!pools && line && typeof line.totalAvailable === 'number') {
+      return Math.max(0, line.totalAvailable);
+    }
+
+    if (!pools || !line) return undefined;
+
+    if (pools.hasVariantSpecific) {
+      return Math.max(0, line.totalAvailable);
+    }
+
+    const pool = Math.max(0, pools.genericTotal);
+    const otherQty = sumOtherLinesQty(item.productId, item.variantId ?? null);
+    const remaining = Math.max(0, pool - otherQty);
+    return Math.max(0, remaining + Math.max(0, Number(item.qty) || 0));
+  };
+
   const clampToMax = (productId: string, variantId: string | null | undefined, wantQty: number) => {
-    const k = keyFor(productId, variantId ?? null);
-    const max = availabilityQ.data?.[k]?.totalAvailable;
-    if (typeof max === 'number' && max >= 0) return Math.min(wantQty, Math.max(1, max));
-    return Math.max(1, wantQty); // unknown → no cap
+    const current = cart.find((c) => sameLine(c, productId, variantId));
+    const data = availabilityQ.data as AvailabilityPayload | undefined;
+
+    const desired = Math.max(1, Math.floor(Number(wantQty) || 1));
+
+    if (!data || !current) return desired;
+
+    const pools = data.products[productId];
+    const line = data.lines[keyFor(productId, variantId ?? null)];
+
+    if ((!pools || !line) && line && typeof line.totalAvailable === 'number') {
+      const hardCap = Math.max(1, line.totalAvailable);
+      return Math.min(desired, hardCap);
+    }
+
+    if (!pools || !line) return desired;
+
+    if (pools.hasVariantSpecific) {
+      const cap = Math.max(1, line.totalAvailable);
+      return Math.min(desired, cap);
+    }
+
+    const pool = Math.max(0, pools.genericTotal);
+    const otherQty = sumOtherLinesQty(productId, variantId ?? null);
+    const capForThisLine = Math.max(0, pool - otherQty) + Math.max(0, Number(current.qty) || 0);
+    const cap = Math.max(1, capForThisLine);
+    return Math.min(desired, cap);
   };
 
   const updateQty = (productId: string, variantId: string | null | undefined, newQtyRaw: number) => {
-    const clamped = clampToMax(productId, variantId, Math.floor(Number(newQtyRaw) || 1));
+    const clamped = clampToMax(productId, variantId, newQtyRaw);
     setCart((prev) =>
       prev.map((it) => {
         if (!sameLine(it, productId, variantId)) return it;
-        const unit = Number.isFinite(Number(it.unitPrice))
-          ? Number(it.unitPrice)
-          : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
+        const unit =
+          Number.isFinite(Number(it.unitPrice)) && it.unitPrice > 0
+            ? Number(it.unitPrice)
+            : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
         return {
           ...it,
           qty: clamped,
-          totalPrice: unit * clamped,
-          unitPrice: unit,
+          totalPrice: (unit > 0 ? unit : 0) * clamped,
+          unitPrice: unit > 0 ? unit : it.unitPrice,
         };
       })
     );
@@ -270,9 +517,6 @@ export default function Cart() {
   const inc = (productId: string, variantId?: string | null) => {
     const item = cart.find((c) => sameLine(c, productId, variantId));
     if (!item) return;
-    const k = keyFor(productId, variantId ?? null);
-    const max = availabilityQ.data?.[k]?.totalAvailable ?? Infinity;
-    if (item.qty >= max) return; // hit the cap; optionally show a toast
     updateQty(productId, variantId ?? null, item.qty + 1);
   };
 
@@ -286,22 +530,43 @@ export default function Cart() {
     setCart((prev) => prev.filter((it) => !sameLine(it, productId, variantId)));
   };
 
-  // Block checkout if any known rule fails
   const cartBlockingReason = useMemo(() => {
-    if (!availabilityQ.data) return null; // unknown yet – allow, or return a message if you prefer strict
-    // any line whose qty > known available?
-    const over = visibleCart.find((it) => {
-      const k = keyFor(it.productId, it.variantId ?? null);
-      const avail = availabilityQ.data?.[k]?.totalAvailable;
-      return typeof avail === 'number' && avail >= 0 && it.qty > avail;
-    });
-    if (over) return 'Reduce quantities: some items exceed available stock.';
+    const data = availabilityQ.data as AvailabilityPayload | undefined;
+    if (!data) return null;
+
+    for (const productId of new Set(visibleCart.map((i) => i.productId))) {
+      const pools = data.products[productId];
+      if (!pools) {
+        const outOfCap = visibleCart
+          .filter((i) => i.productId === productId)
+          .some((i) => {
+            const ln = data.lines[keyFor(i.productId, i.variantId ?? null)];
+            return ln && typeof ln.totalAvailable === 'number' && i.qty > ln.totalAvailable;
+          });
+        if (outOfCap) return 'Reduce quantities: some items exceed available stock.';
+        continue;
+      }
+
+      if (pools.hasVariantSpecific) {
+        for (const it of visibleCart.filter((i) => i.productId === productId)) {
+          const cap = Math.max(0, pools.perVariantTotals[String(it.variantId ?? '')] || 0);
+          if (it.qty > cap) return 'Reduce quantities: some items exceed available stock.';
+        }
+      } else {
+        const sumQty = visibleCart
+          .filter((i) => i.productId === productId)
+          .reduce((s, i) => s + Math.max(0, Number(i.qty) || 0), 0);
+        if (sumQty > pools.genericTotal) {
+          return 'Reduce quantities: some items exceed available stock.';
+        }
+      }
+    }
+
     return null;
   }, [visibleCart, availabilityQ.data]);
 
   const canCheckout = cartBlockingReason == null;
 
-  // Empty state
   if (visibleCart.length === 0) {
     return (
       <div className="min-h-[88vh] bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden grid place-items-center px-4">
@@ -349,22 +614,51 @@ export default function Cart() {
           <section className="space-y-4">
             {visibleCart.map((it) => {
               const currentQty = Math.max(1, Number(it.qty) || 1);
-              const unit = Number.isFinite(Number(it.unitPrice))
-                ? Number(it.unitPrice)
-                : currentQty > 0
-                  ? (Number(it.totalPrice) || 0) / currentQty
-                  : Number(it.totalPrice) || 0;
+              const unit =
+                asMoney(it.unitPrice, 0) > 0
+                  ? asMoney(it.unitPrice, 0)
+                  : currentQty > 0
+                  ? asMoney(it.totalPrice, 0) / currentQty
+                  : asMoney(it.totalPrice, 0);
 
-              const k = keyFor(it.productId, it.variantId ?? null);
-              const maxAvail = availabilityQ.data?.[k]?.totalAvailable;
-              const capKnown = typeof maxAvail === 'number';
-              const cap = capKnown ? Math.max(1, maxAvail!) : undefined;
+              const data = availabilityQ.data as AvailabilityPayload | undefined;
+              const pools = data?.products[it.productId];
+              const line = data?.lines[keyFor(it.productId, it.variantId ?? null)];
+
+              let helperText = '';
+              if (availabilityQ.isLoading) {
+                helperText = 'Checking availability…';
+              } else if (line && typeof line.totalAvailable === 'number' && (!pools || pools.hasVariantSpecific)) {
+                const cap = Math.max(0, line.totalAvailable);
+                helperText =
+                  cap > 0
+                    ? it.qty > cap
+                      ? `Only ${cap} available. Please reduce.`
+                      : `Max you can buy now: ${cap}`
+                    : 'Out of stock';
+              } else if (pools && !pools.hasVariantSpecific && line) {
+                const pool = Math.max(0, pools.genericTotal);
+                const otherQty = visibleCart
+                  .filter(
+                    (x) =>
+                      x.productId === it.productId &&
+                      (x.variantId ?? null) !== (it.variantId ?? null)
+                  )
+                  .reduce((s, x) => s + Math.max(0, Number(x.qty) || 0), 0);
+                const remaining = Math.max(0, pool - otherQty);
+                const maxForThisLine = remaining + currentQty;
+                helperText =
+                  maxForThisLine > 0
+                    ? it.qty > maxForThisLine
+                      ? `Only ${maxForThisLine} available for this selection. Please reduce.`
+                      : `Max you can buy now (shared): ${maxForThisLine}`
+                    : 'Out of stock';
+              }
 
               return (
                 <article
-                  key={k}
-                  className="group rounded-2xl border border-white/60 bg-white/70 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)] p-4 md:p-5
-                             transition hover:shadow-[0_12px_40px_rgba(0,0,0,0.08)]"
+                  key={keyFor(it.productId, it.variantId ?? null)}
+                  className="group rounded-2xl border border-white/60 bg-white/70 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)] p-4 md:p-5 transition hover:shadow-[0_12px_40px_rgba(0,0,0,0.08)]"
                 >
                   <div className="flex items-start gap-4">
                     {/* Thumbnail */}
@@ -377,7 +671,9 @@ export default function Cart() {
                           onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = 'none')}
                         />
                       ) : (
-                        <div className="w-full h-full grid place-items-center text-[11px] text-ink-soft">No image</div>
+                        <div className="w-full h-full grid place-items-center text-[11px] text-ink-soft">
+                          No image
+                        </div>
                       )}
                     </div>
 
@@ -395,18 +691,12 @@ export default function Cart() {
                             </div>
                           )}
 
-                          <p className="mt-1 text-xs text-ink-soft">Unit price: {ngn.format(unit)}</p>
-
-                          {/* Availability helper text */}
-                          <p className="mt-1 text-[11px] text-ink-soft">
-                            {availabilityQ.isLoading
-                              ? 'Checking availability…'
-                              : capKnown
-                                ? cap! > 0
-                                  ? (it.qty > (cap ?? 0) ? `Only ${cap} available. Please reduce.` : `Max you can buy now: ${cap}`)
-                                  : 'Out of stock'
-                                : ''}
+                          <p className="mt-1 text-xs text-ink-soft">
+                            Unit price:{' '}
+                            {unit > 0 ? ngn.format(unit) : 'Pending — will be resolved at checkout'}
                           </p>
+
+                          <p className="mt-1 text-[11px] text-ink-soft">{helperText}</p>
                         </div>
 
                         <button
@@ -433,24 +723,29 @@ export default function Cart() {
                             <input
                               type="number"
                               min={1}
-                              {...(capKnown ? { max: cap } : {})}
                               step={1}
                               value={it.qty}
                               onChange={(e) =>
-                                updateQty(it.productId, it.variantId ?? null, Number(e.target.value))
+                                updateQty(
+                                  it.productId,
+                                  it.variantId ?? null,
+                                  Number(e.target.value)
+                                )
                               }
-                              onBlur={(e) => {
-                                // Ensure it doesn't exceed after manual typing
-                                updateQty(it.productId, it.variantId ?? null, Number(e.target.value));
-                              }}
+                              onBlur={(e) =>
+                                updateQty(
+                                  it.productId,
+                                  it.variantId ?? null,
+                                  Number(e.target.value)
+                                )
+                              }
                               className="w-16 text-center outline-none px-2 py-2 bg-white"
                             />
                             <button
                               aria-label="Increase quantity"
-                              className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition disabled:opacity-40"
+                              className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
                               onClick={() => inc(it.productId, it.variantId ?? null)}
-                              disabled={capKnown ? it.qty >= (cap ?? Infinity) : false}
-                              title={capKnown && it.qty >= (cap ?? Infinity) ? 'No more stock' : 'Increase quantity'}
+                              title="Increase quantity"
                             >
                               +
                             </button>
@@ -498,18 +793,20 @@ export default function Cart() {
               </div>
 
               {!canCheckout && (
-                <p className="mt-2 text-[12px] text-rose-600">
-                  {cartBlockingReason}
-                </p>
+                <p className="mt-2 text-[12px] text-rose-600">{cartBlockingReason}</p>
               )}
 
               <Link
-                to={canCheckout ? "/checkout" : "#"}
-                onClick={(e) => { if (!canCheckout) e.preventDefault(); }}
+                to={canCheckout ? '/checkout' : '#'}
+                onClick={(e) => {
+                  if (!canCheckout) e.preventDefault();
+                }}
                 className={`mt-5 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 font-semibold shadow-sm transition
-                  ${canCheckout
-                    ? 'bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200'
-                    : 'bg-zinc-200 text-zinc-500 cursor-not-allowed'}`}
+                  ${
+                    canCheckout
+                      ? 'bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200'
+                      : 'bg-zinc-200 text-zinc-500 cursor-not-allowed'
+                  }`}
                 aria-disabled={!canCheckout}
               >
                 Proceed to checkout
@@ -517,8 +814,7 @@ export default function Cart() {
 
               <Link
                 to="/"
-                className="mt-3 w-full inline-flex items-center justify-center rounded-xl border border-border bg-white px-4 py-3 text-ink
-                           hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"
+                className="mt-3 w-full inline-flex items-center justify-center rounded-xl border border-border bg-white px-4 py-3 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"
               >
                 Continue shopping
               </Link>

@@ -55,7 +55,7 @@ const ACT = {
   STATUS_CHANGE: 'STATUS_CHANGE',
 } as const;
 
-/** Compute current availableQty / inStock for pairs */
+/** Compute current availableQty / inStock for pairs (sum across offers) */
 async function computeInStockForPairs(
   pairs: Array<{ productId: string; variantId: string | null }>
 ): Promise<Record<string, { availableQty: number; inStock: boolean }>> {
@@ -114,7 +114,15 @@ async function fetchActiveOffersTx(
 ): Promise<Array<{ id: string; supplierId: string | null; availableQty: number; price: number }>> {
   const list = await tx.supplierOffer.findMany({
     where: { ...where, isActive: true },
-    select: { id: true, supplierId: true, availableQty: true, price: true, productId: true, variantId: true, isActive: true },
+    select: {
+      id: true,
+      supplierId: true,
+      availableQty: true,
+      price: true,
+      productId: true,
+      variantId: true,
+      isActive: true,
+    },
   });
 
   const usable = list
@@ -126,8 +134,21 @@ async function fetchActiveOffersTx(
     }))
     .filter((o: any) => o.availableQty > 0 && Number.isFinite(o.price) && o.price > 0);
 
-  usable.sort((a: { price: number; availableQty: number; }, b: { price: number; availableQty: number; }) => (a.price !== b.price ? a.price - b.price : b.availableQty - a.availableQty));
+  usable.sort((a: { price: number; availableQty: number; }, b: { price: number; availableQty: number; }) =>
+    a.price !== b.price ? a.price - b.price : b.availableQty - a.availableQty
+  );
   return usable;
+}
+
+/* ---------------- Shared enrichment for views ---------------- */
+async function enrichItemsWithCurrentStock(
+  items: Array<{ productId: string; variantId: string | null }>
+) {
+  const pairs = items.map(i => ({ productId: i.productId, variantId: i.variantId ?? null }));
+  const map = await computeInStockForPairs(pairs);
+  const key = (p: string, v: string | null) => `${p}::${v ?? 'NULL'}`;
+  return (productId: string, variantId: string | null) =>
+    map[key(productId, variantId)] || { availableQty: 0, inStock: false };
 }
 
 /* =========================================================
@@ -139,230 +160,390 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
 
   if (items.length === 0) return res.status(400).json({ error: 'No items.' });
   if (!body.shippingAddressId && !body.shippingAddress) {
-    return res.status(400).json({ error: 'shippingAddress or shippingAddressId is required.' });
+    return res
+      .status(400)
+      .json({ error: 'shippingAddress or shippingAddressId is required.' });
   }
 
   const userId = getUserId(req);
   if (!userId) return res.status(401).json({ error: 'Unauthorized' });
 
   try {
-    const created = await prisma.$transaction(async (tx: any) => {
-      // 1) Create order shell
-      const data: any = {
-        subtotal: 0,
-        tax: 0,
-        total: 0,
-        status: 'CREATED',
-        user: { connect: { id: userId } },
-      };
-
-      if (body.shippingAddressId) {
-        data.shippingAddress = { connect: { id: body.shippingAddressId } };
-      } else {
-        const a = body.shippingAddress!;
-        data.shippingAddress = {
-          create: {
-            houseNumber: a.houseNumber,
-            streetName: a.streetName,
-            postCode: a.postCode ?? null,
-            town: a.town ?? null,
-            city: a.city,
-            state: a.state,
-            country: a.country,
-          },
+    const created = await prisma.$transaction(
+      async (tx: any) => {
+        // 1) Create order shell
+        const data: any = {
+          subtotal: 0,
+          tax: 0,
+          total: 0,
+          status: 'CREATED',
+          user: { connect: { id: userId } },
         };
-      }
 
-      if (body.billingAddressId) {
-        data.billingAddress = { connect: { id: body.billingAddressId } };
-      } else if (body.billingAddress) {
-        const b = body.billingAddress;
-        data.billingAddress = {
-          create: {
-            houseNumber: b.houseNumber,
-            streetName: b.streetName,
-            postCode: b.postCode ?? null,
-            town: b.town ?? null,
-            city: b.city,
-            state: b.state,
-            country: b.country,
-          },
-        };
-      }
-
-      const order = await tx.order.create({ data });
-
-      await logOrderActivityTx(tx, order.id, ACT.ORDER_CREATED as any, 'Order created');
-      if (body.notes && String(body.notes).trim()) {
-        await logOrderActivityTx(tx, order.id, ACT.NOTE as any, String(body.notes).trim());
-      }
-
-      // 2) Allocate from supplier offers (cheapest-first + merged)
-      let runningSubtotal = 0;
-
-      for (const line of items) {
-        const productId = String((line as any).productId || '');
-        const variantId = (line as any).variantId != null ? String((line as any).variantId) : null;
-
-        const qtyNeeded = Number((line as any).qty ?? (line as any).quantity ?? 0);
-        let retailUnit = asNumber(
-          (line as any).price ?? (line as any).unitPrice ?? (line as any).unit_amount,
-          0
-        );
-        const explicitOfferId = (line as any).offerId ?? (line as any).supplierOfferId ?? null;
-        const selectedOptionsRaw =
-          (line as any).selectedOptions ?? (line as any).selectedOptionsJson ?? null;
-
-        if (!productId || !Number.isFinite(qtyNeeded) || qtyNeeded <= 0) {
-          throw new Error('Invalid line item.');
+        // Shipping address (required)
+        if (body.shippingAddressId) {
+          data.shippingAddress = { connect: { id: body.shippingAddressId } };
+        } else {
+          const a = body.shippingAddress!;
+          data.shippingAddress = {
+            create: {
+              houseNumber: a.houseNumber,
+              streetName: a.streetName,
+              postCode: a.postCode ?? null,
+              town: a.town ?? null,
+              city: a.city,
+              state: a.state,
+              country: a.country,
+            },
+          };
         }
 
-        if (!(retailUnit > 0)) {
-          try {
-            const prod = await tx.product.findUnique({
-              where: { id: productId },
+        // Optional billing address
+        if (body.billingAddressId) {
+          (data as any).billingAddress = { connect: { id: body.billingAddressId } };
+        } else if (body.billingAddress) {
+          const b = body.billingAddress;
+          (data as any).billingAddress = {
+            create: {
+              houseNumber: b.houseNumber,
+              streetName: b.streetName,
+              postCode: b.postCode ?? null,
+              town: b.town ?? null,
+              city: b.city,
+              state: b.state,
+              country: b.country,
+            },
+          };
+        }
+
+        const order = await tx.order.create({ data });
+
+        await logOrderActivityTx(tx, order.id, ACT.ORDER_CREATED as any, 'Order created');
+        if (body.notes && String(body.notes).trim()) {
+          await logOrderActivityTx(
+            tx,
+            order.id,
+            ACT.NOTE as any,
+            String(body.notes).trim()
+          );
+        }
+
+        // 2) Allocate from supplier offers (cheapest-first + merged)
+        let runningSubtotal = 0;
+
+        for (const line of items) {
+          const rawProductId = (line as any).productId ?? '';
+          const productId = String(rawProductId).trim();
+          if (!productId) {
+            throw new Error('Invalid line item: missing productId.');
+          }
+
+          // Normalize & validate variantId
+          let variantId: string | null = null;
+          const rawVariantId = (line as any).variantId;
+
+          if (rawVariantId != null && String(rawVariantId).trim() !== '') {
+            const candidateId = String(rawVariantId).trim();
+
+            const variant = await tx.productVariant.findUnique({
+              where: { id: candidateId },
+              select: { id: true, productId: true },
+            });
+
+            if (variant && String(variant.productId) === productId) {
+              variantId = variant.id;
+            } else {
+              variantId = null; // stale/mismatched → avoid FK error
+            }
+          }
+
+          const qtyNeeded = Number(
+            (line as any).qty ?? (line as any).quantity ?? 0
+          );
+
+          let retailUnit = asNumber(
+            (line as any).price ??
+              (line as any).unitPrice ??
+              (line as any).unit_amount,
+            0
+          );
+
+          const explicitOfferId =
+            (line as any).offerId ?? (line as any).supplierOfferId ?? null;
+
+          const selectedOptionsRaw =
+            (line as any).selectedOptions ??
+            (line as any).selectedOptionsJson ??
+            null;
+
+          if (!Number.isFinite(qtyNeeded) || qtyNeeded <= 0) {
+            throw new Error('Invalid line item.');
+          }
+
+          // Candidate offers (active, >0 qty, sorted by price asc then stock desc)
+          let candidates: Array<{
+            id: string;
+            supplierId: string | null;
+            availableQty: number;
+            price: number;
+          }> = [];
+
+          if (explicitOfferId) {
+            const one = await tx.supplierOffer.findFirst({
+              where: { id: explicitOfferId, isActive: true },
               select: {
-                title: true,
+                id: true,
+                availableQty: true,
                 price: true,
-                variants: variantId ? { where: { id: variantId }, select: { price: true } } : false,
+                supplierId: true,
+                isActive: true,
               },
             });
-            retailUnit = asNumber(variantId ? (prod?.variants as any)?.[0]?.price : prod?.price, 0);
-          } catch {}
-        }
-        if (!(retailUnit > 0)) throw new Error('Invalid line item.');
 
-        // candidate offers
-        let candidates: Array<{ id: string; supplierId: string | null; availableQty: number; price: number }> = [];
-        if (explicitOfferId) {
-          const one = await tx.supplierOffer.findFirst({
-            where: { id: explicitOfferId, isActive: true },
-            select: { id: true, availableQty: true, price: true, supplierId: true, isActive: true },
-          });
-          if (!one || !Number(one.availableQty) || Number(one.availableQty) <= 0) {
-            throw new Error(`Offer unavailable for product ${productId}.`);
-          }
-          candidates = [{
-            id: one.id,
-            supplierId: one.supplierId ?? null,
-            availableQty: Math.max(0, Number(one.availableQty || 0)),
-            price: Number(one.price || 0),
-          }];
-        } else {
-          const variantOffers = variantId ? await fetchActiveOffersTx(tx, { productId, variantId }) : [];
-          const baseOffers = await fetchActiveOffersTx(tx, { productId, variantId: null });
-          const seen = new Set<string>();
-          const merged: typeof variantOffers = [];
-          for (const o of [...variantOffers, ...baseOffers]) {
-            if (seen.has(o.id)) continue;
-            seen.add(o.id);
-            merged.push(o);
-          }
-          merged.sort((a, b) => (a.price !== b.price ? a.price - b.price : b.availableQty - a.availableQty));
-          candidates = merged;
-        }
+            if (
+              !one ||
+              !Number(one.availableQty) ||
+              Number(one.availableQty) <= 0
+            ) {
+              throw new Error(
+                `Offer unavailable for product ${productId}.`
+              );
+            }
 
-        const totalAvailable = candidates.reduce((s, o) => s + o.availableQty, 0);
-        if (totalAvailable < qtyNeeded) {
-          throw new Error(`Insufficient stock for product ${productId}. Need ${qtyNeeded}, available ${totalAvailable}.`);
-        }
+            if (!(Number(one.price) > 0)) {
+              throw new Error(
+                `Offer has no valid price for product ${productId}.`
+              );
+            }
 
-        // allocate cheapest-first
-        let need = qtyNeeded;
-        const allocations: Array<{ offerId: string; supplierId: string | null; qty: number; price: number }> = [];
-        for (const o of candidates) {
-          if (need <= 0) break;
-          if (o.availableQty <= 0) continue;
-          const take = Math.min(need, o.availableQty);
-
-          const updated = await tx.supplierOffer.update({
-            where: { id: o.id },
-            data: { availableQty: { decrement: take } },
-            select: { id: true, availableQty: true },
-          });
-          if (Number(updated.availableQty) < 0) throw new Error('Concurrent stock update detected.');
-          if (Number(updated.availableQty) === 0) {
-            await tx.supplierOffer.update({ where: { id: o.id }, data: { inStock: false } });
-          }
-
-          allocations.push({ offerId: o.id, supplierId: o.supplierId ?? null, qty: take, price: o.price });
-          need -= take;
-        }
-
-        // create order items (retail fields + supplier metadata)
-        const productRow = await tx.product.findUnique({ where: { id: productId }, select: { title: true } });
-        const productTitle = productRow?.title || productId;
-
-        for (const alloc of allocations) {
-          await tx.orderItem.create({
-            data: {
-              orderId: order.id,
+            candidates = [
+              {
+                id: one.id,
+                supplierId: one.supplierId ?? null,
+                availableQty: Math.max(
+                  0,
+                  Number(one.availableQty || 0)
+                ),
+                price: Number(one.price || 0),
+              },
+            ];
+          } else {
+            const variantOffers = variantId
+              ? await fetchActiveOffersTx(tx, {
+                  productId,
+                  variantId,
+                })
+              : [];
+            const baseOffers = await fetchActiveOffersTx(tx, {
               productId,
-              variantId: variantId ?? null,
+              variantId: null,
+            });
 
-              // supplier metadata
-              chosenSupplierOfferId: alloc.offerId,
-              chosenSupplierId: alloc.supplierId,
-              chosenSupplierUnitPrice: alloc.price,
+            const seen = new Set<string>();
+            const merged: typeof variantOffers = [];
 
-              // shopper-facing (retail)
-              title: productTitle,
-              unitPrice: retailUnit,
-              quantity: alloc.qty,
-              lineTotal: retailUnit * alloc.qty,
+            for (const o of [...variantOffers, ...baseOffers]) {
+              if (seen.has(o.id)) continue;
+              seen.add(o.id);
+              merged.push(o);
+            }
 
-              // options stored as JSON string
-              selectedOptions:
-                typeof selectedOptionsRaw === 'string'
-                  ? selectedOptionsRaw
-                  : JSON.stringify(selectedOptionsRaw ?? []),
-            },
+            merged.sort((a, b) =>
+              a.price !== b.price
+                ? a.price - b.price
+                : b.availableQty - a.availableQty
+            );
+            candidates = merged;
+          }
+
+          // Total available stock across all active offers
+          const totalAvailable = candidates.reduce(
+            (s, o) => s + o.availableQty,
+            0
+          );
+          if (totalAvailable < qtyNeeded) {
+            throw new Error(
+              `Insufficient stock for product ${productId}. Need ${qtyNeeded}, available ${totalAvailable}.`
+            );
+          }
+
+          // Backfill retailUnit if missing/0:
+          // 1) Try product / variant price (existing behavior)
+          if (!(retailUnit > 0)) {
+            try {
+              const prod = await tx.product.findUnique({
+                where: { id: productId },
+                select: {
+                  title: true,
+                  price: true,
+                  ProductVariant: variantId
+                    ? {
+                        where: { id: variantId },
+                        select: { price: true },
+                      }
+                    : false,
+                },
+              });
+
+              if (variantId && Array.isArray((prod as any)?.ProductVariant)) {
+                retailUnit = asNumber(
+                  (prod as any).ProductVariant?.[0]?.price,
+                  0
+                );
+              } else {
+                retailUnit = asNumber(prod?.price, 0);
+              }
+            } catch {
+              // ignore; fall through to offers
+            }
+          }
+
+          // 2) If still missing/0, use cheapest active SupplierOffer price
+          if (!(retailUnit > 0) && candidates.length) {
+            const cheapest = candidates.reduce(
+              (min, o) =>
+                !min || o.price < min.price ? o : min,
+              candidates[0]
+            );
+            if (cheapest && cheapest.price > 0) {
+              retailUnit = cheapest.price;
+            }
+          }
+
+          // 3) If *still* no price, it's truly invalid
+          if (!(retailUnit > 0)) {
+            throw new Error(
+              `Invalid line item: no valid price for product ${productId}.`
+            );
+          }
+
+          // Resolve product title for display
+          const productRow = await tx.product.findUnique({
+            where: { id: productId },
+            select: { title: true },
           });
+          const productTitle = productRow?.title || productId;
 
-          runningSubtotal += retailUnit * alloc.qty;
+          // Allocate cheapest-first and decrement offers
+          let need = qtyNeeded;
+          const allocations: Array<{
+            offerId: string;
+            supplierId: string | null;
+            qty: number;
+            price: number;
+          }> = [];
+
+          for (const o of candidates) {
+            if (need <= 0) break;
+            if (o.availableQty <= 0) continue;
+
+            const take = Math.min(need, o.availableQty);
+
+            const updated = await tx.supplierOffer.update({
+              where: { id: o.id },
+              data: { availableQty: { decrement: take } },
+              select: { id: true, availableQty: true },
+            });
+
+            if (Number(updated.availableQty) < 0) {
+              throw new Error('Concurrent stock update detected.');
+            }
+
+            if (Number(updated.availableQty) === 0) {
+              await tx.supplierOffer.update({
+                where: { id: o.id },
+                data: { inStock: false },
+              });
+            }
+
+            allocations.push({
+              offerId: o.id,
+              supplierId: o.supplierId ?? null,
+              qty: take,
+              price: o.price,
+            });
+
+            need -= take;
+          }
+
+          // Create order items for each allocation
+          for (const alloc of allocations) {
+            await tx.orderItem.create({
+              data: {
+                orderId: order.id,
+                productId,
+                variantId,
+
+                // supplier metadata
+                chosenSupplierOfferId: alloc.offerId,
+                chosenSupplierId: alloc.supplierId,
+                chosenSupplierUnitPrice: alloc.price,
+
+                // shopper-facing (retail)
+                title: productTitle,
+                unitPrice: retailUnit,
+                quantity: alloc.qty,
+                lineTotal: retailUnit * alloc.qty,
+
+                // options stored as JSON string
+                selectedOptions:
+                  typeof selectedOptionsRaw === 'string'
+                    ? selectedOptionsRaw
+                    : JSON.stringify(selectedOptionsRaw ?? []),
+              },
+            });
+
+            runningSubtotal += retailUnit * alloc.qty;
+          }
+
+          await syncProductInStockCacheTx(tx, productId);
         }
 
-        await syncProductInStockCacheTx(tx, productId);
-      }
+        // 3) totals
+        const subtotal = round2(runningSubtotal);
+        const tax = 0;
+        const total = round2(subtotal + tax);
 
-      // 3) totals
-      const subtotal = round2(runningSubtotal);
-      const tax = 0;
-      const total = round2(subtotal + tax);
+        const updatedOrder = await tx.order.update({
+          where: { id: order.id },
+          data: { subtotal, tax, total },
+          select: {
+            id: true,
+            subtotal: true,
+            tax: true,
+            total: true,
+            status: true,
+            createdAt: true,
+          },
+        });
 
-      const updatedOrder = await tx.order.update({
-        where: { id: order.id },
-        data: { subtotal, tax, total },
-        select: { id: true, subtotal: true, tax: true, total: true, status: true, createdAt: true },
-      });
-
-      return updatedOrder;
-    }, { isolationLevel: 'Serializable' });
+        return updatedOrder;
+      },
+      { isolationLevel: 'Serializable' }
+    );
 
     return res.status(201).json({ data: created });
   } catch (e: any) {
     console.error('create order failed:', e);
-    return res.status(400).json({ error: e?.message || 'Could not create order' });
+    return res
+      .status(400)
+      .json({ error: e?.message || 'Could not create order' });
   }
 });
 
-/* ---------------- Shared enrichment for views ---------------- */
-async function enrichItemsWithCurrentStock(items: Array<{ productId: string; variantId: string | null }>) {
-  const pairs = items.map(i => ({ productId: i.productId, variantId: i.variantId ?? null }));
-  const map = await computeInStockForPairs(pairs);
-  const key = (p: string, v: string | null) => `${p}::${v ?? 'NULL'}`;
-  return (productId: string, variantId: string | null) => map[key(productId, variantId)] || { availableQty: 0, inStock: false };
-}
-
 /* =========================================================
-   GET /api/orders (admins only) — matches POST schema
+   GET /api/orders (admins only)
 ========================================================= */
 router.get('/', requireAuth, async (req, res) => {
   try {
-    if (!isAdmin(req.user?.role)) return res.status(403).json({ error: 'Admins only' });
+    if (!isAdmin(req.user?.role)) {
+      return res.status(403).json({ error: 'Admins only' });
+    }
 
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 50;
+    const take = Number.isFinite(limitRaw)
+      ? Math.min(100, Math.max(1, limitRaw))
+      : 50;
     const q = String(req.query.q ?? '').trim();
 
     const asNum = (v: any, d = 0) => {
@@ -371,24 +552,58 @@ router.get('/', requireAuth, async (req, res) => {
     };
 
     const whereWithUser = q
-      ? { OR: [{ id: { contains: q } }, { user: { email: { contains: q, mode: 'insensitive' as const } } }] }
+      ? {
+          OR: [
+            { id: { contains: q } },
+            {
+              user: {
+                email: {
+                  contains: q,
+                  mode: 'insensitive' as const,
+                },
+              },
+            },
+          ],
+        }
       : {};
     const whereSimple = q ? { id: { contains: q } } : {};
 
-    let baseOrders: Array<{ id: string; status: string; subtotal?: any; tax?: any; total: any; createdAt: any }> = [];
+    let baseOrders: Array<{
+      id: string;
+      status: string;
+      subtotal?: any;
+      tax?: any;
+      total: any;
+      createdAt: any;
+    }> = [];
+
     try {
       baseOrders = await prisma.order.findMany({
         where: whereWithUser as any,
         orderBy: { createdAt: 'desc' },
         take,
-        select: { id: true, status: true, subtotal: true as any, tax: true as any, total: true, createdAt: true },
+        select: {
+          id: true,
+          status: true,
+          subtotal: true as any,
+          tax: true as any,
+          total: true,
+          createdAt: true,
+        },
       });
     } catch {
       baseOrders = await prisma.order.findMany({
         where: whereSimple as any,
         orderBy: { createdAt: 'desc' },
         take,
-        select: { id: true, status: true, subtotal: true as any, tax: true as any, total: true, createdAt: true },
+        select: {
+          id: true,
+          status: true,
+          subtotal: true as any,
+          tax: true as any,
+          total: true,
+          createdAt: true,
+        },
       });
     }
 
@@ -413,7 +628,8 @@ router.get('/', requireAuth, async (req, res) => {
       });
       for (const p of paid) {
         const id = (p as any).orderId;
-        paidAmountByOrder[id] = (paidAmountByOrder[id] || 0) + asNum(p.amount, 0);
+        paidAmountByOrder[id] =
+          (paidAmountByOrder[id] || 0) + asNum(p.amount, 0);
       }
     } catch {
       try {
@@ -423,27 +639,30 @@ router.get('/', requireAuth, async (req, res) => {
         });
         for (const p of anyPayments) {
           const id = (p as any).orderId;
-          paidAmountByOrder[id] = (paidAmountByOrder[id] || 0) + asNum(p.amount, 0);
+          paidAmountByOrder[id] =
+            (paidAmountByOrder[id] || 0) + asNum(p.amount, 0);
         }
       } catch {}
     }
 
-    // Items — select ONLY fields we actually write in POST
-    const itemsByOrder: Record<string, Array<{
-      id: string;
-      productId: string;
-      variantId: string | null;
-      title: string;
-      unitPrice: number;
-      quantity: number;
-      lineTotal: number;
-      chosenSupplierOfferId: string | null;
-      chosenSupplierId: string | null;
-      chosenSupplierUnitPrice: number | null;
-      selectedOptions: any;
-      currentAvailableQty?: number;
-      currentInStock?: boolean;
-    }>> = {};
+    const itemsByOrder: Record<
+      string,
+      Array<{
+        id: string;
+        productId: string;
+        variantId: string | null;
+        title: string;
+        unitPrice: number;
+        quantity: number;
+        lineTotal: number;
+        chosenSupplierOfferId: string | null;
+        chosenSupplierId: string | null;
+        chosenSupplierUnitPrice: number | null;
+        selectedOptions: any;
+        currentAvailableQty?: number;
+        currentInStock?: boolean;
+      }>
+    > = {};
 
     let allItems: any[] = [];
     try {
@@ -461,20 +680,26 @@ router.get('/', requireAuth, async (req, res) => {
           chosenSupplierOfferId: true,
           chosenSupplierId: true,
           chosenSupplierUnitPrice: true,
-          selectedOptions: true, // stored as JSON string
+          selectedOptions: true,
         },
         orderBy: [{ orderId: 'asc' }, { id: 'asc' }],
       });
 
       const getter = await enrichItemsWithCurrentStock(
-        allItems.map(it => ({ productId: it.productId, variantId: it.variantId ?? null }))
+        allItems.map(it => ({
+          productId: it.productId,
+          variantId: it.variantId ?? null,
+        }))
       );
 
       for (const it of allItems) {
         const oid = it.orderId as string;
         const unitPrice = asNum(it.unitPrice, 0);
         const quantity = asNum(it.quantity, 1);
-        const lineTotal = asNum(it.lineTotal ?? it.lineTotal, unitPrice * quantity);
+        const lineTotal = asNum(
+          it.lineTotal ?? it.lineTotal,
+          unitPrice * quantity
+        );
 
         let selectedOptions: any = null;
         try {
@@ -483,9 +708,14 @@ router.get('/', requireAuth, async (req, res) => {
           } else if (it.selectedOptions) {
             selectedOptions = it.selectedOptions;
           }
-        } catch { selectedOptions = null; }
+        } catch {
+          selectedOptions = null;
+        }
 
-        const { availableQty, inStock } = getter(it.productId, it.variantId ?? null);
+        const { availableQty, inStock } = getter(
+          it.productId,
+          it.variantId ?? null
+        );
 
         (itemsByOrder[oid] ||= []).push({
           id: it.id,
@@ -497,7 +727,10 @@ router.get('/', requireAuth, async (req, res) => {
           lineTotal,
           chosenSupplierOfferId: it.chosenSupplierOfferId ?? null,
           chosenSupplierId: it.chosenSupplierId ?? null,
-          chosenSupplierUnitPrice: it.chosenSupplierUnitPrice != null ? asNumber(it.chosenSupplierUnitPrice, null as any) : null,
+          chosenSupplierUnitPrice:
+            it.chosenSupplierUnitPrice != null
+              ? asNum(it.chosenSupplierUnitPrice, 0)
+              : null,
           selectedOptions,
           currentAvailableQty: availableQty,
           currentInStock: inStock,
@@ -505,7 +738,10 @@ router.get('/', requireAuth, async (req, res) => {
       }
     } catch {}
 
-    const metricsByOrder: Record<string, { revenue: number; cogs: number; profit: number }> = {};
+    const metricsByOrder: Record<
+      string,
+      { revenue: number; cogs: number; profit: number }
+    > = {};
     try {
       const grouped = await prisma.orderItemProfit.groupBy({
         by: ['orderId'],
@@ -524,7 +760,11 @@ router.get('/', requireAuth, async (req, res) => {
     const data = baseOrders.map(o => {
       const email = userByOrder[o.id]?.email ?? null;
       const paidAmount = paidAmountByOrder[o.id] || 0;
-      const metrics = metricsByOrder[o.id] || { revenue: 0, cogs: 0, profit: 0 };
+      const metrics = metricsByOrder[o.id] || {
+        revenue: 0,
+        cogs: 0,
+        profit: 0,
+      };
 
       return {
         id: o.id,
@@ -535,7 +775,9 @@ router.get('/', requireAuth, async (req, res) => {
         total: asNum(o.total, 0),
         paidAmount,
         metrics,
-        createdAt: (o as any).createdAt?.toISOString?.() ?? (o as any).createdAt,
+        createdAt:
+          (o as any).createdAt?.toISOString?.() ??
+          (o as any).createdAt,
         items: itemsByOrder[o.id] || [],
       };
     });
@@ -543,17 +785,21 @@ router.get('/', requireAuth, async (req, res) => {
     res.json({ data });
   } catch (e: any) {
     console.error('GET /api/orders failed hard:', e?.message, e?.stack);
-    res.status(500).json({ error: e?.message || 'Failed to fetch orders' });
+    res
+      .status(500)
+      .json({ error: e?.message || 'Failed to fetch orders' });
   }
 });
 
 /* =========================================================
-   GET /api/orders/mine — matches POST schema
+   GET /api/orders/mine — end user
 ========================================================= */
 router.get('/mine', requireAuth, async (req, res) => {
   try {
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 50;
+    const take = Number.isFinite(limitRaw)
+      ? Math.min(100, Math.max(1, limitRaw))
+      : 50;
 
     const orders = await prisma.order.findMany({
       where: { userId: req.user!.id },
@@ -583,7 +829,14 @@ router.get('/mine', requireAuth, async (req, res) => {
         },
         payments: {
           orderBy: { createdAt: 'desc' },
-          select: { id: true, status: true, amount: true, reference: true, feeAmount: true, createdAt: true },
+          select: {
+            id: true,
+            status: true,
+            amount: true,
+            reference: true,
+            feeAmount: true,
+            createdAt: true,
+          },
         },
       },
     });
@@ -594,7 +847,10 @@ router.get('/mine', requireAuth, async (req, res) => {
     };
 
     const allPairs = orders.flatMap((o: any) =>
-      (Array.isArray(o.items) ? o.items : []).map((it: any) => ({ productId: it?.productId ?? null, variantId: it?.variantId ?? null }))
+      (Array.isArray(o.items) ? o.items : []).map((it: any) => ({
+        productId: it?.productId ?? null,
+        variantId: it?.variantId ?? null,
+      }))
     );
     const getter = await enrichItemsWithCurrentStock(allPairs as any);
 
@@ -604,52 +860,80 @@ router.get('/mine', requireAuth, async (req, res) => {
       subtotal: asNum(o.subtotal, 0),
       tax: asNum(o.tax, 0),
       total: asNum(o.total, 0),
-      createdAt: (o as any).createdAt?.toISOString?.() ?? (o as any).createdAt,
-      items: (Array.isArray(o.items) ? o.items : []).map((it: any) => {
-        const qty = asNum(it?.quantity, 1);
-        const unitPrice = asNum(it?.unitPrice, 0);
-        const rawLine = it?.lineTotal?? unitPrice * qty;
-        const lineTotal = asNum(rawLine, unitPrice * qty);
+      createdAt:
+        (o as any).createdAt?.toISOString?.() ??
+        (o as any).createdAt,
+      items: (Array.isArray(o.items) ? o.items : []).map(
+        (it: any) => {
+          const qty = asNum(it?.quantity, 1);
+          const unitPrice = asNum(it?.unitPrice, 0);
+          const rawLine =
+            it?.lineTotal ?? unitPrice * qty;
+          const lineTotal = asNum(
+            rawLine,
+            unitPrice * qty
+          );
 
-        let selectedOptions: any = null;
-        try {
-          if (typeof it?.selectedOptions === 'string') {
-            selectedOptions = JSON.parse(it.selectedOptions);
-          } else if (it?.selectedOptions) {
-            selectedOptions = it.selectedOptions;
+          let selectedOptions: any = null;
+          try {
+            if (typeof it?.selectedOptions === 'string') {
+              selectedOptions = JSON.parse(
+                it.selectedOptions
+              );
+            } else if (it?.selectedOptions) {
+              selectedOptions = it.selectedOptions;
+            }
+          } catch {
+            selectedOptions = null;
           }
-        } catch { selectedOptions = null; }
 
-        const { availableQty, inStock } = getter(it?.productId, it?.variantId ?? null);
+          const { availableQty, inStock } = getter(
+            it?.productId,
+            it?.variantId ?? null
+          );
 
-        return {
-          id: it?.id,
-          productId: it?.productId,
-          variantId: it?.variantId ?? null,
-          title: it?.title ?? '—',
-          unitPrice,
-          quantity: qty,
-          lineTotal,
-          chosenSupplierOfferId: it?.chosenSupplierOfferId ?? null,
-          chosenSupplierId: it?.chosenSupplierId ?? null,
-          chosenSupplierUnitPrice: it?.chosenSupplierUnitPrice != null ? asNum(it.chosenSupplierUnitPrice, 0) : null,
-          currentAvailableQty: availableQty,
-          currentInStock: inStock,
-          selectedOptions,
-        };
-      }),
-      payment: (Array.isArray(o.payments) ? o.payments : [])[0] ?? null,
+          return {
+            id: it?.id,
+            productId: it?.productId,
+            variantId: it?.variantId ?? null,
+            title: it?.title ?? '—',
+            unitPrice,
+            quantity: qty,
+            lineTotal,
+            chosenSupplierOfferId:
+              it?.chosenSupplierOfferId ?? null,
+            chosenSupplierId:
+              it?.chosenSupplierId ?? null,
+            chosenSupplierUnitPrice:
+              it?.chosenSupplierUnitPrice != null
+                ? asNum(
+                    it.chosenSupplierUnitPrice,
+                    0
+                  )
+                : null,
+            currentAvailableQty: availableQty,
+            currentInStock: inStock,
+            selectedOptions,
+          };
+        }
+      ),
+      payment:
+        (Array.isArray(o.payments)
+          ? o.payments
+          : [])[0] ?? null,
     }));
 
     res.json({ data });
   } catch (e: any) {
     console.error('list my orders failed:', e);
-    res.status(500).json({ error: e?.message || 'Failed to fetch your orders' });
+    res
+      .status(500)
+      .json({ error: e?.message || 'Failed to fetch your orders' });
   }
 });
 
 /* =========================================================
-   GET /api/orders/:id — matches POST schema
+   GET /api/orders/:id — single order
 ========================================================= */
 router.get('/:id', requireAuth, async (req, res) => {
   try {
@@ -676,17 +960,41 @@ router.get('/:id', requireAuth, async (req, res) => {
         },
         payments: {
           orderBy: { createdAt: 'desc' },
-          select: { id: true, status: true, provider: true, channel: true, reference: true, amount: true, feeAmount: true, createdAt: true },
+          select: {
+            id: true,
+            status: true,
+            provider: true,
+            channel: true,
+            reference: true,
+            amount: true,
+            feeAmount: true,
+            createdAt: true,
+          },
         },
       },
     });
 
-    if (!order) return res.status(404).json({ error: 'Order not found' });
-    if (!isAdmin(req.user?.role) && String(order.user?.id) !== String(req.user?.id)) {
-      return res.status(403).json({ error: 'Forbidden' });
+    if (!order) {
+      return res
+        .status(404)
+        .json({ error: 'Order not found' });
+    }
+    if (
+      !isAdmin(req.user?.role) &&
+      String(order.user?.id) !==
+        String(req.user?.id)
+    ) {
+      return res
+        .status(403)
+        .json({ error: 'Forbidden' });
     }
 
-    const getter = await enrichItemsWithCurrentStock(order.items.map((it: any) => ({ productId: it.productId, variantId: it.variantId })) as any);
+    const getter = await enrichItemsWithCurrentStock(
+      order.items.map((it: any) => ({
+        productId: it.productId,
+        variantId: it.variantId,
+      })) as any
+    );
 
     const asNum = (v: any, d = 0) => {
       const n = Number(v);
@@ -700,18 +1008,29 @@ router.get('/:id', requireAuth, async (req, res) => {
       subtotal: Number(order.subtotal ?? 0),
       tax: Number(order.tax ?? 0),
       total: Number(order.total ?? 0),
-      createdAt: (order as any).createdAt?.toISOString?.() ?? (order as any).createdAt,
+      createdAt:
+        (order as any).createdAt?.toISOString?.() ??
+        (order as any).createdAt,
       items: order.items.map((it: any) => {
-        const { availableQty, inStock } = getter(it.productId, it.variantId ?? null);
+        const { availableQty, inStock } = getter(
+          it.productId,
+          it.variantId ?? null
+        );
 
         let selectedOptions: any = null;
         try {
-          if (typeof it?.selectedOptions === 'string') {
-            selectedOptions = JSON.parse(it.selectedOptions);
+          if (
+            typeof it?.selectedOptions === 'string'
+          ) {
+            selectedOptions = JSON.parse(
+              it.selectedOptions
+            );
           } else if (it?.selectedOptions) {
             selectedOptions = it.selectedOptions;
           }
-        } catch { selectedOptions = null; }
+        } catch {
+          selectedOptions = null;
+        }
 
         return {
           id: it.id,
@@ -720,10 +1039,23 @@ router.get('/:id', requireAuth, async (req, res) => {
           title: it.title ?? '—',
           unitPrice: asNum(it.unitPrice, 0),
           quantity: asNum(it.quantity, 1),
-          lineTotal: asNum(it.lineTotal ?? it.totalPrice, asNum(it.unitPrice, 0) * asNum(it.quantity, 1)),
-          chosenSupplierOfferId: it.chosenSupplierOfferId ?? null,
-          chosenSupplierId: it.chosenSupplierId ?? null,
-          chosenSupplierUnitPrice: it.chosenSupplierUnitPrice != null ? asNum(it.chosenSupplierUnitPrice, 0) : null,
+          lineTotal: asNum(
+            it.lineTotal ??
+              (it as any).totalPrice,
+            asNum(it.unitPrice, 0) *
+              asNum(it.quantity, 1)
+          ),
+          chosenSupplierOfferId:
+            it.chosenSupplierOfferId ?? null,
+          chosenSupplierId:
+            it.chosenSupplierId ?? null,
+          chosenSupplierUnitPrice:
+            it.chosenSupplierUnitPrice != null
+              ? asNum(
+                  it.chosenSupplierUnitPrice,
+                  0
+                )
+              : null,
           currentAvailableQty: availableQty,
           currentInStock: inStock,
           selectedOptions,
@@ -735,7 +1067,9 @@ router.get('/:id', requireAuth, async (req, res) => {
     res.json({ data });
   } catch (e: any) {
     console.error('get order failed:', e);
-    res.status(500).json({ error: e?.message || 'Failed to fetch order' });
+    res
+      .status(500)
+      .json({ error: e?.message || 'Failed to fetch order' });
   }
 });
 
@@ -746,19 +1080,30 @@ router.get('/summary', requireAuth, async (req, res) => {
   try {
     const userId = getUserId(req)!;
 
-    const [countAll, paidAgg, latest] = await prisma.$transaction([
-      prisma.order.count({ where: { userId } }),
-      prisma.order.aggregate({
-        where: { userId, status: { in: ['PAID', 'COMPLETED'] } },
-        _sum: { total: true },
-      }),
-      prisma.order.findMany({
-        where: { userId },
-        orderBy: { createdAt: 'asc' },
-        take: 5,
-        select: { id: true, status: true, total: true, createdAt: true },
-      }),
-    ]);
+    const [countAll, paidAgg, latest] =
+      await prisma.$transaction([
+        prisma.order.count({ where: { userId } }),
+        prisma.order.aggregate({
+          where: {
+            userId,
+            status: {
+              in: ['PAID', 'COMPLETED'],
+            },
+          },
+          _sum: { total: true },
+        }),
+        prisma.order.findMany({
+          where: { userId },
+          orderBy: { createdAt: 'asc' },
+          take: 5,
+          select: {
+            id: true,
+            status: true,
+            total: true,
+            createdAt: true,
+          },
+        }),
+      ]);
 
     res.json({
       ordersCount: countAll,
@@ -767,12 +1112,16 @@ router.get('/summary', requireAuth, async (req, res) => {
         id: o.id,
         status: o.status,
         total: Number(o.total ?? 0),
-        createdAt: (o as any).createdAt?.toISOString?.() ?? (o as any).createdAt,
+        createdAt:
+          (o as any).createdAt?.toISOString?.() ??
+          (o as any).createdAt,
       })),
     });
   } catch (err: any) {
     console.error('orders summary failed:', err);
-    res.status(500).json({ error: err?.message || 'Failed to fetch summary' });
+    res
+      .status(500)
+      .json({ error: err?.message || 'Failed to fetch summary' });
   }
 });
 
@@ -785,44 +1134,72 @@ router.get('/:orderId/profit', requireSuperAdmin, async (req, res) => {
 
     const order = await prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, total: true, serviceFee: true, status: true, createdAt: true },
+      select: {
+        id: true,
+        total: true,
+        serviceFee: true,
+        status: true,
+        createdAt: true,
+      },
     });
-    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (!order) {
+      return res
+        .status(404)
+        .json({ error: 'Order not found' });
+    }
 
     const payments = await prisma.payment.findMany({
       where: { orderId, status: 'PAID' },
-      select: { id: true, amount: true, feeAmount: true },
-    });
-
-    const itemMetrics = await prisma.orderItemProfit.findMany({
-      where: { orderId },
-      orderBy: { computedAt: 'desc' },
       select: {
-        orderItemId: true,
-        qty: true,
-        unitPrice: true,
-        chosenSupplierUnitPrice: true,
-        revenue: true,
-        cogs: true,
-        allocatedGatewayFee: true,
-        allocatedCommsFee: true,
-        allocatedBaseServiceFee: true,
-        profit: true,
-        computedAt: true,
+        id: true,
+        amount: true,
+        feeAmount: true,
       },
     });
+
+    const itemMetrics =
+      await prisma.orderItemProfit.findMany({
+        where: { orderId },
+        orderBy: { computedAt: 'desc' },
+        select: {
+          orderItemId: true,
+          qty: true,
+          unitPrice: true,
+          chosenSupplierUnitPrice: true,
+          revenue: true,
+          cogs: true,
+          allocatedGatewayFee: true,
+          allocatedCommsFee: true,
+          allocatedBaseServiceFee: true,
+          profit: true,
+          computedAt: true,
+        },
+      });
 
     const summary = itemMetrics.reduce(
       (s: any, x: any) => {
         s.revenue += Number(x.revenue || 0);
         s.cogs += Number(x.cogs || 0);
-        s.gateway += Number(x.allocatedGatewayFee || 0);
-        s.comms += Number(x.allocatedCommsFee || 0);
-        s.base += Number(x.allocatedBaseServiceFee || 0);
+        s.gateway += Number(
+          x.allocatedGatewayFee || 0
+        );
+        s.comms += Number(
+          x.allocatedCommsFee || 0
+        );
+        s.base += Number(
+          x.allocatedBaseServiceFee || 0
+        );
         s.profit += Number(x.profit || 0);
         return s;
       },
-      { revenue: 0, cogs: 0, gateway: 0, comms: 0, base: 0, profit: 0 }
+      {
+        revenue: 0,
+        cogs: 0,
+        gateway: 0,
+        comms: 0,
+        base: 0,
+        profit: 0,
+      }
     );
 
     res.json({
@@ -830,16 +1207,31 @@ router.get('/:orderId/profit', requireSuperAdmin, async (req, res) => {
         id: order.id,
         status: order.status,
         total: Number(order.total || 0),
-        serviceFeeRecorded: Number(order.serviceFee || 0),
-        paidAmount: payments.reduce((a: number, p: any) => a + Number(p.amount || 0), 0),
-        gatewayFeeActual: payments.reduce((a: number, p: any) => a + Number(p.feeAmount || 0), 0),
+        serviceFeeRecorded: Number(
+          order.serviceFee || 0
+        ),
+        paidAmount: payments.reduce(
+          (a: number, p: any) =>
+            a + Number(p.amount || 0),
+          0
+        ),
+        gatewayFeeActual: payments.reduce(
+          (a: number, p: any) =>
+            a + Number(p.feeAmount || 0),
+          0
+        ),
       },
       summary,
       items: itemMetrics,
     });
   } catch (e: any) {
-    console.error('profit endpoint failed:', e);
-    res.status(500).json({ error: e?.message || 'Failed to fetch profit' });
+    console.error(
+      'profit endpoint failed:',
+      e
+    );
+    res
+      .status(500)
+      .json({ error: e?.message || 'Failed to fetch profit' });
   }
 });
 

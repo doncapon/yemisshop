@@ -374,12 +374,13 @@ model ProductVariantOption {
   variantId   String
   attributeId String
   valueId     String
+  priceBump   Decimal?
 
   variant   ProductVariant @relation("Variant_ProductVariantOptions", fields: [variantId], references: [id], onDelete: Cascade)
   attribute Attribute      @relation("Attribute_ProductVariantOptions", fields: [attributeId], references: [id], onDelete: Cascade)
   value     AttributeValue @relation("AttributeValue_ProductVariantOptions", fields: [valueId], references: [id], onDelete: Cascade)
 
-  @@unique([variantId, attributeId]) // each attribute used once per variant
+  @@unique([variantId, attributeId, valueId], name: "variantId_attributeId_valueId")
   @@index([variantId])
   @@index([attributeId])
   @@index([valueId])

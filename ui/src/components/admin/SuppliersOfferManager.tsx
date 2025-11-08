@@ -1,601 +1,886 @@
-import React from "react";
+import * as React from "react";
+import { forwardRef, useImperativeHandle, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../../api/client";
+import { useModal } from "../ModalProvider";
 
-type VariantLite = { id: string; sku?: string | null };
-type SupplierLite = { id: string; name: string };
+/* ===========================
+   Types expected by parent
+=========================== */
+export type VariantLite = { id: string; sku?: string | null };
+export type SupplierLite = { id: string; name: string };
 
-type SupplierOffer = {
-  id: string;
-  supplierId: string;
-  supplierName?: string;
-  productId: string;
-  variantId?: string | null;
-
-  price: number | string;      // Decimal from API; render as number
-  currency?: string;
-  leadDays?: number | null;
-
-  isActive: boolean;
-  inStock: boolean;            // DB flag (may be stale)
-  availableQty: number;        // <- authoritative
-
-  createdAt?: string;
-  updatedAt?: string;
+/* Expose a handle the parent can call */
+export type SuppliersOfferManagerHandle = {
+  saveAll: () => Promise<void>;
 };
 
-function toInt(x: any, d = 0) {
-  const n = Number(x);
-  return Number.isFinite(n) ? Math.floor(n) : d;
-}
-function toMoney(x: any) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : 0;
-}
+/* ===========================
+   Local types
+=========================== */
+type OfferWire = {
+  id: string;
+  productId: string;
+  supplierId: string;
+  supplierName?: string;
+  variantId?: string | null;
+  variantSku?: string | null;
+  price?: number | string | null;
+  availableQty?: number | string | null;
+  available?: number | string | null;
+  qty?: number | string | null;
+  stock?: number | string | null;
+  isActive?: boolean | string | null;
+  inStock?: boolean | string | null;
+  leadDays?: number | string | null;
+  notes?: string | null;
+};
 
-const headersFor = (token?: string | null) =>
-  token ? { Authorization: `Bearer ${token}` } : undefined;
+type RowDraft = {
+  id?: string; // present = existing row
+  supplierId: string;
+  variantId: string | null;
+  price: string;
+  availableQty: string;
+  isActive: boolean;
+  leadDays?: string;
+  notes?: string; // local only
+};
 
-function buildBodies(patch: any) {
-  return [
-    patch,                         // { ...fields }
-    { data: patch },               // { data: { ...fields } }
-    { ...patch, id: patch?.id },   // sometimes APIs want id echoed
-  ];
-}
-
-async function tryMany<T>(fns: Array<() => Promise<T>>): Promise<T> {
-  let lastErr: any;
-  for (const fn of fns) {
-    try { return await fn(); } catch (e) { lastErr = e; }
-  }
-  throw lastErr;
-}
-
-function pickVariantId(o: any) {
-  return (
-    o.variantId ??
-    o.productVariantId ??
-    o.variant_id ??
-    o.variant?.id ??
-    null
-  );
-}
-function pickSupplierName(o: any) {
-  return o.supplier?.name ?? o.supplierName ?? o.supplier_name ?? "";
-}
-
-/** Fan out variantId so whatever the API expects will be present */
-function withVariantAliases(patch: Partial<SupplierOffer>) {
-  const vid = patch.variantId;
-  if (vid === undefined) return patch;
-  return {
-    ...patch,
-    variantId: vid,
-    productVariantId: vid,
-    variant_id: vid,
-  };
-}
-
-/** Some APIs want fields omitted rather than null/"" */
-function stripNullish<T extends Record<string, any>>(obj: T): T {
-  const out: any = {};
-  for (const k in obj) {
-    const v = obj[k];
-    if (v !== null && v !== undefined && v !== "") out[k] = v;
-  }
-  return out;
-}
-
-export default function SuppliersOfferManager({
-  productId,
-  variants,
-  suppliers,
-  token,
-  readOnly,
-}: {
+type SuppliersOfferManagerProps = {
   productId: string;
   variants: VariantLite[];
   suppliers: SupplierLite[];
   token?: string | null;
   readOnly?: boolean;
-}) {
-  const qc = useQueryClient();
-  const hdr = headersFor(token);
+  onChanged?: () => void;
+};
 
-  /* ---------- Query: list offers for this product ---------- */
-  const listQ = useQuery<SupplierOffer[]>({
-    queryKey: ["admin", "supplier-offers", { productId }],
-    enabled: !!productId,
-    refetchOnWindowFocus: false,
-    staleTime: 30_000,
-    queryFn: async () => {
-      const tries = [
-        `/api/admin/products/${productId}/supplier-offers`,
-        `/api/admin/supplier-offers?productId=${encodeURIComponent(productId)}`,
-        `/api/products/${productId}/supplier-offers`,
-      ];
-      for (const url of tries) {
-        try {
-          const { data } = await api.get(url, { headers: hdr });
-          const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
-          if (Array.isArray(arr)) {
-            // normalize and ensure numbers
-            return arr.map((o: any) => ({
-              id: String(o.id),
-              supplierId: String(o.supplierId ?? o.supplier_id ?? o.supplier?.id ?? ""),
-              supplierName: pickSupplierName(o),
-              productId: String(o.productId ?? o.product_id ?? o.product?.id ?? productId),
-              variantId: pickVariantId(o),
+/* ===========================
+   Helpers
+=========================== */
+const toInt = (x: any, d = 0) => {
+  const n = Number(x);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : d;
+};
+const toNum = (x: any, d = 0) => {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : d;
+};
+const truthy = (v: any, def = true) => {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "string") return /^(true|1|yes|y)$/i.test(v.trim());
+  if (v == null) return def;
+  return Boolean(v);
+};
+const availOf = (o: any) =>
+  toInt(o?.availableQty ?? o?.available ?? o?.qty ?? o?.stock, 0);
+const priceOf = (o: any) => toNum(o?.price, 0);
 
-              price: toMoney(o.price),
-              currency: o.currency ?? "NGN",
-              leadDays: o.leadDays ?? o.lead_days ?? null,
+/**
+ * Normalize a supplier-offer row into our RowDraft shape.
+ * Be tolerant of different backend shapes for variant reference.
+ */
+function normalizeOffer(w: OfferWire | any): RowDraft {
+  const rawVariantId =
+    w.variantId ??
+    w.variant_id ??
+    (typeof w.variant === "string"
+      ? w.variant
+      : w.variant?.id);
 
-              isActive: Boolean(o.isActive ?? o.active),
-              inStock: Boolean(o.inStock ?? o.in_stock),
-              availableQty: toInt(o.availableQty ?? o.available_qty ?? o.qty_available, 0),
+  return {
+    id: String(w.id),
+    supplierId: String(w.supplierId),
+    variantId: rawVariantId ? String(rawVariantId) : null,
+    price: String(priceOf(w)),
+    availableQty: String(availOf(w)),
+    isActive: truthy(w.isActive, true),
+    leadDays: w.leadDays != null ? String(w.leadDays) : "",
+    notes: w.notes ?? "",
+  };
+}
 
-              createdAt: o.createdAt ?? o.created_at,
-              updatedAt: o.updatedAt ?? o.updated_at,
-            })) as SupplierOffer[];
-          }
-        } catch {
-          /* try next */
-        }
+/* ===========================
+   API (robust payload shapes)
+=========================== */
+
+async function listOffers(
+  productId: string,
+  token?: string | null
+): Promise<OfferWire[]> {
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+  try {
+    const { data } = await api.get(
+      `/api/admin/products/${productId}/supplier-offers`,
+      { headers }
+    );
+    const arr = Array.isArray(data?.data)
+      ? data.data
+      : Array.isArray(data)
+      ? data
+      : [];
+    return (arr ?? []) as OfferWire[];
+  } catch {
+    const tries = [
+      `/api/products/${productId}/supplier-offers`,
+      `/api/admin/supplier-offers?productId=${encodeURIComponent(productId)}`,
+      `/api/supplier-offers?productId=${encodeURIComponent(productId)}`,
+    ];
+    for (const url of tries) {
+      try {
+        const { data } = await api.get(url, { headers });
+        const arr = Array.isArray(data?.data)
+          ? data.data
+          : Array.isArray(data)
+          ? data
+          : [];
+        if (Array.isArray(arr)) return arr as OfferWire[];
+      } catch {
+        /* try next */
       }
-      return [];
+    }
+  }
+  return [];
+}
+
+/**
+ * Try both { data: payload } and flat payload for maximum compatibility.
+ */
+async function postWithFlexibleBody(
+  url: string,
+  payload: any,
+  headers: any
+): Promise<any> {
+  // 1) Try { data: payload }
+  try {
+    const res = await api.post(url, { data: payload }, { headers });
+    return (res as any).data ?? res;
+  } catch (e1) {
+    // 2) Try flat payload
+    try {
+      const res = await api.post(url, payload, { headers });
+      return (res as any).data ?? res;
+    } catch (e2) {
+      throw e2;
+    }
+  }
+}
+
+async function patchOrPutWithFlexibleBody(
+  url: string,
+  payload: any,
+  headers: any
+): Promise<any> {
+  // PATCH: { data: payload }
+  try {
+    const res = await api.patch(url, { data: payload }, { headers });
+    return (res as any).data ?? res;
+  } catch {
+    // PATCH: flat
+    try {
+      const res = await api.patch(url, payload, { headers });
+      return (res as any).data ?? res;
+    } catch {
+      // PUT: { data: payload }
+      try {
+        const res = await api.put(url, { data: payload }, { headers });
+        return (res as any).data ?? res;
+      } catch (ePutFlat) {
+        // PUT: flat
+        const res = await api.put(url, payload, { headers }).catch(() => {
+          throw ePutFlat;
+        });
+        return (res as any).data ?? res;
+      }
+    }
+  }
+}
+
+async function createOffer(
+  productId: string,
+  payload: any,
+  token?: string | null
+) {
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+  const urls = [
+    `/api/admin/products/${productId}/supplier-offers`,
+    `/api/products/${productId}/supplier-offers`,
+    `/api/admin/supplier-offers`,
+    `/api/supplier-offers`,
+  ];
+
+  for (const u of urls) {
+    try {
+      return await postWithFlexibleBody(u, payload, headers);
+    } catch {
+      /* try next */
+    }
+  }
+  throw new Error("Failed to create supplier offer.");
+}
+
+async function updateOffer(
+  productId: string,
+  offerId: string,
+  payload: any,
+  token?: string | null
+) {
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+  const urls = [
+    `/api/admin/products/${productId}/supplier-offers/${offerId}`,
+    `/api/products/${productId}/supplier-offers/${offerId}`,
+    `/api/admin/supplier-offers/${offerId}`,
+    `/api/supplier-offers/${offerId}`,
+  ];
+
+  for (const u of urls) {
+    try {
+      return await patchOrPutWithFlexibleBody(u, payload, headers);
+    } catch {
+      /* try next */
+    }
+  }
+  throw new Error("Failed to update supplier offer.");
+}
+
+async function deleteOffer(
+  productId: string,
+  offerId: string,
+  token?: string | null
+) {
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+  const urls = [
+    `/api/admin/products/${productId}/supplier-offers/${offerId}`,
+    `/api/products/${productId}/supplier-offers/${offerId}`,
+    `/api/admin/supplier-offers/${offerId}`,
+    `/api/supplier-offers/${offerId}`,
+  ];
+
+  for (const u of urls) {
+    try {
+      const res = await api.delete(u, { headers });
+      return (res as any).data ?? res;
+    } catch {
+      /* try next */
+    }
+  }
+  throw new Error("Failed to delete supplier offer.");
+}
+
+/* ===========================
+   Component
+=========================== */
+
+const SuppliersOfferManager = forwardRef<
+  SuppliersOfferManagerHandle,
+  SuppliersOfferManagerProps
+>(({ productId, variants, suppliers, token, readOnly, onChanged }, ref) => {
+  const { openModal } = useModal();
+  const qc = useQueryClient();
+
+  /* Load existing offers */
+  const offersQ = useQuery({
+    queryKey: ["admin", "products", productId, "supplier-offers"],
+    enabled: !!productId,
+    queryFn: async () => {
+      const list = await listOffers(productId, token);
+      return list.map(normalizeOffer);
     },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 
-  /* ---------- Mutations (resilient) ---------- */
+  const rows = offersQ.data ?? [];
+
+  /* Lookups */
+  const variantSkuById = useMemo(() => {
+    const m = new Map<string, string>();
+
+    (variants || []).forEach((v) => {
+      if (v.id) m.set(String(v.id), v.sku || v.id);
+    });
+
+    (offersQ.data || []).forEach((o: any) => {
+      const vid =
+        o.variantId ??
+        o.variant_id ??
+        (typeof o.variant === "string"
+          ? o.variant
+          : o.variant?.id);
+      const sku =
+        o.variantSku ??
+        o.variant?.sku ??
+        (vid && m.get(String(vid)));
+      if (vid && sku) {
+        m.set(String(vid), String(sku));
+      }
+    });
+
+    return m;
+  }, [variants, offersQ.data]);
+
+  /* New row */
+  const [newRow, setNewRow] = useState<RowDraft>({
+    supplierId: suppliers[0]?.id ?? "",
+    variantId: null,
+    price: "",
+    availableQty: "",
+    isActive: true,
+    leadDays: "",
+    notes: "",
+  });
+
+  /* Local edits */
+  const [edits, setEdits] = useState<Record<string, RowDraft>>({});
+
+  const mergeRow = (serverRow: RowDraft): RowDraft => {
+    const draft = edits[serverRow.id!];
+    if (!draft) return serverRow;
+    return { ...serverRow, ...draft, id: serverRow.id };
+  };
+
+  const onEditChange = (id: string, patch: Partial<RowDraft>) => {
+    setEdits((prev) => {
+      const base: RowDraft =
+        prev[id] ||
+        (rows.find((r) => r.id === id) as RowDraft) || {
+          id,
+          supplierId: "",
+          variantId: null,
+          price: "",
+          availableQty: "",
+          isActive: true,
+        };
+      const next: RowDraft = { ...base, ...patch, id };
+      return { ...prev, [id]: next };
+    });
+  };
+
+  /* Mutations */
+  const invalidateAll = async () => {
+    await Promise.all([
+      qc.invalidateQueries({
+        queryKey: ["admin", "products", productId, "supplier-offers"],
+      }),
+      qc.invalidateQueries({
+        queryKey: ["admin", "products", "offers-summary"],
+      }),
+    ]);
+    onChanged?.();
+    window.dispatchEvent(
+      new CustomEvent("supplier-offers:changed", {
+        detail: { productId },
+      })
+    );
+  };
+
   const createM = useMutation({
-    mutationFn: async (payload: Partial<SupplierOffer>) => {
-      // Authoritative stock flag from availableQty
-      const availableQty = toInt(payload.availableQty, 0);
-      const base = {
-        ...payload,
+    mutationFn: async (draft: RowDraft) => {
+      const payload = {
         productId,
-        inStock: availableQty > 0,
-        price: toMoney(payload.price),
-        currency: payload.currency || "NGN",
+        supplierId: draft.supplierId,
+        variantId: draft.variantId || null,
+        price: toNum(draft.price, 0),
+        availableQty: toInt(draft.availableQty, 0),
+        isActive: !!draft.isActive,
+        leadDays:
+          draft.leadDays != null && draft.leadDays !== ""
+            ? toInt(draft.leadDays, 0)
+            : undefined,
       };
-      const body = stripNullish(withVariantAliases(base));
-
-      const hdr = headersFor(token);
-
-      const urls: string[] = [
-        // per-product first
-        `/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`,
-        `/api/products/${encodeURIComponent(productId)}/supplier-offers`,
-        // flat fallback
-        `/api/admin/supplier-offers`,
-        `/api/supplier-offers`,
-      ];
-
-      const bodies = buildBodies(body);
-
-      return await tryMany(
-        urls.flatMap((u) => bodies.map((b) => () => api.post(u, b, { headers: hdr })))
-      );
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin", "supplier-offers", { productId }] });
-      // keep the rest of the UI fresh (avail sums, lists)
-      qc.invalidateQueries({ queryKey: ["admin", "products", "offers-summary"] });
-      qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] });
+      return await createOffer(productId, payload, token);
     },
   });
 
   const updateM = useMutation({
-    mutationFn: async ({ id, patch }: { id: string; patch: Partial<SupplierOffer> }) => {
-      // keep inStock consistent with quantity
-      const avail = patch.availableQty != null ? toInt(patch.availableQty, 0) : undefined;
-      const base = avail == null ? patch : { ...patch, inStock: avail > 0 };
-      const body = stripNullish(withVariantAliases(base));
-
-      const hdr = headersFor(token);
-      const idsafe = encodeURIComponent(id);
-      const pid = encodeURIComponent(productId);
-
-      const urls: string[] = [
-        // per-product first
-        `/api/admin/products/${pid}/supplier-offers/${idsafe}`,
-        `/api/products/${pid}/supplier-offers/${idsafe}`,
-        // flat resource
-        `/api/admin/supplier-offers/${idsafe}`,
-        `/api/supplier-offers/${idsafe}`,
-        // some APIs expose a separate /status path
-        `/api/admin/products/${pid}/supplier-offers/${idsafe}/status`,
-        `/api/admin/supplier-offers/${idsafe}/status`,
-        `/api/supplier-offers/${idsafe}/status`,
-      ];
-
-      const bodies = buildBodies(body);
-      const methods: Array<"patch" | "put" | "post"> = ["patch", "put", "post"];
-
-      return await tryMany(
-        urls.flatMap((u) =>
-          methods.flatMap((m) => bodies.map((b) => () => api[m](u, b, { headers: hdr })))
-        )
-      );
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin", "supplier-offers", { productId }] });
-      qc.invalidateQueries({ queryKey: ["admin", "products", "offers-summary"] });
-      qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] });
+    mutationFn: async (draft: RowDraft) => {
+      if (!draft.id) throw new Error("Missing offer id");
+      const payload: any = {
+        supplierId: draft.supplierId,
+        variantId: draft.variantId || null,
+        price: toNum(draft.price, 0),
+        availableQty: toInt(draft.availableQty, 0),
+        isActive: !!draft.isActive,
+      };
+      if (draft.leadDays != null && draft.leadDays !== "") {
+        payload.leadDays = toInt(draft.leadDays, 0);
+      }
+      return await updateOffer(productId, draft.id!, payload, token);
     },
   });
 
   const deleteM = useMutation({
-    mutationFn: async (id: string) => {
-      const hdr = headersFor(token);
-      const idsafe = encodeURIComponent(id);
-      const pid = encodeURIComponent(productId);
-
-      const urls: string[] = [
-        `/api/admin/products/${pid}/supplier-offers/${idsafe}`,
-        `/api/products/${pid}/supplier-offers/${idsafe}`,
-        `/api/admin/supplier-offers/${idsafe}`,
-        `/api/supplier-offers/${idsafe}`,
-      ];
-
-      return await tryMany(urls.map((u) => () => api.delete(u, { headers: hdr })));
+    mutationFn: async (id: string) => await deleteOffer(productId, id, token),
+    onSuccess: async (_r, id) => {
+      setEdits((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      await invalidateAll();
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["admin", "supplier-offers", { productId }] });
-      qc.invalidateQueries({ queryKey: ["admin", "products", "offers-summary"] });
-      qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] });
-    },
+    onError: (e: any) =>
+      openModal({
+        title: "Supplier Offers",
+        message: e?.message || "Failed to delete offer",
+      }),
   });
 
-  /* ---------- Local edit state ---------- */
-  const [openId, setOpenId] = React.useState<string | null>(null);
-  const [drafts, setDrafts] = React.useState<Record<string, Partial<SupplierOffer>>>({});
-  const [addDraft, setAddDraft] = React.useState<Partial<SupplierOffer>>({
-    supplierId: suppliers[0]?.id,
-    variantId: null,
-    price: 0,
-    currency: "NGN",
-    availableQty: 0,
-    leadDays: undefined,
-    isActive: true,
-  });
+  /* Save-all implementation */
+  const [saving, setSaving] = useState(false);
 
-  function startEdit(offer: SupplierOffer) {
-    setOpenId(offer.id);
-    setDrafts((d) => ({
-      ...d,
-      [offer.id]: {
-        supplierId: offer.supplierId,
-        variantId: offer.variantId ?? null,
-        price: Number(offer.price),
-        currency: offer.currency ?? "NGN",
-        availableQty: Number(offer.availableQty),
-        leadDays: offer.leadDays ?? undefined,
-        isActive: offer.isActive,
-        // do NOT carry inStock; we will derive and set on save
-      },
-    }));
-  }
-  function changeDraft(id: string, patch: Partial<SupplierOffer>) {
-    setDrafts((d) => ({ ...d, [id]: { ...(d[id] || {}), ...patch } }));
-  }
-  function cancelEdit() {
-    setOpenId(null);
+  async function saveAllInternal() {
+    if (readOnly) return;
+    setSaving(true);
+
+    try {
+      const editedExisting = Object.values(edits).filter(
+        (d) => !!d.id && !!d.supplierId
+      );
+      const createCandidate =
+        newRow.supplierId &&
+        newRow.price.trim() !== "" &&
+        newRow.availableQty.trim() !== ""
+          ? { ...newRow }
+          : null;
+
+      const ops: Array<Promise<any>> = [];
+
+      for (const d of editedExisting) {
+        ops.push(
+          updateM.mutateAsync({
+            ...d,
+            id: d.id!,
+          })
+        );
+      }
+
+      if (createCandidate) {
+        ops.push(createM.mutateAsync(createCandidate));
+      }
+
+      const results = await Promise.allSettled(ops);
+      const failed = results.filter((r) => r.status === "rejected");
+      const created = createCandidate ? 1 : 0;
+      const updated = editedExisting.length;
+
+      if (failed.length > 0) {
+        const reason = (failed[0] as PromiseRejectedResult).reason as any;
+        openModal({
+          title: "Supplier Offers",
+          message:
+            (reason?.response?.data?.error as string) ||
+            reason?.message ||
+            `Some changes failed to save (${failed.length}/${results.length}).`,
+        });
+      } else {
+        openModal({
+          title: "Supplier Offers",
+          message: `Saved ${updated} update${updated === 1 ? "" : "s"}${
+            created ? ` and ${created} new offer` : ""
+          }.`,
+        });
+        setEdits({});
+        setNewRow((n) => ({
+          ...n,
+          price: "",
+          availableQty: "",
+          leadDays: "",
+          notes: "",
+        }));
+        await invalidateAll();
+      }
+    } finally {
+      setSaving(false);
+    }
   }
 
-  /* ---------- UI helpers ---------- */
+  useImperativeHandle(ref, () => ({
+    saveAll: saveAllInternal,
+  }));
+
+  /* Formatting */
   const ngn = new Intl.NumberFormat("en-NG", {
     style: "currency",
     currency: "NGN",
     maximumFractionDigits: 2,
   });
-  const variantLabel = (vId?: string | null) =>
-    vId ? (variants.find((v) => v.id === vId)?.sku || vId) : "—";
 
-  /* ---------- Repair mismatched inStock flags (optional button) ---------- */
-  const repairM = useMutation({
-    mutationFn: async () => {
-      const offers = listQ.data ?? [];
-      const mismatches = offers.filter((o) => (o.availableQty > 0) !== o.inStock);
-      await Promise.all(
-        mismatches.map((o) =>
-          api.patch(
-            `/api/admin/supplier-offers/${o.id}`,
-            { inStock: o.availableQty > 0 },
-            { headers: hdr }
-          )
-        )
-      );
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "supplier-offers", { productId }] }),
-  });
-
+  /* Render */
   return (
-    <div className="p-3">
-      <div className="flex items-center justify-between mb-2">
-        <div>
-          <h4 className="font-semibold">Supplier offers</h4>
-          <p className="text-xs text-zinc-600">
-            Manage price, <b>availableQty</b>, variant links, activity and lead time.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            className="px-3 py-1.5 rounded-lg border"
-            onClick={() =>
-              setAddDraft({
-                supplierId: suppliers[0]?.id,
-                variantId: null,
-                price: 0,
-                currency: "NGN",
-                availableQty: 0,
-                leadDays: undefined,
-                isActive: true,
-              })
-            }
-            disabled={readOnly}
-            title="Prepare a new offer below"
-          >
-            Add Offer
-          </button>
-
-          <button
-            className="px-3 py-1.5 rounded-lg border"
-            onClick={() => repairM.mutate()}
-            disabled={repairM.isPending || readOnly}
-            title="Force inStock = availableQty > 0 for all offers"
-          >
-            {repairM.isPending ? "Repairing…" : "Repair stock flags"}
-          </button>
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="border rounded-lg overflow-x-auto">
-        <table className="w-full text-sm">
+    <div className="p-4 md:p-5">
+      <div className="overflow-x-auto rounded-xl border bg-white">
+        <table className="min-w-full text-sm">
           <thead className="bg-zinc-50">
             <tr>
               <th className="text-left px-3 py-2">Supplier</th>
               <th className="text-left px-3 py-2">Variant</th>
-              <th className="text-left px-3 py-2">Price</th>
-              <th className="text-left px-3 py-2">Avail.</th>
-              <th className="text-left px-3 py-2">Stock</th>
-              <th className="text-left px-3 py-2">Active</th>
+              <th className="text-right px-3 py-2">Price</th>
+              <th className="text-right px-3 py-2">Available</th>
+              <th className="text-center px-3 py-2">Active</th>
+              <th className="text-right px-3 py-2">Lead (days)</th>
+              <th className="text-left px-3 py-2">Notes</th>
               <th className="text-right px-3 py-2">Actions</th>
             </tr>
           </thead>
-
           <tbody className="divide-y">
-            {/* Existing offers */}
-            {(listQ.data ?? []).map((o) => {
-              const editing = openId === o.id;
-              const d = drafts[o.id] || {};
-              const computedInStock = (o.availableQty ?? 0) > 0; // <- authoritative
+            {offersQ.isLoading && (
+              <tr>
+                <td
+                  colSpan={8}
+                  className="px-3 py-4 text-zinc-500"
+                >
+                  Loading offers…
+                </td>
+              </tr>
+            )}
 
-              return (
-                <React.Fragment key={o.id}>
-                  <tr>
-                    <td className="px-3 py-2">{o.supplierName || (suppliers.find(s => s.id === o.supplierId)?.name) || "—"}</td>
-                    <td className="px-3 py-2">{variantLabel(o.variantId)}</td>
-                    <td className="px-3 py-2">{ngn.format(toMoney(o.price))}</td>
-                    <td className="px-3 py-2">{toInt(o.availableQty, 0)}</td>
+            {!offersQ.isLoading && rows.length === 0 && (
+              <tr>
+                <td
+                  colSpan={8}
+                  className="px-3 py-4 text-zinc-500"
+                >
+                  No supplier offers yet.
+                </td>
+              </tr>
+            )}
 
-                    {/* Stock cell derived solely from availableQty */}
+            {!offersQ.isLoading &&
+              rows.map((serverRow) => {
+                const r = mergeRow(serverRow);
+                return (
+                  <tr key={r.id}>
+                    {/* Supplier */}
                     <td className="px-3 py-2">
-                      {computedInStock ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700">
-                          <span className="inline-block w-2 h-2 rounded-full bg-emerald-600" />
-                          In
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-rose-700">
-                          <span className="inline-block w-2 h-2 rounded-full bg-rose-600" />
-                          Out
-                        </span>
-                      )}
+                      <select
+                        className="border rounded-lg px-2 py-1 w-48"
+                        value={r.supplierId}
+                        onChange={(e) =>
+                          onEditChange(r.id!, {
+                            supplierId: e.target.value,
+                          })
+                        }
+                        disabled={readOnly}
+                      >
+                        {suppliers.map((s) => (
+                          <option
+                            key={s.id}
+                            value={s.id}
+                          >
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
                     </td>
 
-                    <td className="px-3 py-2">{o.isActive ? "Yes" : "No"}</td>
+                    {/* Variant */}
+                    <td className="px-3 py-2">
+                      <select
+                        className="border rounded-lg px-2 py-1 w-48"
+                        value={r.variantId ?? ""}
+                        onChange={(e) =>
+                          onEditChange(r.id!, {
+                            variantId:
+                              e.target.value || null,
+                          })
+                        }
+                        disabled={readOnly}
+                      >
+                        <option value="">
+                          — None (generic) —
+                        </option>
+                        {variants.map((v) => (
+                          <option
+                            key={v.id}
+                            value={v.id}
+                          >
+                            {variantSkuById.get(v.id) ||
+                              v.id}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
 
+                    {/* Price */}
                     <td className="px-3 py-2 text-right">
-                      <div className="inline-flex gap-2">
-                        <button
-                          className="px-2 py-1 rounded border"
-                          onClick={() => startEdit(o)}
-                          disabled={readOnly}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          className="px-2 py-1 rounded bg-rose-600 text-white"
-                          onClick={() => {
-                            if (!readOnly && confirm("Delete this offer?")) deleteM.mutate(o.id);
-                          }}
-                          disabled={deleteM.isPending || readOnly}
-                        >
-                          Delete
-                        </button>
+                      <input
+                        className="border rounded-lg px-2 py-1 w-32 text-right"
+                        inputMode="decimal"
+                        value={r.price}
+                        onChange={(e) =>
+                          onEditChange(r.id!, {
+                            price: e.target.value,
+                          })
+                        }
+                        disabled={readOnly}
+                      />
+                      <div className="text-[11px] text-zinc-500 mt-0.5">
+                        {ngn.format(toNum(r.price, 0))}
                       </div>
                     </td>
+
+                    {/* Available */}
+                    <td className="px-3 py-2 text-right">
+                      <input
+                        className="border rounded-lg px-2 py-1 w-24 text-right"
+                        inputMode="numeric"
+                        value={r.availableQty}
+                        onChange={(e) =>
+                          onEditChange(r.id!, {
+                            availableQty:
+                              e.target.value,
+                          })
+                        }
+                        disabled={readOnly}
+                      />
+                    </td>
+
+                    {/* Active */}
+                    <td className="px-3 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={!!r.isActive}
+                        onChange={(e) =>
+                          onEditChange(r.id!, {
+                            isActive:
+                              e.target.checked,
+                          })
+                        }
+                        disabled={readOnly}
+                      />
+                    </td>
+
+                    {/* Lead days */}
+                    <td className="px-3 py-2 text-right">
+                      <input
+                        className="border rounded-lg px-2 py-1 w-20 text-right"
+                        inputMode="numeric"
+                        value={r.leadDays ?? ""}
+                        onChange={(e) =>
+                          onEditChange(r.id!, {
+                            leadDays:
+                              e.target.value,
+                          })
+                        }
+                        disabled={readOnly}
+                      />
+                    </td>
+
+                    {/* Notes (local only) */}
+                    <td className="px-3 py-2">
+                      <input
+                        className="border rounded-lg px-2 py-1 w-64"
+                        value={r.notes ?? ""}
+                        onChange={(e) =>
+                          onEditChange(r.id!, {
+                            notes: e.target.value,
+                          })
+                        }
+                        disabled={readOnly}
+                      />
+                    </td>
+
+                    {/* Actions */}
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        className="px-2 py-1 rounded bg-rose-600 text-white"
+                        onClick={() => {
+                          if (readOnly) return;
+                          deleteM.mutate(r.id!);
+                        }}
+                        disabled={
+                          readOnly ||
+                          deleteM.isPending ||
+                          saving
+                        }
+                        title="Delete"
+                      >
+                        Delete
+                      </button>
+                    </td>
                   </tr>
+                );
+              })}
 
-                  {editing && (
-                    <tr className="bg-zinc-50/50">
-                      <td colSpan={7} className="px-3 py-3">
-                        <div className="grid md:grid-cols-6 gap-2 items-center">
-                          <select
-                            className="border rounded-lg px-2 py-1"
-                            value={d.supplierId ?? o.supplierId}
-                            onChange={(e) => changeDraft(o.id, { supplierId: e.target.value })}
-                          >
-                            {suppliers.map((s) => (
-                              <option key={s.id} value={s.id}>{s.name}</option>
-                            ))}
-                          </select>
-
-                          <select
-                            className="border rounded-lg px-2 py-1"
-                            value={(d.variantId ?? o.variantId) ?? ""}
-                            onChange={(e) =>
-                              changeDraft(o.id, { variantId: e.target.value || null })
-                            }
-                          >
-                            <option value="">— base product —</option>
-                            {variants.map((v) => (
-                              <option key={v.id} value={v.id}>{v.sku || v.id}</option>
-                            ))}
-                          </select>
-
-                          <input
-                            className="border rounded-lg px-2 py-1"
-                            placeholder="Price"
-                            inputMode="decimal"
-                            value={String(d.price ?? o.price ?? "")}
-                            onChange={(e) => changeDraft(o.id, { price: e.target.value })}
-                          />
-
-                          <input
-                            className="border rounded-lg px-2 py-1"
-                            placeholder="Avail."
-                            inputMode="numeric"
-                            value={String(d.availableQty ?? o.availableQty ?? 0)}
-                            onChange={(e) => changeDraft(o.id, { availableQty: toInt(e.target.value, 0) })}
-                            title="Available quantity (authoritative for stock)"
-                          />
-
-                          <input
-                            className="border rounded-lg px-2 py-1"
-                            placeholder="Lead days"
-                            inputMode="numeric"
-                            value={String(d.leadDays ?? (o.leadDays ?? ""))}
-                            onChange={(e) => changeDraft(o.id, { leadDays: toInt(e.target.value, 0) })}
-                          />
-
-                          <label className="inline-flex items-center gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(d.isActive ?? o.isActive)}
-                              onChange={(e) => changeDraft(o.id, { isActive: e.target.checked })}
-                            />
-                            Active
-                          </label>
-                        </div>
-
-                        <div className="mt-2 flex items-center justify-end gap-2">
-                          <button className="px-3 py-1.5 rounded-lg border" onClick={cancelEdit}>
-                            Cancel
-                          </button>
-                          <button
-                            className="px-3 py-1.5 rounded-lg bg-zinc-900 text-white"
-                            onClick={() => {
-                              const patch = drafts[o.id] || {};
-                              const avail = toInt(patch.availableQty ?? o.availableQty, 0);
-                              updateM.mutate({ id: o.id, patch: { ...patch, inStock: avail > 0 } });
-                              setOpenId(null);
-                            }}
-                            disabled={updateM.isPending}
-                          >
-                            {updateM.isPending ? "Saving…" : "Save"}
-                          </button>
-
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
-              );
-            })}
-
-            {/* Add row */}
-            <tr className="bg-white">
+            {/* New row */}
+            <tr className="bg-zinc-50/50">
               <td className="px-3 py-2">
                 <select
-                  className="border rounded-lg px-2 py-1 w-full"
-                  value={addDraft.supplierId ?? ""}
-                  onChange={(e) => setAddDraft((d) => ({ ...d, supplierId: e.target.value }))}
+                  className="border rounded-lg px-2 py-1 w-48"
+                  value={newRow.supplierId}
+                  onChange={(e) =>
+                    setNewRow((n) => ({
+                      ...n,
+                      supplierId: e.target.value,
+                    }))
+                  }
+                  disabled={readOnly}
                 >
                   {suppliers.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
+                    <option
+                      key={s.id}
+                      value={s.id}
+                    >
+                      {s.name}
+                    </option>
                   ))}
                 </select>
               </td>
               <td className="px-3 py-2">
                 <select
-                  className="border rounded-lg px-2 py-1 w-full"
-                  value={(addDraft.variantId ?? "") as any}
+                  className="border rounded-lg px-2 py-1 w-48"
+                  value={newRow.variantId ?? ""}
                   onChange={(e) =>
-                    setAddDraft((d) => ({ ...d, variantId: e.target.value || null }))
+                    setNewRow((n) => ({
+                      ...n,
+                      variantId:
+                        e.target.value || null,
+                    }))
                   }
+                  disabled={readOnly}
                 >
-                  <option value="">— base product —</option>
+                  <option value="">
+                    — None (generic) —
+                  </option>
                   {variants.map((v) => (
-                    <option key={v.id} value={v.id}>{v.sku || v.id}</option>
+                    <option
+                      key={v.id}
+                      value={v.id}
+                    >
+                      {variantSkuById.get(v.id) ||
+                        v.id}
+                    </option>
                   ))}
                 </select>
               </td>
-              <td className="px-3 py-2">
+              <td className="px-3 py-2 text-right">
                 <input
-                  className="border rounded-lg px-2 py-1 w-full"
-                  placeholder="Price"
+                  className="border rounded-lg px-2 py-1 w-32 text-right"
                   inputMode="decimal"
-                  value={String(addDraft.price ?? "")}
+                  value={newRow.price}
                   onChange={(e) =>
-                    setAddDraft((d) => ({ ...d, price: e.target.value }))
+                    setNewRow((n) => ({
+                      ...n,
+                      price: e.target.value,
+                    }))
                   }
+                  disabled={readOnly}
                 />
-              </td>
-              <td className="px-3 py-2">
-                <input
-                  className="border rounded-lg px-2 py-1 w-full"
-                  placeholder="Avail."
-                  inputMode="numeric"
-                  value={String(addDraft.availableQty ?? 0)}
-                  onChange={(e) =>
-                    setAddDraft((d) => ({ ...d, availableQty: toInt(e.target.value, 0) }))
-                  }
-                  title="Available quantity (authoritative for stock)"
-                />
-              </td>
-              <td className="px-3 py-2">
-                {/* Display-only preview of computed stock */}
-                {toInt(addDraft.availableQty, 0) > 0 ? "In" : "Out"}
-              </td>
-              <td className="px-3 py-2">
-                <label className="inline-flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(addDraft.isActive)}
-                    onChange={(e) => setAddDraft((d) => ({ ...d, isActive: e.target.checked }))}
-                  />
-                  Active
-                </label>
+                <div className="text-[11px] text-zinc-500 mt-0.5">
+                  {ngn.format(toNum(newRow.price, 0))}
+                </div>
               </td>
               <td className="px-3 py-2 text-right">
-                <button
-                  className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white disabled:opacity-50"
-                  onClick={() => {
-                    const payload = {
-                      ...addDraft,
-                      // ensure server gets consistent flag
-                      inStock: toInt(addDraft.availableQty, 0) > 0,
-                      price: toMoney(addDraft.price),
-                      currency: addDraft.currency || "NGN",
-                      productId,
-                    };
-                    createM.mutate(payload);
-                  }}
-                  disabled={createM.isPending || !addDraft.supplierId}
-                >
-                  {createM.isPending ? "Adding…" : "Add"}
-                </button>
+                <input
+                  className="border rounded-lg px-2 py-1 w-24 text-right"
+                  inputMode="numeric"
+                  value={newRow.availableQty}
+                  onChange={(e) =>
+                    setNewRow((n) => ({
+                      ...n,
+                      availableQty:
+                        e.target.value,
+                    }))
+                  }
+                  disabled={readOnly}
+                />
+              </td>
+              <td className="px-3 py-2 text-center">
+                <input
+                  type="checkbox"
+                  checked={!!newRow.isActive}
+                  onChange={(e) =>
+                    setNewRow((n) => ({
+                      ...n,
+                      isActive:
+                        e.target.checked,
+                    }))
+                  }
+                  disabled={readOnly}
+                />
+              </td>
+              <td className="px-3 py-2 text-right">
+                <input
+                  className="border rounded-lg px-2 py-1 w-20 text-right"
+                  inputMode="numeric"
+                  value={newRow.leadDays ?? ""}
+                  onChange={(e) =>
+                    setNewRow((n) => ({
+                      ...n,
+                      leadDays:
+                        e.target.value,
+                    }))
+                  }
+                  disabled={readOnly}
+                />
+              </td>
+              <td className="px-3 py-2">
+                <input
+                  className="border rounded-lg px-2 py-1 w-64"
+                  value={newRow.notes ?? ""}
+                  onChange={(e) =>
+                    setNewRow((n) => ({
+                      ...n,
+                      notes:
+                        e.target.value,
+                    }))
+                  }
+                  disabled={readOnly}
+                />
+              </td>
+              <td className="px-3 py-2 text-right">
+                <span className="text-[11px] text-zinc-400">
+                  Use “Save all”
+                </span>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
+
+      {/* Totals */}
+      {!offersQ.isLoading && rows.length > 0 && (
+        <div className="mt-3 text-xs text-ink-soft">
+          <strong>{rows.length}</strong>{" "}
+          offer{rows.length === 1 ? "" : "s"} • Total available (active
+          only):{" "}
+          {rows
+            .filter((r) => r.isActive)
+            .reduce(
+              (s, r) =>
+                s +
+                toInt(r.availableQty, 0),
+              0
+            )
+            .toLocaleString()}
+        </div>
+      )}
+
+      {/* Save all button */}
+      {!readOnly && rows.length > 0 && (
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={saveAllInternal}
+            disabled={
+              saving ||
+              createM.isPending ||
+              updateM.isPending
+            }
+            className="px-3 py-2 rounded-md bg-emerald-600 text-white text-sm disabled:opacity-60"
+          >
+            {saving ? "Saving…" : "Save all changes"}
+          </button>
+        </div>
+      )}
     </div>
   );
-}
+});
+
+export default SuppliersOfferManager;

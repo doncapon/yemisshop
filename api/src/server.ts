@@ -29,15 +29,18 @@ import adminActivitiesRouter from './routes/adminActivities.js';
 import adminOrdersRouter from './routes/adminOrders.js';
 import adminReports from './routes/adminReports.js';
 import adminBanks from './routes/adminBanks.js';
+import adminVariantsRouter from './routes/adminVariants.js';
 import settings from './routes/settings.js';
 import adminOrderComms from './routes/adminOrderComms.js';
 
 import uploadsRouter from './routes/uploads.js';
 import paymentsRouter from './routes/payments.js';
+import cartRouter from './routes/carts.js';
 import adminMetricsRouter from './routes/adminMetrics.js';
 import availabiltyRouter from './routes/availability.js'
 import supplierOffersList from './routes/supplierOfferList.js'
 import publicProductOffers from './routes/productOffers.js';
+import adminSupplierOffersRouter from './routes/adminSupplierOffers.js';
 
 const app = express();
 
@@ -81,6 +84,8 @@ app.use('/api/admin/categories', adminCategoriesRouter);
 app.use('/api/admin/brands', adminBrandsRouter);
 app.use('/api/admin/attributes', adminAttributesRouter);
 app.use('/api/admin/products', adminProductsRouter);
+app.use('/api/admin', adminSupplierOffersRouter);
+app.use('/api/admin/products', adminSupplierOffersRouter);
 app.use('/api/admin/suppliers', adminSuppliers);
 app.use('/api/admin/order-activities', adminActivitiesRouter);
 app.use('/api/admin/orders', adminOrdersRouter);
@@ -89,10 +94,12 @@ app.use('/api/admin/banks', adminBanks);
 app.use('/api/settings', settings);
 app.use('/api/admin/orders', adminOrderComms); // if this is a separate subrouter under the same path, consider nesting inside adminOrdersRouter to avoid route clashes
 app.use('/api/admin/metrics', adminMetricsRouter);
+app.use('/api/admin/variants', adminVariantsRouter);
 app.use('/api', availabiltyRouter);
 /* 7) Payments: JSON endpoints + raw webhook */
 app.use('/api', publicProductOffers);
 app.use('/api/payments', paymentsRouter); // e.g. /init, /verify
+app.use('/api/cart', cartRouter); 
 
 
 app.post(

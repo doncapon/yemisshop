@@ -21,9 +21,9 @@ function mapVariant(v: any) {
     imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
     options: Array.isArray(v.options)
       ? v.options.map((o: any) => ({
-          attribute: { id: o.attribute.id, name: o.attribute.name, type: o.attribute.type },
-          value: { id: o.value.id, name: o.value.name, code: o.value.code ?? null },
-        }))
+        attribute: { id: o.attribute.id, name: o.attribute.name, type: o.attribute.type },
+        value: { id: o.value.id, name: o.value.name, code: o.value.code ?? null },
+      }))
       : undefined,
   };
 }
@@ -168,25 +168,25 @@ router.get('/', async (req, res) => {
     ...(inc.brand ? { brand: { select: { id: true, name: true } } } : {}),
     ...(inc.variants
       ? {
-          ProductVariant: {
-            orderBy: { createdAt: 'asc' },
-            select: variantSelectBase,
-          },
-        }
+        ProductVariant: {
+          orderBy: { createdAt: 'asc' },
+          select: variantSelectBase,
+        },
+      }
       : {}),
     ...(inc.attributes
       ? {
-          attributeOptions: {
-            include: {
-              attribute: { select: { id: true, name: true, type: true } },
-              value: { select: { id: true, name: true, code: true } },
-            },
+        attributeOptions: {
+          include: {
+            attribute: { select: { id: true, name: true, type: true } },
+            value: { select: { id: true, name: true, code: true } },
           },
-          ProductAttributeText: {
-            include: { attribute: { select: { id: true, name: true, type: true } } },
-            orderBy: [{ attribute: { name: 'asc' } }],
-          },
-        }
+        },
+        ProductAttributeText: {
+          include: { attribute: { select: { id: true, name: true, type: true } } },
+          orderBy: [{ attribute: { name: 'asc' } }],
+        },
+      }
       : {}),
     // Do NOT include supplierOffers relation directly; we stitch it when requested
   };
@@ -211,15 +211,15 @@ router.get('/', async (req, res) => {
         imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
         ...(includeOffers
           ? {
-              offers: (offersByVariant.get(String(v.id)) || []).map((o: any) => ({
-                id: o.id,
-                isActive: o.isActive !== false,
-                inStock: o.inStock !== false,
-                availableQty: o.availableQty != null ? Number(o.availableQty) : null,
-                productId: o.productId ?? null,
-                variantId: o.variantId ?? null,
-              })),
-            }
+            offers: (offersByVariant.get(String(v.id)) || []).map((o: any) => ({
+              id: o.id,
+              isActive: o.isActive !== false,
+              inStock: o.inStock !== false,
+              availableQty: o.availableQty != null ? Number(o.availableQty) : null,
+              productId: o.productId ?? null,
+              variantId: o.variantId ?? null,
+            })),
+          }
           : {}),
       }));
 
@@ -239,27 +239,27 @@ router.get('/', async (req, res) => {
       ...(includeVariants ? { variants } : {}),
       ...(includeOffers
         ? {
-            supplierOffers: (offersByProduct.get(String(p.id)) || []).map((o: any) => ({
-              id: o.id,
-              isActive: o.isActive !== false,
-              inStock: o.inStock !== false,
-              availableQty: o.availableQty != null ? Number(o.availableQty) : null,
-              productId: o.productId ?? null,
-              variantId: o.variantId ?? null,
-            })),
-          }
+          supplierOffers: (offersByProduct.get(String(p.id)) || []).map((o: any) => ({
+            id: o.id,
+            isActive: o.isActive !== false,
+            inStock: o.inStock !== false,
+            availableQty: o.availableQty != null ? Number(o.availableQty) : null,
+            productId: o.productId ?? null,
+            variantId: o.variantId ?? null,
+          })),
+        }
         : {}),
       attributesSummary: includeAttrs
         ? [
-            ...(p.attributeOptions ?? []).map((x: any) => ({
-              attribute: x.attribute?.name ?? '',
-              value: x.value?.name ?? '',
-            })),
-            ...(p.ProductAttributeText ?? []).map((x: any) => ({
-              attribute: x.attribute?.name ?? '',
-              value: String(x.value ?? ''),
-            })),
-          ]
+          ...(p.attributeOptions ?? []).map((x: any) => ({
+            attribute: x.attribute?.name ?? '',
+            value: x.value?.name ?? '',
+          })),
+          ...(p.ProductAttributeText ?? []).map((x: any) => ({
+            attribute: x.attribute?.name ?? '',
+            value: String(x.value ?? ''),
+          })),
+        ]
         : undefined,
     };
   }
@@ -396,129 +396,113 @@ router.get('/:id/similar', async (req, res, next) => {
   }
 });
 
-// GET /api/products/:id?include=brand,variants,attributes,offers
-router.get('/:id', async (req, res) => {
+router.get('/:id', async (req, res, next) => {
   try {
-    const inc = parseInclude(req.query);
-    const id = String(req.params.id);
+    const { id } = req.params;
+    const includeParam = String(req.query.include || '').toLowerCase();
+    const wantBrand = includeParam.includes('brand');
+    const wantVariants = includeParam.includes('variants');
+    const wantAttributes = includeParam.includes('attributes');
+    const wantOffers = includeParam.includes('offers');
 
-    // 1) Fetch by id ONLY — no status/price gating in the DB query
-    const row = await prisma.product.findUnique({
+    const p = await prisma.product.findUnique({
       where: { id },
       include: {
-        category: { select: { id: true, name: true, slug: true } },
-        ...(inc.brand ? { brand: { select: { id: true, name: true } } } : {}),
-        ...(inc.variants
-          ? {
-              // keep your relation field name as used elsewhere (ProductVariant)
-              ProductVariant: {
-                orderBy: { createdAt: 'asc' },
-                select: { id: true, sku: true, price: true, inStock: true, imagesJson: true },
-              },
-            }
-          : {}),
-        ...(inc.attributes
-          ? {
-              attributeOptions: {
+        ...(wantBrand && { brand: { select: { id: true, name: true } } }),
+        ...(wantVariants && {
+          ProductVariant: {
+            include: {
+              options: {
                 include: {
                   attribute: { select: { id: true, name: true, type: true } },
-                  value: { select: { id: true, name: true, code: true } },
+                  value:     { select: { id: true, name: true, code: true } },
                 },
               },
-              ProductAttributeText: {
-                include: { attribute: { select: { id: true, name: true, type: true } } },
-                orderBy: [{ attribute: { name: 'asc' } }],
-              },
-            }
-          : {}),
-        ...(inc.offers
-          ? {
-              SupplierOffer: {
-                where: { isActive: true },
-                select: {
-                  id: true,
-                  supplierId: true,
-                  variantId: true,
-                  price: true,
-                  currency: true,
-                  availableQty: true,
-                  inStock: true,
-                  leadDays: true,
-                  isActive: true,
-                },
-              },
-            }
-          : {}),
+            },
+            orderBy: { createdAt: 'asc' },
+          },
+        }),
+        ...(wantAttributes && {
+          attributeOptions: {
+            include: {
+              attribute: { select: { id: true, name: true, type: true } },
+              value:     { select: { id: true, name: true, code: true } },
+            },
+            orderBy: [{ attribute: { name: 'asc' } }],
+          },
+        }),
+        ...(wantOffers && {
+          supplierOffers: {
+            where: { isActive: true },
+            select: {
+              id: true, supplierId: true, productId: true, variantId: true,
+              price: true, currency: true, availableQty: true, inStock: true,
+            },
+          },
+        }),
       },
     });
 
-    // 2) Not found at all
-    if (!row) return res.status(404).json({ error: 'Product not found' });
-
-    // 3) Public visibility rule — strict LIVE only
-    if (String(row.status).toUpperCase() !== 'LIVE') {
-      return res.status(404).json({ error: 'Product not found' });
-    }
-
-    // 4) Map payload (no price/variant-price gating here to avoid false 404s)
-    const variants =
-      inc.variants &&
-      (row as any).ProductVariant?.map((v: any) => ({
-        id: v.id,
-        sku: v.sku ?? null,
-        price: v.price != null ? Number(v.price) : null,
-        inStock: v.inStock !== false,
-        imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-      }));
+    if (!p) return res.status(404).json({ error: 'Not found' });
 
     const data: any = {
-      id: row.id,
-      title: row.title,
-      description: row.description,
-      price: row.price != null ? Number(row.price) : null,
-      inStock: row.inStock !== false,
-      imagesJson: Array.isArray(row.imagesJson) ? row.imagesJson : [],
-      categoryId: row.categoryId ?? row.category?.id ?? null,
-      categoryName: row.category?.name ?? null,
-      brandId: row.brandId ?? null,
-      brand: inc.brand && row.brand ? { id: row.brand.id, name: row.brand.name } : null,
-      brandName: inc.brand && row.brand ? row.brand.name : null,
-      ...(inc.variants ? { variants } : {}),
-      attributesSummary: inc.attributes
-        ? [
-            ...((row as any).attributeOptions ?? []).map((x: any) => ({
-              attribute: x.attribute?.name ?? '',
-              value: x.value?.name ?? '',
-            })),
-            ...((row as any).ProductAttributeText ?? []).map((x: any) => ({
-              attribute: x.attribute?.name ?? '',
-              value: String(x.value ?? ''),
-            })),
-          ]
-        : undefined,
+      id: p.id,
+      title: p.title,
+      description: p.description,
+      price: p.price != null ? Number(p.price) : null,
+      inStock: p.inStock,
+      imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
     };
 
-    if (inc.offers) {
-      data.supplierOffers =
-        (row as any).SupplierOffer?.map((o: any) => ({
-          id: o.id,
-          supplierId: o.supplierId,
-          variantId: o.variantId,
-          price: o.price != null ? Number(o.price) : null,
-          currency: o.currency,
-          availableQty: o.availableQty ?? 0,
-          inStock: o.inStock !== false,
-          leadDays: o.leadDays ?? null,
-          isActive: o.isActive !== false,
-        })) ?? [];
+    if (wantBrand && (p as any).brand) {
+      data.brand = { id: (p as any).brand.id, name: (p as any).brand.name };
     }
 
-    return res.json({ data });
+    if (wantVariants) {
+      const variants = (p as any).ProductVariant ?? [];
+      data.variants = variants.map((v: any) => ({
+        id: v.id,
+        sku: v.sku,
+        price: v.price != null ? Number(v.price) : null,
+        inStock: v.inStock,
+        imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+        options: (v.options || []).map((o: any) => ({
+          attributeId: o.attribute.id,
+          valueId: o.value.id,
+          // expose bumps so ProductDetail can sum them
+          priceBump: o.priceBump != null ? Number(o.priceBump) : null,
+          attribute: { id: o.attribute.id, name: o.attribute.name, type: o.attribute.type },
+          value: { id: o.value.id, name: o.value.name, code: o.value.code ?? null },
+        })),
+      }));
+    }
+
+    if (wantAttributes) {
+      data.attributes = (p as any).attributeOptions?.map((o: any) => ({
+        attributeId: o.attribute.id,
+        attributeName: o.attribute.name,
+        valueId: o.value.id,
+        valueName: o.value.name,
+      })) ?? [];
+    }
+
+    if (wantOffers) {
+      data.offers = (p as any).supplierOffers?.map((o: any) => ({
+        id: o.id,
+        supplierId: o.supplierId,
+        productId: o.productId,
+        variantId: o.variantId,
+        price: Number(o.price),
+        currency: o.currency,
+        availableQty: o.availableQty,
+        inStock: o.inStock,
+      })) ?? [];
+    }
+
+    res.json({ data });
   } catch (e) {
-    console.error('GET /api/products/:id failed:', e);
-    return res.status(500).json({ error: 'Could not load product' });
+    next(e);
   }
 });
-
 
 export default router;
