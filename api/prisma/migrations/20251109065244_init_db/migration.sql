@@ -236,6 +236,7 @@ CREATE TABLE "ProductVariantOption" (
     "variantId" TEXT NOT NULL,
     "attributeId" TEXT NOT NULL,
     "valueId" TEXT NOT NULL,
+    "priceBump" DECIMAL(65,30),
 
     CONSTRAINT "ProductVariantOption_pkey" PRIMARY KEY ("id")
 );
@@ -259,6 +260,8 @@ CREATE TABLE "Product" (
     "supplierTypeOverride" "SupplierType",
     "commissionPctInt" INTEGER,
     "availableQty" INTEGER NOT NULL DEFAULT 0,
+    "isDeleted" BOOLEAN NOT NULL DEFAULT false,
+    "deletedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Product_pkey" PRIMARY KEY ("id")
@@ -280,6 +283,7 @@ CREATE TABLE "PurchaseOrder" (
     "id" TEXT NOT NULL,
     "orderId" TEXT NOT NULL,
     "supplierId" TEXT NOT NULL,
+    "supplierOrderRef" TEXT,
     "subtotal" DECIMAL(10,2) NOT NULL,
     "platformFee" DECIMAL(10,2) NOT NULL,
     "supplierAmount" DECIMAL(10,2) NOT NULL,
@@ -306,6 +310,7 @@ CREATE TABLE "PurchaseOrderItem" (
 CREATE TABLE "OrderActivity" (
     "id" TEXT NOT NULL,
     "orderId" TEXT NOT NULL,
+    "supplierId" TEXT,
     "type" TEXT NOT NULL,
     "message" TEXT,
     "meta" JSONB,
@@ -544,7 +549,7 @@ CREATE INDEX "ProductVariantOption_attributeId_idx" ON "ProductVariantOption"("a
 CREATE INDEX "ProductVariantOption_valueId_idx" ON "ProductVariantOption"("valueId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "ProductVariantOption_variantId_attributeId_key" ON "ProductVariantOption"("variantId", "attributeId");
+CREATE UNIQUE INDEX "ProductVariantOption_variantId_attributeId_valueId_key" ON "ProductVariantOption"("variantId", "attributeId", "valueId");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Product_sku_key" ON "Product"("sku");
@@ -557,6 +562,15 @@ CREATE INDEX "Product_categoryId_idx" ON "Product"("categoryId");
 
 -- CreateIndex
 CREATE INDEX "Product_supplierId_idx" ON "Product"("supplierId");
+
+-- CreateIndex
+CREATE INDEX "Product_isDeleted_createdAt_idx" ON "Product"("isDeleted", "createdAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Product_sku_isDeleted_key" ON "Product"("sku", "isDeleted");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "PurchaseOrder_supplierOrderRef_key" ON "PurchaseOrder"("supplierOrderRef");
 
 -- CreateIndex
 CREATE INDEX "OrderActivity_orderId_createdAt_idx" ON "OrderActivity"("orderId", "createdAt");

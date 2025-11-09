@@ -408,8 +408,8 @@ export function ModerationGrid({
                   <span
                     className={
                       ordersPresent
-                        ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700'
-                        : 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700'
+                        ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700 '
+                        : 'inline-flex items-center gap-1 px-2 py-0.5 rounded  bg-emerald-50 text-emerald-700'
                     }
                   >
                     Orders: {hasOrdersQ.isLoading ? '…' : ordersPresent ? 'present' : 'none'}

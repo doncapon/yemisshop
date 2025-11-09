@@ -176,7 +176,7 @@ model OrderItem {
 
   purchaseOrderItems PurchaseOrderItem[]
 
-  title           String
+  title String
 
   unitPrice       Decimal  @db.Decimal(10, 2)
   quantity        Int
@@ -370,7 +370,7 @@ model ProductVariant {
 }
 
 model ProductVariantOption {
-  id          String @id @default(cuid())
+  id          String   @id @default(cuid())
   variantId   String
   attributeId String
   valueId     String
@@ -473,8 +473,8 @@ model PurchaseOrder {
 
   supplier   Supplier @relation(fields: [supplierId], references: [id])
   supplierId String
-  
-  supplierOrderRef    String?   @unique
+
+  supplierOrderRef String? @unique
 
   subtotal       Decimal  @db.Decimal(10, 2)
   platformFee    Decimal  @db.Decimal(10, 2)
@@ -501,14 +501,14 @@ model PurchaseOrderItem {
 }
 
 model OrderActivity {
-  id        String   @id @default(cuid())
-  orderId   String
+  id         String   @id @default(cuid())
+  orderId    String
   supplierId String?
-  type      String
-  message   String?
-  meta      Json?
-  createdAt DateTime @default(now())
-  order     Order    @relation("OrderToActivities", fields: [orderId], references: [id], onDelete: Cascade)
+  type       String
+  message    String?
+  meta       Json?
+  createdAt  DateTime @default(now())
+  order      Order    @relation("OrderToActivities", fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([orderId, createdAt])
   @@index([type, createdAt])

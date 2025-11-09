@@ -12,14 +12,21 @@ const randInt = (min: number, max: number) =>
 const sample = <T,>(arr: T[]) => arr[randInt(0, arr.length - 1)];
 const chance = (p: number) => Math.random() < p;
 
-function pickSome<T>(arr: T[], min = 1, max = 3) {
-  const n = Math.max(min, Math.min(max, randInt(min, max)));
+function pickSome<T>(arr: T[], min = 1, max = 3): T[] {
+  if (!arr.length) return [];
+  const n = Math.max(min, Math.min(max, randInt(min, max), arr.length));
   const copy = [...arr];
   const out: T[] = [];
   for (let i = 0; i < n && copy.length; i++) {
-    out.push(copy.splice(randInt(0, copy.length - 1), 1)[0]);
+    const idx = randInt(0, copy.length - 1);
+    out.push(copy.splice(idx, 1)[0]);
   }
   return out;
+}
+
+/** Supplier available stock: keep between 1 and 29 for usable offers */
+function randomAvailable() {
+  return randInt(1, 29);
 }
 
 const PRICE_BUCKETS = [
@@ -27,10 +34,6 @@ const PRICE_BUCKETS = [
   { min: 5000, max: 9999 },
   { min: 10000, max: 99999 },
 ] as const;
-function randomAvailable() {
-  // tweak range as you like
-  return randInt(0, 180);
-}
 
 function randomPrice(): Prisma.Decimal {
   const b =
@@ -83,53 +86,61 @@ function supplierOfferFromRetail(retail: number) {
 async function main() {
   console.log('🧹 Clearing existing data …');
 
-  // Delete dependents first (many tables are optional; guard each call)
+  // Order of deletes respects FKs (children -> parents)
   await prisma.$transaction(
     [
-      prisma.paymentEvent?.deleteMany?.() as any,
-      prisma.orderActivity?.deleteMany?.() as any,
-      prisma.purchaseOrderItem?.deleteMany?.() as any,
-      prisma.purchaseOrder?.deleteMany?.() as any,
-      prisma.orderItem?.deleteMany?.() as any,
-      prisma.payment?.deleteMany?.() as any,
+      prisma.orderItemProfit.deleteMany(),
+      prisma.orderComms.deleteMany(),
+      prisma.orderCoupon.deleteMany(),
+      prisma.coupon.deleteMany(),
 
-      prisma.supplierOffer?.deleteMany?.() as any,
-      prisma.productVariantOption?.deleteMany?.() as any,
-      prisma.productVariant?.deleteMany?.() as any,
+      prisma.paymentEvent.deleteMany(),
+      prisma.orderActivity.deleteMany(),
+      prisma.purchaseOrderItem.deleteMany(),
+      prisma.purchaseOrder.deleteMany(),
 
-      prisma.productAttributeText?.deleteMany?.() as any,
-      prisma.productAttributeOption?.deleteMany?.() as any, // ← new link table
+      prisma.orderItem.deleteMany(),
+      prisma.payment.deleteMany(),
+      prisma.order.deleteMany(),
 
-      prisma.favorite?.deleteMany?.() as any,
-      prisma.wishlist?.deleteMany?.() as any,
-      prisma.product?.deleteMany?.() as any,
+      prisma.supplierOffer.deleteMany(),
+      prisma.productVariantOption.deleteMany(),
+      prisma.productVariant.deleteMany(),
 
-      prisma.attributeValue?.deleteMany?.() as any,
-      prisma.attribute?.deleteMany?.() as any,
-      prisma.brand?.deleteMany?.() as any,
-      prisma.category?.deleteMany?.() as any,
+      prisma.productAttributeText.deleteMany(),
+      prisma.productAttributeOption.deleteMany(),
 
-      prisma.supplier?.deleteMany?.() as any,
-      prisma.emailVerifyToken?.deleteMany?.() as any,
-      prisma.otp?.deleteMany?.() as any,
-      prisma.user?.deleteMany?.() as any,
-      prisma.address?.deleteMany?.() as any,
-      prisma.setting?.deleteMany?.() as any, // optional
-    ].filter(Boolean)
+      prisma.favorite.deleteMany(),
+      prisma.wishlist.deleteMany(),
+      prisma.product.deleteMany(),
+
+      prisma.attributeValue.deleteMany(),
+      prisma.attribute.deleteMany(),
+      prisma.brand.deleteMany(),
+      prisma.category.deleteMany(),
+
+      prisma.setting.deleteMany(),
+
+      prisma.supplier.deleteMany(),
+      prisma.emailVerifyToken.deleteMany(),
+      prisma.otp.deleteMany(),
+      prisma.user.deleteMany(),
+      prisma.address.deleteMany(),
+    ].filter(Boolean) as any
   );
 
-  console.log('⚙️  Seeding settings (if table exists)…');
+  console.log('⚙️  Seeding settings…');
   try {
     await prisma.setting.createMany({
       data: [
-        { key: 'taxMode', value: 'INCLUDED' },   // or ADDED / NONE
-        { key: 'taxRatePct', value: '7.5' },
-        { key: 'commsUnitCostNGN', value: '100' },
+        { key: 'taxMode', value: 'INCLUDED', isPublic: true },
+        { key: 'taxRatePct', value: '7.5', isPublic: true },
+        { key: 'commsUnitCostNGN', value: '100', isPublic: false },
       ],
       skipDuplicates: true,
     });
   } catch {
-    // settings table may not exist yet; ignore
+    /* table might not exist; ignore */
   }
 
   console.log('👥 Seeding users…');
@@ -139,16 +150,46 @@ async function main() {
 
   // Addresses
   const [adminHome, adminShip] = await Promise.all([
-    makeAddress({ houseNumber: '10', streetName: 'Admin Crescent', city: 'Ikeja', state: 'Lagos' }),
-    makeAddress({ houseNumber: '12', streetName: 'Admin Crescent', city: 'Ikeja', state: 'Lagos' }),
+    makeAddress({
+      houseNumber: '10',
+      streetName: 'Admin Crescent',
+      city: 'Ikeja',
+      state: 'Lagos',
+    }),
+    makeAddress({
+      houseNumber: '12',
+      streetName: 'Admin Crescent',
+      city: 'Ikeja',
+      state: 'Lagos',
+    }),
   ]);
   const [superAdminHome, superAdminShip] = await Promise.all([
-    makeAddress({ houseNumber: '22B', streetName: 'Leadership Ave', city: 'Abuja', state: 'FCT' }),
-    makeAddress({ houseNumber: '5', streetName: 'Steward Road', city: 'Abuja', state: 'FCT' }),
+    makeAddress({
+      houseNumber: '22B',
+      streetName: 'Leadership Ave',
+      city: 'Abuja',
+      state: 'FCT',
+    }),
+    makeAddress({
+      houseNumber: '5',
+      streetName: 'Steward Road',
+      city: 'Abuja',
+      state: 'FCT',
+    }),
   ]);
   const [shopperHome, shopperShip] = await Promise.all([
-    makeAddress({ houseNumber: '7', streetName: 'Market Lane', city: 'Ibadan', state: 'Oyo' }),
-    makeAddress({ houseNumber: '9', streetName: 'Market Lane', city: 'Ibadan', state: 'Oyo' }),
+    makeAddress({
+      houseNumber: '7',
+      streetName: 'Market Lane',
+      city: 'Ibadan',
+      state: 'Oyo',
+    }),
+    makeAddress({
+      houseNumber: '9',
+      streetName: 'Market Lane',
+      city: 'Ibadan',
+      state: 'Oyo',
+    }),
   ]);
 
   const admin = await prisma.user.create({
@@ -272,7 +313,7 @@ async function main() {
     'Sports & Outdoor',
   ];
   const categories = await Promise.all(
-    categoryNames.map((name) =>
+    categoryNames.map((name, idx) =>
       prisma.category.create({
         data: {
           name,
@@ -282,7 +323,7 @@ async function main() {
             .replace(/[^a-z0-9]+/g, '-')
             .replace(/(^-|-$)/g, ''),
           isActive: true,
-          position: 0,
+          position: idx,
         },
       })
     )
@@ -303,31 +344,82 @@ async function main() {
     )
   );
 
-  console.log('🏷️  Seeding attributes & values…');
-  // Attributes: Color (SELECT), Size (SELECT), Material (TEXT)
+  console.log('🏷️  Seeding attributes & values (Color, Size, Weight, Volume)…');
+
+  // Core selectable attributes
   const colorAttr = await prisma.attribute.create({
     data: { name: 'Color', type: 'SELECT', isActive: true },
   });
   const sizeAttr = await prisma.attribute.create({
     data: { name: 'Size', type: 'SELECT', isActive: true },
   });
+  const weightAttr = await prisma.attribute.create({
+    data: { name: 'Weight', type: 'SELECT', isActive: true },
+  });
+  const volumeAttr = await prisma.attribute.create({
+    data: { name: 'Volume', type: 'SELECT', isActive: true },
+  });
+
+  // Optional descriptive attribute
   const materialAttr = await prisma.attribute.create({
     data: { name: 'Material', type: 'TEXT', isActive: true },
   });
 
   const colorValues = await prisma.$transaction([
-    prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Red', code: 'RED', position: 1 } }),
-    prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Blue', code: 'BLU', position: 2 } }),
-    prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Black', code: 'BLK', position: 3 } }),
-    prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'Green', code: 'GRN', position: 4 } }),
-    prisma.attributeValue.create({ data: { attributeId: colorAttr.id, name: 'White', code: 'WHT', position: 5 } }),
+    prisma.attributeValue.create({
+      data: { attributeId: colorAttr.id, name: 'Red', code: 'RED', position: 1 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: colorAttr.id, name: 'Blue', code: 'BLU', position: 2 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: colorAttr.id, name: 'Black', code: 'BLK', position: 3 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: colorAttr.id, name: 'Green', code: 'GRN', position: 4 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: colorAttr.id, name: 'White', code: 'WHT', position: 5 },
+    }),
   ]);
 
   const sizeValues = await prisma.$transaction([
-    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'S', code: 'S', position: 1 } }),
-    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'M', code: 'M', position: 2 } }),
-    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'L', code: 'L', position: 3 } }),
-    prisma.attributeValue.create({ data: { attributeId: sizeAttr.id, name: 'XL', code: 'XL', position: 4 } }),
+    prisma.attributeValue.create({
+      data: { attributeId: sizeAttr.id, name: 'S', code: 'S', position: 1 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: sizeAttr.id, name: 'M', code: 'M', position: 2 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: sizeAttr.id, name: 'L', code: 'L', position: 3 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: sizeAttr.id, name: 'XL', code: 'XL', position: 4 },
+    }),
+  ]);
+
+  const weightValues = await prisma.$transaction([
+    prisma.attributeValue.create({
+      data: { attributeId: weightAttr.id, name: '250g', code: '250G', position: 1 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: weightAttr.id, name: '500g', code: '500G', position: 2 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: weightAttr.id, name: '1kg', code: '1KG', position: 3 },
+    }),
+  ]);
+
+  const volumeValues = await prisma.$transaction([
+    prisma.attributeValue.create({
+      data: { attributeId: volumeAttr.id, name: '250ml', code: '250ML', position: 1 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: volumeAttr.id, name: '500ml', code: '500ML', position: 2 },
+    }),
+    prisma.attributeValue.create({
+      data: { attributeId: volumeAttr.id, name: '1L', code: '1L', position: 3 },
+    }),
   ]);
 
   console.log('📦 Seeding products…');
@@ -359,12 +451,19 @@ async function main() {
   const TOTAL_OUT_OF_STOCK = 30;
   const TOTAL = TOTAL_IN_STOCK + TOTAL_OUT_OF_STOCK;
 
-  const createdProducts: { id: string; i: number }[] = [];
+  type CreatedProduct = { id: string; i: number };
+  const createdProducts: CreatedProduct[] = [];
+  function randomPositiveQty(min = 1, max = 20) {
+    return randInt(min, max);
+  }
+
   for (let i = 1; i <= TOTAL; i++) {
     const cat = categories[(i - 1) % categories.length];
     const brand = brands[(i - 1) % brands.length];
     const title = `${titlePool[i % titlePool.length]} #${i}`;
     const sup = suppliers[(i - 1) % suppliers.length];
+
+    const shouldBeLive = Math.random() < 0.9; // ~90% LIVE
 
     const p = await prisma.product.create({
       data: {
@@ -374,9 +473,12 @@ async function main() {
         price: randomPrice(),
         sku: `SKU-${String(i).padStart(5, '0')}`,
         inStock: i <= TOTAL_IN_STOCK,
-         status: i <= TOTAL_LIVE ? 'LIVE' : 'PUBLISHED',
+        status: shouldBeLive ? 'LIVE' : 'PUBLISHED',
         imagesJson: productImages(i),
         communicationCost: new Prisma.Decimal(50),
+
+        // 👇 ensure LIVE products get > 0 availableQty
+        availableQty: shouldBeLive ? randomPositiveQty() : 0,
 
         supplier: { connect: { id: sup.id } },
         category: { connect: { id: cat.id } },
@@ -389,7 +491,8 @@ async function main() {
     createdProducts.push({ id: p.id, i });
   }
 
-  // Pending products too
+
+  // Extra pending products (no need to be super rich here)
   const TOTAL_PENDING = 30;
   console.log(`⏳ Seeding ${TOTAL_PENDING} pending products…`);
   for (let j = 1; j <= TOTAL_PENDING; j++) {
@@ -401,10 +504,11 @@ async function main() {
     await prisma.product.create({
       data: {
         title,
-        description: 'Awaiting moderation. Submitted by admin for review prior to publishing.',
+        description:
+          'Awaiting moderation. Submitted for review prior to publishing.',
         price: randomPrice(),
         sku: `SKU-PEND-${String(j).padStart(4, '0')}`,
-        inStock: Math.random() > 0.4,
+        inStock: chance(0.6),
         status: 'PENDING',
         imagesJson: productImages(`pending-${j}`),
         supplier: { connect: { id: sup2.id } },
@@ -416,11 +520,10 @@ async function main() {
   }
 
   console.log('🏷️  Tagging products with allowed attribute options…');
-  // Link Color/Size values to products via ProductAttributeOption
-  for (const { id, i } of createdProducts) {
-    // Colors (1–3 allowed values)
-    const colors = pickSome(colorValues, 1, 3);
-    for (const c of colors) {
+  // Link allowed values (ProductAttributeOption) as a superset for variants
+  for (const { id } of createdProducts) {
+    // Colors: 1–4
+    for (const c of pickSome(colorValues, 1, 4)) {
       await prisma.productAttributeOption.create({
         data: {
           productId: id,
@@ -430,15 +533,40 @@ async function main() {
       });
     }
 
-    // Sizes (0–2 allowed values)
-    if (chance(0.75)) {
-      const sizes = pickSome(sizeValues, 1, 2);
-      for (const s of sizes) {
+    // Sizes: maybe
+    if (chance(0.6)) {
+      for (const s of pickSome(sizeValues, 1, 3)) {
         await prisma.productAttributeOption.create({
           data: {
             productId: id,
             attributeId: s.attributeId,
             valueId: s.id,
+          },
+        });
+      }
+    }
+
+    // Weight: maybe
+    if (chance(0.4)) {
+      for (const w of pickSome(weightValues, 1, 2)) {
+        await prisma.productAttributeOption.create({
+          data: {
+            productId: id,
+            attributeId: w.attributeId,
+            valueId: w.id,
+          },
+        });
+      }
+    }
+
+    // Volume: maybe
+    if (chance(0.4)) {
+      for (const v of pickSome(volumeValues, 1, 2)) {
+        await prisma.productAttributeOption.create({
+          data: {
+            productId: id,
+            attributeId: v.attributeId,
+            valueId: v.id,
           },
         });
       }
@@ -450,161 +578,275 @@ async function main() {
         data: {
           productId: id,
           attributeId: materialAttr.id,
-          value: sample(['Cotton', 'Polyester', 'Cotton/Poly Blend', 'Stainless Steel', 'BPA-free Plastic']),
+          value: sample([
+            'Cotton',
+            'Polyester',
+            'Cotton/Poly Blend',
+            'Stainless Steel',
+            'BPA-free Plastic',
+            'Premium Plastic',
+          ]),
         },
       });
     }
   }
 
-  console.log('🔀 Creating random variants…');
+  console.log('🔀 Creating variants with mixed attribute combos for ~half of products…');
+
   const variantsByProduct: Record<string, { id: string; sku: string }[]> = {};
 
   for (const { id, i } of createdProducts) {
-    // Each product gets 0–6 variants randomly
-    const makeVariants = randInt(0, 6);
-    if (makeVariants === 0) continue;
-
-    const product = await prisma.product.findUnique({ where: { id } });
-    const baseSku = (product?.sku || `SKU-V-${String(i).padStart(4, '0')}`).toUpperCase();
-
-    const localVariants: { id: string; sku: string }[] = [];
-
-    // Use the product's allowed options (if any); fallback to global values
-    const allowedColorIds = (
-      await prisma.productAttributeOption.findMany({
-        where: { productId: id, attributeId: colorAttr.id },
-        select: { valueId: true },
-      })
-    ).map((r) => r.valueId);
-    const allowedSizeIds = (
-      await prisma.productAttributeOption.findMany({
-        where: { productId: id, attributeId: sizeAttr.id },
-        select: { valueId: true },
-      })
-    ).map((r) => r.valueId);
-
-    const colors = (allowedColorIds.length
-      ? colorValues.filter((v) => allowedColorIds.includes(v.id))
-      : colorValues);
-
-    const sizes = (allowedSizeIds.length
-      ? sizeValues.filter((v) => allowedSizeIds.includes(v.id))
-      : sizeValues);
-
-    if (!colors.length || !sizes.length) {
-      // If there is no overlap, just skip making variants for this product
+    // Only about half of products will have variants
+    if (!chance(0.55)) {
       variantsByProduct[id] = [];
       continue;
     }
 
-    // Generate up to makeVariants combinations
-    outer: for (const c of colors) {
-      for (const s of sizes) {
-        if (localVariants.length >= makeVariants) break outer;
+    const product = await prisma.product.findUnique({
+      where: { id },
+      select: { price: true, sku: true },
+    });
+    if (!product) {
+      variantsByProduct[id] = [];
+      continue;
+    }
 
-        const base = Number(product?.price || 0);
-        const bump = [0, 200, 300, 500][randInt(0, 3)];
-        const sku = `${baseSku}-${(c.code || c.name).toUpperCase()}-${(s.code || s.name).toUpperCase()}`;
+    const baseSku = (product.sku || `SKU-V-${String(i).padStart(4, '0')}`).toUpperCase();
+    const basePrice = Number(product.price || 0);
 
-        const v = await prisma.productVariant.create({
+    // Read allowed options back
+    const paos = await prisma.productAttributeOption.findMany({
+      where: { productId: id },
+      select: { attributeId: true, valueId: true },
+    });
+
+    const allowedByAttr = paos.reduce<Record<string, string[]>>((acc, row) => {
+      (acc[row.attributeId] ||= []).push(row.valueId);
+      return acc;
+    }, {});
+
+    const allowedColors = allowedByAttr[colorAttr.id] || colorValues.map((v) => v.id);
+    const allowedSizes = allowedByAttr[sizeAttr.id] || [];
+    const allowedWeights = allowedByAttr[weightAttr.id] || [];
+    const allowedVolumes = allowedByAttr[volumeAttr.id] || [];
+
+    const localVariants: { id: string; sku: string }[] = [];
+    const maxVariants = randInt(2, 6);
+
+    // We’ll build variants with varied combos
+    const makeVariantCombo = async (
+      attrs: { attrId: string; values: string[] }[]
+    ) => {
+      if (!attrs.length) return;
+
+      // pick one value per attr
+      const chosen: { attrId: string; valueId: string }[] = [];
+      for (const a of attrs) {
+        if (!a.values.length) return;
+        chosen.push({ attrId: a.attrId, valueId: sample(a.values) });
+      }
+
+      // Ensure uniqueness by SKU
+      const skuParts = chosen.map((c) => {
+        const val = c.valueId;
+        return val.slice(0, 4).toUpperCase();
+      });
+      const sku = `${baseSku}-${skuParts.join('-')}`;
+
+      if (localVariants.some((lv) => lv.sku === sku)) return;
+
+      // small random bump
+      const bump = [0, 200, 300, 500][randInt(0, 3)];
+      const finalPrice = Math.max(500, basePrice + bump);
+
+      const variant = await prisma.productVariant.create({
+        data: {
+          productId: id,
+          sku,
+          price: bump ? new Prisma.Decimal(finalPrice) : null, // if null, frontend can fallback to product price
+          inStock: chance(0.85),
+          imagesJson: productImages(`${i}-${sku}`),
+          availableQty: randInt(5, 40),
+        },
+      });
+
+      for (const c of chosen) {
+        await prisma.productVariantOption.create({
           data: {
-            productId: id,
-            sku,
-            price: bump ? new Prisma.Decimal(base + bump) : undefined, // nullable => uses product price
-            inStock: chance(0.8),
-            imagesJson: productImages(`${i}-${sku}`),
+            variantId: variant.id,
+            attributeId: c.attrId,
+            valueId: c.valueId,
+            // Some bumps on attribute values (not strictly required)
+            priceBump:
+              bump && chance(0.3)
+                ? new Prisma.Decimal(randInt(50, bump))
+                : null,
           },
         });
-
-        await prisma.productVariantOption.create({
-          data: { variantId: v.id, attributeId: colorAttr.id, valueId: c.id },
-        });
-        await prisma.productVariantOption.create({
-          data: { variantId: v.id, attributeId: sizeAttr.id, valueId: s.id },
-        });
-
-        localVariants.push({ id: v.id, sku });
       }
+
+      localVariants.push({ id: variant.id, sku });
+    };
+
+    // Generate a mix:
+    // Some Color-only
+    if (allowedColors.length && localVariants.length < maxVariants && chance(0.7)) {
+      await makeVariantCombo([{ attrId: colorAttr.id, values: allowedColors }]);
+    }
+
+    // Color + Size
+    if (
+      allowedColors.length &&
+      allowedSizes.length &&
+      localVariants.length < maxVariants &&
+      chance(0.9)
+    ) {
+      await makeVariantCombo([
+        { attrId: colorAttr.id, values: allowedColors },
+        { attrId: sizeAttr.id, values: allowedSizes },
+      ]);
+    }
+
+    // Color + Size + Weight
+    if (
+      allowedColors.length &&
+      allowedSizes.length &&
+      allowedWeights.length &&
+      localVariants.length < maxVariants &&
+      chance(0.6)
+    ) {
+      await makeVariantCombo([
+        { attrId: colorAttr.id, values: allowedColors },
+        { attrId: sizeAttr.id, values: allowedSizes },
+        { attrId: weightAttr.id, values: allowedWeights },
+      ]);
+    }
+
+    // Size + Volume
+    if (
+      allowedSizes.length &&
+      allowedVolumes.length &&
+      localVariants.length < maxVariants &&
+      chance(0.5)
+    ) {
+      await makeVariantCombo([
+        { attrId: sizeAttr.id, values: allowedSizes },
+        { attrId: volumeAttr.id, values: allowedVolumes },
+      ]);
     }
 
     variantsByProduct[id] = localVariants;
   }
+console.log('💸 Creating supplier offers (variant-rich & ready)…');
 
-  console.log('💸 Creating supplier offers (at least one per product)…');
-  const allProducts = await prisma.product.findMany({
-    select: { id: true, price: true },
-  });
+const allProducts = await prisma.product.findMany({
+  select: { id: true, price: true, status: true },
+});
 
-  for (const p of allProducts) {
-    const retail = Number(p.price);
-    const vList = variantsByProduct[p.id] || [];
+// To respect unique(supplierId, productId, variantId)
+const usedOfferKeys = new Set<string>(); // `${supplierId}::${productId}::${variantId || 'NULL'}`
 
-    // Always at least ONE product-wide offer
-    const supForProductWide = sample(suppliers);
-    const avail1 = randomAvailable();
-    await prisma.supplierOffer.create({
+for (const p of allProducts) {
+  const retail = Number(p.price) || 5000;
+  const vList = variantsByProduct[p.id] || [];
+  const hasVariants = vList.length > 0;
+  const isLive = p.status === 'LIVE';
+
+  // Helper to safely create an offer without violating the unique constraint
+  const createOffer = async (opts: {
+    supplierId: string;
+    variantId: string | null;
+    baseRetail?: number;
+    leadMin?: number;
+    leadMax?: number;
+  }) => {
+    const key = `${opts.supplierId}::${p.id}::${opts.variantId || 'NULL'}`;
+    if (usedOfferKeys.has(key)) return null;
+
+    const baseRetail = opts.baseRetail ?? retail;
+    const leadMin = opts.leadMin ?? 1;
+    const leadMax = opts.leadMax ?? 7;
+
+    const availableQty = randomPositiveQty(1, 29); // always > 0 for seeded offers
+    const price = supplierOfferFromRetail(
+      baseRetail * (0.95 + Math.random() * 0.15)
+    );
+
+    const offer = await prisma.supplierOffer.create({
       data: {
-        supplierId: supForProductWide.id,
+        supplierId: opts.supplierId,
         productId: p.id,
-        variantId: null,
-        price: supplierOfferFromRetail(retail),
+        variantId: opts.variantId,
+        price,
         currency: 'NGN',
-        availableQty: avail1,            // 👈 NEW
-        inStock: avail1 > 0,          // 👈 derive from available
-        leadDays: randInt(1, 5),
+        availableQty,
+        inStock: true,
+        leadDays: randInt(leadMin, leadMax),
         isActive: true,
       },
     });
 
+    usedOfferKeys.add(key);
+    return offer;
+  };
 
-    // Maybe add more product-wide offers (0–2 more)
-    const extraPw = randInt(0, 2);
-    const extraSuppliers = pickSome(
-      suppliers.filter((s) => s.id !== supForProductWide.id),
-      0,
-      extraPw
+  if (hasVariants) {
+    // Use lots of variants 🎯
+    // 60–100% of variants get at least one offer
+    const shuffledVariants = [...vList].sort(() => Math.random() - 0.5);
+    const targetCount = Math.max(
+      1,
+      Math.round(shuffledVariants.length * (0.6 + Math.random() * 0.4))
     );
-    for (const sup of extraSuppliers) {
-      const avail2 = randomAvailable();
-      await prisma.supplierOffer.create({
-        data: {
+    const chosen = shuffledVariants.slice(0, targetCount);
+
+    // For each chosen variant, create 1–2 offers from different suppliers
+    for (const { id: variantId } of chosen) {
+      const offerSuppliers = pickSome(suppliers, 1, 2);
+      for (const sup of offerSuppliers) {
+        await createOffer({
           supplierId: sup.id,
-          productId: p.id,
-          variantId: null,
-          price: supplierOfferFromRetail(retail * (0.95 + Math.random() * 0.1)),
-          currency: 'NGN',
-          availableQty: avail2,           // 👈 NEW
-          inStock: avail2 > 0,         // 👈 derive from available
-          leadDays: randInt(2, 7),
-          isActive: true,
-        },
-      });
-    }
-
-
-    // Variant-specific offers for some products (~50%)
-    if (vList.length && chance(0.5)) {
-      const chosenVariants = pickSome(vList, 1, Math.min(3, vList.length));
-      for (const v of chosenVariants) {
-        const sup = sample(suppliers);
-        const availV = randomAvailable();
-        await prisma.supplierOffer.create({
-          data: {
-            supplierId: sup.id,
-            productId: p.id,
-            variantId: v.id,
-            price: supplierOfferFromRetail(retail * (0.95 + Math.random() * 0.15)),
-            currency: 'NGN',
-            availableQty: availV,         // 👈 NEW
-            inStock: availV > 0,       // 👈 derive from available
-            leadDays: randInt(2, 8),
-            isActive: true,
-          },
+          variantId,
+          baseRetail: retail,
+          leadMin: 2,
+          leadMax: 10,
         });
       }
     }
 
+    // Optional: also 0–2 product-wide offers (no variantId)
+    const extraGlobalOffers = randInt(0, 2);
+    const globals = pickSome(suppliers, 0, extraGlobalOffers);
+    for (const sup of globals) {
+      await createOffer({
+        supplierId: sup.id,
+        variantId: null,
+        baseRetail: retail * (0.9 + Math.random() * 0.2),
+        leadMin: 1,
+        leadMax: 5,
+      });
+    }
+  } else {
+    // No variants for this product → only product-wide offers
+    // Make sure LIVE products are definitely purchasable
+    const offerSuppliers = pickSome(suppliers, isLive ? 1 : 0, 3);
+    if (offerSuppliers.length === 0) {
+      // Fallback: always at least one
+      offerSuppliers.push(sample(suppliers));
+    }
+
+    for (const sup of offerSuppliers) {
+      await createOffer({
+        supplierId: sup.id,
+        variantId: null,
+        baseRetail: retail,
+        leadMin: 1,
+        leadMax: 7,
+      });
+    }
   }
+}
+
 
   console.log('✅ Seed complete.');
   console.log('Users:');

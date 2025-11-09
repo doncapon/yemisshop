@@ -459,10 +459,11 @@ export default function Cart() {
       return Math.max(0, line.totalAvailable);
     }
 
+    // ✅ Shared generic pool: cap is fixed = pool - otherLinesQty
     const pool = Math.max(0, pools.genericTotal);
     const otherQty = sumOtherLinesQty(item.productId, item.variantId ?? null);
     const remaining = Math.max(0, pool - otherQty);
-    return Math.max(0, remaining + Math.max(0, Number(item.qty) || 0));
+    return remaining;
   };
 
   const clampToMax = (productId: string, variantId: string | null | undefined, wantQty: number) => {
@@ -488,9 +489,10 @@ export default function Cart() {
       return Math.min(desired, cap);
     }
 
+    // ✅ Shared generic pool: fixed cap based on other lines, not this line's current qty
     const pool = Math.max(0, pools.genericTotal);
     const otherQty = sumOtherLinesQty(productId, variantId ?? null);
-    const capForThisLine = Math.max(0, pool - otherQty) + Math.max(0, Number(current.qty) || 0);
+    const capForThisLine = Math.max(0, pool - otherQty);
     const cap = Math.max(1, capForThisLine);
     return Math.min(desired, cap);
   };
@@ -637,6 +639,7 @@ export default function Cart() {
                       : `Max you can buy now: ${cap}`
                     : 'Out of stock';
               } else if (pools && !pools.hasVariantSpecific && line) {
+                // ✅ Shared generic pool helper: fixed max based on pool and other lines (not this qty)
                 const pool = Math.max(0, pools.genericTotal);
                 const otherQty = visibleCart
                   .filter(
@@ -645,8 +648,8 @@ export default function Cart() {
                       (x.variantId ?? null) !== (it.variantId ?? null)
                   )
                   .reduce((s, x) => s + Math.max(0, Number(x.qty) || 0), 0);
-                const remaining = Math.max(0, pool - otherQty);
-                const maxForThisLine = remaining + currentQty;
+                const maxForThisLine = Math.max(0, pool - otherQty);
+
                 helperText =
                   maxForThisLine > 0
                     ? it.qty > maxForThisLine
