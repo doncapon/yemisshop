@@ -24,7 +24,6 @@ type OrderItem = {
   variant?: { id: string; sku?: string | null; imagesJson?: string[] | null } | null;
 };
 
-
 type PaymentRow = {
   id: string;
   status: string;
@@ -43,6 +42,13 @@ type OrderRow = {
   items?: OrderItem[];
   payment?: PaymentRow | null;
   payments?: PaymentRow[];
+  // from /api/orders (admin) when present:
+  paidAmount?: number;
+  metrics?: {
+    revenue?: number;
+    cogs?: number;
+    profit?: number;
+  };
 };
 
 /* ---------------- Utils ---------------- */
@@ -61,12 +67,12 @@ const fmtDate = (s?: string) => {
   return Number.isNaN(+d)
     ? s
     : d.toLocaleString(undefined, {
-      month: 'short',
-      day: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+        month: 'short',
+        day: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
 };
 
 // normalize shapes
@@ -120,7 +126,10 @@ export default function OrdersPage() {
   });
 
   // open param
-  const openId = useMemo(() => new URLSearchParams(location.search).get('open') || '', [location.search]);
+  const openId = useMemo(
+    () => new URLSearchParams(location.search).get('open') || '',
+    [location.search],
+  );
   const [expandedId, setExpandedId] = useState<string | null>(null);
   useEffect(() => {
     if (openId) setExpandedId(openId);
@@ -137,7 +146,8 @@ export default function OrdersPage() {
 
   /* ---------------- Filter Bar State ---------------- */
   const [q, setQ] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'PENDING' | 'PAID' | 'FAILED' | 'CANCELED' | 'REFUNDED'>('ALL');
+  const [statusFilter, setStatusFilter] =
+    useState<'ALL' | 'PENDING' | 'PAID' | 'FAILED' | 'CANCELED' | 'REFUNDED'>('ALL');
   const [from, setFrom] = useState(''); // yyyy-mm-dd
   const [to, setTo] = useState('');
   const [minTotal, setMinTotal] = useState('');
@@ -153,23 +163,21 @@ export default function OrdersPage() {
   };
 
   /* ---------------- Sorting ---------------- */
-  // Put this near the top where SortKey is declared
   type SortKey = 'id' | 'user' | 'items' | 'total' | 'status' | 'date';
 
-  // ⬇️ replace your sort state with a single object
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({
     key: 'date',
-    dir: 'desc', // newest first by default
+    dir: 'desc',
   });
 
-  // single handler that always flips when clicking the same header
   const toggleSort = (key: SortKey) => {
     setSort((prev) =>
       prev.key === key
         ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
-        : { key, dir: key === 'date' ? 'desc' : 'asc' }
+        : { key, dir: key === 'date' ? 'desc' : 'asc' },
     );
   };
+
   const tdy = todayYMD();
   const isTodayActive = from === tdy && to === tdy;
 
@@ -182,7 +190,6 @@ export default function OrdersPage() {
       setTo(tdy);
     }
   };
-
 
   const SortHeader = ({
     label,
@@ -207,26 +214,26 @@ export default function OrdersPage() {
           title={`Sort by ${label}`}
         >
           <span>{label}</span>
-          {active ? <span aria-hidden>{sort.dir === 'asc' ? '▲' : '▼'}</span> : <span className="opacity-40">↕</span>}
+          {active ? (
+            <span aria-hidden>{sort.dir === 'asc' ? '▲' : '▼'}</span>
+          ) : (
+            <span className="opacity-40">↕</span>
+          )}
         </button>
       </th>
     );
   };
 
-
-
   /* ---------------- Derived: filtered + sorted ---------------- */
   const filteredSorted = useMemo(() => {
-    // filter
     const qnorm = q.trim().toLowerCase();
     const dateFrom = from ? new Date(from).getTime() : null;
-    // to: include full day
     const dateTo = to ? new Date(to + 'T23:59:59.999Z').getTime() : null;
     const min = minTotal ? Number(minTotal) : null;
     const max = maxTotal ? Number(maxTotal) : null;
 
     const list = orders.filter((o) => {
-      // search in id, userEmail, any item title, or payment reference
+      // search
       if (qnorm) {
         const pool: string[] = [];
         pool.push(o.id || '');
@@ -261,7 +268,6 @@ export default function OrdersPage() {
       return true;
     });
 
-    // sort
     const dir = sort.dir === 'asc' ? 1 : -1;
     const ordered = [...list].sort((a, b) => {
       const s = sort.key;
@@ -277,43 +283,52 @@ export default function OrdersPage() {
         return (((a.items || []).length - (b.items || []).length) || 0) * dir;
       }
       if (s === 'status') {
-        return String(a.status || '').localeCompare(String(b.status || ''), undefined, { sensitivity: 'base' }) * dir;
+        return (
+          String(a.status || '').localeCompare(String(b.status || ''), undefined, {
+            sensitivity: 'base',
+          }) * dir
+        );
       }
       if (s === 'user') {
-        return String(a.userEmail || '').localeCompare(String(b.userEmail || ''), undefined, { sensitivity: 'base' }) * dir;
+        return (
+          String(a.userEmail || '').localeCompare(String(b.userEmail || ''), undefined, {
+            sensitivity: 'base',
+          }) * dir
+        );
       }
-      // id
-      return String(a.id).localeCompare(String(b.id), undefined, { sensitivity: 'base' }) * dir;
+      return (
+        String(a.id).localeCompare(String(b.id), undefined, {
+          sensitivity: 'base',
+        }) * dir
+      );
     });
 
     return ordered;
   }, [orders, q, statusFilter, from, to, minTotal, maxTotal, sort.key, sort.dir]);
 
-
+  /* ---------------- Aggregates (SUPER_ADMIN only) ---------------- */
   const aggregates = useMemo(() => {
     if (role !== 'SUPER_ADMIN') return null;
     const num = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
-    let revenuePaid = 0, refunds = 0, fees = 0, comms = 0;
+    let revenuePaid = 0;
+    let refunds = 0; // wire up when you track per-order refunds in this payload
 
     for (const o of filteredSorted) {
-      const pays: PaymentRow[] = Array.isArray(o.payments) ? o.payments : (o.payment ? [o.payment] : []);
-      for (const p of pays) {
-        const st = String(p.status || '').toUpperCase();
-        if (st === 'PAID') {
-          revenuePaid += num(p.amount);
-          fees += num((p as any).feeAmount);
-        } else if (st === 'REFUNDED') {
-          refunds += num(p.amount);
-        }
+      const metricsRevenue = num(o.metrics?.revenue);
+      const paidAmount = num(o.paidAmount);
+
+      // Prefer backend-computed revenue; fall back to paidAmount
+      if (metricsRevenue > 0) {
+        revenuePaid += metricsRevenue;
+      } else if (paidAmount > 0) {
+        revenuePaid += paidAmount;
       }
-      comms += num((o as any).commsTotal ?? 0); // preload from backend or fetch per order
+      // If you later expose refunds per order in this list, subtract here into `refunds`.
     }
 
     const revenueNet = revenuePaid - refunds;
-    const grossProfit = comms - fees; // ✅ 
-
-    return { revenuePaid, refunds, revenueNet, comms, fees, grossProfit };
+    return { revenuePaid, refunds, revenueNet };
   }, [filteredSorted, role]);
 
   // actions
@@ -324,7 +339,7 @@ export default function OrdersPage() {
       await api.post(
         `/api/admin/orders/${orderId}/cancel`,
         {},
-        { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
+        { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
       );
       ordersQ.refetch();
       setExpandedId(null);
@@ -337,36 +352,33 @@ export default function OrdersPage() {
     const list: PaymentRow[] = Array.isArray(o.payments)
       ? [...o.payments]
       : o.payment
-        ? [o.payment]
-        : [];
+      ? [o.payment]
+      : [];
 
     if (list.length === 0) return null;
 
-    // prefer a PAID payment
-    const paid = list.find(p => String(p.status).toUpperCase() === 'PAID');
+    const paid = list.find((p) => String(p.status).toUpperCase() === 'PAID');
     if (paid) return paid;
 
-    // else latest by createdAt (desc)
     return list
       .slice()
-      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())[0];
+      .sort(
+        (a, b) =>
+          new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime(),
+      )[0];
   }
 
-  // inside Orders.tsx (component scope)
   const downloadReceipt = async (reference: string) => {
     try {
       const res = await api.get(`/api/payments/${reference}/receipt.pdf`, {
         responseType: 'blob',
-        // api client already sets Authorization, but this is fine too:
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
       const blob = new Blob([res.data], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
 
-      // open in a new tab:
       const w = window.open(url, '_blank');
       if (!w) {
-        // fallback to download if a popup blocker intervenes
         const a = document.createElement('a');
         a.href = url;
         a.download = `receipt-${reference}.pdf`;
@@ -374,7 +386,6 @@ export default function OrdersPage() {
         a.click();
         a.remove();
       }
-      // cleanup later
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (e: any) {
       alert(e?.response?.data?.error || 'Could not download receipt.');
@@ -385,8 +396,9 @@ export default function OrdersPage() {
   function sumItemLines(o: OrderRow): number {
     return (o.items ?? []).reduce((s, it) => {
       const qty = Number(it.quantity ?? 1);
-      const unit = Number(it.unitPrice ?? it.lineTotal ?? 0); // fallbacks are cheap; corrected below
-      const line = it.lineTotal != null ? Number(it.lineTotal) : Number(it.unitPrice) * qty;
+      const unit = Number(it.unitPrice ?? it.lineTotal ?? 0);
+      const line =
+        it.lineTotal != null ? Number(it.lineTotal) : Number(it.unitPrice) * qty;
       const n = Number.isFinite(line) ? line : 0;
       return s + n;
     }, 0);
@@ -417,16 +429,23 @@ export default function OrdersPage() {
 
   const profitRangeQ = useQuery({
     queryKey: ['metrics', 'profit-summary', { from: toYMD(from), to: toYMD(to) }],
-    enabled: role === 'SUPER_ADMIN',  // only super admins see it
+    enabled: role === 'SUPER_ADMIN',
     queryFn: async () => {
       const params = new URLSearchParams();
       if (toYMD(from)) params.set('from', toYMD(from)!);
       if (toYMD(to)) params.set('to', toYMD(to)!);
-      const { data } = await api.get(`/api/admin/metrics/profit-summary${params.toString() ? `?${params.toString()}` : ''}`);
-      // shape: { range: {from,to}, profitSum, profitToday, eventsCount }
-      return data as { profitSum: number; profitToday: number; eventsCount: number; range: { from: string; to: string } };
+      const { data } = await api.get(
+        `/api/admin/metrics/profit-summary${
+          params.toString() ? `?${params.toString()}` : ''
+        }`,
+      );
+      return data as {
+        profitSum: number;
+        profitToday: number;
+        eventsCount: number;
+        range: { from: string; to: string };
+      };
     },
-    // refetch when the date filters change
     refetchOnWindowFocus: false,
     staleTime: 10_000,
   });
@@ -435,7 +454,9 @@ export default function OrdersPage() {
   return (
     <div className="max-w-6xl mx-auto px-4 md:px-6 py-6">
       <div className="mb-5">
-        <h1 className="text-2xl font-semibold text-ink">{isAdmin ? 'All Orders' : 'My Orders'}</h1>
+        <h1 className="text-2xl font-semibold text-ink">
+          {isAdmin ? 'All Orders' : 'My Orders'}
+        </h1>
         <p className="text-sm text-ink-soft mt-1">
           {isAdmin ? 'Manage all customer orders.' : 'Your recent purchase history.'}
         </p>
@@ -528,15 +549,17 @@ export default function OrdersPage() {
             Clear filters
           </button>
 
-          {/* NEW: Today toggle */}
+          {/* Today toggle */}
           <button
             type="button"
             aria-pressed={isTodayActive}
             onClick={toggleToday}
             className={`rounded-lg px-3 py-2 text-sm border transition
-       ${isTodayActive
-                ? 'bg-zinc-900 text-white border-zinc-900'
-                : 'bg-white hover:bg-black/5'}`}
+              ${
+                isTodayActive
+                  ? 'bg-zinc-900 text-white border-zinc-900'
+                  : 'bg-white hover:bg-black/5'
+              }`}
             title="Show only today’s orders"
           >
             Today
@@ -547,7 +570,6 @@ export default function OrdersPage() {
             {isTodayActive && <span className="ml-2">(today)</span>}
           </div>
         </div>
-
       </div>
 
       {role === 'SUPER_ADMIN' && aggregates && (
@@ -556,7 +578,8 @@ export default function OrdersPage() {
             <div className="text-ink-soft">Revenue (net)</div>
             <div className="font-semibold">{ngn.format(aggregates.revenueNet)}</div>
             <div className="text-[11px] text-ink-soft">
-              Paid {ngn.format(aggregates.revenuePaid)} • Refunds {ngn.format(aggregates.refunds)}
+              Paid {ngn.format(aggregates.revenuePaid)} • Refunds{' '}
+              {ngn.format(aggregates.refunds)}
             </div>
           </div>
           <div className="rounded-xl border p-3 bg-white">
@@ -566,12 +589,15 @@ export default function OrdersPage() {
         </div>
       )}
 
-
       {/* ---------------- Table ---------------- */}
       <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
         <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
           <div className="text-sm text-ink-soft">
-            {loading ? 'Loading…' : `${filteredSorted.length} order${filteredSorted.length === 1 ? '' : 's'}`}
+            {loading
+              ? 'Loading…'
+              : `${filteredSorted.length} order${
+                  filteredSorted.length === 1 ? '' : 's'
+                }`}
           </div>
           <button
             onClick={() => ordersQ.refetch()}
@@ -606,7 +632,10 @@ export default function OrdersPage() {
 
               {!loading && filteredSorted.length === 0 && (
                 <tr>
-                  <td colSpan={colSpan} className="px-3 py-6 text-center text-zinc-500">
+                  <td
+                    colSpan={colSpan}
+                    className="px-3 py-6 text-center text-zinc-500"
+                  >
                     No orders match your filters.
                   </td>
                 </tr>
@@ -619,20 +648,24 @@ export default function OrdersPage() {
                   const latestPayment = latestPaymentOf(o);
                   const paymentId = latestPayment?.id;
                   const canShowReceipt =
-                    !!latestPayment?.reference && String(latestPayment.status).toUpperCase() === 'PAID';
+                    !!latestPayment?.reference &&
+                    String(latestPayment.status).toUpperCase() === 'PAID';
 
                   return (
                     <React.Fragment key={o.id}>
                       <tr
-
-                        className={`hover:bg-black/5 cursor-pointer ${isOpen ? 'bg-amber-50/50' : ''}`}
+                        className={`hover:bg-black/5 cursor-pointer ${
+                          isOpen ? 'bg-amber-50/50' : ''
+                        }`}
                         onClick={() => onToggle(o.id)}
                         aria-expanded={isOpen}
                       >
                         <td className="px-3 py-3">
                           <div className="flex items-center gap-2">
                             <span
-                              className={`inline-block w-4 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+                              className={`inline-block w-4 transition-transform ${
+                                isOpen ? 'rotate-90' : ''
+                              }`}
                               aria-hidden
                             >
                               ▶
@@ -640,7 +673,9 @@ export default function OrdersPage() {
                             <span className="font-mono">{o.id}</span>
                           </div>
                         </td>
-                        {isAdmin && <td className="px-3 py-3">{o.userEmail || '—'}</td>}
+                        {isAdmin && (
+                          <td className="px-3 py-3">{o.userEmail || '—'}</td>
+                        )}
                         <td className="px-3 py-3">
                           {Array.isArray(o.items) && o.items.length > 0 ? (
                             <div className="space-y-1">
@@ -651,38 +686,45 @@ export default function OrdersPage() {
                                 return (
                                   <div key={it.id} className="text-ink">
                                     <span className="font-medium">{name}</span>
-                                    <span className="text-ink-soft">{`  •  ${qty} × ${ngn.format(unit)}`}</span>
+                                    <span className="text-ink-soft">
+                                      {`  •  ${qty} × ${ngn.format(unit)}`}
+                                    </span>
                                   </div>
                                 );
                               })}
                               {o.items!.length > 3 && (
-                                <div className="text-xs text-ink-soft">+ {o.items!.length - 3} more…</div>
+                                <div className="text-xs text-ink-soft">
+                                  + {o.items!.length - 3} more…
+                                </div>
                               )}
                             </div>
                           ) : (
                             '—'
                           )}
                         </td>
-                        <td className="px-3 py-3">{ngn.format(fmtN(o.total))}</td>
+                        <td className="px-3 py-3">
+                          {ngn.format(fmtN(o.total))}
+                        </td>
                         <td className="px-3 py-3">
                           <StatusDot label={o.status || '—'} />
                         </td>
-                        <td className="px-3 py-3">{fmtDate(o.createdAt)}</td>
+                        <td className="px-3 py-3">
+                          {fmtDate(o.createdAt)}
+                        </td>
                         <td className="px-3 py-3">
                           {canShowReceipt ? (
                             <div className="flex items-center gap-2">
                               <button
                                 className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-1.5 hover:bg-black/5"
                                 onClick={(e) => {
-                                  e.stopPropagation(); // don't toggle row
+                                  e.stopPropagation();
                                   nav(`/receipt/${paymentId}`);
                                 }}
                               >
                                 View receipt
                               </button>
 
-                              {/* Optional: direct PDF download link */}
-                              {<button
+                              <button
                                 className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-1.5 hover:bg-black/5"
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -690,39 +732,45 @@ export default function OrdersPage() {
                                 }}
                               >
                                 Download PDF
-                              </button>}
-                              {isAdmin && String(o.status).toUpperCase() !== 'PENDING' && (
-                                <button
-                                  className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-1.5 hover:bg-black/5"
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    try {
-                                      await api.post(`/api/admin/orders/${o.id}/notify-suppliers`, {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
-                                      alert('Notifications (re)triggered.');
-                                    } catch (e: any) {
-                                      alert(e?.response?.data?.error || 'Could not notify suppliers.');
-                                    }
-                                  }}
-                                >
-                                  Notify suppliers
-                                </button>
-                              )}
+                              </button>
 
+                              {isAdmin &&
+                                String(o.status).toUpperCase() !== 'PENDING' && (
+                                  <button
+                                    className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-1.5 hover:bg-black/5"
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      try {
+                                        await api.post(
+                                          `/api/admin/orders/${o.id}/notify-suppliers`,
+                                          {},
+                                          {
+                                            headers: token
+                                              ? { Authorization: `Bearer ${token}` }
+                                              : undefined,
+                                          },
+                                        );
+                                        alert('Notifications (re)triggered.');
+                                      } catch (e: any) {
+                                        alert(
+                                          e?.response?.data?.error ||
+                                            'Could not notify suppliers.',
+                                        );
+                                      }
+                                    }}
+                                  >
+                                    Notify suppliers
+                                  </button>
+                                )}
                             </div>
                           ) : (
                             <span className="text-xs text-ink-soft">
-                              
-                                <button
-                                  className="inline-flex items-center justify-center rounded-xl border bg-green-200 px-3 py-1.5 hover:bg-black/5"
-                                  >
-                                  View details
-                                </button>
-                              
+                              <button className="inline-flex items-center justify-center rounded-xl border bg-green-200 px-3 py-1.5 hover:bg-black/5">
+                                View details
+                              </button>
                             </span>
-
                           )}
                         </td>
-
                       </tr>
 
                       {isOpen && (
@@ -736,27 +784,36 @@ export default function OrdersPage() {
                                     <span className="font-mono">{o.id}</span>
                                   </div>
                                   <div className="text-ink-soft">
-                                    Placed: {fmtDate(o.createdAt)} • Status: <b>{o.status}</b>
+                                    Placed: {fmtDate(o.createdAt)} • Status:{' '}
+                                    <b>{o.status}</b>
                                   </div>
                                   {latestPayment && (
                                     <div className="text-ink-soft">
-                                      Payment: <b>{latestPayment.status}</b>
-                                      {latestPayment.reference ? (
+                                      Payment:{' '}
+                                      <b>{latestPayment.status}</b>
+                                      {latestPayment.reference && (
                                         <>
                                           {' '}
                                           • Ref:{' '}
-                                          <span className="font-mono">{latestPayment.reference}</span>
+                                          <span className="font-mono">
+                                            {latestPayment.reference}
+                                          </span>
                                         </>
-                                      ) : null}
-                                      {latestPayment.amount != null ? (
-                                        <> • {ngn.format(fmtN(latestPayment.amount))}</>
-                                      ) : null}
+                                      )}
+                                      {latestPayment.amount != null && (
+                                        <>
+                                          {' '}
+                                          •{' '}
+                                          {ngn.format(fmtN(latestPayment.amount))}
+                                        </>
+                                      )}
                                     </div>
                                   )}
                                 </div>
 
                                 <div className="flex gap-2">
-                                  {(String(o.status).toUpperCase() === 'PENDING' || String(o.status).toUpperCase() === 'CREATED') && (
+                                  {(String(o.status).toUpperCase() === 'PENDING' ||
+                                    String(o.status).toUpperCase() === 'CREATED') && (
                                     <>
                                       <button
                                         className="rounded-lg bg-emerald-600 text-white px-4 py-2 hover:bg-emerald-700"
@@ -787,19 +844,35 @@ export default function OrdersPage() {
                                 <table className="w-full text-sm">
                                   <thead className="bg-zinc-50">
                                     <tr>
-                                      <th className="text-left px-3 py-2">Item</th>
-                                      <th className="text-left px-3 py-2">Qty</th>
-                                      <th className="text-left px-3 py-2">Unit</th>
-                                      <th className="text-left px-3 py-2">Line total</th>
-                                      <th className="text-left px-3 py-2">Status</th>
+                                      <th className="text-left px-3 py-2">
+                                        Item
+                                      </th>
+                                      <th className="text-left px-3 py-2">
+                                        Qty
+                                      </th>
+                                      <th className="text-left px-3 py-2">
+                                        Unit
+                                      </th>
+                                      <th className="text-left px-3 py-2">
+                                        Line total
+                                      </th>
+                                      <th className="text-left px-3 py-2">
+                                        Status
+                                      </th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y">
                                     {(o.items || []).map((it) => {
-                                      const name = (it.title || it.product?.title || '—').toString();
+                                      const name = (it.title ||
+                                        it.product?.title ||
+                                        '—'
+                                      ).toString();
                                       const qty = Number(it.quantity ?? 1);
                                       const unit = fmtN(it.unitPrice);
-                                      const line = it.lineTotal != null ? fmtN(it.lineTotal) : unit * qty;
+                                      const line =
+                                        it.lineTotal != null
+                                          ? fmtN(it.lineTotal)
+                                          : unit * qty;
 
                                       return (
                                         <tr key={it.id}>
@@ -807,25 +880,42 @@ export default function OrdersPage() {
                                             <table className="table-fixed">
                                               <tbody>
                                                 <tr className="align-top">
-                                                  <td className="pr-2">{name}</td>
-                                                  {/* either remove the separator or put it in its own cell */}
-                                                  <td className="px-2 text-zinc-400">|</td>
+                                                  <td className="pr-2">
+                                                    {name}
+                                                  </td>
+                                                  <td className="px-2 text-zinc-400">
+                                                    |
+                                                  </td>
                                                   <td className="pl-2">
-                                                    {Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0 && (
-                                                      <div className="text-xs text-ink-soft mt-0.5">
-                                                        {it.selectedOptions
-                                                          .map(o => `${o.attribute || ''}: ${o.value || ''}`)
-                                                          .filter(Boolean)
-                                                          .join(' *** ')}
-                                                      </div>
-                                                    )}
+                                                    {Array.isArray(
+                                                      it.selectedOptions,
+                                                    ) &&
+                                                      it
+                                                        .selectedOptions
+                                                        .length > 0 && (
+                                                        <div className="text-xs text-ink-soft mt-0.5">
+                                                          {it.selectedOptions
+                                                            .map((o) =>
+                                                              `${o.attribute || ''}: ${
+                                                                o.value || ''
+                                                              }`,
+                                                            )
+                                                            .filter(Boolean)
+                                                            .join(' *** ')}
+                                                        </div>
+                                                      )}
 
                                                     {it.variant?.sku && (
                                                       <div className="text-[11px] text-ink-soft mt-0.5">
-                                                        SKU: {it.variant.sku}
-                                                        {it.variant?.imagesJson?.[0] && (
+                                                        SKU:{' '}
+                                                        {it.variant.sku}
+                                                        {it.variant
+                                                          ?.imagesJson?.[0] && (
                                                           <img
-                                                            src={it.variant.imagesJson[0]}
+                                                            src={
+                                                              it.variant
+                                                                .imagesJson[0]
+                                                            }
                                                             alt=""
                                                             className="mt-2 w-12 h-12 object-cover rounded border"
                                                           />
@@ -838,18 +928,25 @@ export default function OrdersPage() {
                                             </table>
                                           </td>
 
-                                          <td className="px-3 py-2">{qty}</td>
-
-                                          {/* If you ever see hydration warnings due to Intl spacing, you can wrap with suppressHydrationWarning */}
                                           <td className="px-3 py-2">
-                                            <span /* suppressHydrationWarning */>{ngn.format(unit)}</span>
-                                          </td>
-                                          <td className="px-3 py-2">
-                                            <span /* suppressHydrationWarning */>{ngn.format(line)}</span>
+                                            {qty}
                                           </td>
 
                                           <td className="px-3 py-2">
-                                            <span className="text-xs text-ink-soft">{it.status || '—'}</span>
+                                            <span>
+                                              {ngn.format(unit)}
+                                            </span>
+                                          </td>
+                                          <td className="px-3 py-2">
+                                            <span>
+                                              {ngn.format(line)}
+                                            </span>
+                                          </td>
+
+                                          <td className="px-3 py-2">
+                                            <span className="text-xs text-ink-soft">
+                                              {it.status || '—'}
+                                            </span>
                                           </td>
                                         </tr>
                                       );
@@ -858,32 +955,31 @@ export default function OrdersPage() {
 
                                   <tfoot>
                                     <tr className="bg-zinc-50">
-                                      {/* Make the "Total" label span Item + Qty */}
-                                      <td className="px-3 py-2 font-medium" colSpan={2}>Total</td>
+                                      <td
+                                        className="px-3 py-2 font-medium"
+                                        colSpan={2}
+                                      >
+                                        Total
+                                      </td>
 
-                                      {/* NEW: Service fee cell (shows before the final total price) */}
                                       <td className="px-3 py-2">
                                         <div className="flex items-center justify-between text-sm">
-                                          <span className="text-ink-soft">Service fee</span>
+                                          <span className="text-ink-soft">
+                                            Service fee
+                                          </span>
                                           <span className="font-medium">
-                                            <span /* suppressHydrationWarning */>
-                                              {ngn.format(orderServiceFee(o))}
-                                            </span>
+                                            {ngn.format(orderServiceFee(o))}
                                           </span>
                                         </div>
                                       </td>
 
-                                      {/* Existing final total price */}
                                       <td className="px-3 py-2 font-semibold">
-                                        <span /* suppressHydrationWarning */>{ngn.format(fmtN(o.total))}</span>
+                                        {ngn.format(fmtN(o.total))}
                                       </td>
 
-                                      {/* Empty cell to align with Status column */}
                                       <td />
                                     </tr>
                                   </tfoot>
-
-
                                 </table>
                               </div>
                             </div>
@@ -920,10 +1016,16 @@ function StatusDot({ label }: { label: string }) {
     s === 'PAID' || s === 'VERIFIED'
       ? 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20'
       : s === 'PENDING'
-        ? 'bg-amber-500/10 text-amber-700 border-amber-600/20'
-        : s === 'FAILED' || s === 'CANCELED' || s === 'REJECTED' || s === 'REFUNDED'
-          ? 'bg-rose-500/10 text-rose-700 border-rose-600/20'
-          : 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
+      ? 'bg-amber-500/10 text-amber-700 border-amber-600/20'
+      : s === 'FAILED' || s === 'CANCELED' || s === 'REJECTED' || s === 'REFUNDED'
+      ? 'bg-rose-500/10 text-rose-700 border-rose-600/20'
+      : 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
 
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${cls}`}>{label}</span>;
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${cls}`}
+    >
+      {label}
+    </span>
+  );
 }

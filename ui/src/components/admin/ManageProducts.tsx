@@ -139,9 +139,6 @@ type VariantRow = {
    Helpers
 ============================ */
 
-const getOfferAvailableQty = (o: any) =>
-    toInt(o?.availableQty ?? o?.available ?? o?.qty ?? o?.stock, 0);
-
 function statusFromPreset(
     p: FilterPreset
 ): "ANY" | "PUBLISHED" | "PENDING" | "REJECTED" | "LIVE" {
@@ -166,14 +163,19 @@ function toInt(x: any, d = 0) {
 }
 
 function availOf(o: any): number {
-    return Math.max(
-        0,
-        toInt(o?.availableQty, 0) ??
-        toInt(o?.available, 0) ??
-        toInt(o?.qty, 0) ??
-        toInt(o?.stock, 0) ??
-        0
-    );
+    const candidates = [
+        o?.availableQty,
+        o?.available,
+        o?.qty,
+        o?.stock,
+    ];
+    for (const v of candidates) {
+        const n = Number(v);
+        if (Number.isFinite(n)) {
+            return Math.max(0, Math.floor(n));
+        }
+    }
+    return 0;
 }
 
 async function persistVariantsStrict(
@@ -453,7 +455,7 @@ export function ManageProducts({
         | "LIVE";
 
     const getStatus = (p: any): EffectiveStatus =>
-        p?.isDeleted ? "ARCHIVED" : (p?.status ?? "PENDING");
+        (p?.isDelete || p?.isDeleted) ? "ARCHIVED" : (p?.status ?? "PENDING");
 
     type RowAction =
         | {
@@ -646,10 +648,6 @@ export function ManageProducts({
                     headers: { Authorization: `Bearer ${token}` },
                 })
             ).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] });
-            qc.invalidateQueries({ queryKey: ["admin", "overview"] });
-        },
         onError: (e) =>
             openModal({
                 title: "Products",
@@ -664,10 +662,6 @@ export function ManageProducts({
                     headers: { Authorization: `Bearer ${token}` },
                 })
             ).data,
-        onSuccess: () => {
-            qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] });
-            qc.invalidateQueries({ queryKey: ["admin", "overview"] });
-        },
         onError: (e) =>
             openModal({
                 title: "Products",
@@ -856,12 +850,11 @@ export function ManageProducts({
         [attrsQ.data]
     );
 
-    const [variantRows, setVariantRows] = useState<VariantRow[]>(
-        []
-    );
-    const [currentVariants, setCurrentVariants] = useState<
-        any[]
-    >([]);
+    const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
+
+    // Used ONLY for SupplierOfferManager; fed ONLY via "Refresh offers".
+    const [offerVariants, setOfferVariants] = useState<any[]>([]);
+
 
     // Do NOT wipe variantRows when attributes flicker; only align keys when we have attrs
     useEffect(() => {
@@ -935,7 +928,6 @@ export function ManageProducts({
 
     function resetVariantState() {
         setVariantRows([]);
-        setCurrentVariants([]);
     }
 
 
@@ -1493,11 +1485,7 @@ export function ManageProducts({
             setVariantRows(
                 vr
             );
-            setCurrentVariants(
-                full.variants ||
-                []
-            );
-
+            loadOfferVariants(full.id);
         } catch (e) {
             console.error(e);
             openModal({
@@ -1513,242 +1501,158 @@ export function ManageProducts({
 
     async function handleOpenSupplierOffers() {
         if (!offersProductId) return;
+        await loadOfferVariants(offersProductId);
+    }
+
+    async function loadOfferVariants(productId: string) {
         try {
-            const full = await fetchProductFull(offersProductId);
-            setCurrentVariants(full.variants || []);
+            const full = await fetchProductFull(productId);
+            setOfferVariants(full.variants || []);
         } catch (e) {
             console.error(e);
-            openModal({
-                title: "Supplier offers",
-                message: "Could not refresh product variants for offers.",
-            });
+            alert("Could not load product variants for offers.",
+            );
         }
     }
 
 
 
     /* ---------------- Save / Create ---------------- */
-
     async function saveOrCreate() {
         const base: any = {
-            title:
-                pending.title.trim(),
-            price:
-                Number(
-                    pending.price
-                ) || 0,
-            status:
-                pending.status,
-            sku:
-                pending.sku.trim() ||
-                undefined,
+            title: pending.title.trim(),
+            price: Number(pending.price) || 0,
+            status: pending.status,
+            sku: pending.sku.trim() || undefined,
             description:
-                pending.description !=
-                    null
+                pending.description != null
                     ? pending.description
                     : undefined,
         };
 
         if (!base.title) return;
-        if (userId)
-            base.ownerId =
-                userId;
+        if (userId) base.ownerId = userId;
 
-        const comm =
-            Number(
-                pending.communicationCost
-            );
-        if (
-            Number.isFinite(
-                comm
-            ) &&
-            comm >= 0
-        ) {
-            base.communicationCost =
-                comm;
+        const comm = Number(pending.communicationCost);
+        if (Number.isFinite(comm) && comm >= 0) {
+            base.communicationCost = comm;
         }
 
-        if (pending.categoryId)
-            base.categoryId =
-                pending.categoryId;
-        if (pending.brandId)
-            base.brandId =
-                pending.brandId;
-        if (pending.supplierId)
-            base.supplierId =
-                pending.supplierId;
+        if (pending.categoryId) base.categoryId = pending.categoryId;
+        if (pending.brandId) base.brandId = pending.brandId;
+        if (pending.supplierId) base.supplierId = pending.supplierId;
 
-        const urlList =
-            parseUrlList(
-                pending.imageUrls
-            );
-        const uploaded =
-            await uploadLocalFiles();
-        const imagesJson = [
-            ...urlList,
-            ...uploaded,
-        ].filter(Boolean);
-        if (imagesJson.length)
-            base.imagesJson =
-                imagesJson;
+        const urlList = parseUrlList(pending.imageUrls);
+        const uploaded = await uploadLocalFiles();
+        const imagesJson = [...urlList, ...uploaded].filter(Boolean);
+        if (imagesJson.length) base.imagesJson = imagesJson;
 
-        const payload =
-            buildProductPayload({
-                base,
-                selectedAttrs,
-                variantRows,
-                attrsAll:
-                    attrsQ.data ||
-                    [],
-            });
+        // Build full payload (includes attributes, etc.)
+        const fullPayload = buildProductPayload({
+            base,
+            selectedAttrs,
+            variantRows,
+            attrsAll: attrsQ.data || [],
+        });
 
-        if (!payload) return;
+        if (!fullPayload) return;
 
         if (editingId) {
-            // UPDATE existing product
+            // 🔴 IMPORTANT:
+            // For existing products, strip out any variant-related fields.
+            // Product Save Changes should NOT touch variants or SO mappings.
+            const {
+                variants,
+                variantOptions,
+                attributeSelections, // keep if you want, or strip if they're variant-related in your backend
+                ...productOnly
+            } = fullPayload as any;
+
             updateM.mutate(
-                { id: editingId, ...payload },
+                { id: editingId, ...productOnly },
                 {
-                    onSuccess:
-                        async () => {
-                            const pid =
-                                editingId;
-                            const vars =
-                                (payload as any)
-                                    ?.variants ??
-                                [];
-                            if (
-                                pid &&
-                                vars.length >
-                                0
-                            ) {
-                                await persistVariantsStrict(
-                                    pid,
-                                    vars,
-                                    token
-                                );
-                                setCurrentVariants(
-                                    vars
-                                );
-                            }
-                            await Promise.all(
-                                [
-                                    qc.invalidateQueries(
-                                        {
-                                            queryKey:
-                                                [
-                                                    "admin",
-                                                    "products",
-                                                    "manage",
-                                                ],
-                                        }
-                                    ),
-                                    qc.invalidateQueries(
-                                        {
-                                            queryKey:
-                                                [
-                                                    "admin",
-                                                    "overview",
-                                                ],
-                                        }
-                                    ),
-                                    qc.invalidateQueries(
-                                        {
-                                            queryKey:
-                                                [
-                                                    "admin",
-                                                    "product",
-                                                    editingId,
-                                                    "variants",
-                                                ],
-                                        }
-                                    ),
-                                ]
-                            );
-                        },
+                    onSuccess: async () => {
+                        const pid = editingId;
+
+                        await Promise.all([
+                            qc.invalidateQueries({
+                                queryKey: ["admin", "products", "manage"],
+                            }),
+                            qc.invalidateQueries({
+                                queryKey: ["admin", "overview"],
+                            }),
+                            pid
+                                ? qc.invalidateQueries({
+                                    queryKey: [
+                                        "admin",
+                                        "product",
+                                        pid,
+                                        "variants",
+                                    ],
+                                })
+                                : Promise.resolve(),
+                        ]);
+
+                        // ✅ DO NOT touch offerVariants
+                        // ✅ DO NOT call persistVariantsStrict here
+                    },
                 }
             );
         } else {
-            // CREATE new product
-            createM.mutate(
-                payload,
-                {
-                    onSuccess:
-                        async (
-                            res
-                        ) => {
-                            const created =
-                                (res?.data ??
-                                    res) as any;
-                            const pid =
-                                created?.id ||
-                                created
-                                    ?.product
-                                    ?.id ||
-                                created
-                                    ?.data
-                                    ?.id;
-                            const vars =
-                                (payload as any)
-                                    ?.variants ??
-                                [];
-                            if (
-                                pid &&
-                                vars.length >
-                                0
-                            ) {
-                                await persistVariantsStrict(
+            // New product: it's safe to create variants once, then use them for SO.
+            createM.mutate(fullPayload, {
+                onSuccess: async (res) => {
+                    const created = (res?.data ?? res) as any;
+                    const pid =
+                        created?.id ||
+                        created?.product?.id ||
+                        created?.data?.id;
+
+                    const vars = (fullPayload as any)?.variants ?? [];
+
+                    if (pid && vars.length > 0) {
+                        try {
+                            await persistVariantsStrict(pid, vars, token);
+                        } catch (e) {
+                            console.error("Failed to persist variants on create", e);
+                            openModal({
+                                title: "Products",
+                                message: getHttpErrorMessage(
+                                    e,
+                                    "Failed to save variants"
+                                ),
+                            });
+                        }
+                    }
+
+                    if (pid) {
+                        setOffersProductId(pid);
+                        setEditingId(pid);
+                        loadOfferVariants(pid);
+                    }
+
+                    await Promise.all([
+                        qc.invalidateQueries({
+                            queryKey: ["admin", "products", "manage"],
+                        }),
+                        qc.invalidateQueries({
+                            queryKey: ["admin", "overview"],
+                        }),
+                        pid
+                            ? qc.invalidateQueries({
+                                queryKey: [
+                                    "admin",
+                                    "product",
                                     pid,
-                                    vars,
-                                    token
-                                );
-                                setCurrentVariants(
-                                    vars
-                                );
-                            }
-                            await Promise.all(
-                                [
-                                    qc.invalidateQueries(
-                                        {
-                                            queryKey:
-                                                [
-                                                    "admin",
-                                                    "products",
-                                                    "manage",
-                                                ],
-                                        }
-                                    ),
-                                    qc.invalidateQueries(
-                                        {
-                                            queryKey:
-                                                [
-                                                    "admin",
-                                                    "overview",
-                                                ],
-                                        }
-                                    ),
-                                    pid
-                                        ? qc.invalidateQueries(
-                                            {
-                                                queryKey:
-                                                    [
-                                                        "admin",
-                                                        "product",
-                                                        pid,
-                                                        "variants",
-                                                    ],
-                                            }
-                                        )
-                                        : Promise.resolve(),
-                                ]
-                            );
-                            if (pid)
-                                setEditingId(
-                                    pid
-                                );
-                        },
-                }
-            );
+                                    "variants",
+                                ],
+                            })
+                            : Promise.resolve(),
+                    ]);
+
+                    // ✅ DO NOT touch offerVariants
+                },
+            });
         }
     }
 
@@ -2432,6 +2336,46 @@ export function ManageProducts({
         ]
     );
 
+    const supplierVariants = useMemo(
+        () =>
+            (offerVariants || [])
+                .filter((v: any) => v && v.id != null && v.id !== "")
+                .map((v: any, index: number) => {
+                    const fromOptions =
+                        Array.isArray(v.options || v.optionSelections)
+                            ? (v.options || v.optionSelections)
+                                .map(
+                                    (o: any) =>
+                                        o?.value?.code ||
+                                        o?.value?.name ||
+                                        o?.attributeValue?.code ||
+                                        o?.attributeValue?.name ||
+                                        o?.valueId ||
+                                        ""
+                                )
+                                .filter(Boolean)
+                                .join(" / ")
+                            : "";
+
+                    const label =
+                        v.sku ||
+                        v.label ||
+                        v.name ||
+                        fromOptions ||
+                        (v.id != null ? String(v.id) : `Variant ${index + 1}`);
+
+                    return {
+                        id: String(v.id),
+                        sku: v.sku || label,
+                        label,
+                    };
+                }),
+        [offerVariants]
+    );
+
+
+
+
     /* ============================
        Render
     ============================ */
@@ -2494,51 +2438,16 @@ export function ManageProducts({
                         </div>
 
                         <SuppliersOfferManager
+                            key={offersProductId}        // ✅ separate “form” per product
                             productId={offersProductId}
-                            variants={(currentVariants || []).map((v: any, index: number) => {
-                                const fromOptions =
-                                    Array.isArray(v.options || v.optionSelections)
-                                        ? (v.options || v.optionSelections)
-                                            .map(
-                                                (o: any) =>
-                                                    o?.value?.code ||
-                                                    o?.value?.name ||
-                                                    o?.attributeValue?.code ||
-                                                    o?.attributeValue?.name ||
-                                                    o?.valueId ||
-                                                    ""
-                                            )
-                                            .filter(Boolean)
-                                            .join(" / ")
-                                        : "";
-
-                                const label =
-                                    v.sku ||
-                                    v.label ||
-                                    v.name ||
-                                    fromOptions ||
-                                    (v.id != null ? String(v.id) : `Variant ${index + 1}`);
-
-                                const safeId =
-                                    v.id != null && v.id !== ""
-                                        ? String(v.id)
-                                        : v.sku ||
-                                        fromOptions ||
-                                        `variant-${index}`;
-
-                                return {
-                                    id: safeId,
-                                    sku: label,
-                                    label,
-                                };
-                            })}
+                            variants={supplierVariants}
                             suppliers={suppliersQ.data ?? []}
                             token={token}
                             readOnly={!(isSuper || isAdmin)}
                         />
-
                     </div>
                 )}
+
 
 
 
@@ -3351,6 +3260,8 @@ export function ManageProducts({
                                     if (fileInputRef.current)
                                         fileInputRef.current.value = "";
                                     resetVariantState();
+                                    setOfferVariants([]);
+
 
                                 }}
                                 className="px-3 py-2 rounded-md bg-zinc-900 text-white text-sm"
