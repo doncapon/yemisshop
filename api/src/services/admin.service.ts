@@ -149,11 +149,11 @@ export async function computeProfitForWindow(
     // Fallback: pro-rated serviceFee
     const svcOrders = await prismaClient.order.findMany({
       where: { id: { in: orderIds } },
-      select: { id: true, total: true, serviceFee: true },
+      select: { id: true, total: true, serviceFeeTotal: true },
     });
     for (const o of svcOrders) {
       const f = effectiveFactorFor(N(o.total), o.id);
-      commsNet += N(o.serviceFee) * f;
+      commsNet += N(o.serviceFeeTotal) * f;
     }
   }
 

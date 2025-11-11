@@ -2,6 +2,7 @@ import * as React from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import SiteLayout from "../layouts/SiteLayout";
 
 /* ---------------- Types ---------------- */
 type Brand = { id: string; name: string } | null;
@@ -954,6 +955,7 @@ export default function ProductDetail() {
   }
 
   return (
+    <SiteLayout>
     <>
       {/* Toast */}
       {toast?.show && (
@@ -1354,5 +1356,7 @@ export default function ProductDetail() {
         </div>
       </div>
     </>
+    </SiteLayout>
+    
   );
 }

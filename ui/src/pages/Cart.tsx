@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import api from '../api/client';
+import SiteLayout from '../layouts/SiteLayout';
 
 /* ---------------- Types ---------------- */
 
@@ -76,8 +77,8 @@ function normalizeCartShape(parsed: any[]): CartItem[] {
     const unitPrice = hasUnit
       ? Number(it.unitPrice)
       : hasPrice
-      ? Number(it.price)
-      : unitFromTotal ?? 0;
+        ? Number(it.price)
+        : unitFromTotal ?? 0;
 
     const totalPrice = hasTotal ? Number(it.totalPrice) : unitPrice * qtyNum;
 
@@ -334,9 +335,9 @@ async function hydrateLinePrice(line: CartItem): Promise<CartItem> {
         p.variants.flatMap((v: any) =>
           Array.isArray(v.offers)
             ? v.offers.map((o: any) => ({
-                ...o,
-                variantId: v.id,
-              }))
+              ...o,
+              variantId: v.id,
+            }))
             : []
         );
 
@@ -571,27 +572,29 @@ export default function Cart() {
 
   if (visibleCart.length === 0) {
     return (
-      <div className="min-h-[88vh] bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden grid place-items-center px-4">
-        <div className="pointer-events-none absolute -top-24 -left-24 size-80 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
-        <div className="pointer-events-none absolute -bottom-28 -right-24 size-96 rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
+      <SiteLayout>
+        <div className="min-h-[88vh] bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden grid place-items-center px-4">
+          <div className="pointer-events-none absolute -top-24 -left-24 size-80 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
+          <div className="pointer-events-none absolute -bottom-28 -right-24 size-96 rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
 
-        <div className="max-w-md w-full text-center">
-          <div className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
-            <span className="inline-block size-1.5 rounded-full bg-white/90" />
-            Your cart is empty
+          <div className="max-w-md w-full text-center">
+            <div className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
+              <span className="inline-block size-1.5 rounded-full bg-white/90" />
+              Your cart is empty
+            </div>
+            <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-ink">Let’s find something you’ll love</h1>
+            <p className="mt-1 text-ink-soft">
+              Browse our catalogue and add items to your cart. They’ll show up here for checkout.
+            </p>
+            <Link
+              to="/"
+              className="mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
+            >
+              Go shopping
+            </Link>
           </div>
-          <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-ink">Let’s find something you’ll love</h1>
-          <p className="mt-1 text-ink-soft">
-            Browse our catalogue and add items to your cart. They’ll show up here for checkout.
-          </p>
-          <Link
-            to="/"
-            className="mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
-          >
-            Go shopping
-          </Link>
         </div>
-      </div>
+      </SiteLayout>
     );
   }
 
@@ -620,8 +623,8 @@ export default function Cart() {
                 asMoney(it.unitPrice, 0) > 0
                   ? asMoney(it.unitPrice, 0)
                   : currentQty > 0
-                  ? asMoney(it.totalPrice, 0) / currentQty
-                  : asMoney(it.totalPrice, 0);
+                    ? asMoney(it.totalPrice, 0) / currentQty
+                    : asMoney(it.totalPrice, 0);
 
               const data = availabilityQ.data as AvailabilityPayload | undefined;
               const pools = data?.products[it.productId];
@@ -805,10 +808,9 @@ export default function Cart() {
                   if (!canCheckout) e.preventDefault();
                 }}
                 className={`mt-5 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 font-semibold shadow-sm transition
-                  ${
-                    canCheckout
-                      ? 'bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200'
-                      : 'bg-zinc-200 text-zinc-500 cursor-not-allowed'
+                  ${canCheckout
+                    ? 'bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200'
+                    : 'bg-zinc-200 text-zinc-500 cursor-not-allowed'
                   }`}
                 aria-disabled={!canCheckout}
               >

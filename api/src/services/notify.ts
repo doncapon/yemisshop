@@ -1,6 +1,8 @@
 // api/src/services/notify.ts
 import { prisma } from '../lib/prisma.js';
 import { Prisma } from '@prisma/client';
+import { transporter } from '../lib/email.js';
+
 
 /* ----------------------------- Helpers ----------------------------- */
 
@@ -288,3 +290,183 @@ Please confirm availability and delivery timeline. Thank you!`;
     suppliers: Object.keys(groups).map(supplierId => ({ supplierId })),
   };
 }
+
+
+// ...existing exports like notifySuppliersForOrder, etc.
+
+/**
+ * Notify shopper that their order has been paid.
+ * - Called from finalizePaidFlow in payments.ts
+ * - Idempotency is handled in payments.ts via PAYMENT_EVENT ORDER_PAID_EMAIL_SENT
+ */
+export async function notifyCustomerOrderPaid(orderId: string, paymentId: string) {
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: {
+      id: true,
+      amount: true,
+      reference: true,
+      paidAt: true,
+      status: true,
+      order: {
+        select: {
+          id: true,
+          total: true,
+          status: true,
+          createdAt: true,
+          user: {
+            select: {
+              email: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+          shippingAddress: {
+            select: {
+              houseNumber: true,
+              streetName: true,
+              town: true,
+              city: true,
+              state: true,
+              country: true,
+            },
+          },
+          items: {
+            select: {
+              title: true,
+              quantity: true,
+              unitPrice: true,
+              lineTotal: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  // Safety checks
+  if (!payment || !payment.order) return;
+  if (payment.status !== 'PAID') return;
+
+  const order = payment.order;
+  const user = order.user;
+  if (!user?.email) return;
+
+  const to = user.email;
+  const displayName =
+    [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Customer';
+
+  const paidAt = payment.paidAt || new Date();
+  const total = Number(order.total || payment.amount || 0);
+  const amountPaid = Number(payment.amount || total);
+
+  const subject = `Payment received for your order ${order.id}`;
+  const preview = `We’ve received your payment of ₦${amountPaid.toLocaleString()} for order ${order.id}.`;
+
+  const shippingLines = [
+    order.shippingAddress?.houseNumber,
+    order.shippingAddress?.streetName,
+    order.shippingAddress?.town,
+    order.shippingAddress?.city,
+    order.shippingAddress?.state,
+    order.shippingAddress?.country,
+  ]
+    .filter(Boolean)
+    .join(', ');
+
+  const itemsHtml =
+    (order.items || [])
+      .map((it: { quantity: any; unitPrice: any; lineTotal: null; title: any; }) => {
+        const qty = Number(it.quantity || 1);
+        const unit = Number(it.unitPrice || 0);
+        const line =
+          it.lineTotal != null
+            ? Number(it.lineTotal)
+            : unit * qty;
+
+        return `
+          <tr>
+            <td style="padding:4px 0;">${it.title || 'Item'}</td>
+            <td style="padding:4px 8px; text-align:center;">${qty}</td>
+            <td style="padding:4px 8px; text-align:right;">₦${unit.toLocaleString()}</td>
+            <td style="padding:4px 0; text-align:right;">₦${line.toLocaleString()}</td>
+          </tr>
+        `;
+      })
+      .join('') ||
+    `
+      <tr>
+        <td colspan="4" style="padding:4px 0;">Order details are available in your dashboard.</td>
+      </tr>
+    `;
+
+  const html = `
+    <div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;color:#111827;line-height:1.6;">
+      <p>Hi ${displayName},</p>
+      <p>We’ve received your payment for your order <strong>${order.id}</strong>. Thank you for shopping with us.</p>
+
+      <p>
+        <strong>Amount paid:</strong> ₦${amountPaid.toLocaleString()}<br/>
+        <strong>Payment ref:</strong> ${payment.reference || payment.id}<br/>
+        <strong>Paid at:</strong> ${paidAt.toLocaleString()}
+      </p>
+
+      <p><strong>Order summary</strong></p>
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th align="left" style="padding:4px 0;border-bottom:1px solid #e5e7eb;">Item</th>
+            <th align="center" style="padding:4px 0;border-bottom:1px solid #e5e7eb;">Qty</th>
+            <th align="right" style="padding:4px 0;border-bottom:1px solid #e5e7eb;">Unit</th>
+            <th align="right" style="padding:4px 0;border-bottom:1px solid #e5e7eb;">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${itemsHtml}
+        </tbody>
+      </table>
+
+      <p style="margin-top:10px;">
+        <strong>Order total:</strong> ₦${total.toLocaleString()}
+      </p>
+
+      ${
+        shippingLines
+          ? `<p><strong>Shipping to:</strong><br/>${shippingLines}</p>`
+          : ''
+      }
+
+      <p>You can view your full order details and download your receipt from your dashboard at any time.</p>
+
+      <p style="margin-top:16px;font-size:12px;color:#6b7280;">
+        If you have any questions, just reply to this email.
+      </p>
+    </div>
+  `;
+
+  const text = [
+    `Hi ${displayName},`,
+    ``,
+    `We’ve received your payment for order ${order.id}.`,
+    `Amount paid: ₦${amountPaid.toLocaleString()}`,
+    `Payment ref: ${payment.reference || payment.id}`,
+    `Paid at: ${paidAt.toLocaleString()}`,
+    ``,
+    `You can view your order and receipt in your dashboard.`,
+  ].join('\n');
+
+  await transporter.sendMail({
+    to,
+    subject,
+    html,
+    text,
+  });
+
+  console.log('[mail] order paid email sent', {
+    to,
+    orderId: order.id,
+    paymentId: payment.id,
+    preview,
+  });
+}
+

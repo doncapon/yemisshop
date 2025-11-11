@@ -1,23 +1,28 @@
 // src/components/Navbar.tsx
-import { Link, NavLink, useNavigate } from 'react-router-dom';
-import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import { useAuthStore } from '../store/auth';
-import api from '../api/client';
-import { hardResetApp } from '../utils/resetApp.ts';
+import { Link, NavLink, useNavigate } from "react-router-dom";
+import {
+  useState,
+  useMemo,
+  useRef,
+  useEffect,
+  useCallback,
+} from "react";
+import { useAuthStore } from "../store/auth";
+import api from "../api/client";
+import { hardResetApp } from "../utils/resetApp";
 
-type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER';
+type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER";
 
 type MeResponse = {
   id: string;
   email: string;
   role: Role;
-  status: 'PENDING' | 'PARTIAL' | 'VERIFIED';
+  status: "PENDING" | "PARTIAL" | "VERIFIED";
   firstName?: string | null;
   middleName?: string | null;
   lastName?: string | null;
   name?: string | null;
 };
-
 
 function useClickAway<T extends HTMLElement>(onAway: () => void) {
   const ref = useRef<T | null>(null);
@@ -26,34 +31,31 @@ function useClickAway<T extends HTMLElement>(onAway: () => void) {
       if (!ref.current) return;
       if (!ref.current.contains(e.target as Node)) onAway();
     }
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
   }, [onAway]);
   return ref;
 }
 
 export default function Navbar() {
-  // Read from store via selectors to avoid type issues
   const token = useAuthStore((s) => s.token);
   const userRole = useAuthStore((s) => s.user?.role ?? null);
   const userEmail = useAuthStore((s) => s.user?.email ?? null);
   const clear = useAuthStore((s) => s.clear);
-
   const nav = useNavigate();
 
   const [mobileOpen, setMobileOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
 
-  // Names from /api/auth/me
   const [firstName, setFirstName] = useState<string | null>(null);
   const [middleName, setMiddleName] = useState<string | null>(null);
   const [lastName, setLastName] = useState<string | null>(null);
 
-  // Fetch name details when token is present
-
+  // Load /me when token changes
   useEffect(() => {
     let cancelled = false;
+
     async function loadMe() {
       if (!token) {
         setFirstName(null);
@@ -62,31 +64,29 @@ export default function Navbar() {
         return;
       }
       try {
-        const { data } = await api.get<MeResponse>('/api/auth/me', {
+        const { data } = await api.get<MeResponse>("/api/auth/me", {
           headers: { Authorization: `Bearer ${token}` },
         });
-        const f = data.firstName?.trim() || null;
-        const m = data.middleName?.trim() || null;
-        const l = data.lastName?.trim() || null;
 
         if (!cancelled) {
-          setFirstName(f);
-          setMiddleName(m);
-          setLastName(l);
+          setFirstName(data.firstName?.trim() || null);
+          setMiddleName(data.middleName?.trim() || null);
+          setLastName(data.lastName?.trim() || null);
         }
       } catch (e: any) {
-        // If token is invalid/expired -> full reset
         const status = e?.response?.status;
         if (status === 401 || status === 403) {
-          hardResetApp('/'); // wipe and reload
+          hardResetApp("/");
           return;
         }
-        // network or other error: don't silently “U”; force reset as per your requirement
-        hardResetApp('/');
+        hardResetApp("/");
       }
     }
+
     loadMe();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [token]);
 
   const displayName = useMemo(() => {
@@ -94,50 +94,53 @@ export default function Navbar() {
     const l = lastName?.trim();
     const m = middleName?.trim();
     if (f && l) {
-      const mid = m ? ` ${m[0].toUpperCase()}.` : '';
+      const mid = m ? ` ${m[0].toUpperCase()}.` : "";
       return `${f}${mid} ${l}`;
     }
     return null;
   }, [firstName, middleName, lastName]);
 
   const initials = useMemo(() => {
-    const f = (firstName?.trim()?.[0] || '').toUpperCase();
-    const l = (lastName?.trim()?.[0] || '').toUpperCase();
+    const f = (firstName?.trim()?.[0] || "").toUpperCase();
+    const l = (lastName?.trim()?.[0] || "").toUpperCase();
     const init = `${f}${l}`.trim();
-    return init || 'U';
+    return init || "U";
   }, [firstName, lastName]);
 
   const logout = useCallback(() => {
     clear();
     try {
-      localStorage.removeItem('cart');
-      // if your persisted store key is different, remove that one instead
-      localStorage.removeItem('auth');
-    } catch { }
-    nav('/');
+      localStorage.removeItem("cart");
+      localStorage.removeItem("auth");
+    } catch {
+      //
+    }
+    nav("/");
   }, [clear, nav]);
 
   const linkBase =
-    'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium transition';
-  const linkInactive = 'text-ink-invert/90 hover:bg.white/10 hover:bg-white/10';
-  const linkActive = 'text-ink-invert bg-white/15';
+    "inline-flex items-center px-3 py-2 rounded-md text-sm font-medium transition";
+  const linkInactive =
+    "text-white/90 hover:bg-white/10";
+  const linkActive =
+    "text-white bg-white/20";
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-primary-700/40 bg-primary-800/95 backdrop-blur">
-      <div className="max-w-7xl mx-auto h-16 px-4 md:px-6 flex items-center gap-4">
+    <header className="sticky top-0 z-40 w-full border-b border-primary-800/40 bg-primary-900/95 backdrop-blur">
+      <div className="max-w-6xl mx-auto h-14 md:h-16 px-4 md:px-6 flex items-center gap-4">
         {/* Brand */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <Link
             to="/"
-            className="text-ink-invert text-lg font-bold tracking-tight hover:opacity-95"
+            className="text-white text-lg font-bold tracking-tight hover:opacity-95"
             aria-label="DaySpring home"
           >
             DaySpring
           </Link>
         </div>
 
-        {/* Primary nav (desktop) */}
-        <nav className="hidden md:flex gap-1 ml-2">
+        {/* Desktop nav */}
+        <nav className="hidden md:flex gap-1 ml-3">
           <NavLink
             to="/"
             end
@@ -193,7 +196,7 @@ export default function Navbar() {
             </NavLink>
           )}
 
-          {(userRole === 'ADMIN' || userRole === 'SUPER_ADMIN') && (
+          {(userRole === "ADMIN" || userRole === "SUPER_ADMIN") && (
             <NavLink
               to="/admin"
               className={({ isActive }) =>
@@ -208,16 +211,17 @@ export default function Navbar() {
         {/* Spacer */}
         <div className="ml-auto" />
 
-        {/* Auth / Avatar */}
+        {/* Desktop auth / avatar */}
         <div className="hidden md:flex items-center gap-3">
           {!token ? (
             <>
               <NavLink
                 to="/login"
                 className={({ isActive }) =>
-                  `${linkBase} ${isActive
-                    ? 'bg-white text-primary-800'
-                    : 'border border-white/15 text.white hover:bg-white/10 text-white'
+                  `${linkBase} ${
+                    isActive
+                      ? "bg-white text-primary-900"
+                      : "border border-white/25 text-white hover:bg-white/10"
                   }`
                 }
               >
@@ -225,7 +229,7 @@ export default function Navbar() {
               </NavLink>
               <NavLink
                 to="/register"
-                className="inline-flex items-center px-3 py-2 rounded-md text-sm font-semibold text-primary-700 bg-white hover:bg-zinc-50 transition"
+                className="inline-flex items-center px-3 py-2 rounded-md text-sm font-semibold text-primary-800 bg-white hover:bg-zinc-50 transition"
               >
                 Register
               </NavLink>
@@ -234,7 +238,7 @@ export default function Navbar() {
             <div className="relative" ref={menuRef}>
               <button
                 onClick={() => setMenuOpen((v) => !v)}
-                className="w-9 h-9 rounded-full grid place-items-center border border-white/20 bg-white/10 text-white font-semibold hover:bg-white/20 focus:outline-none focus:ring-4 focus:ring-white/25 transition"
+                className="w-9 h-9 rounded-full grid place-items-center border border-white/25 bg-white/10 text-white font-semibold hover:bg-white/20 focus:outline-none focus:ring-4 focus:ring-white/25 transition"
                 aria-label="User menu"
               >
                 {initials}
@@ -242,54 +246,58 @@ export default function Navbar() {
 
               {menuOpen && (
                 <div
-                  className="absolute right-0 mt-2 w-64 rounded-xl border border-border bg-surface shadow-lg overflow-hidden"
+                  className="absolute right-0 mt-2 w-64 rounded-xl border border-zinc-200 bg-white shadow-lg overflow-hidden"
                   role="menu"
                 >
-                  <div className="px-3 py-3 border-b border-border/80 bg-surface-soft">
-                    <div className="text-sm text-ink-soft">Signed in as</div>
-                    <div className="text-sm font-medium truncate text-ink">
-                      {displayName || userEmail || 'User'}
+                  <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
+                    <div className="text-xs text-zinc-500">
+                      Signed in as
+                    </div>
+                    <div className="text-sm font-medium truncate text-zinc-900">
+                      {displayName || userEmail || "User"}
                     </div>
                     {userEmail && (
-                      <div className="text-xs opacity-70 truncate">{userEmail}</div>
+                      <div className="text-[10px] text-zinc-500 truncate">
+                        {userEmail}
+                      </div>
                     )}
                   </div>
                   <nav className="py-1 text-sm">
                     <button
-                      className="w-full text-left px-3 py-2 hover:bg-black/5 transition"
+                      className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
                       onClick={() => {
                         setMenuOpen(false);
-                        nav('/profile');
+                        nav("/profile");
                       }}
                       role="menuitem"
                     >
                       Edit Profile
                     </button>
                     <button
-                      className="w-full text-left px-3 py-2 hover:bg-black/5 transition"
+                      className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
                       onClick={() => {
                         setMenuOpen(false);
-                        nav('/orders');
+                        nav("/orders");
                       }}
                       role="menuitem"
                     >
                       Purchase history
                     </button>
-                    {userRole === 'SUPER_ADMIN' &&
+                    {userRole === "SUPER_ADMIN" && (
+                      <button
+                        className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          nav("/admin/settings");
+                        }}
+                        role="menuitem"
+                      >
+                        Admin Settings
+                      </button>
+                    )}
+                    <div className="my-1 border-t border-zinc-100" />
                     <button
-                      className="w-full text-left px-3 py-2 hover:bg-black/5 transition"
-                      onClick={() => {
-                        setMenuOpen(false);
-                        nav('/admin/settings');
-                      }}
-                      role="menuitem"
-                    >
-                      Admin Settings
-                    </button>
-                    }
-                    <div className="my-1 border-t border-border" />
-                    <button
-                      className="w-full text-left px-3 py-2 text-danger hover:bg-red-50 transition"
+                      className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition"
                       onClick={logout}
                       role="menuitem"
                     >
@@ -302,29 +310,43 @@ export default function Navbar() {
           )}
         </div>
 
-        {/* Mobile controls */}
+        {/* Mobile menu toggle */}
         <button
-          className="md:hidden inline-flex items-center justify-center w-9 h-9 rounded-md border border-white/20 text-white/95 hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-white/25 transition"
+          className="md:hidden inline-flex items-center justify-center w-9 h-9 rounded-md border border-white/25 text-white hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-white/25 transition"
           aria-label="Toggle menu"
           onClick={() => setMobileOpen((v) => !v)}
         >
-          {/* simple icon */}
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M4 7h16M4 12h16M4 17h16"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
           </svg>
         </button>
       </div>
 
       {/* Mobile drawer */}
       {mobileOpen && (
-        <div className="md:hidden border-t border-primary-700/40 bg-primary-700/95 backdrop-blur">
+        <div className="md:hidden border-t border-primary-800/40 bg-primary-900/98 backdrop-blur">
           <div className="px-4 py-3 flex flex-col gap-1">
             <NavLink
               to="/"
               end
               onClick={() => setMobileOpen(false)}
               className={({ isActive }) =>
-                `${linkBase} ${isActive ? 'bg-white/20 text-white' : 'text-white/90 hover:bg-white/10'}`
+                `${linkBase} ${
+                  isActive
+                    ? "bg-white/20 text-white"
+                    : "text-white/90 hover:bg-white/10"
+                }`
               }
             >
               Catalogue
@@ -334,7 +356,11 @@ export default function Navbar() {
               to="/cart"
               onClick={() => setMobileOpen(false)}
               className={({ isActive }) =>
-                `${linkBase} ${isActive ? 'bg-white/20 text-white' : 'text-white/90 hover:bg-white/10'}`
+                `${linkBase} ${
+                  isActive
+                    ? "bg-white/20 text-white"
+                    : "text-white/90 hover:bg-white/10"
+                }`
               }
             >
               Cart
@@ -345,7 +371,11 @@ export default function Navbar() {
                 to="/wishlist"
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
-                  `${linkBase} ${isActive ? 'bg-white/20 text-white' : 'text-white/90 hover:bg-white/10'}`
+                  `${linkBase} ${
+                    isActive
+                      ? "bg-white/20 text-white"
+                      : "text-white/90 hover:bg-white/10"
+                  }`
                 }
               >
                 Wishlist
@@ -358,19 +388,27 @@ export default function Navbar() {
                 end
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
-                  `${linkBase} ${isActive ? 'bg.white/20 text-white' : 'text-white/90 hover:bg-white/10'}`
+                  `${linkBase} ${
+                    isActive
+                      ? "bg-white/20 text-white"
+                      : "text-white/90 hover:bg-white/10"
+                  }`
                 }
               >
                 Dashboard
               </NavLink>
             )}
 
-            {(userRole === 'ADMIN' || userRole === 'SUPER_ADMIN') && (
+            {(userRole === "ADMIN" || userRole === "SUPER_ADMIN") && (
               <NavLink
                 to="/admin"
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
-                  `${linkBase} ${isActive ? 'bg-white/20 text-white' : 'text-white/90 hover:bg-white/10'}`
+                  `${linkBase} ${
+                    isActive
+                      ? "bg-white/20 text-white"
+                      : "text-white/90 hover:bg-white/10"
+                  }`
                 }
               >
                 Admin
@@ -385,9 +423,10 @@ export default function Navbar() {
                   to="/login"
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `flex-1 text-center ${linkBase} ${isActive
-                      ? 'bg-white text-primary-800'
-                      : 'border border-white/20 text-white hover:bg-white/10'
+                    `flex-1 text-center ${linkBase} ${
+                      isActive
+                        ? "bg-white text-primary-900"
+                        : "border border-white/25 text-white hover:bg-white/10"
                     }`
                   }
                 >
@@ -396,18 +435,18 @@ export default function Navbar() {
                 <NavLink
                   to="/register"
                   onClick={() => setMobileOpen(false)}
-                  className="flex-1 text-center inline-flex items-center justify-center px-3 py-2 rounded-md text-sm font-semibold text-primary-700 bg-white hover:bg-zinc-50 transition"
+                  className="flex-1 text-center inline-flex items-center justify-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-white hover:bg-zinc-50 transition"
                 >
                   Register
                 </NavLink>
               </div>
-            ) : (token &&
+            ) : (
               <div className="flex flex-col gap-1">
                 <button
                   className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
                   onClick={() => {
                     setMobileOpen(false);
-                    nav('/profile');
+                    nav("/profile");
                   }}
                 >
                   Edit Profile
@@ -416,26 +455,24 @@ export default function Navbar() {
                   className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
                   onClick={() => {
                     setMobileOpen(false);
-                    nav('/orders');
+                    nav("/orders");
                   }}
                 >
                   Purchase history
                 </button>
-
-                {userRole === 'SUPER_ADMIN' && <button
-                  className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
-                  onClick={() => {
-                    nav("/admin/settings")
-                    setMobileOpen(false);
-                    nav('/orders');
-                  }}
-                >
-                  Admin Settings
-                </button>
-                }
-
+                {userRole === "SUPER_ADMIN" && (
+                  <button
+                    className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
+                    onClick={() => {
+                      setMobileOpen(false);
+                      nav("/admin/settings");
+                    }}
+                  >
+                    Admin Settings
+                  </button>
+                )}
                 <button
-                  className="w-full text-left px-3 py-2 rounded-md text-red-100 hover:bg-white/10"
+                  className="w-full text-left px-3 py-2 rounded-md text-red-200 hover:bg-red-500/10"
                   onClick={() => {
                     setMobileOpen(false);
                     logout();

@@ -154,7 +154,12 @@ model Order {
   purchaseOrders PurchaseOrder[]
   payments       Payment[]
   orderCoupons   OrderCoupon[]
-  serviceFee     Decimal         @default(0) @db.Decimal(10, 2)
+
+  serviceFeeBase    Decimal @default(0) @db.Decimal(10, 2)
+  serviceFeeComms   Decimal @default(0) @db.Decimal(10, 2)
+  serviceFeeGateway Decimal @default(0) @db.Decimal(10, 2)
+  serviceFeeTotal   Decimal @default(0) @db.Decimal(10, 2)
+  
 
   // back-rel to OrderComms (name must match OrderComms.order relation)
   comms OrderComms[] @relation("OrderToComms")

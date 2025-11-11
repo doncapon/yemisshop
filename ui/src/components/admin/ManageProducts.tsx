@@ -1111,109 +1111,69 @@ export function ManageProducts({
             payload.attributeTexts =
                 attributeTexts;
 
-        if (
-            variantRows.length > 0 &&
-            selectableAttrs.length > 0
-        ) {
+        // Build variants from the provided rows + attributes (self-contained)
+        const selectable = (attrsAll || []).filter(
+            (a) => a.type === "SELECT" && a.isActive
+        );
+
+        if (variantRows.length > 0 && selectable.length > 0) {
             const variants: any[] = [];
 
             for (const row of variantRows) {
-                const picks = Object.entries(
-                    row.selections || {}
-                ).filter(([, valueId]) => valueId);
+                const picks = Object.entries(row.selections || {}).filter(
+                    ([, valueId]) => valueId
+                );
                 if (picks.length === 0) continue;
 
                 const bumpNum = Number(row.priceBump);
-                const hasBump =
-                    Number.isFinite(bumpNum);
+                const hasBump = Number.isFinite(bumpNum);
 
-                const options = picks.map(
-                    ([attributeId, valueId]) => {
-                        const option: any = {
-                            attributeId,
-                            valueId,
-                            attributeValueId:
-                                valueId,
-                        };
-                        if (hasBump)
-                            option.priceBump =
-                                bumpNum;
-                        return option;
-                    }
-                );
+                const options = picks.map(([attributeId, valueId]) => {
+                    const option: any = {
+                        attributeId,
+                        valueId,
+                        attributeValueId: valueId,
+                    };
+                    if (hasBump) option.priceBump = bumpNum;
+                    return option;
+                });
 
                 const labelParts: string[] = [];
-                for (const [
-                    attributeId,
-                    valueId,
-                ] of picks) {
-                    const attr =
-                        selectableAttrs.find(
-                            (a) =>
-                                a.id ===
-                                attributeId
-                        );
-                    const val =
-                        attr?.values?.find(
-                            (v) =>
-                                v.id ===
-                                valueId
-                        );
-                    const code = (
-                        val?.code ||
-                        val?.name ||
-                        ""
-                    ).toString();
+                for (const [attributeId, valueId] of picks) {
+                    const attr = selectable.find((a) => a.id === attributeId);
+                    const val = attr?.values?.find((v) => v.id === valueId);
+                    const code = (val?.code || val?.name || "").toString();
                     if (code) {
                         labelParts.push(
-                            code
-                                .toUpperCase()
-                                .replace(
-                                    /\s+/g,
-                                    ""
-                                )
+                            code.toUpperCase().replace(/\s+/g, "")
                         );
                     }
                 }
-                const comboLabel =
-                    labelParts.join(
-                        "-"
-                    );
+
+                const comboLabel = labelParts.join("-");
                 const sku =
-                    base.sku &&
-                        comboLabel
+                    base.sku && comboLabel
                         ? `${base.sku}-${comboLabel}`
-                        : base.sku ||
-                        comboLabel ||
-                        undefined;
+                        : base.sku || comboLabel || undefined;
 
                 variants.push({
                     sku,
                     options,
-                    optionSelections:
-                        options,
-                    attributes:
-                        options.map(
-                            (o: any) => ({
-                                attributeId:
-                                    o.attributeId,
-                                valueId:
-                                    o.valueId,
-                            })
-                        ),
+                    optionSelections: options,
+                    attributes: options.map((o: any) => ({
+                        attributeId: o.attributeId,
+                        valueId: o.valueId,
+                    })),
                 });
             }
 
             if (variants.length) {
-                payload.variants =
-                    variants;
-                payload.variantOptions =
-                    variants.map(
-                        (v: any) =>
-                            v.options
-                    );
+                payload.variants = variants;
+                payload.variantOptions = variants.map((v: any) => v.options);
             }
         }
+
+
 
         if (!base.supplierId) {
             openModal({
@@ -1547,7 +1507,7 @@ export function ManageProducts({
         const imagesJson = [...urlList, ...uploaded].filter(Boolean);
         if (imagesJson.length) base.imagesJson = imagesJson;
 
-        // Build full payload (includes attributes, etc.)
+        // Build full payload (includes attributes + variants)
         const fullPayload = buildProductPayload({
             base,
             selectedAttrs,
@@ -1558,15 +1518,15 @@ export function ManageProducts({
         if (!fullPayload) return;
 
         if (editingId) {
-            // 🔴 IMPORTANT:
-            // For existing products, strip out any variant-related fields.
-            // Product Save Changes should NOT touch variants or SO mappings.
             const {
                 variants,
                 variantOptions,
-                attributeSelections, // keep if you want, or strip if they're variant-related in your backend
+                attributeSelections,
                 ...productOnly
             } = fullPayload as any;
+
+            const hasVariantRows =
+                Array.isArray(variants) && variants.length > 0;
 
             updateM.mutate(
                 { id: editingId, ...productOnly },
@@ -1574,10 +1534,43 @@ export function ManageProducts({
                     onSuccess: async () => {
                         const pid = editingId;
 
+                        // Persist variants when variant rows are defined
+                        if (pid && hasVariantRows) {
+                            try {
+                                await persistVariantsStrict(pid, variants, token);
+                            } catch (e) {
+                                console.error(
+                                    "Failed to persist variants on update",
+                                    e
+                                );
+                                openModal({
+                                    title: "Products",
+                                    message: getHttpErrorMessage(
+                                        e,
+                                        "Failed to save variants"
+                                    ),
+                                });
+                            }
+                        }
+
+                        // 🔹 Update the cached products list instead of forcing a full refetch
+                        qc.setQueryData<AdminProduct[]>(
+                            [
+                                "admin",
+                                "products",
+                                "manage",
+                                { q: debouncedSearch, statusParam },
+                            ],
+                            (old) => {
+                                if (!old) return old;
+                                return old.map((p) =>
+                                    p.id === pid ? { ...p, ...productOnly } : p
+                                );
+                            }
+                        );
+
+                        // Still refresh aggregates / detail where it makes sense
                         await Promise.all([
-                            qc.invalidateQueries({
-                                queryKey: ["admin", "products", "manage"],
-                            }),
                             qc.invalidateQueries({
                                 queryKey: ["admin", "overview"],
                             }),
@@ -1593,13 +1586,14 @@ export function ManageProducts({
                                 : Promise.resolve(),
                         ]);
 
-                        // ✅ DO NOT touch offerVariants
-                        // ✅ DO NOT call persistVariantsStrict here
+                        // ✅ Alert only; no reload
+                        alert("Product changes saved.");
                     },
                 }
             );
-        } else {
-            // New product: it's safe to create variants once, then use them for SO.
+        }
+        else {
+            // CREATE NEW PRODUCT (unchanged logic, still supports variants)
             createM.mutate(fullPayload, {
                 onSuccess: async (res) => {
                     const created = (res?.data ?? res) as any;
@@ -1649,12 +1643,11 @@ export function ManageProducts({
                             })
                             : Promise.resolve(),
                     ]);
-
-                    // ✅ DO NOT touch offerVariants
                 },
             });
         }
     }
+
 
     /* ---------------- Focus handoff from moderation ---------------- */
 

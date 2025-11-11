@@ -1,6 +1,7 @@
 // web/src/pages/admin/SettingsAdminPage.tsx
 import { useEffect, useMemo, useState } from 'react';
 import api from '../../api/client.js';
+import SiteLayout from '../../layouts/SiteLayout.js';
 
 type Setting = {
   id: string;
@@ -170,114 +171,89 @@ export default function SettingsAdminPage() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-2xl font-semibold mb-4">Settings</h1>
+    <SiteLayout>
+      <div className="p-6 max-w-4xl mx-auto">
+        <h1 className="text-2xl font-semibold mb-4">Settings</h1>
 
-      <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-3">
-        <input
-          className="border rounded px-3 py-2"
-          placeholder="Search key/value…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-      </div>
-
-      {err && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded mb-4">
-          {err}
-        </div>
-      )}
-
-      {/* Create new */}
-      <form onSubmit={create} className="border rounded p-4 mb-6 space-y-3">
-        <div className="font-medium">Create setting</div>
-
-        <div className="grid md:grid-cols-2 gap-3">
+        <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-3">
           <input
             className="border rounded px-3 py-2"
-            placeholder="key (e.g. taxMode)"
-            value={creating.key}
-            onChange={(e) => setCreating((s) => ({ ...s, key: e.target.value }))}
-            required
+            placeholder="Search key/value…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
           />
-
-          {/* Value type toggle */}
-          <div className="flex items-center gap-4">
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="radio"
-                name="valueType"
-                checked={creating.valueType === 'text'}
-                onChange={() =>
-                  setCreating((s) => ({ ...s, valueType: 'text' }))
-                }
-              />
-              Text
-            </label>
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="radio"
-                name="valueType"
-                checked={creating.valueType === 'select'}
-                onChange={() =>
-                  setCreating((s) => {
-                    const key = s.key.trim();
-                    const presets = KNOWN_KEY_OPTIONS[key];
-                    const optionsText =
-                      presets?.length ? presets.join(',') : s.optionsText || '';
-                    const first = presets?.[0] || s.value || '';
-                    return {
-                      ...s,
-                      valueType: 'select',
-                      optionsText,
-                      value: s.value || first,
-                    };
-                  })
-                }
-              />
-              Select
-            </label>
-          </div>
         </div>
 
-        {/* Value input: text or select */}
-        {creating.valueType === 'text' ? (
+        {err && (
+          <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded mb-4">
+            {err}
+          </div>
+        )}
+
+        {/* Create new */}
+        <form onSubmit={create} className="border rounded p-4 mb-6 space-y-3">
+          <div className="font-medium">Create setting</div>
+
           <div className="grid md:grid-cols-2 gap-3">
             <input
               className="border rounded px-3 py-2"
-              placeholder="value (string)"
-              value={creating.value}
-              onChange={(e) =>
-                setCreating((s) => ({ ...s, value: e.target.value }))
-              }
+              placeholder="key (e.g. taxMode)"
+              value={creating.key}
+              onChange={(e) => setCreating((s) => ({ ...s, key: e.target.value }))}
               required
             />
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={creating.isPublic}
-                onChange={(e) =>
-                  setCreating((s) => ({ ...s, isPublic: e.target.checked }))
-                }
-              />
-              Public (readable without admin)
-            </label>
+
+            {/* Value type toggle */}
+            <div className="flex items-center gap-4">
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="valueType"
+                  checked={creating.valueType === 'text'}
+                  onChange={() =>
+                    setCreating((s) => ({ ...s, valueType: 'text' }))
+                  }
+                />
+                Text
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="valueType"
+                  checked={creating.valueType === 'select'}
+                  onChange={() =>
+                    setCreating((s) => {
+                      const key = s.key.trim();
+                      const presets = KNOWN_KEY_OPTIONS[key];
+                      const optionsText =
+                        presets?.length ? presets.join(',') : s.optionsText || '';
+                      const first = presets?.[0] || s.value || '';
+                      return {
+                        ...s,
+                        valueType: 'select',
+                        optionsText,
+                        value: s.value || first,
+                      };
+                    })
+                  }
+                />
+                Select
+              </label>
+            </div>
           </div>
-        ) : (
-          <div className="space-y-3">
+
+          {/* Value input: text or select */}
+          {creating.valueType === 'text' ? (
             <div className="grid md:grid-cols-2 gap-3">
               <input
                 className="border rounded px-3 py-2"
-                placeholder="Options (comma-separated), e.g. INCLUDED,ADDED,NONE"
-                value={creating.optionsText}
+                placeholder="value (string)"
+                value={creating.value}
                 onChange={(e) =>
-                  setCreating((s) => ({
-                    ...s,
-                    optionsText: e.target.value,
-                  }))
+                  setCreating((s) => ({ ...s, value: e.target.value }))
                 }
+                required
               />
-
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -289,116 +265,143 @@ export default function SettingsAdminPage() {
                 Public (readable without admin)
               </label>
             </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid md:grid-cols-2 gap-3">
+                <input
+                  className="border rounded px-3 py-2"
+                  placeholder="Options (comma-separated), e.g. INCLUDED,ADDED,NONE"
+                  value={creating.optionsText}
+                  onChange={(e) =>
+                    setCreating((s) => ({
+                      ...s,
+                      optionsText: e.target.value,
+                    }))
+                  }
+                />
 
-            <div className="grid md:grid-cols-2 gap-3 items-center">
-              <div className="text-sm text-gray-600">
-                Preview/select a value:
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={creating.isPublic}
+                    onChange={(e) =>
+                      setCreating((s) => ({ ...s, isPublic: e.target.checked }))
+                    }
+                  />
+                  Public (readable without admin)
+                </label>
               </div>
-              <select
-                className="border rounded px-3 py-2"
-                value={creating.value}
-                onChange={(e) =>
-                  setCreating((s) => ({ ...s, value: e.target.value }))
-                }
-                required
-              >
-                <option value="" disabled>
-                  {optionsArray.length ? 'Select…' : 'Add options above…'}
-                </option>
-                {optionsArray.map((opt) => (
-                  <option key={opt} value={opt}>
-                    {opt}
+
+              <div className="grid md:grid-cols-2 gap-3 items-center">
+                <div className="text-sm text-gray-600">
+                  Preview/select a value:
+                </div>
+                <select
+                  className="border rounded px-3 py-2"
+                  value={creating.value}
+                  onChange={(e) =>
+                    setCreating((s) => ({ ...s, value: e.target.value }))
+                  }
+                  required
+                >
+                  <option value="" disabled>
+                    {optionsArray.length ? 'Select…' : 'Add options above…'}
                   </option>
-                ))}
-              </select>
+                  {optionsArray.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Optional meta JSON */}
-        <input
-          className="border rounded px-3 py-2 w-full"
-          placeholder='meta (JSON, e.g. {"help":"shown in UI"})'
-          value={creating.meta}
-          onChange={(e) =>
-            setCreating((s) => ({ ...s, meta: e.target.value }))
-          }
-        />
-
-        <div>
-          <button
-            type="submit"
-            className="bg-black text-white px-4 py-2 rounded disabled:opacity-50"
-            disabled={
-              !creating.key ||
-              !creating.value ||
-              (creating.valueType === 'select' && optionsArray.length === 0)
+          {/* Optional meta JSON */}
+          <input
+            className="border rounded px-3 py-2 w-full"
+            placeholder='meta (JSON, e.g. {"help":"shown in UI"})'
+            value={creating.meta}
+            onChange={(e) =>
+              setCreating((s) => ({ ...s, meta: e.target.value }))
             }
-          >
-            + Create
-          </button>
-        </div>
-      </form>
+          />
 
-      {/* List */}
-      <div className="border rounded">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="text-left p-3 w-[28%]">Key</th>
-              <th className="text-left p-3 w-[36%]">Value</th>
-              <th className="text-left p-3 w-[16%]">Public</th>
-              <th className="text-left p-3 w-[12%]">Updated</th>
-              <th className="text-right p-3 w-[8%]">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
+          <div>
+            <button
+              type="submit"
+              className="bg-black text-white px-4 py-2 rounded disabled:opacity-50"
+              disabled={
+                !creating.key ||
+                !creating.value ||
+                (creating.valueType === 'select' && optionsArray.length === 0)
+              }
+            >
+              + Create
+            </button>
+          </div>
+        </form>
+
+        {/* List */}
+        <div className="border rounded">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50">
               <tr>
-                <td colSpan={5} className="p-4">
-                  Loading…
-                </td>
+                <th className="text-left p-3 w-[28%]">Key</th>
+                <th className="text-left p-3 w-[36%]">Value</th>
+                <th className="text-left p-3 w-[16%]">Public</th>
+                <th className="text-left p-3 w-[12%]">Updated</th>
+                <th className="text-right p-3 w-[8%]">Actions</th>
               </tr>
-            ) : filtered.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="p-4">
-                  No settings found.
-                </td>
-              </tr>
-            ) : (
-              filtered.map((r) => (
-                <tr key={r.id} className="border-t">
-                  <td className="p-3 font-mono text-xs md:text-sm break-all">
-                    {r.key}
-                  </td>
-                  <td className="p-3">
-                    <InlineText value={r.value} onSave={(v) => update(r.id, { value: v })} />
-                  </td>
-                  <td className="p-3">
-                    <input
-                      type="checkbox"
-                      checked={!!r.isPublic}
-                      onChange={(e) => update(r.id, { isPublic: e.target.checked })}
-                    />
-                  </td>
-                  <td className="p-3 text-gray-500">
-                    {r.updatedAt ? new Date(r.updatedAt).toLocaleString() : '—'}
-                  </td>
-                  <td className="p-3 text-right">
-                    <button
-                      className="text-red-600 hover:underline"
-                      onClick={() => remove(r.id)}
-                    >
-                      Delete
-                    </button>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="p-4">
+                    Loading…
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+              ) : filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="p-4">
+                    No settings found.
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((r) => (
+                  <tr key={r.id} className="border-t">
+                    <td className="p-3 font-mono text-xs md:text-sm break-all">
+                      {r.key}
+                    </td>
+                    <td className="p-3">
+                      <InlineText value={r.value} onSave={(v) => update(r.id, { value: v })} />
+                    </td>
+                    <td className="p-3">
+                      <input
+                        type="checkbox"
+                        checked={!!r.isPublic}
+                        onChange={(e) => update(r.id, { isPublic: e.target.checked })}
+                      />
+                    </td>
+                    <td className="p-3 text-gray-500">
+                      {r.updatedAt ? new Date(r.updatedAt).toLocaleString() : '—'}
+                    </td>
+                    <td className="p-3 text-right">
+                      <button
+                        className="text-red-600 hover:underline"
+                        onClick={() => remove(r.id)}
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
-    </div>
+    </SiteLayout>
   );
 }
 

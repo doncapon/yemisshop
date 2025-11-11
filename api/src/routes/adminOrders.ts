@@ -1,147 +1,116 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { requireAdmin } from '../middleware/auth.js';
-import { logOrderActivity } from '../services/activity.service.js';
+import { logOrderActivityTx } from '../services/activity.service.js';
 import { notifySuppliersForOrder } from '../services/notify.js';
 import { syncProductInStockCacheTx } from '../services/inventory.service.js';
 
 const router = Router();
 
-/* =========================================================
-   POST /api/admin/orders/:id/cancel
-   - Admins can cancel any order
-   - Idempotent restock (won’t restock twice)
-   - After incrementing offers, set inStock=true where availableQty>0
-   - Recompute product/variant inStock caches from offers
-========================================================= */
-router.post('/:id/cancel', requireAdmin, async (req, res, next) => {
-  try {
-    const orderId = String(req.params.id);
 
-    // Minimal order + items for restock & status check
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      select: {
-        id: true,
-        userId: true,
-        status: true,
-        items: {
-          select: {
-            id: true,
-            productId: true,
-            variantId: true,
-            quantity: true,
-            supplierOfferId: true, // name may be chosenSupplierOfferId in your schema; adjust if needed
+const ACT = {
+  STATUS_CHANGE: 'STATUS_CHANGE',
+} as const;
+
+// POST /api/admin/orders/:orderId/cancel
+router.post('/:orderId/cancel', requireAdmin, async (req, res) => {
+  const { orderId } = req.params;
+
+  try {
+    const updated = await prisma.$transaction(async (tx: any) => {
+      // 1) Load order with items + payments
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: {
+          items: {
+            select: {
+              id: true,
+              productId: true,
+              variantId: true,
+              quantity: true,
+              chosenSupplierOfferId: true,
+            },
+          },
+          payments: {
+            select: { status: true },
           },
         },
-      },
-    });
+      });
 
-    if (!order) return res.status(404).json({ error: 'Order not found' });
+      if (!order) {
+        throw new Error('Order not found');
+      }
 
-    const terminal = new Set(['CANCELED', 'COMPLETED']);
-    if (terminal.has(order.status)) {
-      return res.status(400).json({ error: `Order is already ${order.status}` });
-    }
+      // Do not cancel if already canceled
+      if (order.status === 'CANCELED') {
+        return order;
+      }
 
-    // Idempotence: if we already restocked once, do not restock again
-    const alreadyRestocked = await prisma.orderActivity.findFirst({
-      where: { orderId, type: 'ORDER_RESTOCKED' as any },
-      select: { id: true },
-    });
+      // Block cancel if any successful payment exists
+      const hasPaid = (order.payments || []).some((p: { status: any; }) => {
+        const s = String(p.status || '').toUpperCase();
+        return ['PAID', 'SUCCESS', 'SUCCESSFUL', 'VERIFIED', 'COMPLETED'].includes(s);
+      });
+      if (hasPaid || ['PAID', 'COMPLETED'].includes(order.status)) {
+        throw new Error('Cannot cancel an order that has been paid/completed.');
+      }
 
-    let restockMeta:
-      | {
-          increments: Array<{ offerId: string; qty: number }>;
-          affectedProducts: string[];
-        }
-      | null = null;
+      // 2) Restock allocated supplier offers (if any)
+      for (const it of order.items) {
+        const qty = Number(it.quantity || 0);
+        if (!it.chosenSupplierOfferId || !qty || qty <= 0) continue;
 
-    const previousStatus = order.status;
+        // increment stock back
+        const updatedOffer = await tx.supplierOffer.update({
+          where: { id: it.chosenSupplierOfferId },
+          data: { availableQty: { increment: qty } },
+          select: { id: true, availableQty: true },
+        });
 
-    await prisma.$transaction(async (tx: any) => {
-      if (!alreadyRestocked) {
-        const incByOffer = new Map<string, number>();
-        const affectedProducts = new Set<string>();
-
-        for (const it of order.items) {
-          affectedProducts.add(it.productId);
-          const offerId = (it as any).supplierOfferId; // or chosenSupplierOfferId if that’s your schema
-          if (offerId) {
-            incByOffer.set(offerId, (incByOffer.get(offerId) || 0) + Number(it.quantity || 0));
-          }
-        }
-
-        // Apply increments
-        const touchedOfferIds: string[] = [];
-        for (const [offerId, qty] of incByOffer.entries()) {
-          if (qty > 0) {
-            await tx.supplierOffer.updateMany({
-              where: { id: offerId },
-              data: { availableQty: { increment: qty } },
-            });
-            touchedOfferIds.push(offerId);
-          }
-        }
-
-        // Any touched offer with availableQty > 0 should be inStock=true
-        if (touchedOfferIds.length > 0) {
-          await tx.supplierOffer.updateMany({
-            where: { id: { in: touchedOfferIds }, availableQty: { gt: 0 } },
+        // ensure inStock flag is correct
+        if (Number(updatedOffer.availableQty) > 0) {
+          await tx.supplierOffer.update({
+            where: { id: updatedOffer.id },
             data: { inStock: true },
           });
         }
 
-        // Recompute product caches based on offers (sum(active.availableQty) > 0)
-        for (const pid of affectedProducts) {
-          await syncProductInStockCacheTx(tx, pid);
-        }
-
-        restockMeta = {
-          increments: Array.from(incByOffer.entries()).map(([offerId, qty]) => ({ offerId, qty })),
-          affectedProducts: Array.from(affectedProducts),
-        };
+        // sync product cache
+        await syncProductInStockCacheTx(tx, it.productId);
       }
 
-      // Update status to CANCELED (idempotent)
-      if (previousStatus !== 'CANCELED') {
-        await tx.order.update({
-          where: { id: orderId },
-          data: { status: 'CANCELED' },
-        });
-      }
-    });
-
-    // Post-commit activities (best-effort)
-    try {
-      await logOrderActivity(orderId, 'ORDER_CANCELED' as any, 'Order was canceled', {
-        previousStatus,
-        canceledBy: 'ADMIN',
+      // 3) Mark order canceled
+      const canceled = await tx.order.update({
+        where: { id: orderId },
+        data: { status: 'CANCELED' },
       });
 
-      if (!alreadyRestocked && restockMeta) {
-        const { increments, affectedProducts } = restockMeta;
-        await logOrderActivity(
-          orderId,
-          'ORDER_RESTOCKED' as any,
-          'Inventory returned to supplier offers',
-          { increments, affectedProducts }
-        );
-      }
-    } catch {
-      /* swallow log errors */
-    }
+      // 4) Log activity
+      await logOrderActivityTx(
+        tx,
+        orderId,
+        ACT.STATUS_CHANGE as any,
+        'Order canceled by admin',
+      );
 
-    res.json({
-      id: orderId,
-      status: 'CANCELED',
-      restocked: !alreadyRestocked,
-      restock: restockMeta ?? undefined,
+      return canceled;
     });
-  } catch (e) {
-    next(e);
+
+    return res.json({ ok: true, data: updated });
+  } catch (e: any) {
+    console.error('Admin cancel order failed:', e);
+    const msg = e?.message || 'Failed to cancel order';
+    // If we intentionally threw a user-facing error, send 400
+    if (
+      msg.includes('Cannot cancel an order') ||
+      msg.includes('Order not found')
+    ) {
+      return res.status(400).json({ error: msg });
+    }
+    return res.status(500).json({ error: msg });
   }
 });
+
 
 /* =========================================================
    GET /api/admin/orders/:orderId/activities

@@ -59,7 +59,7 @@ export default function App() {
   return (
     <ModalProvider>
       <div className="min-h-screen flex flex-col">
-        <Navbar />
+        
         <main className="w-full px-4 md:px-8 flex-1 bg-primary-100">
           <div className="max-w-7xl mx-auto">
             <Routes>

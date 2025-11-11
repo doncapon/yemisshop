@@ -27,6 +27,7 @@ import { ModerationGrid } from '../../components/admin/ModerationGrid.js';
 import { ManageProducts } from '../../components/admin/ManageProducts.js';
 import { TransactionRow } from '../../components/admin/TransactionRow.js';
 import { CatalogSettingsSection } from '../../components/admin/CatalogSettingSection.js';
+import SiteLayout from '../../layouts/SiteLayout.js';
 
 const staleTImeInSecs = 300_000;
 
@@ -1406,6 +1407,7 @@ export default function AdminDashboard() {
 
   /* ---------------- Render ---------------- */
   return (
+    <SiteLayout>
     <div
       className="max-w-[1400px] mx-auto px-4 md:px-6 py-6"
       onClickCapture={stopHashNav}
@@ -2050,6 +2052,7 @@ export default function AdminDashboard() {
         )}
       </div>
     </div>
+    </SiteLayout>
   );
 }
 
