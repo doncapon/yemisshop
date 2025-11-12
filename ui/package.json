@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",              // ⬅️ remove tsc from build
-    "typecheck": "tsc --noEmit",         // ⬅️ CI-only type check
+    "build": "vite build",          
+    "typecheck": "tsc --noEmit",       
     "lint": "eslint .",
     "preview": "vite preview"
   },
