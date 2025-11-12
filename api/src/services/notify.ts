@@ -1,7 +1,7 @@
 // api/src/services/notify.ts
 import { prisma } from '../lib/prisma.js';
 import { Prisma } from '@prisma/client';
-import { transporter } from '../lib/email.js';
+import { sendMail } from '../lib/email.js';
 
 
 /* ----------------------------- Helpers ----------------------------- */
@@ -455,7 +455,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     `You can view your order and receipt in your dashboard.`,
   ].join('\n');
 
-  await transporter.sendMail({
+  await sendMail({
     to,
     subject,
     html,
