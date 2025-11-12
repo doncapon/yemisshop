@@ -128,6 +128,8 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
-app.listen(env.port,'0.0.0.0', () => {
-  console.log(`API on http://0.0.0.0::${env.port}`);
+const port = Number(process.env.PORT ?? 4000);
+const host = '0.0.0.0';
+app.listen(port, host, () => {
+  console.log(`API on http://${host}:${port}`);
 });
