@@ -137,6 +137,11 @@ export async function sendVerifyEmail(to: string, verifyUrl: string) {
   });
 }
 
+export async function sendMail(opts: import('nodemailer').SendMailOptions) {
+  if (!opts.from) opts.from = from; // default sender we computed earlier
+  return safeSend(opts);
+}
+
 /**
  * Send password reset/forgot email with a reset link.
  * Your routes call: sendResetorForgotPasswordEmail(to, resetUrl, subject?, introText?)

@@ -1,8 +1,10 @@
 // api/src/services/admin.service.ts
-import { Prisma, PrismaClient, PaymentStatus } from '@prisma/client';
+import { PrismaClient, $Enums } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import type { Role } from '../types/role.js';
 import { prisma } from '../lib/prisma.js';
 import { startOfDay, addDays } from 'date-fns';
+import { Decimal } from '@prisma/client/runtime/binary';
 
 /* ------------------------------------------------------------------ */
 /* Types returned by the service                                       */
@@ -18,7 +20,7 @@ export type AdminUser = {
 export type AdminProduct = {
   id: string;
   title: string;
-  price: Prisma.Decimal | number | string;
+  price: Decimal | number | string;
   status: string;
   imagesJson?: string[];
   createdAt?: Date | string;
@@ -28,7 +30,7 @@ export type AdminPayment = {
   id: string;
   orderId: string;
   userEmail?: string | null;
-  amount: Prisma.Decimal | number | string;
+  amount: Decimal | number | string;
   status: string;
   provider?: string | null;
   channel?: string | null;
@@ -59,11 +61,11 @@ export async function computeProfitForWindow(
 ): Promise<ProfitBreakdown> {
   const payments = await prismaClient.payment.findMany({
     where: {
-      status: { in: [PaymentStatus.PAID, PaymentStatus.REFUNDED] },
+      status: { in: [$Enums.PaymentStatus.PAID, $Enums.PaymentStatus.REFUNDED] },
       OR: [
         // PAID effective date
         {
-          status: PaymentStatus.PAID,
+          status: $Enums.PaymentStatus.PAID,
           OR: [
             { paidAt: { gte: from, lte: to } },
             // fallback: treat createdAt as paidAt if missing
@@ -72,7 +74,7 @@ export async function computeProfitForWindow(
         },
         // REFUNDED effective date
         {
-          status: PaymentStatus.REFUNDED,
+          status: $Enums.PaymentStatus.REFUNDED,
           OR: [
             { refundedAt: { gte: from, lte: to } },
             { refundedAt: null, createdAt: { gte: from, lte: to } },
@@ -92,13 +94,13 @@ export async function computeProfitForWindow(
   for (const p of payments) {
     const amt = N(p.amount);
     const fee = N(p.feeAmount);
-    if (p.status === PaymentStatus.PAID) {
+    if (p.status === $Enums.PaymentStatus.PAID) {
       revenuePaid += amt;
       gatewayFees += fee;
       if (p.orderId) {
         paidByOrder.set(p.orderId, N(paidByOrder.get(p.orderId)) + amt);
       }
-    } else if (p.status === PaymentStatus.REFUNDED) {
+    } else if (p.status === $Enums.PaymentStatus.REFUNDED) {
       refunds += amt;
       if (p.orderId) {
         refundedByOrder.set(
@@ -144,7 +146,7 @@ export async function computeProfitForWindow(
   });
 
   if (commsRows.length) {
-    commsNet = commsRows.reduce((s, r) => s + N(r.amount), 0);
+    commsNet = commsRows.reduce((s: number, r: { amount: any; }) => s + N(r.amount), 0);
   } else if (orderIds.length) {
     // Fallback: pro-rated serviceFee
     const svcOrders = await prismaClient.order.findMany({
