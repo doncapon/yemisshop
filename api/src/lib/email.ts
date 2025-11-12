@@ -5,7 +5,11 @@ import nodemailer from 'nodemailer';
  * Flexible mail transport for dev/prod.
  * - STRATEGY: 'ssl' (465) or 'starttls' (587)
  * - ALLOW_SELF_SIGNED: dev-only escape hatch for corporate proxies/AV that MITM TLS
+ * - In production on Railway we SKIP transporter.verify() to avoid port blocks/timeouts.
  */
+
+const NODE_ENV = process.env.NODE_ENV ?? 'production';
+const IS_PROD = NODE_ENV === 'production';
 
 const STRATEGY = (process.env.SMTP_STRATEGY || 'starttls').toLowerCase(); // 'ssl' | 'starttls'
 const ALLOW_SELF_SIGNED = String(process.env.SMTP_ALLOW_SELF_SIGNED || 'false') === 'true';
@@ -18,37 +22,96 @@ const pass = (process.env.SMTP_PASS || '').replace(/\s+/g, '');
 const fromEnv = process.env.SMTP_FROM || process.env.EMAIL_FROM || user || 'no-reply@dayspring.com';
 const from = fromEnv;
 
-const base: any = {
-  host,
-  auth: user && pass ? { user, pass } : undefined,
-};
+// If SMTP creds are missing, we’ll fall back to a dev-safe transport (stream) when not in prod
+const HAS_SMTP_CREDS = Boolean(user && pass);
+const DEV_FALLBACK = !IS_PROD && !HAS_SMTP_CREDS;
 
-if (STRATEGY === 'ssl') {
-  base.port = Number(process.env.SMTP_PORT || 465);
-  base.secure = true;
+let transporter: nodemailer.Transporter;
+
+if (DEV_FALLBACK) {
+  // Dev-only: don’t try to reach the network; render the email to buffer/console.
+  transporter = nodemailer.createTransport({
+    streamTransport: true,
+    buffer: true,
+    newline: 'unix',
+  });
+  // eslint-disable-next-line no-console
+  console.log('[mail] Using DEV fallback transport (stream). No SMTP creds set.');
 } else {
-  base.port = Number(process.env.SMTP_PORT || 587);
-  base.secure = false; // STARTTLS
+  const base: any = {
+    host,
+    auth: HAS_SMTP_CREDS ? { user, pass } : undefined,
+    // Keep connections short-lived; Railway commonly blocks SMTP ports on hobby plans.
+    connectionTimeout: Number(process.env.SMTP_CONN_TIMEOUT ?? 3000),
+    greetingTimeout: Number(process.env.SMTP_GREET_TIMEOUT ?? 3000),
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT ?? 5000),
+  };
+
+  if (STRATEGY === 'ssl') {
+    base.port = Number(process.env.SMTP_PORT || 465);
+    base.secure = true;
+  } else {
+    base.port = Number(process.env.SMTP_PORT || 587);
+    base.secure = false; // STARTTLS
+    base.requireTLS = true;
+  }
+
+  base.tls = {
+    servername: host,
+    ...(ALLOW_SELF_SIGNED ? { rejectUnauthorized: false } : {}),
+  };
+
+  transporter = nodemailer.createTransport(base);
+
+  // In PRODUCTION: do NOT verify on boot (avoid blocking startup on Railway)
+  // In DEV: verify is helpful but non-fatal.
+  if (!IS_PROD) {
+    transporter
+      .verify()
+      .then(() => {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[mail] SMTP OK host=${host} port=${base.port} secure=${base.secure} strategy=${STRATEGY} allowSelfSigned=${ALLOW_SELF_SIGNED}`
+        );
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.log('[mail] SMTP verify skipped:', err?.message || err);
+      });
+  }
 }
 
-base.tls = {
-  servername: host,
-  ...(ALLOW_SELF_SIGNED ? { rejectUnauthorized: false } : {}),
-};
+// Small helper so routes can check if real SMTP is available
+export const canSendRealEmail = !DEV_FALLBACK && HAS_SMTP_CREDS;
 
-export const transporter = nodemailer.createTransport(base);
+async function safeSend(options: nodemailer.SendMailOptions) {
+  try {
+    const info = await transporter.sendMail(options);
 
-// Log SMTP status at startup (non-fatal if it fails; send() will still throw)
-transporter
-  .verify()
-  .then(() => {
-    console.log(
-      `[mail] SMTP OK host=${host} port=${base.port} secure=${base.secure} strategy=${STRATEGY} allowSelfSigned=${ALLOW_SELF_SIGNED}`
-    );
-  })
-  .catch((err) => {
-    console.error('[mail] SMTP verify failed:', err?.message || err);
-  });
+    if (DEV_FALLBACK) {
+      // Rendered email in dev (no network). Dump a short preview.
+      const rendered = (info as any).message?.toString?.();
+      // eslint-disable-next-line no-console
+      console.log('[mail][dev] rendered message:\n', rendered?.slice(0, 800) ?? info);
+    } else {
+      // eslint-disable-next-line no-console
+      console.log('[mail] sent', {
+        to: options.to,
+        subject: options.subject,
+        messageId: (info as any).messageId,
+        accepted: (info as any).accepted,
+        rejected: (info as any).rejected,
+      });
+    }
+
+    return info;
+  } catch (err: any) {
+    // Don’t crash the server; let callers handle failures per use-case
+    // eslint-disable-next-line no-console
+    console.error('[mail] send failed:', err?.message || err);
+    throw err;
+  }
+}
 
 /**
  * Send verification email with a link (JWT or DB token URL).
@@ -66,18 +129,11 @@ export async function sendVerifyEmail(to: string, verifyUrl: string) {
     </div>
   `;
 
-  const info = await transporter.sendMail({
+  return safeSend({
     from,
     to,
     subject: 'Verify your email — DaySpring',
     html,
-  });
-
-  console.log('[mail] verify sent', {
-    to,
-    messageId: info.messageId,
-    accepted: info.accepted,
-    rejected: info.rejected,
   });
 }
 
@@ -105,18 +161,11 @@ export async function sendResetorForgotPasswordEmail(
     </div>
   `;
 
-  const info = await transporter.sendMail({
+  return safeSend({
     from,
     to,
     subject,
     html,
-  });
-
-  console.log('[mail] reset sent', {
-    to,
-    messageId: info.messageId,
-    accepted: info.accepted,
-    rejected: info.rejected,
   });
 }
 
