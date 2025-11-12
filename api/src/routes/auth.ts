@@ -14,7 +14,7 @@ import {  requireAuth } from '../middleware/auth.js';
 
 // ---------------- ENV / constants ----------------
 const APP_URL = process.env.APP_URL || 'http://localhost:5173';
-const API_BASE_URL = process.env.API_BASE_URL || process.env.API_URL || 'http://localhost:4000';
+const API_BASE_URL = process.env.API_URL || 'http://localhost:4000';
 const EMAIL_JWT_SECRET = process.env.EMAIL_JWT_SECRET || 'CHANGE_ME_DEV_SECRET';
 
 // ---------------- Schemas ----------------
