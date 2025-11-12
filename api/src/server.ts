@@ -46,8 +46,8 @@ const app = express();
 
 /* 1) CORS first */
 const allowedOrigins = [
-  'http://localhost:5173',
   process.env.APP_URL ?? '',
+  'http://localhost:5173',
 ].filter(Boolean);
 
 app.use(

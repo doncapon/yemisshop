@@ -13,7 +13,7 @@ import { signJwt, signAccessJwt } from '../lib/jwt.js';
 import {  requireAuth } from '../middleware/auth.js';
 
 // ---------------- ENV / constants ----------------
-const WEB_BASE_URL = process.env.WEB_BASE_URL || 'http://localhost:5173';
+const APP_URL = process.env.APP_URL || 'http://localhost:5173';
 const API_BASE_URL = process.env.API_BASE_URL || process.env.API_URL || 'http://localhost:4000';
 const EMAIL_JWT_SECRET = process.env.EMAIL_JWT_SECRET || 'CHANGE_ME_DEV_SECRET';
 
@@ -327,7 +327,7 @@ router.get('/verify-email', async (req, res) => {
       });
     }
 
-    const ui = `${WEB_BASE_URL}/verify?token=${encodeURIComponent(raw)}&e=${encodeURIComponent(email)}&ok=1`;
+    const ui = `${APP_URL}/verify?token=${encodeURIComponent(raw)}&e=${encodeURIComponent(email)}&ok=1`;
     return res.redirect(ui);
   } catch {
     // 2) Fallback to legacy DB tokens (older emails)
@@ -340,7 +340,7 @@ router.get('/verify-email', async (req, res) => {
     });
 
     if (!legacy) {
-      const ui = `${WEB_BASE_URL}/verify?token=${encodeURIComponent(raw)}&e=&err=token`;
+      const ui = `${APP_URL}/verify?token=${encodeURIComponent(raw)}&e=&err=token`;
       return res.redirect(ui);
     }
 
@@ -368,7 +368,7 @@ router.get('/verify-email', async (req, res) => {
       });
     }
 
-    const ui = `${WEB_BASE_URL}/verify?token=${encodeURIComponent(raw)}&e=${encodeURIComponent(email)}&ok=1`;
+    const ui = `${APP_URL}/verify?token=${encodeURIComponent(raw)}&e=${encodeURIComponent(email)}&ok=1`;
     return res.redirect(ui);
   }
 });
@@ -431,7 +431,7 @@ router.post('/forgot-password', async (req, res, next) => {
       data: { resetPasswordToken: token, resetPasswordExpiresAt: expires },
     });
 
-    const resetUrl = `${WEB_BASE_URL}/reset-password?token=${encodeURIComponent(token)}`;
+    const resetUrl = `${APP_URL}/reset-password?token=${encodeURIComponent(token)}`;
     await sendResetorForgotPasswordEmail(user.email, resetUrl, 'Reset your DaySpring password', 'Click the link to reset your password:');
 
     res.json({ ok: true });
