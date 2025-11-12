@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "serve -s dist -l tcp://0.0.0.0:$PORT"
+    "start": "serve -s dist -l tcp://0.0.0.0:${PORT:-8080}"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
