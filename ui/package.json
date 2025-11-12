@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "vite build",              // ⬅️ remove tsc from build
+    "typecheck": "tsc --noEmit",         // ⬅️ CI-only type check
     "lint": "eslint .",
-    "preview": "vite preview",
-    "typecheck": "tsc --noEmit" 
+    "preview": "vite preview"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
