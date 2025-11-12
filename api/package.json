@@ -8,6 +8,8 @@
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "postinstall": "prisma generate",
     "prestart": "echo '--- PWD ---' && pwd && echo '--- ls -la ---' && ls -la && echo '--- ls -R dist ---' && ls -R dist || true",
     "seed": "tsx prisma/seed.ts"
   },
