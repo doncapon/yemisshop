@@ -47,7 +47,6 @@ model User {
   middleName  String?
   lastName    String
   phone       String?
-  otps        Otp[]
   dateOfBirth DateTime?
 
   addressId         String?  @unique
@@ -551,17 +550,17 @@ model Wishlist {
 }
 
 model Otp {
-  id         String    @id @default(cuid())
-  userId     String
+  id         String   @id @default(cuid())
+  userId     String?  // <-- add this if missing
+  identifier String?
   codeHash   String
+  attempts   Int       @default(0)
+  channel    String?
   expiresAt  DateTime
   consumedAt DateTime?
-  attempts   Int       @default(0)
   createdAt  DateTime  @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, expiresAt])
+  @@index([identifier, createdAt])
 }
 
 model EmailVerifyToken {

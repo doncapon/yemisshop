@@ -91,7 +91,10 @@ CREATE TABLE "Order" (
     "shippingBreakdownJson" JSONB,
     "status" TEXT NOT NULL DEFAULT 'PENDING',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "serviceFee" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "serviceFeeBase" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "serviceFeeComms" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "serviceFeeGateway" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "serviceFeeTotal" DECIMAL(10,2) NOT NULL DEFAULT 0,
 
     CONSTRAINT "Order_pkey" PRIMARY KEY ("id")
 );
@@ -340,11 +343,13 @@ CREATE TABLE "Wishlist" (
 -- CreateTable
 CREATE TABLE "Otp" (
     "id" TEXT NOT NULL,
-    "userId" TEXT NOT NULL,
+    "userId" TEXT,
+    "identifier" TEXT,
     "codeHash" TEXT NOT NULL,
+    "attempts" INTEGER NOT NULL DEFAULT 0,
+    "channel" TEXT,
     "expiresAt" TIMESTAMP(3) NOT NULL,
     "consumedAt" TIMESTAMP(3),
-    "attempts" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Otp_pkey" PRIMARY KEY ("id")
@@ -594,7 +599,7 @@ CREATE INDEX "Wishlist_userId_idx" ON "Wishlist"("userId");
 CREATE INDEX "Wishlist_productId_idx" ON "Wishlist"("productId");
 
 -- CreateIndex
-CREATE INDEX "Otp_userId_expiresAt_idx" ON "Otp"("userId", "expiresAt");
+CREATE INDEX "Otp_identifier_createdAt_idx" ON "Otp"("identifier", "createdAt");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "EmailVerifyToken_token_key" ON "EmailVerifyToken"("token");
@@ -736,9 +741,6 @@ ALTER TABLE "Wishlist" ADD CONSTRAINT "Wishlist_userId_fkey" FOREIGN KEY ("userI
 
 -- AddForeignKey
 ALTER TABLE "Wishlist" ADD CONSTRAINT "Wishlist_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "Otp" ADD CONSTRAINT "Otp_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "EmailVerifyToken" ADD CONSTRAINT "EmailVerifyToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;

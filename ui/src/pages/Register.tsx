@@ -12,37 +12,37 @@ type RegisterResponse = {
 
 type Country = { name: string; code: string; dial: string };
 const COUNTRIES: Country[] = [
-  { name: 'Nigeria', code: 'NG', dial: '234' },
-  { name: 'United States', code: 'US', dial: '1' },
-  { name: 'United Kingdom', code: 'GB', dial: '44' },
-  { name: 'Canada', code: 'CA', dial: '1' },
-  { name: 'Ghana', code: 'GH', dial: '233' },
-  { name: 'Kenya', code: 'KE', dial: '254' },
-  { name: 'South Africa', code: 'ZA', dial: '27' },
-  { name: 'India', code: 'IN', dial: '91' },
-  { name: 'Ireland', code: 'IE', dial: '353' },
-  { name: 'Germany', code: 'DE', dial: '49' },
-  { name: 'France', code: 'FR', dial: '33' },
-  { name: 'Finland', code: 'FI', dial: '358' },
-  { name: 'Spain', code: 'ES', dial: '34' },
-  { name: 'Italy', code: 'IT', dial: '39' },
-  { name: 'Netherlands', code: 'NL', dial: '31' },
-  { name: 'Sweden', code: 'SE', dial: '46' },
-  { name: 'Norway', code: 'NO', dial: '47' },
-  { name: 'Denmark', code: 'DK', dial: '45' },
-  { name: 'Switzerland', code: 'CH', dial: '41' },
-  { name: 'Brazil', code: 'BR', dial: '55' },
-  { name: 'Mexico', code: 'MX', dial: '52' },
-  { name: 'Australia', code: 'AU', dial: '61' },
+  { name: 'Nigeria', code: 'NG', dial: '+234' },
+  { name: 'United States', code: 'US', dial: '+1' },
+  { name: 'United Kingdom', code: 'GB', dial: '+44' },
+  { name: 'Canada', code: 'CA', dial: '+1' },
+  { name: 'Ghana', code: 'GH', dial: '+233' },
+  { name: 'Kenya', code: 'KE', dial: '+254' },
+  { name: 'South Africa', code: 'ZA', dial: '+27' },
+  { name: 'India', code: 'IN', dial: '+91' },
+  { name: 'Ireland', code: 'IE', dial: '+353' },
+  { name: 'Germany', code: 'DE', dial: '+49' },
+  { name: 'France', code: 'FR', dial: '+33' },
+  { name: 'Finland', code: 'FI', dial: '+358' },
+  { name: 'Spain', code: 'ES', dial: '+34' },
+  { name: 'Italy', code: 'IT', dial: '+39' },
+  { name: 'Netherlands', code: 'NL', dial: '+31' },
+  { name: 'Sweden', code: 'SE', dial: '+46' },
+  { name: 'Norway', code: 'NO', dial: '+47' },
+  { name: 'Denmark', code: 'DK', dial: '+45' },
+  { name: 'Switzerland', code: 'CH', dial: '+41' },
+  { name: 'Brazil', code: 'BR', dial: '+55' },
+  { name: 'Mexico', code: 'MX', dial: '+52' },
+  { name: 'Australia', code: 'AU', dial: '+61' },
   { name: 'New Zealand', code: 'NZ', dial: '64' },
-  { name: 'UAE', code: 'AE', dial: '971' },
-  { name: 'Saudi Arabia', code: 'SA', dial: '966' },
-  { name: 'Turkey', code: 'TR', dial: '90' },
-  { name: 'Egypt', code: 'EG', dial: '20' },
-  { name: 'Morocco', code: 'MA', dial: '212' },
-  { name: 'Côte d’Ivoire', code: 'CI', dial: '225' },
-  { name: 'Cameroon', code: 'CM', dial: '237' },
-  { name: 'Ethiopia', code: 'ET', dial: '251' },
+  { name: 'UAE', code: 'AE', dial: '+971' },
+  { name: 'Saudi Arabia', code: 'SA', dial: '+966' },
+  { name: 'Turkey', code: 'TR', dial: '+90' },
+  { name: 'Egypt', code: 'EG', dial: '+20' },
+  { name: 'Morocco', code: 'MA', dial: '+212' },
+  { name: 'Côte d’Ivoire', code: 'CI', dial: '+225' },
+  { name: 'Cameroon', code: 'CM', dial: '+237' },
+  { name: 'Ethiopia', code: 'ET', dial: '+251' },
 ];
 
 export default function Register() {
@@ -102,7 +102,7 @@ export default function Register() {
 
     const localDigits = form.localPhone.replace(/\D/g, '');
     if (localDigits && localDigits.length < 6) return 'Please enter a valid phone number';
-    if (!COUNTRIES.some((c) => c.dial === form.countryDial)) return 'Please select a valid country code';
+    // if (!COUNTRIES.some((c) => c.dial === form.countryDial)) return 'Please select a valid country code';
 
     if (!form.dateOfBirth) return 'Please select your date of birth';
     if (!/^\d{4}-\d{2}-\d{2}$/.test(form.dateOfBirth)) {
@@ -304,7 +304,7 @@ export default function Register() {
                     >
                       {COUNTRIES.map((c) => (
                         <option key={c.code} value={c.dial}>
-                          {c.name} (+{c.dial})
+                          {c.name} ({c.dial})
                         </option>
                       ))}
                     </select>
