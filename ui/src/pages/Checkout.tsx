@@ -638,7 +638,9 @@ export default function Checkout() {
         setEmailOk(flags.emailOk);
         setPhoneOk(flags.phoneOk);
 
-        if (!flags.emailOk || !flags.phoneOk) {
+        if (!flags.emailOk
+          //  || !flags.phoneOk
+          ) {
           setShowNotVerified(true);
         }
 
@@ -777,13 +779,17 @@ export default function Checkout() {
         throw new Error(
           'Checking your account verification…'
         );
-      if (!emailOk || !phoneOk) {
-        const msg =
-          !emailOk && !phoneOk
-            ? 'Your email and password are not verified.'
-            : !emailOk
-              ? 'Your email is not verified.'
-              : 'You phone is not verified.';
+      if (!emailOk 
+        // || !phoneOk
+      ) {
+        const msg =  'Your email is not verified.';
+          // !emailOk 
+          // && !phoneOk
+          //   ? 'Your email and password are not verified.'
+          //   : 
+          //   !emailOk
+          //     ? 'Your email is not verified.'
+          //     : 'You phone is not verified.';
         throw new Error(msg);
       }
 
@@ -912,22 +918,23 @@ export default function Checkout() {
   }
 
   const NotVerifiedModal = () => {
-    const title =
-      !emailOk && !phoneOk
-        ? 'Email and password not verified'
-        : !emailOk
-          ? 'Email not verified'
-          : 'Phone is not verified';
+     let title; if(!emailOk) { title ='Email not verified'}
+    // const title =
+    //   !emailOk && !phoneOk
+    //     ? 'Email and password not verified'
+    //     : !emailOk
+    //       ? 'Email not verified'
+    //       : 'Phone is not verified';
 
     const lines: string[] = [];
     if (!emailOk)
       lines.push(
         '• Your email is not verified.'
       );
-    if (!phoneOk)
-      lines.push(
-        '• You phone is not verified.'
-      );
+    // if (!phoneOk)
+    //   lines.push(
+    //     '• You phone is not verified.'
+    //   );
     lines.push(
       'Please fix this, then return to your cart/checkout.'
     );
@@ -973,7 +980,8 @@ export default function Checkout() {
                       nav(verifyHref)
                     }
                   >
-                    Verify email/phone now
+                    {/* Verify email/phone now */}
+                    Verify email now
                   </button>
                 )}
               <div className="text-xs text-ink-soft text-center">

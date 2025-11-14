@@ -2,7 +2,7 @@
 import { prisma } from '../lib/prisma.js';
 import { Prisma } from '@prisma/client';
 import { sendMail } from '../lib/email.js';
-
+import { sendWhatsApp } from '../lib/sms.js';
 
 /* ----------------------------- Helpers ----------------------------- */
 
@@ -23,11 +23,6 @@ const formatAddress = (a?: any) => {
   ].filter(Boolean);
   return parts.join(', ');
 };
-
-async function sendWhatsApp(to: string, msg: string) {
-  // Plug your provider here. Current dev logger:
-  console.log(`[whatsapp][DEV] => ${to}\n${msg}\n---`);
-}
 
 async function getCommsUnitCostNGN(): Promise<number> {
   const keys = ['commsUnitCostNGN', 'commsServiceFeeNGN', 'commsUnitCost'];
@@ -130,25 +125,37 @@ export async function notifySuppliersForOrder(orderId: string) {
     // Use the saved supplier unit (COGS); fall back (rare) to cheapest active offer
     let supplierUnit = Number((it as any).chosenSupplierUnitPrice ?? 0);
     if (!(supplierUnit > 0)) {
-      const cheapest = await prisma.supplierOffer.findFirst({
-        where: {
-          productId: it.productId,
-          variantId: it.variant?.id ?? null,
-          isActive: true,
-          inStock: true,
-        },
-        orderBy: { price: 'asc' },
-        select: { price: true, id: true, supplierId: true, supplier: { select: { name: true, whatsappPhone: true } } },
-      }) || await prisma.supplierOffer.findFirst({
-        where: {
-          productId: it.productId,
-          variantId: null,
-          isActive: true,
-          inStock: true,
-        },
-        orderBy: { price: 'asc' },
-        select: { price: true, id: true, supplierId: true, supplier: { select: { name: true, whatsappPhone: true } } },
-      });
+      const cheapest =
+        (await prisma.supplierOffer.findFirst({
+          where: {
+            productId: it.productId,
+            variantId: it.variant?.id ?? null,
+            isActive: true,
+            inStock: true,
+          },
+          orderBy: { price: 'asc' },
+          select: {
+            price: true,
+            id: true,
+            supplierId: true,
+            supplier: { select: { name: true, whatsappPhone: true } },
+          },
+        })) ||
+        (await prisma.supplierOffer.findFirst({
+          where: {
+            productId: it.productId,
+            variantId: null,
+            isActive: true,
+            inStock: true,
+          },
+          orderBy: { price: 'asc' },
+          select: {
+            price: true,
+            id: true,
+            supplierId: true,
+            supplier: { select: { name: true, whatsappPhone: true } },
+          },
+        }));
 
       if (cheapest) {
         supplierUnit = Number(cheapest.price || 0);
@@ -188,7 +195,7 @@ export async function notifySuppliersForOrder(orderId: string) {
       where: { orderId, supplierId: { in: supplierIds }, reason: 'SUPPLIER_NOTIFY' },
       select: { supplierId: true },
     });
-    const already = new Set(existing.map((e: { supplierId: any; }) => e.supplierId));
+    const already = new Set(existing.map((e: { supplierId: any }) => e.supplierId));
     for (const supplierId of supplierIds) {
       if (already.has(supplierId)) continue;
       await prisma.orderComms.create({
@@ -222,19 +229,30 @@ export async function notifySuppliersForOrder(orderId: string) {
     const supplierName = items[0]?.supplierName || 'Supplier';
 
     // Item lines (unit = supplier cost)
-    const lines = items.map((c) => {
-      const price = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 })
-        .format(Number(c.supplierUnit || 0));
-      const sku = c.variantSku ? ` (SKU: ${c.variantSku})` : '';
-      return `• ${c.title}${sku} × ${c.qty} — ${price}`;
-    }).join('\n');
+    const lines = items
+      .map((c) => {
+        const price = new Intl.NumberFormat('en-NG', {
+          style: 'currency',
+          currency: 'NGN',
+          maximumFractionDigits: 2,
+        }).format(Number(c.supplierUnit || 0));
+        const sku = c.variantSku ? ` (SKU: ${c.variantSku})` : '';
+        return `• ${c.title}${sku} × ${c.qty} — ${price}`;
+      })
+      .join('\n');
 
     // Sum of this supplier’s items at supplier unit
-    const supplierTotal = items.reduce((sum, c) => sum + Number(c.supplierUnit || 0) * Math.max(1, c.qty || 1), 0);
-    const supplierTotalFmt = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 2 })
-      .format(supplierTotal);
+    const supplierTotal = items.reduce(
+      (sum, c) => sum + Number(c.supplierUnit || 0) * Math.max(1, c.qty || 1),
+      0
+    );
+    const supplierTotalFmt = new Intl.NumberFormat('en-NG', {
+      style: 'currency',
+      currency: 'NGN',
+      maximumFractionDigits: 2,
+    }).format(supplierTotal);
 
-    // The message — includes customer phone + email + address for every supplier
+    // Plaintext fallback message
     const msg = `New order from DaySpring
 
 Your ref: ${supplierOrderRef}
@@ -264,7 +282,40 @@ Please confirm availability and delivery timeline. Thank you!`;
     }
 
     try {
-      await sendWhatsApp(supplierPhone, msg);
+      // Prefer a template if configured; otherwise send plaintext
+      const templateName =
+        process.env.WABA_TEMPLATE_NAME_SUPPLIER || 'supplier_notify';
+
+      const components = [
+        {
+          type: 'body',
+          parameters: [
+            { type: 'text', text: supplierOrderRef },
+            { type: 'text', text: shopper },
+            { type: 'text', text: shopperPhone },
+            { type: 'text', text: shopperEmail },
+            { type: 'text', text: shipTo },
+            { type: 'text', text: lines },
+            { type: 'text', text: supplierTotalFmt },
+          ],
+        },
+      ];
+
+      const usedTemplate =
+        process.env.WABA_PHONE_NUMBER_ID && process.env.WABA_TOKEN;
+
+      if (usedTemplate) {
+        await sendWhatsApp(supplierPhone, msg, {
+          useTemplate: true,
+          templateName,
+          langCode: process.env.WABA_TEMPLATE_LANG || 'en',
+          components,
+        });
+      } else {
+        // fallback to plain text if WA Cloud not configured
+        await sendWhatsApp(supplierPhone, msg);
+      }
+
       await prisma.orderActivity.create({
         data: {
           orderId: order.id,
@@ -287,12 +338,9 @@ Please confirm availability and delivery timeline. Thank you!`;
 
   return {
     ok: true,
-    suppliers: Object.keys(groups).map(supplierId => ({ supplierId })),
+    suppliers: Object.keys(groups).map((supplierId) => ({ supplierId })),
   };
 }
-
-
-// ...existing exports like notifySuppliersForOrder, etc.
 
 /**
  * Notify shopper that their order has been paid.
@@ -353,8 +401,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
   if (!user?.email) return;
 
   const to = user.email;
-  const displayName =
-    [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Customer';
+  const displayName = [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Customer';
 
   const paidAt = payment.paidAt || new Date();
   const total = Number(order.total || payment.amount || 0);
@@ -376,13 +423,10 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
 
   const itemsHtml =
     (order.items || [])
-      .map((it: { quantity: any; unitPrice: any; lineTotal: null; title: any; }) => {
+      .map((it: { quantity: any; unitPrice: any; lineTotal: null; title: any }) => {
         const qty = Number(it.quantity || 1);
         const unit = Number(it.unitPrice || 0);
-        const line =
-          it.lineTotal != null
-            ? Number(it.lineTotal)
-            : unit * qty;
+        const line = it.lineTotal != null ? Number(it.lineTotal) : unit * qty;
 
         return `
           <tr>
@@ -430,11 +474,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
         <strong>Order total:</strong> ₦${total.toLocaleString()}
       </p>
 
-      ${
-        shippingLines
-          ? `<p><strong>Shipping to:</strong><br/>${shippingLines}</p>`
-          : ''
-      }
+      ${shippingLines ? `<p><strong>Shipping to:</strong><br/>${shippingLines}</p>` : ''}
 
       <p>You can view your full order details and download your receipt from your dashboard at any time.</p>
 
@@ -469,4 +509,3 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     preview,
   });
 }
-
