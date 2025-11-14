@@ -1,117 +1,66 @@
 // src/lib/email.ts
 import { Resend } from 'resend';
-import nodemailer from 'nodemailer';
-
-/**
- * Email transport using Resend with dev fallback.
- * - Primary: Resend (set RESEND_API_KEY and RESEND_FROM/EMAIL_FROM/SMTP_FROM)
- * - Dev fallback: stream transport (prints rendered message to console)
- */
 
 const NODE_ENV = process.env.NODE_ENV ?? 'production';
 const IS_PROD = NODE_ENV === 'production';
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
-const FROM_ENV =
-  process.env.RESEND_FROM ||
-  process.env.EMAIL_FROM ||
-  process.env.SMTP_FROM ||
-  'Acme <onboarding@resend.dev>'; // safe default for quick tests
+const FROM = process.env.SMTP_FROM || process.env.EMAIL_FROM || 'DaySpring <no-reply@dayspring.com>';
+const DEFAULT_REPLY_TO = process.env.EMAIL_REPLY_TO; // optional
 
-// === Transport selection =====================================================
-const HAS_RESEND = Boolean(RESEND_API_KEY);
-const resend = HAS_RESEND ? new Resend(RESEND_API_KEY) : null;
+export const canSendRealEmail = Boolean(RESEND_API_KEY);
 
-// Dev-only fallback (no network): render message to console
-let devTransporter: nodemailer.Transporter | null = null;
-if (!HAS_RESEND) {
-  devTransporter = nodemailer.createTransport({
-    streamTransport: true,
-    buffer: true,
-    newline: 'unix',
-  });
-  // eslint-disable-next-line no-console
-  console.log('[mail] Using DEV fallback transport (stream). RESEND_API_KEY not set.');
-}
+const resend = new Resend(RESEND_API_KEY);
 
-// Expose whether we can send “for real”
-export const canSendRealEmail = HAS_RESEND;
-
-// === Low-level send helper ===================================================
 type BasicMail = {
   to: string | string[];
   subject: string;
   html?: string;
   text?: string;
-  cc?: string | string[];
-  bcc?: string | string[];
   replyTo?: string | string[];
-  headers?: Record<string, string>;
-  fromOverride?: string; // optional per-message override
 };
-
-async function safeSend(input: BasicMail) {
-  const from = input.fromOverride || FROM_ENV;
-
-  if (HAS_RESEND && resend) {
-    // Resend send — supports to/cc/bcc arrays & reply_to
-    const res = await resend.emails.send({
-      from,
-      to: input.to,
-      subject: input.subject,
-      html: input.html,
-      text: input.text,
-      cc: input.cc,
-      bcc: input.bcc,
-      reply_to: input.replyTo,
-      headers: input.headers,
-    });
-
-    if (res.error) {
-      // eslint-disable-next-line no-console
-      console.error('[mail] send failed (Resend):', res.error?.message || res.error);
-      throw new Error(res.error?.message || 'Resend send failed');
-    }
-
-    // eslint-disable-next-line no-console
-    console.log('[mail] sent (Resend)', {
-      to: input.to,
-      subject: input.subject,
-      messageId: res.data?.id,
-    });
-
-    return res.data;
+async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
+  if (!canSendRealEmail) {
+    console.log('[mail][dev] would send', { from: FROM, to, subject, html: html?.slice(0, 200) ?? text });
+    return { id: 'dev-preview' };
   }
 
-  // Dev fallback: render the email to console
-  if (devTransporter) {
-    const info = await devTransporter.sendMail({
-      from,
-      to: input.to,
-      subject: input.subject,
-      html: input.html,
-      text: input.text,
-      cc: input.cc,
-      bcc: input.bcc,
-      replyTo: input.replyTo,
-      headers: input.headers,
+  const base = {
+    from: FROM,
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    // ✅ correct key for the Node SDK:
+    replyTo: replyTo ?? DEFAULT_REPLY_TO,
+  } as const;
+
+  if (html && html.trim().length > 0) {
+    // send with HTML branch
+    const { data, error } = await resend.emails.send({
+      ...base,
+      html,                      // present → picks the { html } overload
     });
-    const rendered = (info as any).message?.toString?.();
-    // eslint-disable-next-line no-console
-    console.log('[mail][dev] rendered message:\n', rendered?.slice(0, 1200) ?? info);
-    return info;
+    if (error) throw error;
+    console.log('[mail] sent', { to, subject, id: data?.id });
+    return data;
   }
 
-  throw new Error('No email transport available');
+  if (text && text.trim().length > 0) {
+    // send with TEXT branch
+    const { data, error } = await resend.emails.send({
+      ...base,
+      text,                      // present → picks the { text } overload
+    });
+    if (error) throw error;
+    console.log('[mail] sent', { to, subject, id: data?.id });
+    return data;
+  }
+
+  throw new Error('safeSend: either html or text must be provided');
 }
 
-// === Your templates (unchanged) =============================================
 
-/**
- * Send verification email with a link (JWT or DB token URL).
- */
+/** Verify-email message */
 export async function sendVerifyEmail(to: string, verifyUrl: string) {
-  const subject = 'Verify your email — DaySpring';
   const html = `
     <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
       <h2>Verify your email</h2>
@@ -123,40 +72,15 @@ export async function sendVerifyEmail(to: string, verifyUrl: string) {
       <p>Thanks,<br/>DaySpring</p>
     </div>
   `;
-  const text = [
-    'Verify your email',
-    `Open this link to verify: ${verifyUrl}`,
-    'This link expires in 60 minutes.',
-  ].join('\n');
-
-  return safeSend({ to, subject, html, text });
+  return safeSend({ to, subject: 'Verify your email — DaySpring', html });
 }
 
-/**
- * Generic “sendMail” for ad-hoc emails (keeps your previous API).
- * Example usage: await sendMail({ to, subject, html, text })
- */
-export async function sendMail(opts: import('nodemailer').SendMailOptions) {
-  const to = opts.to as string | string[];
-  if (!to) throw new Error('sendMail: "to" is required');
-
-  return safeSend({
-    to,
-    subject: String(opts.subject || ''),
-    html: typeof opts.html === 'string' ? opts.html : undefined,
-    text: typeof opts.text === 'string' ? opts.text : undefined,
-    cc: opts.cc as any,
-    bcc: opts.bcc as any,
-    replyTo: opts.replyTo as any,
-    headers: opts.headers as any,
-    fromOverride: typeof opts.from === 'string' ? opts.from : undefined,
-  });
+/** Generic helper so routes can send adhoc emails */
+export async function sendMail(opts: BasicMail) {
+  return safeSend(opts);
 }
 
-/**
- * Send password reset/forgot email with a reset link.
- * Callers: sendResetorForgotPasswordEmail(to, resetUrl, subject?, introText?)
- */
+/** Password reset email (same template text you used) */
 export async function sendResetorForgotPasswordEmail(
   to: string,
   resetUrl: string,
@@ -175,16 +99,8 @@ export async function sendResetorForgotPasswordEmail(
       <p>Thanks,<br/>DaySpring</p>
     </div>
   `;
-
-  const text = [
-    'Password reset',
-    introText,
-    `Reset link: ${resetUrl}`,
-    'This link expires in 60 minutes.',
-  ].join('\n');
-
-  return safeSend({ to, subject, html, text });
+  return safeSend({ to, subject, html });
 }
 
-// Alias (kept for backwards compatibility)
+// Alias to match any existing imports
 export const sendResetOrForgotPasswordEmail = sendResetorForgotPasswordEmail;
