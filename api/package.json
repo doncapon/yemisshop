@@ -12,7 +12,6 @@
     "postinstall": "prisma generate",
     "seed": "tsx prisma/seed.ts",
     "prestart": "prisma migrate deploy && echo '--- PWD ---' && pwd && echo '--- ls -la ---' && ls -la && echo '--- ls -R dist ---' && ls -R dist || true"
-
   },
   "dependencies": {
     "@prisma/client": "^6.16.3",
@@ -35,6 +34,7 @@
     "paystack-api": "^2.0.6",
     "pdfkit": "^0.17.2",
     "process": "^0.11.10",
+    "resend": "^6.4.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {

@@ -1,121 +1,65 @@
 // src/lib/email.ts
-import nodemailer from 'nodemailer';
-
-/**
- * Flexible mail transport for dev/prod.
- * - STRATEGY: 'ssl' (465) or 'starttls' (587)
- * - ALLOW_SELF_SIGNED: dev-only escape hatch for corporate proxies/AV that MITM TLS
- * - In production on Railway we SKIP transporter.verify() to avoid port blocks/timeouts.
- */
+import { Resend } from 'resend';
 
 const NODE_ENV = process.env.NODE_ENV ?? 'production';
 const IS_PROD = NODE_ENV === 'production';
 
-const STRATEGY = (process.env.SMTP_STRATEGY || 'starttls').toLowerCase(); // 'ssl' | 'starttls'
-const ALLOW_SELF_SIGNED = String(process.env.SMTP_ALLOW_SELF_SIGNED || 'false') === 'true';
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const FROM = process.env.SMTP_FROM || process.env.EMAIL_FROM || 'DaySpring <no-reply@dayspring.com>';
+const DEFAULT_REPLY_TO = process.env.EMAIL_REPLY_TO; // optional
 
-const host = process.env.SMTP_HOST || 'smtp.gmail.com';
-const user = process.env.SMTP_USER || '';
-// Google App Password must be 16 chars, no spaces. We strip whitespace just in case.
-const pass = (process.env.SMTP_PASS || '').replace(/\s+/g, '');
+export const canSendRealEmail = Boolean(RESEND_API_KEY);
 
-const fromEnv = process.env.SMTP_FROM || process.env.EMAIL_FROM || user || 'no-reply@dayspring.com';
-const from = fromEnv;
+const resend = new Resend(RESEND_API_KEY);
 
-// If SMTP creds are missing, we’ll fall back to a dev-safe transport (stream) when not in prod
-const HAS_SMTP_CREDS = Boolean(user && pass);
-const DEV_FALLBACK = !IS_PROD && !HAS_SMTP_CREDS;
-
-let transporter: nodemailer.Transporter;
-
-if (DEV_FALLBACK) {
-  // Dev-only: don’t try to reach the network; render the email to buffer/console.
-  transporter = nodemailer.createTransport({
-    streamTransport: true,
-    buffer: true,
-    newline: 'unix',
-  });
-  // eslint-disable-next-line no-console
-  console.log('[mail] Using DEV fallback transport (stream). No SMTP creds set.');
-} else {
-  const base: any = {
-    host,
-    auth: HAS_SMTP_CREDS ? { user, pass } : undefined,
-    // Keep connections short-lived; Railway commonly blocks SMTP ports on hobby plans.
-    connectionTimeout: Number(process.env.SMTP_CONN_TIMEOUT ?? 3000),
-    greetingTimeout: Number(process.env.SMTP_GREET_TIMEOUT ?? 3000),
-    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT ?? 5000),
-  };
-
-  if (STRATEGY === 'ssl') {
-    base.port = Number(process.env.SMTP_PORT || 465);
-    base.secure = true;
-  } else {
-    base.port = Number(process.env.SMTP_PORT || 587);
-    base.secure = false; // STARTTLS
-    base.requireTLS = true;
+type BasicMail = {
+  to: string | string[];
+  subject: string;
+  html?: string;
+  text?: string;
+  replyTo?: string | string[];
+};
+async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
+  if (!canSendRealEmail) {
+    console.log('[mail][dev] would send', { from: FROM, to, subject, html: html?.slice(0, 200) ?? text });
+    return { id: 'dev-preview' };
   }
 
-  base.tls = {
-    servername: host,
-    ...(ALLOW_SELF_SIGNED ? { rejectUnauthorized: false } : {}),
-  };
+  const base = {
+    from: FROM,
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    // ✅ correct key for the Node SDK:
+    replyTo: replyTo ?? DEFAULT_REPLY_TO,
+  } as const;
 
-  transporter = nodemailer.createTransport(base);
-
-  // In PRODUCTION: do NOT verify on boot (avoid blocking startup on Railway)
-  // In DEV: verify is helpful but non-fatal.
-  if (!IS_PROD) {
-    transporter
-      .verify()
-      .then(() => {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[mail] SMTP OK host=${host} port=${base.port} secure=${base.secure} strategy=${STRATEGY} allowSelfSigned=${ALLOW_SELF_SIGNED}`
-        );
-      })
-      .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.log('[mail] SMTP verify skipped:', err?.message || err);
-      });
+  if (html && html.trim().length > 0) {
+    // send with HTML branch
+    const { data, error } = await resend.emails.send({
+      ...base,
+      html,                      // present → picks the { html } overload
+    });
+    if (error) throw error;
+    console.log('[mail] sent', { to, subject, id: data?.id });
+    return data;
   }
+
+  if (text && text.trim().length > 0) {
+    // send with TEXT branch
+    const { data, error } = await resend.emails.send({
+      ...base,
+      text,                      // present → picks the { text } overload
+    });
+    if (error) throw error;
+    console.log('[mail] sent', { to, subject, id: data?.id });
+    return data;
+  }
+
+  throw new Error('safeSend: either html or text must be provided');
 }
 
-// Small helper so routes can check if real SMTP is available
-export const canSendRealEmail = !DEV_FALLBACK && HAS_SMTP_CREDS;
 
-async function safeSend(options: nodemailer.SendMailOptions) {
-  try {
-    const info = await transporter.sendMail(options);
-
-    if (DEV_FALLBACK) {
-      // Rendered email in dev (no network). Dump a short preview.
-      const rendered = (info as any).message?.toString?.();
-      // eslint-disable-next-line no-console
-      console.log('[mail][dev] rendered message:\n', rendered?.slice(0, 800) ?? info);
-    } else {
-      // eslint-disable-next-line no-console
-      console.log('[mail] sent', {
-        to: options.to,
-        subject: options.subject,
-        messageId: (info as any).messageId,
-        accepted: (info as any).accepted,
-        rejected: (info as any).rejected,
-      });
-    }
-
-    return info;
-  } catch (err: any) {
-    // Don’t crash the server; let callers handle failures per use-case
-    // eslint-disable-next-line no-console
-    console.error('[mail] send failed:', err?.message || err);
-    throw err;
-  }
-}
-
-/**
- * Send verification email with a link (JWT or DB token URL).
- */
+/** Verify-email message */
 export async function sendVerifyEmail(to: string, verifyUrl: string) {
   const html = `
     <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
@@ -128,25 +72,15 @@ export async function sendVerifyEmail(to: string, verifyUrl: string) {
       <p>Thanks,<br/>DaySpring</p>
     </div>
   `;
-
-  return safeSend({
-    from,
-    to,
-    subject: 'Verify your email — DaySpring',
-    html,
-  });
+  return safeSend({ to, subject: 'Verify your email — DaySpring', html });
 }
 
-export async function sendMail(opts: import('nodemailer').SendMailOptions) {
-  if (!opts.from) opts.from = from; // default sender we computed earlier
+/** Generic helper so routes can send adhoc emails */
+export async function sendMail(opts: BasicMail) {
   return safeSend(opts);
 }
 
-/**
- * Send password reset/forgot email with a reset link.
- * Your routes call: sendResetorForgotPasswordEmail(to, resetUrl, subject?, introText?)
- * We export BOTH spellings to avoid breaking existing imports.
- */
+/** Password reset email (same template text you used) */
 export async function sendResetorForgotPasswordEmail(
   to: string,
   resetUrl: string,
@@ -165,14 +99,8 @@ export async function sendResetorForgotPasswordEmail(
       <p>Thanks,<br/>DaySpring</p>
     </div>
   `;
-
-  return safeSend({
-    from,
-    to,
-    subject,
-    html,
-  });
+  return safeSend({ to, subject, html });
 }
 
-// Alias with capital “Or” in case some files import the other name
+// Alias to match any existing imports
 export const sendResetOrForgotPasswordEmail = sendResetorForgotPasswordEmail;
