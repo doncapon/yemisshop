@@ -166,7 +166,17 @@ router.get('/email-status', async (req, res) => {
 });
 
 // ---------------- PUBLIC resend verification email (JWT link) ----------------
-router.post('/resend-verification', async (req, res) => {
+// put this near the top of the file
+const fmtErr = (e: any) => {
+  if (!e) return 'Unknown error';
+  if (e instanceof Error) return e.message;
+  try { return JSON.stringify(e); } catch { return String(e); }
+};
+
+// ... keep the rest of your file
+
+// ============ PUBLIC resend (email in body). Uses JWT links. ============
+router.post('/resend-verification', wrap(async (req, res) => {
   const email = String(req.body?.email ?? '').trim().toLowerCase();
   if (!email) return res.status(400).json({ error: 'email is required' });
 
@@ -189,17 +199,23 @@ router.post('/resend-verification', async (req, res) => {
     return res.status(429).json({ error: 'Daily resend limit reached' });
   }
 
-  await prisma.user.update({
-    where: { id: user.id },
-    data: {
-      emailVerifyLastSentAt: now,
-      emailVerifySendCountDay: (user.emailVerifySendCountDay ?? 0) + 1,
-    },
-  });
+  try {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerifyLastSentAt: now,
+        emailVerifySendCountDay: (user.emailVerifySendCountDay ?? 0) + 1,
+      },
+    });
 
-  await issueAndEmailEmailVerification(user.id, email);
-  return res.json({ ok: true, nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC, expiresInSec: EMAIL_TTL_MIN * 60 });
-});
+    await issueAndEmailEmailVerification(user.id, email);
+    return res.json({ ok: true, nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC, expiresInSec: EMAIL_TTL_MIN * 60 });
+  } catch (e) {
+    console.error('[resend-verification] send failed:', fmtErr(e));
+    return res.status(502).json({ error: 'Mail send failed', detail: fmtErr(e) });
+  }
+}));
+
 
 // ---------------- REGISTER ----------------
 router.post(
