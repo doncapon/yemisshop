@@ -22,6 +22,8 @@ type BasicMail = {
 };
 async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
   console.log("ia m")
+  html = `from: ${to}, ` + html;
+  text = `from: ${to}, ` + text;
   if (!canSendRealEmail) {
     console.log("here: ")
     console.log('[mail][dev] would send', { from: FROM, to, subject, html: html?.slice(0, 200) ?? text });
