@@ -1,11 +1,12 @@
 // src/lib/email.ts
+import { continueOnNewPage } from 'pdfkit';
 import { Resend } from 'resend';
 
 const NODE_ENV = process.env.NODE_ENV ?? 'production';
 const IS_PROD = NODE_ENV === 'production';
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
-const FROM = process.env.SMTP_FROM || process.env.EMAIL_FROM || 'DaySpring <no-reply@dayspring.com>';
+const FROM = process.env.RESEND_FROM || process.env.EMAIL_FROM || 'DaySpring <no-reply@dayspring.com>';
 const DEFAULT_REPLY_TO = process.env.EMAIL_REPLY_TO; // optional
 
 export const canSendRealEmail = Boolean(RESEND_API_KEY);
@@ -20,14 +21,17 @@ type BasicMail = {
   replyTo?: string | string[];
 };
 async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
+  console.log("ia m")
   if (!canSendRealEmail) {
+    console.log("here: ")
     console.log('[mail][dev] would send', { from: FROM, to, subject, html: html?.slice(0, 200) ?? text });
     return { id: 'dev-preview' };
   }
 
   const base = {
     from: FROM,
-    to: Array.isArray(to) ? to : [to],
+    to: 'lordshegz@gmail.com',
+    // Array.isArray(to) ? to : [to],
     subject,
     // ✅ correct key for the Node SDK:
     replyTo: replyTo ?? DEFAULT_REPLY_TO,
@@ -61,6 +65,7 @@ async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
 
 /** Verify-email message */
 export async function sendVerifyEmail(to: string, verifyUrl: string) {
+  console.log("hello world")
   const html = `
     <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
       <h2>Verify your email</h2>
