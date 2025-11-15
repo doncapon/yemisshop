@@ -12,6 +12,7 @@ type RegisterResponse = {
 
 type Country = { name: string; code: string; dial: string };
 const COUNTRIES: Country[] = [
+  { name: 'Country', code: '', dial: 'dial' },
   { name: 'Nigeria', code: 'NG', dial: '+234' },
   { name: 'United States', code: 'US', dial: '+1' },
   { name: 'United Kingdom', code: 'GB', dial: '+44' },
@@ -51,7 +52,7 @@ export default function Register() {
     firstName: '',
     middleName: '',
     lastName: '',
-    countryDial: '234',
+    countryDial: 'dial',
     localPhone: '',
     password: '',
     confirmPassword: '',
@@ -88,6 +89,9 @@ export default function Register() {
     if (!form.lastName.trim()) return 'Please enter your last name';
     if (!form.email.trim()) return 'Please enter your email';
     if (!/^\S+@\S+\.\S+$/.test(form.email)) return 'Please enter a valid email';
+    if (form.countryDial === 'dial') {
+      return 'Please select your country code';
+    }
 
     const pwd = form.password ?? '';
     const hasMinLen = pwd.length >= 8;
@@ -121,12 +125,24 @@ export default function Register() {
     return null;
   };
 
+  const scrollTopOnError = () => {
+    try {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch {
+      /* no-op */
+    }
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null);
 
     const v = validate();
-    if (v) return setErr(v);
+    if (v) {
+      setErr(v);
+      scrollTopOnError();   // 👈 ensure error is visible
+      return;
+    }
 
     try {
       setSubmitting(true);
@@ -163,6 +179,7 @@ export default function Register() {
     } catch (e: any) {
       // Surface API error (409 Email already registered, etc.)
       setErr(e?.response?.data?.error || 'Registration failed');
+      scrollTopOnError();     // 👈 ensure API error is visible
     } finally {
       setSubmitting(false);
     }
@@ -290,16 +307,18 @@ export default function Register() {
                 </div>
               </div>
 
-              {/* Phone */}
+              {/* Phone — stacked on mobile, side-by-side on lg+ */}
               <div>
                 <label className="block text-sm font-medium text-slate-800 mb-1">Phone</label>
-                <div className="flex gap-2">
+
+                <div className="grid grid-cols-1 gap-2 lg:grid-cols-[16rem,1fr]">
+                  {/* Country code */}
                   <div className="relative group">
                     <select
                       value={form.countryDial}
                       onChange={onChange('countryDial')}
-                      className="rounded-xl border border-slate-300/80 bg-white px-3 py-3 w-44
-                               outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                      className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3
+                   outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
                       aria-label="Country code"
                     >
                       {COUNTRIES.map((c) => (
@@ -310,22 +329,33 @@ export default function Register() {
                     </select>
                     <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">🌍</span>
                   </div>
-                  <div className="relative group flex-1">
+
+                  {/* Local number — full width on mobile */}
+                  <div className="relative group">
                     <input
                       value={form.localPhone}
                       onChange={onChange('localPhone')}
                       inputMode="tel"
-                      placeholder="Local number"
-                      className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 placeholder:text-slate-400 text-slate-900
-                               outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                      autoComplete="tel-national"
+                      placeholder="Local number (e.g. 8031234567)"
+                      className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 pr-9
+                   placeholder:text-slate-400 text-slate-900
+                   outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
                     />
-                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">📱</span>
+                    {/* <button type="button" className="hidden lg:flex items-center justify-center rounded-xl border border-slate-300/80 bg-white px-3"> */}
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">
+                      📱</span>
+                    {/* </button> */}
                   </div>
                 </div>
-                <p className="mt-1 text-xs text-slate-500 text-center">
+
+                <p className="mt-1 text-xs text-slate-500 text-center lg:text-left">
                   Will format as +{form.countryDial} {form.localPhone.replace(/\D/g, '')}
                 </p>
               </div>
+
+
+
 
               {/* Passwords */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -334,6 +364,12 @@ export default function Register() {
                   <div className="relative group">
                     <input
                       type="password"
+                      name="password"
+                      autoComplete="new-password"
+                      autoCorrect="off"
+                      autoCapitalize="none"
+                      spellCheck={false}
+                      inputMode="text"
                       value={form.password}
                       onChange={onChange('password')}
                       placeholder="At least 8 characters"
@@ -346,12 +382,12 @@ export default function Register() {
                   <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
                     <div
                       className={`h-full transition-all ${pwdStrength <= 1
-                          ? 'w-1/4 bg-rose-400'
-                          : pwdStrength === 2
-                            ? 'w-2/4 bg-amber-400'
-                            : pwdStrength === 3
-                              ? 'w-3/4 bg-lime-400'
-                              : 'w-full bg-emerald-400'
+                        ? 'w-1/4 bg-rose-400'
+                        : pwdStrength === 2
+                          ? 'w-2/4 bg-amber-400'
+                          : pwdStrength === 3
+                            ? 'w-3/4 bg-lime-400'
+                            : 'w-full bg-emerald-400'
                         }`}
                     />
                   </div>
@@ -364,6 +400,12 @@ export default function Register() {
                   <div className="relative group">
                     <input
                       type="password"
+                      name="confirmPassword"
+                      autoComplete="new-password"
+                      autoCorrect="off"
+                      autoCapitalize="none"
+                      spellCheck={false}
+                      inputMode="text"
                       value={form.confirmPassword}
                       onChange={onChange('confirmPassword')}
                       placeholder="Re-enter password"
