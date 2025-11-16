@@ -1,10 +1,10 @@
 // src/pages/UserDashboard.tsx
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
-import { useModal } from "../components/ModalProvider";
+import { useModal } from '../components/ModalProvider';
 import {
   Sparkles,
   CheckCircle2,
@@ -65,30 +65,40 @@ type Address = {
   country?: string | null;
 };
 
+type OrderLiteItem = {
+  id: string;
+  productId: string;
+  title: string;
+  quantity: number;
+};
+
 type OrderLite = {
   id: string;
   createdAt: string;
   status:
-  | 'PENDING'
-  | 'PAID'
-  | 'SHIPPED'
-  | 'DELIVERED'
-  | 'CANCELLED'
-  | 'FAILED'
-  | 'PROCESSING';
+    | 'PENDING'
+    | 'PAID'
+    | 'SHIPPED'
+    | 'DELIVERED'
+    | 'CANCELLED'
+    | 'FAILED'
+    | 'PROCESSING'
+    | string;
   total: number;
-  items: Array<{
-    product: any;
-    id: string;
-    title: string;
-    quantity: number;
-    image?: string | null;
-  }>;
+  items: OrderLiteItem[];
   trackingUrl?: string | null;
 };
 
+// Matches /api/orders/summary + an extra byStatus we compute on the client
 type OrdersSummary = {
-  total: number;
+  ordersCount: number;
+  totalSpent: number;
+  recent: Array<{
+    id: string;
+    status: string;
+    total: number;
+    createdAt: string;
+  }>;
   byStatus: Record<string, number>;
 };
 
@@ -129,14 +139,13 @@ const ngn = new Intl.NumberFormat('en-NG', {
   maximumFractionDigits: 2,
 });
 const dateFmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString() : '—');
+
 function dateTimeFmt(iso?: string | null) {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(+d)) return '—';
   return d.toLocaleString();
 }
-
-
 
 function sinceJoined(iso?: string | null) {
   if (!iso) return '';
@@ -190,8 +199,25 @@ function useRecentOrders(limit = 5) {
   const token = useAuthStore((s) => s.token);
   return useQuery({
     queryKey: ['orders', 'recent', limit],
-    queryFn: async () =>
-      (await api.get<OrderLite[]>(`/api/orders/mine?limit=${limit}`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
+    queryFn: async (): Promise<OrderLite[]> => {
+      const res = await api.get<{ data: any[] }>(`/api/orders/mine?limit=${limit}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      const raw = Array.isArray(res.data?.data) ? res.data.data : [];
+      return raw.map((o) => ({
+        id: o.id,
+        createdAt: o.createdAt,
+        status: o.status,
+        total: Number(o.total ?? 0),
+        items: (Array.isArray(o.items) ? o.items : []).map((it: any) => ({
+          id: it.id,
+          productId: it.productId,
+          title: it.title ?? '—',
+          quantity: Number(it.quantity ?? 1),
+        })),
+        trackingUrl: null,
+      }));
+    },
     enabled: !!token,
     retry: 1,
   });
@@ -202,21 +228,64 @@ function useOrdersSummary() {
   return useQuery({
     queryKey: ['orders', 'summary'],
     queryFn: async (): Promise<OrdersSummary> => {
+      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
       try {
-        const res = await api.get<OrdersSummary>('/api/orders/summary', { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
-        if (res?.data?.total != null) return res.data;
-      } catch { }
-      try {
-        const res = await api.get<OrderLite[]>('/api/orders/mine?limit=1000', { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
-        const list = Array.isArray(res.data) ? res.data : [];
+        const [summaryRes, mineRes] = await Promise.all([
+          api.get<{
+            ordersCount: number;
+            totalSpent: number;
+            recent: Array<{ id: string; status: string; total: number; createdAt: string }>;
+          }>('/api/orders/summary', { headers }),
+          api.get<{ data: any[] }>('/api/orders/mine?limit=1000', { headers }),
+        ]);
+
+        const list = Array.isArray(mineRes.data?.data) ? mineRes.data.data : [];
         const byStatus: Record<string, number> = {};
         for (const o of list) {
-          const s = (o.status || 'UNKNOWN').toUpperCase();
+          const s = String(o.status || 'UNKNOWN').toUpperCase();
           byStatus[s] = (byStatus[s] || 0) + 1;
         }
-        return { total: list.length, byStatus };
+
+        return {
+          ordersCount: summaryRes.data.ordersCount ?? list.length,
+          totalSpent: Number(summaryRes.data.totalSpent ?? 0),
+          recent: (summaryRes.data.recent || []).map((o) => ({
+            id: o.id,
+            status: o.status,
+            total: Number(o.total ?? 0),
+            createdAt: o.createdAt,
+          })),
+          byStatus,
+        };
       } catch {
-        return { total: 0, byStatus: {} };
+        // Fallback: derive everything from /mine
+        try {
+          const mineRes = await api.get<{ data: any[] }>('/api/orders/mine?limit=1000', { headers });
+          const list = Array.isArray(mineRes.data?.data) ? mineRes.data.data : [];
+          const byStatus: Record<string, number> = {};
+          let totalSpent = 0;
+          for (const o of list) {
+            const s = String(o.status || 'UNKNOWN').toUpperCase();
+            byStatus[s] = (byStatus[s] || 0) + 1;
+            if (s === 'PAID' || s === 'COMPLETED') {
+              totalSpent += Number(o.total ?? 0);
+            }
+          }
+          return {
+            ordersCount: list.length,
+            totalSpent,
+            recent: list.slice(0, 5).map((o) => ({
+              id: o.id,
+              status: o.status,
+              total: Number(o.total ?? 0),
+              createdAt: o.createdAt,
+            })),
+            byStatus,
+          };
+        } catch {
+          return { ordersCount: 0, totalSpent: 0, recent: [], byStatus: {} };
+        }
       }
     },
     enabled: !!token,
@@ -226,36 +295,91 @@ function useOrdersSummary() {
 
 function useRecentTransactions(limit = 5) {
   const token = useAuthStore((s) => s.token);
+
   return useQuery({
     queryKey: ['payments', 'recent-orders', limit],
-    queryFn: async () =>
-      (await api.get<RecentTransaction[]>(`/api/payments/recent?limit=${limit}`, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
+    queryFn: async (): Promise<RecentTransaction[]> => {
+      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+      const res = await api.get<{ data: any[] }>(
+        `/api/payments/recent?limit=${limit}`,
+        { headers }
+      );
+
+      const orders = Array.isArray(res.data?.data) ? res.data.data : [];
+
+      const txs: RecentTransaction[] = orders.map((o: any) => {
+        const p = o.latestPayment || null;
+
+        const createdAt =
+          p?.paidAt || p?.createdAt || o.createdAt || new Date().toISOString();
+
+        const total = Number(
+          o.total ?? p?.amount ?? 0
+        );
+
+        const orderStatus = String(p?.status || 'PENDING');
+
+        const payment = p
+          ? {
+              id: String(p.id),
+              reference: p.reference ?? null,
+              status: String(p.status),
+              channel: p.channel ?? null,
+              provider: p.provider ?? null,
+              createdAt: String(p.createdAt || createdAt),
+            }
+          : undefined;
+
+        return {
+          orderId: String(o.id),
+          createdAt: String(createdAt),
+          total,
+          orderStatus,
+          payment,
+        };
+      });
+
+      // If you only want rows that actually have a payment, uncomment:
+      // return txs.filter((t) => !!t.payment);
+
+      return txs;
+    },
     enabled: !!token,
     retry: 1,
   });
 }
 
-/** Sum of successful payments; tries /api/payments/summary then falls back */
+/** Sum of successful payments; tries /api/payments/summary then falls back to orders summary, then /orders/mine */
 function useTotalSpent() {
   const token = useAuthStore((s) => s.token);
   return useQuery({
     queryKey: ['payments', 'totalSpent'],
     queryFn: async () => {
+      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+      // 1) payments summary (if you have it)
       try {
         const r = await api.get<{ totalPaid?: number; totalPaidNgn?: number }>('/api/payments/summary', {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          headers,
         });
         const v = r.data?.totalPaid ?? r.data?.totalPaidNgn;
         if (typeof v === 'number' && Number.isFinite(v)) return v;
       } catch { }
+
+      // 2) orders summary
       try {
-        const res = await api.get<OrderLite[]>('/api/orders/mine?limit=1000', {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        });
-        const list = Array.isArray(res.data) ? res.data : [];
+        const s = await api.get<{ ordersCount: number; totalSpent: number }>('/api/orders/summary', { headers });
+        if (typeof s.data?.totalSpent === 'number') return s.data.totalSpent;
+      } catch { }
+
+      // 3) derive from /orders/mine
+      try {
+        const res = await api.get<{ data: any[] }>('/api/orders/mine?limit=1000', { headers });
+        const list = Array.isArray(res.data?.data) ? res.data.data : [];
         const total = list
-          .filter((o) => (o.status || '').toUpperCase() === 'PAID')
-          .reduce((s, o) => s + (Number.isFinite(o.total as any) ? Number(o.total) : 0), 0);
+          .filter((o) => ['PAID', 'COMPLETED'].includes(String(o.status || '').toUpperCase()))
+          .reduce((s, o) => s + (Number(o.total ?? 0) || 0), 0);
         return total;
       } catch {
         return 0;
@@ -269,13 +393,17 @@ function useTotalSpent() {
 function useResendEmail() {
   const token = useAuthStore((s) => s.token);
   return useMutation({
-    mutationFn: async () => (await api.post('/api/auth/resend-email', {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
+    mutationFn: async () =>
+      (await api.post('/api/auth/resend-email', {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
   });
 }
 function useResendOtp() {
   const token = useAuthStore((s) => s.token);
   return useMutation({
-    mutationFn: async () => (await api.post('/api/auth/resend-otp', {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data as { nextResendAfterSec?: number },
+    mutationFn: async () =>
+      (await api.post('/api/auth/resend-otp', {}, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      })).data as { nextResendAfterSec?: number },
   });
 }
 
@@ -389,9 +517,9 @@ export default function UserDashboard() {
       const res = await api.get(`/api/orders/${orderId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
-      const items = Array.isArray(res.data?.items) ? res.data.items : [];
+      const items = Array.isArray(res.data?.data?.items) ? res.data.data.items : Array.isArray(res.data?.items) ? res.data.items : [];
       const toCart = items.map((it: any) => ({
-        productId: it.product?.id ?? it.productId ?? it.id,
+        productId: it.productId ?? it.product?.id ?? it.id,
         qty: it.qty ?? it.quantity ?? 1,
       }));
       if (toCart.length > 0) mergeIntoLocalCart(toCart);
@@ -403,7 +531,8 @@ export default function UserDashboard() {
     }
   }
 
-  useMemo(() => {
+  // properly tick down OTP cooldown
+  useEffect(() => {
     if (otpCooldown <= 0) return;
     const t = setInterval(() => setOtpCooldown((s) => Math.max(0, s - 1)), 1000);
     return () => clearInterval(t);
@@ -411,19 +540,6 @@ export default function UserDashboard() {
 
   const me = meQ.data;
   const initials = initialsFrom(me?.firstName, me?.lastName, me?.email);
-
-  const verifiedBadge = (
-    <span className="ml-2 inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700">
-      <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
-      Verified
-    </span>
-  );
-  const notVerifiedBadge = (
-    <span className="ml-2 inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700">
-      <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
-      Not verified
-    </span>
-  );
 
   const statusOrder = ['PENDING', 'PROCESSING', 'PAID', 'SHIPPED', 'DELIVERED', 'FAILED', 'CANCELLED'];
   const byStatusEntries = useMemo(() => {
@@ -450,20 +566,15 @@ export default function UserDashboard() {
                   animate={{ opacity: 1, y: 0 }}
                   className="text-2xl md:text-3xl font-bold tracking-tight text-zinc-900"
                 >
-                  {me ? `Hey ${me.firstName || me.displayName || me.email.split('@')[0]}!` : 'Welcome!'} <span className="inline-block align-middle"><Sparkles className="inline text-fuchsia-600" size={22} /></span>
+                  {me ? `Hey ${me.firstName || me.displayName || me.email.split('@')[0]}!` : 'Welcome!'}{' '}
+                  <span className="inline-block align-middle">
+                    <Sparkles className="inline text-fuchsia-600" size={22} />
+                  </span>
                 </motion.h1>
                 <p className="text-sm text-zinc-600">
                   Your vibe, your orders, your payments—everything in one electric dashboard ⚡
                 </p>
               </div>
-              <motion.button
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.98 }}
-                className="hidden sm:inline-flex items-center gap-2 rounded-full border px-4 py-2 bg-white/80 backdrop-blur hover:bg-white transition"
-                onClick={() => nav('/settings')}
-              >
-                <ShieldCheck size={16} /> <span>Preferences</span> <ChevronRight size={16} />
-              </motion.button>
             </div>
           </div>
         </div>
@@ -476,7 +587,11 @@ export default function UserDashboard() {
               title="Profile"
               icon={<ShoppingBag size={18} />}
               right={
-                <button className="text-sm text-fuchsia-600 hover:underline" onClick={() => nav('/profile')} aria-label="Edit profile">
+                <button
+                  className="text-sm text-fuchsia-600 hover:underline"
+                  onClick={() => nav('/profile')}
+                  aria-label="Edit profile"
+                >
                   Edit
                 </button>
               }
@@ -499,15 +614,18 @@ export default function UserDashboard() {
                   <div className="text-sm text-zinc-600 truncate">{me?.email || (meQ.isLoading ? <Shimmer /> : '—')}</div>
                   <div className="text-xs text-zinc-600 mt-1 flex items-center gap-2">
                     <Clock3 size={14} className="text-cyan-600" />
-                    Joined {dateFmt(me?.joinedAt)} {me ? (me?.status === 'VERIFIED' ? (
-                      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700">
-                        <CheckCircle2 size={14} /> Verified
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700">
-                        <AlertCircle size={14} /> Not verified
-                      </span>
-                    )) : null}
+                    Joined {dateFmt(me?.joinedAt)}{' '}
+                    {me ? (
+                      me?.status === 'VERIFIED' ? (
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700">
+                          <CheckCircle2 size={14} /> Verified
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700">
+                          <AlertCircle size={14} /> Not verified
+                        </span>
+                      )
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -519,16 +637,15 @@ export default function UserDashboard() {
                 <Link className="group inline-flex items-center gap-1.5 text-cyan-700 hover:underline" to="/orders">
                   Orders <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
                 </Link>
-                <Link className="group inline-flex items-center gap-1.5 text-cyan-700 hover:underline" to="/settings">
-                  Preferences <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
-                </Link>
               </div>
             </GlassCard>
 
             <GlassCard title="Verification" icon={<ShieldCheck size={18} />}>
               <div className="space-y-3 text-sm">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2"><MailCheck size={16} className="text-emerald-600" /> Email {me?.emailVerified ? 'verified' : 'pending'}</span>
+                  <span className="inline-flex items-center gap-2">
+                    <MailCheck size={16} className="text-emerald-600" /> Email {me?.emailVerified ? 'verified' : 'pending'}
+                  </span>
                   {!me?.emailVerified && (
                     <motion.button
                       whileHover={{ y: -1 }}
@@ -549,7 +666,9 @@ export default function UserDashboard() {
                   )}
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2"><Phone size={16} className="text-cyan-600" /> Phone {me?.phoneVerified ? 'verified' : 'pending'}</span>
+                  <span className="inline-flex items-center gap-2">
+                    <Phone size={16} className="text-cyan-600" /> Phone {me?.phoneVerified ? 'verified' : 'pending'}
+                  </span>
                   {!me?.phoneVerified && (
                     <motion.button
                       whileHover={{ y: -1 }}
@@ -608,26 +727,48 @@ export default function UserDashboard() {
             <GlassCard
               title="Your orders at a glance"
               icon={<ShoppingBag size={18} />}
-              right={<Link className="text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">View all <ChevronRight size={14} /></Link>}
+              right={
+                <Link className="text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
+                  View all <ChevronRight size={14} />
+                </Link>
+              }
             >
               {ordersSummaryQ.isLoading ? (
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                   {Array.from({ length: 6 }).map((_, i) => (
-                    <div key={i} className="p-4 rounded-2xl border bg-white"><Shimmer /><div className="mt-2"><Shimmer /></div></div>
+                    <div key={i} className="p-4 rounded-2xl border bg-white">
+                      <Shimmer />
+                      <div className="mt-2">
+                        <Shimmer />
+                      </div>
+                    </div>
                   ))}
                 </div>
               ) : ordersSummaryQ.isError ? (
-                <div className="text-sm text-rose-600 inline-flex items-center gap-2"><Info size={16} /> Couldn’t load order summary.</div>
+                <div className="text-sm text-rose-600 inline-flex items-center gap-2">
+                  <Info size={16} /> Couldn’t load order summary.
+                </div>
               ) : (
                 <>
                   <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                    <Stat label="Total orders" value={String(ordersSummaryQ.data?.total ?? 0)} icon={<RefreshCcw size={18} />} accent="violet" />
+                    <Stat
+                      label="Total orders"
+                      value={String(ordersSummaryQ.data?.ordersCount ?? 0)}
+                      icon={<RefreshCcw size={18} />}
+                      accent="violet"
+                    />
                     {byStatusEntries.slice(0, 5).map(([k, v]) => (
                       <Stat
                         key={k}
                         label={k}
                         value={String(v)}
-                        icon={k === 'PAID' ? <CheckCircle2 size={18} /> : k === 'SHIPPED' || k === 'DELIVERED' || k === 'PROCESSING' ? <Truck size={18} /> : <Clock3 size={18} />}
+                        icon={
+                          k === 'PAID'
+                            ? <CheckCircle2 size={18} />
+                            : k === 'SHIPPED' || k === 'DELIVERED' || k === 'PROCESSING'
+                              ? <Truck size={18} />
+                              : <Clock3 size={18} />
+                        }
                         accent={k === 'PAID' ? 'emerald' : k === 'PENDING' ? 'cyan' : 'violet'}
                       />
                     ))}
@@ -647,50 +788,48 @@ export default function UserDashboard() {
             <GlassCard
               title="Recent orders"
               icon={<Truck size={18} />}
-              right={<Link className="text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">View all <ChevronRight size={14} /></Link>}
+              right={
+                <Link className="text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
+                  View all <ChevronRight size={14} />
+                </Link>
+              }
             >
               {ordersQ.isLoading ? (
-                <div className="grid gap-3">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="border rounded-2xl p-4 bg-white grid gap-2"><Shimmer /><Shimmer /></div>)}</div>
+                <div className="grid gap-3">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="border rounded-2xl p-4 bg-white grid gap-2">
+                      <Shimmer />
+                      <Shimmer />
+                    </div>
+                  ))}
+                </div>
               ) : ordersQ.isError ? (
-                <div className="text-sm text-rose-600 inline-flex items-center gap-2"><Info size={16} /> Couldn’t load orders.</div>
+                <div className="text-sm text-rose-600 inline-flex items-center gap-2">
+                  <Info size={16} /> Couldn’t load orders.
+                </div>
               ) : ordersQ.data && ordersQ.data.length > 0 ? (
                 <div className="grid gap-3">
                   {ordersQ.data.map((o) => (
                     <motion.div
                       key={o.id}
                       whileHover={{ scale: 1.005 }}
-                      className="border rounded-2xl p-4 bg-white flex items-center gap-4"
+                      className="border rounded-2xl p-4 bg-white flex flex-col sm:flex-row sm:items-center gap-4"
                     >
-                      <div className="text-xs w-28">
+                      <div className="text-xs w-28 shrink-0">
                         <div className="text-zinc-500">{dateFmt(o.createdAt)}</div>
                         <div className="font-medium mt-1">{o.status}</div>
                       </div>
-                      <div className="flex-1 grid gap-2 sm:grid-cols-2">
-                        <div className="flex items-center gap-2">
-                          {o.items.slice(0, 3).map((it) => {
-                            const productId = it.product?.id ?? it.id;
-                            const src = it.image || it.product?.imagesJson?.[0] || '/placeholder.svg';
-                            return (
-                              <Link key={it.id} to={`/product/${productId}`} title={it.title} aria-label={`View ${it.title}`}>
-                                <img src={src} alt={it.title} className="w-12 h-12 rounded-xl object-cover border" />
-                              </Link>
-                            );
-                          })}
-                          {o.items.length > 3 && (
-                            <span className="text-xs text-zinc-500">+{o.items.length - 3} more</span>
-                          )}
-                        </div>
-                        <div className="text-sm">
-                          <div className="font-semibold">{ngn.format(o.total)}</div>
-                          <div className="text-zinc-500">{o.items[0]?.title ?? ''}</div>
+                      <div className="flex-1 text-sm">
+                        <div className="font-semibold">{ngn.format(o.total)}</div>
+                        <div className="text-zinc-500 mt-1">
+                          {o.items.length === 0
+                            ? 'No items'
+                            : o.items.length === 1
+                              ? o.items[0].title
+                              : `${o.items[0].title} + ${o.items.length - 1} more`}
                         </div>
                       </div>
                       <div className="ml-auto flex items-center gap-2">
-                        {o.trackingUrl && (
-                          <a href={o.trackingUrl} target="_blank" rel="noreferrer" className="text-sm text-cyan-700 hover:underline">
-                            Track
-                          </a>
-                        )}
                         <Link to={`/orders?open=${o.id}`} className="text-sm text-fuchsia-700 hover:underline">
                           Details
                         </Link>
@@ -716,16 +855,33 @@ export default function UserDashboard() {
             <GlassCard
               title="Recent transactions"
               icon={<CreditCard size={18} />}
-              right={<Link className="text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">All orders <ChevronRight size={14} /></Link>}
+              right={
+                <Link className="text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
+                  All orders <ChevronRight size={14} />
+                </Link>
+              }
             >
               {transactionsQ.isLoading ? (
-                <div className="grid gap-3">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="border rounded-2xl p-4 bg-white grid gap-2"><Shimmer /><Shimmer /></div>)}</div>
+                <div className="grid gap-3">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="border rounded-2xl p-4 bg-white grid gap-2">
+                      <Shimmer />
+                      <Shimmer />
+                    </div>
+                  ))}
+                </div>
               ) : transactionsQ.isError ? (
-                <div className="text-sm text-rose-600 inline-flex items-center gap-2"><Info size={16} /> Couldn’t load transactions.</div>
+                <div className="text-sm text-rose-600 inline-flex items-center gap-2">
+                  <Info size={16} /> Couldn’t load transactions.
+                </div>
               ) : transactionsQ.data && transactionsQ.data.length > 0 ? (
                 <div className="grid gap-3">
                   {transactionsQ.data.map((t) => (
-                    <motion.div key={t.orderId} whileHover={{ scale: 1.005 }} className="border rounded-2xl p-4 bg-white flex items-center gap-4">
+                    <motion.div
+                      key={t.orderId}
+                      whileHover={{ scale: 1.005 }}
+                      className="border rounded-2xl p-4 bg-white flex items-center gap-4"
+                    >
                       <div className="text-xs w-44">
                         <div className="text-zinc-500">{dateTimeFmt(t.createdAt)}</div>
                         <div className="font-medium mt-1">{t.orderStatus}</div>
@@ -750,7 +906,10 @@ export default function UserDashboard() {
                         </Link>
                         {t.orderStatus !== 'PAID' && (
                           <motion.div whileHover={{ y: -1 }}>
-                            <Link to={`/payment?orderId=${t.orderId}`} className="text-sm rounded-full border px-3 py-1.5 bg-white hover:bg-zinc-50 transition">
+                            <Link
+                              to={`/payment?orderId=${t.orderId}`}
+                              className="text-sm rounded-full border px-3 py-1.5 bg-white hover:bg-zinc-50 transition"
+                            >
                               Pay now
                             </Link>
                           </motion.div>
@@ -775,7 +934,7 @@ export default function UserDashboard() {
                 />
                 <Stat
                   label="Orders"
-                  value={String(ordersSummaryQ.data?.total ?? 0)}
+                  value={String(ordersSummaryQ.data?.ordersCount ?? 0)}
                   icon={<ShoppingBag size={18} />}
                   accent="cyan"
                 />
@@ -787,7 +946,6 @@ export default function UserDashboard() {
                       : '—'
                   }
                 />
-
               </div>
               <p className="text-xs text-zinc-600 mt-3">
                 Tip: Turn on personalised recommendations in Preferences to see smarter picks here.

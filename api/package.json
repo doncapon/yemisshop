@@ -2,6 +2,7 @@
   "name": "ecommerce-api",
   "version": "0.2.0",
   "type": "module",
+  "prisma": { "seed": "node prisma/seed.js" },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
@@ -10,7 +11,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
-    "seed": "node dist/prisma/seed.js",
+    "seeds": "node dist/prisma/seed.js",
+    "seed": "node prisma/seed.js",
     "postdeploy": "npm run seed",
     "prestart": "prisma migrate deploy && echo '--- PWD ---' && pwd && echo '--- ls -la ---' && ls -la && echo '--- ls -R dist ---' && ls -R dist || true"
   },
@@ -48,6 +50,7 @@
     "@types/node": "^24.8.1",
     "@types/nodemailer": "^7.0.2",
     "@types/pdfkit": "^0.17.3",
+    "dotenv-cli": "^11.0.0",
     "multer": "^2.0.2",
     "prisma": "^6.16.3",
     "slugify": "^1.6.6",
