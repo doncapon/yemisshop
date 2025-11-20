@@ -1083,13 +1083,81 @@ export default function Catalog() {
   }, [totalPages]);
 
   if (productsQ.isLoading)
-    return <p className="p-6">Loading…</p>;
-  if (productsQ.error)
     return (
-      <p className="p-6 text-rose-600">
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <div
+          className="
+            relative
+            w-[10rem] aspect-square      /* mobile */
+            sm:w-[13rem]                 /* small screens & up */
+            md:w-[16rem]                 /* desktop */
+          "
+          role="status"
+          aria-label="Error loading products"
+        >
+          {/* Outer ring */}
+          <div className="absolute inset-0 rounded-full border-2 border-slate-200/70" />
+
+          {/* Inner ring (scaled with size) */}
+          <div className="absolute inset-[18%] rounded-full border border-slate-200/40" />
+
+          {/* Rotating radar beam */}
+          <div
+            className="
+              absolute inset-[8%] rounded-full
+              bg-[conic-gradient(from_0deg,rgba(59,130,246,0.9),rgba(59,130,246,0.05)_40%,transparent_65%)]
+              animate-[spin_1.8s_linear_infinite]
+            "
+          />
+
+          {/* Center dot */}
+          <div className="absolute top-1/2 left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-500" />
+        </div>
+      </div>
+    );
+
+ if (productsQ.error)
+  return (
+    <>
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <div
+          className="
+            relative
+            w-[10rem] aspect-square      /* mobile */
+            sm:w-[13rem]                 /* small screens & up */
+            md:w-[16rem]                 /* desktop */
+          "
+          role="status"
+          aria-label="Error loading products"
+        >
+          {/* Outer ring */}
+          <div className="absolute inset-0 rounded-full border-2 border-slate-200/70" />
+
+          {/* Inner ring (scaled with size) */}
+          <div className="absolute inset-[18%] rounded-full border border-slate-200/40" />
+
+          {/* Rotating radar beam */}
+          <div
+            className="
+              absolute inset-[8%] rounded-full
+              bg-[conic-gradient(from_0deg,rgba(59,130,246,0.9),rgba(59,130,246,0.05)_40%,transparent_65%)]
+              animate-[spin_1.8s_linear_infinite]
+            "
+          />
+
+          {/* Center dot */}
+          <div className="absolute top-1/2 left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-500" />
+        </div>
+      </div>
+
+      <p className="p-6 text-center text-rose-600">
         Error loading products
       </p>
-    );
+    </>
+  );
+
+
+
 
   /* -------- Small helpers for JSX -------- */
 
@@ -1976,8 +2044,8 @@ export default function Catalog() {
                                 type="button"
                                 onClick={() => goTo(n)}
                                 className={`px-2 py-1 text-[9px] border rounded-lg ${n === currentPage
-                                    ? 'bg-zinc-900 text-white border-zinc-900'
-                                    : 'bg-white hover:bg-zinc-50'
+                                  ? 'bg-zinc-900 text-white border-zinc-900'
+                                  : 'bg-white hover:bg-zinc-50'
                                   }`}
                               >
                                 {n}
@@ -2001,8 +2069,8 @@ export default function Catalog() {
                                 type="button"
                                 onClick={() => goTo(n)}
                                 className={`px-3 py-1.5 text-xs border rounded-xl ${n === currentPage
-                                    ? 'bg-zinc-900 text-white border-zinc-900'
-                                    : 'bg-white hover:bg-zinc-50'
+                                  ? 'bg-zinc-900 text-white border-zinc-900'
+                                  : 'bg-white hover:bg-zinc-50'
                                   }`}
                                 aria-current={n === currentPage ? 'page' : undefined}
                               >
