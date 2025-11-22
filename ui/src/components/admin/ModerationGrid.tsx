@@ -100,6 +100,7 @@ function timeVal(iso?: string) {
   return Number.isFinite(t) ? t : 0;
 }
 
+
 function useModeratableProductsQuery(token: string | null | undefined, q: string) {
   return useQuery<AdminProduct[]>({
     queryKey: ['admin', 'products', 'moderation', { q }],
@@ -111,9 +112,9 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
     queryFn: async () => {
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
 
-      // 🔹 Match ManageProducts: explicitly ask for ANY status
+      // ✅ Match ManageProducts: *always* ask for ANY status
       const params = {
-        status: 'ANY',                    // <-- IMPORTANT
+        status: 'ANY',                     // <---- IMPORTANT
         q: q || undefined,
         take: 50,
         skip: 0,
@@ -129,7 +130,9 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
         price: p.price != null ? p.price : null,
         status: String(p.status ?? ''),
         imagesJson:
-          Array.isArray(p.imagesJson) || typeof p.imagesJson === 'string' ? p.imagesJson : [],
+          Array.isArray(p.imagesJson) || typeof p.imagesJson === 'string'
+            ? p.imagesJson
+            : [],
         createdAt: p.createdAt ?? null,
         isDeleted: !!p.isDeleted,
         ownerId: p.ownerId ?? p.owner?.id ?? null,
@@ -142,10 +145,9 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
         supplierOffers: Array.isArray(p.supplierOffers) ? p.supplierOffers : [],
       }));
 
-      // 🔹 Drop LIVE only here (what you want)
-      const nonLive = rows.filter((p) => normalizeStatus(p.status) !== 'LIVE');
+      // 🔹 Now just drop LIVE ones on the client
+      const nonLive = rows.filter((p) => p.status?.toUpperCase() !== 'LIVE');
 
-      // keep your existing sorting
       nonLive.sort((a, b) => {
         const ra = statusRank(a.status);
         const rb = statusRank(b.status);
@@ -153,7 +155,6 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
         return timeVal(b.createdAt) - timeVal(a.createdAt);
       });
 
-      console.log('Moderation statuses:', nonLive.map((p) => p.status));
       return nonLive;
     },
   });
