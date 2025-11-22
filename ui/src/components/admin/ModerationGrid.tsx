@@ -146,7 +146,8 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
       }));
 
       // 🔹 Now just drop LIVE ones on the client
-      const nonLive = rows.filter((p) => p.status?.toUpperCase() !== 'LIVE');
+      // const nonLive = rows.filter((p) => p.status?.toUpperCase() !== 'LIVE');
+      const nonLive = rows; 
 
       nonLive.sort((a, b) => {
         const ra = statusRank(a.status);
