@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 
 import { prisma } from '../lib/prisma.js';
+import { Prisma, SupplierType, SupplierCompanyType } from '@prisma/client';
 import { sendVerifyEmail, sendResetorForgotPasswordEmail } from '../lib/email.js';
 import { signJwt, signAccessJwt } from '../lib/jwt.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -172,8 +173,6 @@ const fmtErr = (e: any) => {
   if (e instanceof Error) return e.message;
   try { return JSON.stringify(e); } catch { return String(e); }
 };
-
-// ... keep the rest of your file
 
 // ============ PUBLIC resend (email in body). Uses JWT links. ============
 router.post('/resend-verification', wrap(async (req, res) => {
@@ -594,5 +593,254 @@ router.post('/resend-otp', requireAuth, wrap(async (req, res) => {
     res.status(500).json({ error: 'Internal error' });
   }
 }));
+
+const registerSupplierSchema = z.object({
+  role: z.literal('SUPPLIER').optional(), // from frontend, but we don't really need it
+  contactFirstName: z.string().min(1),
+  contactLastName: z.string().min(1),
+  contactEmail: z.string().email(),
+  contactPhone: z.string().nullable().optional(),
+  password: z.string().min(8),
+
+  rcNumber: z.string().min(3),
+  companyType: z.string().min(1),
+
+  kycEntity: z.object({
+    company_name: z.string(),
+    rc_number: z.string(),
+    address: z.string().nullable().optional(),
+    state: z.string().nullable().optional(),
+    city: z.string().nullable().optional(),
+    lga: z.string().nullable().optional(),
+    email: z.string().nullable().optional(),
+    type_of_company: z.string(),
+    date_of_registration: z.string().nullable().optional(),
+    nature_of_business: z.string().nullable().optional(),
+    share_capital: z.number().nullable().optional(),
+    share_details: z.unknown().optional(),
+    affiliates: z
+      .array(
+        z.object({
+          first_name: z.string(),
+          last_name: z.string(),
+          email: z.string().nullable().optional(),
+          address: z.string().nullable().optional(),
+          state: z.string().nullable().optional(),
+          city: z.string().nullable().optional(),
+          lga: z.string().nullable().optional(),
+          occupation: z.string().nullable().optional(),
+          phone_number: z.string().nullable().optional(),
+          gender: z.string().nullable().optional(),
+          date_of_birth: z.string().nullable().optional(),
+          nationality: z.string().nullable().optional(),
+          affiliate_type: z.string().nullable().optional(),
+          affiliate_category_type: z.string().nullable().optional(),
+          country: z.string().nullable().optional(),
+          id_number: z.string().nullable().optional(),
+          id_type: z.string().nullable().optional(),
+        })
+      )
+      .optional(),
+  }),
+
+  ownerVerified: z.boolean().optional(),
+  proprietorAffiliate: z
+    .object({
+      first_name: z.string(),
+      last_name: z.string(),
+      email: z.string().nullable().optional(),
+      address: z.string().nullable().optional(),
+      state: z.string().nullable().optional(),
+      city: z.string().nullable().optional(),
+      lga: z.string().nullable().optional(),
+      occupation: z.string().nullable().optional(),
+      phone_number: z.string().nullable().optional(),
+      gender: z.string().nullable().optional(),
+      date_of_birth: z.string().nullable().optional(),
+      nationality: z.string().nullable().optional(),
+      affiliate_type: z.string().nullable().optional(),
+      affiliate_category_type: z.string().nullable().optional(),
+      country: z.string().nullable().optional(),
+      id_number: z.string().nullable().optional(),
+      id_type: z.string().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
+  proprietorBvnMasked: z.string().optional(),
+});
+
+router.post('/register-supplier', async (req, res) => {
+  try {
+    const parsed = registerSupplierSchema.parse(req.body);
+
+    const {
+      contactFirstName,
+      contactLastName,
+      contactEmail,
+      contactPhone,
+      password,
+      rcNumber,
+      companyType,
+      kycEntity,
+      ownerVerified,
+      proprietorAffiliate,
+      proprietorBvnMasked,
+    } = parsed;
+
+    // --- 1) Check for existing user / supplier conflicts ---
+
+    const existingUser = await prisma.user.findUnique({
+      where: { email: contactEmail.toLowerCase() },
+    });
+    if (existingUser) {
+      return res.status(409).json({ error: 'A user with this email already exists.' });
+    }
+
+    const existingSupplierByRc = await prisma.supplier.findFirst({
+      where: { rcNumber },
+    });
+    if (existingSupplierByRc) {
+      return res
+        .status(409)
+        .json({ error: 'A supplier with this RC number already exists.' });
+    }
+
+    // --- 2) Create User (role: SUPPLIER) ---
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const user = await prisma.user.create({
+      data: {
+        email: contactEmail.toLowerCase(),
+        firstName: contactFirstName,
+        lastName: contactLastName,
+        phone: contactPhone || undefined,
+        role: 'SUPPLIER', // make sure your Role enum / type supports this
+        status: ownerVerified ? 'VERIFIED' : 'PENDING', // adjust to your app's statuses
+        passwordHash,
+      },
+    });
+
+    // --- 3) Optional: create Address for registered office ---
+
+    let registeredAddressId: string | null = null;
+
+    if (kycEntity.address || kycEntity.city || kycEntity.state || kycEntity.lga) {
+      const addr = await prisma.address.create({
+        data: {
+          // No houseNumber/postCode in payload, so we just map what we have
+          streetName: kycEntity.address || undefined,
+          town: kycEntity.lga || undefined,
+          city: kycEntity.city || undefined,
+          state: kycEntity.state || undefined,
+          country: 'Nigeria', // Dojah CAC is Nigeria; change if you support others
+        },
+      });
+      registeredAddressId = addr.id;
+    }
+
+    // --- 4) Create Supplier + nested affiliates ---
+
+    const affiliatesCreate =
+      kycEntity.affiliates && kycEntity.affiliates.length
+        ? {
+            create: kycEntity.affiliates.map((a) => ({
+              firstName: a.first_name,
+              lastName: a.last_name,
+              email: a.email || undefined,
+              phoneNumber: a.phone_number || undefined,
+              gender: a.gender || undefined,
+              dateOfBirth: a.date_of_birth ? new Date(a.date_of_birth) : undefined,
+              nationality: a.nationality || undefined,
+              affiliateType: a.affiliate_type || undefined,
+              affiliateCategoryType: a.affiliate_category_type || undefined,
+              occupation: a.occupation || undefined,
+              country: a.country || undefined,
+              idNumber: a.id_number || undefined,
+              idType: a.id_type || undefined,
+              // if your SupplierAffiliate has an Address relation, you can also nest create here
+            })),
+          }
+        : undefined;
+
+    const dateOfReg = kycEntity.date_of_registration
+      ? new Date(kycEntity.date_of_registration)
+      : null;
+
+    const shareCapitalDecimal =
+      typeof kycEntity.share_capital === 'number'
+        ? new Prisma.Decimal(kycEntity.share_capital)
+        : null;
+
+    const supplier = await prisma.supplier.create({
+      data: {
+        // core
+        name: kycEntity.company_name,
+        contactEmail: contactEmail.toLowerCase(),
+        whatsappPhone: contactPhone || null,
+        type: SupplierType.ONLINE, // or whatever default makes sense in your enum
+        status: ownerVerified ? 'ACTIVE' : 'PENDING_REVIEW',
+
+        // link to user
+        userId: user.id,
+
+        // KYC / legal info
+        legalName: kycEntity.company_name,
+        rcNumber,
+        companyType: companyType as SupplierCompanyType, // or kycEntity.type_of_company
+        dateOfRegistration: dateOfReg || undefined,
+        natureOfBusiness: kycEntity.nature_of_business || undefined,
+        shareCapital: shareCapitalDecimal || undefined,
+        shareDetails: (kycEntity.share_details as any) ?? undefined,
+        kycRawPayload: kycEntity as any,
+
+        // registered address
+        registeredAddressId: registeredAddressId || undefined,
+
+        // affiliates (directors / proprietors)
+        affiliates: affiliatesCreate,
+
+        // payout plumbing remains null/default until supplier configures it
+        payoutMethod: null,
+        bankCountry: null,
+        bankCode: null,
+        bankName: null,
+        accountNumber: null,
+        accountName: null,
+        paystackRecipientCode: null,
+        paystackSubaccountCode: null,
+        isPayoutEnabled: false,
+
+        // you can store these for audit if you add fields:
+        ownerVerified: ownerVerified ?? false,
+        proprietorAffiliateJson: proprietorAffiliate as any,
+        proprietorBvnMasked,
+      },
+    });
+
+    return res.status(201).json({
+      message: 'Supplier registered successfully',
+      supplierId: supplier.id,
+    });
+  } catch (err: any) {
+    console.error('[register-supplier] error', err);
+
+    if (err.name === 'ZodError') {
+      return res.status(400).json({ error: 'Invalid payload', details: err.errors });
+    }
+
+    // Handle unique constraint errors more nicely
+    if (err instanceof Prisma.PrismaClientKnownRequestError) {
+      if (err.code === 'P2002') {
+        return res.status(409).json({
+          error: 'A supplier or user already exists with these details.',
+          meta: err.meta,
+        });
+      }
+    }
+
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 export default router;

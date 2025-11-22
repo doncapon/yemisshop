@@ -30,6 +30,7 @@ import SettingsAdminPage from './pages/admin/SettingsAdminPage.tsx';
 import UserDashboard from './pages/UserDashboard.tsx';
 import { useAuthStore } from './store/auth';
 import { scheduleTokenExpiryLogout } from './utils/tokenWatcher';
+import SupplierRegister from './pages/SupplierRegister.tsx';
 
 // Optional shell for /admin (handy if you add a sidebar/header later)
 function AdminLayout() {
@@ -83,6 +84,11 @@ export default function App() {
               <Route
                 path="/register"
                 element={useAuthStore.getState().token ? <Navigate to="/" replace /> : <Register />}
+              />
+
+               <Route
+                path="/register-supplier"
+                element={useAuthStore.getState().token ? <Navigate to="/" replace /> : <SupplierRegister />}
               />
               <Route
                 path="/reset-password"

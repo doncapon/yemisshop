@@ -215,13 +215,20 @@ export default function Navbar() {
         <div className="hidden md:flex items-center gap-3">
           {!token ? (
             <>
+              {/* NEW: Supplier registration button */}
+              <NavLink
+                to="/register-supplier"
+                className="inline-flex items-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-amber-300 hover:bg-amber-200 transition"
+              >
+                Supply
+              </NavLink>
+
               <NavLink
                 to="/login"
                 className={({ isActive }) =>
-                  `${linkBase} ${
-                    isActive
-                      ? "bg-white text-primary-900"
-                      : "border border-white/25 text-white hover:bg-white/10"
+                  `${linkBase} ${isActive
+                    ? "bg-white text-primary-900"
+                    : "border border-white/25 text-white hover:bg-white/10"
                   }`
                 }
               >
@@ -342,10 +349,9 @@ export default function Navbar() {
               end
               onClick={() => setMobileOpen(false)}
               className={({ isActive }) =>
-                `${linkBase} ${
-                  isActive
-                    ? "bg-white/20 text-white"
-                    : "text-white/90 hover:bg-white/10"
+                `${linkBase} ${isActive
+                  ? "bg-white/20 text-white"
+                  : "text-white/90 hover:bg-white/10"
                 }`
               }
             >
@@ -356,10 +362,9 @@ export default function Navbar() {
               to="/cart"
               onClick={() => setMobileOpen(false)}
               className={({ isActive }) =>
-                `${linkBase} ${
-                  isActive
-                    ? "bg-white/20 text-white"
-                    : "text-white/90 hover:bg-white/10"
+                `${linkBase} ${isActive
+                  ? "bg-white/20 text-white"
+                  : "text-white/90 hover:bg-white/10"
                 }`
               }
             >
@@ -371,10 +376,9 @@ export default function Navbar() {
                 to="/wishlist"
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
-                  `${linkBase} ${
-                    isActive
-                      ? "bg-white/20 text-white"
-                      : "text-white/90 hover:bg-white/10"
+                  `${linkBase} ${isActive
+                    ? "bg-white/20 text-white"
+                    : "text-white/90 hover:bg-white/10"
                   }`
                 }
               >
@@ -388,10 +392,9 @@ export default function Navbar() {
                 end
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
-                  `${linkBase} ${
-                    isActive
-                      ? "bg-white/20 text-white"
-                      : "text-white/90 hover:bg-white/10"
+                  `${linkBase} ${isActive
+                    ? "bg-white/20 text-white"
+                    : "text-white/90 hover:bg-white/10"
                   }`
                 }
               >
@@ -404,10 +407,9 @@ export default function Navbar() {
                 to="/admin"
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
-                  `${linkBase} ${
-                    isActive
-                      ? "bg-white/20 text-white"
-                      : "text-white/90 hover:bg-white/10"
+                  `${linkBase} ${isActive
+                    ? "bg-white/20 text-white"
+                    : "text-white/90 hover:bg-white/10"
                   }`
                 }
               >
@@ -419,19 +421,28 @@ export default function Navbar() {
 
             {!token ? (
               <div className="flex gap-2">
+                {/* NEW: Supplier registration button (mobile) */}
+                <NavLink
+                  to="/register-supplier"
+                  onClick={() => setMobileOpen(false)}
+                  className="flex-1 text-center inline-flex items-center justify-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-amber-300 hover:bg-amber-200 transition"
+                >
+                  Supply
+                </NavLink>
+
                 <NavLink
                   to="/login"
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `flex-1 text-center ${linkBase} ${
-                      isActive
-                        ? "bg-white text-primary-900"
-                        : "border border-white/25 text-white hover:bg-white/10"
+                    `flex-1 text-center ${linkBase} ${isActive
+                      ? "bg-white text-primary-900"
+                      : "border border-white/25 text-white hover:bg-white/10"
                     }`
                   }
                 >
                   Login
                 </NavLink>
+
                 <NavLink
                   to="/register"
                   onClick={() => setMobileOpen(false)}
