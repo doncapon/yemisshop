@@ -26,6 +26,7 @@ model Address {
   city        String?
   state       String?
   country     String?
+  lga         String? // NEW: for Nigerian addresses, e.g. "Jos south"
 
   // Back-relations (MUST use the same relation names)
   userPrimary  User? @relation("UserPrimaryAddress")
@@ -33,6 +34,12 @@ model Address {
 
   // Back-relation for orders’ shipping address
   ordersAsShipping Order[] @relation("OrderShippingAddress")
+
+  // NEW: Supplier registered office address
+  suppliersRegistered Supplier[] @relation("SupplierRegisteredAddress")
+
+  // NEW: Affiliates' addresses
+  supplierAffiliates SupplierAffiliate[] @relation("SupplierAffiliateAddress")
 }
 
 /**
@@ -87,6 +94,14 @@ model User {
   @@index([phoneVerifiedAt])
 }
 
+enum SupplierCompanyType {
+  BUSINESS_NAME
+  COMPANY
+  INCORPORATED_TRUSTEES
+  LIMITED_PARTNERSHIP
+  LIMITED_LIABILITY_PARTNERSHIP
+}
+
 model Supplier {
   id            String       @id @default(cuid())
   name          String       @unique
@@ -112,7 +127,7 @@ model Supplier {
 
   chosenOrderItems OrderItem[] @relation("OrderItemChosenSupplier")
 
-  // NEW — payout plumbing
+  // NEW — payout plumbing (existing)
   payoutMethod           String?
   bankCountry            String?
   bankCode               String?
@@ -122,6 +137,71 @@ model Supplier {
   paystackRecipientCode  String?
   paystackSubaccountCode String?
   isPayoutEnabled        Boolean @default(false)
+
+  // ========= NEW: Legal / KYC company info =========
+
+  /// Registered legal name from KYC (company_name)
+  legalName          String?
+  /// RC/BN number (rc_number) – optional but unique when present
+  rcNumber           String?              @unique
+  /// type_of_company (BUSINESS_NAME, LIMITED, etc.)
+  companyType        SupplierCompanyType?
+  /// date_of_registration
+  dateOfRegistration DateTime?
+  /// nature_of_business
+  natureOfBusiness   String?
+  /// share_capital (you can adjust precision/scale for your DB)
+  shareCapital       Decimal?
+  /// share_details (arbitrary structure from provider)
+  shareDetails       Json?
+
+  /// Optional: keep full raw response from KYC provider for audit/debug
+  kycRawPayload Json?
+
+  /// Whether we’ve successfully verified the owner/proprietor via BVN etc.
+  ownerVerified           Boolean @default(false)
+  /// Snapshot of the proprietor affiliate object we matched against
+  proprietorAffiliateJson Json?
+  /// Masked BVN we used for verification (e.g. ******1234)
+  proprietorBvnMasked     String?
+
+  // ========= NEW: Registered address using Address model =========
+
+  registeredAddressId String?
+  registeredAddress   Address? @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
+
+  // ========= NEW: Affiliates (directors / proprietors, etc.) =========
+
+  affiliates SupplierAffiliate[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model SupplierAffiliate {
+  id String @id @default(cuid())
+
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+
+  // From payload:
+  firstName             String
+  lastName              String
+  email                 String?
+  phoneNumber           String?
+  gender                String? // "MALE", "FEMALE", etc. (keep string for flexibility)
+  dateOfBirth           DateTime?
+  nationality           String?
+  affiliateType         String? // e.g. "PROPRIETOR"
+  affiliateCategoryType String? // e.g. "individual_proprietor"
+  occupation            String?
+  country               String?
+  idNumber              String?
+  idType                String?
+
+  // Address for this affiliate (using Address model)
+  addressId String?
+  address   Address? @relation("SupplierAffiliateAddress", fields: [addressId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -158,7 +238,6 @@ model Order {
   serviceFeeComms   Decimal @default(0) @db.Decimal(10, 2)
   serviceFeeGateway Decimal @default(0) @db.Decimal(10, 2)
   serviceFeeTotal   Decimal @default(0) @db.Decimal(10, 2)
-  
 
   // back-rel to OrderComms (name must match OrderComms.order relation)
   comms OrderComms[] @relation("OrderToComms")
@@ -550,8 +629,8 @@ model Wishlist {
 }
 
 model Otp {
-  id         String   @id @default(cuid())
-  userId     String?  // <-- add this if missing
+  id         String    @id @default(cuid())
+  userId     String? // <-- add this if missing
   identifier String?
   codeHash   String
   attempts   Int       @default(0)

@@ -110,13 +110,15 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
     refetchOnMount: 'always',
     queryFn: async () => {
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-      // no status filter server-side so we can collect multiple states
+
       const params = {
         q: q || undefined,
         take: 50,
         skip: 0,
         include: 'supplierOffers,owner',
+        status: 'ANY' as const,   // 👈 NEW: override backend default
       };
+
       const { data } = await api.get('/api/admin/products', { headers, params });
       const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 
@@ -125,7 +127,10 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
         title: String(p.title ?? ''),
         price: p.price != null ? p.price : null,
         status: String(p.status ?? ''),
-        imagesJson: Array.isArray(p.imagesJson) || typeof p.imagesJson === 'string' ? p.imagesJson : [],
+        imagesJson:
+          Array.isArray(p.imagesJson) || typeof p.imagesJson === 'string'
+            ? p.imagesJson
+            : [],
         createdAt: p.createdAt ?? null,
         isDeleted: !!p.isDeleted,
         ownerId: p.ownerId ?? p.owner?.id ?? null,
@@ -141,12 +146,11 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
       // 1) Only NOT LIVE
       const nonLive = rows.filter((p) => normalizeStatus(p.status) !== 'LIVE');
 
-      // 2) Sort: PUBLISHED first, then PENDING-like, then others; and newest first inside each bucket
+      // 2) Sort: PUBLISHED first, then PENDING-like, then others; newest first
       nonLive.sort((a, b) => {
         const ra = statusRank(a.status);
         const rb = statusRank(b.status);
         if (ra !== rb) return ra - rb;
-        // newest first
         return timeVal(b.createdAt) - timeVal(a.createdAt);
       });
 
@@ -154,6 +158,7 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
     },
   });
 }
+
 
 /* ===================== Component ===================== */
 type ModerationGridProps = {
