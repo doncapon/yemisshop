@@ -143,8 +143,11 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
         supplierOffers: Array.isArray(p.supplierOffers) ? p.supplierOffers : [],
       }));
 
+      console.log('Moderation statuses:', rows.map(p => ({ id: p.id, status: p.status })));
+
       // 1) Only NOT LIVE
       const nonLive = rows.filter((p) => normalizeStatus(p.status) !== 'LIVE');
+      console.log('Moderation NON LIVE statuses:', nonLive.map(p => ({ id: p.id, status: p.status })));
 
       // 2) Sort: PUBLISHED first, then PENDING-like, then others; newest first
       nonLive.sort((a, b) => {
