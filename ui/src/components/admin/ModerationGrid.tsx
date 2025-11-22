@@ -111,12 +111,21 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
     queryFn: async () => {
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
 
+      // 🔴 OLD – no status, backend defaults to LIVE on Railway
+      // const params = {
+      //   q: q || undefined,
+      //   take: 50,
+      //   skip: 0,
+      //   include: 'supplierOffers,owner',
+      // };
+
+      // ✅ NEW – explicitly ask for ANY so we get PUBLISHED/PENDING/REJECTED too
       const params = {
+        status: 'ANY' as const,
         q: q || undefined,
         take: 50,
         skip: 0,
         include: 'supplierOffers,owner',
-        status: 'ANY' as const,   // 👈 NEW: override backend default
       };
 
       const { data } = await api.get('/api/admin/products', { headers, params });
@@ -127,10 +136,7 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
         title: String(p.title ?? ''),
         price: p.price != null ? p.price : null,
         status: String(p.status ?? ''),
-        imagesJson:
-          Array.isArray(p.imagesJson) || typeof p.imagesJson === 'string'
-            ? p.imagesJson
-            : [],
+        imagesJson: Array.isArray(p.imagesJson) || typeof p.imagesJson === 'string' ? p.imagesJson : [],
         createdAt: p.createdAt ?? null,
         isDeleted: !!p.isDeleted,
         ownerId: p.ownerId ?? p.owner?.id ?? null,
@@ -143,24 +149,18 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
         supplierOffers: Array.isArray(p.supplierOffers) ? p.supplierOffers : [],
       }));
 
-      console.log('Moderation statuses:', rows.map(p => ({ id: p.id, status: p.status })));
-
-      // 1) Only NOT LIVE
+      // Keep this as-is: we still only want NOT LIVE
       const nonLive = rows.filter((p) => normalizeStatus(p.status) !== 'LIVE');
-      console.log('Moderation NON LIVE statuses:', nonLive.map(p => ({ id: p.id, status: p.status })));
 
-      // 2) Sort: PUBLISHED first, then PENDING-like, then others; newest first
-      nonLive.sort((a, b) => {
-        const ra = statusRank(a.status);
-        const rb = statusRank(b.status);
-        if (ra !== rb) return ra - rb;
-        return timeVal(b.createdAt) - timeVal(a.createdAt);
-      });
+      // (Optional) debug:
+      console.log('Moderation statuses:', rows.map(r => r.status));
+      console.log('Moderation NON LIVE statuses:', nonLive.map(r => r.status));
 
       return nonLive;
     },
   });
 }
+
 
 
 /* ===================== Component ===================== */
