@@ -1,4 +1,5 @@
-import React, { createContext, useCallback, useContext, useState } from "react";
+import React, { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import Modal from "./Modal";
 
 type OpenArgs = { title: string; message?: React.ReactNode };
@@ -29,11 +30,20 @@ export const ModalProvider: React.FC<React.PropsWithChildren> = ({ children }) =
 
   const closeModal = useCallback(() => setIsOpen(false), []);
 
+  const value = useMemo(() => ({ openModal, closeModal }), [openModal, closeModal]);
+
+  const modalNode = (
+    <Modal isOpen={isOpen} title={title} message={message} onClose={closeModal} />
+  );
+
   return (
-    <ModalContext.Provider value={{ openModal, closeModal }}>
+    <ModalContext.Provider value={value}>
       {children}
-      {/* Render one modal at the root so routes/pages can trigger it */}
-      <Modal isOpen={isOpen} title={title} message={message} onClose={closeModal} />
+
+      {/* ✅ Portal modal outside any <form> to prevent submit/reset side-effects */}
+      {typeof document !== "undefined"
+        ? createPortal(modalNode, document.body)
+        : modalNode}
     </ModalContext.Provider>
   );
 };

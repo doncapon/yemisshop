@@ -1,8 +1,9 @@
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
-import { setAccessToken } from '../api/client';
+// src/store/auth.ts
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import { setAccessToken } from "../api/client";
 
-export type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER';
+export type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER";
 
 export type User = {
   id: string;
@@ -23,6 +24,8 @@ type AuthState = {
   setHydrated: (v: boolean) => void;
   setAuth: (p: { token: string; user: User }) => void;
   setNeedsVerification: (v: boolean) => void;
+
+  logout: () => void;
   clear: () => void;
 };
 
@@ -37,11 +40,16 @@ export const useAuthStore = create<AuthState>()(
       setHydrated: (v) => set({ hydrated: v }),
 
       setAuth: ({ token, user }) => {
-        setAccessToken(token);          // sync axios/localStorage
+        setAccessToken(token); // keep axios/localStorage in sync
         set({ token, user });
       },
 
       setNeedsVerification: (v) => set({ needsVerification: v }),
+
+      logout: () => {
+        setAccessToken(null);
+        set({ token: null, user: null, needsVerification: false });
+      },
 
       clear: () => {
         setAccessToken(null);
@@ -49,15 +57,21 @@ export const useAuthStore = create<AuthState>()(
       },
     }),
     {
-      name: 'auth',
+      name: "auth",
       partialize: (s) => ({
         token: s.token,
         user: s.user,
         needsVerification: s.needsVerification,
       }),
-      // When rehydration from storage is done, mark hydrated = true
       onRehydrateStorage: () => (state) => {
-        queueMicrotask(() => state?.setHydrated(true));
+        // When rehydration from storage is done, mark hydrated = true
+        queueMicrotask(() => {
+          state?.setHydrated(true);
+
+          // IMPORTANT: make sure axios has the persisted token too
+          const t = state?.token ?? null;
+          setAccessToken(t);
+        });
       },
     }
   )

@@ -2,9 +2,11 @@
   "name": "ecommerce-api",
   "version": "0.2.0",
   "type": "module",
-  "prisma": { "seed": "node prisma/seed.js" },
+  "prisma": {
+    "seed": "node prisma/seed.ts"
+  },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch src/server.ts && node -r dotenv/config src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
@@ -12,13 +14,12 @@
     "prisma:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
     "seeds": "node dist/prisma/seed.js",
-    "seed": "node prisma/seed.js",
+    "seed": "node prisma/seed.ts",
     "postdeploy": "npm run seed",
     "prestart": "prisma migrate deploy && echo '--- PWD ---' && pwd && echo '--- ls -la ---' && ls -la && echo '--- ls -R dist ---' && ls -R dist || true"
   },
   "dependencies": {
-    "@prisma/client": "^6.16.3",
-    "@types/bcryptjs": "^3.0.0",
+    "@prisma/client": "^6.17.1",
     "axios": "^1.12.2",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
@@ -41,13 +42,14 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/morgan": "^1.9.10",
     "@types/multer": "^2.0.0",
-    "@types/node": "^24.8.1",
+    "@types/node": "^24.10.4",
     "@types/nodemailer": "^7.0.2",
     "@types/pdfkit": "^0.17.3",
     "dotenv-cli": "^11.0.0",

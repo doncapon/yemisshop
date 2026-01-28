@@ -1,5 +1,5 @@
 // src/lib/prismaSoft.ts
-import { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client'
 import {prisma} from '../lib/prisma.js'
 
 /**

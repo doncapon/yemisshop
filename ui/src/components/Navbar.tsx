@@ -11,7 +11,7 @@ import { useAuthStore } from "../store/auth";
 import api from "../api/client";
 import { hardResetApp } from "../utils/resetApp";
 
-type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER";
+type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER";
 
 type MeResponse = {
   id: string;
@@ -43,6 +43,9 @@ export default function Navbar() {
   const userEmail = useAuthStore((s) => s.user?.email ?? null);
   const clear = useAuthStore((s) => s.clear);
   const nav = useNavigate();
+
+  const isSupplier = userRole === "SUPPLIER";
+  const isSuperAdmin = userRole === "SUPER_ADMIN";
 
   const [mobileOpen, setMobileOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -127,7 +130,7 @@ export default function Navbar() {
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-primary-800/40 bg-primary-900/95 backdrop-blur">
-      <div className="max-w-6xl mx-auto h-14 md:h-16 px-4 md:px-6 flex items-center gap-4">
+      <div className="w-full max-w-6xl mx-auto h-14 md:h-16 px-4 md:px-6 flex items-center gap-4 min-w-0">
         {/* Brand */}
         <div className="flex items-center gap-2">
           <Link
@@ -140,7 +143,7 @@ export default function Navbar() {
         </div>
 
         {/* Desktop nav */}
-        <nav className="hidden md:flex gap-1 ml-3">
+        <nav className="hidden md:flex gap-1 ml-3 min-w-0 flex-wrap">
           <NavLink
             to="/"
             end
@@ -151,7 +154,36 @@ export default function Navbar() {
             Catalogue
           </NavLink>
 
-          {token && (
+          {/* ✅ Dashboard label rules:
+              - SUPPLIER sees "Dashboard" -> /supplier
+              - SUPER_ADMIN sees "SupplierDashboard" -> /supplier
+              - Others see "Dashboard" -> /dashboard
+          */}
+          {token && isSupplier && (
+            <NavLink
+              to="/supplier"
+              end
+              className={({ isActive }) =>
+                `${linkBase} ${isActive ? linkActive : linkInactive}`
+              }
+            >
+              Dashboard
+            </NavLink>
+          )}
+
+          {token && isSuperAdmin && (
+            <NavLink
+              to="/supplier"
+              end
+              className={({ isActive }) =>
+                `${linkBase} ${isActive ? linkActive : linkInactive}`
+              }
+            >
+              SupplierDashboard
+            </NavLink>
+          )}
+
+          {token && !isSupplier && !isSuperAdmin && (
             <NavLink
               to="/dashboard"
               end
@@ -163,16 +195,20 @@ export default function Navbar() {
             </NavLink>
           )}
 
-          <NavLink
-            to="/cart"
-            className={({ isActive }) =>
-              `${linkBase} ${isActive ? linkActive : linkInactive}`
-            }
-          >
-            Cart
-          </NavLink>
+          {/* Hide for suppliers */}
+          {!isSupplier && (
+            <NavLink
+              to="/cart"
+              className={({ isActive }) =>
+                `${linkBase} ${isActive ? linkActive : linkInactive}`
+              }
+            >
+              Cart
+            </NavLink>
+          )}
 
-          {token && (
+          {/* Hide for suppliers */}
+          {token && !isSupplier && (
             <NavLink
               to="/wishlist"
               end
@@ -184,7 +220,8 @@ export default function Navbar() {
             </NavLink>
           )}
 
-          {token && (
+          {/* Hide for suppliers */}
+          {token && !isSupplier && (
             <NavLink
               to="/orders"
               end
@@ -215,7 +252,7 @@ export default function Navbar() {
         <div className="hidden md:flex items-center gap-3">
           {!token ? (
             <>
-              {/* NEW: Supplier registration button */}
+              {/* Supplier registration button */}
               <NavLink
                 to="/register-supplier"
                 className="inline-flex items-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-amber-300 hover:bg-amber-200 transition"
@@ -280,16 +317,33 @@ export default function Navbar() {
                     >
                       Edit Profile
                     </button>
+
                     <button
                       className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
                       onClick={() => {
                         setMenuOpen(false);
-                        nav("/orders");
+                        nav("/account/sessions");
                       }}
                       role="menuitem"
                     >
-                      Purchase history
+                      Sessions
                     </button>
+
+
+                    {/* Hide purchase history for suppliers */}
+                    {!isSupplier && (
+                      <button
+                        className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          nav("/orders");
+                        }}
+                        role="menuitem"
+                      >
+                        Purchase history
+                      </button>
+                    )}
+
                     {userRole === "SUPER_ADMIN" && (
                       <button
                         className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
@@ -358,20 +412,73 @@ export default function Navbar() {
               Catalogue
             </NavLink>
 
-            <NavLink
-              to="/cart"
-              onClick={() => setMobileOpen(false)}
-              className={({ isActive }) =>
-                `${linkBase} ${isActive
-                  ? "bg-white/20 text-white"
-                  : "text-white/90 hover:bg-white/10"
-                }`
-              }
-            >
-              Cart
-            </NavLink>
+            {/* ✅ Mobile dashboard label rules (same as desktop) */}
+            {token && isSupplier && (
+              <NavLink
+                to="/supplier"
+                end
+                onClick={() => setMobileOpen(false)}
+                className={({ isActive }) =>
+                  `${linkBase} ${isActive
+                    ? "bg-white/20 text-white"
+                    : "text-white/90 hover:bg-white/10"
+                  }`
+                }
+              >
+                Dashboard
+              </NavLink>
+            )}
 
-            {token && (
+            {token && isSuperAdmin && (
+              <NavLink
+                to="/supplier"
+                end
+                onClick={() => setMobileOpen(false)}
+                className={({ isActive }) =>
+                  `${linkBase} ${isActive
+                    ? "bg-white/20 text-white"
+                    : "text-white/90 hover:bg-white/10"
+                  }`
+                }
+              >
+                SupplierDashboard
+              </NavLink>
+            )}
+
+            {token && !isSupplier && !isSuperAdmin && (
+              <NavLink
+                to="/dashboard"
+                end
+                onClick={() => setMobileOpen(false)}
+                className={({ isActive }) =>
+                  `${linkBase} ${isActive
+                    ? "bg-white/20 text-white"
+                    : "text-white/90 hover:bg-white/10"
+                  }`
+                }
+              >
+                Dashboard
+              </NavLink>
+            )}
+
+            {/* Hide cart for suppliers */}
+            {!isSupplier && (
+              <NavLink
+                to="/cart"
+                onClick={() => setMobileOpen(false)}
+                className={({ isActive }) =>
+                  `${linkBase} ${isActive
+                    ? "bg-white/20 text-white"
+                    : "text-white/90 hover:bg-white/10"
+                  }`
+                }
+              >
+                Cart
+              </NavLink>
+            )}
+
+            {/* Hide wishlist for suppliers */}
+            {token && !isSupplier && (
               <NavLink
                 to="/wishlist"
                 onClick={() => setMobileOpen(false)}
@@ -386,7 +493,7 @@ export default function Navbar() {
               </NavLink>
             )}
 
-            {token && (
+            {token && !isSupplier && !isSuperAdmin && (
               <NavLink
                 to="/dashboard"
                 end
@@ -421,7 +528,7 @@ export default function Navbar() {
 
             {!token ? (
               <div className="flex gap-2">
-                {/* NEW: Supplier registration button (mobile) */}
+                {/* Supplier registration button (mobile) */}
                 <NavLink
                   to="/register-supplier"
                   onClick={() => setMobileOpen(false)}
@@ -462,15 +569,31 @@ export default function Navbar() {
                 >
                   Edit Profile
                 </button>
+
                 <button
                   className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
                   onClick={() => {
                     setMobileOpen(false);
-                    nav("/orders");
+                    nav("/account/sessions");
                   }}
                 >
-                  Purchase history
+                  Sessions
                 </button>
+
+
+                {/* Hide purchase history for suppliers */}
+                {!isSupplier && (
+                  <button
+                    className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
+                    onClick={() => {
+                      setMobileOpen(false);
+                      nav("/orders");
+                    }}
+                  >
+                    Purchase history
+                  </button>
+                )}
+
                 {userRole === "SUPER_ADMIN" && (
                   <button
                     className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"

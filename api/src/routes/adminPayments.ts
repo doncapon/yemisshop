@@ -1,6 +1,6 @@
 // src/routes/admin.payments.ts
 import { Router, Request, Response } from 'express';
-import { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client'
 import { requireAuth, requireSuperAdmin } from '../middleware/auth.js';
 
 const prisma = new PrismaClient();

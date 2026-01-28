@@ -1,4 +1,14 @@
+// src/utils/tokenWatcher.ts
 let timer: number | undefined;
+
+/**
+ * Safely base64url-decodes a JWT part (adds padding if needed).
+ */
+function decodeJwtPart(part: string): string {
+  const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
+  return atob(padded);
+}
 
 /**
  * Schedules a logout callback shortly before a JWT expires.
@@ -15,9 +25,10 @@ export function scheduleTokenExpiryLogout(
   if (!token) return () => {};
 
   try {
-    const parts = token.split('.');
+    const parts = token.split(".");
     if (parts.length !== 3) return () => {}; // not a JWT? ignore
-    const payloadJson = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+
+    const payloadJson = decodeJwtPart(parts[1]);
     const payload = JSON.parse(payloadJson) as { exp?: number };
 
     const expMs = (payload.exp ?? 0) * 1000;

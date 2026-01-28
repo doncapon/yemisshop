@@ -2,7 +2,6 @@
 import express, { Router } from 'express';
 import { requireAuth, requireAdmin , requireSuperAdmin} from '../middleware/auth.js';
 import { z } from 'zod';
-import { Prisma } from '@prisma/client';
 
 
 import {
@@ -21,6 +20,7 @@ import {
 import { toCsv } from '../lib/csv.js';
 import { startOfDay, subDays } from 'date-fns';
 import { prisma } from '../lib/prisma.js';
+import { Prisma } from '@prisma/client';
 
 const r = Router();
 r.use(requireAuth, requireAdmin);

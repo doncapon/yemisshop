@@ -44,7 +44,7 @@
   --color-warning: #F59E0B;
   --color-info:    #0EA5E9;
 
-  --color-text:        white /*#0f172a; /* slate-900 */
+  --color-text:        white; /* if you want dark text instead, set to #0f172a */
   --color-text-muted:  #475569; /* slate-600 */
   --color-border:      #e2e8f0; /* slate-200 */
   --color-bg:          #ffffff;
@@ -53,8 +53,6 @@
   /* Optional radii & shadows */
   --radius-xl: 0.9rem;
   --radius-2xl: 1.25rem;
-
-
 }
 
 /* Dark mode overrides */
@@ -70,7 +68,6 @@
 .bg-hero-radial {
   background-image: radial-gradient(1200px 400px at 50% -100px, rgba(59,130,246,0.18), transparent 60%);
 }
-
 
 /* ===================== Modal (uses Tailwind v4 @theme tokens) ===================== */
 :root {
@@ -184,6 +181,18 @@
   color: var(--color-ink);
 }
 
+select {
+  font-size: 18px;
+  line-height: 1.25;
+  color: #111827; /* zinc-900 */
+}
+
+select option {
+  font-size: 18px;
+  color: #111827;
+  background: #ffffff;
+}
+
 /* Animations */
 @keyframes modal-fade-in {
   from { opacity: 0; } to { opacity: 1; }
@@ -205,3 +214,57 @@
     animation: none !important;
   }
 }
+
+/* ===========================
+   ✅ GLOBAL: stop “page drift”
+   (This is the real fix)
+   =========================== */
+
+/* 1) Make all sizing predictable */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* 2) Kill Vite-template centering/flex on :root/body */
+:root {
+  width: 100%;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* 3) Ensure the document scrolls normally (not a centered flex container) */
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+
+  /* IMPORTANT: avoid sideways panning */
+  overflow-x: hidden;            /* use hidden for widest browser support */
+  overscroll-behavior-x: none;   /* stops sideways “rubber band” */
+  touch-action: pan-y;           /* vertical scrolling only */
+  scrollbar-gutter: stable;      /* reduces subtle reflow/shift */
+}
+
+/* 4) Force body layout to be normal block (Vite template often sets flex) */
+body {
+  display: block !important;
+}
+
+/* 5) Root must not be constrained/centered by any old template styles */
+#root {
+  width: 100%;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100vh;
+}
+

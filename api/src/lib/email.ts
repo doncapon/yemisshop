@@ -1,17 +1,33 @@
 // src/lib/email.ts
-import { continueOnNewPage } from 'pdfkit';
-import { Resend } from 'resend';
+import { Resend } from "resend";
 
-const NODE_ENV = process.env.NODE_ENV ?? 'production';
-const IS_PROD = NODE_ENV === 'production';
+const NODE_ENV = process.env.NODE_ENV ?? "development";
+const IS_PROD = NODE_ENV === "production";
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
-const FROM = process.env.RESEND_FROM || process.env.EMAIL_FROM || 'DaySpring <no-reply@dayspring.com>';
+const RESEND_API_KEY = (process.env.RESEND_API_KEY || "").trim();
+const FROM =
+  process.env.RESEND_FROM ||
+  process.env.EMAIL_FROM ||
+  "DaySpring <no-reply@dayspring.com>";
 const DEFAULT_REPLY_TO = process.env.EMAIL_REPLY_TO; // optional
 
 export const canSendRealEmail = Boolean(RESEND_API_KEY);
 
-const resend = new Resend(RESEND_API_KEY);
+// IMPORTANT: do NOT instantiate Resend when the key is missing
+let resendClient: Resend | null = null;
+
+function getResend(): Resend {
+  if (!RESEND_API_KEY) {
+    // In prod, treat as a config error; in dev, we won't call this anyway
+    throw new Error(
+      "Missing RESEND_API_KEY. Set RESEND_API_KEY=re_... in your environment."
+    );
+  }
+  if (!resendClient) {
+    resendClient = new Resend(RESEND_API_KEY);
+  }
+  return resendClient;
+}
 
 type BasicMail = {
   to: string | string[];
@@ -20,54 +36,68 @@ type BasicMail = {
   text?: string;
   replyTo?: string | string[];
 };
+
 async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
-  console.log("ia m")
-  html = `from: ${to}, ` + html;
-  text = `from: ${to}, ` + text;
+  // Normalize recipients
+  const toList = Array.isArray(to) ? to : [to];
+
+  // If no key, do a dev-preview and don't crash the API
   if (!canSendRealEmail) {
-    console.log("here: ")
-    console.log('[mail][dev] would send', { from: FROM, to, subject, html: html?.slice(0, 200) ?? text });
-    return { id: 'dev-preview' };
+    const preview = {
+      from: FROM,
+      to: toList,
+      subject,
+      replyTo: replyTo ?? DEFAULT_REPLY_TO ?? undefined,
+      htmlPreview: html?.slice(0, 200),
+      textPreview: text?.slice(0, 200),
+      env: NODE_ENV,
+    };
+    console.log("[mail][dev] would send", preview);
+
+    // In production you might prefer to throw instead:
+    if (IS_PROD) {
+      // If you *want* production to hard-fail when misconfigured, uncomment:
+      // throw new Error("Email is not configured (RESEND_API_KEY missing).");
+    }
+
+    return { id: "dev-preview" };
   }
+
+  const resend = getResend();
 
   const base = {
     from: FROM,
-    to: 'lordshegz@gmail.com',
-    // Array.isArray(to) ? to : [to],
+    to: toList,
     subject,
-    // ✅ correct key for the Node SDK:
-    replyTo: replyTo ?? DEFAULT_REPLY_TO,
+    replyTo: replyTo ?? DEFAULT_REPLY_TO ?? undefined,
   } as const;
 
+  // Send HTML if present, else TEXT
   if (html && html.trim().length > 0) {
-    // send with HTML branch
     const { data, error } = await resend.emails.send({
       ...base,
-      html,                      // present → picks the { html } overload
+      html,
     });
     if (error) throw error;
-    console.log('[mail] sent', { to, subject, id: data?.id });
+    console.log("[mail] sent", { to: toList, subject, id: data?.id });
     return data;
   }
 
   if (text && text.trim().length > 0) {
-    // send with TEXT branch
     const { data, error } = await resend.emails.send({
       ...base,
-      text,                      // present → picks the { text } overload
+      text,
     });
     if (error) throw error;
-    console.log('[mail] sent', { to, subject, id: data?.id });
+    console.log("[mail] sent", { to: toList, subject, id: data?.id });
     return data;
   }
 
-  throw new Error('safeSend: either html or text must be provided');
+  throw new Error("safeSend: either html or text must be provided");
 }
-
 
 /** Verify-email message */
 export async function sendVerifyEmail(to: string, verifyUrl: string) {
-  console.log("hello world")
   const html = `
     <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
       <h2>Verify your email</h2>
@@ -79,7 +109,7 @@ export async function sendVerifyEmail(to: string, verifyUrl: string) {
       <p>Thanks,<br/>DaySpring</p>
     </div>
   `;
-  return safeSend({ to, subject: 'Verify your email — DaySpring', html });
+  return safeSend({ to, subject: "Verify your email — DaySpring", html });
 }
 
 /** Generic helper so routes can send adhoc emails */
@@ -87,12 +117,12 @@ export async function sendMail(opts: BasicMail) {
   return safeSend(opts);
 }
 
-/** Password reset email (same template text you used) */
+/** Password reset email */
 export async function sendResetorForgotPasswordEmail(
   to: string,
   resetUrl: string,
-  subject = 'Reset your DaySpring password',
-  introText = 'Click the button below to reset your password:'
+  subject = "Reset your DaySpring password",
+  introText = "Click the button below to reset your password:"
 ) {
   const html = `
     <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">

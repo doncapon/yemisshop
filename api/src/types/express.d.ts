@@ -7,7 +7,8 @@ declare module 'express-serve-static-core' {
     user?: {
       id: string;
       email: string;
-      role: 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER';
+      role: 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER' | 'SUPPLIER';
+      supplierId?: string | null;
     };
 
     /** High-level flag the app uses to decide if user should be nudged to verify */

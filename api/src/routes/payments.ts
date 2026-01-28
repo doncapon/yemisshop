@@ -25,6 +25,9 @@ import PDFDocument from 'pdfkit';
 // NEW: dynamic split computation
 import { computePaystackSplitForOrder } from '../lib/splits.js';
 
+// ✅ FIX: import enum directly (instead of Prisma.SupplierPaymentStatus)
+import { SupplierPaymentStatus } from '@prisma/client'
+
 const router = Router();
 
 /* ----------------------------- Config ----------------------------- */
@@ -83,6 +86,8 @@ async function readSetting(key: string): Promise<string | null> {
   }
 }
 
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 /* ----------------------------- Split & Transfers ----------------------------- */
 
 async function lookupBankCode(bankName?: string | null) {
@@ -119,8 +124,12 @@ async function paySuppliersByTransfer(orderId: string, paymentId: string) {
       name: true,
       paystackRecipientCode: true,
       bankName: true,
+      bankCode: true,
+      bankCountry: true,
       accountNumber: true,
       accountName: true,
+      isPayoutEnabled: true,
+      bankVerificationStatus: true,
     },
   });
 
@@ -128,17 +137,39 @@ async function paySuppliersByTransfer(orderId: string, paymentId: string) {
     const amount = bySupplier.get(s.id) || 0;
     if (!(amount > 0)) continue;
 
+    const payoutOk =
+      s.isPayoutEnabled === true &&
+      s.bankVerificationStatus === "VERIFIED" &&
+      !!s.bankCode &&
+      !!s.bankCountry &&
+      !!s.accountNumber &&
+      !!s.accountName;
+
+    if (!payoutOk) {
+      await prisma.paymentEvent.create({
+        data: {
+          paymentId,
+          type: "TRANSFER_SKIPPED",
+          data: { supplierId: s.id, reason: "supplier_not_payout_ready_or_verified" },
+        },
+      });
+      continue;
+    }
+
+    if (!(amount > 0)) continue;
+
     try {
       let recipientCode = s.paystackRecipientCode || null;
 
       if (!recipientCode) {
-        const bank_code = await lookupBankCode(s.bankName);
-        const r = await ps.post('/transferrecipient', {
-          type: 'nuban',
-          name: s.bankAccountName || s.name || 'Supplier',
-          account_number: s.bankAccountNumber,
+        const bank_code = await lookupBankCode(s.bankCode ?? s.bankName); // ideally s.bankCode
+
+        const r = await ps.post("/transferrecipient", {
+          type: "nuban",
+          name: s.accountName || s.name || "Supplier",
+          account_number: s.accountNumber,
           bank_code,
-          currency: 'NGN',
+          currency: "NGN",
         });
         recipientCode = r.data?.data?.recipient_code || null;
         if (recipientCode) {
@@ -187,6 +218,238 @@ async function paySuppliersByTransfer(orderId: string, paymentId: string) {
   }
 }
 
+/* ----------------------------- PO helpers (idempotent + allocations) ----------------------------- */
+
+function generateSupplierOrderRef() {
+  // e.g. "SPO-7G5Q-2K9M"
+  const chunk = () => Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `SPO-${chunk()}-${chunk()}`;
+}
+
+async function ensureSupplierOrderRef(
+  tx: any,
+  orderId: string,
+  supplierId: string,
+): Promise<string> {
+  // 1) Existing PO
+  const existingPO = await tx.purchaseOrder.findFirst({
+    where: { orderId, supplierId },
+    orderBy: { createdAt: 'asc' },
+    select: { supplierOrderRef: true },
+  });
+  if (existingPO?.supplierOrderRef) return existingPO.supplierOrderRef;
+
+  // 2) From activity log
+  const refAct = await tx.orderActivity.findFirst({
+    where: { orderId, supplierId, type: 'SUPPLIER_REF_CREATED' },
+    orderBy: { createdAt: 'asc' },
+    select: { meta: true },
+  });
+  const fromAct =
+    (refAct?.meta as any)?.supplierOrderRef || (refAct?.meta as any)?.supplierRef;
+  if (fromAct && typeof fromAct === 'string' && fromAct.trim()) {
+    return fromAct.trim();
+  }
+
+  // 3) Generate + log
+  const ref = generateSupplierOrderRef();
+  try {
+    await tx.orderActivity.create({
+      data: {
+        orderId,
+        supplierId,
+        type: 'SUPPLIER_REF_CREATED',
+        message: `Supplier reference created for supplier ${supplierId}`,
+        meta: { supplierOrderRef: ref },
+      },
+    });
+  } catch {
+    // non-fatal
+  }
+  return ref;
+}
+
+/**
+ * ✅ Idempotent PO builder:
+ * - groups OrderItems by chosenSupplierId
+ * - upserts/updates one PurchaseOrder per supplier
+ * - recreates PurchaseOrderItems links
+ *
+ * IMPORTANT: This runs inside the PAID finalize tx, so UI can show POs immediately.
+ */
+async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
+  const items = await tx.orderItem.findMany({
+    where: { orderId },
+    select: {
+      id: true,
+      quantity: true,
+      unitPrice: true,
+      lineTotal: true,
+      chosenSupplierId: true,
+      chosenSupplierUnitPrice: true,
+    },
+  });
+
+  const bySupplier = new Map<
+    string,
+    { supplierId: string; supplierAmount: number; customerSubtotal: number; itemIds: string[] }
+  >();
+
+  for (const it of items) {
+    const sid = it.chosenSupplierId ? String(it.chosenSupplierId) : '';
+    if (!sid) continue;
+
+    const qty = Math.max(0, Number(it.quantity ?? 0));
+    const supplierUnit = Number(it.chosenSupplierUnitPrice ?? 0) || 0;
+    const supplierLine = supplierUnit * qty;
+
+    const customerLine =
+      it.lineTotal != null
+        ? Number(it.lineTotal ?? 0)
+        : (Number(it.unitPrice ?? 0) || 0) * qty;
+
+    const cur =
+      bySupplier.get(sid) ?? { supplierId: sid, supplierAmount: 0, customerSubtotal: 0, itemIds: [] };
+
+    cur.supplierAmount += supplierLine;
+    cur.customerSubtotal += customerLine;
+    cur.itemIds.push(String(it.id));
+    bySupplier.set(sid, cur);
+  }
+
+  const supplierIds = Array.from(bySupplier.keys());
+  if (!supplierIds.length) return [];
+
+  const createdOrUpdated: any[] = [];
+
+  for (const sid of supplierIds) {
+    const g = bySupplier.get(sid)!;
+
+    const supplierAmount = round2(g.supplierAmount);
+    const customerSubtotal = round2(g.customerSubtotal);
+    const platformFee = round2(Math.max(0, customerSubtotal - supplierAmount));
+
+    // Keep a stable supplierOrderRef per (order,supplier)
+    const supplierOrderRef = await ensureSupplierOrderRef(tx, orderId, sid);
+
+    // Upsert without requiring @@unique([orderId,supplierId]) (works even if you don't have it)
+    let po = await tx.purchaseOrder.findFirst({
+      where: { orderId, supplierId: sid },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    });
+
+    if (!po) {
+      // create (handle possible race)
+      try {
+        po = await tx.purchaseOrder.create({
+          data: {
+            orderId,
+            supplierId: sid,
+            subtotal: customerSubtotal,
+            platformFee,
+            supplierAmount,
+            status: 'CREATED',
+            supplierOrderRef,
+          },
+          select: { id: true },
+        });
+      } catch (e: any) {
+        // if concurrent create happened, re-read then update
+        po = await tx.purchaseOrder.findFirst({
+          where: { orderId, supplierId: sid },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true },
+        });
+        if (!po) throw e;
+      }
+    }
+
+    // update amounts (idempotent)
+    await tx.purchaseOrder.update({
+      where: { id: po.id },
+      data: {
+        subtotal: customerSubtotal,
+        platformFee,
+        supplierAmount,
+        supplierOrderRef,
+      },
+    });
+
+    // recreate PO items
+    await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: po.id } });
+    for (const orderItemId of g.itemIds) {
+      await tx.purchaseOrderItem.create({
+        data: {
+          purchaseOrderId: po.id,
+          orderItemId,
+          externalRef: null,
+          externalStatus: null,
+        },
+      });
+    }
+
+    createdOrUpdated.push({ id: po.id, supplierId: sid });
+  }
+
+  return createdOrUpdated;
+}
+
+/**
+ * ✅ Allocations must be written when a payment becomes PAID.
+ * Your Orders UI reads: order.payments[].allocations[].
+ */
+async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, orderId: string) {
+  const pos = await tx.purchaseOrder.findMany({
+    where: { orderId },
+    include: { supplier: { select: { id: true, name: true } } },
+  });
+
+  if (!pos.length) return [];
+
+  // idempotency
+  await tx.supplierPaymentAllocation.deleteMany({ where: { paymentId } });
+
+  const rows = [];
+  for (const po of pos) {
+    rows.push(
+      await tx.supplierPaymentAllocation.create({
+        data: {
+          paymentId,
+          orderId,
+          supplierId: po.supplierId,
+          purchaseOrderId: po.id,
+          amount: po.supplierAmount,
+          status: SupplierPaymentStatus.PENDING, // ✅ HELD concept maps to PENDING in your schema
+          supplierNameSnapshot: po.supplier?.name ?? null,
+          meta: { purchaseOrderStatus: po.status },
+        },
+      }),
+    );
+
+    // optional: mark PO funded
+    await tx.purchaseOrder.update({
+      where: { id: po.id },
+      data: { status: 'FUNDED' },
+    });
+  }
+
+  // optional snapshot on payment
+  await tx.payment.update({
+    where: { id: paymentId },
+    data: {
+      supplierBreakdownJson: pos.map((po: any) => ({
+        supplierId: po.supplierId,
+        supplierName: po.supplier?.name ?? null,
+        purchaseOrderId: po.id,
+        supplierAmount: Number(po.supplierAmount ?? 0),
+      })),
+    },
+  });
+
+  return rows;
+}
+
 /* ----------------------------- Core finalize ----------------------------- */
 
 async function finalizePaidFlow(paymentId: string) {
@@ -227,9 +490,7 @@ async function finalizePaidFlow(paymentId: string) {
 
     // Move order to next status
     const next =
-      process.env.TURN_OFF_AWAIT_CONF === 'true'
-        ? 'PAID'
-        : 'AWAITING_FULFILLMENT';
+      process.env.TURN_OFF_AWAIT_CONF === 'true' ? 'PAID' : 'AWAITING_FULFILLMENT';
 
     await tx.order.update({
       where: { id: p.orderId },
@@ -250,12 +511,12 @@ async function finalizePaidFlow(paymentId: string) {
           paymentId: p.id,
           amount: slice,
           channel: p.channel ?? null,
-          reason: 'SERVICE_FEE_SLICE',
+          reason: 'SUPPLIER_NOTIFY',
         },
         update: {
           amount: slice,
           channel: p.channel ?? null,
-          reason: 'SERVICE_FEE_SLICE',
+          reason: 'SUPPLIER_NOTIFY',
         },
       });
     }
@@ -267,6 +528,11 @@ async function finalizePaidFlow(paymentId: string) {
         data: { reference: p.reference },
       },
     });
+
+    // ✅ FIX BUG #2 HERE:
+    // Create/refresh Purchase Orders + write SupplierPaymentAllocations in the SAME PAID finalize TX.
+    await ensurePurchaseOrdersForOrderTx(tx, p.orderId);
+    await recordSupplierAllocationsOnPaidTx(tx, p.id, p.orderId);
 
     return { orderId: p.orderId, paymentId: p.id };
   });
@@ -323,10 +589,8 @@ async function finalizePaidFlow(paymentId: string) {
     }
   }
 
-  // Create POs after supplier notification (async)
-  setImmediate(() =>
-    createPurchaseOrdersForOrder(orderId).catch(console.error),
-  );
+  // ❌ REMOVE the old async PO creation (it causes “PO/allocations not showing” timing bugs)
+  // setImmediate(() => createPurchaseOrdersForOrder(orderId).catch(console.error));
 
   // Receipt
   try {
@@ -383,142 +647,62 @@ async function getSettingNumber(
   }
 }
 
-/* ----------------------------- PO helpers ----------------------------- */
-
-function generateSupplierOrderRef() {
-  // e.g. "SPO-7G5Q-2K9M"
-  const chunk = () =>
-    Math.random().toString(36).slice(2, 6).toUpperCase();
-  return `SPO-${chunk()}-${chunk()}`;
-}
-
-async function ensureSupplierOrderRef(
-  tx: any,
-  orderId: string,
-  supplierId: string,
-): Promise<string> {
-  // 1) Existing PO
-  const existingPO = await tx.purchaseOrder.findFirst({
-    where: { orderId, supplierId },
-    orderBy: { createdAt: 'asc' },
-    select: { supplierOrderRef: true },
-  });
-  if (existingPO?.supplierOrderRef) return existingPO.supplierOrderRef;
-
-  // 2) From activity log
-  const refAct = await tx.orderActivity.findFirst({
-    where: { orderId, supplierId, type: 'SUPPLIER_REF_CREATED' },
-    orderBy: { createdAt: 'asc' },
-    select: { meta: true },
-  });
-  const fromAct =
-    (refAct?.meta as any)?.supplierOrderRef ||
-    (refAct?.meta as any)?.supplierRef;
-  if (fromAct && typeof fromAct === 'string' && fromAct.trim()) {
-    return fromAct.trim();
-  }
-
-  // 3) Generate + log
-  const ref = generateSupplierOrderRef();
-  try {
-    await tx.orderActivity.create({
-      data: {
-        orderId,
-        supplierId,
-        type: 'SUPPLIER_REF_CREATED',
-        message: `Supplier reference created for supplier ${supplierId}`,
-        meta: { supplierOrderRef: ref },
-      },
-    });
-  } catch {
-    // non-fatal
-  }
-  return ref;
-}
-
+/* ----------------------------- Legacy PO builder (kept, but no longer used by finalize) ----------------------------- */
+/**
+ * NOTE:
+ * This method is now redundant for the paid flow because finalizePaidFlow
+ * creates idempotent POs + allocations immediately.
+ * Kept only if you call it elsewhere manually.
+ */
 export async function createPurchaseOrdersForOrder(orderId: string) {
   await prisma.$transaction(async (tx: any) => {
-    const items = await tx.orderItem.findMany({
-      where: { orderId },
-      select: {
-        id: true,
-        quantity: true,
-        chosenSupplierId: true,
-        chosenSupplierUnitPrice: true,
-      },
-    });
-
-    const bySupplier = new Map<string, typeof items>();
-    for (const it of items) {
-      if (!it.chosenSupplierId) continue;
-      const arr = bySupplier.get(it.chosenSupplierId) ?? [];
-      arr.push(it);
-      bySupplier.set(it.chosenSupplierId, arr);
-    }
-
-    for (const [supplierId, group] of bySupplier) {
-      const subtotal = group.reduce(
-        (sum: number, it: any) =>
-          sum +
-          Number(it.chosenSupplierUnitPrice ?? 0) *
-            Math.max(1, Number(it.quantity ?? 1)),
-        0,
-      );
-
-      const supplierOrderRef = await ensureSupplierOrderRef(
-        tx,
-        orderId,
-        supplierId,
-      );
-
-      let po: { id: string } | null = null;
-      for (let i = 0; i < 5; i++) {
-        try {
-          po = await tx.purchaseOrder.create({
-            data: {
-              orderId,
-              supplierId,
-              subtotal,
-              platformFee: 0,
-              supplierAmount: subtotal,
-              status: 'CREATED',
-              supplierOrderRef,
-            },
-            select: { id: true },
-          });
-          break;
-        } catch (e: any) {
-          const isUniqueRef =
-            e?.code === 'P2002' &&
-            Array.isArray(e?.meta?.target) &&
-            e.meta.target.includes('supplierOrderRef');
-          if (isUniqueRef) {
-            continue;
-          }
-          throw e;
-        }
-      }
-      if (!po) {
-        throw new Error(
-          'Could not create purchase order (ref collisions).',
-        );
-      }
-
-      for (const it of group) {
-        await tx.purchaseOrderItem.create({
-          data: {
-            purchaseOrderId: po.id,
-            orderItemId: it.id,
-            externalRef: null,
-            externalStatus: null,
-          },
-        });
-      }
-    }
+    await ensurePurchaseOrdersForOrderTx(tx, orderId);
   });
 }
 
 /* ----------------------------- Profit recompute ----------------------------- */
+
+async function getCheapestUnitCost(productId: string, variantId?: string | null) {
+  // Variant offer cost = basePrice + priceBump (if linked to a base offer)
+  if (variantId) {
+    const offers = await prisma.supplierVariantOffer.findMany({
+      where: {
+        productId,
+        variantId,
+        isActive: true,
+        inStock: true,
+        availableQty: { gt: 0 },
+      },
+      select: {
+        priceBump: true,
+        supplierProductOffer: { select: { basePrice: true } },
+      },
+    });
+
+    let best = Infinity;
+    for (const o of offers) {
+      const base = Number(o.supplierProductOffer?.basePrice ?? 0);
+      const bump = Number(o.priceBump ?? 0);
+      best = Math.min(best, base + bump);
+    }
+    if (Number.isFinite(best)) return best;
+    // fall through to base offers if none
+  }
+
+  // Base offer cost = basePrice
+  const base = await prisma.supplierProductOffer.findFirst({
+    where: {
+      productId,
+      isActive: true,
+      inStock: true,
+      availableQty: { gt: 0 },
+    },
+    orderBy: { basePrice: 'asc' },
+    select: { basePrice: true },
+  });
+
+  return Number(base?.basePrice ?? 0);
+}
 
 async function recomputeProfitForPayment(paymentId: string) {
   const p = await prisma.payment.findUnique({
@@ -563,31 +747,8 @@ async function recomputeProfitForPayment(paymentId: string) {
     if (!(unitCost > 0)) {
       const key = `${it.productId}|${it.variantId ?? 'NULL'}`;
       if (!offerCache.has(key)) {
-        let cheapest = await prisma.supplierOffer.findFirst({
-          where: {
-            productId: it.productId,
-            variantId: it.variantId ?? undefined,
-            isActive: true,
-            inStock: true,
-          },
-          orderBy: { price: 'asc' },
-          select: { price: true },
-        });
-
-        if (!cheapest) {
-          cheapest = await prisma.supplierOffer.findFirst({
-            where: {
-              productId: it.productId,
-              variantId: null,
-              isActive: true,
-              inStock: true,
-            },
-            orderBy: { price: 'asc' },
-            select: { price: true },
-          });
-        }
-
-        offerCache.set(key, Number(cheapest?.price ?? 0));
+        const cheapest = await getCheapestUnitCost(String(it.productId), it.variantId ?? null);
+        offerCache.set(key, Number(cheapest ?? 0));
       }
       unitCost = offerCache.get(key)!;
     }
@@ -606,8 +767,8 @@ async function recomputeProfitForPayment(paymentId: string) {
   const baseServiceFee =
     Number(
       (await readSetting('serviceFeeBaseNGN')) ??
-        (await readSetting('platformBaseFeeNGN')) ??
-        0,
+      (await readSetting('platformBaseFeeNGN')) ??
+      0,
     ) || 0;
 
   const amountPaid = Number(p.amount || 0);
@@ -754,8 +915,7 @@ router.post('/init', requireAuth, async (req: Request, res: Response) => {
         channel,
         amount: order.total,
         status: 'PENDING',
-        provider:
-          channel === 'paystack' ? 'PAYSTACK' : null,
+        provider: channel === 'paystack' ? 'PAYSTACK' : null,
       },
     });
     pay = {
@@ -824,10 +984,7 @@ router.post('/init', requireAuth, async (req: Request, res: Response) => {
         }
       }
     } catch (e: any) {
-      console.error(
-        'paystack split create failed',
-        e?.response?.data || e?.message,
-      );
+      console.error('paystack split create failed', e?.response?.data || e?.message);
     }
 
     const initPayload: any = {
@@ -857,10 +1014,7 @@ router.post('/init', requireAuth, async (req: Request, res: Response) => {
     };
     if (split_code) initPayload.split_code = split_code;
 
-    const resp = await ps.post(
-      '/transaction/initialize',
-      initPayload,
-    );
+    const resp = await ps.post('/transaction/initialize', initPayload);
     const data = resp.data?.data;
 
     await prisma.payment.update({
@@ -873,12 +1027,10 @@ router.post('/init', requireAuth, async (req: Request, res: Response) => {
       },
     });
 
-    await logOrderActivity(
-      orderId,
-      'PAYMENT_INIT',
-      'Paystack init',
-      { reference: pay.reference, amount: toNumber(order.total) },
-    );
+    await logOrderActivity(orderId, 'PAYMENT_INIT', 'Paystack init', {
+      reference: pay.reference,
+      amount: toNumber(order.total),
+    });
 
     return res.json({
       mode: 'paystack',
@@ -910,9 +1062,7 @@ router.post('/init', requireAuth, async (req: Request, res: Response) => {
 
 async function verifyPaystack(reference: string) {
   const { data } = await axios.get(
-    `https://api.paystack.co/transaction/verify/${encodeURIComponent(
-      reference,
-    )}`,
+    `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
     {
       headers: {
         Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
@@ -925,20 +1075,16 @@ async function verifyPaystack(reference: string) {
     throw new Error('Verification failed');
   }
 
-  const amountNaira =
-    Math.round(Number(tx.amount || 0)) / 100;
+  const amountNaira = Math.round(Number(tx.amount || 0)) / 100;
 
   let feeNaira = 0;
   if (typeof tx.fees === 'number') {
     feeNaira = Math.round(Number(tx.fees)) / 100;
   } else {
     const isIntl =
-      (tx.authorization?.country_code &&
-        tx.authorization.country_code !== 'NG') ||
+      (tx.authorization?.country_code && tx.authorization.country_code !== 'NG') ||
       tx.currency !== 'NGN';
-    feeNaira = calcPaystackFee(amountNaira, {
-      international: !!isIntl,
-    });
+    feeNaira = calcPaystackFee(amountNaira, { international: !!isIntl });
   }
 
   await prisma.payment.update({
@@ -950,9 +1096,7 @@ async function verifyPaystack(reference: string) {
       feeAmount: feeNaira,
       providerPayload: tx,
       provider: 'PAYSTACK',
-      channel: String(
-        tx.channel || tx.authorization?.channel || 'paystack',
-      ).toLowerCase(),
+      channel: String(tx.channel || tx.authorization?.channel || 'paystack').toLowerCase(),
     },
   });
 
@@ -960,206 +1104,168 @@ async function verifyPaystack(reference: string) {
 }
 
 // POST /api/payments/verify  { orderId, reference }
-router.post(
-  '/verify',
-  requireAuth,
-  async (req: Request, res: Response) => {
-    const { orderId, reference } = req.body ?? {};
-    if (!orderId || !reference) {
-      return res
-        .status(400)
-        .json({ error: 'orderId and reference required' });
-    }
+router.post('/verify', requireAuth, async (req: Request, res: Response) => {
+  const { orderId, reference } = req.body ?? {};
+  if (!orderId || !reference) {
+    return res.status(400).json({ error: 'orderId and reference required' });
+  }
 
-    const pay = await prisma.payment.findUnique({
-      where: { reference },
-      select: {
-        id: true,
-        orderId: true,
-        status: true,
-        channel: true,
-        amount: true,
-      },
+  const pay = await prisma.payment.findUnique({
+    where: { reference },
+    select: {
+      id: true,
+      orderId: true,
+      status: true,
+      channel: true,
+      amount: true,
+    },
+  });
+  if (!pay || pay.orderId !== orderId) {
+    return res.status(404).json({ error: 'Payment not found' });
+  }
+
+  if (pay.status === 'PAID') {
+    return res.json({
+      ok: true,
+      status: 'PAID',
+      message: 'Already verified',
     });
-    if (!pay || pay.orderId !== orderId) {
-      return res
-        .status(404)
-        .json({ error: 'Payment not found' });
-    }
+  }
+  if (['FAILED', 'CANCELED', 'REFUNDED'].includes(pay.status)) {
+    await logOrderActivity(orderId, 'PAYMENT_FAILED', 'Verification attempted on non-pending payment', {
+      reference,
+    });
+    return res.json({
+      ok: true,
+      status: pay.status,
+      message: 'Payment is not successful',
+    });
+  }
 
-    if (pay.status === 'PAID') {
-      return res.json({
-        ok: true,
-        status: 'PAID',
-        message: 'Already verified',
-      });
-    }
-    if (
-      ['FAILED', 'CANCELED', 'REFUNDED'].includes(
-        pay.status,
-      )
-    ) {
-      await logOrderActivity(
-        orderId,
-        'PAYMENT_FAILED',
-        'Verification attempted on non-pending payment',
-        { reference },
-      );
-      return res.json({
-        ok: true,
-        status: pay.status,
-        message: 'Payment is not successful',
-      });
-    }
-
-    if (TRIAL_MODE || pay.channel !== 'paystack') {
-      if (INLINE_APPROVAL === 'manual') {
-        await prisma.paymentEvent.create({
-          data: {
-            paymentId: pay.id,
-            type: 'VERIFY_PENDING',
-            data: {
-              reference,
-              note: 'Manual approval required',
-            },
-          },
-        });
-        await logOrderActivity(
-          orderId,
-          'PAYMENT_PENDING',
-          'Awaiting manual confirmation',
-          { reference },
-        );
-        return res.json({
-          ok: true,
-          status: 'PENDING',
-          message: 'Awaiting confirmation',
-        });
-      }
-
-      const updated = await prisma.payment.update({
-        where: { id: pay.id },
-        data: {
-          status: 'PAID',
-          paidAt: new Date(),
-        },
-        select: { id: true },
-      });
-
-      await finalizePaidFlow(updated.id);
-      return res.json({
-        ok: true,
-        status: 'PAID',
-        message: 'Payment verified (trial/virtual)',
-      });
-    }
-
-    try {
-      const vr = await ps.get(
-        `/transaction/verify/${reference}`,
-      );
-      const pData = vr.data?.data;
-      const status: string | undefined = pData?.status;
-      const gatewayRef = pData?.reference;
-
-      if (gatewayRef && gatewayRef !== reference) {
-        await prisma.paymentEvent.create({
-          data: {
-            paymentId: pay.id,
-            type: 'VERIFY_MISMATCH',
-            data: { reference, gatewayRef, status },
-          },
-        });
-        return res
-          .status(400)
-          .json({ error: 'Reference mismatch from gateway' });
-      }
-
-      if (status === 'success') {
-        await prisma.payment.update({
-          where: { id: pay.id },
-          data: { providerPayload: pData },
-        });
-        await verifyPaystack(reference);
-        const p = await prisma.payment.findUnique({
-          where: { reference },
-          select: { id: true },
-        });
-        if (p?.id) {
-          await finalizePaidFlow(p.id);
-        }
-        return res.json({
-          ok: true,
-          status: 'PAID',
-          message: 'Payment verified',
-        });
-      }
-
-      if (status === 'failed') {
-        await prisma.$transaction(async (tx: any) => {
-          await tx.payment.update({
-            where: { id: pay.id },
-            data: {
-              status: 'FAILED',
-              providerPayload: pData,
-            },
-          });
-          await tx.paymentEvent.create({
-            data: {
-              paymentId: pay.id,
-              type: 'VERIFY_FAILED',
-              data: { reference, status },
-            },
-          });
-        });
-        await logOrderActivity(
-          orderId,
-          'PAYMENT_FAILED',
-          'Gateway reported failure',
-          { reference },
-        );
-        return res.json({
-          ok: true,
-          status: 'FAILED',
-          message: 'Payment failed',
-        });
-      }
-
+  if (TRIAL_MODE || pay.channel !== 'paystack') {
+    if (INLINE_APPROVAL === 'manual') {
       await prisma.paymentEvent.create({
         data: {
           paymentId: pay.id,
           type: 'VERIFY_PENDING',
-          data: { reference, status: status ?? 'unknown' },
+          data: { reference, note: 'Manual approval required' },
         },
       });
-      await logOrderActivity(
-        orderId,
-        'PAYMENT_PENDING',
-        'Awaiting confirmation',
-        { reference },
-      );
+      await logOrderActivity(orderId, 'PAYMENT_PENDING', 'Awaiting manual confirmation', { reference });
       return res.json({
         ok: true,
         status: 'PENDING',
         message: 'Awaiting confirmation',
       });
-    } catch (e: any) {
+    }
+
+    const updated = await prisma.payment.update({
+      where: { id: pay.id },
+      data: {
+        status: 'PAID',
+        paidAt: new Date(),
+      },
+      select: { id: true },
+    });
+
+    await finalizePaidFlow(updated.id);
+    return res.json({
+      ok: true,
+      status: 'PAID',
+      message: 'Payment verified (trial/virtual)',
+    });
+  }
+
+  try {
+    const vr = await ps.get(`/transaction/verify/${reference}`);
+    const pData = vr.data?.data;
+    const status: string | undefined = pData?.status;
+    const gatewayRef = pData?.reference;
+
+    if (gatewayRef && gatewayRef !== reference) {
       await prisma.paymentEvent.create({
         data: {
           paymentId: pay.id,
-          type: 'VERIFY_ERROR',
-          data: { reference, err: e?.message },
+          type: 'VERIFY_MISMATCH',
+          data: { reference, gatewayRef, status },
         },
       });
+      return res.status(400).json({ error: 'Reference mismatch from gateway' });
+    }
+
+    if (status === 'success') {
+      await prisma.payment.update({
+        where: { id: pay.id },
+        data: { providerPayload: pData },
+      });
+      await verifyPaystack(reference);
+      const p = await prisma.payment.findUnique({
+        where: { reference },
+        select: { id: true },
+      });
+      if (p?.id) {
+        await finalizePaidFlow(p.id);
+      }
       return res.json({
         ok: true,
-        status: 'PENDING',
-        message:
-          'Could not verify yet; try again shortly',
+        status: 'PAID',
+        message: 'Payment verified',
       });
     }
-  },
-);
+
+    if (status === 'failed') {
+      await prisma.$transaction(async (tx: any) => {
+        await tx.payment.update({
+          where: { id: pay.id },
+          data: {
+            status: 'FAILED',
+            providerPayload: pData,
+          },
+        });
+        await tx.paymentEvent.create({
+          data: {
+            paymentId: pay.id,
+            type: 'VERIFY_FAILED',
+            data: { reference, status },
+          },
+        });
+      });
+      await logOrderActivity(orderId, 'PAYMENT_FAILED', 'Gateway reported failure', { reference });
+      return res.json({
+        ok: true,
+        status: 'FAILED',
+        message: 'Payment failed',
+      });
+    }
+
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId: pay.id,
+        type: 'VERIFY_PENDING',
+        data: { reference, status: status ?? 'unknown' },
+      },
+    });
+    await logOrderActivity(orderId, 'PAYMENT_PENDING', 'Awaiting confirmation', { reference });
+    return res.json({
+      ok: true,
+      status: 'PENDING',
+      message: 'Awaiting confirmation',
+    });
+  } catch (e: any) {
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId: pay.id,
+        type: 'VERIFY_ERROR',
+        data: { reference, err: e?.message },
+      },
+    });
+    return res.json({
+      ok: true,
+      status: 'PENDING',
+      message: 'Could not verify yet; try again shortly',
+    });
+  }
+});
 
 // Optional admin helper: POST /api/payments/:reference/verify
 router.post('/:reference/verify', requireAuth, async (req, res) => {
@@ -1175,9 +1281,7 @@ router.post('/:reference/verify', requireAuth, async (req, res) => {
     }
     return res.json({ data: result });
   } catch (e: any) {
-    return res
-      .status(400)
-      .json({ error: e?.message || 'Verification failed' });
+    return res.status(400).json({ error: e?.message || 'Verification failed' });
   }
 });
 
@@ -1188,55 +1292,31 @@ router.post(
   express.raw({ type: '*/*' }),
   async (req, res) => {
     try {
-      const sig = req.headers[
-        'x-paystack-signature'
-      ] as string | undefined;
-      const secret =
-        process.env.PAYSTACK_SECRET_KEY || '';
-      if (
-        !isValidSignature(
-          req.body as Buffer,
-          sig,
-          secret,
-        )
-      ) {
+      const sig = req.headers['x-paystack-signature'] as string | undefined;
+      const secret = process.env.PAYSTACK_SECRET_KEY || '';
+      if (!isValidSignature(req.body as Buffer, sig, secret)) {
         return res.status(401).send('bad sig');
       }
 
-      const evt = JSON.parse(
-        (req.body as Buffer).toString('utf8'),
-      );
+      const evt = JSON.parse((req.body as Buffer).toString('utf8'));
       const eventType = String(evt?.event || '');
       const data = evt?.data || {};
-      const reference: string | undefined =
-        data?.reference;
-      const channel: string | undefined =
-        data?.channel ||
-        data?.authorization?.channel;
+      const reference: string | undefined = data?.reference;
+      const channel: string | undefined = data?.channel || data?.authorization?.channel;
 
-      if (
-        channel === 'card' &&
-        !WEBHOOK_ACCEPT_CARD
-      ) {
-        return res
-          .status(200)
-          .send('ignored: card off');
+      if (channel === 'card' && !WEBHOOK_ACCEPT_CARD) {
+        return res.status(200).send('ignored: card off');
       }
       if (
-        (channel === 'bank' ||
-          channel === 'bank_transfer') &&
+        (channel === 'bank' || channel === 'bank_transfer') &&
         !WEBHOOK_ACCEPT_BANK_TRANSFER
       ) {
-        return res
-          .status(200)
-          .send('ignored: bank_transfer off');
+        return res.status(200).send('ignored: bank_transfer off');
       }
 
       if (reference) {
         try {
-          const pay = await prisma.payment.findUnique(
-            { where: { reference } },
-          );
+          const pay = await prisma.payment.findUnique({ where: { reference } });
           if (pay) {
             await prisma.paymentEvent.create({
               data: {
@@ -1254,11 +1334,10 @@ router.post(
       if (eventType === 'charge.success') {
         if (reference) {
           await verifyPaystack(reference);
-          const p =
-            await prisma.payment.findUnique({
-              where: { reference },
-              select: { id: true },
-            });
+          const p = await prisma.payment.findUnique({
+            where: { reference },
+            select: { id: true },
+          });
           if (p?.id) {
             await finalizePaidFlow(p.id);
           }
@@ -1266,10 +1345,7 @@ router.post(
         return res.status(200).send('ok');
       }
 
-      if (
-        eventType === 'transfer.success' ||
-        eventType === 'transfer.failed'
-      ) {
+      if (eventType === 'transfer.success' || eventType === 'transfer.failed') {
         return res.status(200).send('ok');
       }
 
@@ -1286,13 +1362,10 @@ router.post(
 router.get('/status', requireAuth, async (req, res) => {
   try {
     const orderId = String(req.query.orderId || '');
-    const reference = String(
-      req.query.reference || '',
-    );
+    const reference = String(req.query.reference || '');
     if (!orderId || !reference) {
       return res.status(400).json({
-        error:
-          'orderId and reference are required',
+        error: 'orderId and reference are required',
       });
     }
 
@@ -1306,29 +1379,19 @@ router.get('/status', requireAuth, async (req, res) => {
     });
 
     if (!pay) {
-      return res
-        .status(404)
-        .json({ error: 'Payment not found' });
+      return res.status(404).json({ error: 'Payment not found' });
     }
     return res.json({ status: pay.status });
   } catch (e: any) {
     console.error('payments/status error', e);
-    return res
-      .status(500)
-      .json({ error: 'Failed to fetch payment status' });
+    return res.status(500).json({ error: 'Failed to fetch payment status' });
   }
 });
 
-export async function assertCanViewReceipt(
-  paymentKey: string,
-  user: JwtUser,
-) {
+export async function assertCanViewReceipt(paymentKey: string, user: JwtUser) {
   const row = await prisma.payment.findFirst({
     where: {
-      OR: [
-        { id: paymentKey },
-        { reference: paymentKey },
-      ],
+      OR: [{ id: paymentKey }, { reference: paymentKey }],
     },
     select: {
       id: true,
@@ -1343,12 +1406,8 @@ export async function assertCanViewReceipt(
   }
 
   const role = (user?.role || '').toUpperCase();
-  const isAdmin =
-    role === 'ADMIN' || role === 'SUPER_ADMIN';
-  const isOwner =
-    row.order?.userId &&
-    user?.id &&
-    row.order.userId === user.id;
+  const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
+  const isOwner = row.order?.userId && user?.id && row.order.userId === user.id;
 
   if (!isOwner && !isAdmin) {
     throw httpErr(403, 'Forbidden');
@@ -1357,377 +1416,214 @@ export async function assertCanViewReceipt(
   return row;
 }
 
-router.get(
-  '/:paymentKey/receipt',
-  requireAuth,
-  async (req, res) => {
-    try {
-      const { paymentKey } = req.params;
-      const row = await assertCanViewReceipt(
-        paymentKey,
-        req.user!,
-      );
+router.get('/:paymentKey/receipt', requireAuth, async (req, res) => {
+  try {
+    const { paymentKey } = req.params;
+    const row = await assertCanViewReceipt(paymentKey, req.user!);
 
-      const pay = await issueReceiptIfNeeded(
-        row.id,
-      );
-      if (!pay) {
-        return res
-          .status(404)
-          .json({ error: 'Receipt not available' });
-      }
-
-      const r = (pay.receiptData || {}) as any;
-
-      let serviceFee =
-        Number(
-          r.order?.serviceFeeTotal ??
-            r.order?.commsTotal ??
-            r.order?.comms ??
-            0,
-        ) || 0;
-
-      if (!serviceFee && row.orderId) {
-        const order =
-          await prisma.order.findUnique({
-            where: { id: row.orderId },
-            select: { serviceFeeTotal: true },
-          });
-        if (order?.serviceFeeTotal != null) {
-          serviceFee =
-            Number(order.serviceFeeTotal) || 0;
-        }
-      }
-
-      const data = {
-        ...r,
-        order: {
-          ...(r.order || {}),
-          serviceFee,
-        },
-      };
-
-      return res.json({
-        ok: true,
-        receiptNo: pay.receiptNo,
-        issuedAt: pay.receiptIssuedAt,
-        data,
-      });
-    } catch (e: any) {
-      const status = e?.status || 500;
-      return res.status(status).json({
-        error:
-          e?.message ||
-          'Failed to fetch receipt',
-      });
+    const pay = await issueReceiptIfNeeded(row.id);
+    if (!pay) {
+      return res.status(404).json({ error: 'Receipt not available' });
     }
-  },
-);
 
-router.get(
-  '/:paymentKey/receipt.pdf',
-  requireAuth,
-  async (req, res) => {
-    try {
-      const { paymentKey } = req.params;
+    const r = (pay.receiptData || {}) as any;
 
-      const row = await assertCanViewReceipt(
-        paymentKey,
-        req.user!,
-      );
+    let serviceFee =
+      Number(r.order?.serviceFeeTotal ?? r.order?.commsTotal ?? r.order?.comms ?? 0) || 0;
 
-      const pay = await issueReceiptIfNeeded(
-        row.id,
-      );
-      if (!pay?.receiptData) {
-        return res
-          .status(404)
-          .json({ error: 'Receipt not available' });
-      }
-
-      const r = pay.receiptData as any;
-
-      let serviceFee =
-        Number(
-          r.order?.serviceFeeTotal ??
-            r.order?.commsTotal ??
-            r.order?.comms ??
-            0,
-        ) || 0;
-
-      if (!serviceFee && row.orderId) {
-        const order =
-          await prisma.order.findUnique({
-            where: { id: row.orderId },
-            select: { serviceFeeTotal: true },
-          });
-        if (order?.serviceFeeTotal != null) {
-          serviceFee =
-            Number(order.serviceFeeTotal) || 0;
-        }
-      }
-
-      res.setHeader(
-        'Content-Type',
-        'application/pdf',
-      );
-      res.setHeader(
-        'Content-Disposition',
-        `inline; filename="${
-          pay.receiptNo || 'receipt'
-        }.pdf"`,
-      );
-
-      const doc = new PDFDocument({
-        size: 'A4',
-        margin: 48,
+    if (!serviceFee && row.orderId) {
+      const order = await prisma.order.findUnique({
+        where: { id: row.orderId },
+        select: { serviceFeeTotal: true },
       });
-      doc.pipe(res);
+      if (order?.serviceFeeTotal != null) {
+        serviceFee = Number(order.serviceFeeTotal) || 0;
+      }
+    }
 
-      // Header
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(18)
-        .text(
-          r.merchant?.name || 'Receipt',
-        );
-      doc.moveDown(0.5);
+    const data = {
+      ...r,
+      order: {
+        ...(r.order || {}),
+        serviceFee,
+      },
+    };
+
+    return res.json({
+      ok: true,
+      receiptNo: pay.receiptNo,
+      issuedAt: pay.receiptIssuedAt,
+      data,
+    });
+  } catch (e: any) {
+    const status = e?.status || 500;
+    return res.status(status).json({
+      error: e?.message || 'Failed to fetch receipt',
+    });
+  }
+});
+
+router.get('/:paymentKey/receipt.pdf', requireAuth, async (req, res) => {
+  try {
+    const { paymentKey } = req.params;
+
+    const row = await assertCanViewReceipt(paymentKey, req.user!);
+
+    const pay = await issueReceiptIfNeeded(row.id);
+    if (!pay?.receiptData) {
+      return res.status(404).json({ error: 'Receipt not available' });
+    }
+
+    const r = pay.receiptData as any;
+
+    let serviceFee =
+      Number(r.order?.serviceFeeTotal ?? r.order?.commsTotal ?? r.order?.comms ?? 0) || 0;
+
+    if (!serviceFee && row.orderId) {
+      const order = await prisma.order.findUnique({
+        where: { id: row.orderId },
+        select: { serviceFeeTotal: true },
+      });
+      if (order?.serviceFeeTotal != null) {
+        serviceFee = Number(order.serviceFeeTotal) || 0;
+      }
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${pay.receiptNo || 'receipt'}.pdf"`);
+
+    const doc = new PDFDocument({ size: 'A4', margin: 48 });
+    doc.pipe(res);
+
+    // Header
+    doc.font('Helvetica-Bold').fontSize(18).text(r.merchant?.name || 'Receipt');
+    doc.moveDown(0.5);
+
+    doc.font('Helvetica').fontSize(10).fillColor('#555');
+    doc.text(r.merchant?.addressLine1 || '');
+    if (r.merchant?.addressLine2) doc.text(r.merchant.addressLine2);
+    if (r.merchant?.supportEmail) doc.text(`Support: ${r.merchant.supportEmail}`);
+    doc.moveDown();
+    doc.fillColor('#000');
+
+    // Meta
+    doc.font('Helvetica').fontSize(12);
+    doc.text(`Receipt No: ${pay.receiptNo || ''}`);
+    doc.text(`Reference: ${r.reference}`);
+    if (r.paidAt) {
+      doc.text(`Paid At: ${new Date(r.paidAt).toLocaleString()}`);
+    }
+    doc.moveDown();
+
+    // Customer
+    doc.font('Helvetica-Bold').fontSize(11).text('Customer', { underline: true });
+    doc.font('Helvetica');
+    doc.text(`${r.customer?.name || '—'}`);
+    doc.text(`${r.customer?.email || '—'}`);
+    if (r.customer?.phone) doc.text(r.customer.phone);
+    doc.moveDown();
+
+    // Ship To
+    doc.font('Helvetica-Bold').fontSize(11).text('Ship To', { underline: true });
+    const addr = r.order?.shippingAddress || {};
+    [
+      addr.houseNumber,
+      addr.streetName,
+      addr.town,
+      addr.city,
+      addr.state,
+      addr.country,
+    ]
+      .filter(Boolean)
+      .forEach((line: string) => doc.text(line));
+    doc.moveDown();
+
+    // Items
+    doc.font('Helvetica-Bold').fontSize(11).text('Items', { underline: true });
+    doc.moveDown(0.25);
+
+    r.order?.items?.forEach((it: any) => {
+      const title = it.title || 'Item';
+      const qty = Number(it.quantity || 1);
+      const unit = Number(it.unitPrice || 0);
+      const line = Number(it.lineTotal || unit * qty);
 
       doc
         .font('Helvetica')
         .fontSize(10)
-        .fillColor('#555');
-      doc.text(
-        r.merchant?.addressLine1 || '',
-      );
-      if (r.merchant?.addressLine2)
-        doc.text(
-          r.merchant.addressLine2,
+        .text(
+          `${title}  •  ${qty} × NGN ${unit.toLocaleString()}  =  NGN ${line.toLocaleString()}`,
         );
-      if (r.merchant?.supportEmail)
-        doc.text(
-          `Support: ${r.merchant.supportEmail}`,
-        );
-      doc.moveDown();
-      doc.fillColor('#000');
 
-      // Meta
-      doc
-        .font('Helvetica')
-        .fontSize(12);
-      doc.text(
-        `Receipt No: ${pay.receiptNo || ''}`,
-      );
-      doc.text(
-        `Reference: ${r.reference}`,
-      );
-      if (r.paidAt) {
-        doc.text(
-          `Paid At: ${new Date(
-            r.paidAt,
-          ).toLocaleString()}`,
-        );
+      if (Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0) {
+        doc
+          .fillColor('#555')
+          .fontSize(9)
+          .text(
+            it.selectedOptions.map((o: any) => `${o.attribute}: ${o.value}`).join(' • '),
+          )
+          .fillColor('#000');
       }
-      doc.moveDown();
-
-      // Customer
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(11)
-        .text('Customer', {
-          underline: true,
-        });
-      doc.font('Helvetica');
-      doc.text(
-        `${r.customer?.name || '—'}`,
-      );
-      doc.text(
-        `${r.customer?.email || '—'}`,
-      );
-      if (r.customer?.phone)
-        doc.text(r.customer.phone);
-      doc.moveDown();
-
-      // Ship To
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(11)
-        .text('Ship To', {
-          underline: true,
-        });
-      const addr =
-        r.order?.shippingAddress || {};
-      [
-        addr.houseNumber,
-        addr.streetName,
-        addr.town,
-        addr.city,
-        addr.state,
-        addr.country,
-      ]
-        .filter(Boolean)
-        .forEach((line: string) =>
-          doc.text(line),
-        );
-      doc.moveDown();
-
-      // Items
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(11)
-        .text('Items', {
-          underline: true,
-        });
       doc.moveDown(0.25);
+    });
 
-      r.order?.items?.forEach(
-        (it: any) => {
-          const title =
-            it.title || 'Item';
-          const qty = Number(
-            it.quantity || 1,
-          );
-          const unit = Number(
-            it.unitPrice || 0,
-          );
-          const line = Number(
-            it.lineTotal ||
-              unit * qty,
-          );
+    doc.moveDown();
 
-          doc
-            .font('Helvetica')
-            .fontSize(10)
-            .text(
-              `${title}  •  ${qty} × NGN ${unit.toLocaleString()}  =  NGN ${line.toLocaleString()}`,
-            );
+    const subtotal = Number(r.order?.subtotal || 0);
+    const tax = Number(r.order?.tax || 0);
+    const shipping = Number(r.order?.shipping || 0);
+    const total = Number(r.order?.total || 0);
 
-          if (
-            Array.isArray(
-              it.selectedOptions,
-            ) &&
-            it.selectedOptions
-              .length > 0
-          ) {
-            doc
-              .fillColor('#555')
-              .fontSize(9)
-              .text(
-                it.selectedOptions
-                  .map(
-                    (o: any) =>
-                      `${o.attribute}: ${o.value}`,
-                  )
-                  .join(' • '),
-              )
-              .fillColor('#000');
-          }
-          doc.moveDown(0.25);
-        },
-      );
-
-      doc.moveDown();
-
-      const subtotal = Number(
-        r.order?.subtotal || 0,
-      );
-      const tax = Number(
-        r.order?.tax || 0,
-      );
-      const shipping = Number(
-        r.order?.shipping || 0,
-      );
-      const total = Number(
-        r.order?.total || 0,
-      );
-
-      doc
-        .font('Helvetica')
-        .fontSize(11);
-      doc.text(
-        `Subtotal: NGN ${subtotal.toLocaleString()}`,
-      );
-      doc.text(
-        `Tax: NGN ${tax.toLocaleString()}`,
-      );
-      doc.text(
-        `Shipping: NGN ${shipping.toLocaleString()}`,
-      );
-      if (serviceFee) {
-        doc.text(
-          `Service fee: NGN ${serviceFee.toLocaleString()}`,
-        );
-      }
-
-      doc
-        .font('Helvetica-Bold')
-        .fontSize(12)
-        .text(
-          `Total: NGN ${total.toLocaleString()}`,
-        );
-      doc.moveDown(1);
-
-      doc
-        .font('Helvetica')
-        .fontSize(9)
-        .fillColor('#666')
-        .text(
-          'Thank you for your purchase. This document serves as a receipt.',
-          { align: 'left' },
-        );
-
-      doc.end();
-    } catch (e: any) {
-      const status = e?.status || 500;
-      if (!res.headersSent) {
-        res.status(status).json({
-          error:
-            e?.message ||
-            'Failed to render receipt PDF',
-        });
-      }
+    doc.font('Helvetica').fontSize(11);
+    doc.text(`Subtotal: NGN ${subtotal.toLocaleString()}`);
+    doc.text(`Tax: NGN ${tax.toLocaleString()}`);
+    doc.text(`Shipping: NGN ${shipping.toLocaleString()}`);
+    if (serviceFee) {
+      doc.text(`Service fee: NGN ${serviceFee.toLocaleString()}`);
     }
-  },
-);
+
+    doc.font('Helvetica-Bold').fontSize(12).text(`Total: NGN ${total.toLocaleString()}`);
+    doc.moveDown(1);
+
+    doc
+      .font('Helvetica')
+      .fontSize(9)
+      .fillColor('#666')
+      .text('Thank you for your purchase. This document serves as a receipt.', {
+        align: 'left',
+      });
+
+    doc.end();
+  } catch (e: any) {
+    const status = e?.status || 500;
+    if (!res.headersSent) {
+      res.status(status).json({
+        error: e?.message || 'Failed to render receipt PDF',
+      });
+    }
+  }
+});
 
 /* ----------------------------- Listings ----------------------------- */
 
 router.post('/link', requireAuth, async (req, res, next) => {
   try {
-    const { orderId } = req.body as {
-      orderId: string;
-    };
+    const { orderId } = req.body as { orderId: string };
     if (!orderId) {
-      return res
-        .status(400)
-        .json({ error: 'orderId is required' });
+      return res.status(400).json({ error: 'orderId is required' });
     }
 
-    const order = await prisma.order.findUnique(
-      { where: { id: orderId } },
-    );
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
     if (!order || order.userId !== req.user!.id) {
-      return res
-        .status(404)
-        .json({ error: 'Order not found' });
+      return res.status(404).json({ error: 'Order not found' });
     }
 
     if (!process.env.JWT_SECRET) {
-      return res
-        .status(500)
-        .json({
-          error: 'JWT_SECRET not configured',
-        });
+      return res.status(500).json({ error: 'JWT_SECRET not configured' });
     }
 
-    const token = jwt.sign(
-      { oid: orderId },
-      process.env.JWT_SECRET,
-      { expiresIn: '2d' },
-    );
-    const url = `${APP_URL}/payment?orderId=${orderId}&share=${encodeURIComponent(
-      token,
-    )}`;
+    const token = jwt.sign({ oid: orderId }, process.env.JWT_SECRET, { expiresIn: '2d' });
+    const url = `${APP_URL}/payment?orderId=${orderId}&share=${encodeURIComponent(token)}`;
     res.json({ shareUrl: url });
   } catch (e) {
     next(e);
@@ -1737,9 +1633,7 @@ router.post('/link', requireAuth, async (req, res, next) => {
 router.get('/mine', requireAuth, async (req, res, next) => {
   try {
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw)
-      ? Math.min(50, Math.max(1, limitRaw))
-      : 5;
+    const take = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, limitRaw)) : 5;
 
     const rows = await prisma.payment.findMany({
       where: { order: { userId: req.user!.id } },
@@ -1766,42 +1660,33 @@ router.get('/mine', requireAuth, async (req, res, next) => {
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw)
-      ? Math.min(100, Math.max(1, limitRaw))
-      : 20;
+    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 20;
 
-    const { userId, orderId, status } =
-      req.query as {
-        userId?: string;
-        orderId?: string;
-        status?: string;
-      };
+    const { userId, orderId, status } = req.query as {
+      userId?: string;
+      orderId?: string;
+      status?: string;
+    };
 
     const where: any = {};
     if (orderId) where.orderId = orderId;
-    if (status)
-      where.status =
-        status.toString().toUpperCase();
+    if (status) where.status = status.toString().toUpperCase();
 
-    const payments = await prisma.payment.findMany(
-      {
-        where: userId
-          ? { ...where, order: { userId } }
-          : where,
-        orderBy: { createdAt: 'desc' },
-        take,
-        select: {
-          id: true,
-          reference: true,
-          amount: true,
-          status: true,
-          channel: true,
-          provider: true,
-          createdAt: true,
-          orderId: true,
-        },
+    const payments = await prisma.payment.findMany({
+      where: userId ? { ...where, order: { userId } } : where,
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        reference: true,
+        amount: true,
+        status: true,
+        channel: true,
+        provider: true,
+        createdAt: true,
+        orderId: true,
       },
-    );
+    });
 
     res.json(payments);
   } catch (e) {
@@ -1812,9 +1697,7 @@ router.get('/', requireAuth, async (req, res, next) => {
 router.get('/recent', requireAuth, async (req, res, next) => {
   try {
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw)
-      ? Math.min(50, Math.max(1, limitRaw))
-      : 5;
+    const take = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, limitRaw)) : 5;
 
     const orders = await prisma.order.findMany({
       where: { userId: req.user!.id },
@@ -1871,138 +1754,84 @@ router.get('/recent', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get(
-  '/admin/compat-alias',
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const isAdmin = (r?: string) =>
-        r === 'ADMIN' || r === 'SUPER_ADMIN';
-      if (!isAdmin(req.user?.role)) {
-        return res
-          .status(403)
-          .json({ error: 'Forbidden' });
-      }
+router.get('/admin/compat-alias', requireAuth, async (req, res, next) => {
+  try {
+    const isAdmin = (r?: string) => r === 'ADMIN' || r === 'SUPER_ADMIN';
+    if (!isAdmin(req.user?.role)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
 
-      (req as any).query.includeItems =
-        req.query.includeItems ?? '1';
-      (req as any).query.limit =
-        req.query.limit ?? '20';
+    (req as any).query.includeItems = req.query.includeItems ?? '1';
+    (req as any).query.limit = req.query.limit ?? '20';
 
-      const includeItems =
-        String(req.query.includeItems || '') === '1';
-      const q = String(
-        req.query.q || '',
-      ).trim();
-      const limitRaw = Number(
-        req.query.limit,
-      );
-      const take = Number.isFinite(limitRaw)
-        ? Math.min(100, Math.max(1, limitRaw))
-        : 20;
+    const includeItems = String(req.query.includeItems || '') === '1';
+    const q = String(req.query.q || '').trim();
+    const limitRaw = Number(req.query.limit);
+    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 20;
 
-      const where: any = {};
-      if (q) {
-        where.OR = [
-          {
-            reference: {
-              contains: q,
-              mode: 'insensitive',
-            },
-          },
-          {
-            orderId: {
-              contains: q,
-              mode: 'insensitive',
-            },
-          },
-          {
-            order: {
-              user: {
-                email: {
-                  contains: q,
-                  mode: 'insensitive',
+    const where: any = {};
+    if (q) {
+      where.OR = [
+        { reference: { contains: q, mode: 'insensitive' } },
+        { orderId: { contains: q, mode: 'insensitive' } },
+        { order: { user: { email: { contains: q, mode: 'insensitive' } } } },
+      ];
+    }
+
+    const rows = await prisma.payment.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take,
+      include: {
+        order: {
+          select: {
+            id: true,
+            total: true,
+            status: true,
+            user: { select: { email: true } },
+            items: includeItems
+              ? {
+                select: {
+                  id: true,
+                  title: true,
+                  unitPrice: true,
+                  quantity: true,
+                  status: true,
                 },
-              },
-            },
-          },
-        ];
-      }
-
-      const rows = await prisma.payment.findMany(
-        {
-          where,
-          orderBy: { createdAt: 'desc' },
-          take,
-          include: {
-            order: {
-              select: {
-                id: true,
-                total: true,
-                status: true,
-                user: {
-                  select: { email: true },
-                },
-                items: includeItems
-                  ? {
-                      select: {
-                        id: true,
-                        title: true,
-                        unitPrice: true,
-                        quantity: true,
-                        status: true,
-                      },
-                    }
-                  : false,
-              },
-            },
+              }
+              : false,
           },
         },
-      );
+      },
+    });
 
-      const data = rows.map((p: any) => ({
-        id: p.id,
-        orderId: p.orderId,
-        userEmail:
-          p.order?.user?.email || null,
-        amount: Number(p.amount),
-        status: p.status,
-        provider: p.provider,
-        channel: p.channel,
-        reference: p.reference,
-        createdAt:
-          p.createdAt?.toISOString?.() ??
-          (p as any).createdAt,
-        orderStatus: p.order?.status,
-        items: Array.isArray(
-          (p.order as any)?.items,
-        )
-          ? (p.order as any).items.map(
-              (it: any) => ({
-                id: it.id,
-                title: it.title,
-                unitPrice: Number(
-                  it.unitPrice,
-                ),
-                quantity: Number(
-                  it.quantity || 0,
-                ),
-                lineTotal:
-                  Number(it.unitPrice) *
-                  Number(
-                    it.quantity || 0,
-                  ),
-                status: it.status,
-              }),
-            )
-          : undefined,
-      }));
+    const data = rows.map((p: any) => ({
+      id: p.id,
+      orderId: p.orderId,
+      userEmail: p.order?.user?.email || null,
+      amount: Number(p.amount),
+      status: p.status,
+      provider: p.provider,
+      channel: p.channel,
+      reference: p.reference,
+      createdAt: p.createdAt?.toISOString?.() ?? (p as any).createdAt,
+      orderStatus: p.order?.status,
+      items: Array.isArray((p.order as any)?.items)
+        ? (p.order as any).items.map((it: any) => ({
+          id: it.id,
+          title: it.title,
+          unitPrice: Number(it.unitPrice),
+          quantity: Number(it.quantity || 0),
+          lineTotal: Number(it.unitPrice) * Number(it.quantity || 0),
+          status: it.status,
+        }))
+        : undefined,
+    }));
 
-      res.json({ data });
-    } catch (e) {
-      next(e);
-    }
-  },
-);
+    res.json({ data });
+  } catch (e) {
+    next(e);
+  }
+});
 
 export default router;

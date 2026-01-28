@@ -1,5 +1,5 @@
 // src/lib/prisma.ts (workaround)
-import prismaPkg from '@prisma/client';
+import prismaPkg from '@prisma/client'
 const { PrismaClient } = prismaPkg as any;
 
 const g = globalThis as any;

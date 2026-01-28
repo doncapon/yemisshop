@@ -1,6 +1,6 @@
 // src/routes/admin.activities.ts
 import { Router } from 'express';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client'
 import {prisma} from '../lib/prisma.js'
 import { z } from 'zod';
 import { requireAdmin } from '../middleware/auth.js';

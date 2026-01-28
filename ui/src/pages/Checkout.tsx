@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+// src/pages/Checkout.tsx (or wherever your Checkout component lives)
+
+import React, { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/client.js';
@@ -84,6 +86,8 @@ function readCart(): CartLine[] {
         price: unit,
         totalPrice: num(x.totalPrice, unit * qty),
         image: x.image ?? null,
+
+        // ✅ keep supplierId if present
         supplierId: x.supplierId ?? null,
       };
     });
@@ -97,6 +101,7 @@ function writeCart(lines: CartLine[]) {
     const unit = num(l.unitPrice, num(l.price, 0));
     const qty = Math.max(1, num(l.qty, 1));
     const total = unit * qty;
+
     return {
       productId: l.productId,
       title: l.title,
@@ -105,10 +110,15 @@ function writeCart(lines: CartLine[]) {
       variantId: l.variantId ?? null,
       selectedOptions: l.selectedOptions ?? [],
       image: l.image ?? null,
+
+      // ✅ KEEP IT so supplierIdsParam is not empty
+      supplierId: l.supplierId ?? null,
+
       price: unit,
       totalPrice: total,
     };
   });
+
   localStorage.setItem('cart', JSON.stringify(out));
 }
 
@@ -171,10 +181,7 @@ const asMoney = (v: any, d = 0) => {
 };
 
 // Fetch active offers; used ONLY as a fallback to avoid unitPrice=0.
-async function fetchActiveOffersFor(
-  productId: string,
-  variantId?: string | null
-): Promise<PublicOffer[]> {
+async function fetchActiveOffersFor(productId: string, variantId?: string | null): Promise<PublicOffer[]> {
   const buildParams = (pid: string, vid?: string | null) => {
     const qs = new URLSearchParams();
     qs.set('productId', pid);
@@ -186,7 +193,7 @@ async function fetchActiveOffersFor(
 
   const primary = `/api/supplier-offers?${buildParams(productId, variantId ?? undefined)}`;
   const fb1 = `/api/supplier-offers?${buildParams(productId)}`;
-  const fb2 = `/api/products/${productId}?include=offers,variants,supplierOffers`;
+  const fb2 = `/api/products/${productId}?include=offers,variants`;
 
   const norm = (arr: any[]): PublicOffer[] =>
     (arr || [])
@@ -200,42 +207,41 @@ async function fetchActiveOffersFor(
         isActive: o.isActive === true,
         availableQty: asInt(o.availableQty ?? o.available_quantity ?? o.qty ?? 0, 0),
       }))
-      .filter(
-        (o) =>
-          o.isActive &&
-          o.availableQty > 0 &&
-          Number.isFinite(o.price) &&
-          o.price > 0
-      );
+      .filter((o) => o.isActive && o.availableQty > 0 && Number.isFinite(o.price) && o.price > 0);
 
   try {
     const { data } = await api.get(primary);
     const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
     const out = norm(list);
     if (out.length) return out;
-  } catch { }
+  } catch {}
 
   try {
     const { data } = await api.get(fb1);
     const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
     const out = norm(list);
     if (out.length) return out;
-  } catch { }
+  } catch {}
 
   try {
-    const { data } = await api.get(fb2);
+    const resp = await api.get(fb2);
+    const body = resp.data;
+    const payload = body?.data ?? body ?? null;
+
     const fromVariant =
-      variantId && Array.isArray(data?.variants)
+      variantId && Array.isArray(payload?.variants)
         ? norm(
-          data.variants
-            .filter((v: any) => String(v.id) === String(variantId))
-            .flatMap((v: any) => (Array.isArray(v.offers) ? v.offers : []))
-        )
+            payload.variants
+              .filter((v: any) => String(v.id) === String(variantId))
+              .flatMap((v: any) => (Array.isArray(v.offers) ? v.offers : []))
+          )
         : [];
-    const fromProduct = Array.isArray(data?.supplierOffers) ? norm(data.supplierOffers) : [];
+
+    const fromProduct = Array.isArray(payload?.supplierOffers) ? norm(payload.supplierOffers) : [];
+
     const combined = [...fromVariant, ...fromProduct];
     if (combined.length) return combined;
-  } catch { }
+  } catch {}
 
   return [];
 }
@@ -263,13 +269,21 @@ const IconCart = (props: any) => (
 
 const IconHome = (props: any) => (
   <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
-    <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-9.5Z" stroke="currentColor" strokeWidth="1.5" />
+    <path
+      d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-9.5Z"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    />
   </svg>
 );
 
 const IconTruck = (props: any) => (
   <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
-    <path d="M14 17H6a1 1 0 0 1-1-1V5h9v12ZM14 8h4l3 3v5a1 1 0 0 1-1 1h-1" stroke="currentColor" strokeWidth="1.5" />
+    <path
+      d="M14 17H6a1 1 0 0 1-1-1V5h9v12ZM14 8h4l3 3v5a1 1 0 0 1-1 1h-1"
+      stroke="currentColor"
+      strokeWidth="1.5"
+    />
     <circle cx="7.5" cy="18.5" r="1.5" fill="currentColor" />
     <circle cx="17.5" cy="18.5" r="1.5" fill="currentColor" />
   </svg>
@@ -288,10 +302,10 @@ function Card({
     tone === 'primary'
       ? 'border-primary-200'
       : tone === 'emerald'
-        ? 'border-emerald-200'
-        : tone === 'amber'
-          ? 'border-amber-200'
-          : 'border-border';
+      ? 'border-emerald-200'
+      : tone === 'amber'
+      ? 'border-amber-200'
+      : 'border-border';
 
   return (
     <div
@@ -319,24 +333,22 @@ function CardHeader({
     tone === 'primary'
       ? 'from-primary-50 to-white'
       : tone === 'emerald'
-        ? 'from-emerald-50 to-white'
-        : tone === 'amber'
-          ? 'from-amber-50 to-white'
-          : 'from-surface to-white';
+      ? 'from-emerald-50 to-white'
+      : tone === 'amber'
+      ? 'from-amber-50 to-white'
+      : 'from-surface to-white';
 
   const toneIcon =
     tone === 'primary'
       ? 'text-primary-600'
       : tone === 'emerald'
-        ? 'text-emerald-600'
-        : tone === 'amber'
-          ? 'text-amber-600'
-          : 'text-ink-soft';
+      ? 'text-emerald-600'
+      : tone === 'amber'
+      ? 'text-amber-600'
+      : 'text-ink-soft';
 
   return (
-    <div
-      className={`flex items-center justify-between p-4 border-b border-border bg-gradient-to-b ${toneBg}`}
-    >
+    <div className={`flex items-center justify-between p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
       <div className="flex items-start gap-3">
         {icon && <div className={`mt-[2px] ${toneIcon}`}>{icon}</div>}
         <div>
@@ -353,8 +365,9 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 ${props.className || ''
-        }`}
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 ${
+        props.className || ''
+      }`}
     />
   );
 }
@@ -426,9 +439,7 @@ export default function Checkout() {
 
             // 2) Try variant-specific price
             if (line.variantId && productData && Array.isArray(productData.variants)) {
-              const v = productData.variants.find(
-                (vv: any) => String(vv.id) === String(line.variantId)
-              );
+              const v = productData.variants.find((vv: any) => String(vv.id) === String(line.variantId));
               if (v) {
                 const vPrice = num(v.price, 0);
                 if (vPrice > 0) {
@@ -444,9 +455,7 @@ export default function Checkout() {
             if (!unit && line.variantId) {
               const offers = await fetchActiveOffersFor(line.productId, line.variantId);
               const offerPrice = pickMinOfferPrice(offers);
-              if (offerPrice && offerPrice > 0) {
-                unit = offerPrice;
-              }
+              if (offerPrice && offerPrice > 0) unit = offerPrice;
             }
 
             // 4) If no variant or still no price, try product base price
@@ -454,11 +463,7 @@ export default function Checkout() {
               const base = num(productData.price, 0);
               if (base > 0) {
                 unit = base;
-                if (
-                  !img &&
-                  Array.isArray(productData.imagesJson) &&
-                  productData.imagesJson[0]
-                ) {
+                if (!img && Array.isArray(productData.imagesJson) && productData.imagesJson[0]) {
                   img = productData.imagesJson[0];
                 }
               }
@@ -468,15 +473,11 @@ export default function Checkout() {
             if (!unit) {
               const offers = await fetchActiveOffersFor(line.productId, null);
               const offerPrice = pickMinOfferPrice(offers);
-              if (offerPrice && offerPrice > 0) {
-                unit = offerPrice;
-              }
+              if (offerPrice && offerPrice > 0) unit = offerPrice;
             }
 
             // 6) Final fallback: keep existing (even if 0) to avoid NaN
-            if (!unit && currentUnit > 0) {
-              unit = currentUnit;
-            }
+            if (!unit && currentUnit > 0) unit = currentUnit;
 
             const qty = Math.max(1, num(line.qty, 1));
             return {
@@ -498,107 +499,69 @@ export default function Checkout() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Distinct ids
-  const productIds = useMemo(
-    () => Array.from(new Set(cart.map((l) => l.productId))),
-    [cart]
-  );
+  const authHeader = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+  // Distinct ids (used mainly for display + passing through to backend)
+  const productIds = useMemo(() => Array.from(new Set(cart.map((l) => l.productId))), [cart]);
   const supplierIds = useMemo(
-    () =>
-      Array.from(
-        new Set(cart.map((l) => l.supplierId).filter(Boolean) as string[])
-      ),
+    () => Array.from(new Set(cart.map((l) => l.supplierId).filter(Boolean) as string[])),
     [cart]
   );
 
-  // Server-computed comms/service fee
+  // totals needed for fee query
+  const itemsSubtotal = useMemo(() => cart.reduce((s, it) => s + computeLineTotal(it), 0), [cart]);
+  const units = useMemo(() => cart.reduce((s, it) => s + Math.max(1, num(it.qty, 1)), 0), [cart]);
+
+  // ✅ Authoritative fees from backend (MATCHES orders.ts)
   const serviceFeeQ = useQuery({
-    queryKey: ['checkout', 'service-fee', { productIds, supplierIds }],
-    enabled: productIds.length > 0,
+    queryKey: ['checkout', 'service-fee', { itemsSubtotal, units, productIds, supplierIds }],
+    enabled: cart.length > 0,
     queryFn: async () => {
       const qs = new URLSearchParams();
-      if (supplierIds.length) qs.set('supplierIds', supplierIds.join(','));
-      else qs.set('productIds', productIds.join(','));
+      qs.set('itemsSubtotal', String(itemsSubtotal));
+      qs.set('units', String(units));
 
-      const { data } = await api.get(
-        `/api/settings/checkout/service-fee?${qs.toString()}`
-      );
+      // display-only (but you asked they should show up)
+      if (productIds.length) qs.set('productIds', productIds.join(','));
+      if (supplierIds.length) qs.set('supplierIds', supplierIds.join(','));
+
+      const { data } = await api.get(`/api/settings/checkout/service-fee?${qs.toString()}`);
 
       return {
-        unit: Number(data?.unitFee) || 0,
-        msgs: Number(data?.notificationsCount) || 0,
-        suppliers: Number(data?.suppliersCount) || 0,
-        amount: Number(data?.serviceFee) || 0,
+        unitFee: Number(data?.unitFee) || 0,
+        units: Number(data?.units) || 0,
+
+        taxMode: String(data?.taxMode || 'INCLUDED') as 'INCLUDED' | 'ADDED' | 'NONE',
+        taxRatePct: Number(data?.taxRatePct) || 0,
+        vatAddOn: Number(data?.vatAddOn) || 0,
+
+        serviceFeeBase: Number(data?.serviceFeeBase) || 0,
+        serviceFeeComms: Number(data?.serviceFeeComms) || 0,
+        serviceFeeGateway: Number(data?.serviceFeeGateway) || 0,
+        serviceFeeTotal: Number(data?.serviceFeeTotal ?? data?.serviceFee) || 0,
       };
     },
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
 
-  const svcFee = serviceFeeQ.data?.amount ?? 0;
+  const fee = serviceFeeQ.data;
+  const taxMode = fee?.taxMode ?? 'INCLUDED';
+  const taxRatePct = fee?.taxRatePct ?? 0;
+  const vatAddOn = fee?.vatAddOn ?? 0;
 
-  // TAX & base service fee (public settings)
-  const [baseFee, setBaseFee] = useState(0);
-  const [taxMode, setTaxMode] =
-    useState<'INCLUDED' | 'ADDED' | 'NONE'>('INCLUDED');
-  const [taxRatePct, setTaxRatePct] = useState(0);
+  const taxRate = useMemo(() => (Number.isFinite(taxRatePct) ? taxRatePct / 100 : 0), [taxRatePct]);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await api.get('/api/settings/public');
-        const base =
-          Number(data?.baseServiceFeeNGN) ||
-          Number(data?.serviceFeeBaseNGN) ||
-          Number(data?.platformBaseFeeNGN) ||
-          0;
-        if (Number.isFinite(base) && base >= 0) setBaseFee(base);
-
-        const tmRaw = String(data?.taxMode || '').toUpperCase();
-        if (tmRaw === 'ADDED' || tmRaw === 'NONE' || tmRaw === 'INCLUDED') {
-          setTaxMode(tmRaw as 'INCLUDED' | 'ADDED' | 'NONE');
-        }
-        const tr = Number(data?.taxRatePct);
-        if (Number.isFinite(tr) && tr >= 0) setTaxRatePct(tr);
-      } catch {
-        // leave defaults
-      }
-    })();
-  }, []);
-
-  const taxRate = useMemo(
-    () => (Number.isFinite(taxRatePct) ? taxRatePct / 100 : 0),
-    [taxRatePct]
-  );
-
-  // totals
-  const itemsSubtotal = useMemo(
-    () => cart.reduce((s, it) => s + computeLineTotal(it), 0),
-    [cart]
-  );
-
+  // Display-only: VAT "included" estimate (when mode is INCLUDED)
   const estimatedVATIncluded = useMemo(() => {
     if (taxMode !== 'INCLUDED' || taxRate <= 0) return 0;
-    return itemsSubtotal - itemsSubtotal / (1 + taxRate);
-  }, [itemsSubtotal, taxMode, taxRate]);
-
-  const vatAddOn = useMemo(() => {
-    if (taxMode !== 'ADDED' || taxRate <= 0) return 0;
     return itemsSubtotal * taxRate;
   }, [itemsSubtotal, taxMode, taxRate]);
 
-  const gatewayEstimate = useMemo(() => {
-    const grossBeforeGateway =
-      itemsSubtotal +
-      (taxMode === 'ADDED' ? vatAddOn : 0) +
-      baseFee +
-      svcFee;
-    return estimateGatewayFee(grossBeforeGateway);
-  }, [itemsSubtotal, taxMode, vatAddOn, baseFee, svcFee]);
+  const serviceFeeTotal = fee?.serviceFeeTotal ?? 0;
 
-  const serviceFeeTotal = baseFee + svcFee + gatewayEstimate;
-  const payableTotal =
-    itemsSubtotal + (taxMode === 'ADDED' ? vatAddOn : 0) + serviceFeeTotal;
+  // ✅ This now matches backend/orders: subtotal + vatAddOn (if ADDED) + serviceFeeTotal (base+comms+gateway)
+  const payableTotal = itemsSubtotal + (taxMode === 'ADDED' ? vatAddOn : 0) + serviceFeeTotal;
 
   // ADDRESSES
   const [loadingProfile, setLoadingProfile] = useState(true);
@@ -614,10 +577,6 @@ export default function Checkout() {
   const [savingHome, setSavingHome] = useState(false);
   const [savingShip, setSavingShip] = useState(false);
 
-  const authHeader = token
-    ? { Authorization: `Bearer ${token}` }
-    : undefined;
-
   // Verification + addresses load
   useEffect(() => {
     let mounted = true;
@@ -629,29 +588,19 @@ export default function Checkout() {
       setProfileErr(null);
 
       try {
-        const res = await api.get<ProfileMe>('/api/profile/me', {
-          headers: authHeader,
-        });
+        const res = await api.get<ProfileMe>('/api/profile/me', { headers: authHeader });
         if (!mounted) return;
 
         const flags = computeVerificationFlags(res.data);
         setEmailOk(flags.emailOk);
         setPhoneOk(flags.phoneOk);
 
-        if (!flags.emailOk
-          //  || !flags.phoneOk
-          ) {
+        if (!flags.emailOk /* || !flags.phoneOk */) {
           setShowNotVerified(true);
         }
 
-        const h =
-          res.data?.address ??
-          (res.data as any)?.address ??
-          null;
-        const saddr =
-          res.data?.shippingAddress ??
-          (res.data as any)?.shipping_address ??
-          null;
+        const h = res.data?.address ?? (res.data as any)?.address ?? null;
+        const saddr = res.data?.shippingAddress ?? (res.data as any)?.shipping_address ?? null;
 
         if (h) setHomeAddr({ ...EMPTY_ADDR, ...h });
         if (saddr) setShipAddr({ ...EMPTY_ADDR, ...saddr });
@@ -664,9 +613,7 @@ export default function Checkout() {
         setEmailOk(false);
         setPhoneOk(false);
         setShowNotVerified(true);
-        setProfileErr(
-          e?.response?.data?.error || 'Failed to load profile'
-        );
+        setProfileErr(e?.response?.data?.error || 'Failed to load profile');
       } finally {
         if (mounted) {
           setCheckingVerification(false);
@@ -681,35 +628,26 @@ export default function Checkout() {
   }, [token]);
 
   useEffect(() => {
-    if (sameAsHome)
-      setShipAddr((prev) => ({ ...prev, ...homeAddr }));
+    if (sameAsHome) setShipAddr((prev) => ({ ...prev, ...homeAddr }));
   }, [sameAsHome, homeAddr]);
 
   const onChangeHome =
     (k: keyof Address) =>
-      (e: React.ChangeEvent<HTMLInputElement>) =>
-        setHomeAddr((a) => ({ ...a, [k]: e.target.value }));
+    (e: React.ChangeEvent<HTMLInputElement>) =>
+      setHomeAddr((a) => ({ ...a, [k]: e.target.value }));
 
   const onChangeShip =
     (k: keyof Address) =>
-      (e: React.ChangeEvent<HTMLInputElement>) =>
-        setShipAddr((a) => ({ ...a, [k]: e.target.value }));
+    (e: React.ChangeEvent<HTMLInputElement>) =>
+      setShipAddr((a) => ({ ...a, [k]: e.target.value }));
 
-  function validateAddress(
-    a: Address,
-    isShipping = false
-  ): string | null {
+  function validateAddress(a: Address, isShipping = false): string | null {
     const label = isShipping ? 'Shipping' : 'Home';
-    if (!a.houseNumber.trim())
-      return `Enter ${label} address: house/plot number`;
-    if (!a.streetName.trim())
-      return `Enter ${label} address: street name`;
-    if (!a.city.trim())
-      return `Enter ${label} address: city`;
-    if (!a.state.trim())
-      return `Enter ${label} address: state`;
-    if (!a.country.trim())
-      return `Enter ${label} address: country`;
+    if (!a.houseNumber.trim()) return `Enter ${label} address: house/plot number`;
+    if (!a.streetName.trim()) return `Enter ${label} address: street name`;
+    if (!a.city.trim()) return `Enter ${label} address: city`;
+    if (!a.state.trim()) return `Enter ${label} address: state`;
+    if (!a.country.trim()) return `Enter ${label} address: country`;
     return null;
   }
 
@@ -721,26 +659,18 @@ export default function Checkout() {
     }
     try {
       setSavingHome(true);
-      await api.post('/api/profile/address', homeAddr, {
-        headers: authHeader,
-      });
+      await api.post('/api/profile/address', homeAddr, { headers: authHeader });
       setShowHomeForm(false);
 
       if (sameAsHome) {
-        await api.post(
-          '/api/profile/shipping',
-          homeAddr,
-          { headers: authHeader }
-        );
+        await api.post('/api/profile/shipping', homeAddr, { headers: authHeader });
         setShipAddr(homeAddr);
         setShowShipForm(false);
       }
     } catch (e: any) {
       openModal({
         title: 'Checkout',
-        message:
-          e?.response?.data?.error ||
-          'Failed to save home address',
+        message: e?.response?.data?.error || 'Failed to save home address',
       });
     } finally {
       setSavingHome(false);
@@ -755,18 +685,12 @@ export default function Checkout() {
     }
     try {
       setSavingShip(true);
-      await api.post(
-        '/api/profile/shipping',
-        shipAddr,
-        { headers: authHeader }
-      );
+      await api.post('/api/profile/shipping', shipAddr, { headers: authHeader });
       setShowShipForm(false);
     } catch (e: any) {
       openModal({
         title: 'Checkout',
-        message:
-          e?.response?.data?.error ||
-          'Failed to save shipping address',
+        message: e?.response?.data?.error || 'Failed to save shipping address',
       });
     } finally {
       setSavingShip(false);
@@ -775,47 +699,23 @@ export default function Checkout() {
 
   const createOrder = useMutation({
     mutationFn: async () => {
-      if (checkingVerification)
-        throw new Error(
-          'Checking your account verification…'
-        );
-      if (!emailOk 
-        // || !phoneOk
-      ) {
-        const msg =  'Your email is not verified.';
-          // !emailOk 
-          // && !phoneOk
-          //   ? 'Your email and password are not verified.'
-          //   : 
-          //   !emailOk
-          //     ? 'Your email is not verified.'
-          //     : 'You phone is not verified.';
-        throw new Error(msg);
-      }
+      if (checkingVerification) throw new Error('Checking your account verification…');
+      if (!emailOk /* || !phoneOk */) throw new Error('Your email is not verified.');
 
-      if (cart.length === 0)
-        throw new Error('Your cart is empty');
+      if (cart.length === 0) throw new Error('Your cart is empty');
 
-      const bad = cart.find(
-        (l) =>
-          num(l.unitPrice, num(l.price, 0)) <= 0
-      );
-      if (bad)
-        throw new Error(
-          'One or more items have no price. Please remove and re-add them to cart.'
-        );
+      // Ensure fees are computed before creating order (prevents mismatch)
+      if (serviceFeeQ.isLoading || !fee) throw new Error('Calculating fees… Please try again in a moment.');
+
+      const bad = cart.find((l) => num(l.unitPrice, num(l.price, 0)) <= 0);
+      if (bad) throw new Error('One or more items have no price. Please remove and re-add them to cart.');
 
       const vaHome = validateAddress(homeAddr);
       if (vaHome) throw new Error(vaHome);
 
-      const finalShip = sameAsHome
-        ? homeAddr
-        : shipAddr;
+      const finalShip = sameAsHome ? homeAddr : shipAddr;
       if (!sameAsHome) {
-        const vaShip = validateAddress(
-          finalShip,
-          true
-        );
+        const vaShip = validateAddress(finalShip, true);
         if (vaShip) throw new Error(vaShip);
       }
 
@@ -823,60 +723,38 @@ export default function Checkout() {
         productId: it.productId,
         variantId: it.variantId || undefined,
         qty: Math.max(1, num(it.qty, 1)),
-        unitPrice: num(
-          it.unitPrice,
-          num(it.price, 0)
-        ),
-        selectedOptions: Array.isArray(
-          it.selectedOptions
-        )
-          ? it.selectedOptions
-          : undefined,
+        unitPrice: num(it.unitPrice, num(it.price, 0)),
+        selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : undefined,
       }));
 
       const payload = {
         items,
         shippingAddress: finalShip,
 
-        // --- service fee breakdown (to be stored on the order) ---
-        serviceFeeBase: baseFee,
-        serviceFeeComms: svcFee,
-        serviceFeeGateway: gatewayEstimate,
-        serviceFeeTotal: serviceFeeTotal,
-        // helpful alias for older readers
-        serviceFee: serviceFeeTotal,
+        // ✅ Send EXACT backend-computed breakdown (do not recompute locally)
+        serviceFeeBase: fee.serviceFeeBase ?? 0,
+        serviceFeeComms: fee.serviceFeeComms ?? 0,
+        serviceFeeGateway: fee.serviceFeeGateway ?? 0,
+        serviceFeeTotal: fee.serviceFeeTotal ?? 0,
+        serviceFee: fee.serviceFeeTotal ?? 0,
 
-        // --- order math snapshot (optional but useful) ---
+        // snapshot (optional but useful)
         itemsSubtotal,
-        taxMode,
-        taxRatePct,
-        vatAddOn,
+        taxMode: fee.taxMode,
+        taxRatePct: fee.taxRatePct,
+        vatAddOn: fee.vatAddOn,
         total: payableTotal,
       };
 
-
       let res;
       try {
-        res = await api.post(
-          '/api/orders',
-          payload,
-          { headers: authHeader }
-        );
+        res = await api.post('/api/orders', payload, { headers: authHeader });
       } catch (e: any) {
-        console.error(
-          'create order failed:',
-          e?.response?.status,
-          e?.response?.data
-        );
-        throw new Error(
-          e?.response?.data?.error ||
-          'Failed to create order'
-        );
+        console.error('create order failed:', e?.response?.status, e?.response?.data);
+        throw new Error(e?.response?.data?.error || 'Failed to create order');
       }
 
-      return res.data as {
-        data: { id: string };
-      };
+      return res.data as { data: { id: string } };
     },
     onSuccess: (resp) => {
       const orderId = (resp as any)?.data?.id;
@@ -886,9 +764,7 @@ export default function Checkout() {
           orderId,
           total: payableTotal,
           homeAddress: homeAddr,
-          shippingAddress: sameAsHome
-            ? homeAddr
-            : shipAddr,
+          shippingAddress: sameAsHome ? homeAddr : shipAddr,
         },
         replace: true,
       });
@@ -899,13 +775,8 @@ export default function Checkout() {
     return (
       <div className="min-h-[70vh] grid place-items-center bg-bg-soft">
         <div className="text-center space-y-3">
-          <h1 className="text-2xl font-semibold text-ink">
-            Your cart is empty
-          </h1>
-          <p className="text-ink-soft">
-            Add some items to proceed to
-            checkout.
-          </p>
+          <h1 className="text-2xl font-semibold text-ink">Your cart is empty</h1>
+          <p className="text-ink-soft">Add some items to proceed to checkout.</p>
           <button
             onClick={() => nav('/')}
             className="inline-flex items-center rounded-md bg-primary-600 px-4 py-2 text-white font-medium hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
@@ -918,30 +789,13 @@ export default function Checkout() {
   }
 
   const NotVerifiedModal = () => {
-     let title; if(!emailOk) { title ='Email not verified'}
-    // const title =
-    //   !emailOk && !phoneOk
-    //     ? 'Email and password not verified'
-    //     : !emailOk
-    //       ? 'Email not verified'
-    //       : 'Phone is not verified';
+    const title = !emailOk && !phoneOk ? 'Email and password not verified' : !emailOk ? 'Email not verified' : 'Phone is not verified';
 
     const lines: string[] = [];
-    if (!emailOk)
-      lines.push(
-        '• Your email is not verified.'
-      );
-    // if (!phoneOk)
-    //   lines.push(
-    //     '• You phone is not verified.'
-    //   );
-    lines.push(
-      'Please fix this, then return to your cart/checkout.'
-    );
+    if (!emailOk) lines.push('• Your email is not verified.');
+    lines.push('Please fix this, then return to your cart/checkout.');
 
-    const next = encodeURIComponent(
-      '/checkout'
-    );
+    const next = encodeURIComponent('/checkout');
     const verifyHref = `${VERIFY_PATH}?next=${next}`;
 
     return (
@@ -954,16 +808,9 @@ export default function Checkout() {
         }}
         className="fixed inset-0 z-50 grid place-items-center bg-black/40 px-4"
       >
-        <div
-          className="w-full max-w-md rounded-2xl bg-white shadow-2xl border"
-          onClick={(e) =>
-            e.stopPropagation()
-          }
-        >
+        <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border" onClick={(e) => e.stopPropagation()}>
           <div className="px-5 py-4 border-b">
-            <h2 className="text-lg font-semibold">
-              {title}
-            </h2>
+            <h2 className="text-lg font-semibold">{title}</h2>
           </div>
 
           <div className="p-5 space-y-3 text-sm">
@@ -972,35 +819,26 @@ export default function Checkout() {
             ))}
 
             <div className="mt-2 space-y-2">
-              {(!emailOk ||
-                !phoneOk) && (
-                  <button
-                    className="w-full inline-flex items-center justify-center rounded-lg bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200"
-                    onClick={() =>
-                      nav(verifyHref)
-                    }
-                  >
-                    {/* Verify email/phone now */}
-                    Verify email now
-                  </button>
-                )}
+              {(!emailOk || !phoneOk) && (
+                <button
+                  className="w-full inline-flex items-center justify-center rounded-lg bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200"
+                  onClick={() => nav(verifyHref)}
+                >
+                  Verify email now
+                </button>
+              )}
               <div className="text-xs text-ink-soft text-center">
                 {!emailOk && (
                   <>
                     Or{' '}
                     <a
                       className="underline"
-                      onClick={(
-                        e
-                      ) => {
+                      onClick={(e) => {
                         e.preventDefault();
-                        nav(
-                          verifyHref
-                        );
+                        nav(verifyHref);
                       }}
                     >
-                      open verification
-                      page
+                      open verification page
                     </a>
                     .
                   </>
@@ -1013,20 +851,13 @@ export default function Checkout() {
             <button
               className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 text-sm"
               onClick={() => {
-                setShowNotVerified(
-                  false
-                );
+                setShowNotVerified(false);
                 nav('/cart');
               }}
             >
               Back to cart
             </button>
-            <button
-              className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
-              onClick={() => { }}
-              disabled
-              title="Complete the steps above"
-            >
+            <button className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm" onClick={() => {}} disabled title="Complete the steps above">
               Continue
             </button>
           </div>
@@ -1038,47 +869,27 @@ export default function Checkout() {
   return (
     <SiteLayout>
       <div className="bg-bg-soft bg-hero-radial">
-        {!checkingVerification &&
-          showNotVerified && (
-            <NotVerifiedModal />
-          )}
+        {!checkingVerification && showNotVerified && <NotVerifiedModal />}
 
         <div className="max-w-6xl mx-auto px-4 md:px-6 py-8">
           <div className="mb-6">
             <nav className="flex items-center gap-2 text-sm">
-              <span className="text-ink font-medium">
-                Items
-              </span>
-              <span className="opacity-40">
-                ›
-              </span>
-              <span className="text-ink-soft">
-                Address
-              </span>
-              <span className="opacity-40">
-                ›
-              </span>
-              <span className="text-ink-soft">
-                Payment
-              </span>
+              <span className="text-ink font-medium">Items</span>
+              <span className="opacity-40">›</span>
+              <span className="text-ink-soft">Address</span>
+              <span className="opacity-40">›</span>
+              <span className="text-ink-soft">Payment</span>
             </nav>
-            <h1 className="mt-2 text-2xl font-semibold text-ink">
-              Checkout
-            </h1>
+            <h1 className="mt-2 text-2xl font-semibold text-ink">Checkout</h1>
             {profileErr && (
-              <p className="mt-2 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
-                {profileErr}
-              </p>
+              <p className="mt-2 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">{profileErr}</p>
             )}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-6">
             {/* LEFT: Items / Addresses */}
             <section className="space-y-6">
-              <Card
-                tone="primary"
-                className="animate-in fade-in slide-in-from-bottom-2 duration-300"
-              >
+              <Card tone="primary" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
                 <CardHeader
                   tone="primary"
                   title="Items in your order"
@@ -1087,44 +898,18 @@ export default function Checkout() {
                 />
                 <ul className="divide-y">
                   {cart.map((it) => {
-                    const unit = num(
-                      it.unitPrice,
-                      num(it.price, 0)
-                    );
-                    const lineTotal =
-                      computeLineTotal(it);
-                    const hasOptions =
-                      Array.isArray(
-                        it.selectedOptions
-                      ) &&
-                      it
-                        .selectedOptions!
-                        .length > 0;
+                    const unit = num(it.unitPrice, num(it.price, 0));
+                    const lineTotal = computeLineTotal(it);
+                    const hasOptions = Array.isArray(it.selectedOptions) && it.selectedOptions!.length > 0;
                     const optionsText = hasOptions
-                      ? it.selectedOptions!
-                        .map(
-                          (o) =>
-                            `${o.attribute}: ${o.value}`
-                        )
-                        .join(' • ')
+                      ? it.selectedOptions!.map((o) => `${o.attribute}: ${o.value}`).join(' • ')
                       : null;
 
                     return (
-                      <li
-                        key={`${it.productId}-${it.variantId ?? 'base'}`}
-                        className="p-4"
-                      >
+                      <li key={`${it.productId}-${it.variantId ?? 'base'}`} className="p-4">
                         <div className="flex items-center gap-4">
                           {it.image ? (
-                            <img
-                              src={
-                                it.image
-                              }
-                              alt={
-                                it.title
-                              }
-                              className="w-14 h-14 rounded-md object-cover border"
-                            />
+                            <img src={it.image} alt={it.title} className="w-14 h-14 rounded-md object-cover border" />
                           ) : (
                             <div className="w-14 h-14 rounded-md bg-zinc-100 grid place-items-center text-[10px] text-ink-soft border">
                               No image
@@ -1136,33 +921,14 @@ export default function Checkout() {
                               <div className="min-w-0">
                                 <div className="font-medium text-ink truncate">
                                   {it.title}
-                                  {it.variantId
-                                    ? ' (Variant)'
-                                    : ''}
+                                  {it.variantId ? ' (Variant)' : ''}
                                 </div>
                                 <div className="text-xs text-ink-soft">
-                                  Qty:{' '}
-                                  {
-                                    it.qty
-                                  }{' '}
-                                  • Unit:{' '}
-                                  {ngn.format(
-                                    unit
-                                  )}
+                                  Qty: {it.qty} • Unit: {ngn.format(unit)}
                                 </div>
-                                {optionsText && (
-                                  <div className="mt-1 text-xs text-ink-soft">
-                                    {
-                                      optionsText
-                                    }
-                                  </div>
-                                )}
+                                {optionsText && <div className="mt-1 text-xs text-ink-soft">{optionsText}</div>}
                               </div>
-                              <div className="text-ink font-semibold whitespace-nowrap">
-                                {ngn.format(
-                                  lineTotal
-                                )}
-                              </div>
+                              <div className="text-ink font-semibold whitespace-nowrap">{ngn.format(lineTotal)}</div>
                             </div>
                           </div>
                         </div>
@@ -1173,10 +939,7 @@ export default function Checkout() {
               </Card>
 
               {/* Home Address */}
-              <Card
-                tone="emerald"
-                className="animate-in fade-in slide-in-from-bottom-2 duration-300"
-              >
+              <Card tone="emerald" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
                 <CardHeader
                   tone="emerald"
                   title="Home address"
@@ -1184,138 +947,56 @@ export default function Checkout() {
                   icon={<IconHome />}
                   action={
                     !showHomeForm && (
-                      <button
-                        className="text-sm text-emerald-700 hover:underline"
-                        onClick={() =>
-                          setShowHomeForm(
-                            true
-                          )
-                        }
-                      >
+                      <button className="text-sm text-emerald-700 hover:underline" onClick={() => setShowHomeForm(true)}>
                         Change
                       </button>
                     )
                   }
                 />
                 {loadingProfile ? (
-                  <div className="p-4 text-sm text-ink-soft">
-                    Loading…
-                  </div>
+                  <div className="p-4 text-sm text-ink-soft">Loading…</div>
                 ) : showHomeForm ? (
                   <div className="p-4 grid grid-cols-1 gap-3">
                     <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        value={
-                          homeAddr.houseNumber
-                        }
-                        onChange={onChangeHome(
-                          'houseNumber'
-                        )}
-                        placeholder="House No."
-                      />
-                      <Input
-                        value={
-                          homeAddr.postCode
-                        }
-                        onChange={onChangeHome(
-                          'postCode'
-                        )}
-                        placeholder="Post code"
-                      />
+                      <Input value={homeAddr.houseNumber} onChange={onChangeHome('houseNumber')} placeholder="House No." />
+                      <Input value={homeAddr.postCode} onChange={onChangeHome('postCode')} placeholder="Post code" />
                     </div>
-                    <Input
-                      value={
-                        homeAddr.streetName
-                      }
-                      onChange={onChangeHome(
-                        'streetName'
-                      )}
-                      placeholder="Street name"
-                    />
+                    <Input value={homeAddr.streetName} onChange={onChangeHome('streetName')} placeholder="Street name" />
                     <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        value={
-                          homeAddr.town
-                        }
-                        onChange={onChangeHome(
-                          'town'
-                        )}
-                        placeholder="Town"
-                      />
-                      <Input
-                        value={
-                          homeAddr.city
-                        }
-                        onChange={onChangeHome(
-                          'city'
-                        )}
-                        placeholder="City"
-                      />
+                      <Input value={homeAddr.town} onChange={onChangeHome('town')} placeholder="Town" />
+                      <Input value={homeAddr.city} onChange={onChangeHome('city')} placeholder="City" />
                     </div>
                     <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        value={
-                          homeAddr.state
-                        }
-                        onChange={onChangeHome(
-                          'state'
-                        )}
-                        placeholder="State"
-                      />
-                      <Input
-                        value={
-                          homeAddr.country
-                        }
-                        onChange={onChangeHome(
-                          'country'
-                        )}
-                        placeholder="Country"
-                      />
+                      <Input value={homeAddr.state} onChange={onChangeHome('state')} placeholder="State" />
+                      <Input value={homeAddr.country} onChange={onChangeHome('country')} placeholder="Country" />
                     </div>
 
                     <div className="flex items-center gap-3 pt-1">
                       <button
                         type="button"
                         className="inline-flex items-center rounded-md bg-emerald-600 px-4 py-2 text-white font-medium hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-200 transition disabled:opacity-50"
-                        onClick={
-                          saveHome
-                        }
-                        disabled={
-                          savingHome
-                        }
+                        onClick={saveHome}
+                        disabled={savingHome}
                       >
-                        {savingHome
-                          ? 'Saving…'
-                          : 'Done'}
+                        {savingHome ? 'Saving…' : 'Done'}
                       </button>
                       <button
                         type="button"
                         className="text-sm text-ink-soft hover:underline"
-                        onClick={() =>
-                          setHomeAddr(
-                            EMPTY_ADDR
-                          )
-                        }
-                        disabled={
-                          savingHome
-                        }
+                        onClick={() => setHomeAddr(EMPTY_ADDR)}
+                        disabled={savingHome}
                       >
                         Clear
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <AddressPreview
-                    a={homeAddr}
-                  />
+                  <AddressPreview a={homeAddr} />
                 )}
               </Card>
 
               {/* Shipping Address */}
-              <Card
-                tone="amber"
-                className="animate-in fade-in slide-in-from-bottom-2 duration-300"
-              >
+              <Card tone="amber" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
                 <CardHeader
                   tone="amber"
                   title="Shipping address"
@@ -1325,172 +1006,65 @@ export default function Checkout() {
                     <label className="flex items-center gap-2 text-sm">
                       <input
                         type="checkbox"
-                        checked={
-                          sameAsHome
-                        }
-                        onChange={async (
-                          e
-                        ) => {
-                          const checked =
-                            e.target
-                              .checked;
-                          setSameAsHome(
-                            checked
-                          );
-                          if (
-                            checked
-                          ) {
+                        checked={sameAsHome}
+                        onChange={async (e) => {
+                          const checked = e.target.checked;
+                          setSameAsHome(checked);
+                          if (checked) {
                             try {
-                              setSavingShip(
-                                true
-                              );
-                              await api.post(
-                                '/api/profile/shipping',
-                                homeAddr,
-                                {
-                                  headers:
-                                    authHeader,
-                                }
-                              );
-                              setShipAddr(
-                                homeAddr
-                              );
-                              setShowShipForm(
-                                false
-                              );
+                              setSavingShip(true);
+                              await api.post('/api/profile/shipping', homeAddr, { headers: authHeader });
+                              setShipAddr(homeAddr);
+                              setShowShipForm(false);
                             } catch (err: any) {
                               openModal({
-                                title:
-                                  'Checkout',
-                                message:
-                                  err
-                                    ?.response
-                                    ?.data
-                                    ?.error ||
-                                  'Failed to set shipping as home',
+                                title: 'Checkout',
+                                message: err?.response?.data?.error || 'Failed to set shipping as home',
                               });
                             } finally {
-                              setSavingShip(
-                                false
-                              );
+                              setSavingShip(false);
                             }
                           }
                         }}
                       />
-                      <span className="text-ink-soft">
-                        Same as home
-                      </span>
+                      <span className="text-ink-soft">Same as home</span>
                     </label>
                   }
                 />
                 {sameAsHome ? (
-                  <div className="p-4 text-sm text-ink-soft">
-                    Using your Home
-                    address for
-                    shipping.
-                  </div>
+                  <div className="p-4 text-sm text-ink-soft">Using your Home address for shipping.</div>
                 ) : loadingProfile ? (
-                  <div className="p-4 text-sm text-ink-soft">
-                    Loading…
-                  </div>
+                  <div className="p-4 text-sm text-ink-soft">Loading…</div>
                 ) : showShipForm ? (
                   <div className="p-4 grid grid-cols-1 gap-3">
                     <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        value={
-                          shipAddr.houseNumber
-                        }
-                        onChange={onChangeShip(
-                          'houseNumber'
-                        )}
-                        placeholder="House No."
-                      />
-                      <Input
-                        value={
-                          shipAddr.postCode
-                        }
-                        onChange={onChangeShip(
-                          'postCode'
-                        )}
-                        placeholder="Post code"
-                      />
+                      <Input value={shipAddr.houseNumber} onChange={onChangeShip('houseNumber')} placeholder="House No." />
+                      <Input value={shipAddr.postCode} onChange={onChangeShip('postCode')} placeholder="Post code" />
                     </div>
-                    <Input
-                      value={
-                        shipAddr.streetName
-                      }
-                      onChange={onChangeShip(
-                        'streetName'
-                      )}
-                      placeholder="Street name"
-                    />
+                    <Input value={shipAddr.streetName} onChange={onChangeShip('streetName')} placeholder="Street name" />
                     <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        value={
-                          shipAddr.town
-                        }
-                        onChange={onChangeShip(
-                          'town'
-                        )}
-                        placeholder="Town"
-                      />
-                      <Input
-                        value={
-                          shipAddr.city
-                        }
-                        onChange={onChangeShip(
-                          'city'
-                        )}
-                        placeholder="City"
-                      />
+                      <Input value={shipAddr.town} onChange={onChangeShip('town')} placeholder="Town" />
+                      <Input value={shipAddr.city} onChange={onChangeShip('city')} placeholder="City" />
                     </div>
                     <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        value={
-                          shipAddr.state
-                        }
-                        onChange={onChangeShip(
-                          'state'
-                        )}
-                        placeholder="State"
-                      />
-                      <Input
-                        value={
-                          shipAddr.country
-                        }
-                        onChange={onChangeShip(
-                          'country'
-                        )}
-                        placeholder="Country"
-                      />
+                      <Input value={shipAddr.state} onChange={onChangeShip('state')} placeholder="State" />
+                      <Input value={shipAddr.country} onChange={onChangeShip('country')} placeholder="Country" />
                     </div>
 
                     <div className="flex items-center gap-3 pt-1">
                       <button
                         type="button"
                         className="inline-flex items-center rounded-md bg-amber-600 px-4 py-2 text-white font-medium hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-200 transition disabled:opacity-50"
-                        onClick={
-                          saveShip
-                        }
-                        disabled={
-                          savingShip
-                        }
+                        onClick={saveShip}
+                        disabled={savingShip}
                       >
-                        {savingShip
-                          ? 'Saving…'
-                          : 'Done'}
+                        {savingShip ? 'Saving…' : 'Done'}
                       </button>
                       <button
                         type="button"
                         className="text-sm text-ink-soft hover:underline"
-                        onClick={() =>
-                          setShipAddr(
-                            EMPTY_ADDR
-                          )
-                        }
-                        disabled={
-                          savingShip
-                        }
+                        onClick={() => setShipAddr(EMPTY_ADDR)}
+                        disabled={savingShip}
                       >
                         Clear
                       </button>
@@ -1501,39 +1075,16 @@ export default function Checkout() {
                     <div className="flex items-start justify-between">
                       <div className="text-sm leading-6 text-ink">
                         <div>
-                          {
-                            shipAddr.houseNumber
-                          }{' '}
-                          {
-                            shipAddr.streetName
-                          }
+                          {shipAddr.houseNumber} {shipAddr.streetName}
                         </div>
                         <div>
-                          {shipAddr.town ||
-                            ''}{' '}
-                          {shipAddr.city ||
-                            ''}{' '}
-                          {shipAddr.postCode ||
-                            ''}
+                          {shipAddr.town || ''} {shipAddr.city || ''} {shipAddr.postCode || ''}
                         </div>
                         <div>
-                          {
-                            shipAddr.state
-                          }
-                          ,{' '}
-                          {
-                            shipAddr.country
-                          }
+                          {shipAddr.state}, {shipAddr.country}
                         </div>
                       </div>
-                      <button
-                        className="text-sm text-amber-700 hover:underline"
-                        onClick={() =>
-                          setShowShipForm(
-                            true
-                          )
-                        }
-                      >
+                      <button className="text-sm text-amber-700 hover:underline" onClick={() => setShowShipForm(true)}>
                         Change
                       </button>
                     </div>
@@ -1545,154 +1096,78 @@ export default function Checkout() {
             {/* RIGHT: Summary / Action */}
             <aside className="lg:sticky lg:top-6 h-max">
               <Card className="p-5">
-                <h2 className="text-lg font-semibold text-ink">
-                  Order Summary
-                </h2>
+                <h2 className="text-lg font-semibold text-ink">Order Summary</h2>
 
                 <div className="mt-3 space-y-2 text-sm">
                   <div className="flex items-center justify-between">
-                    <span className="text-ink-soft">
-                      Items Subtotal
-                    </span>
-                    <span className="font-medium">
-                      {ngn.format(
-                        itemsSubtotal
-                      )}
-                    </span>
+                    <span className="text-ink-soft">Items Subtotal</span>
+                    <span className="font-medium">{ngn.format(itemsSubtotal)}</span>
                   </div>
 
-                  {taxMode ===
-                    'INCLUDED' &&
-                    estimatedVATIncluded >
-                    0 && (
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-ink-soft">
-                          VAT
-                          (included)
-                        </span>
-                        <span className="text-ink-soft">
-                          {ngn.format(
-                            estimatedVATIncluded
-                          )}
-                        </span>
-                      </div>
-                    )}
+                  {taxMode === 'INCLUDED' && estimatedVATIncluded > 0 && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-ink-soft">VAT (included)</span>
+                      <span className="text-ink-soft">{ngn.format(estimatedVATIncluded)}</span>
+                    </div>
+                  )}
 
-                  {taxMode ===
-                    'ADDED' &&
-                    vatAddOn >
-                    0 && (
-                      <div className="flex items-center justify-between">
-                        <span className="text-ink-soft">
-                          VAT
-                        </span>
-                        <span className="font-medium">
-                          {ngn.format(
-                            vatAddOn
-                          )}
-                        </span>
-                      </div>
-                    )}
+                  {taxMode === 'ADDED' && vatAddOn > 0 && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-ink-soft">VAT</span>
+                      <span className="font-medium">{ngn.format(vatAddOn)}</span>
+                    </div>
+                  )}
 
                   <div className="flex items-center justify-between">
-                    <span className="text-ink-soft">
-                      Shipping
-                    </span>
-                    <span className="font-medium">
-                      Included by
-                      supplier
-                    </span>
+                    <span className="text-ink-soft">Shipping</span>
+                    <span className="font-medium">Included by supplier</span>
                   </div>
 
                   <div className="mt-4 pt-3 border-t border-border">
                     <div className="flex items-center justify-between mt-2">
-                      <span className="text-ink">
-                        Service fee
-                        (total)
-                      </span>
-                      <span className="font-semibold">
-                        {ngn.format(
-                          serviceFeeTotal
-                        )}
-                      </span>
+                      <span className="text-ink">Service fee (total)</span>
+                      <span className="font-semibold">{ngn.format(serviceFeeTotal)}</span>
                     </div>
+                    {serviceFeeQ.isLoading && <div className="mt-1 text-xs text-ink-soft">Calculating fees…</div>}
+                    {serviceFeeQ.isError && <div className="mt-1 text-xs text-danger">Failed to compute fees</div>}
                   </div>
                 </div>
 
                 <div className="mt-4 flex items-center justify-between text-ink">
-                  <span className="font-semibold">
-                    Total
-                  </span>
-                  <span className="text-xl font-semibold">
-                    {ngn.format(
-                      payableTotal
-                    )}
-                  </span>
+                  <span className="font-semibold">Total</span>
+                  <span className="text-xl font-semibold">{ngn.format(payableTotal)}</span>
                 </div>
 
                 <button
-                  disabled={
-                    createOrder.isPending
-                  }
-                  onClick={() =>
-                    createOrder.mutate()
-                  }
+                  disabled={createOrder.isPending || serviceFeeQ.isLoading}
+                  onClick={() => createOrder.mutate()}
                   className="mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50"
                 >
-                  {createOrder.isPending
-                    ? 'Processing…'
-                    : 'Place order & Proceed to payment'}
+                  {createOrder.isPending ? 'Processing…' : 'Place order & Proceed to payment'}
                 </button>
 
                 {createOrder.isError && (
                   <p className="mt-3 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
                     {(() => {
-                      const err =
-                        createOrder.error as any;
-                      if (
-                        err &&
-                        typeof err ===
-                        'object' &&
-                        'response' in err
-                      ) {
-                        const axiosErr =
-                          err as {
-                            response?: {
-                              data?: {
-                                error?: string;
-                              };
-                            };
-                          };
-                        return (
-                          axiosErr
-                            .response
-                            ?.data
-                            ?.error ||
-                          'Failed to create order'
-                        );
+                      const err = createOrder.error as any;
+                      if (err && typeof err === 'object' && 'response' in err) {
+                        const axiosErr = err as { response?: { data?: { error?: string } } };
+                        return axiosErr.response?.data?.error || 'Failed to create order';
                       }
-                      return (
-                        (err as Error)
-                          ?.message ||
-                        'Failed to create order'
-                      );
+                      return (err as Error)?.message || 'Failed to create order';
                     })()}
                   </p>
                 )}
 
                 <button
-                  onClick={() =>
-                    nav('/cart')
-                  }
+                  onClick={() => nav('/cart')}
                   className="mt-3 w-full inline-flex items-center justify-center rounded-lg border border-border bg-surface px-4 py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"
                 >
                   Back to cart
                 </button>
 
                 <p className="mt-3 text-[11px] text-ink-soft text-center">
-                  Fees are estimates. Any
-                  gateway differences are
-                  reconciled on your receipt.
+                  Fees are estimates. Any gateway differences are reconciled on your receipt.
                 </p>
               </Card>
             </aside>
