@@ -63,7 +63,9 @@ model User {
   address                   Address?           @relation("UserPrimaryAddress", fields: [addressId], references: [id])
   shippingAddress           Address?           @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
   Wishlist                  Wishlist[]
-
+  orderOtpRequests OrderOtpRequest[] @relation("UserOtpRequests")
+  deliveryOtps     PurchaseOrderDeliveryOtp[]
+  
   sessions UserSession[]
 
   @@index([emailVerifiedAt])
@@ -262,6 +264,9 @@ model Order {
   payments              Payment[]
   purchaseOrders        PurchaseOrder[]
   refunds Refund[]
+
+  otpRequests OrderOtpRequest[] @relation("OrderOtpRequests")
+  deliveryOtps PurchaseOrderDeliveryOtp[] 
 
   allocations           SupplierPaymentAllocation[] @relation("OrderAllocations")
 
@@ -616,6 +621,35 @@ model SupplierLedgerEntry {
   @@index([supplierId, createdAt])
 }
 
+model PurchaseOrderDeliveryOtp {
+  id            String   @id @default(cuid())
+  purchaseOrderId String
+  orderId       String
+  customerId    String
+
+  codeHash      String
+  salt          String
+  expiresAt     DateTime
+  verifiedAt    DateTime?
+  consumedAt    DateTime?
+
+  attempts      Int      @default(0)
+  lockedUntil   DateTime?
+
+
+
+  deliveredAt DateTime?
+  deliveredByUserId String?
+  createdAt     DateTime @default(now())
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customer      User          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([purchaseOrderId])
+  @@index([orderId])
+  @@index([customerId])
+}
 
 
 model PurchaseOrder {
@@ -630,28 +664,72 @@ model PurchaseOrder {
   createdAt        DateTime                    @default(now())
   status           PurchaseOrderStatus         @default(CREATED)
 
-  payoutStatus     PurchaseOrderPayoutStatus @default(PENDING)
+  payoutStatus     PurchaseOrderPayoutStatus   @default(PENDING)
   paidOutAt        DateTime?
 
   order            Order                       @relation(fields: [orderId], references: [id])
   supplier         Supplier                    @relation(fields: [supplierId], references: [id])
   items            PurchaseOrderItem[]
   allocations      SupplierPaymentAllocation[] @relation("PurchaseOrderAllocations")
-  refund Refund?
+  refund           Refund?
 
   confirmedAt      DateTime?
   packedAt         DateTime?
   shippedAt        DateTime?
   deliveredAt      DateTime?
   canceledAt       DateTime?
-  cancelReason     String?   // e.g. OUT_OF_STOCK, CUSTOMER_REQUEST, SUPPLIER_CANCEL, ADDRESS_ISSUE, OTHER
-  cancelNote       String?   // free text
+  cancelReason     String?
+  cancelNote       String?
+
+  // ✅ OTP delivery confirmation
+  deliveryOtpHash        String?
+  deliveryOtpIssuedAt    DateTime?
+  deliveryOtpExpiresAt   DateTime?
+  deliveryOtpVerifiedAt  DateTime?
+  deliveryOtpAttempts    Int      @default(0)
+  deliveryOtpLockedUntil DateTime?
+  deliveryOtpIssuedToUserId String? // customer user id
+  deliveredByUserId      String?    // supplier user id who entered OTP
+  deliveredMetaJson      Json?
+
+  deliveryOtps PurchaseOrderDeliveryOtp[]
 
   @@unique([orderId, supplierId])
   @@index([orderId])
   @@index([supplierId])
   @@index([status])
 }
+
+
+model OrderOtpRequest {
+  id          String   @id @default(cuid())
+  requestId   String   @unique @default(cuid()) // or cuid, or nanoid you generate
+  orderId     String
+  userId      String
+  purpose     String   // CANCEL_ORDER | PAY_ORDER
+
+  codeHash    String
+  salt        String
+  expiresAt   DateTime
+
+  consumedAt  DateTime?
+  attempts    Int      @default(0)
+  lockedUntil DateTime?
+  verifiedAt  DateTime?
+
+  createdAt   DateTime @default(now())
+
+  order       Order    @relation("OrderOtpRequests", fields: [orderId], references: [id], onDelete: Cascade)
+  user        User     @relation("UserOtpRequests", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([userId])
+  @@index([purpose])
+  @@index([orderId, purpose])
+}
+
+
+
 
 model PurchaseOrderItem {
   id              String        @id @default(cuid())
@@ -906,6 +984,8 @@ enum PurchaseOrderStatus {
 
 enum SupplierPaymentStatus {
   PENDING
+  APPROVED
   PAID
   FAILED
+  HELD
 }

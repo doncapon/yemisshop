@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import api from '../api/client.js';
 import { useAuthStore } from '../store/auth';
 import SiteLayout from '../layouts/SiteLayout.js';
+import StatusDot from '../components/StatusDot.js';
 
 /* ---------------- Types (loose to match API) ---------------- */
 type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER' | string;
@@ -104,6 +105,25 @@ type OrderRow = {
   purchaseOrders?: PurchaseOrderRow[];
 };
 
+type OtpPurpose = "PAY_ORDER" | "CANCEL_ORDER";
+
+type OtpState =
+  | { open: false }
+  | {
+    open: true;
+    orderId: string;
+    purpose: OtpPurpose;
+    requestId: string;
+    expiresAt: number; // epoch ms
+    channelHint?: string | null; // e.g. "sms to ***1234"
+    otp: string;
+    busy: boolean;
+    error?: string | null;
+    // what to do after verify:
+    onSuccess: (otpToken: string) => Promise<void> | void;
+  };
+
+
 /* ---------------- Utils ---------------- */
 const ngn = new Intl.NumberFormat('en-NG', {
   style: 'currency',
@@ -150,16 +170,8 @@ const toYMD = (s?: string) => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '');
 
 function isPaidStatus(status?: string | null): boolean {
   const s = String(status || '').toUpperCase();
-  return [
-    'PAID',
-    'VERIFIED',
-    'SUCCESS',
-    'SUCCESSFUL',
-    'COMPLETED',
-    'AWAITING_FULFILLMENT',
-    'FULFILLED',
-    'FULILLED',
-  ].includes(s);
+  return ['PAID', 'VERIFIED', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED'].includes(s);
+
 }
 
 function latestPaymentOf(o: OrderRow): PaymentRow | null {
@@ -498,6 +510,31 @@ export default function OrdersPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
 
+  type PoOtpUi = Record<string, { code: string; busy: boolean; msg?: string | null; err?: string | null }>;
+
+  const [poOtp, setPoOtp] = useState<PoOtpUi>({});
+
+  const requestDeliveryOtp = async (poId: string) => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    const { data } = await api.post(
+      `/api/orders/purchase-orders/${encodeURIComponent(poId)}/delivery-otp/request`,
+      {},
+      { headers }
+    );
+    return data as { ok: boolean; expiresAt?: string; error?: string };
+  };
+
+  const verifyDeliveryOtp = async (poId: string, code: string) => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    const { data } = await api.post(
+      `/api/orders/purchase-orders/${encodeURIComponent(poId)}/delivery-otp/verify`,
+      { code },
+      { headers }
+    );
+    return data as { ok: boolean; error?: string };
+  };
+
+
   /* ----- Role ----- */
   const meQ = useQuery({
     queryKey: ['me-min'],
@@ -514,10 +551,12 @@ export default function OrdersPage() {
   const role: Role = (storeRole || meQ.data?.role || 'SHOPPER') as Role;
   const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
   const isMetricsRole = isAdmin;
+  const isSupplier = role === "SUPPLIER";
+
 
   /* ----- Orders ----- */
   const ordersQ = useQuery({
-    queryKey: ['orders', isAdmin ? 'admin' : 'mine'],
+    queryKey: ['orders', token, isAdmin ? 'admin' : 'mine'],
     enabled: !!token,
     queryFn: async () => {
       const url = isAdmin ? '/api/orders?limit=50' : '/api/orders/mine?limit=50';
@@ -553,7 +592,7 @@ export default function OrdersPage() {
    * So when a row is expanded, fetch the detailed order.
    */
   const orderDetailQ = useQuery({
-    queryKey: ['order-detail', expandedId, isAdmin],
+    queryKey: ['order-detail', token, expandedId, isAdmin],
     enabled: !!token && !!expandedId,
     queryFn: async () => {
       if (!expandedId) return null;
@@ -597,6 +636,73 @@ export default function OrdersPage() {
   const [to, setTo] = useState('');
   const [minTotal, setMinTotal] = useState('');
   const [maxTotal, setMaxTotal] = useState('');
+
+  const [otpModal, setOtpModal] = useState<OtpState>({ open: false });
+
+  const closeOtp = () => setOtpModal({ open: false });
+
+  const requestOtp = async (orderId: string, purpose: OtpPurpose) => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+    const { data } = await api.post(
+      `/api/orders/${encodeURIComponent(orderId)}/otp/request`,
+      { purpose },
+      { headers }
+    );
+
+    // expected: { requestId, expiresInSec, channelHint }
+    const expiresInSec = Number(data?.expiresInSec ?? 300);
+    const expiresAt = Date.now() + Math.max(30, expiresInSec) * 1000;
+
+    return {
+      requestId: String(data?.requestId ?? ""),
+      expiresAt,
+      channelHint: data?.channelHint ?? null,
+    };
+  };
+
+  const verifyOtp = async (orderId: string, requestId: string, purpose: OtpPurpose, otp: string) => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+    const { data } = await api.post(
+      `/api/orders/${encodeURIComponent(orderId)}/otp/verify`,
+      { purpose, requestId, otp },
+      { headers }
+    );
+
+    // expected: { token: "otpToken..." }
+    const otpToken = String(data?.token ?? "");
+    if (!otpToken) throw new Error("OTP verified but no token returned.");
+    return otpToken;
+  };
+
+  // One function to enforce OTP before doing something sensitive
+  const withOtp = async (
+    orderId: string,
+    purpose: OtpPurpose,
+    onSuccess: (otpToken: string) => Promise<void> | void
+  ) => {
+    try {
+      const r = await requestOtp(orderId, purpose);
+      if (!r.requestId) throw new Error("Failed to request OTP.");
+
+      setOtpModal({
+        open: true,
+        orderId,
+        purpose,
+        requestId: r.requestId,
+        expiresAt: r.expiresAt,
+        channelHint: r.channelHint,
+        otp: "",
+        busy: false,
+        error: null,
+        onSuccess,
+      });
+    } catch (e: any) {
+      alert(e?.response?.data?.error || e?.message || "Could not send OTP");
+    }
+  };
+
 
   const clearFilters = () => {
     setQ('');
@@ -884,17 +990,37 @@ export default function OrdersPage() {
   /* ---------------- Actions ---------------- */
   const onToggle = (id: string) => setExpandedId((curr) => (curr === id ? null : id));
 
-  const onPay = (orderId: string) => nav(`/payment?orderId=${orderId}`);
+  const onPay = (orderId: string) => {
+    withOtp(orderId, "PAY_ORDER", async (otpToken) => {
+      // Option A: pass token via query (not ideal)
+      // Option B (recommended): store temporarily in sessionStorage
+      sessionStorage.setItem(`otp:${orderId}:PAY_ORDER`, otpToken);
+
+      nav(`/payment?orderId=${encodeURIComponent(orderId)}`);
+    });
+  };
 
   const onCancel = async (orderId: string) => {
-    try {
-      await api.post(`/api/admin/orders/${orderId}/cancel`, {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
-      ordersQ.refetch();
-      setExpandedId(null);
-    } catch (e: any) {
-      alert(e?.response?.data?.error || 'Could not cancel order');
-    }
+    withOtp(orderId, "CANCEL_ORDER", async (otpToken) => {
+      try {
+        await api.post(
+          `/api/admin/orders/${encodeURIComponent(orderId)}/cancel`,
+          {},
+          {
+            headers: token
+              ? { Authorization: `Bearer ${token}`, "x-otp-token": otpToken }
+              : { "x-otp-token": otpToken },
+          }
+        );
+        ordersQ.refetch();
+        setExpandedId(null);
+        closeOtp();
+      } catch (e: any) {
+        alert(e?.response?.data?.error || "Could not cancel order");
+      }
+    });
   };
+
 
   const viewReceipt = (key: string) => {
     nav(`/receipt/${encodeURIComponent(key)}`);
@@ -1089,7 +1215,7 @@ export default function OrdersPage() {
                     const pos = details.purchaseOrders || [];
                     const allocs =
                       (latestPaymentOf(details)?.allocations || []).filter(Boolean);
-
+                    const canSeeDeliveryOtp = isAdmin || isSupplier;
                     return (
                       <React.Fragment key={o.id}>
                         <tr
@@ -1353,7 +1479,7 @@ export default function OrdersPage() {
                                   </table>
 
 
-                                  {isSuperAdmin && (
+                                  {canSeeDeliveryOtp  && (
                                     <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
                                       <div className="rounded-xl border bg-white p-3">
                                         <div className="text-sm font-semibold">Supplier split (Purchase Orders)</div>
@@ -1361,19 +1487,101 @@ export default function OrdersPage() {
                                           <div className="text-xs text-ink-soft mt-2">No purchase orders recorded for this order.</div>
                                         ) : (
                                           <div className="mt-2 space-y-2">
-                                            {pos.map((po) => (
-                                              <div key={po.id} className="rounded-lg border p-2 text-xs">
-                                                <div className="flex items-center justify-between gap-2">
-                                                  <div className="font-medium">{po.supplierName || po.supplierId}</div>
-                                                  <span className="text-[11px] text-ink-soft">{po.status || "—"}</span>
+                                            {pos.map((po) => {
+                                              const ui = poOtp[po.id] || { code: "", busy: false };
+                                              const poStatus = String(po.status || "").toUpperCase();
+
+                                              const canRequestOtp = (isAdmin || isSupplier) && poStatus === "SHIPPED";
+                                              const canVerifyOtp = (isAdmin || isSupplier) && poStatus === "SHIPPED"; // verify transitions to DELIVERED
+
+                                              return (
+                                                <div key={po.id} className="rounded-lg border p-2 text-xs">
+                                                  <div className="flex items-center justify-between gap-2">
+                                                    <div className="font-medium">{po.supplierName || po.supplierId}</div>
+                                                    <span className="text-[11px] text-ink-soft">{po.status || "—"}</span>
+                                                  </div>
+
+                                                  <div className="mt-1 grid grid-cols-3 gap-2 text-[11px] text-ink-soft">
+                                                    <div>Supplier: <b className="text-ink">{ngn.format(fmtN(po.supplierAmount))}</b></div>
+                                                    <div>Subtotal: <b className="text-ink">{ngn.format(fmtN(po.subtotal))}</b></div>
+                                                    <div>Margin: <b className="text-ink">{ngn.format(fmtN(po.platformFee))}</b></div>
+                                                  </div>
+
+                                                  {(canRequestOtp || canVerifyOtp) && (
+                                                    <div className="mt-2 rounded-lg border bg-zinc-50 p-2">
+                                                      <div className="text-[11px] font-semibold text-ink">Delivery OTP</div>
+
+                                                      {canRequestOtp && (
+                                                        <button
+                                                          disabled={ui.busy}
+                                                          className="mt-2 rounded-lg border bg-white px-3 py-1.5 text-[11px] hover:bg-black/5 disabled:opacity-50"
+                                                          onClick={async (e) => {
+                                                            e.stopPropagation();
+                                                            try {
+                                                              setPoOtp((m) => ({ ...m, [po.id]: { ...ui, busy: true, err: null, msg: null } }));
+                                                              const r = await requestDeliveryOtp(po.id);
+                                                              setPoOtp((m) => ({
+                                                                ...m,
+                                                                [po.id]: { ...ui, busy: false, msg: r?.expiresAt ? `OTP sent. Expires ${fmtDate(r.expiresAt)}` : "OTP sent." },
+                                                              }));
+                                                            } catch (err: any) {
+                                                              setPoOtp((m) => ({
+                                                                ...m,
+                                                                [po.id]: { ...ui, busy: false, err: err?.response?.data?.error || err?.message || "Failed to send OTP" },
+                                                              }));
+                                                            }
+                                                          }}
+                                                        >
+                                                          Send / Resend OTP to customer
+                                                        </button>
+                                                      )}
+
+                                                      {canVerifyOtp && (
+                                                        <div className="mt-2 flex items-center gap-2">
+                                                          <input
+                                                            value={ui.code}
+                                                            onChange={(e) =>
+                                                              setPoOtp((m) => ({
+                                                                ...m,
+                                                                [po.id]: { ...ui, code: e.target.value.replace(/\D/g, "").slice(0, 6), err: null, msg: null },
+                                                              }))
+                                                            }
+                                                            inputMode="numeric"
+                                                            placeholder="Enter 6-digit OTP"
+                                                            className="flex-1 rounded-lg border px-2 py-1.5 text-[12px] tracking-widest"
+                                                          />
+                                                          <button
+                                                            disabled={ui.busy || ui.code.length !== 6}
+                                                            className="rounded-lg bg-zinc-900 text-white px-3 py-1.5 text-[11px] disabled:opacity-50"
+                                                            onClick={async (e) => {
+                                                              e.stopPropagation();
+                                                              try {
+                                                                setPoOtp((m) => ({ ...m, [po.id]: { ...ui, busy: true, err: null, msg: null } }));
+                                                                await verifyDeliveryOtp(po.id, ui.code);
+                                                                setPoOtp((m) => ({ ...m, [po.id]: { code: "", busy: false, msg: "Delivered ✅", err: null } }));
+                                                                ordersQ.refetch();
+                                                                if (expandedId) orderDetailQ.refetch();
+                                                              } catch (err: any) {
+                                                                setPoOtp((m) => ({
+                                                                  ...m,
+                                                                  [po.id]: { ...ui, busy: false, err: err?.response?.data?.error || err?.message || "OTP invalid/expired" },
+                                                                }));
+                                                              }
+                                                            }}
+                                                          >
+                                                            Confirm delivery
+                                                          </button>
+                                                        </div>
+                                                      )}
+
+                                                      {ui.err && <div className="mt-2 text-[11px] text-rose-600">{ui.err}</div>}
+                                                      {ui.msg && <div className="mt-2 text-[11px] text-emerald-700">{ui.msg}</div>}
+                                                    </div>
+                                                  )}
                                                 </div>
-                                                <div className="mt-1 grid grid-cols-3 gap-2 text-[11px] text-ink-soft">
-                                                  <div>Supplier: <b className="text-ink">{ngn.format(fmtN(po.supplierAmount))}</b></div>
-                                                  <div>Subtotal: <b className="text-ink">{ngn.format(fmtN(po.subtotal))}</b></div>
-                                                  <div>Margin: <b className="text-ink">{ngn.format(fmtN(po.platformFee))}</b></div>
-                                                </div>
-                                              </div>
-                                            ))}
+                                              );
+                                            })}
+
                                           </div>
                                         )}
                                       </div>
@@ -1573,6 +1781,116 @@ export default function OrdersPage() {
             }}
           />
         </div>
+        {otpModal.open && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+            <div className="absolute inset-0 bg-black/40" onClick={closeOtp} />
+            <div className="relative w-full max-w-md rounded-2xl bg-white shadow-2xl border p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold">Enter OTP</div>
+                  <div className="text-xs text-ink-soft mt-1">
+                    {otpModal.channelHint
+                      ? `We sent a code (${otpModal.channelHint}).`
+                      : "We sent a code to your phone/email."}
+                  </div>
+                </div>
+                <button
+                  className="text-xs text-ink-soft px-2 py-1 rounded-lg hover:bg-black/5"
+                  onClick={closeOtp}
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-3">
+                <label className="text-xs text-ink-soft">OTP code</label>
+                <input
+                  value={otpModal.otp}
+                  onChange={(e) =>
+                    setOtpModal((s) =>
+                      !s.open ? s : { ...s, otp: e.target.value.replace(/\D/g, "").slice(0, 6), error: null }
+                    )
+                  }
+                  inputMode="numeric"
+                  autoFocus
+                  className="mt-1 w-full border rounded-xl px-3 py-2 text-base tracking-widest"
+                  placeholder="123456"
+                />
+                {!!otpModal.error && <div className="mt-2 text-xs text-rose-600">{otpModal.error}</div>}
+              </div>
+
+              <div className="mt-4 flex items-center gap-2">
+                <button
+                  disabled={otpModal.busy || otpModal.otp.length < 4}
+                  className="flex-1 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm disabled:opacity-50"
+                  onClick={async () => {
+                    if (!otpModal.open) return;
+                    try {
+                      setOtpModal((s) => (!s.open ? s : { ...s, busy: true, error: null }));
+                      const otpToken = await verifyOtp(
+                        otpModal.orderId,
+                        otpModal.requestId,
+                        otpModal.purpose,
+                        otpModal.otp
+                      );
+                      await otpModal.onSuccess(otpToken);
+                      closeOtp();
+                    } catch (e: any) {
+                      setOtpModal((s) =>
+                        !s.open
+                          ? s
+                          : {
+                            ...s,
+                            busy: false,
+                            error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
+                          }
+                      );
+                    }
+                  }}
+                >
+                  Verify
+                </button>
+
+                <button
+                  disabled={otpModal.busy}
+                  className="rounded-xl border bg-white px-3 py-2 text-sm hover:bg-black/5 disabled:opacity-50"
+                  onClick={async () => {
+                    if (!otpModal.open) return;
+                    try {
+                      setOtpModal((s) => (!s.open ? s : { ...s, busy: true, error: null }));
+                      const r = await requestOtp(otpModal.orderId, otpModal.purpose);
+                      setOtpModal((s) =>
+                        !s.open
+                          ? s
+                          : {
+                            ...s,
+                            busy: false,
+                            requestId: r.requestId,
+                            expiresAt: r.expiresAt,
+                            channelHint: r.channelHint,
+                            otp: "",
+                          }
+                      );
+                    } catch (e: any) {
+                      setOtpModal((s) =>
+                        !s.open
+                          ? s
+                          : { ...s, busy: false, error: e?.response?.data?.error || "Could not resend OTP" }
+                      );
+                    }
+                  }}
+                >
+                  Resend
+                </button>
+              </div>
+
+              <div className="mt-3 text-[11px] text-ink-soft">
+                Tip: If you don’t receive the code within ~30 seconds, tap Resend.
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
     </SiteLayout>
   );
@@ -1608,7 +1926,7 @@ function SkeletonRow({
   );
 }
 
-function StatusDot({ label }: { label: string }) {
+function StatusPill({ label }: { label: string }) {
   const s = (label || '').toUpperCase();
   const cls =
     s === 'PAID' || s === 'VERIFIED'

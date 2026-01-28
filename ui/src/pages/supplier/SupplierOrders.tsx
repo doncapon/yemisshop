@@ -11,6 +11,10 @@ import {
   ChevronDown,
   ChevronUp,
   Save,
+  KeyRound,
+  Send,
+  CheckCircle2,
+  X,
 } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { AxiosError } from "axios";
@@ -122,45 +126,46 @@ function supplierOptionsLabel(selectedOptions: any) {
     })
     .join(", ");
 }
+
 export default function SupplierOrders() {
   const { orderId } = useParams<{ orderId?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // ✅ init q from /orders/:orderId OR from ?q=...
   const [q, setQ] = useState(() => {
     return (orderId ?? searchParams.get("q") ?? "").trim();
   });
 
-  // ✅ when route param exists, force it into q and URL (?q=...)
   useEffect(() => {
     const v = (orderId ?? "").trim();
     if (!v) return;
 
     setQ(v);
 
-    // keep URL in sync for refresh/share
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.set("q", v);
-      return next;
-    }, { replace: true });
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("q", v);
+        return next;
+      },
+      { replace: true }
+    );
   }, [orderId, setSearchParams]);
 
-  // ✅ OPTIONAL: keep URL updated when typing
   useEffect(() => {
     const v = (q ?? "").trim();
     const cur = (searchParams.get("q") ?? "").trim();
     if (v === cur) return;
 
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (v) next.set("q", v);
-      else next.delete("q");
-      return next;
-    }, { replace: true });
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (v) next.set("q", v);
+        else next.delete("q");
+        return next;
+      },
+      { replace: true }
+    );
   }, [q, searchParams, setSearchParams]);
-
-
 
   const token = useAuthStore((s) => s.token);
 
@@ -171,52 +176,12 @@ export default function SupplierOrders() {
 
   const supplierStatuses = ["PENDING", "CONFIRMED", "PACKED", "SHIPPED", "DELIVERED", "CANCELED"];
 
-  // ✅ When navigating to /supplier/orders/:orderId, force q to that value
-  useEffect(() => {
-    const v = (orderId ?? "").trim();
-    if (!v) return;
-
-    // only update if different (avoid pointless rerenders)
-    setQ((prev) => (prev === v ? prev : v));
-
-    // keep URL in sync (?q=orderId) for refresh/share
-    const currentQ = (searchParams.get("q") ?? "").trim();
-    if (currentQ !== v) {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        next.set("q", v);
-        return next;
-      }, { replace: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orderId]);
-
-  // ✅ If user lands on /supplier/orders?q=..., reflect it in input
-  useEffect(() => {
-    const qp = (searchParams.get("q") ?? "").trim();
-    // only sync if it differs and there's no route param overriding it
-    if (!orderId && qp && qp !== q) setQ(qp);
-    if (!orderId && !qp && q) {
-      // querystring cleared externally
-      setQ("");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
-
-  // ✅ Keep querystring updated when user types (guard to avoid loops)
-  useEffect(() => {
-    const v = (q ?? "").trim();
-    const cur = (searchParams.get("q") ?? "").trim();
-    if (v === cur) return;
-
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (v) next.set("q", v);
-      else next.delete("q");
-      return next;
-    }, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q]);
+  // ✅ Delivery OTP UI state (per order row)
+  const [otpOpen, setOtpOpen] = useState<Record<string, boolean>>({});
+  const [otpCode, setOtpCode] = useState<Record<string, string>>({});
+  const [otpMeta, setOtpMeta] = useState<
+    Record<string, { requestId?: string; channelHint?: string | null; expiresAt?: string | null }>
+  >({});
 
   const ordersQ = useQuery({
     queryKey: ["supplier", "orders"],
@@ -228,11 +193,8 @@ export default function SupplierOrders() {
       } catch (err) {
         const e = err as AxiosError<any>;
         const status = e?.response?.status;
-
-        // ✅ Treat "no endpoint / not mounted yet" as "no orders"
         if (status === 404) return [];
         if (status === 204) return [];
-
         throw err;
       }
     },
@@ -271,6 +233,35 @@ export default function SupplierOrders() {
       ordersQ.refetch();
     },
   });
+
+  // ✅ Request delivery OTP (sends to customer)
+  const requestDeliveryOtpM = useMutation({
+    mutationFn: async (vars: { poId: string }) => {
+      const { data } = await api.post(`/api/orders/purchase-orders/${vars.poId}/delivery-otp/request`, {});
+      return data as any;
+    },
+    onSuccess: (data, vars) => {
+      // store meta by PO id (but we index by orderId below)
+    },
+  });
+
+  // ✅ Verify delivery OTP (rider enters code)
+  const verifyDeliveryOtpM = useMutation({
+    mutationFn: async (vars: { poId: string; code: string }) => {
+      const { data } = await api.post(`/api/orders/purchase-orders/${vars.poId}/delivery-otp/verify`, {
+        code: vars.code,
+      });
+      return data as any;
+    },
+    onSuccess: () => {
+      ordersQ.refetch();
+    },
+  });
+
+  function canShowDeliveryOtpControls(o: SupplierOrder) {
+    const supplierStatus = String(o.supplierStatus || "").toUpperCase();
+    return !!o.purchaseOrderId && ["SHIPPED", "OUT_FOR_DELIVERY"].includes(supplierStatus);
+  }
 
   return (
     <SiteLayout>
@@ -355,8 +346,8 @@ export default function SupplierOrders() {
                 {ordersQ.isLoading
                   ? "Loading…"
                   : ordersQ.isError
-                  ? "Temporarily unavailable"
-                  : `${filtered.length} order(s)`}
+                    ? "Temporarily unavailable"
+                    : `${filtered.length} order(s)`}
               </div>
             </div>
 
@@ -382,6 +373,10 @@ export default function SupplierOrders() {
                   (sum, it) => sum + Number(it.chosenSupplierUnitPrice || 0) * Number(it.quantity || 0),
                   0
                 );
+
+                const showOtp = !!otpOpen[o.id];
+                const meta = otpMeta[o.id] || {};
+                const code = otpCode[o.id] ?? "";
 
                 return (
                   <div key={o.id} className="rounded-2xl border bg-white p-4 flex flex-col gap-3">
@@ -430,9 +425,7 @@ export default function SupplierOrders() {
                           ORDER: {String(o.status || "").toUpperCase()}
                         </span>
 
-                        <span
-                          className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${badgeClass(supplierStatus)}`}
-                        >
+                        <span className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${badgeClass(supplierStatus)}`}>
                           YOU: {supplierStatus}
                         </span>
 
@@ -446,9 +439,20 @@ export default function SupplierOrders() {
                         >
                           <Truck size={14} /> Update
                         </button>
+
+                        {canShowDeliveryOtpControls(o) && (
+                          <button
+                            type="button"
+                            onClick={() => setOtpOpen((s) => ({ ...s, [o.id]: !s[o.id] }))}
+                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5"
+                          >
+                            <KeyRound size={14} /> Delivery OTP
+                          </button>
+                        )}
                       </div>
                     </div>
 
+                    {/* Status editor */}
                     {editingId === o.id && (
                       <div className="rounded-xl border bg-zinc-50 p-3 flex flex-col sm:flex-row sm:items-center gap-2">
                         <div className="text-xs font-semibold text-zinc-700">Set supplier status</div>
@@ -484,10 +488,124 @@ export default function SupplierOrders() {
                           </button>
                         </div>
 
-                        {updateStatusM.isError && <div className="text-xs text-rose-700">Failed to update. Please try again.</div>}
+                        {updateStatusM.isError && (
+                          <div className="text-xs text-rose-700">Failed to update. Please try again.</div>
+                        )}
                       </div>
                     )}
 
+                    {/* ✅ Delivery OTP panel */}
+                    {showOtp && canShowDeliveryOtpControls(o) && (
+                      <div className="rounded-2xl border bg-white p-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-sm font-semibold text-zinc-900 flex items-center gap-2">
+                            <KeyRound size={16} /> Delivery confirmation OTP
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setOtpOpen((s) => ({ ...s, [o.id]: false }))}
+                            className="inline-flex items-center gap-1 rounded-xl border bg-white px-2 py-1 text-xs hover:bg-black/5"
+                          >
+                            <X size={14} /> Close
+                          </button>
+                        </div>
+
+                        <div className="mt-1 text-xs text-zinc-600">
+                          Step 1: Request OTP → customer receives it. Step 2: Enter OTP at delivery to confirm.
+                        </div>
+
+                        <div className="mt-3 flex flex-col sm:flex-row gap-2 sm:items-center">
+                          <button
+                            type="button"
+                            disabled={requestDeliveryOtpM.isPending || !o.purchaseOrderId}
+                            onClick={async () => {
+                              if (!o.purchaseOrderId) return;
+                              try {
+                                const resp = await requestDeliveryOtpM.mutateAsync({ poId: o.purchaseOrderId });
+                                setOtpMeta((s) => ({
+                                  ...s,
+                                  [o.id]: {
+                                    requestId: String(resp?.requestId ?? resp?.data?.requestId ?? ""),
+                                    channelHint: resp?.channelHint ?? resp?.data?.channelHint ?? null,
+                                    expiresAt: resp?.expiresAt ?? resp?.data?.expiresAt ?? null,
+                                  },
+                                }));
+                              } catch {
+                                // handled by isError
+                              }
+                            }}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                          >
+                            <Send size={14} /> {requestDeliveryOtpM.isPending ? "Requesting…" : "Request OTP"}
+                          </button>
+
+                          {meta.channelHint ? (
+                            <div className="text-[11px] text-zinc-600">
+                              Sent via: <span className="font-semibold text-zinc-800">{meta.channelHint}</span>
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-zinc-500">OTP goes to the customer’s email/phone on file.</div>
+                          )}
+                        </div>
+
+                        {requestDeliveryOtpM.isError && (
+                          <div className="mt-2 text-xs text-rose-700">
+                            Failed to request OTP. Ensure status is SHIPPED / OUT_FOR_DELIVERY, then try again.
+                          </div>
+                        )}
+
+                        <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
+                          <div className="sm:col-span-2">
+                            <div className="text-xs font-semibold text-zinc-700 mb-1">Enter 6-digit OTP from customer</div>
+                            <input
+                              value={code}
+                              onChange={(e) => {
+                                const v = String(e.target.value || "").replace(/\D/g, "").slice(0, 6);
+                                setOtpCode((s) => ({ ...s, [o.id]: v }));
+                              }}
+                              placeholder="123456"
+                              inputMode="numeric"
+                              className="w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:ring-4 focus:ring-emerald-100 focus:border-emerald-400 transition"
+                            />
+                            {meta.expiresAt ? (
+                              <div className="mt-1 text-[11px] text-zinc-500">
+                                Expires at:{" "}
+                                <span className="text-zinc-700">
+                                  {formatDate(String(meta.expiresAt))}
+                                </span>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <button
+                            type="button"
+                            disabled={verifyDeliveryOtpM.isPending || !o.purchaseOrderId || !/^\d{6}$/.test(code)}
+                            onClick={async () => {
+                              if (!o.purchaseOrderId) return;
+                              try {
+                                await verifyDeliveryOtpM.mutateAsync({ poId: o.purchaseOrderId, code });
+                                setOtpCode((s) => ({ ...s, [o.id]: "" }));
+                                setOtpMeta((s) => ({ ...s, [o.id]: {} }));
+                                setOtpOpen((s) => ({ ...s, [o.id]: false }));
+                              } catch {
+                                // handled by isError
+                              }
+                            }}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                          >
+                            <CheckCircle2 size={14} /> {verifyDeliveryOtpM.isPending ? "Verifying…" : "Confirm delivery"}
+                          </button>
+                        </div>
+
+                        {verifyDeliveryOtpM.isError && (
+                          <div className="mt-2 text-xs text-rose-700">
+                            OTP verification failed. Check the code, or request a new OTP.
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Details */}
                     {isOpen && (
                       <div className="rounded-2xl border bg-white p-3">
                         <div className="text-xs font-semibold text-zinc-700 mb-2">Items allocated to you</div>

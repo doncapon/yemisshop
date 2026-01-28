@@ -14,6 +14,10 @@ import authSessionRouter from './routes/authSessions.js';
 import profileRouter from './routes/profile.js';
 import productsRouter from './routes/products.js';
 import ordersRouter from './routes/orders.js';
+import orderOtpRouter from "./routes/orderOtp.js";
+import purchaseOrdersRouter from './routes/purchaseOrders.js';
+import purchaseOrderDeliveryOtpRouter from "./routes/purchaseOrderDeliveryOtp.js";
+
 import wishlistRouter from './routes/wishlist.js';
 import favoritesRouter from './routes/favorites.js';
 
@@ -53,6 +57,9 @@ import adminCatalogRequests from "./routes/adminCatalogRequests.js";
 import adminCatalogMeta from "./routes/adminCatalogMeta.js";
 
 import dojahRouter from './routes/dojahProxy.js';
+import deliveryOtpRouter from "./routes/deliveryOtp.js";
+
+
 
 import 'dotenv/config';
 
@@ -113,6 +120,9 @@ app.use('/api/supplier', suppliers);
 
 app.use('/api/admin/order-activities', adminActivitiesRouter);
 app.use('/api/admin/orders', adminOrdersRouter);
+app.use("/api/purchase-orders", purchaseOrdersRouter);
+app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
+
 app.use('/api/admin/reports', adminReports);
 app.use('/api/banks', banks);
 app.use('/api/settings', settings);
@@ -130,6 +140,9 @@ app.use('/api/cart', cartRouter);
 app.use('/api/supplier/products', supplierProducts);
 app.use('/api/supplier/orders', supplierOrders);
 
+app.use("/api", deliveryOtpRouter);
+
+
 app.post(
   '/api/payments/webhook',
   express.raw({ type: '*/*' }),
@@ -146,6 +159,7 @@ app.use('/api', supplierOffersList);
 /* 9) Domain routes */
 app.use('/api/products', productsRouter);
 app.use('/api/orders', ordersRouter);
+app.use("/api/orders", orderOtpRouter);
 app.use('/api/wishlist', wishlistRouter);
 app.use('/api/favorites', favoritesRouter);
 app.use("/api/catalog", catalogRoutes);

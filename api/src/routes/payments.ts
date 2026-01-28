@@ -420,7 +420,7 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
           supplierId: po.supplierId,
           purchaseOrderId: po.id,
           amount: po.supplierAmount,
-          status: SupplierPaymentStatus.PENDING, // ✅ HELD concept maps to PENDING in your schema
+          status: SupplierPaymentStatus.HELD, // ✅ HELD concept maps to PENDING in your schema
           supplierNameSnapshot: po.supplier?.name ?? null,
           meta: { purchaseOrderStatus: po.status },
         },
@@ -449,6 +449,135 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
 
   return rows;
 }
+
+async function paySupplierForPurchaseOrder(purchaseOrderId: string) {
+  const po = await prisma.purchaseOrder.findUnique({
+    where: { id: purchaseOrderId },
+    select: {
+      id: true,
+      orderId: true,
+      supplierId: true,
+      supplierAmount: true,
+      status: true,
+    },
+  });
+  if (!po) throw new Error("PO not found");
+
+  // Find latest PAID payment for order (so paymentId exists for logging)
+  const pay = await prisma.payment.findFirst({
+    where: { orderId: po.orderId, status: "PAID" },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  const paymentId = pay?.id;
+  if (!paymentId) throw new Error("No PAID payment found for order");
+
+  // Idempotency: don’t pay twice
+  const already = await prisma.paymentEvent.findFirst({
+    where: { paymentId, type: "TRANSFER_INIT", data: { path: ["purchaseOrderId"], equals: purchaseOrderId } },
+  });
+  if (already) return;
+
+  const s = await prisma.supplier.findUnique({
+    where: { id: po.supplierId },
+    select: {
+      id: true,
+      name: true,
+      paystackRecipientCode: true,
+      bankName: true,
+      bankCode: true,
+      bankCountry: true,
+      accountNumber: true,
+      accountName: true,
+      isPayoutEnabled: true,
+      bankVerificationStatus: true,
+    },
+  });
+  if (!s) throw new Error("Supplier not found");
+
+  const amount = Number(po.supplierAmount ?? 0);
+  if (!(amount > 0)) return;
+
+  const payoutOk =
+    s.isPayoutEnabled === true &&
+    s.bankVerificationStatus === "VERIFIED" &&
+    !!s.bankCode &&
+    !!s.bankCountry &&
+    !!s.accountNumber &&
+    !!s.accountName;
+
+  if (!payoutOk) {
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId,
+        type: "TRANSFER_SKIPPED",
+        data: { supplierId: s.id, purchaseOrderId, reason: "supplier_not_payout_ready_or_verified" },
+      },
+    });
+    return;
+  }
+
+  if (TRIAL_MODE) {
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId,
+        type: "TRANSFER_SKIPPED",
+        data: { supplierId: s.id, purchaseOrderId, reason: "TRIAL_MODE", amount },
+      },
+    });
+    return;
+  }
+
+  // Create recipient code if missing (re-use your existing code)
+  let recipientCode = s.paystackRecipientCode || null;
+  if (!recipientCode) {
+    const bank_code = await lookupBankCode(s.bankCode ?? s.bankName);
+    const r = await ps.post("/transferrecipient", {
+      type: "nuban",
+      name: s.accountName || s.name || "Supplier",
+      account_number: s.accountNumber,
+      bank_code,
+      currency: "NGN",
+    });
+    recipientCode = r.data?.data?.recipient_code || null;
+    if (recipientCode) {
+      await prisma.supplier.update({ where: { id: s.id }, data: { paystackRecipientCode: recipientCode } });
+    }
+  }
+
+  if (!recipientCode) {
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId,
+        type: "TRANSFER_SKIPPED",
+        data: { supplierId: s.id, purchaseOrderId, reason: "no recipient" },
+      },
+    });
+    return;
+  }
+
+  const tr = await ps.post("/transfer", {
+    source: "balance",
+    amount: Math.round(amount * 100),
+    recipient: recipientCode,
+    reason: `PO ${purchaseOrderId} payout for order ${po.orderId}`,
+  });
+
+  await prisma.paymentEvent.create({
+    data: {
+      paymentId,
+      type: "TRANSFER_INIT",
+      data: { supplierId: s.id, purchaseOrderId, amount, transfer: tr.data?.data },
+    },
+  });
+
+  // update allocation status to PAID_OUT
+  await prisma.supplierPaymentAllocation.updateMany({
+    where: { purchaseOrderId, paymentId },
+    data: { status: SupplierPaymentStatus.PAID }, // adjust to your enum
+  });
+}
+
 
 /* ----------------------------- Core finalize ----------------------------- */
 
@@ -571,23 +700,14 @@ async function finalizePaidFlow(paymentId: string) {
     },
   });
 
-  if (!usedSplit) {
-    if (TRIAL_MODE) {
-      await prisma.paymentEvent.create({
-        data: {
-          paymentId: result.paymentId,
-          type: 'TRANSFER_SKIPPED',
-          data: { reason: 'TRIAL_MODE' },
-        },
-      });
-    } else {
-      try {
-        await paySuppliersByTransfer(orderId, result.paymentId);
-      } catch (e) {
-        console.error('paySuppliersByTransfer failed', e);
-      }
-    }
-  }
+  // ✅ Option A: HOLD supplier funds until delivery OTP per PurchaseOrder is verified.
+  await prisma.paymentEvent.create({
+    data: {
+      paymentId: result.paymentId,
+      type: "SUPPLIER_PAYOUTS_HELD",
+      data: { orderId, reason: "awaiting_delivery_otp" },
+    },
+  });
 
   // ❌ REMOVE the old async PO creation (it causes “PO/allocations not showing” timing bugs)
   // setImmediate(() => createPurchaseOrdersForOrder(orderId).catch(console.error));
@@ -955,34 +1075,12 @@ router.post('/init', requireAuth, async (req: Request, res: Response) => {
     let split_code: string | undefined;
     try {
       const split = await computePaystackSplitForOrder(orderId);
-      if (split) {
-        const subaccounts = split.parts.map(
-          (p: { subaccount: any; amount: number }) => ({
-            subaccount: p.subaccount,
-            share: Math.round(p.amount * 100),
-          }),
-        );
+      // ✅ Option A: NO split codes. Platform receives full amount.
+      // Keep a trace event so we know we’re in “HOLD THEN TRANSFER” mode.
+      await prisma.paymentEvent.create({
+        data: { paymentId: pay.id, type: "SPLIT_DISABLED_OPTION_A" },
+      });
 
-        const splitResp = await ps.post('/split', {
-          name: `Order ${orderId} ${pay.reference}`,
-          type: 'percentage',
-          currency: 'NGN',
-          subaccounts,
-          bearer_type: 'account',
-          active: true,
-        });
-
-        split_code = splitResp.data?.data?.split_code;
-        if (split_code) {
-          await prisma.paymentEvent.create({
-            data: {
-              paymentId: pay.id,
-              type: 'SPLIT_USED',
-              data: { split_code },
-            },
-          });
-        }
-      }
     } catch (e: any) {
       console.error('paystack split create failed', e?.response?.data || e?.message);
     }

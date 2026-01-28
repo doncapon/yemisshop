@@ -582,6 +582,12 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
         return { po, refund, payout: null };
       }
 
+      if (normalized === "DELIVERED" && isSupplier(role)) {
+        return res.status(400).json({
+          error: "Delivery must be confirmed with OTP. Use POST /api/supplier/purchase-orders/:poId/confirm-delivery",
+        });
+      }
+
       if (normalized === "DELIVERED") {
         // ✅ confirm payout readiness before releasing funds
         await assertSupplierPayoutReadyTx(tx, supplierId);

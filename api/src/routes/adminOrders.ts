@@ -13,6 +13,39 @@ const ACT = {
   STATUS_CHANGE: 'STATUS_CHANGE',
 } as const;
 
+
+async function assertVerifiedOrderOtp(
+  orderId: string,
+  purpose: "CANCEL_ORDER" | "PAY_ORDER",
+  token: string
+) {
+  if (!token) throw new Error("Missing OTP token");
+
+  const row = await prisma.orderOtpRequest.findFirst({
+    where: {
+      id: token,
+      orderId,
+      purpose,
+      verifiedAt: { not: null },
+    },
+    select: { id: true, expiresAt: true, consumedAt: true },
+  });
+
+  if (!row) throw new Error("Invalid or unverified OTP token");
+  if (row.expiresAt <= new Date()) throw new Error("OTP token expired");
+  if (row.consumedAt) throw new Error("OTP token already used");
+
+  // ✅ consume (one-time)
+  await prisma.orderOtpRequest.update({
+    where: { id: row.id },
+    data: { consumedAt: new Date() },
+  });
+}
+
+
+
+
+
 // GET /api/admin/orders/:orderId
 router.get('/:orderId', requireAdmin, async (req, res) => {
   const { orderId } = req.params as { orderId: string };
@@ -155,6 +188,14 @@ router.get("/:id/suppliers", requireSuperAdmin, async (req, res) => {
 router.post('/:orderId/cancel', requireAdmin, async (req, res) => {
   const { orderId } = req.params;
 
+  // ✅ OTP REQUIRED HERE (not on GET)
+  try {
+    const otpToken = String(req.headers['x-otp-token'] ?? req.body?.otpToken ?? '');
+    await assertVerifiedOrderOtp(orderId, "CANCEL_ORDER", otpToken);
+  } catch (e: any) {
+    return res.status(400).json({ error: e?.message || "OTP verification required" });
+  }
+
   try {
     const updated = await prisma.$transaction(async (tx: any) => {
       // 1) Load order with items + payments
@@ -260,7 +301,8 @@ router.post('/:orderId/cancel', requireAdmin, async (req, res) => {
     // If we intentionally threw a user-facing error, send 400
     if (
       msg.includes('Cannot cancel an order') ||
-      msg.includes('Order not found')
+      msg.includes('Order not found') ||
+      msg.includes('OTP')
     ) {
       return res.status(400).json({ error: msg });
     }
