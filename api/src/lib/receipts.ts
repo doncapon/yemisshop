@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma.js';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client'
 
 function shortDate(d: Date) {
   const y = d.getFullYear();

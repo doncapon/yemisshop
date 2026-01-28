@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireSuperAdmin} from '../middleware/auth.js';
+import { requireAdmin, requireSuperAdmin} from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import slugify from '../lib/slugify.js'; // simple helper; add below snippet if you don't have one
 
@@ -12,7 +12,7 @@ r.get('/', async (_req, res) => {
   res.json({ data: rows });
 });
 
-r.post('/', requireSuperAdmin, async (req, res) => {
+r.post('/', requireSuperAdmin, requireAdmin, async (req, res) => {
   const { name, slug, logoUrl = null, isActive = true } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
   const created = await prisma.brand.create({
@@ -26,7 +26,7 @@ r.post('/', requireSuperAdmin, async (req, res) => {
   res.json({ ok: true, brand: created });
 });
 
-r.put('/:id', requireSuperAdmin, async (req, res) => {
+r.put('/:id', requireSuperAdmin,  requireAdmin, async (req, res) => {
   const id = req.params.id;
   const { name, slug, logoUrl, isActive } = req.body || {};
   const updated = await prisma.brand.update({
@@ -42,7 +42,7 @@ r.put('/:id', requireSuperAdmin, async (req, res) => {
 });
 
 // DELETE /api/admin/brands/:id
-r.delete('/:id', requireSuperAdmin, async (req, res, next) => {
+r.delete('/:id', requireSuperAdmin, requireAdmin, async (req, res, next) => {
   try {
     const id = req.params.id;
 

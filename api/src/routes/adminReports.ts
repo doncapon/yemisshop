@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { requireAdmin, requireAuth } from '../middleware/auth.js';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client'
 const r = Router();
 
 r.get('/products', requireAuth, requireAdmin, async (req, res) => {

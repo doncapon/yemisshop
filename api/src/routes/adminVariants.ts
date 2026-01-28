@@ -24,7 +24,7 @@ type VariantIn = {
 
 const router = Router();
 
-router.patch("/api/admin/variants/:variantId", async (req, res) => {
+router.patch("/:variantId", async (req, res) => {
   const { variantId } = req.params;
   const { sku, price, inStock, imagesJson, options } = req.body as VariantIn;
 

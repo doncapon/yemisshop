@@ -1,6 +1,6 @@
 // api/src/services/admin.service.ts
-import { PrismaClient, $Enums } from '@prisma/client';
-import type { Prisma } from '@prisma/client';
+import { PrismaClient, $Enums } from '@prisma/client'
+import type { Prisma } from '@prisma/client'
 import type { Role } from '../types/role.js';
 import { prisma } from '../lib/prisma.js';
 import { startOfDay, addDays } from 'date-fns';
@@ -36,9 +36,6 @@ export type AdminPayment = {
   channel?: string | null;
   createdAt?: Date | string;
 };
-
-
-
 
 // ----------------------------------------------------------------------------
 
@@ -103,19 +100,14 @@ export async function computeProfitForWindow(
     } else if (p.status === $Enums.PaymentStatus.REFUNDED) {
       refunds += amt;
       if (p.orderId) {
-        refundedByOrder.set(
-          p.orderId,
-          N(refundedByOrder.get(p.orderId)) + amt
-        );
+        refundedByOrder.set(p.orderId, N(refundedByOrder.get(p.orderId)) + amt);
       }
     }
   }
 
   const revenueNet = revenuePaid - refunds;
 
-  const orderIds = Array.from(
-    new Set([...paidByOrder.keys(), ...refundedByOrder.keys()])
-  );
+  const orderIds = Array.from(new Set([...paidByOrder.keys(), ...refundedByOrder.keys()]));
 
   const effectiveFactorFor = (orderTotal: number, orderId: string) => {
     const paid = N(paidByOrder.get(orderId));
@@ -146,7 +138,7 @@ export async function computeProfitForWindow(
   });
 
   if (commsRows.length) {
-    commsNet = commsRows.reduce((s: number, r: { amount: any; }) => s + N(r.amount), 0);
+    commsNet = commsRows.reduce((s: number, r: { amount: any }) => s + N(r.amount), 0);
   } else if (orderIds.length) {
     // Fallback: pro-rated serviceFee
     const svcOrders = await prismaClient.order.findMany({
@@ -172,9 +164,7 @@ export async function computeProfitForWindow(
   };
 }
 
-
-
-export async function getOverview(): Promise<Overview> { 
+export async function getOverview(): Promise<Overview> {
   const [
     productsTotal,
     productsPending,
@@ -217,14 +207,15 @@ export async function getOverview(): Promise<Overview> {
     prisma.product.count({ where: anyActiveOffer }),
     prisma.product.count({ where: { status: 'PUBLISHED' as any, AND: [anyActiveOffer] } }),
 
+    // ✅ FIX: do NOT rely on a "LIVE" status string; compute live from rules
     prisma.product.count({
-      where: { status: 'LIVE' as any, AND: [variantAwareAvailable] },
+      where: { status: 'PUBLISHED' as any, AND: [variantAwareAvailable, anyActiveOffer] },
     }),
 
     prisma.product.count({ where: { ProductVariant: { some: {} } } }),
     prisma.product.count({ where: { ProductVariant: { none: {} } } }),
 
-    // base (non-variant-aware) stock among published
+    // base (non-variant-aware) stock among published (kept as-is)
     prisma.product.count({ where: { status: 'PUBLISHED' as any, inStock: true } }),
     prisma.product.count({ where: { status: 'PUBLISHED' as any, inStock: false } }),
   ]);
@@ -246,7 +237,6 @@ export async function getOverview(): Promise<Overview> {
     where: { createdAt: { gte: todayStart, lte: todayEnd }, NOT: { status: 'CANCELED' } },
   });
 
-
   // Sparklines (7d)
   const sparklineRevenue7d: number[] = [];
   const sparklineProfit7d: number[] = [];
@@ -256,19 +246,14 @@ export async function getOverview(): Promise<Overview> {
     const { revenueNet: rev, grossProfit: gp } = await computeProfitForWindow(
       prisma,
       startOfDay(d),
-      endOfDay(d),
+      endOfDay(d)
     );
     sparklineRevenue7d.push(rev);
     sparklineProfit7d.push(gp);
   }
 
   // Whatever you already compute (examples shown; keep yours)
-  const [
-    ordersCount,
-    usersCount,
-    revenueTodayAgg,
-    profitEventsToday,
-  ] = await Promise.all([
+  const [ordersCount, usersCount, revenueTodayAgg, profitEventsToday] = await Promise.all([
     prisma.order.count(),
     prisma.user.count(),
     prisma.payment.aggregate({
@@ -358,45 +343,55 @@ export async function createCoupon(args: { code: string; pct: number; maxUses: n
   }
 }
 
-
-
-
-
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
-// --- helpers (top of file, once) ---
 function endOfDay(d: Date) {
   const x = new Date(d);
   x.setHours(23, 59, 59, 999);
   return x;
 }
-// Variant-aware & offer-aware filters (use your relation names)
-const noActiveOffer = {
-  AND: [
-    { supplierOffers: { none: { isActive: true, inStock: true } } },
-    { ProductVariant: { none: { offers: { some: { isActive: true, inStock: true } } } } },
-  ],
-} as const;
 
-const variantAwareAvailable: Prisma.ProductWhereInput = {
+/**
+ * ✅ UPDATED for new schema:
+ * Product no longer has `supplierOffers`.
+ * It has:
+ *  - supplierProductOffers
+ *  - supplierVariantOffers
+ */
+
+/**
+ * Any ACTIVE & IN-STOCK offer with quantity > 0 (product-level OR variant-level).
+ * This is your “real stock” now.
+ */
+const anyActiveOffer: Prisma.ProductWhereInput = {
   OR: [
-    { inStock: true },
-    { ProductVariant: { some: { inStock: true } } },
+    { supplierProductOffers: { some: { isActive: true, inStock: true, availableQty: { gt: 0 } } } },
+    { supplierVariantOffers: { some: { isActive: true, inStock: true, availableQty: { gt: 0 } } } },
   ],
 };
 
+/**
+ * ✅ FIX FOR YOUR ISSUE:
+ * Products without ANY offers should be “out of stock”.
+ * So “available” is now driven by offers (not by product.inStock / variant.inStock).
+ */
+const variantAwareAvailable: Prisma.ProductWhereInput = anyActiveOffer;
+
 const anyOffer: Prisma.ProductWhereInput = {
-  // any SupplierOffer attached to the product (includes variant-specific offers)
-  supplierOffers: { some: {} },
+  OR: [{ supplierProductOffers: { some: {} } }, { supplierVariantOffers: { some: {} } }],
 };
 
 const noOffer: Prisma.ProductWhereInput = {
-  supplierOffers: { none: {} },
+  AND: [{ supplierProductOffers: { none: {} } }, { supplierVariantOffers: { none: {} } }],
 };
 
-const anyActiveOffer: Prisma.ProductWhereInput = {
-  supplierOffers: { some: { isActive: true, inStock: true } },
+// (kept in case you later need it)
+const noActiveOffer: Prisma.ProductWhereInput = {
+  AND: [
+    { supplierProductOffers: { none: { isActive: true, inStock: true, availableQty: { gt: 0 } } } },
+    { supplierVariantOffers: { none: { isActive: true, inStock: true, availableQty: { gt: 0 } } } },
+  ],
 };
 
 /* ------------------------------------------------------------------ */
@@ -406,12 +401,11 @@ const anyActiveOffer: Prisma.ProductWhereInput = {
 export async function findUsers(q?: string): Promise<AdminUser[]> {
   const where: Prisma.UserWhereInput = q
     ? {
-      OR: [
-        { email: { contains: q, mode: 'insensitive' } },
-        // allow role search by string
-        { role: { equals: q as Role } },
-      ],
-    }
+        OR: [
+          { email: { contains: q, mode: 'insensitive' } },
+          { role: { equals: q as Role } },
+        ],
+      }
     : {};
 
   const users = await prisma.user.findMany({
@@ -428,6 +422,7 @@ export async function findUsers(q?: string): Promise<AdminUser[]> {
 
   return users;
 }
+
 /* ---- Overview payload types (match your getOverview) ---- */
 type Overview = {
   ordersToday: number;
@@ -447,8 +442,8 @@ type Overview = {
     total: number;
     pending: number;
     rejected: number;
-    published: number;         // approval state
-    live: number;              // published & available (variant-aware) & active offers
+    published: number;
+    live: number;
     availability: {
       allStatusesAvailable: number;
       publishedAvailable: number;
@@ -472,11 +467,8 @@ type Overview = {
   };
 };
 
-
-
 /**
  * Suspend / deactivate a user.
- * We’ll set `status` to 'SUSPENDED'. Frontend union allows custom strings.
  */
 export async function suspendUser(userId: string) {
   const user = await prisma.user.update({
@@ -488,8 +480,7 @@ export async function suspendUser(userId: string) {
 }
 
 /**
- * Suspend / deactivate a user.
- * We’ll set `status` to 'SUSPENDED'. Frontend union allows custom strings.
+ * Reactivate a user.
  */
 export async function reactivateUser(userId: string) {
   const user = await prisma.user.update({
@@ -504,15 +495,10 @@ export async function reactivateUser(userId: string) {
 /* Payments                                                            */
 /* ------------------------------------------------------------------ */
 
-/**
- * Mark a payment as PAID.
- * Also opportunistically set the parent order status to PAID.
- * (If you track multi-payment totals, you may want to sum and compare.)
- */
 export async function markPaymentPaid(paymentId: string) {
   const payment = await prisma.payment.update({
     where: { id: paymentId },
-    data: { status: 'PAID', paidAt: new Date() },   // ✅
+    data: { status: 'PAID', paidAt: new Date() },
     select: { id: true, orderId: true, status: true, amount: true },
   });
   if (payment.orderId) {
@@ -524,12 +510,6 @@ export async function markPaymentPaid(paymentId: string) {
   return payment;
 }
 
-
-/**
- * Mark a payment as REFUNDED.
- * If you want to adjust order status automatically, you can set:
- *  - 'CANCELED' if all payments are refunded/failed
- */
 export async function markPaymentRefunded(paymentId: string) {
   const payment = await prisma.payment.update({
     where: { id: paymentId },
@@ -537,7 +517,6 @@ export async function markPaymentRefunded(paymentId: string) {
     select: { id: true, orderId: true, status: true, amount: true },
   });
 
-  // Optional: If no PAID payments remain for this order, mark order as CANCELED
   if (payment.orderId) {
     const stillPaid = await prisma.payment.count({
       where: { orderId: payment.orderId, status: 'PAID' },
@@ -558,13 +537,10 @@ export async function markPaymentRefunded(paymentId: string) {
 /* =======================  NEW: Products  ========================== */
 /* ================================================================== */
 
-/** List products pending review, optional search by title. */
 export async function pendingProducts(q?: string): Promise<AdminProduct[]> {
   const where: Prisma.ProductWhereInput = {
     status: 'PENDING',
-    ...(q
-      ? { title: { contains: q, mode: 'insensitive' } }
-      : {}),
+    ...(q ? { title: { contains: q, mode: 'insensitive' } } : {}),
   };
 
   const list = await prisma.product.findMany({
@@ -583,25 +559,33 @@ export async function pendingProducts(q?: string): Promise<AdminProduct[]> {
   return list;
 }
 
-/** Approve a pending product -> PUBLISHED. */
 export async function approveProduct(productId: string) {
   const prod = await prisma.product.update({
     where: { id: productId },
     data: { status: 'PUBLISHED' },
     select: {
-      id: true, title: true, status: true, price: true, imagesJson: true, createdAt: true,
+      id: true,
+      title: true,
+      status: true,
+      price: true,
+      imagesJson: true,
+      createdAt: true,
     },
   });
   return prod;
 }
 
-/** Reject a pending product -> REJECTED. */
 export async function rejectProduct(productId: string) {
   const prod = await prisma.product.update({
     where: { id: productId },
     data: { status: 'REJECTED' },
     select: {
-      id: true, title: true, status: true, price: true, imagesJson: true, createdAt: true,
+      id: true,
+      title: true,
+      status: true,
+      price: true,
+      imagesJson: true,
+      createdAt: true,
     },
   });
   return prod;
@@ -611,26 +595,21 @@ export async function rejectProduct(productId: string) {
 /* =======================  NEW: Payments  ========================== */
 /* ================================================================== */
 
-/**
- * List payments with optional query:
- * - matches payment id OR order id OR user email (via order.user)
- */
 export async function listPayments(q?: string): Promise<AdminPayment[]> {
-  // Build where:
   const where: Prisma.PaymentWhereInput = q
     ? {
-      OR: [
-        { id: { contains: q, mode: 'insensitive' } },
-        { orderId: { contains: q, mode: 'insensitive' } },
-        {
-          order: {
-            user: {
-              email: { contains: q, mode: 'insensitive' },
+        OR: [
+          { id: { contains: q, mode: 'insensitive' } },
+          { orderId: { contains: q, mode: 'insensitive' } },
+          {
+            order: {
+              user: {
+                email: { contains: q, mode: 'insensitive' },
+              },
             },
           },
-        },
-      ],
-    }
+        ],
+      }
     : {};
 
   const rows = await prisma.payment.findMany({
@@ -652,7 +631,7 @@ export async function listPayments(q?: string): Promise<AdminPayment[]> {
     },
   });
 
-  return rows.map((r: { id: any; orderId: any; amount: any; status: any; provider: any; channel: any; createdAt: any; order: { user: { email: any; }; }; }) => ({
+  return rows.map((r: any) => ({
     id: r.id,
     orderId: r.orderId,
     amount: r.amount,
@@ -664,16 +643,10 @@ export async function listPayments(q?: string): Promise<AdminPayment[]> {
   }));
 }
 
-
-
 /* ================================================================== */
 /* ===================  NEW: Ops / Security  ======================= */
 /* ================================================================== */
 
-/**
- * Snapshot platform config & last security events.
- * Tries optional tables: Setting, SecurityEvent. Falls back gracefully.
- */
 export async function opsSnapshot(): Promise<{
   paymentProvider: string;
   backupsEnabled: boolean;
@@ -687,11 +660,6 @@ export async function opsSnapshot(): Promise<{
   let commsUnitCost: number | undefined;
   let taxRatePct: number | undefined;
 
-
-
-
-
-  // Optional: a Settings table — if present, prefer its values
   try {
     const settings = await prisma.setting?.findMany?.({
       where: { key: { in: ['paymentProvider', 'backupsEnabled'] } },
@@ -714,7 +682,6 @@ export async function opsSnapshot(): Promise<{
     // ignore and use defaults
   }
 
-  // Optional: SecurityEvent table
   try {
     const events = await prisma.securityEvent?.findMany?.({
       orderBy: { createdAt: 'desc' },

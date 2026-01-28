@@ -1,6 +1,6 @@
 // api/src/routes/admin.orderComms.ts
 import { Router } from 'express';
-import { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { getGlobalCommsFee } from '../lib/comms.js';

@@ -16,7 +16,6 @@ export async function sendSmsOtp(to: string, text: string) {
 
 export async function sendWhatsappOtp(toE164: string, code: string) {
   // Only run if properly configured
-  console.log("i am here: " + toE164, "code: " , code)
   if (!process.env.WABA_PHONE_NUMBER_ID || !process.env.WABA_TOKEN) {
     console.warn('[whatsapp] Missing WABA envs; skipping send.');
     return { ok: false, error: 'WABA not configured' };

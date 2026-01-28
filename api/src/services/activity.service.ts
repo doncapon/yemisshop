@@ -1,6 +1,6 @@
 // src/services/activity.service.ts
 import { prisma } from '../lib/prisma.js';
-import type { Prisma } from '@prisma/client';
+import type { Prisma } from '@prisma/client'
 
 
 export type ActivityType =

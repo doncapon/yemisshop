@@ -1,7 +1,7 @@
 // api/src/routes/adminCatalog.ts
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
-import { requireAdmin, requireAuth } from '../middleware/auth.js';
+import { requireAdmin, requireAuth, requireSupplier } from '../middleware/auth.js';
 
 const router = Router();
 

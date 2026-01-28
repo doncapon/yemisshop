@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireSuperAdmin } from '../middleware/auth.js';
+import { requireAdmin, requireSuperAdmin } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 
 const r = Router();
@@ -27,7 +27,7 @@ r.get('/', async (_req, res) => {
 });
 
 // POST /api/admin/attributes
-r.post('/', requireSuperAdmin, async (req, res) => {
+r.post('/', requireSuperAdmin,  requireAdmin, async (req, res) => {
   const { name, type = 'SELECT', isActive = true } = req.body || {};
 
   if (!isNonEmptyString(name)) {
@@ -56,7 +56,7 @@ r.post('/', requireSuperAdmin, async (req, res) => {
 });
 
 // PUT /api/admin/attributes/:id
-r.put('/:id', requireSuperAdmin, async (req, res) => {
+r.put('/:id', requireSuperAdmin, requireAdmin,async (req, res) => {
   const id = req.params.id;
   const { name, type, isActive } = req.body || {};
 
@@ -91,7 +91,7 @@ r.put('/:id', requireSuperAdmin, async (req, res) => {
 
 // POST /api/admin/attributes/:attributeId/values
 // Require: name, code (non-empty), and enforce unique code
-r.post('/:attributeId/values', requireSuperAdmin, async (req, res) => {
+r.post('/:attributeId/values', requireSuperAdmin, requireAdmin, async (req, res) => {
   const attributeId = req.params.attributeId;
   const { name, code, position = 0, isActive = true } = req.body || {};
 
@@ -194,7 +194,7 @@ r.delete('/:attributeId/values/:id', requireSuperAdmin, async (req, res) => {
 /* ---------------- Delete Attribute ---------------- */
 
 // DELETE /api/admin/attributes/:id
-r.delete('/:id', requireSuperAdmin, async (req, res, next) => {
+r.delete('/:id', requireSuperAdmin,  requireAdmin, async (req, res, next) => {
   try {
     const id = req.params.id;
 

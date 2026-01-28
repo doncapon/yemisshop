@@ -1,5 +1,3 @@
-// prisma/schema.prisma
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -9,364 +7,375 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum SupplierType {
-  PHYSICAL
-  ONLINE
-}
-
-/**
- * ---------------- Address ----------------
- */
 model Address {
-  id          String  @id @default(cuid())
-  houseNumber String?
-  streetName  String?
-  postCode    String?
-  town        String?
-  city        String?
-  state       String?
-  country     String?
-  lga         String? // NEW: for Nigerian addresses, e.g. "Jos south"
-
-  // Back-relations (MUST use the same relation names)
-  userPrimary  User? @relation("UserPrimaryAddress")
-  userShipping User? @relation("UserShippingAddress")
-
-  // Back-relation for orders’ shipping address
-  ordersAsShipping Order[] @relation("OrderShippingAddress")
-
-  // NEW: Supplier registered office address
+  id                  String     @id @default(cuid())
+  houseNumber         String?
+  streetName          String?
+  postCode            String?
+  town                String?
+  city                String?
+  state               String?
+  country             String?
+  lga                 String?
+  ordersAsBilling     Order[]    @relation("OrderBillingAddress")
+  ordersAsShipping    Order[]    @relation("OrderShippingAddress")
   suppliersRegistered Supplier[] @relation("SupplierRegisteredAddress")
-
-  // NEW: Affiliates' addresses
-  supplierAffiliates SupplierAffiliate[] @relation("SupplierAffiliateAddress")
+  userPrimary         User?      @relation("UserPrimaryAddress")
+  userShipping        User?      @relation("UserShippingAddress")
 }
 
-/**
- * ---------------- User ----------------
- */
 model User {
-  id          String    @id @default(cuid())
-  email       String    @unique
-  password    String
-  role        String // "ADMIN" | "SUPPLIER" | "SHOPPER"
-  firstName   String
-  middleName  String?
-  lastName    String
-  phone       String?
-  dateOfBirth DateTime?
-
-  addressId         String?  @unique
-  address           Address? @relation("UserPrimaryAddress", fields: [addressId], references: [id])
-  shippingAddressId String?  @unique
-  shippingAddress   Address? @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
-
-  // Verification (single source of truth)
-  status          String    @default("PENDING")
-  emailVerifiedAt DateTime?
-  phoneVerifiedAt DateTime?
-
-  phoneOtpHash         String?
-  phoneOtpExpiresAt    DateTime?
-  phoneOtpLastSentAt   DateTime?
-  phoneOtpSendCountDay Int       @default(0)
-
+  id                        String             @id @default(cuid())
+  email                     String             @unique
+  password                  String
+  role                      String
+  firstName                 String
+  middleName                String?
+  lastName                  String
+  phone                     String?
+  dateOfBirth               DateTime?
+  addressId                 String?            @unique
+  shippingAddressId         String?            @unique
+  status                    String             @default("PENDING")
+  emailVerifiedAt           DateTime?
+  phoneVerifiedAt           DateTime?
+  phoneOtpHash              String?
+  phoneOtpExpiresAt         DateTime?
+  phoneOtpLastSentAt        DateTime?
+  phoneOtpSendCountDay      Int                @default(0)
   emailVerifyToken          String?
   emailVerifyTokenExpiresAt DateTime?
   emailVerifyLastSentAt     DateTime?
-  emailVerifySendCountDay   Int       @default(0)
+  emailVerifySendCountDay   Int                @default(0)
+  resetPasswordToken        String?
+  resetPasswordExpiresAt    DateTime?
+  createdAt                 DateTime           @default(now())
+  joinedAt                  DateTime           @default(now())
+  reviewedCatalogRequests   CatalogRequest[]   @relation("CatalogRequestReviewedBy")
+  EmailVerifyToken          EmailVerifyToken[]
+  Favorite                  Favorite[]
+  orders                    Order[]
+  createdProducts           Product[]          @relation("ProductCreatedBy")
+  ownedProducts             Product[]          @relation("ProductOwner")
+  updatedProducts           Product[]          @relation("ProductUpdatedBy")
+  products                  Product[]          @relation("ProductUser")
+  supplier                  Supplier?
+  address                   Address?           @relation("UserPrimaryAddress", fields: [addressId], references: [id])
+  shippingAddress           Address?           @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
+  Wishlist                  Wishlist[]
 
-  resetPasswordToken     String?
-  resetPasswordExpiresAt DateTime?
-
-  // Relations
-  supplier Supplier?
-  orders   Order[]
-  Favorite Favorite[]
-  Wishlist Wishlist[]
-
-  createdAt        DateTime           @default(now())
-  joinedAt         DateTime           @default(now()) // <-- NEW
-  EmailVerifyToken EmailVerifyToken[]
-  Product          Product[]
+  sessions UserSession[]
 
   @@index([emailVerifiedAt])
   @@index([phoneVerifiedAt])
 }
 
-enum SupplierCompanyType {
-  BUSINESS_NAME
-  COMPANY
-  INCORPORATED_TRUSTEES
-  LIMITED_PARTNERSHIP
-  LIMITED_LIABILITY_PARTNERSHIP
-}
-
 model Supplier {
-  id            String       @id @default(cuid())
-  name          String       @unique
-  contactEmail  String?
-  whatsappPhone String?
-  type          SupplierType
-  status        String       @default("ACTIVE")
-
-  // back-rel to OrderComms
-  comms OrderComms[] @relation("SupplierToComms")
-
-  apiBaseUrl  String?
-  apiAuthType String?
-  apiKey      String?
-
-  offers SupplierOffer[]
-
-  userId String? @unique
-  user   User?   @relation(fields: [userId], references: [id])
-
-  products       Product[]
-  purchaseOrders PurchaseOrder[]
-
-  chosenOrderItems OrderItem[] @relation("OrderItemChosenSupplier")
-
-  // NEW — payout plumbing (existing)
+  id                     String                      @id @default(cuid())
+  name                   String                      @unique
+  contactEmail           String?
+  whatsappPhone          String?
+  type                   SupplierType
+  status                 String                      @default("ACTIVE")
+  apiBaseUrl             String?
+  apiAuthType            String?
+  apiKey                 String?
+  userId                 String?                     @unique
   payoutMethod           String?
   bankCountry            String?
   bankCode               String?
   bankName               String?
   accountNumber          String?
   accountName            String?
+  bankVerificationStatus      BankVerificationStatus @default(UNVERIFIED)
+  bankVerificationNote        String?
+  bankVerificationRequestedAt DateTime?
+  bankVerifiedAt              DateTime?
+  bankVerifiedById            String?
   paystackRecipientCode  String?
   paystackSubaccountCode String?
-  isPayoutEnabled        Boolean @default(false)
+  isPayoutEnabled        Boolean                     @default(false)
+  createdAt              DateTime                    @default(now())
+  updatedAt              DateTime                    @updatedAt
+  companyType            SupplierCompanyType?
+  dateOfRegistration     DateTime?
+  kycRawPayload          Json?
+  legalName              String?
+  natureOfBusiness       String?
+  ownerVerified          Boolean                     @default(false)
+  proprietorBvnMasked    String?
+  rcNumber               String?                     @unique
+  registeredAddressId    String?
+  shareCapital           Decimal?
+  shareDetails           Json?
+  kycApprovedAt          DateTime?
+  kycCheckedAt           DateTime?
+  kycProvider            String?
+  kycStatus              String                      @default("NONE")
+  kycRegistrationStatus  CacStatus                   @default(NONE)
+  catalogRequests        CatalogRequest[]
+  ledgerEntries SupplierLedgerEntry[] @relation("SupplierToLedger")
+  comms                  OrderComms[]                @relation("SupplierToComms")
+  chosenOrderItems       OrderItem[]                 @relation("OrderItemChosenSupplier")
+  payments               Payment[]                   @relation("SupplierPayments")
+  products               Product[]                   @relation("ProductSupplier")
+  purchaseOrders         PurchaseOrder[]
+  registeredAddress      Address?                    @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
+  user                   User?                       @relation(fields: [userId], references: [id])
+  allocations            SupplierPaymentAllocation[]
+  productOffers          SupplierProductOffer[]
+  variantOffers          SupplierVariantOffer[]
+  refunds Refund[]
 
-  // ========= NEW: Legal / KYC company info =========
-
-  /// Registered legal name from KYC (company_name)
-  legalName          String?
-  /// RC/BN number (rc_number) – optional but unique when present
-  rcNumber           String?              @unique
-  /// type_of_company (BUSINESS_NAME, LIMITED, etc.)
-  companyType        SupplierCompanyType?
-  /// date_of_registration
-  dateOfRegistration DateTime?
-  /// nature_of_business
-  natureOfBusiness   String?
-  /// share_capital (you can adjust precision/scale for your DB)
-  shareCapital       Decimal?
-  /// share_details (arbitrary structure from provider)
-  shareDetails       Json?
-
-  /// Optional: keep full raw response from KYC provider for audit/debug
-  kycRawPayload Json?
-
-  /// Whether we’ve successfully verified the owner/proprietor via BVN etc.
-  ownerVerified           Boolean @default(false)
-  /// Snapshot of the proprietor affiliate object we matched against
-  proprietorAffiliateJson Json?
-  /// Masked BVN we used for verification (e.g. ******1234)
-  proprietorBvnMasked     String?
-
-  // ========= NEW: Registered address using Address model =========
-
-  registeredAddressId String?
-  registeredAddress   Address? @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
-
-  // ========= NEW: Affiliates (directors / proprietors, etc.) =========
-
-  affiliates SupplierAffiliate[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
 }
 
-model SupplierAffiliate {
-  id String @id @default(cuid())
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  PROCESSING
+  PAID
+  FAILED
+  CANCELED
+}
 
-  supplierId String
-  supplier   Supplier @relation(fields: [supplierId], references: [id])
+model Refund {
+  id                    String       @id @default(cuid())
 
-  // From payload:
-  firstName             String
-  lastName              String
-  email                 String?
-  phoneNumber           String?
-  gender                String? // "MALE", "FEMALE", etc. (keep string for flexibility)
-  dateOfBirth           DateTime?
-  nationality           String?
-  affiliateType         String? // e.g. "PROPRIETOR"
-  affiliateCategoryType String? // e.g. "individual_proprietor"
-  occupation            String?
-  country               String?
-  idNumber              String?
-  idType                String?
+  orderId               String
+  purchaseOrderId       String
+  supplierId            String?
 
-  // Address for this affiliate (using Address model)
-  addressId String?
-  address   Address? @relation("SupplierAffiliateAddress", fields: [addressId], references: [id])
+  status                RefundStatus  @default(REQUESTED)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  itemsAmount           Decimal      @db.Decimal(12, 2)
+  taxAmount             Decimal      @default(0) @db.Decimal(12, 2)
+  serviceFeeBaseAmount  Decimal      @default(0) @db.Decimal(12, 2)
+  serviceFeeCommsAmount Decimal      @default(0) @db.Decimal(12, 2)
+  serviceFeeGatewayAmount Decimal    @default(0) @db.Decimal(12, 2)
+  totalAmount           Decimal      @db.Decimal(12, 2)
+
+  reason                String?
+  meta                  Json?
+
+  faultParty    String? // SUPPLIER | CUSTOMER | PLATFORM | CARRIER | UNKNOWN
+
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  order                 Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  purchaseOrder         PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  supplier              Supplier?    @relation(fields: [supplierId], references: [id])
+
+  @@unique([purchaseOrderId])
+  @@index([orderId])
+  @@index([supplierId])
+  @@index([status, createdAt])
+}
+
+
+
+enum BankVerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+model CacRegistrationCache {
+  id          String              @id @default(cuid())
+  rcNumber    String
+  companyType SupplierCompanyType
+  entity      Json
+  status      CacStatus           @default(CHECKED)
+  checkedAt   DateTime            @default(now())
+  approvedAt  DateTime?
+  updatedAt   DateTime            @updatedAt
+
+  @@unique([rcNumber, companyType])
+}
+
+model CacLookup {
+  id          String              @id @default(cuid())
+  rcNumber    String
+  companyType SupplierCompanyType
+  outcome     CacOutcome
+  entity      Json?
+  checkedAt   DateTime            @default(now())
+  retryAt     DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@unique([rcNumber, companyType], name: "CacLookup_rc_companyType_key")
+}
+
+model CacVerificationTicket {
+  id              String              @id @default(cuid())
+  tokenHash       String              @unique
+  rcNumber        String
+  companyType     SupplierCompanyType
+  companyNameNorm String
+  regDateYMD      String
+  createdAt       DateTime            @default(now())
+  expiresAt       DateTime
+  usedAt          DateTime?
+
+  @@index([rcNumber, companyType])
+}
+
+model CacVerifyAttempt {
+  id          String              @id @default(cuid())
+  ipHash      String
+  day         String
+  rcNumber    String
+  companyType SupplierCompanyType
+  createdAt   DateTime            @default(now())
+
+  @@unique([ipHash, day, rcNumber, companyType], name: "CacVerifyAttempt_ip_day_rc_type_key")
+  @@index([ipHash, day])
 }
 
 model Order {
-  id String @id @default(cuid())
-
-  user   User   @relation(fields: [userId], references: [id])
-  userId String
-
-  // required relation to Address for shipping
-  shippingAddressId String
-  shippingAddress   Address @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id], onDelete: Restrict)
-
-  total    Decimal @db.Decimal(10, 2)
-  tax      Decimal @db.Decimal(10, 2)
-  subtotal Decimal @db.Decimal(10, 2)
-
-  // NEW — snapshot of per-supplier or per-shipment calculation
+  id                    String                      @id @default(cuid())
+  userId                String
+  shippingAddressId     String
+  total                 Decimal                     @db.Decimal(10, 2)
+  tax                   Decimal                     @db.Decimal(10, 2)
+  subtotal              Decimal                     @db.Decimal(10, 2)
   shippingBreakdownJson Json?
+  status                String                      @default("PENDING")
+  createdAt             DateTime                    @default(now())
+  serviceFeeBase        Decimal                     @default(0) @db.Decimal(10, 2)
+  serviceFeeComms       Decimal                     @default(0) @db.Decimal(10, 2)
+  serviceFeeGateway     Decimal                     @default(0) @db.Decimal(10, 2)
+  serviceFeeTotal       Decimal                     @default(0) @db.Decimal(10, 2)
+  serviceFee            Decimal?                    @db.Decimal(12, 2)
+  billingAddressId      String?
+  billingAddress        Address?                    @relation("OrderBillingAddress", fields: [billingAddressId], references: [id])
+  shippingAddress       Address                     @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id])
+  user                  User                        @relation(fields: [userId], references: [id])
+  activities            OrderActivity[]             @relation("OrderToActivities")
+  comms                 OrderComms[]                @relation("OrderToComms")
+  orderCoupons          OrderCoupon[]
+  items                 OrderItem[]
+  itemProfits           OrderItemProfit[]           @relation("Order_ItemProfits")
+  payments              Payment[]
+  purchaseOrders        PurchaseOrder[]
+  refunds Refund[]
 
-  status     String          @default("PENDING")
-  activities OrderActivity[] @relation("OrderToActivities")
-
-  createdAt DateTime @default(now())
-
-  items          OrderItem[]
-  purchaseOrders PurchaseOrder[]
-  payments       Payment[]
-  orderCoupons   OrderCoupon[]
-
-  serviceFeeBase    Decimal @default(0) @db.Decimal(10, 2)
-  serviceFeeComms   Decimal @default(0) @db.Decimal(10, 2)
-  serviceFeeGateway Decimal @default(0) @db.Decimal(10, 2)
-  serviceFeeTotal   Decimal @default(0) @db.Decimal(10, 2)
-
-  // back-rel to OrderComms (name must match OrderComms.order relation)
-  comms OrderComms[] @relation("OrderToComms")
-
-  itemProfits OrderItemProfit[] @relation("Order_ItemProfits")
+  allocations           SupplierPaymentAllocation[] @relation("OrderAllocations")
 
   @@index([createdAt])
 }
 
+
+model UserSession {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+
+   expiresAt     DateTime?
+  rotatedAt     DateTime?
+
+  ip            String?
+  userAgent     String?
+  deviceName    String?
+
+  revokedAt     DateTime?
+  revokedReason String?
+
+  @@index([userId, lastSeenAt])
+  @@index([revokedAt])
+}
+
+enum PurchaseOrderPayoutStatus {
+  PENDING
+  HELD
+  RELEASED
+  FAILED
+}
+
+
+
 model OrderItem {
-  id        String          @id @default(cuid())
-  orderId   String
-  variantId String?
-  variant   ProductVariant? @relation("VariantOrderItems", fields: [variantId], references: [id], onDelete: SetNull)
-
-  order     Order    @relation(fields: [orderId], references: [id])
-  productId String?
-  product   Product? @relation(fields: [productId], references: [id])
-
-  purchaseOrderItems PurchaseOrderItem[]
-
-  title String
-
-  unitPrice       Decimal  @db.Decimal(10, 2)
-  quantity        Int
-  lineTotal       Decimal? @db.Decimal(10, 2)
-  status          String?
-  selectedOptions Json?
-  createdAt       DateTime @default(now())
-
-  // ✅ chosen supplier / offer (already present)
-  chosenSupplierId String?
-  chosenSupplier   Supplier? @relation("OrderItemChosenSupplier", fields: [chosenSupplierId], references: [id])
-
-  chosenSupplierOfferId String?
-  chosenSupplierOffer   SupplierOffer? @relation("OrderItemChosenSupplierOffer", fields: [chosenSupplierOfferId], references: [id])
-
-  chosenSupplierUnitPrice Decimal? @db.Decimal(10, 2)
-
-  // NEW — optional weight for better shipping quotes
-  weightGrams Int?
-
-  profit OrderItemProfit? @relation("OrderItem_Profit")
+  id                           String                @id @default(cuid())
+  orderId                      String
+  variantId                    String?
+  productId                    String?
+  title                        String
+  unitPrice                    Decimal               @db.Decimal(10, 2)
+  quantity                     Int
+  lineTotal                    Decimal?              @db.Decimal(10, 2)
+  status                       String?
+  selectedOptions              Json?
+  createdAt                    DateTime              @default(now())
+  chosenSupplierId             String?
+  chosenSupplierUnitPrice      Decimal?              @db.Decimal(10, 2)
+  weightGrams                  Int?
+  chosenSupplierProductOfferId String?
+  chosenSupplierVariantOfferId String?
+  chosenSupplier               Supplier?             @relation("OrderItemChosenSupplier", fields: [chosenSupplierId], references: [id])
+  chosenSupplierProductOffer   SupplierProductOffer? @relation("OrderItemChosenSupplierProductOffer", fields: [chosenSupplierProductOfferId], references: [id])
+  chosenSupplierVariantOffer   SupplierVariantOffer? @relation("OrderItemChosenSupplierVariantOffer", fields: [chosenSupplierVariantOfferId], references: [id])
+  order                        Order                 @relation(fields: [orderId], references: [id])
+  product                      Product?              @relation(fields: [productId], references: [id])
+  variant                      ProductVariant?       @relation("VariantOrderItems", fields: [variantId], references: [id])
+  profit                       OrderItemProfit?      @relation("OrderItem_Profit")
+  purchaseOrderItems           PurchaseOrderItem[]
 
   @@index([chosenSupplierId])
-  @@index([chosenSupplierOfferId])
+  @@index([chosenSupplierProductOfferId])
+  @@index([chosenSupplierVariantOfferId])
   @@index([orderId])
   @@index([productId])
 }
 
 model Payment {
-  id              String        @id @default(cuid())
-  orderId         String
-  reference       String        @unique
-  amount          Decimal       @db.Decimal(12, 2)
-  status          PaymentStatus @default(PENDING)
-  provider        String?
-  channel         String?
-  attemptNo       Int?
-  initPayload     Json?
-  providerPayload Json?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id                    String                      @id @default(cuid())
+  orderId               String
+  reference             String                      @unique
+  amount                Decimal                     @db.Decimal(12, 2)
+  status                PaymentStatus               @default(PENDING)
+  provider              String?
+  channel               String?
+  attemptNo             Int?
+  initPayload           Json?
+  providerPayload       Json?
+  createdAt             DateTime                    @default(now())
+  updatedAt             DateTime                    @updatedAt
+  feeAmount             Decimal?                    @default(0) @db.Decimal(12, 2)
+  receiptNo             String?                     @unique
+  receiptIssuedAt       DateTime?
+  receiptData           Json?
+  paidAt                DateTime?
+  refundedAt            DateTime?
+  supplierBreakdownJson Json?
+  supplierId            String?
+  supplierName          String?
+  orderComms            OrderComms?                 @relation("PaymentToComms")
+  order                 Order                       @relation(fields: [orderId], references: [id])
+  supplier              Supplier?                   @relation("SupplierPayments", fields: [supplierId], references: [id])
+  events                PaymentEvent[]
+  allocations           SupplierPaymentAllocation[]
 
-  // used in profit calc
-  feeAmount Decimal? @default(0) @db.Decimal(12, 2)
-
-  // Receipt
-  receiptNo       String?   @unique
-  receiptIssuedAt DateTime?
-  receiptData     Json?
-
-  events     PaymentEvent[]
-  paidAt     DateTime?
-  refundedAt DateTime?
-
-  order Order @relation(fields: [orderId], references: [id])
-
-  // opposite side of OrderComms.payment (optional 1:1)
-  orderComms OrderComms? @relation("PaymentToComms")
-
+  @@index([supplierId])
   @@index([status, paidAt])
 }
 
-model SupplierOffer {
-  id         String  @id @default(cuid())
-  supplierId String
-  productId  String
-  variantId  String?
-
-  supplier Supplier        @relation(fields: [supplierId], references: [id])
-  product  Product         @relation(fields: [productId], references: [id])
-  variant  ProductVariant? @relation(fields: [variantId], references: [id])
-
-  price    Decimal @db.Decimal(10, 2)
-  currency String  @default("NGN")
-  inStock  Boolean @default(true)
-  leadDays Int?
-  isActive Boolean @default(true)
-
-  // NEW — authoritative inventory for this offer
-  availableQty Int @default(0) // editable in admin UI
-  // (optional) for future holds/reservations
-  // reservedQty  Int     @default(0)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  orderItemsChosen OrderItem[] @relation("OrderItemChosenSupplierOffer")
-
-  @@unique([supplierId, productId, variantId])
-  @@index([productId])
-  @@index([variantId])
-  @@index([supplierId])
-  @@index([isActive, inStock])
-}
-
 model Category {
-  id       String     @id @default(cuid())
-  name     String     @unique
-  slug     String?    @unique
-  parentId String?
-  parent   Category?  @relation("CategoryToParent", fields: [parentId], references: [id])
-  children Category[] @relation("CategoryToParent")
-  position Int        @default(0)
-  isActive Boolean    @default(true)
-  products Product[] // if you link products
-
-  createdAt DateTime @default(now())
+  id        String     @id @default(cuid())
+  name      String     @unique
+  slug      String?    @unique
+  parentId  String?
+  position  Int        @default(0)
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  parent    Category?  @relation("CategoryToParent", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryToParent")
+  products  Product[]
 }
 
 model Brand {
@@ -379,50 +388,37 @@ model Brand {
 }
 
 model Attribute {
-  id       String  @id @default(cuid())
-  name     String
-  type     String  @default("SELECT") // TEXT | SELECT | MULTISELECT
-  isActive Boolean @default(true)
-
-  // Optional: you already had these
-  ProductAttributeText ProductAttributeText[]
-  // For variant options (distinct relation name from attributeOptions)
-  variantOptions       ProductVariantOption[] @relation("Attribute_ProductVariantOptions")
-
-  values AttributeValue[]
-
-  // Back-relation to ProductAttributeOption.attribute
+  id                      String                   @id @default(cuid())
+  name                    String
+  type                    String                   @default("SELECT")
+  isActive                Boolean                  @default(true)
+  values                  AttributeValue[]
   productAttributeOptions ProductAttributeOption[] @relation("Attribute_ProductAttributeOptions")
+  ProductAttributeText    ProductAttributeText[]
+  variantOptions          ProductVariantOption[]   @relation("Attribute_ProductVariantOptions")
 }
 
 model AttributeValue {
-  id          String  @id @default(cuid())
-  attributeId String
-  name        String
-  code        String?
-  position    Int     @default(0)
-  isActive    Boolean @default(true)
-
-  attribute Attribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
-
-  // For variant options (distinct relation)
-  variantOptions ProductVariantOption[] @relation("AttributeValue_ProductVariantOptions")
-
-  // Back-relation to ProductAttributeOption.value
+  id                      String                   @id @default(cuid())
+  attributeId             String
+  name                    String
+  code                    String?
+  position                Int                      @default(0)
+  isActive                Boolean                  @default(true)
+  attribute               Attribute                @relation(fields: [attributeId], references: [id], onDelete: Cascade)
   productAttributeOptions ProductAttributeOption[] @relation("AttributeValue_ProductAttributeOptions")
+  variantOptions          ProductVariantOption[]   @relation("AttributeValue_ProductVariantOptions")
 }
 
 model ProductAttributeOption {
-  id          String   @id @default(cuid())
+  id          String         @id @default(cuid())
   productId   String
   attributeId String
   valueId     String
-  createdAt   DateTime @default(now())
-
-  // Forward relations (names MUST match opposite sides)
-  product   Product        @relation("Product_ProductAttributeOptions", fields: [productId], references: [id], onDelete: Cascade)
-  attribute Attribute      @relation("Attribute_ProductAttributeOptions", fields: [attributeId], references: [id], onDelete: Cascade)
-  value     AttributeValue @relation("AttributeValue_ProductAttributeOptions", fields: [valueId], references: [id], onDelete: Cascade)
+  createdAt   DateTime       @default(now())
+  attribute   Attribute      @relation("Attribute_ProductAttributeOptions", fields: [attributeId], references: [id], onDelete: Cascade)
+  product     Product        @relation("Product_ProductAttributeOptions", fields: [productId], references: [id], onDelete: Cascade)
+  value       AttributeValue @relation("AttributeValue_ProductAttributeOptions", fields: [valueId], references: [id], onDelete: Cascade)
 
   @@unique([productId, attributeId, valueId])
   @@index([productId])
@@ -431,37 +427,35 @@ model ProductAttributeOption {
 }
 
 model ProductVariant {
-  id         String   @id @default(cuid())
-  productId  String
-  sku        String?  @unique
-  price      Decimal? @db.Decimal(10, 2)
-  inStock    Boolean  @default(true)
-  imagesJson String[]
-  createdAt  DateTime @default(now())
-
-  product Product                @relation("Product_ProductVariants", fields: [productId], references: [id], onDelete: Cascade)
-  options ProductVariantOption[] @relation("Variant_ProductVariantOptions")
-
-  // 🔧 Opposite side of OrderItem.variant
-  OrderItem OrderItem[] @relation("VariantOrderItems")
-
-  availableQty Int @default(0) // cached
-
-  SupplierOffer SupplierOffer[]
+  id                    String                 @id @default(cuid())
+  productId             String
+  sku                   String?                @unique
+  retailPrice           Decimal?               @map("price") @db.Decimal(10, 2)
+  inStock               Boolean                @default(true)
+  imagesJson            String[]
+  createdAt             DateTime               @default(now())
+  availableQty          Int                    @default(0)
+  archivedAt            DateTime?
+  isActive              Boolean                @default(true)
+  OrderItem             OrderItem[]            @relation("VariantOrderItems")
+  product               Product                @relation("Product_ProductVariants", fields: [productId], references: [id], onDelete: Cascade)
+  options               ProductVariantOption[] @relation("Variant_ProductVariantOptions")
+  supplierVariantOffers SupplierVariantOffer[]
 
   @@index([productId])
+  @@index([productId, isActive])
+  @@index([productId, archivedAt])
 }
 
 model ProductVariantOption {
-  id          String   @id @default(cuid())
+  id          String         @id @default(cuid())
   variantId   String
   attributeId String
   valueId     String
   priceBump   Decimal?
-
-  variant   ProductVariant @relation("Variant_ProductVariantOptions", fields: [variantId], references: [id], onDelete: Cascade)
-  attribute Attribute      @relation("Attribute_ProductVariantOptions", fields: [attributeId], references: [id], onDelete: Cascade)
-  value     AttributeValue @relation("AttributeValue_ProductVariantOptions", fields: [valueId], references: [id], onDelete: Cascade)
+  attribute   Attribute      @relation("Attribute_ProductVariantOptions", fields: [attributeId], references: [id], onDelete: Cascade)
+  value       AttributeValue @relation("AttributeValue_ProductVariantOptions", fields: [valueId], references: [id], onDelete: Cascade)
+  variant     ProductVariant @relation("Variant_ProductVariantOptions", fields: [variantId], references: [id], onDelete: Cascade)
 
   @@unique([variantId, attributeId, valueId], name: "variantId_attributeId_valueId")
   @@index([variantId])
@@ -470,117 +464,204 @@ model ProductVariantOption {
 }
 
 model Product {
-  id          String   @id @default(cuid())
-  title       String
-  description String
-  price       Decimal  @db.Decimal(10, 2)
-  sku         String   @unique
-  inStock     Boolean  @default(true)
-  status      String   @default("PUBLISHED")
-  imagesJson  String[]
+  id                    String                   @id @default(cuid())
+  title                 String
+  description           String
+  retailPrice           Decimal?                 @map("price") @db.Decimal(10, 2)
+  sku                   String
+  inStock               Boolean                  @default(true)
+  status                String                   @default("PUBLISHED")
+  imagesJson            String[]
+  userId                String?
+  brandId               String?
+  categoryId            String?
+  categoryName          String?
+  communicationCost     Decimal?                 @db.Decimal(10, 2)
+  supplierTypeOverride  SupplierType?
+  commissionPctInt      Int?
+  availableQty          Int                      @default(0)
+  isDeleted             Boolean                  @default(false)
+  deletedAt             DateTime?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+  ownerId               String?
+  autoPrice             Decimal?                 @db.Decimal(10, 2)
+  priceMode             ProductPriceMode         @default(AUTO)
+  createdById           String?
+  supplierId            String?
+  updatedById           String?
+  Favorite              Favorite[]
+  orderItems            OrderItem[]
+  brand                 Brand?                   @relation(fields: [brandId], references: [id])
+  category              Category?                @relation(fields: [categoryId], references: [id])
+  createdBy             User?                    @relation("ProductCreatedBy", fields: [createdById], references: [id])
+  owner                 User?                    @relation("ProductOwner", fields: [ownerId], references: [id])
+  supplier              Supplier?                @relation("ProductSupplier", fields: [supplierId], references: [id])
+  updatedBy             User?                    @relation("ProductUpdatedBy", fields: [updatedById], references: [id])
+  user                  User?                    @relation("ProductUser", fields: [userId], references: [id])
+  attributeOptions      ProductAttributeOption[] @relation("Product_ProductAttributeOptions")
+  ProductAttributeText  ProductAttributeText[]
+  ProductVariant        ProductVariant[]         @relation("Product_ProductVariants")
+  supplierProductOffers SupplierProductOffer[]
+  supplierVariantOffers SupplierVariantOffer[]
+  Wishlist              Wishlist[]
 
-  // Ownership
-  userId String?
-  owner  User?   @relation(fields: [userId], references: [id])
-
-  // Brand (optional)
-  brandId String?
-  brand   Brand?  @relation(fields: [brandId], references: [id])
-
-  // Category (optional)
-  categoryId   String?
-  category     Category? @relation(fields: [categoryId], references: [id])
-  categoryName String?
-
-  // Supplier (required per your note)
-  supplierId String
-  supplier   Supplier @relation(fields: [supplierId], references: [id])
-
-  // Pricing/commission
-  communicationCost    Decimal?      @db.Decimal(10, 2)
-  supplierTypeOverride SupplierType?
-  commissionPctInt     Int?
-
-  availableQty Int @default(0) // cached
-
-  // Relations used elsewhere
-  supplierOffers       SupplierOffer[]
-  orderItems           OrderItem[]
-  Favorite             Favorite[]
-  Wishlist             Wishlist[]
-  ProductAttributeText ProductAttributeText[]
-
-  // Variants (explicit relation name)
-  ProductVariant ProductVariant[] @relation("Product_ProductVariants")
-
-  // Back-relation to ProductAttributeOption.product
-  attributeOptions ProductAttributeOption[] @relation("Product_ProductAttributeOptions")
-
-  // Soft delete
-  isDeleted Boolean   @default(false)
-  deletedAt DateTime?
-
-  createdAt DateTime @default(now())
-
-  // 🔁 important indexes
-  @@unique([sku, isDeleted]) // allow reusing SKU after soft delete
+  @@unique([sku, isDeleted])
   @@index([brandId])
   @@index([categoryId])
-  @@index([supplierId])
   @@index([isDeleted, createdAt])
+  @@index([userId])
+  @@index([ownerId])
+  @@index([supplierId])
+  @@index([createdById])
+  @@index([updatedById])
 }
 
-enum PaymentStatus {
-  PENDING // initialized, awaiting confirmation
-  REQUIRES_ACTION // 3-DS/OTP or extra step needed
-  PAID
-  FAILED
-  CANCELED
-  REFUNDED
+model SupplierProductOffer {
+  id               String                 @id @default(cuid())
+  supplierId       String
+  productId        String
+  basePrice        Decimal                @db.Decimal(10, 2)
+  currency         String                 @default("NGN")
+  availableQty     Int                    @default(0)
+  leadDays         Int?
+  isActive         Boolean                @default(true)
+  inStock          Boolean                @default(true)
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  orderItemsChosen OrderItem[]            @relation("OrderItemChosenSupplierProductOffer")
+  product          Product                @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier         Supplier               @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  variantOffers    SupplierVariantOffer[]
+
+  @@unique([supplierId, productId])
+  @@index([productId])
+  @@index([supplierId])
+  @@index([isActive, inStock])
+}
+
+model SupplierVariantOffer {
+  id                     String                @id @default(cuid())
+  supplierId             String
+  productId              String
+  variantId              String
+  supplierProductOfferId String?
+  priceBump              Decimal               @db.Decimal(10, 2)
+  currency               String                @default("NGN")
+  availableQty           Int                   @default(0)
+  leadDays               Int?
+  isActive               Boolean               @default(true)
+  inStock                Boolean               @default(true)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  orderItemsChosen       OrderItem[]           @relation("OrderItemChosenSupplierVariantOffer")
+  product                Product               @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier               Supplier              @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplierProductOffer   SupplierProductOffer? @relation(fields: [supplierProductOfferId], references: [id])
+  variant                ProductVariant        @relation(fields: [variantId], references: [id])
+
+  @@unique([supplierId, variantId])
+  @@index([variantId])
+  @@index([productId])
+  @@index([supplierId])
+  @@index([isActive, inStock])
 }
 
 model PaymentEvent {
   id        String   @id @default(cuid())
   paymentId String
-  payment   Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
-  type      String // INIT | VERIFY | WEBHOOK | STATUS_CHANGE
+  type      String
   data      Json?
   createdAt DateTime @default(now())
+  payment   Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
 }
 
+model SupplierPaymentAllocation {
+  id                   String                @id @default(cuid())
+  paymentId            String
+  orderId              String
+  supplierId           String
+  purchaseOrderId      String?
+  amount               Decimal               @db.Decimal(12, 2)
+  status               SupplierPaymentStatus @default(PENDING)
+  supplierNameSnapshot String?
+  meta                 Json?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  order                Order                 @relation("OrderAllocations", fields: [orderId], references: [id], onDelete: Cascade)
+  payment              Payment               @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  purchaseOrder        PurchaseOrder?        @relation("PurchaseOrderAllocations", fields: [purchaseOrderId], references: [id])
+  supplier             Supplier              @relation(fields: [supplierId], references: [id])
+  releasedAt           DateTime?
+
+  @@unique([paymentId, supplierId, purchaseOrderId])
+  @@index([paymentId])
+  @@index([orderId])
+  @@index([supplierId])
+}
+
+model SupplierLedgerEntry {
+  id            String   @id @default(cuid())
+  supplierId    String
+  type          String
+  amount        Decimal  @db.Decimal(12, 2)
+  currency      String   @default("NGN")
+  referenceType String?
+  referenceId   String?
+  meta          Json?
+  createdAt     DateTime @default(now())
+
+  supplier      Supplier @relation("SupplierToLedger", fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId, createdAt])
+}
+
+
+
 model PurchaseOrder {
-  id String @id @default(cuid())
+  id               String                      @id @default(cuid())
+  orderId          String
+  supplierId       String
+  supplierOrderRef String?                     @unique
+  subtotal         Decimal                     @db.Decimal(10, 2)
+  platformFee      Decimal                     @db.Decimal(10, 2)
+  supplierAmount   Decimal                     @db.Decimal(10, 2)
+  whatsappMsgId    String?
+  createdAt        DateTime                    @default(now())
+  status           PurchaseOrderStatus         @default(CREATED)
 
-  order   Order  @relation(fields: [orderId], references: [id])
-  orderId String
+  payoutStatus     PurchaseOrderPayoutStatus @default(PENDING)
+  paidOutAt        DateTime?
 
-  supplier   Supplier @relation(fields: [supplierId], references: [id])
-  supplierId String
+  order            Order                       @relation(fields: [orderId], references: [id])
+  supplier         Supplier                    @relation(fields: [supplierId], references: [id])
+  items            PurchaseOrderItem[]
+  allocations      SupplierPaymentAllocation[] @relation("PurchaseOrderAllocations")
+  refund Refund?
 
-  supplierOrderRef String? @unique
+  confirmedAt      DateTime?
+  packedAt         DateTime?
+  shippedAt        DateTime?
+  deliveredAt      DateTime?
+  canceledAt       DateTime?
+  cancelReason     String?   // e.g. OUT_OF_STOCK, CUSTOMER_REQUEST, SUPPLIER_CANCEL, ADDRESS_ISSUE, OTHER
+  cancelNote       String?   // free text
 
-  subtotal       Decimal  @db.Decimal(10, 2)
-  platformFee    Decimal  @db.Decimal(10, 2)
-  supplierAmount Decimal  @db.Decimal(10, 2)
-  status         String   @default("CREATED")
-  whatsappMsgId  String?
-  createdAt      DateTime @default(now())
-
-  items PurchaseOrderItem[]
+  @@unique([orderId, supplierId])
+  @@index([orderId])
+  @@index([supplierId])
+  @@index([status])
 }
 
 model PurchaseOrderItem {
-  id String @id @default(cuid())
-
-  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  id              String        @id @default(cuid())
   purchaseOrderId String
-
-  orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
-  orderItemId String
-
-  externalRef    String?
-  externalStatus String?
-  receiptUrl     String?
+  orderItemId     String
+  externalRef     String?
+  externalStatus  String?
+  receiptUrl      String?
+  orderItem       OrderItem     @relation(fields: [orderItemId], references: [id])
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
 }
 
 model OrderActivity {
@@ -598,19 +679,14 @@ model OrderActivity {
 }
 
 model Favorite {
-  id String @id @default(cuid())
-
+  id        String   @id @default(cuid())
   userId    String
   productId String
-
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-
   createdAt DateTime @default(now())
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // prevent the same product being favorited twice by the same user
   @@unique([userId, productId])
-  // fast lookups
   @@index([userId])
   @@index([productId])
 }
@@ -618,19 +694,17 @@ model Favorite {
 model Wishlist {
   userId    String
   productId String
-  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // Composite primary key (prevents duplicates)
   @@id([userId, productId])
-  // Optional: add indexes to speed up lookups
   @@index([userId])
   @@index([productId])
 }
 
 model Otp {
   id         String    @id @default(cuid())
-  userId     String? // <-- add this if missing
+  userId     String?
   identifier String?
   codeHash   String
   attempts   Int       @default(0)
@@ -648,122 +722,190 @@ model EmailVerifyToken {
   token     String   @unique
   expiresAt DateTime
   createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model ProductAttributeText {
-  id        String  @id @default(cuid())
-  productId String
-  product   Product @relation(fields: [productId], references: [id])
-
+  id          String    @id @default(cuid())
+  productId   String
   attributeId String
+  value       String
+  createdAt   DateTime  @default(now())
   attribute   Attribute @relation(fields: [attributeId], references: [id])
+  product     Product   @relation(fields: [productId], references: [id])
 
-  value     String // e.g., “Care: Hand wash only”
-  createdAt DateTime @default(now())
-
-  @@unique([productId, attributeId]) // one text value per attribute per product
+  @@unique([productId, attributeId])
   @@index([productId])
   @@index([attributeId])
 }
 
-// ---------------- OrderComms (fixed relations) ----------------
 model OrderComms {
-  id String @id @default(cuid())
-
-  // Order <-> OrderComms (paired with Order.comms)
-  orderId String
-  order   Order  @relation("OrderToComms", fields: [orderId], references: [id])
-
-  // Payment <-> OrderComms (1:0..1) — unique for idempotency
-  paymentId String?  @unique
-  payment   Payment? @relation("PaymentToComms", fields: [paymentId], references: [id])
-
-  amount Decimal @db.Decimal(12, 2)
-
-  // Supplier <-> OrderComms (optional)
+  id         String    @id @default(cuid())
+  orderId    String
+  paymentId  String?   @unique
+  amount     Decimal   @db.Decimal(12, 2)
   supplierId String?
+  channel    String?
+  recipient  String?
+  units      Int?
+  reason     String?
+  createdAt  DateTime  @default(now())
+  order      Order     @relation("OrderToComms", fields: [orderId], references: [id])
+  payment    Payment?  @relation("PaymentToComms", fields: [paymentId], references: [id])
   supplier   Supplier? @relation("SupplierToComms", fields: [supplierId], references: [id])
-
-  channel   String?
-  recipient String?
-  units     Int?
-  reason    String?
-  createdAt DateTime @default(now())
 }
 
 model Setting {
   id        String   @id @default(cuid())
   key       String   @unique
   value     String
-  isPublic  Boolean  @default(false) // if you want this field
+  isPublic  Boolean  @default(false)
   meta      Json?
   createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt // <-- add @default(now())
-}
-
-enum CouponType {
-  PERCENT // e.g. 10 means 10%
-  FLAT // e.g. 1500 means ₦1,500
+  updatedAt DateTime @updatedAt
 }
 
 model Coupon {
-  id           String     @id @default(cuid())
-  code         String     @unique @db.VarChar(50) // store uppercase
-  description  String?    @db.VarChar(255)
+  id           String        @id @default(cuid())
+  code         String        @unique @db.VarChar(50)
+  description  String?       @db.VarChar(255)
   type         CouponType
-  value        Decimal    @db.Decimal(12, 2) // percent or flat NGN
-  maxDiscount  Decimal?   @db.Decimal(12, 2) // optional cap for % coupons
-  minSubtotal  Decimal?   @db.Decimal(12, 2) // minimum order subtotal
+  value        Decimal       @db.Decimal(12, 2)
+  maxDiscount  Decimal?      @db.Decimal(12, 2)
+  minSubtotal  Decimal?      @db.Decimal(12, 2)
   startsAt     DateTime?
   expiresAt    DateTime?
-  usageLimit   Int? // total uses across all users
-  perUserLimit Int? // max uses per single user
-  timesUsed    Int        @default(0) // optional, can be derived
-  isActive     Boolean    @default(true)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-
-  orders OrderCoupon[]
+  usageLimit   Int?
+  perUserLimit Int?
+  timesUsed    Int           @default(0)
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  orders       OrderCoupon[]
 }
 
 model OrderCoupon {
   id        String   @id @default(cuid())
   orderId   String
   couponId  String
-  amount    Decimal  @db.Decimal(12, 2) // discount applied (final amount)
+  amount    Decimal  @db.Decimal(12, 2)
   createdAt DateTime @default(now())
+  coupon    Coupon   @relation(fields: [couponId], references: [id])
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  coupon Coupon @relation(fields: [couponId], references: [id])
-
-  @@unique([orderId, couponId]) // at most one entry of a given coupon per order
+  @@unique([orderId, couponId])
 }
 
-// prisma/schema.prisma
-
 model OrderItemProfit {
-  id          String @id @default(cuid())
-  orderId     String
-  orderItemId String @unique
-
+  id                      String    @id @default(cuid())
+  orderId                 String
+  orderItemId             String    @unique
   revenue                 Decimal
   qty                     Int
   unitPrice               Decimal
   chosenSupplierUnitPrice Decimal
   cogs                    Decimal
-
-  allocatedGatewayFee     Decimal @default(0)
-  allocatedCommsFee       Decimal @default(0)
-  allocatedBaseServiceFee Decimal @default(0)
-
-  profit     Decimal
-  computedAt DateTime @default(now())
-
-  // 🔗 named relations
-  order     Order     @relation("Order_ItemProfits", fields: [orderId], references: [id])
-  orderItem OrderItem @relation("OrderItem_Profit", fields: [orderItemId], references: [id])
+  allocatedGatewayFee     Decimal   @default(0)
+  allocatedCommsFee       Decimal   @default(0)
+  allocatedBaseServiceFee Decimal   @default(0)
+  profit                  Decimal
+  computedAt              DateTime  @default(now())
+  order                   Order     @relation("Order_ItemProfits", fields: [orderId], references: [id])
+  orderItem               OrderItem @relation("OrderItem_Profit", fields: [orderItemId], references: [id])
 
   @@index([orderId])
+}
+
+model CatalogRequest {
+  id           String               @id @default(cuid())
+  type         CatalogRequestType
+  status       CatalogRequestStatus @default(PENDING)
+  supplierId   String
+  payload      Json
+  reason       String?
+  adminNote    String?
+  reviewedAt   DateTime?
+  reviewedById String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  reviewedBy   User?                @relation("CatalogRequestReviewedBy", fields: [reviewedById], references: [id])
+  supplier     Supplier             @relation(fields: [supplierId], references: [id])
+
+  @@index([status, type])
+  @@index([supplierId, createdAt])
+}
+
+enum SupplierType {
+  PHYSICAL
+  ONLINE
+}
+
+enum SupplierCompanyType {
+  BUSINESS_NAME
+  COMPANY
+  INCORPORATED_TRUSTEES
+  LIMITED_PARTNERSHIP
+  LIMITED_LIABILITY_PARTNERSHIP
+}
+
+enum CacStatus {
+  NONE
+  CHECKED
+  APPROVED
+  REJECTED
+  PENDING
+}
+
+enum CacOutcome {
+  OK
+  NOT_FOUND
+  ERROR
+}
+
+enum PaymentStatus {
+  PENDING
+  REQUIRES_ACTION
+  PAID
+  FAILED
+  CANCELED
+  REFUNDED
+}
+
+enum CouponType {
+  PERCENT
+  FLAT
+}
+
+enum CatalogRequestType {
+  BRAND
+  CATEGORY
+  ATTRIBUTE
+  ATTRIBUTE_VALUE
+}
+
+enum CatalogRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ProductPriceMode {
+  AUTO
+  ADMIN
+}
+
+enum PurchaseOrderStatus {
+  CREATED
+  FUNDED
+  CONFIRMED
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELED
+}
+
+enum SupplierPaymentStatus {
+  PENDING
+  PAID
+  FAILED
 }
