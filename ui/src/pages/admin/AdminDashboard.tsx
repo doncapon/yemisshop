@@ -1372,27 +1372,34 @@ export default function AdminDashboard() {
       },
     });
 
-    const approveM = useMutation({
-      mutationFn: async (id: string) =>
-        (
-          await api.post(
-            `/api/admin/products/${id}/approve`,
-            {},
-            { headers: hdr },
-          )
-        ).data,
-      onSuccess: () => {
-        qc.invalidateQueries({
-          queryKey: ['admin', 'products', 'pending'],
-        });
-        qc.invalidateQueries({
-          queryKey: ['admin', 'products', 'published'],
-        });
-        qc.invalidateQueries({
-          queryKey: ['admin', 'overview'],
-        });
-      },
-    });
+
+const approveM = useMutation({
+  mutationFn: async (id: string) => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+    // ✅ SUPER ADMIN approval = go LIVE
+    const res = await api.post(
+      `/api/admin/products/${encodeURIComponent(id)}/go-live`,
+      {},
+      { headers }
+    );
+
+    return res.data?.data ?? res.data ?? res;
+  },
+  onSuccess: async () => {
+    // refresh moderation list + any dashboard counters
+    await qc.invalidateQueries({ queryKey: ['admin', 'products'] });
+    await qc.invalidateQueries({ queryKey: ['admin', 'products', 'moderation'] });
+    await qc.invalidateQueries({ queryKey: ['admin', 'overview'] });
+  },
+  onError: (e: any) => {
+    const msg =
+      e?.response?.data?.error ||
+      e?.message ||
+      'Failed to approve (go live).';
+    window.alert(msg);
+  },
+});
 
     return (
       <ModerationGrid

@@ -357,7 +357,7 @@ export default function ReceiptPage() {
                   className="px-3 py-2 font-medium text-right"
                   colSpan={3}
                 >
-                  Tax
+                  Tax(Included)
                 </td>
                 <td className="px-3 py-2 text-right">
                   {ngn.format(

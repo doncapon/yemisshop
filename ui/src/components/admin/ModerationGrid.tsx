@@ -1,4 +1,4 @@
-import { PackageCheck, PackageX, Search } from 'lucide-react';
+import { PackageCheck, PackageX, Search, Wrench, Plus } from 'lucide-react';
 import api from '../../api/client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React from 'react';
@@ -12,11 +12,15 @@ type SupplierOfferLite = {
   supplierName?: string;
   isActive?: boolean;
   inStock?: boolean;
-  // any of these may exist depending on backend:
   availableQty?: number | null;
   available?: number | null;
   qty?: number | null;
   stock?: number | null;
+
+  // ✅ important: backend uses offerPrice; some older payloads use price
+  offerPrice?: number | string | null;
+  price?: number | string | null;
+  currency?: string | null;
 };
 
 type AdminProduct = {
@@ -37,15 +41,23 @@ type AdminProduct = {
   supplierOffers?: SupplierOfferLite[];
 };
 
+type AdminBrand = { id: string; name: string; slug: string; logoUrl?: string | null; isActive: boolean };
+type AdminCategory = { id: string; name: string; slug: string; parentId?: string | null; isActive: boolean; position?: number | null };
+
 /* ===================== Utils ===================== */
 const STALE_TIME = 30_000;
 
 const toArray = (x: any): any[] => (Array.isArray(x) ? x : x == null ? [] : [x]);
 const isUrlish = (s?: string) => !!s && /^(https?:\/\/|data:image\/|\/)/i.test(s);
 
-// safe available units from many shapes
 function availableUnits(o: SupplierOfferLite | any) {
   const raw = o?.availableQty ?? o?.available ?? o?.qty ?? o?.stock ?? 0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function offerUnitPrice(o: SupplierOfferLite | any) {
+  const raw = o?.offerPrice ?? o?.price ?? null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : 0;
 }
@@ -56,7 +68,7 @@ function extractImageUrls(p: any): string[] {
     try {
       const parsed = JSON.parse(p.imagesJson);
       if (Array.isArray(parsed)) return parsed.filter(isUrlish);
-    } catch {}
+    } catch { }
     return p.imagesJson
       .split(/[\n,]/g)
       .map((t: string) => t.trim())
@@ -72,7 +84,6 @@ function extractImageUrls(p: any): string[] {
   return (candidates as string[]).filter(isUrlish);
 }
 
-// tiny debounce hook
 function useDebounced<T>(value: T, delay = 350) {
   const [v, setV] = React.useState(value);
   React.useEffect(() => {
@@ -82,13 +93,9 @@ function useDebounced<T>(value: T, delay = 350) {
   return v;
 }
 
-/* ===================== Data ===================== */
 function normalizeStatus(s: any) {
   return String(s ?? '').toUpperCase();
 }
-
-// sorting: PUBLISHED first (rank 0), then PENDING-like (rank 1), then others (rank 2)
-// within same rank, newest first by createdAt
 function statusRank(s: string) {
   const u = normalizeStatus(s);
   if (u === 'PUBLISHED') return 0;
@@ -100,7 +107,17 @@ function timeVal(iso?: string) {
   return Number.isFinite(t) ? t : 0;
 }
 
+function slugifyLocal(input: string) {
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 80);
+}
 
+/* ===================== Data ===================== */
 function useModeratableProductsQuery(token: string | null | undefined, q: string) {
   return useQuery<AdminProduct[]>({
     queryKey: ['admin', 'products', 'moderation', { q }],
@@ -112,27 +129,24 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
     queryFn: async () => {
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
 
-      // ✅ Match ManageProducts: *always* ask for ANY status
+      // 1) Fetch products (do NOT rely on supplierOffers being included)
       const params = {
-        status: 'ANY',                     // <---- IMPORTANT
+        status: 'ANY',
         q: q || undefined,
         take: 50,
         skip: 0,
-        include: 'supplierOffers,owner',
+        include: 'owner', // keep it simple; we hydrate offers ourselves
       };
 
       const { data } = await api.get('/api/admin/products', { headers, params });
       const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 
-      const rows: AdminProduct[] = (arr ?? []).map((p: any) => ({
+      const baseRows: AdminProduct[] = (arr ?? []).map((p: any) => ({
         id: String(p.id),
         title: String(p.title ?? ''),
         price: p.price != null ? p.price : null,
         status: String(p.status ?? ''),
-        imagesJson:
-          Array.isArray(p.imagesJson) || typeof p.imagesJson === 'string'
-            ? p.imagesJson
-            : [],
+        imagesJson: Array.isArray(p.imagesJson) || typeof p.imagesJson === 'string' ? p.imagesJson : [],
         createdAt: p.createdAt ?? null,
         isDeleted: !!p.isDeleted,
         ownerId: p.ownerId ?? p.owner?.id ?? null,
@@ -142,12 +156,74 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
         supplierId: p.supplierId ?? null,
         sku: p.sku ?? null,
         inStock: p.inStock !== false,
-        supplierOffers: Array.isArray(p.supplierOffers) ? p.supplierOffers : [],
+        supplierOffers: [], // hydrate next
       }));
 
-      // 🔹 Now just drop LIVE ones on the client
-      // const nonLive = rows.filter((p) => p.status?.toUpperCase() !== 'LIVE');
-      const nonLive = rows; 
+      const productIds = Array.from(new Set(baseRows.map((r) => r.id))).filter(Boolean);
+
+      // 2) Fetch supplier offers by productIds (this is the reliable part)
+      let offersByProductId: Record<string, SupplierOfferLite[]> = {};
+      if (productIds.length) {
+        try {
+          // ✅ Use whichever endpoint you already have in the backend:
+          // - /api/admin/supplier-offers?productIds=...
+          // - OR /api/admin/products/supplier-offers?productIds=...
+          const { data: offerData } = await api.get('/api/admin/supplier-offers', {
+            headers,
+            params: { productIds: productIds.join(',') },
+          });
+
+          const rawOffers = Array.isArray(offerData?.data)
+            ? offerData.data
+            : Array.isArray(offerData)
+            ? offerData
+            : [];
+
+          for (const o of rawOffers) {
+            const pid = String(o?.productId ?? '');
+            if (!pid) continue;
+
+            const norm: SupplierOfferLite = {
+              id: String(o?.id ?? ''),
+              productId: pid,
+              variantId: o?.variantId ?? null,
+              supplierId: String(o?.supplierId ?? ''),
+              supplierName: o?.supplierName ?? undefined,
+              isActive: o?.isActive !== false,
+              inStock: typeof o?.inStock === 'boolean' ? o.inStock : undefined,
+
+              // qty fields (support lots of possible payloads)
+              availableQty: Number.isFinite(Number(o?.availableQty))
+                ? Number(o.availableQty)
+                : Number.isFinite(Number(o?.availableQuantity))
+                ? Number(o.availableQuantity)
+                : null,
+              available: o?.available ?? null,
+              qty: o?.qty ?? o?.quantity ?? null,
+              stock: o?.stock ?? o?.stockQty ?? null,
+
+              // price fields (support lots of possible payloads)
+              offerPrice: o?.offerPrice ?? o?.unitPrice ?? o?.priceNGN ?? null,
+              price: o?.price ?? null,
+              currency: o?.currency ?? null,
+            };
+
+            if (!offersByProductId[pid]) offersByProductId[pid] = [];
+            offersByProductId[pid].push(norm);
+          }
+        } catch {
+          // leave offers empty; UI will show missing
+        }
+      }
+
+      // 3) Attach offers onto products
+      const rows = baseRows.map((p) => ({
+        ...p,
+        supplierOffers: offersByProductId[p.id] ?? [],
+      }));
+
+      // 4) Show everything that's NOT LIVE (PENDING, REJECTED, PUBLISHED, etc.)
+      const nonLive = rows.filter((p) => p.status?.toUpperCase() !== 'LIVE');
 
       nonLive.sort((a, b) => {
         const ra = statusRank(a.status);
@@ -162,41 +238,94 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
 }
 
 
+function useAdminBrands(token?: string) {
+  return useQuery<AdminBrand[]>({
+    queryKey: ['admin', 'brands'],
+    enabled: !!token,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      const { data } = await api.get('/api/admin/brands', {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      return arr.map((b: any) => ({
+        id: String(b.id),
+        name: String(b.name ?? ''),
+        slug: String(b.slug ?? ''),
+        logoUrl: b.logoUrl ?? null,
+        isActive: b.isActive !== false,
+      }));
+    },
+  });
+}
 
+function useAdminCategories(token?: string) {
+  return useQuery<AdminCategory[]>({
+    queryKey: ['admin', 'categories'],
+    enabled: !!token,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      const { data } = await api.get('/api/admin/categories', {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      return arr.map((c: any) => ({
+        id: String(c.id),
+        name: String(c.name ?? ''),
+        slug: String(c.slug ?? ''),
+        parentId: c.parentId ?? null,
+        isActive: c.isActive !== false,
+        position: c.position ?? null,
+      }));
+    },
+  });
+}
+
+/* ===================== Product patch helper ===================== */
+async function patchProductCatalogMeta(
+  token: string,
+  productId: string,
+  meta: { brandId?: string | null; categoryId?: string | null }
+) {
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const { data } = await api.patch(
+    `/api/admin/products/${encodeURIComponent(productId)}`,
+    meta,
+    { headers }
+  );
+
+  return data?.data ?? data ?? { ok: true };
+}
 
 /* ===================== Component ===================== */
 type ModerationGridProps = {
-  search: string;                 // parent-provided value (we’ll keep it in sync)
+  search: string;
   token: string;
-  setSearch: (s: string) => void; // parent setter (we’ll call it after debounce)
+  setSearch: (s: string) => void;
   onApprove: (id: string) => void;
   onInspect: (p: Pick<AdminProduct, 'id' | 'title' | 'sku'>) => void;
 };
 
-export function ModerationGrid({
-  token,
-  search,
-  setSearch,
-  onApprove,
-  onInspect,
-}: ModerationGridProps) {
+export function ModerationGrid({ token, search, setSearch, onApprove, onInspect }: ModerationGridProps) {
   const statusOf = (p: any) => normalizeStatus(p?.status);
   const isPublished = (p: any) => statusOf(p) === 'PUBLISHED';
 
-  // Supplier-offer check:
-  // - default active to true when missing
-  // - if inStock is missing, derive from available units
-  function hasSupplierOffer(p: any) {
+  // ✅ eligible supplier offer = active + in-stock + qty>0 + unit price > 0
+  function hasEligibleSupplierOffer(p: any) {
     const offers: SupplierOfferLite[] = Array.isArray(p?.supplierOffers) ? p.supplierOffers : [];
     return offers.some((o) => {
-      const active = o?.isActive !== false; // treat undefined as active
-      const units = availableUnits(o);
-      const stockFlag = typeof o?.inStock === 'boolean' ? o.inStock : units > 0;
-      return active && stockFlag && units > 0;
+      const active = o?.isActive !== false;        // default true
+      const units = availableUnits(o);            // checks availableQty/qty/stock/etc
+      const unitPrice = offerUnitPrice(o);        // checks offerPrice/price
+      return active && units > 0 && unitPrice > 0;
     });
   }
 
-  // ------ Search (single debounce in the component) ------
+
+  // ------ Search ------
   const [searchLocal, setSearchLocal] = React.useState(search);
   React.useEffect(() => setSearchLocal(search), [search]);
   const debouncedLocal = useDebounced(searchLocal, 350);
@@ -205,18 +334,13 @@ export function ModerationGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedLocal]);
 
-  // Products (non-LIVE, sorted Published → Pending → Others)
   const productsQ = useModeratableProductsQuery(token, debouncedLocal);
   const qc = useQueryClient();
-
   const gridRows = productsQ.data ?? [];
 
-  // ------ Has-orders probe (map: id -> boolean) ------
+  // ------ Has-orders probe ------
   const normalizeId = (id: any) => String(id ?? '');
-  const ids = React.useMemo(
-    () => Array.from(new Set(gridRows.map((r) => normalizeId(r.id)))),
-    [gridRows]
-  );
+  const ids = React.useMemo(() => Array.from(new Set(gridRows.map((r) => normalizeId(r.id)))), [gridRows]);
 
   const hasOrdersQ = useQuery<Record<string, boolean>>({
     queryKey: ['admin', 'products', 'has-orders', { ids }],
@@ -230,31 +354,27 @@ export function ModerationGrid({
 
       const settled = await Promise.allSettled(
         fetchIds.map(async (id) => {
-          const { data } = await api.get(
-            `/api/admin/products/${encodeURIComponent(id)}/has-orders`,
-            { headers: hdr }
-          );
+          const { data } = await api.get(`/api/admin/products/${encodeURIComponent(id)}/has-orders`, { headers: hdr });
+
+          // ✅ FIX: backend returns { data: { hasOrders, orderLineCount } }
           const has =
-            typeof data === 'boolean'
-              ? data
-              : typeof data?.has === 'boolean'
-              ? data.has
-              : typeof data?.data?.has === 'boolean'
-              ? data.data.has
-              : typeof data?.count === 'number'
-              ? data.count > 0
-              : typeof data?.data?.count === 'number'
-              ? data.data.count > 0
-              : false;
+            typeof data?.data?.hasOrders === 'boolean'
+              ? data.data.hasOrders
+              : typeof data?.hasOrders === 'boolean'
+                ? data.hasOrders
+                : typeof data?.data?.orderLineCount === 'number'
+                  ? data.data.orderLineCount > 0
+                  : typeof data?.orderLineCount === 'number'
+                    ? data.orderLineCount > 0
+                    : false;
 
           return [id, !!has] as const;
         })
       );
 
       const entries: Array<readonly [string, boolean]> = [];
-      for (const r of settled) {
-        if (r.status === 'fulfilled') entries.push(r.value);
-      }
+      for (const r of settled) if (r.status === 'fulfilled') entries.push(r.value);
+
       const map = Object.fromEntries(entries);
       for (const id of fetchIds) if (!(id in map)) map[id] = false;
       return map;
@@ -263,7 +383,7 @@ export function ModerationGrid({
 
   const hasOrder = (productId: any) => !!hasOrdersQ.data?.[normalizeId(productId)];
 
-  // ------ Actions ------
+  // ------ Reject ------
   const rejectM = useMutation({
     mutationFn: async (id: string) => {
       const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
@@ -277,9 +397,124 @@ export function ModerationGrid({
     },
   });
 
+  /* ===================== Fix Brand/Category modal ===================== */
+  const brandsQ = useAdminBrands(token);
+  const categoriesQ = useAdminCategories(token);
+
+  const [fixOpen, setFixOpen] = React.useState(false);
+  const [fixProduct, setFixProduct] = React.useState<AdminProduct | null>(null);
+
+  const [selectedBrandId, setSelectedBrandId] = React.useState<string>('');
+  const [selectedCategoryId, setSelectedCategoryId] = React.useState<string>('');
+
+  const [newBrandName, setNewBrandName] = React.useState('');
+  const [newBrandSlug, setNewBrandSlug] = React.useState('');
+  const [newCategoryName, setNewCategoryName] = React.useState('');
+  const [newCategorySlug, setNewCategorySlug] = React.useState('');
+  const [newCategoryParentId, setNewCategoryParentId] = React.useState<string>('');
+
+  const openFix = (p: AdminProduct) => {
+    setFixProduct(p);
+    setSelectedBrandId(p.brandId ?? '');
+    setSelectedCategoryId(p.categoryId ?? '');
+    setNewBrandName('');
+    setNewBrandSlug('');
+    setNewCategoryName('');
+    setNewCategorySlug('');
+    setNewCategoryParentId('');
+    setFixOpen(true);
+  };
+
+  const closeFix = () => {
+    setFixOpen(false);
+    setFixProduct(null);
+  };
+
+  const createBrandM = useMutation({
+    mutationFn: async () => {
+      const name = newBrandName.trim();
+      if (!name) throw new Error('Brand name is required');
+      const slug = (newBrandSlug.trim() || slugifyLocal(name)).trim();
+      const { data } = await api.post(
+        '/api/admin/brands',
+        { name, slug, isActive: true },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return data?.brand ?? data?.data ?? data;
+    },
+    onSuccess: async (created: any) => {
+      await qc.invalidateQueries({ queryKey: ['admin', 'brands'] });
+      const id = String(created?.id || '');
+      if (id) setSelectedBrandId(id);
+      setNewBrandName('');
+      setNewBrandSlug('');
+    },
+    onError: (e: any) => {
+      const msg = e?.response?.data?.error || e?.message || 'Failed to create brand';
+      window.alert(msg);
+    },
+  });
+
+  const createCategoryM = useMutation({
+    mutationFn: async () => {
+      const name = newCategoryName.trim();
+      if (!name) throw new Error('Category name is required');
+      const slug = (newCategorySlug.trim() || slugifyLocal(name)).trim();
+      const parentId = newCategoryParentId || null;
+
+      const { data } = await api.post(
+        '/api/admin/categories',
+        { name, slug, parentId, position: 0, isActive: true },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return data?.category ?? data?.data ?? data;
+    },
+    onSuccess: async (created: any) => {
+      await qc.invalidateQueries({ queryKey: ['admin', 'categories'] });
+      const id = String(created?.id || '');
+      if (id) setSelectedCategoryId(id);
+      setNewCategoryName('');
+      setNewCategorySlug('');
+      setNewCategoryParentId('');
+    },
+    onError: (e: any) => {
+      const msg = e?.response?.data?.error || e?.message || 'Failed to create category';
+      window.alert(msg);
+    },
+  });
+
+  const saveAndApproveM = useMutation({
+    mutationFn: async () => {
+      if (!fixProduct) throw new Error('No product selected');
+
+      const meta = {
+        brandId: selectedBrandId || null,
+        categoryId: selectedCategoryId || null,
+      };
+
+      await patchProductCatalogMeta(token, fixProduct.id, meta);
+      return true;
+    },
+    onSuccess: () => {
+      if (fixProduct) onApprove(fixProduct.id);
+
+      qc.invalidateQueries({ queryKey: ['admin', 'products'] });
+      productsQ.refetch();
+      closeFix();
+    },
+    onError: (e: any) => {
+      const msg =
+        e?.response?.data?.error ||
+        e?.message ||
+        'Failed to save brand/category. Use Inspect to set it manually.';
+      window.alert(msg);
+    },
+  });
+
   /* ===================== UI ===================== */
   return (
     <>
+      {/* Search */}
       <div className="relative mb-3">
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
         <input
@@ -290,25 +525,29 @@ export function ModerationGrid({
         />
       </div>
 
+      {/* Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {gridRows.map((p) => {
           const published = isPublished(p);
-          const offersPresent = hasSupplierOffer(p);
+          const offersPresent = hasEligibleSupplierOffer(p);
           const ordersPresent = hasOrder(p.id);
           const checkingOrders = hasOrdersQ.isLoading;
 
-          // Disable if: NOT published OR no supplier offer OR has orders (also disable while checking)
-          const disableApprove = !published || !offersPresent || checkingOrders || ordersPresent;
+          // ✅ Approve only when ALL are satisfied
+          const disableApprove = !published || !offersPresent || checkingOrders;
 
           const approveTitle = checkingOrders
             ? 'Checking orders…'
             : !published
-            ? 'Only PUBLISHED items can be approved'
-            : !offersPresent
-            ? 'Needs at least one active supplier offer with available quantity'
-            : ordersPresent
-            ? 'Cannot approve: product already has orders'
-            : 'Approve product';
+              ? 'Only PUBLISHED items can be approved'
+              : !offersPresent
+                ? 'Needs at least one active supplier offer with quantity and price'
+                : ordersPresent
+                  ? 'Cannot approve: product already has orders'
+                  : 'Approve product';
+
+          const brandMissing = !p.brandId;
+          const categoryMissing = !p.categoryId;
 
           return (
             <div key={p.id} className="rounded-2xl border bg-white overflow-hidden shadow-sm">
@@ -345,8 +584,8 @@ export function ModerationGrid({
 
               {/* Actions */}
               <div className="px-3 pb-3">
-                <div className="mt-1 flex items-center justify-between">
-                  <div className="inline-flex gap-2">
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <div className="inline-flex gap-2 flex-wrap">
                     <button
                       onClick={() => {
                         if (disableApprove) {
@@ -374,6 +613,18 @@ export function ModerationGrid({
                     >
                       <Search size={16} /> Inspect
                     </button>
+
+                    {/* Fix brand/category shortcut (does NOT touch attributes) */}
+                    <button
+                      onClick={() => openFix(p)}
+                      className={[
+                        'inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border',
+                        brandMissing || categoryMissing ? 'bg-amber-50 hover:bg-amber-100' : 'bg-white hover:bg-black/5',
+                      ].join(' ')}
+                      title="Quickly set Brand/Category (and optionally create them) then approve"
+                    >
+                      <Wrench size={16} /> Fix
+                    </button>
                   </div>
 
                   <button
@@ -383,8 +634,8 @@ export function ModerationGrid({
                       checkingOrders
                         ? 'Checking orders…'
                         : ordersPresent
-                        ? 'Cannot reject: product already has orders'
-                        : 'Reject product'
+                          ? 'Cannot reject: product already has orders'
+                          : 'Reject product'
                     }
                     disabled={checkingOrders || ordersPresent}
                   >
@@ -423,6 +674,26 @@ export function ModerationGrid({
                   >
                     Orders: {hasOrdersQ.isLoading ? '…' : ordersPresent ? 'present' : 'none'}
                   </span>
+
+                  <span
+                    className={
+                      p.brandId
+                        ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700'
+                        : 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700'
+                    }
+                  >
+                    Brand: {p.brandId ? 'set' : 'missing'}
+                  </span>
+
+                  <span
+                    className={
+                      p.categoryId
+                        ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700'
+                        : 'inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700'
+                    }
+                  >
+                    Category: {p.categoryId ? 'set' : 'missing'}
+                  </span>
                 </div>
               </div>
 
@@ -440,11 +711,166 @@ export function ModerationGrid({
         })}
 
         {!productsQ.isLoading && gridRows.length === 0 && (
-          <div className="col-span-full text-center text-zinc-500 py-8">
-            Nothing to review right now.
-          </div>
+          <div className="col-span-full text-center text-zinc-500 py-8">Nothing to review right now.</div>
         )}
       </div>
+
+      {/* ===================== Modal ===================== */}
+      {fixOpen && fixProduct && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/40" onClick={closeFix} />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="w-full max-w-2xl rounded-2xl border bg-white shadow-xl overflow-hidden">
+              <div className="px-5 py-4 border-b flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-zinc-900">Fix Brand / Category</div>
+                  <div className="text-xs text-zinc-500 truncate">
+                    {fixProduct.title || 'Untitled'} {fixProduct.sku ? `• ${fixProduct.sku}` : ''}
+                  </div>
+                </div>
+                <button className="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5" onClick={closeFix}>
+                  Close
+                </button>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {/* Brand picker */}
+                  <div className="rounded-xl border p-3">
+                    <div className="text-xs font-semibold text-zinc-700 mb-1">Brand</div>
+                    <select
+                      className="w-full rounded-lg border px-3 py-2 text-sm bg-white"
+                      value={selectedBrandId}
+                      onChange={(e) => setSelectedBrandId(e.target.value)}
+                    >
+                      <option value="">{brandsQ.isLoading ? 'Loading…' : '— Select brand —'}</option>
+                      {(brandsQ.data ?? [])
+                        .filter((b) => b.isActive !== false)
+                        .map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name}
+                          </option>
+                        ))}
+                    </select>
+
+                    <div className="mt-3 border-t pt-3">
+                      <div className="text-[11px] text-zinc-500 mb-2">Create brand (Super Admin)</div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        <input
+                          className="rounded-lg border px-3 py-2 text-sm"
+                          placeholder="Brand name"
+                          value={newBrandName}
+                          onChange={(e) => {
+                            setNewBrandName(e.target.value);
+                            if (!newBrandSlug.trim()) setNewBrandSlug(slugifyLocal(e.target.value));
+                          }}
+                        />
+                        <input
+                          className="rounded-lg border px-3 py-2 text-sm"
+                          placeholder="Slug (optional)"
+                          value={newBrandSlug}
+                          onChange={(e) => setNewBrandSlug(e.target.value)}
+                        />
+                      </div>
+                      <button
+                        className="mt-2 inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm hover:bg-black/5 disabled:opacity-60"
+                        disabled={createBrandM.isPending}
+                        onClick={() => createBrandM.mutate()}
+                      >
+                        <Plus size={16} /> {createBrandM.isPending ? 'Creating…' : 'Create brand'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Category picker */}
+                  <div className="rounded-xl border p-3">
+                    <div className="text-xs font-semibold text-zinc-700 mb-1">Category</div>
+                    <select
+                      className="w-full rounded-lg border px-3 py-2 text-sm bg-white"
+                      value={selectedCategoryId}
+                      onChange={(e) => setSelectedCategoryId(e.target.value)}
+                    >
+                      <option value="">{categoriesQ.isLoading ? 'Loading…' : '— Select category —'}</option>
+                      {(categoriesQ.data ?? [])
+                        .filter((c) => c.isActive !== false)
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                    </select>
+
+                    <div className="mt-3 border-t pt-3">
+                      <div className="text-[11px] text-zinc-500 mb-2">Create category (Super Admin)</div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        <input
+                          className="rounded-lg border px-3 py-2 text-sm"
+                          placeholder="Category name"
+                          value={newCategoryName}
+                          onChange={(e) => {
+                            setNewCategoryName(e.target.value);
+                            if (!newCategorySlug.trim()) setNewCategorySlug(slugifyLocal(e.target.value));
+                          }}
+                        />
+                        <input
+                          className="rounded-lg border px-3 py-2 text-sm"
+                          placeholder="Slug (optional)"
+                          value={newCategorySlug}
+                          onChange={(e) => setNewCategorySlug(e.target.value)}
+                        />
+                        <select
+                          className="rounded-lg border px-3 py-2 text-sm bg-white md:col-span-2"
+                          value={newCategoryParentId}
+                          onChange={(e) => setNewCategoryParentId(e.target.value)}
+                        >
+                          <option value="">No parent</option>
+                          {(categoriesQ.data ?? []).map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <button
+                        className="mt-2 inline-flex items-center gap-2 rounded-lg border bg-white px-3 py-2 text-sm hover:bg-black/5 disabled:opacity-60"
+                        disabled={createCategoryM.isPending}
+                        onClick={() => createCategoryM.mutate()}
+                      >
+                        <Plus size={16} /> {createCategoryM.isPending ? 'Creating…' : 'Create category'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border bg-zinc-50 p-3 text-xs text-zinc-600">
+                  <b>Note:</b> This shortcut only fixes <b>Brand</b> and <b>Category</b>. Attributes are managed in your
+                  Catalog Settings page to avoid duplicate schema changes.
+                </div>
+              </div>
+
+              <div className="px-5 py-4 border-t flex items-center justify-end gap-2">
+                <button
+                  className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5"
+                  onClick={() =>
+                    onInspect({ id: fixProduct.id, title: fixProduct.title, sku: fixProduct.sku ?? (null as any) })
+                  }
+                >
+                  Inspect instead
+                </button>
+
+                <button
+                  className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 disabled:opacity-60"
+                  disabled={saveAndApproveM.isPending}
+                  onClick={() => saveAndApproveM.mutate()}
+                  title="Save Brand/Category to product (if possible) then approve"
+                >
+                  {saveAndApproveM.isPending ? 'Saving…' : 'Save & approve'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -1,3 +1,4 @@
+// src/pages/Cart.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -14,6 +15,7 @@ type SelectedOption = {
 };
 
 type CartItem = {
+  kind?: "BASE" | "VARIANT"; // ✅ NEW
   productId: string;
   variantId?: string | null;
   title: string;
@@ -31,9 +33,9 @@ type Availability = {
 
 type ProductPools = {
   hasVariantSpecific: boolean;
-  genericTotal: number; // stock where offer.variantId === null
-  productTotal: number; // if variant-specific exists: sum of per-variant totals; else == genericTotal
-  perVariantTotals: Record<string, number>; // vid -> qty (only when variant-specific exists)
+  genericTotal: number; // base-product pool (supplierProductOffers)
+  productTotal: number; // genericTotal + sum(perVariantTotals) when both exist
+  perVariantTotals: Record<string, number>; // vid -> qty
 };
 
 type AvailabilityPayload = {
@@ -53,6 +55,7 @@ const asInt = (v: any, d = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : d;
 };
+
 const asMoney = (v: any, d = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
@@ -65,9 +68,78 @@ function toArray<T = any>(x: any): T[] {
   return Array.isArray(x) ? x : [x];
 }
 
+function normalizeSelectedOptions(raw: any): SelectedOption[] {
+  const arr = toArray<SelectedOption>(raw)
+    .map((o: any) => ({
+      attributeId: String(o.attributeId ?? ''),
+      attribute: String(o.attribute ?? ''),
+      valueId: o.valueId ? String(o.valueId) : undefined,
+      value: String(o.value ?? ''),
+    }))
+    .filter((o) => o.attributeId || o.attribute || o.valueId || o.value);
+
+  // stable order so the same combo always hashes the same
+  arr.sort((a, b) => {
+    const aKey = `${a.attributeId}:${a.valueId ?? a.value}`;
+    const bKey = `${b.attributeId}:${b.valueId ?? b.value}`;
+    return aKey.localeCompare(bKey);
+  });
+
+  return arr;
+}
+
+// Used to separate cart lines when variantId is null but options exist (or you want stronger separation)
+function optionsKey(sel?: SelectedOption[]) {
+  const s = (sel ?? []).filter(Boolean);
+  if (!s.length) return '';
+  return s
+    .map((o) => `${o.attributeId}=${o.valueId ?? o.value}`)
+    .join('|');
+}
+
+/**
+ * ✅ New: separate cart lines by "kind"
+ * - base product: productId::base
+ * - variant by id: productId::v:<variantId>
+ * - options-only (rare): productId::o:<optionsKey>
+ */
+function lineKeyFor(item: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) {
+  const pid = String(item.productId);
+  const vid = item.variantId == null ? null : String(item.variantId);
+  const sel = normalizeSelectedOptions(item.selectedOptions);
+
+  // ✅ force separation by kind
+  const kind: "BASE" | "VARIANT" =
+    item.kind === "BASE" || item.kind === "VARIANT"
+      ? item.kind
+      : (item.variantId ? "VARIANT" : "BASE");
+
+
+  if (kind === "VARIANT") {
+    if (vid) return `${pid}::v:${vid}`;
+    // fallback (rare)
+    return sel.length ? `${pid}::o:${optionsKey(sel)}` : `${pid}::v:unknown`;
+  }
+
+  // BASE
+  return `${pid}::base`;
+}
+
+
+// Availability key stays per (productId, variantId) because backend returns that shape
+const availKeyFor = (productId: string, variantId?: string | null) =>
+  `${productId}::${variantId ?? 'null'}`;
+
 function normalizeCartShape(parsed: any[]): CartItem[] {
   return parsed.map((it: any) => {
     const qtyNum = Math.max(1, Number(it.qty) || 1);
+
+    const variantId = it.variantId == null ? null : String(it.variantId);
+    const selectedOptions = normalizeSelectedOptions(it.selectedOptions);
+
+    // ✅ FIX: only trust it.kind if it's explicitly valid, otherwise infer from variantId/options
+ const rawKind = it.kind === "BASE" || it.kind === "VARIANT" ? it.kind : undefined;
+const kind = rawKind ?? (it.variantId ? "VARIANT" : "BASE");
 
     const hasTotal = Number.isFinite(Number(it.totalPrice));
     const hasPrice = Number.isFinite(Number(it.price));
@@ -82,28 +154,20 @@ function normalizeCartShape(parsed: any[]): CartItem[] {
 
     const totalPrice = hasTotal ? Number(it.totalPrice) : unitPrice * qtyNum;
 
-    const rawSel = toArray<SelectedOption>(it.selectedOptions);
-    const selectedOptions: SelectedOption[] = rawSel
-      .map((o: any) => ({
-        attributeId: String(o.attributeId ?? ''),
-        attribute: String(o.attribute ?? ''),
-        valueId: o.valueId ? String(o.valueId) : undefined,
-        value: String(o.value ?? ''),
-      }))
-      .filter((o) => o.attribute || o.value);
-
     return {
+      kind,
       productId: String(it.productId),
-      variantId: it.variantId == null ? null : String(it.variantId),
-      title: String(it.title ?? ''),
+      variantId,
+      title: String(it.title ?? ""),
       qty: qtyNum,
       unitPrice: Number.isFinite(unitPrice) ? unitPrice : 0,
       totalPrice: Number.isFinite(totalPrice) ? totalPrice : 0,
       selectedOptions,
-      image: typeof it.image === 'string' ? it.image : undefined,
+      image: typeof it.image === "string" ? it.image : undefined,
     } as CartItem;
   });
 }
+
 
 function loadCart(): CartItem[] {
   try {
@@ -121,26 +185,37 @@ function saveCart(items: CartItem[]) {
   localStorage.setItem('cart', JSON.stringify(items));
 }
 
-const keyFor = (productId: string, variantId?: string | null) => `${productId}::${variantId ?? 'null'}`;
+const sameLine = (a: CartItem, b: Pick<CartItem, 'productId' | 'variantId' | 'selectedOptions'>) =>
+  lineKeyFor(a) === lineKeyFor(b);
 
-const sameLine = (a: CartItem, productId: string, variantId?: string | null) =>
-  a.productId === productId && (a.variantId ?? null) === (variantId ?? null);
+const isBaseLine = (it: CartItem) => {
+  if (it.variantId) return false;             // ✅ variantId always means variant selection
+  if (it.kind === "VARIANT") return false;
+  return true;
+};
+
 
 /* ---------------- Availability (batched) ---------------- */
 
 /**
- * Availability uses sum of supplierOffers.availableQty across suppliers.
- * Rules:
- *  - If ANY variant-specific offers exist for a product, each variant has its own pool (no borrowing from generic).
- *  - If ONLY generic offers exist, product has a shared pool; cart lines share this.
+ * Availability uses sum of:
+ *  - SupplierProductOffer.availableQty (generic/base pool)
+ *  - SupplierVariantOffer.availableQty (variant pool)
+ *
+ * Rules you want (buy base + variants separately):
+ *  - If variant-specific exists, variants use their pool AND base uses genericTotal (if backend returns it).
+ *  - If only generic exists, all lines share genericTotal.
  */
 async function fetchAvailabilityForCart(items: CartItem[]): Promise<AvailabilityPayload> {
   if (!items.length) return { lines: {}, products: {} };
+
+  // For availability request, we only need unique (productId, variantId) pairs
   const pairs = items.map((i) => ({ productId: i.productId, variantId: i.variantId ?? null }));
   const uniqPairs: { productId: string; variantId: string | null }[] = [];
   const seen = new Set<string>();
+
   for (const p of pairs) {
-    const k = keyFor(p.productId, p.variantId);
+    const k = availKeyFor(p.productId, p.variantId);
     if (!seen.has(k)) {
       seen.add(k);
       uniqPairs.push(p);
@@ -149,10 +224,14 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Availability
 
   const itemsParam = uniqPairs.map((p) => `${p.productId}:${p.variantId ?? ''}`).join(',');
 
+  // NOTE:
+  // If you kept the earlier availability.ts that returns 0 for base when variants exist,
+  // add support on the backend for includeBase=1 and remove that "0" rule.
+  // We already send includeBase=1 here.
   const attempts = [
-    `/api/catalog/availability?items=${encodeURIComponent(itemsParam)}`,
-    `/api/products/availability?items=${encodeURIComponent(itemsParam)}`,
-    `/api/supplier-offers/availability?items=${encodeURIComponent(itemsParam)}`,
+    `/api/catalog/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
+    `/api/products/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
+    `/api/supplier-offers/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
   ];
 
   for (const url of attempts) {
@@ -167,13 +246,15 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Availability
           totalAvailable?: number;
           cheapestSupplierUnit?: number | null;
         };
-        const byProduct: Record<string, { generic: number; perVariant: Record<string, number> }> = {};
+
+        const byProduct: Record<string, { generic: number; perVariant: Record<string, number> }> =
+          {};
 
         for (const r of arr as Row[]) {
           const pid = String(r.productId);
           const vid = r.variantId == null ? null : String(r.variantId);
           const avail = Math.max(0, Number(r.totalAvailable) || 0);
-          const k = keyFor(pid, vid);
+          const k = availKeyFor(pid, vid);
 
           lines[k] = {
             totalAvailable: avail,
@@ -183,6 +264,7 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Availability
           };
 
           if (!byProduct[pid]) byProduct[pid] = { generic: 0, perVariant: {} };
+
           if (vid == null) {
             byProduct[pid].generic += avail;
           } else {
@@ -193,9 +275,8 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Availability
         const products: Record<string, ProductPools> = {};
         for (const [pid, agg] of Object.entries(byProduct)) {
           const hasVariantSpecific = Object.keys(agg.perVariant).length > 0;
-          const productTotal = hasVariantSpecific
-            ? Object.values(agg.perVariant).reduce((s, n) => s + n, 0)
-            : agg.generic;
+          const variantSum = Object.values(agg.perVariant).reduce((s, n) => s + n, 0);
+          const productTotal = agg.generic + variantSum; // ✅ base + variants can co-exist
 
           products[pid] = {
             hasVariantSpecific,
@@ -212,90 +293,8 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Availability
     }
   }
 
-  // Fallback: build from supplier-offers per product
-  const lines: Record<string, Availability> = {};
-  const products: Record<string, ProductPools> = {};
-  const productCache: Record<string, any[] | null> = {};
-
-  async function getOffersForProduct(productId: string): Promise<any[] | null> {
-    if (productId in productCache) return productCache[productId];
-    const perAttempts = [
-      `/api/products/${productId}/supplier-offers`,
-      `/api/admin/products/${productId}/supplier-offers`,
-      `/api/admin/products/${productId}/offers`,
-    ];
-    for (const url of perAttempts) {
-      try {
-        const { data } = await api.get(url);
-        const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-        if (Array.isArray(arr)) {
-          productCache[productId] = arr;
-          return arr;
-        }
-      } catch {
-        /* next */
-      }
-    }
-    productCache[productId] = null;
-    return null;
-  }
-
-  const uniqProducts = Array.from(new Set(uniqPairs.map((p) => p.productId)));
-
-  for (const productId of uniqProducts) {
-    const offers = await getOffersForProduct(productId);
-    if (!offers) continue;
-
-    const perVariantTotals: Record<string, number> = {};
-    let genericTotal = 0;
-
-    for (const o of offers) {
-      const vid = o?.variantId ?? null;
-      const qty = Math.max(0, asInt(o?.availableQty ?? o?.available ?? o?.qty ?? 0, 0));
-      if (vid == null) {
-        genericTotal += qty;
-      } else {
-        const k = String(vid);
-        perVariantTotals[k] = (perVariantTotals[k] || 0) + qty;
-      }
-    }
-
-    const hasVariantSpecific = Object.keys(perVariantTotals).length > 0;
-    const productTotal = hasVariantSpecific
-      ? Object.values(perVariantTotals).reduce((s, n) => s + n, 0)
-      : genericTotal;
-
-    products[productId] = {
-      hasVariantSpecific,
-      genericTotal,
-      productTotal,
-      perVariantTotals,
-    };
-  }
-
-  for (const pair of uniqPairs) {
-    const pools = products[pair.productId];
-    if (!pools) continue;
-
-    let totalAvailable = 0;
-
-    if (pools.hasVariantSpecific) {
-      if (pair.variantId != null) {
-        totalAvailable = Math.max(0, pools.perVariantTotals[String(pair.variantId)] || 0);
-      } else {
-        totalAvailable = 0;
-      }
-    } else {
-      totalAvailable = Math.max(0, pools.genericTotal);
-    }
-
-    lines[keyFor(pair.productId, pair.variantId)] = {
-      totalAvailable,
-      cheapestSupplierUnit: null,
-    };
-  }
-
-  return { lines, products };
+  // Fallback: unknown (keep cart, no pruning)
+  return { lines: {}, products: {} };
 }
 
 /* ---------------- Price hydration (fix 0-price lines) ---------------- */
@@ -308,6 +307,7 @@ async function hydrateLinePrice(line: CartItem): Promise<CartItem> {
     const { data } = await api.get(`/api/products/${line.productId}`, {
       params: { include: 'variants,offers,supplierOffers' },
     });
+
     const p = data?.data ?? data ?? {};
 
     let unit = 0;
@@ -323,7 +323,7 @@ async function hydrateLinePrice(line: CartItem): Promise<CartItem> {
       }
     }
 
-    // 2) If still 0, fall back to cheapest active supplier offer (sum of all suppliers)
+    // 2) If still 0, fall back to cheapest active supplier offer
     if (!(unit > 0)) {
       const offersSrc = [
         ...(Array.isArray(p.supplierOffers) ? p.supplierOffers : []),
@@ -399,42 +399,58 @@ export default function Cart() {
   }, [cart]);
 
   const availabilityQ = useQuery({
-    queryKey: ['catalog', 'availability:v2', cart.map((i) => keyFor(i.productId, i.variantId ?? null)).sort().join(',')],
+    queryKey: [
+      'catalog',
+      'availability:v3',
+      cart
+        .map((i) => availKeyFor(i.productId, i.variantId ?? null))
+        .sort()
+        .join(','),
+    ],
     enabled: cart.length > 0,
     refetchOnWindowFocus: false,
     staleTime: 15_000,
     queryFn: () => fetchAvailabilityForCart(cart),
   });
 
-  const sumOtherLinesQty = (productId: string, exceptVariantId: string | null | undefined) => {
+  // Shared generic pool math: sum other lines of same product that ALSO use generic pool
+  const sumOtherLinesQty = (
+    productId: string,
+    except: Pick<CartItem, 'productId' | 'variantId' | 'selectedOptions'>
+  ) => {
     return cart.reduce((s, it) => {
       if (it.productId !== productId) return s;
-      if ((it.variantId ?? null) === (exceptVariantId ?? null)) return s;
+      if (sameLine(it, except)) return s;
       return s + Math.max(0, Number(it.qty) || 0);
     }, 0);
   };
 
-  // Prune only when we are SURE totalAvailable === 0 (sum across suppliers)
+  // Prune only when we are SURE totalAvailable === 0
   useEffect(() => {
     const data = availabilityQ.data as AvailabilityPayload | undefined;
     if (!data || cart.length === 0) return;
 
     const next = cart.filter((it) => {
-      const line = data.lines[keyFor(it.productId, it.variantId ?? null)];
+      const line = data.lines[availKeyFor(it.productId, it.variantId ?? null)];
       if (!line) return true; // unknown → keep
+
+      // ✅ Do NOT auto-remove items while availability is loading/unknown
+      if (availabilityQ.isLoading) return true;
+
       return !(typeof line.totalAvailable === 'number' && line.totalAvailable === 0);
     });
 
     if (next.length !== cart.length) setCart(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availabilityQ.data]);
+  }, [availabilityQ.data, availabilityQ.isLoading]);
 
   const visibleCart = useMemo(() => {
     const data = availabilityQ.data as AvailabilityPayload | undefined;
     if (!data) return cart;
+
     return cart.filter((it) => {
-      const line = data.lines[keyFor(it.productId, it.variantId ?? null)];
-      return !(line && line.totalAvailable === 0);
+      const line = data.lines[availKeyFor(it.productId, it.variantId ?? null)];
+      return !(line && typeof line.totalAvailable === 'number' && line.totalAvailable === 0);
     });
   }, [cart, availabilityQ.data]);
 
@@ -448,65 +464,59 @@ export default function Cart() {
     if (!data) return undefined;
 
     const pools = data.products[item.productId];
-    const line = data.lines[keyFor(item.productId, item.variantId ?? null)];
+    const line = data.lines[availKeyFor(item.productId, item.variantId ?? null)];
 
-    if (!pools && line && typeof line.totalAvailable === 'number') {
+    if (!line || typeof line.totalAvailable !== 'number') return undefined;
+
+    // ✅ If product has variant-specific, each line uses its own availability
+    if (pools?.hasVariantSpecific) {
       return Math.max(0, line.totalAvailable);
     }
 
-    if (!pools || !line) return undefined;
-
-    if (pools.hasVariantSpecific) {
-      return Math.max(0, line.totalAvailable);
-    }
-
-    // ✅ Shared generic pool: cap is fixed = pool - otherLinesQty
-    const pool = Math.max(0, pools.genericTotal);
-    const otherQty = sumOtherLinesQty(item.productId, item.variantId ?? null);
-    const remaining = Math.max(0, pool - otherQty);
-    return remaining;
+    // ✅ Generic-only pool: shared pool, cap = pool - other lines qty
+    const pool = Math.max(0, pools?.genericTotal ?? line.totalAvailable);
+    const otherQty = sumOtherLinesQty(item.productId, item);
+    return Math.max(0, pool - otherQty);
   };
 
-  const clampToMax = (productId: string, variantId: string | null | undefined, wantQty: number) => {
-    const current = cart.find((c) => sameLine(c, productId, variantId));
+  const clampToMax = (item: CartItem, wantQty: number) => {
     const data = availabilityQ.data as AvailabilityPayload | undefined;
-
     const desired = Math.max(1, Math.floor(Number(wantQty) || 1));
 
-    if (!data || !current) return desired;
+    if (!data) return desired;
 
-    const pools = data.products[productId];
-    const line = data.lines[keyFor(productId, variantId ?? null)];
+    const pools = data.products[item.productId];
+    const line = data.lines[availKeyFor(item.productId, item.variantId ?? null)];
 
-    if ((!pools || !line) && line && typeof line.totalAvailable === 'number') {
-      const hardCap = Math.max(1, line.totalAvailable);
-      return Math.min(desired, hardCap);
-    }
+    // if we can't read availability safely, don't clamp
+    if (!line || typeof line.totalAvailable !== 'number') return desired;
 
-    if (!pools || !line) return desired;
-
-    if (pools.hasVariantSpecific) {
+    // variant-specific: cap per line
+    if (pools?.hasVariantSpecific) {
       const cap = Math.max(1, line.totalAvailable);
       return Math.min(desired, cap);
     }
 
-    // ✅ Shared generic pool: fixed cap based on other lines, not this line's current qty
-    const pool = Math.max(0, pools.genericTotal);
-    const otherQty = sumOtherLinesQty(productId, variantId ?? null);
+    // generic-only: fixed cap based on pool - other lines
+    const pool = Math.max(0, pools?.genericTotal ?? line.totalAvailable);
+    const otherQty = sumOtherLinesQty(item.productId, item);
     const capForThisLine = Math.max(0, pool - otherQty);
     const cap = Math.max(1, capForThisLine);
     return Math.min(desired, cap);
   };
 
-  const updateQty = (productId: string, variantId: string | null | undefined, newQtyRaw: number) => {
-    const clamped = clampToMax(productId, variantId, newQtyRaw);
+  const updateQty = (target: CartItem, newQtyRaw: number) => {
     setCart((prev) =>
       prev.map((it) => {
-        if (!sameLine(it, productId, variantId)) return it;
+        if (!sameLine(it, target)) return it;
+
+        const clamped = clampToMax(it, newQtyRaw);
+
         const unit =
           Number.isFinite(Number(it.unitPrice)) && it.unitPrice > 0
             ? Number(it.unitPrice)
             : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
+
         return {
           ...it,
           qty: clamped,
@@ -517,20 +527,11 @@ export default function Cart() {
     );
   };
 
-  const inc = (productId: string, variantId?: string | null) => {
-    const item = cart.find((c) => sameLine(c, productId, variantId));
-    if (!item) return;
-    updateQty(productId, variantId ?? null, item.qty + 1);
-  };
+  const inc = (target: CartItem) => updateQty(target, (target.qty || 1) + 1);
+  const dec = (target: CartItem) => updateQty(target, Math.max(1, (target.qty || 1) - 1));
 
-  const dec = (productId: string, variantId?: string | null) => {
-    const item = cart.find((c) => sameLine(c, productId, variantId));
-    if (!item) return;
-    updateQty(productId, variantId ?? null, Math.max(1, item.qty - 1));
-  };
-
-  const remove = (productId: string, variantId?: string | null) => {
-    setCart((prev) => prev.filter((it) => !sameLine(it, productId, variantId)));
+  const remove = (target: CartItem) => {
+    setCart((prev) => prev.filter((it) => !sameLine(it, target)));
   };
 
   const cartBlockingReason = useMemo(() => {
@@ -539,11 +540,13 @@ export default function Cart() {
 
     for (const productId of new Set(visibleCart.map((i) => i.productId))) {
       const pools = data.products[productId];
+
+      // If we don't have pools, only check per-line caps
       if (!pools) {
         const outOfCap = visibleCart
           .filter((i) => i.productId === productId)
           .some((i) => {
-            const ln = data.lines[keyFor(i.productId, i.variantId ?? null)];
+            const ln = data.lines[availKeyFor(i.productId, i.variantId ?? null)];
             return ln && typeof ln.totalAvailable === 'number' && i.qty > ln.totalAvailable;
           });
         if (outOfCap) return 'Reduce quantities: some items exceed available stock.';
@@ -551,11 +554,17 @@ export default function Cart() {
       }
 
       if (pools.hasVariantSpecific) {
+        // per line cap
         for (const it of visibleCart.filter((i) => i.productId === productId)) {
-          const cap = Math.max(0, pools.perVariantTotals[String(it.variantId ?? '')] || 0);
+          const ln = data.lines[availKeyFor(it.productId, it.variantId ?? null)];
+          const cap =
+            ln && typeof ln.totalAvailable === 'number'
+              ? Math.max(0, ln.totalAvailable)
+              : 0;
           if (it.qty > cap) return 'Reduce quantities: some items exceed available stock.';
         }
       } else {
+        // shared pool across all lines of the product
         const sumQty = visibleCart
           .filter((i) => i.productId === productId)
           .reduce((s, i) => s + Math.max(0, Number(i.qty) || 0), 0);
@@ -582,7 +591,9 @@ export default function Cart() {
               <span className="inline-block size-1.5 rounded-full bg-white/90" />
               Your cart is empty
             </div>
-            <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-ink">Let’s find something you’ll love</h1>
+            <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-ink">
+              Let’s find something you’ll love
+            </h1>
             <p className="mt-1 text-ink-soft">
               Browse our catalogue and add items to your cart. They’ll show up here for checkout.
             </p>
@@ -611,7 +622,9 @@ export default function Cart() {
             Review & edit
           </span>
           <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-ink">Your cart</h1>
-          <p className="text-sm text-ink-soft">Update quantities, remove items, and proceed when you’re ready.</p>
+          <p className="text-sm text-ink-soft">
+            Base items and variant selections are separated — you can buy each independently.
+          </p>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-6">
@@ -628,42 +641,37 @@ export default function Cart() {
 
               const data = availabilityQ.data as AvailabilityPayload | undefined;
               const pools = data?.products[it.productId];
-              const line = data?.lines[keyFor(it.productId, it.variantId ?? null)];
+              const line = data?.lines[availKeyFor(it.productId, it.variantId ?? null)];
 
-              let helperText = '';
-              if (availabilityQ.isLoading) {
-                helperText = 'Checking availability…';
-              } else if (line && typeof line.totalAvailable === 'number' && (!pools || pools.hasVariantSpecific)) {
-                const cap = Math.max(0, line.totalAvailable);
-                helperText =
-                  cap > 0
+              const cap = computedCapForLine(it);
+              const capText =
+                typeof cap === 'number'
+                  ? cap > 0
                     ? it.qty > cap
                       ? `Only ${cap} available. Please reduce.`
                       : `Max you can buy now: ${cap}`
-                    : 'Out of stock';
-              } else if (pools && !pools.hasVariantSpecific && line) {
-                // ✅ Shared generic pool helper: fixed max based on pool and other lines (not this qty)
-                const pool = Math.max(0, pools.genericTotal);
-                const otherQty = visibleCart
-                  .filter(
-                    (x) =>
-                      x.productId === it.productId &&
-                      (x.variantId ?? null) !== (it.variantId ?? null)
-                  )
-                  .reduce((s, x) => s + Math.max(0, Number(x.qty) || 0), 0);
-                const maxForThisLine = Math.max(0, pool - otherQty);
+                    : 'Out of stock'
+                  : '';
 
-                helperText =
-                  maxForThisLine > 0
-                    ? it.qty > maxForThisLine
-                      ? `Only ${maxForThisLine} available for this selection. Please reduce.`
-                      : `Max you can buy now (shared): ${maxForThisLine}`
-                    : 'Out of stock';
+              const kindLabel = isBaseLine(it)
+                ? 'Base product'
+                : it.variantId
+                  ? 'Variant selection'
+                  : it.selectedOptions?.length
+                    ? 'Configured selection'
+                    : 'Item';
+
+              // helper text
+              let helperText = '';
+              if (availabilityQ.isLoading) {
+                helperText = 'Checking availability…';
+              } else if (line && typeof line.totalAvailable === 'number') {
+                helperText = capText;
               }
 
               return (
                 <article
-                  key={keyFor(it.productId, it.variantId ?? null)}
+                  key={lineKeyFor(it)}
                   className="group rounded-2xl border border-white/60 bg-white/70 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)] p-4 md:p-5 transition hover:shadow-[0_12px_40px_rgba(0,0,0,0.08)]"
                 >
                   <div className="flex items-start gap-4">
@@ -674,7 +682,9 @@ export default function Cart() {
                           src={it.image}
                           alt={it.title}
                           className="w-full h-full object-cover"
-                          onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = 'none')}
+                          onError={(e) =>
+                            (((e.currentTarget as HTMLImageElement).style.display = 'none'), void 0)
+                          }
                         />
                       ) : (
                         <div className="w-full h-full grid place-items-center text-[11px] text-ink-soft">
@@ -687,9 +697,14 @@ export default function Cart() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0">
-                          <h3 className="font-semibold text-ink truncate" title={it.title}>
-                            {it.title}
-                          </h3>
+                          <div className="inline-flex items-center gap-2">
+                            <h3 className="font-semibold text-ink truncate" title={it.title}>
+                              {it.title}
+                            </h3>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">
+                              {kindLabel}
+                            </span>
+                          </div>
 
                           {!!it.selectedOptions?.length && (
                             <div className="mt-1 text-xs text-ink-soft">
@@ -702,12 +717,19 @@ export default function Cart() {
                             {unit > 0 ? ngn.format(unit) : 'Pending — will be resolved at checkout'}
                           </p>
 
-                          <p className="mt-1 text-[11px] text-ink-soft">{helperText}</p>
+                          {!!helperText && <p className="mt-1 text-[11px] text-ink-soft">{helperText}</p>}
+
+                          {/* Small extra hint when product has both pools */}
+                          {pools?.hasVariantSpecific && isBaseLine(it) && (
+                            <p className="mt-1 text-[11px] text-ink-soft">
+                              This is the <span className="font-medium">base</span> item pool. Variant selections use their own pools.
+                            </p>
+                          )}
                         </div>
 
                         <button
                           className="text-xs md:text-sm text-danger hover:underline rounded px-2 py-1 hover:bg-danger/5 transition"
-                          onClick={() => remove(it.productId, it.variantId ?? null)}
+                          onClick={() => remove(it)}
                           aria-label={`Remove ${it.title}`}
                           title="Remove item"
                         >
@@ -722,7 +744,7 @@ export default function Cart() {
                             <button
                               aria-label="Decrease quantity"
                               className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
-                              onClick={() => dec(it.productId, it.variantId ?? null)}
+                              onClick={() => dec(it)}
                             >
                               −
                             </button>
@@ -731,26 +753,14 @@ export default function Cart() {
                               min={1}
                               step={1}
                               value={it.qty}
-                              onChange={(e) =>
-                                updateQty(
-                                  it.productId,
-                                  it.variantId ?? null,
-                                  Number(e.target.value)
-                                )
-                              }
-                              onBlur={(e) =>
-                                updateQty(
-                                  it.productId,
-                                  it.variantId ?? null,
-                                  Number(e.target.value)
-                                )
-                              }
+                              onChange={(e) => updateQty(it, Number(e.target.value))}
+                              onBlur={(e) => updateQty(it, Number(e.target.value))}
                               className="w-16 text-center outline-none px-2 py-2 bg-white"
                             />
                             <button
                               aria-label="Increase quantity"
                               className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
-                              onClick={() => inc(it.productId, it.variantId ?? null)}
+                              onClick={() => inc(it)}
                               title="Increase quantity"
                             >
                               +
@@ -798,9 +808,7 @@ export default function Cart() {
                 <span className="text-2xl font-extrabold tracking-tight">{ngn.format(total)}</span>
               </div>
 
-              {!canCheckout && (
-                <p className="mt-2 text-[12px] text-rose-600">{cartBlockingReason}</p>
-              )}
+              {!canCheckout && <p className="mt-2 text-[12px] text-rose-600">{cartBlockingReason}</p>}
 
               <Link
                 to={canCheckout ? '/checkout' : '#'}

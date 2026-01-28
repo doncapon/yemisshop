@@ -2,7 +2,7 @@ import { Navigate, useLocation } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { useAuthStore } from '../store/auth';
 
-export type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER';
+export type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER' | 'SUPPLIER';
 
 export default function ProtectedRoute({
   roles,
