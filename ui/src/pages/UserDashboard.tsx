@@ -25,7 +25,7 @@ import { motion } from 'framer-motion';
 import SiteLayout from '../layouts/SiteLayout';
 
 /* ---------------------- Types ---------------------- */
-type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SUPER_USER' | 'SHOPPER';
+type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SUPER_USER' | 'SHOPPER'| "SUPPLIER_RIDER";
 
 type MeResponse = {
   id: string;

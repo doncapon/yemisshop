@@ -10,7 +10,7 @@ r.get("/banks", async (req, res) => {
     const { data } = await axios.get(
       "https://api.paystack.co/bank",
       {
-        headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+        headers: { Authorization: `Bearer ${process.env.PAYSTACK_TEST_SECRET_KEY}` },
         params: { country, perPage: 1000 }, // large page to get all
       }
     );

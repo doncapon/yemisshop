@@ -1,4 +1,5 @@
 // src/server.ts
+import "dotenv/config";
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -14,6 +15,10 @@ import authSessionRouter from './routes/authSessions.js';
 import profileRouter from './routes/profile.js';
 import productsRouter from './routes/products.js';
 import ordersRouter from './routes/orders.js';
+import orderOtpRouter from "./routes/orderOtp.js";
+import purchaseOrdersRouter from './routes/purchaseOrders.js';
+import purchaseOrderDeliveryOtpRouter from "./routes/purchaseOrderDeliveryOtp.js";
+
 import wishlistRouter from './routes/wishlist.js';
 import favoritesRouter from './routes/favorites.js';
 
@@ -53,6 +58,18 @@ import adminCatalogRequests from "./routes/adminCatalogRequests.js";
 import adminCatalogMeta from "./routes/adminCatalogMeta.js";
 
 import dojahRouter from './routes/dojahProxy.js';
+import deliveryOtpRouter from "./routes/deliveryOtp.js";
+
+
+import supplierPayoutsAction from "./routes/supplierPayoutsAction.js";
+import adminPayouts from "./routes/adminPayouts.js";
+
+import refundsRouter from "./routes/refunds.js";
+import supplierRefundsRouter from "./routes/supplierRefunds.js";
+import adminRefundsRouter from "./routes/adminRefunds.js";
+import disputesRouter from "./routes/disputes.js";
+import notificationsRouter from "./routes/notifications.js";
+import ridersRouter from "./routes/riders.js";
 
 import 'dotenv/config';
 
@@ -113,6 +130,9 @@ app.use('/api/supplier', suppliers);
 
 app.use('/api/admin/order-activities', adminActivitiesRouter);
 app.use('/api/admin/orders', adminOrdersRouter);
+app.use("/api/purchase-orders", purchaseOrdersRouter);
+app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
+
 app.use('/api/admin/reports', adminReports);
 app.use('/api/banks', banks);
 app.use('/api/settings', settings);
@@ -130,6 +150,10 @@ app.use('/api/cart', cartRouter);
 app.use('/api/supplier/products', supplierProducts);
 app.use('/api/supplier/orders', supplierOrders);
 
+app.use("/api", deliveryOtpRouter);
+app.use("/api/supplier/payouts", supplierPayoutsAction);
+
+
 app.post(
   '/api/payments/webhook',
   express.raw({ type: '*/*' }),
@@ -145,6 +169,7 @@ app.use('/api', supplierOffersList);
 
 /* 9) Domain routes */
 app.use('/api/products', productsRouter);
+app.use("/api/orders", orderOtpRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/wishlist', wishlistRouter);
 app.use('/api/favorites', favoritesRouter);
@@ -154,6 +179,19 @@ app.use('/api/integrations/dojah', dojahRouter);
 
 app.use("/api/supplier/catalog-requests", supplierCatalogRequests);
 app.use("/api/admin/catalog-requests", adminCatalogRequests);
+app.use("/api/admin/payouts", adminPayouts);
+
+app.use("/api/refunds", refundsRouter);
+app.use("/api/supplier/refunds", supplierRefundsRouter);
+app.use("/api/admin/refunds", adminRefundsRouter);
+
+app.use("/api/disputes", disputesRouter);
+
+app.use("/api/notifications", notificationsRouter);
+app.use("/api/riders", ridersRouter);
+
+
+
 
 /* 10) Error handler */
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

@@ -7,7 +7,7 @@ declare module 'express-serve-static-core' {
     user?: {
       id: string;
       email: string;
-      role: 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER' | 'SUPPLIER';
+      role: 'ADMIN' | 'SUPER_ADMIN' | 'SHOPPER' | 'SUPPLIER' | 'SUPPLIER_RIDER';
       supplierId?: string | null;
     };
 

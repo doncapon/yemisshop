@@ -1,17 +1,11 @@
 // src/components/Navbar.tsx
 import { Link, NavLink, useNavigate } from "react-router-dom";
-import {
-  useState,
-  useMemo,
-  useRef,
-  useEffect,
-  useCallback,
-} from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useAuthStore } from "../store/auth";
 import api from "../api/client";
 import { hardResetApp } from "../utils/resetApp";
 
-type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER";
+type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
 type MeResponse = {
   id: string;
@@ -46,6 +40,8 @@ export default function Navbar() {
 
   const isSupplier = userRole === "SUPPLIER";
   const isSuperAdmin = userRole === "SUPER_ADMIN";
+  const isAdmin = userRole === "ADMIN" || userRole === "SUPER_ADMIN";
+  const isRider = userRole === "SUPPLIER_RIDER";
 
   const [mobileOpen, setMobileOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -121,12 +117,12 @@ export default function Navbar() {
     nav("/");
   }, [clear, nav]);
 
-  const linkBase =
-    "inline-flex items-center px-3 py-2 rounded-md text-sm font-medium transition";
-  const linkInactive =
-    "text-white/90 hover:bg-white/10";
-  const linkActive =
-    "text-white bg-white/20";
+  const linkBase = "inline-flex items-center px-3 py-2 rounded-md text-sm font-medium transition";
+  const linkInactive = "text-white/90 hover:bg-white/10";
+  const linkActive = "text-white bg-white/20";
+
+  // Riders should only use supplier orders (and avoid the shop nav clutter)
+  const brandHref = isRider ? "/supplier/orders" : "/";
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-primary-800/40 bg-primary-900/95 backdrop-blur">
@@ -134,7 +130,7 @@ export default function Navbar() {
         {/* Brand */}
         <div className="flex items-center gap-2">
           <Link
-            to="/"
+            to={brandHref}
             className="text-white text-lg font-bold tracking-tight hover:opacity-95"
             aria-label="DaySpring home"
           >
@@ -144,104 +140,100 @@ export default function Navbar() {
 
         {/* Desktop nav */}
         <nav className="hidden md:flex gap-1 ml-3 min-w-0 flex-wrap">
-          <NavLink
-            to="/"
-            end
-            className={({ isActive }) =>
-              `${linkBase} ${isActive ? linkActive : linkInactive}`
-            }
-          >
-            Catalogue
-          </NavLink>
-
-          {/* ✅ Dashboard label rules:
-              - SUPPLIER sees "Dashboard" -> /supplier
-              - SUPER_ADMIN sees "SupplierDashboard" -> /supplier
-              - Others see "Dashboard" -> /dashboard
-          */}
-          {token && isSupplier && (
+          {/* Riders: ONLY show Supplier Orders */}
+          {token && isRider ? (
             <NavLink
-              to="/supplier"
-              end
-              className={({ isActive }) =>
-                `${linkBase} ${isActive ? linkActive : linkInactive}`
-              }
-            >
-              Dashboard
-            </NavLink>
-          )}
-
-          {token && isSuperAdmin && (
-            <NavLink
-              to="/supplier"
-              end
-              className={({ isActive }) =>
-                `${linkBase} ${isActive ? linkActive : linkInactive}`
-              }
-            >
-              SupplierDashboard
-            </NavLink>
-          )}
-
-          {token && !isSupplier && !isSuperAdmin && (
-            <NavLink
-              to="/dashboard"
-              end
-              className={({ isActive }) =>
-                `${linkBase} ${isActive ? linkActive : linkInactive}`
-              }
-            >
-              Dashboard
-            </NavLink>
-          )}
-
-          {/* Hide for suppliers */}
-          {!isSupplier && (
-            <NavLink
-              to="/cart"
-              className={({ isActive }) =>
-                `${linkBase} ${isActive ? linkActive : linkInactive}`
-              }
-            >
-              Cart
-            </NavLink>
-          )}
-
-          {/* Hide for suppliers */}
-          {token && !isSupplier && (
-            <NavLink
-              to="/wishlist"
-              end
-              className={({ isActive }) =>
-                `${linkBase} ${isActive ? linkActive : linkInactive}`
-              }
-            >
-              Wishlist
-            </NavLink>
-          )}
-
-          {/* Hide for suppliers */}
-          {token && !isSupplier && (
-            <NavLink
-              to="/orders"
-              end
-              className={({ isActive }) =>
-                `${linkBase} ${isActive ? linkActive : linkInactive}`
-              }
+              to="/supplier/orders"
+              className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
             >
               Orders
             </NavLink>
-          )}
+          ) : (
+            <>
+              <NavLink
+                to="/"
+                end
+                className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
+              >
+                Catalogue
+              </NavLink>
 
-          {(userRole === "ADMIN" || userRole === "SUPER_ADMIN") && (
-            <NavLink
-              to="/admin"
-              className={({ isActive }) =>
-                `${linkBase} ${isActive ? linkActive : linkInactive}`
-              }
-            >
-              Admin
-            </NavLink>
+              {/* ✅ Dashboard label rules:
+                  - SUPPLIER sees "Dashboard" -> /supplier
+                  - SUPER_ADMIN sees "SupplierDashboard" -> /supplier
+                  - Others see "Dashboard" -> /dashboard
+              */}
+              {token && isSupplier && (
+                <NavLink
+                  to="/supplier"
+                  end
+                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
+                >
+                  Dashboard
+                </NavLink>
+              )}
+
+              {token && isSuperAdmin && (
+                <NavLink
+                  to="/supplier"
+                  end
+                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
+                >
+                  SupplierDashboard
+                </NavLink>
+              )}
+
+              {token && !isSupplier && !isSuperAdmin && (
+                <NavLink
+                  to="/dashboard"
+                  end
+                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
+                >
+                  Dashboard
+                </NavLink>
+              )}
+
+              {/* Hide for suppliers */}
+              {!isSupplier && (
+                <NavLink
+                  to="/cart"
+                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
+                >
+                  Cart
+                </NavLink>
+              )}
+
+              {/* Hide for suppliers */}
+              {token && !isSupplier && (
+                <NavLink
+                  to="/wishlist"
+                  end
+                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
+                >
+                  Wishlist
+                </NavLink>
+              )}
+
+              {/* Hide for suppliers */}
+              {token && !isSupplier && (
+                <NavLink
+                  to="/orders"
+                  end
+                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
+                >
+                  Orders
+                </NavLink>
+              )}
+
+              {isAdmin && (
+                <NavLink
+                  to="/admin"
+                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
+                >
+                  Admin
+                </NavLink>
+              )}
+            </>
           )}
         </nav>
 
@@ -263,14 +255,16 @@ export default function Navbar() {
               <NavLink
                 to="/login"
                 className={({ isActive }) =>
-                  `${linkBase} ${isActive
-                    ? "bg-white text-primary-900"
-                    : "border border-white/25 text-white hover:bg-white/10"
+                  `${linkBase} ${
+                    isActive
+                      ? "bg-white text-primary-900"
+                      : "border border-white/25 text-white hover:bg-white/10"
                   }`
                 }
               >
                 Login
               </NavLink>
+
               <NavLink
                 to="/register"
                 className="inline-flex items-center px-3 py-2 rounded-md text-sm font-semibold text-primary-800 bg-white hover:bg-zinc-50 transition"
@@ -294,77 +288,101 @@ export default function Navbar() {
                   role="menu"
                 >
                   <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
-                    <div className="text-xs text-zinc-500">
-                      Signed in as
-                    </div>
+                    <div className="text-xs text-zinc-500">Signed in as</div>
                     <div className="text-sm font-medium truncate text-zinc-900">
                       {displayName || userEmail || "User"}
                     </div>
                     {userEmail && (
-                      <div className="text-[10px] text-zinc-500 truncate">
-                        {userEmail}
-                      </div>
+                      <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>
+                    )}
+                    {isRider && (
+                      <div className="mt-1 text-[10px] text-zinc-500">Role: Rider</div>
                     )}
                   </div>
-                  <nav className="py-1 text-sm">
-                    <button
-                      className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                      onClick={() => {
-                        setMenuOpen(false);
-                        nav("/profile");
-                      }}
-                      role="menuitem"
-                    >
-                      Edit Profile
-                    </button>
 
-                    <button
-                      className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                      onClick={() => {
-                        setMenuOpen(false);
-                        nav("/account/sessions");
-                      }}
-                      role="menuitem"
-                    >
-                      Sessions
-                    </button>
-
-
-                    {/* Hide purchase history for suppliers */}
-                    {!isSupplier && (
+                  {/* Riders: keep menu minimal (logout only) */}
+                  {isRider ? (
+                    <nav className="py-1 text-sm">
                       <button
                         className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
                         onClick={() => {
                           setMenuOpen(false);
-                          nav("/orders");
+                          nav("/supplier/orders");
                         }}
                         role="menuitem"
                       >
-                        Purchase history
+                        Orders
                       </button>
-                    )}
-
-                    {userRole === "SUPER_ADMIN" && (
+                      <div className="my-1 border-t border-zinc-100" />
+                      <button
+                        className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition"
+                        onClick={logout}
+                        role="menuitem"
+                      >
+                        Logout
+                      </button>
+                    </nav>
+                  ) : (
+                    <nav className="py-1 text-sm">
                       <button
                         className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
                         onClick={() => {
                           setMenuOpen(false);
-                          nav("/admin/settings");
+                          nav("/profile");
                         }}
                         role="menuitem"
                       >
-                        Admin Settings
+                        Edit Profile
                       </button>
-                    )}
-                    <div className="my-1 border-t border-zinc-100" />
-                    <button
-                      className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition"
-                      onClick={logout}
-                      role="menuitem"
-                    >
-                      Logout
-                    </button>
-                  </nav>
+
+                      <button
+                        className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          nav("/account/sessions");
+                        }}
+                        role="menuitem"
+                      >
+                        Sessions
+                      </button>
+
+                      {/* Hide purchase history for suppliers */}
+                      {!isSupplier && (
+                        <button
+                          className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            nav("/orders");
+                          }}
+                          role="menuitem"
+                        >
+                          Purchase history
+                        </button>
+                      )}
+
+                      {userRole === "SUPER_ADMIN" && (
+                        <button
+                          className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            nav("/admin/settings");
+                          }}
+                          role="menuitem"
+                        >
+                          Admin Settings
+                        </button>
+                      )}
+
+                      <div className="my-1 border-t border-zinc-100" />
+                      <button
+                        className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition"
+                        onClick={logout}
+                        role="menuitem"
+                      >
+                        Logout
+                      </button>
+                    </nav>
+                  )}
                 </div>
               )}
             </div>
@@ -377,13 +395,7 @@ export default function Navbar() {
           aria-label="Toggle menu"
           onClick={() => setMobileOpen((v) => !v)}
         >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            aria-hidden="true"
-          >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path
               d="M4 7h16M4 12h16M4 17h16"
               stroke="currentColor"
@@ -398,213 +410,20 @@ export default function Navbar() {
       {mobileOpen && (
         <div className="md:hidden border-t border-primary-800/40 bg-primary-900/98 backdrop-blur">
           <div className="px-4 py-3 flex flex-col gap-1">
-            <NavLink
-              to="/"
-              end
-              onClick={() => setMobileOpen(false)}
-              className={({ isActive }) =>
-                `${linkBase} ${isActive
-                  ? "bg-white/20 text-white"
-                  : "text-white/90 hover:bg-white/10"
-                }`
-              }
-            >
-              Catalogue
-            </NavLink>
-
-            {/* ✅ Mobile dashboard label rules (same as desktop) */}
-            {token && isSupplier && (
-              <NavLink
-                to="/supplier"
-                end
-                onClick={() => setMobileOpen(false)}
-                className={({ isActive }) =>
-                  `${linkBase} ${isActive
-                    ? "bg-white/20 text-white"
-                    : "text-white/90 hover:bg-white/10"
-                  }`
-                }
-              >
-                Dashboard
-              </NavLink>
-            )}
-
-            {token && isSuperAdmin && (
-              <NavLink
-                to="/supplier"
-                end
-                onClick={() => setMobileOpen(false)}
-                className={({ isActive }) =>
-                  `${linkBase} ${isActive
-                    ? "bg-white/20 text-white"
-                    : "text-white/90 hover:bg-white/10"
-                  }`
-                }
-              >
-                SupplierDashboard
-              </NavLink>
-            )}
-
-            {token && !isSupplier && !isSuperAdmin && (
-              <NavLink
-                to="/dashboard"
-                end
-                onClick={() => setMobileOpen(false)}
-                className={({ isActive }) =>
-                  `${linkBase} ${isActive
-                    ? "bg-white/20 text-white"
-                    : "text-white/90 hover:bg-white/10"
-                  }`
-                }
-              >
-                Dashboard
-              </NavLink>
-            )}
-
-            {/* Hide cart for suppliers */}
-            {!isSupplier && (
-              <NavLink
-                to="/cart"
-                onClick={() => setMobileOpen(false)}
-                className={({ isActive }) =>
-                  `${linkBase} ${isActive
-                    ? "bg-white/20 text-white"
-                    : "text-white/90 hover:bg-white/10"
-                  }`
-                }
-              >
-                Cart
-              </NavLink>
-            )}
-
-            {/* Hide wishlist for suppliers */}
-            {token && !isSupplier && (
-              <NavLink
-                to="/wishlist"
-                onClick={() => setMobileOpen(false)}
-                className={({ isActive }) =>
-                  `${linkBase} ${isActive
-                    ? "bg-white/20 text-white"
-                    : "text-white/90 hover:bg-white/10"
-                  }`
-                }
-              >
-                Wishlist
-              </NavLink>
-            )}
-
-            {token && !isSupplier && !isSuperAdmin && (
-              <NavLink
-                to="/dashboard"
-                end
-                onClick={() => setMobileOpen(false)}
-                className={({ isActive }) =>
-                  `${linkBase} ${isActive
-                    ? "bg-white/20 text-white"
-                    : "text-white/90 hover:bg-white/10"
-                  }`
-                }
-              >
-                Dashboard
-              </NavLink>
-            )}
-
-            {(userRole === "ADMIN" || userRole === "SUPER_ADMIN") && (
-              <NavLink
-                to="/admin"
-                onClick={() => setMobileOpen(false)}
-                className={({ isActive }) =>
-                  `${linkBase} ${isActive
-                    ? "bg-white/20 text-white"
-                    : "text-white/90 hover:bg-white/10"
-                  }`
-                }
-              >
-                Admin
-              </NavLink>
-            )}
-
-            <div className="mt-2 border-t border-white/15 pt-2" />
-
-            {!token ? (
-              <div className="flex gap-2">
-                {/* Supplier registration button (mobile) */}
+            {/* Riders: ONLY show Supplier Orders */}
+            {token && isRider ? (
+              <>
                 <NavLink
-                  to="/register-supplier"
-                  onClick={() => setMobileOpen(false)}
-                  className="flex-1 text-center inline-flex items-center justify-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-amber-300 hover:bg-amber-200 transition"
-                >
-                  Supply
-                </NavLink>
-
-                <NavLink
-                  to="/login"
+                  to="/supplier/orders"
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `flex-1 text-center ${linkBase} ${isActive
-                      ? "bg-white text-primary-900"
-                      : "border border-white/25 text-white hover:bg-white/10"
-                    }`
+                    `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
                   }
                 >
-                  Login
+                  Orders
                 </NavLink>
 
-                <NavLink
-                  to="/register"
-                  onClick={() => setMobileOpen(false)}
-                  className="flex-1 text-center inline-flex items-center justify-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-white hover:bg-zinc-50 transition"
-                >
-                  Register
-                </NavLink>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-1">
-                <button
-                  className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
-                  onClick={() => {
-                    setMobileOpen(false);
-                    nav("/profile");
-                  }}
-                >
-                  Edit Profile
-                </button>
-
-                <button
-                  className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
-                  onClick={() => {
-                    setMobileOpen(false);
-                    nav("/account/sessions");
-                  }}
-                >
-                  Sessions
-                </button>
-
-
-                {/* Hide purchase history for suppliers */}
-                {!isSupplier && (
-                  <button
-                    className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
-                    onClick={() => {
-                      setMobileOpen(false);
-                      nav("/orders");
-                    }}
-                  >
-                    Purchase history
-                  </button>
-                )}
-
-                {userRole === "SUPER_ADMIN" && (
-                  <button
-                    className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
-                    onClick={() => {
-                      setMobileOpen(false);
-                      nav("/admin/settings");
-                    }}
-                  >
-                    Admin Settings
-                  </button>
-                )}
+                <div className="mt-2 border-t border-white/15 pt-2" />
                 <button
                   className="w-full text-left px-3 py-2 rounded-md text-red-200 hover:bg-red-500/10"
                   onClick={() => {
@@ -614,7 +433,205 @@ export default function Navbar() {
                 >
                   Logout
                 </button>
-              </div>
+              </>
+            ) : (
+              <>
+                <NavLink
+                  to="/"
+                  end
+                  onClick={() => setMobileOpen(false)}
+                  className={({ isActive }) =>
+                    `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                  }
+                >
+                  Catalogue
+                </NavLink>
+
+                {/* ✅ Mobile dashboard label rules (same as desktop) */}
+                {token && isSupplier && (
+                  <NavLink
+                    to="/supplier"
+                    end
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                    }
+                  >
+                    Dashboard
+                  </NavLink>
+                )}
+
+                {token && isSuperAdmin && (
+                  <NavLink
+                    to="/supplier"
+                    end
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                    }
+                  >
+                    SupplierDashboard
+                  </NavLink>
+                )}
+
+                {token && !isSupplier && !isSuperAdmin && (
+                  <NavLink
+                    to="/dashboard"
+                    end
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                    }
+                  >
+                    Dashboard
+                  </NavLink>
+                )}
+
+                {/* Hide cart for suppliers */}
+                {!isSupplier && (
+                  <NavLink
+                    to="/cart"
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                    }
+                  >
+                    Cart
+                  </NavLink>
+                )}
+
+                {/* Hide wishlist for suppliers */}
+                {token && !isSupplier && (
+                  <NavLink
+                    to="/wishlist"
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                    }
+                  >
+                    Wishlist
+                  </NavLink>
+                )}
+
+                {/* Hide orders for suppliers */}
+                {token && !isSupplier && (
+                  <NavLink
+                    to="/orders"
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                    }
+                  >
+                    Orders
+                  </NavLink>
+                )}
+
+                {isAdmin && (
+                  <NavLink
+                    to="/admin"
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                    }
+                  >
+                    Admin
+                  </NavLink>
+                )}
+
+                <div className="mt-2 border-t border-white/15 pt-2" />
+
+                {!token ? (
+                  <div className="flex gap-2">
+                    {/* Supplier registration button (mobile) */}
+                    <NavLink
+                      to="/register-supplier"
+                      onClick={() => setMobileOpen(false)}
+                      className="flex-1 text-center inline-flex items-center justify-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-amber-300 hover:bg-amber-200 transition"
+                    >
+                      Supply
+                    </NavLink>
+
+                    <NavLink
+                      to="/login"
+                      onClick={() => setMobileOpen(false)}
+                      className={({ isActive }) =>
+                        `flex-1 text-center ${linkBase} ${
+                          isActive
+                            ? "bg-white text-primary-900"
+                            : "border border-white/25 text-white hover:bg-white/10"
+                        }`
+                      }
+                    >
+                      Login
+                    </NavLink>
+
+                    <NavLink
+                      to="/register"
+                      onClick={() => setMobileOpen(false)}
+                      className="flex-1 text-center inline-flex items-center justify-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-white hover:bg-zinc-50 transition"
+                    >
+                      Register
+                    </NavLink>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    <button
+                      className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
+                      onClick={() => {
+                        setMobileOpen(false);
+                        nav("/profile");
+                      }}
+                    >
+                      Edit Profile
+                    </button>
+
+                    <button
+                      className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
+                      onClick={() => {
+                        setMobileOpen(false);
+                        nav("/account/sessions");
+                      }}
+                    >
+                      Sessions
+                    </button>
+
+                    {/* Hide purchase history for suppliers */}
+                    {!isSupplier && (
+                      <button
+                        className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
+                        onClick={() => {
+                          setMobileOpen(false);
+                          nav("/orders");
+                        }}
+                      >
+                        Purchase history
+                      </button>
+                    )}
+
+                    {userRole === "SUPER_ADMIN" && (
+                      <button
+                        className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
+                        onClick={() => {
+                          setMobileOpen(false);
+                          nav("/admin/settings");
+                        }}
+                      >
+                        Admin Settings
+                      </button>
+                    )}
+
+                    <button
+                      className="w-full text-left px-3 py-2 rounded-md text-red-200 hover:bg-red-500/10"
+                      onClick={() => {
+                        setMobileOpen(false);
+                        logout();
+                      }}
+                    >
+                      Logout
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

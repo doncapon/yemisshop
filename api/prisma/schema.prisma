@@ -7,165 +7,173 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Address {
-  id                  String     @id @default(cuid())
-  houseNumber         String?
-  streetName          String?
-  postCode            String?
-  town                String?
-  city                String?
-  state               String?
-  country             String?
-  lga                 String?
-  ordersAsBilling     Order[]    @relation("OrderBillingAddress")
-  ordersAsShipping    Order[]    @relation("OrderShippingAddress")
-  suppliersRegistered Supplier[] @relation("SupplierRegisteredAddress")
-  userPrimary         User?      @relation("UserPrimaryAddress")
-  userShipping        User?      @relation("UserShippingAddress")
-}
-
-model User {
-  id                        String             @id @default(cuid())
-  email                     String             @unique
-  password                  String
-  role                      String
-  firstName                 String
-  middleName                String?
-  lastName                  String
-  phone                     String?
-  dateOfBirth               DateTime?
-  addressId                 String?            @unique
-  shippingAddressId         String?            @unique
-  status                    String             @default("PENDING")
-  emailVerifiedAt           DateTime?
-  phoneVerifiedAt           DateTime?
-  phoneOtpHash              String?
-  phoneOtpExpiresAt         DateTime?
-  phoneOtpLastSentAt        DateTime?
-  phoneOtpSendCountDay      Int                @default(0)
-  emailVerifyToken          String?
-  emailVerifyTokenExpiresAt DateTime?
-  emailVerifyLastSentAt     DateTime?
-  emailVerifySendCountDay   Int                @default(0)
-  resetPasswordToken        String?
-  resetPasswordExpiresAt    DateTime?
-  createdAt                 DateTime           @default(now())
-  joinedAt                  DateTime           @default(now())
-  reviewedCatalogRequests   CatalogRequest[]   @relation("CatalogRequestReviewedBy")
-  EmailVerifyToken          EmailVerifyToken[]
-  Favorite                  Favorite[]
-  orders                    Order[]
-  createdProducts           Product[]          @relation("ProductCreatedBy")
-  ownedProducts             Product[]          @relation("ProductOwner")
-  updatedProducts           Product[]          @relation("ProductUpdatedBy")
-  products                  Product[]          @relation("ProductUser")
-  supplier                  Supplier?
-  address                   Address?           @relation("UserPrimaryAddress", fields: [addressId], references: [id])
-  shippingAddress           Address?           @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
-  Wishlist                  Wishlist[]
-
-  sessions UserSession[]
-
-  @@index([emailVerifiedAt])
-  @@index([phoneVerifiedAt])
-}
-
-model Supplier {
-  id                     String                      @id @default(cuid())
-  name                   String                      @unique
-  contactEmail           String?
-  whatsappPhone          String?
-  type                   SupplierType
-  status                 String                      @default("ACTIVE")
-  apiBaseUrl             String?
-  apiAuthType            String?
-  apiKey                 String?
-  userId                 String?                     @unique
-  payoutMethod           String?
-  bankCountry            String?
-  bankCode               String?
-  bankName               String?
-  accountNumber          String?
-  accountName            String?
-  bankVerificationStatus      BankVerificationStatus @default(UNVERIFIED)
-  bankVerificationNote        String?
-  bankVerificationRequestedAt DateTime?
-  bankVerifiedAt              DateTime?
-  bankVerifiedById            String?
-  paystackRecipientCode  String?
-  paystackSubaccountCode String?
-  isPayoutEnabled        Boolean                     @default(false)
-  createdAt              DateTime                    @default(now())
-  updatedAt              DateTime                    @updatedAt
-  companyType            SupplierCompanyType?
-  dateOfRegistration     DateTime?
-  kycRawPayload          Json?
-  legalName              String?
-  natureOfBusiness       String?
-  ownerVerified          Boolean                     @default(false)
-  proprietorBvnMasked    String?
-  rcNumber               String?                     @unique
-  registeredAddressId    String?
-  shareCapital           Decimal?
-  shareDetails           Json?
-  kycApprovedAt          DateTime?
-  kycCheckedAt           DateTime?
-  kycProvider            String?
-  kycStatus              String                      @default("NONE")
-  kycRegistrationStatus  CacStatus                   @default(NONE)
-  catalogRequests        CatalogRequest[]
-  ledgerEntries SupplierLedgerEntry[] @relation("SupplierToLedger")
-  comms                  OrderComms[]                @relation("SupplierToComms")
-  chosenOrderItems       OrderItem[]                 @relation("OrderItemChosenSupplier")
-  payments               Payment[]                   @relation("SupplierPayments")
-  products               Product[]                   @relation("ProductSupplier")
-  purchaseOrders         PurchaseOrder[]
-  registeredAddress      Address?                    @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
-  user                   User?                       @relation(fields: [userId], references: [id])
-  allocations            SupplierPaymentAllocation[]
-  productOffers          SupplierProductOffer[]
-  variantOffers          SupplierVariantOffer[]
-  refunds Refund[]
-
-}
-
 enum RefundStatus {
-  REQUESTED
-  APPROVED
-  REJECTED
-  PROCESSING
-  PAID
-  FAILED
-  CANCELED
+  REQUESTED // customer created
+  SUPPLIER_REVIEW // supplier must respond
+  SUPPLIER_ACCEPTED // supplier agrees
+  SUPPLIER_REJECTED // supplier disagrees
+  ESCALATED // admin arbitration
+  APPROVED // admin approved
+  REJECTED // admin rejected
+  REFUNDED // money refunded (or marked as refunded)
+  CLOSED // final closed
+}
+
+enum DisputeStatus {
+  OPEN
+  SUPPLIER_RESPONSE
+  ESCALATED
+  RESOLVED
+  CLOSED
+}
+
+enum NotificationType {
+  REFUND_REQUESTED
+  REFUND_UPDATED
+  DISPUTE_OPENED
+  DISPUTE_UPDATED
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+}
+
+model RefundRequest {
+  id              String  @id @default(cuid())
+  orderId         String
+  purchaseOrderId String?
+  supplierId      String?
+  customerId      String
+
+  status       RefundStatus @default(REQUESTED)
+  reason       String
+  message      String?
+  evidenceUrls Json?
+
+  // amounts (optional, but useful)
+  itemsAmount             Decimal? @db.Decimal(18, 2)
+  taxAmount               Decimal? @db.Decimal(18, 2)
+  serviceFeeBaseAmount    Decimal? @db.Decimal(18, 2)
+  serviceFeeCommsAmount   Decimal? @db.Decimal(18, 2)
+  serviceFeeGatewayAmount Decimal? @db.Decimal(18, 2)
+  totalAmount             Decimal? @db.Decimal(18, 2)
+
+  supplierNote String?
+  adminNote    String?
+
+  resolvedByUserId String?
+  resolvedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  order         Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  supplier      Supplier?      @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  customer      User           @relation("RefundRequestCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  resolvedBy    User?          @relation("RefundRequestResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orderId, createdAt])
+  @@index([supplierId, status])
+  @@index([customerId, createdAt])
+}
+
+model DisputeCase {
+  id              String  @id @default(cuid())
+  orderId         String
+  purchaseOrderId String?
+  supplierId      String?
+  customerId      String
+
+  status       DisputeStatus @default(OPEN)
+  subject      String
+  message      String?
+  evidenceUrls Json?
+
+  supplierResponse String?
+  adminDecision    String?
+
+  resolvedByUserId String?
+  resolvedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  order         Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  supplier      Supplier?      @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  customer      User           @relation("DisputeCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  resolvedBy    User?          @relation("DisputeResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orderId, createdAt])
+  @@index([supplierId, status])
+  @@index([customerId, createdAt])
 }
 
 model Refund {
-  id                    String       @id @default(cuid())
+  id String @id @default(cuid())
 
-  orderId               String
-  purchaseOrderId       String
-  supplierId            String?
+  orderId         String
+  purchaseOrderId String
+  supplierId      String?
 
-  status                RefundStatus  @default(REQUESTED)
+  status RefundStatus @default(REQUESTED)
 
-  itemsAmount           Decimal      @db.Decimal(12, 2)
-  taxAmount             Decimal      @default(0) @db.Decimal(12, 2)
-  serviceFeeBaseAmount  Decimal      @default(0) @db.Decimal(12, 2)
-  serviceFeeCommsAmount Decimal      @default(0) @db.Decimal(12, 2)
-  serviceFeeGatewayAmount Decimal    @default(0) @db.Decimal(12, 2)
-  totalAmount           Decimal      @db.Decimal(12, 2)
+  // ✅ actor fields
+  requestedByUserId String
+  requestedAt       DateTime @default(now())
 
-  reason                String?
-  meta                  Json?
+  supplierRespondedAt DateTime?
+  supplierResponse    String? // ACCEPT | REJECT | DISPUTE
+  supplierNote        String?
 
-  faultParty    String? // SUPPLIER | CUSTOMER | PLATFORM | CARRIER | UNKNOWN
+  adminResolvedAt   DateTime?
+  adminResolvedById String?
+  adminDecision     String? // APPROVE | REJECT
+  adminNote         String?
 
-  createdAt             DateTime     @default(now())
-  updatedAt             DateTime     @updatedAt
+  // ✅ money
+  itemsAmount             Decimal @db.Decimal(12, 2)
+  taxAmount               Decimal @default(0) @db.Decimal(12, 2)
+  serviceFeeBaseAmount    Decimal @default(0) @db.Decimal(12, 2)
+  serviceFeeCommsAmount   Decimal @default(0) @db.Decimal(12, 2)
+  serviceFeeGatewayAmount Decimal @default(0) @db.Decimal(12, 2)
+  totalAmount             Decimal @db.Decimal(12, 2)
 
-  order                 Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  purchaseOrder         PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  supplier              Supplier?    @relation(fields: [supplierId], references: [id])
+  // ✅ provider tracking (Paystack)
+  provider          String? // PAYSTACK
+  providerReference String? // refund reference/id returned by paystack (store whatever they return)
+  providerStatus    String?
+  providerPayload   Json?
+  processedAt       DateTime?
+  paidAt            DateTime?
+
+  reason     String?
+  meta       Json?
+  faultParty String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  supplier      Supplier?     @relation(fields: [supplierId], references: [id])
+
+  requestedBy     User  @relation("RefundRequestedBy", fields: [requestedByUserId], references: [id])
+  adminResolvedBy User? @relation("RefundResolvedBy", fields: [adminResolvedById], references: [id])
+
+  events RefundEvent[]
+  items  RefundItem[]
 
   @@unique([purchaseOrderId])
   @@index([orderId])
@@ -173,7 +181,31 @@ model Refund {
   @@index([status, createdAt])
 }
 
+model RefundEvent {
+  id        String   @id @default(cuid())
+  refundId  String
+  type      String // REQUESTED | SUPPLIER_ACCEPTED | ADMIN_APPROVED | PROVIDER_REFUND_INIT | WEBHOOK_UPDATE ...
+  message   String?
+  meta      Json?
+  createdAt DateTime @default(now())
 
+  refund Refund @relation(fields: [refundId], references: [id], onDelete: Cascade)
+
+  @@index([refundId, createdAt])
+}
+
+model RefundItem {
+  id          String @id @default(cuid())
+  refundId    String
+  orderItemId String
+  qty         Int
+
+  refund    Refund    @relation(fields: [refundId], references: [id], onDelete: Cascade)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+
+  @@unique([refundId, orderItemId])
+  @@index([refundId])
+}
 
 enum BankVerificationStatus {
   UNVERIFIED
@@ -235,54 +267,20 @@ model CacVerifyAttempt {
   @@index([ipHash, day])
 }
 
-model Order {
-  id                    String                      @id @default(cuid())
-  userId                String
-  shippingAddressId     String
-  total                 Decimal                     @db.Decimal(10, 2)
-  tax                   Decimal                     @db.Decimal(10, 2)
-  subtotal              Decimal                     @db.Decimal(10, 2)
-  shippingBreakdownJson Json?
-  status                String                      @default("PENDING")
-  createdAt             DateTime                    @default(now())
-  serviceFeeBase        Decimal                     @default(0) @db.Decimal(10, 2)
-  serviceFeeComms       Decimal                     @default(0) @db.Decimal(10, 2)
-  serviceFeeGateway     Decimal                     @default(0) @db.Decimal(10, 2)
-  serviceFeeTotal       Decimal                     @default(0) @db.Decimal(10, 2)
-  serviceFee            Decimal?                    @db.Decimal(12, 2)
-  billingAddressId      String?
-  billingAddress        Address?                    @relation("OrderBillingAddress", fields: [billingAddressId], references: [id])
-  shippingAddress       Address                     @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id])
-  user                  User                        @relation(fields: [userId], references: [id])
-  activities            OrderActivity[]             @relation("OrderToActivities")
-  comms                 OrderComms[]                @relation("OrderToComms")
-  orderCoupons          OrderCoupon[]
-  items                 OrderItem[]
-  itemProfits           OrderItemProfit[]           @relation("Order_ItemProfits")
-  payments              Payment[]
-  purchaseOrders        PurchaseOrder[]
-  refunds Refund[]
-
-  allocations           SupplierPaymentAllocation[] @relation("OrderAllocations")
-
-  @@index([createdAt])
-}
-
-
 model UserSession {
-  id            String   @id @default(cuid())
-  userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  createdAt     DateTime @default(now())
-  lastSeenAt    DateTime @default(now())
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
 
-   expiresAt     DateTime?
-  rotatedAt     DateTime?
+  expiresAt DateTime?
+  rotatedAt DateTime?
 
-  ip            String?
-  userAgent     String?
-  deviceName    String?
+  ip         String?
+  userAgent  String?
+  deviceName String?
 
   revokedAt     DateTime?
   revokedReason String?
@@ -295,74 +293,8 @@ enum PurchaseOrderPayoutStatus {
   PENDING
   HELD
   RELEASED
+  REFUNDED
   FAILED
-}
-
-
-
-model OrderItem {
-  id                           String                @id @default(cuid())
-  orderId                      String
-  variantId                    String?
-  productId                    String?
-  title                        String
-  unitPrice                    Decimal               @db.Decimal(10, 2)
-  quantity                     Int
-  lineTotal                    Decimal?              @db.Decimal(10, 2)
-  status                       String?
-  selectedOptions              Json?
-  createdAt                    DateTime              @default(now())
-  chosenSupplierId             String?
-  chosenSupplierUnitPrice      Decimal?              @db.Decimal(10, 2)
-  weightGrams                  Int?
-  chosenSupplierProductOfferId String?
-  chosenSupplierVariantOfferId String?
-  chosenSupplier               Supplier?             @relation("OrderItemChosenSupplier", fields: [chosenSupplierId], references: [id])
-  chosenSupplierProductOffer   SupplierProductOffer? @relation("OrderItemChosenSupplierProductOffer", fields: [chosenSupplierProductOfferId], references: [id])
-  chosenSupplierVariantOffer   SupplierVariantOffer? @relation("OrderItemChosenSupplierVariantOffer", fields: [chosenSupplierVariantOfferId], references: [id])
-  order                        Order                 @relation(fields: [orderId], references: [id])
-  product                      Product?              @relation(fields: [productId], references: [id])
-  variant                      ProductVariant?       @relation("VariantOrderItems", fields: [variantId], references: [id])
-  profit                       OrderItemProfit?      @relation("OrderItem_Profit")
-  purchaseOrderItems           PurchaseOrderItem[]
-
-  @@index([chosenSupplierId])
-  @@index([chosenSupplierProductOfferId])
-  @@index([chosenSupplierVariantOfferId])
-  @@index([orderId])
-  @@index([productId])
-}
-
-model Payment {
-  id                    String                      @id @default(cuid())
-  orderId               String
-  reference             String                      @unique
-  amount                Decimal                     @db.Decimal(12, 2)
-  status                PaymentStatus               @default(PENDING)
-  provider              String?
-  channel               String?
-  attemptNo             Int?
-  initPayload           Json?
-  providerPayload       Json?
-  createdAt             DateTime                    @default(now())
-  updatedAt             DateTime                    @updatedAt
-  feeAmount             Decimal?                    @default(0) @db.Decimal(12, 2)
-  receiptNo             String?                     @unique
-  receiptIssuedAt       DateTime?
-  receiptData           Json?
-  paidAt                DateTime?
-  refundedAt            DateTime?
-  supplierBreakdownJson Json?
-  supplierId            String?
-  supplierName          String?
-  orderComms            OrderComms?                 @relation("PaymentToComms")
-  order                 Order                       @relation(fields: [orderId], references: [id])
-  supplier              Supplier?                   @relation("SupplierPayments", fields: [supplierId], references: [id])
-  events                PaymentEvent[]
-  allocations           SupplierPaymentAllocation[]
-
-  @@index([supplierId])
-  @@index([status, paidAt])
 }
 
 model Category {
@@ -517,56 +449,6 @@ model Product {
   @@index([updatedById])
 }
 
-model SupplierProductOffer {
-  id               String                 @id @default(cuid())
-  supplierId       String
-  productId        String
-  basePrice        Decimal                @db.Decimal(10, 2)
-  currency         String                 @default("NGN")
-  availableQty     Int                    @default(0)
-  leadDays         Int?
-  isActive         Boolean                @default(true)
-  inStock          Boolean                @default(true)
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
-  orderItemsChosen OrderItem[]            @relation("OrderItemChosenSupplierProductOffer")
-  product          Product                @relation(fields: [productId], references: [id], onDelete: Cascade)
-  supplier         Supplier               @relation(fields: [supplierId], references: [id], onDelete: Cascade)
-  variantOffers    SupplierVariantOffer[]
-
-  @@unique([supplierId, productId])
-  @@index([productId])
-  @@index([supplierId])
-  @@index([isActive, inStock])
-}
-
-model SupplierVariantOffer {
-  id                     String                @id @default(cuid())
-  supplierId             String
-  productId              String
-  variantId              String
-  supplierProductOfferId String?
-  priceBump              Decimal               @db.Decimal(10, 2)
-  currency               String                @default("NGN")
-  availableQty           Int                   @default(0)
-  leadDays               Int?
-  isActive               Boolean               @default(true)
-  inStock                Boolean               @default(true)
-  createdAt              DateTime              @default(now())
-  updatedAt              DateTime              @updatedAt
-  orderItemsChosen       OrderItem[]           @relation("OrderItemChosenSupplierVariantOffer")
-  product                Product               @relation(fields: [productId], references: [id], onDelete: Cascade)
-  supplier               Supplier              @relation(fields: [supplierId], references: [id], onDelete: Cascade)
-  supplierProductOffer   SupplierProductOffer? @relation(fields: [supplierProductOfferId], references: [id])
-  variant                ProductVariant        @relation(fields: [variantId], references: [id])
-
-  @@unique([supplierId, variantId])
-  @@index([variantId])
-  @@index([productId])
-  @@index([supplierId])
-  @@index([isActive, inStock])
-}
-
 model PaymentEvent {
   id        String   @id @default(cuid())
   paymentId String
@@ -600,6 +482,18 @@ model SupplierPaymentAllocation {
   @@index([supplierId])
 }
 
+enum SupplierLedgerType {
+  CREDIT
+  DEBIT
+}
+
+enum SupplierLedgerReason {
+  PAYOUT_RELEASED // credit when PO payout released
+  REFUND_DEBIT // debit when refund is charged to supplier
+  ADJUSTMENT // manual admin adjustments
+  WITHDRAWAL // if you later implement withdrawals
+}
+
 model SupplierLedgerEntry {
   id            String   @id @default(cuid())
   supplierId    String
@@ -608,60 +502,624 @@ model SupplierLedgerEntry {
   currency      String   @default("NGN")
   referenceType String?
   referenceId   String?
+  reason        String? // ✅ make optional
   meta          Json?
   createdAt     DateTime @default(now())
 
-  supplier      Supplier @relation("SupplierToLedger", fields: [supplierId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation("SupplierToLedger", fields: [supplierId], references: [id], onDelete: Cascade)
 
   @@index([supplierId, createdAt])
 }
 
+/**
+ * =========================
+ * NEW ENUM for Order OTP
+ * =========================
+ */
+enum OrderOtpPurpose {
+  PAY_ORDER
+  CANCEL_ORDER
+  REFUND_ORDER
+}
 
+/**
+ * =========================
+ * Address (referenced by Order)
+ * =========================
+ */
+model Address {
+  id          String  @id @default(cuid())
+  houseNumber String?
+  streetName  String?
+  postCode    String?
+  town        String?
+  city        String?
+  state       String?
+  country     String?
+  lga         String?
 
+  ordersAsBilling     Order[]    @relation("OrderBillingAddress")
+  ordersAsShipping    Order[]    @relation("OrderShippingAddress")
+  suppliersRegistered Supplier[] @relation("SupplierRegisteredAddress")
+  userPrimary         User?      @relation("UserPrimaryAddress")
+  userShipping        User?      @relation("UserShippingAddress")
+}
+
+enum Role {
+  ADMIN
+  SUPER_ADMIN
+  SHOPPER
+  SUPPLIER
+  SUPPLIER_RIDER
+}
+
+/**
+ * =========================
+ * User (OTP + sessions + orders)
+ * =========================
+ */
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  password          String
+  role              String
+  firstName         String
+  middleName        String?
+  lastName          String
+  phone             String?
+  dateOfBirth       DateTime?
+  addressId         String?   @unique
+  shippingAddressId String?   @unique
+  status            String    @default("PENDING")
+  emailVerifiedAt   DateTime?
+  phoneVerifiedAt   DateTime?
+
+  phoneOtpHash         String?
+  phoneOtpExpiresAt    DateTime?
+  phoneOtpLastSentAt   DateTime?
+  phoneOtpSendCountDay Int       @default(0)
+
+  emailVerifyToken          String?
+  emailVerifyTokenExpiresAt DateTime?
+  emailVerifyLastSentAt     DateTime?
+  emailVerifySendCountDay   Int       @default(0)
+
+  resetPasswordToken     String?
+  resetPasswordExpiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  joinedAt  DateTime @default(now())
+
+  reviewedCatalogRequests CatalogRequest[]   @relation("CatalogRequestReviewedBy")
+  EmailVerifyToken        EmailVerifyToken[]
+  Favorite                Favorite[]
+  Wishlist                Wishlist[]
+
+  orders        Order[]
+  supplierRider SupplierRider?
+
+  createdProducts Product[] @relation("ProductCreatedBy")
+  ownedProducts   Product[] @relation("ProductOwner")
+  updatedProducts Product[] @relation("ProductUpdatedBy")
+  products        Product[] @relation("ProductUser")
+
+  supplier Supplier?
+
+  address         Address? @relation("UserPrimaryAddress", fields: [addressId], references: [id])
+  shippingAddress Address? @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
+
+  // ✅ OTP requests (order OTP)
+  orderOtpRequests OrderOtpRequest[] @relation("UserOtpRequests")
+
+  // ✅ delivery OTPs (PO delivery confirmation)
+  deliveryOtps PurchaseOrderDeliveryOtp[]
+
+  refundsRequested Refund[] @relation("RefundRequestedBy")
+  refundsResolved  Refund[] @relation("RefundResolvedBy")
+
+  sessions UserSession[]
+
+  // Notifications
+  notifications Notification[]
+
+  // RefundRequest (legacy workflow model)
+  refundRequestsAsCustomer RefundRequest[] @relation("RefundRequestCustomer")
+  refundRequestsResolved   RefundRequest[] @relation("RefundRequestResolvedBy")
+
+  // Disputes
+  disputesAsCustomer DisputeCase[] @relation("DisputeCustomer")
+  disputesResolved   DisputeCase[] @relation("DisputeResolvedBy")
+
+  @@index([emailVerifiedAt])
+  @@index([phoneVerifiedAt])
+}
+
+/**
+ * =========================
+ * Supplier (payout gating depends on these fields)
+ * =========================
+ */
+model Supplier {
+  id            String       @id @default(cuid())
+  name          String       @unique
+  contactEmail  String?
+  whatsappPhone String?
+  type          SupplierType
+  status        String       @default("ACTIVE")
+
+  apiBaseUrl  String?
+  apiAuthType String?
+  apiKey      String?
+
+  userId String? @unique
+
+  payoutMethod  String?
+  bankCountry   String?
+  bankCode      String?
+  bankName      String?
+  accountNumber String?
+  accountName   String?
+
+  bankVerificationStatus      BankVerificationStatus @default(UNVERIFIED)
+  bankVerificationNote        String?
+  bankVerificationRequestedAt DateTime?
+  bankVerifiedAt              DateTime?
+  bankVerifiedById            String?
+
+  paystackRecipientCode  String?
+  paystackSubaccountCode String?
+
+  isPayoutEnabled Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyType         SupplierCompanyType?
+  dateOfRegistration  DateTime?
+  kycRawPayload       Json?
+  legalName           String?
+  natureOfBusiness    String?
+  ownerVerified       Boolean              @default(false)
+  proprietorBvnMasked String?
+
+  rcNumber            String? @unique
+  registeredAddressId String?
+
+  shareCapital Decimal?
+  shareDetails Json?
+
+  kycApprovedAt         DateTime?
+  kycCheckedAt          DateTime?
+  kycProvider           String?
+  kycStatus             String    @default("NONE")
+  kycRegistrationStatus CacStatus @default(NONE)
+
+  catalogRequests CatalogRequest[]
+  riders          SupplierRider[]
+  ledgerEntries   SupplierLedgerEntry[] @relation("SupplierToLedger")
+  comms           OrderComms[]          @relation("SupplierToComms")
+
+  chosenOrderItems OrderItem[] @relation("OrderItemChosenSupplier")
+  payments         Payment[]   @relation("SupplierPayments")
+
+  products       Product[]       @relation("ProductSupplier")
+  purchaseOrders PurchaseOrder[]
+
+  registeredAddress Address? @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
+  user              User?    @relation(fields: [userId], references: [id])
+
+  allocations   SupplierPaymentAllocation[]
+  productOffers SupplierProductOffer[]
+  variantOffers SupplierVariantOffer[]
+
+  refunds Refund[]
+
+  refundRequests RefundRequest[]
+  disputeCases   DisputeCase[]
+
+  @@index([status])
+  @@index([isPayoutEnabled])
+  @@index([bankVerificationStatus])
+}
+
+/**
+ * =========================
+ * Order (OTP + allocations + PO)
+ * =========================
+ */
+model Order {
+  id                String  @id @default(cuid())
+  userId            String
+  shippingAddressId String
+  total             Decimal @db.Decimal(10, 2)
+  tax               Decimal @db.Decimal(10, 2)
+  subtotal          Decimal @db.Decimal(10, 2)
+
+  shippingBreakdownJson Json?
+  status                String   @default("PENDING")
+  createdAt             DateTime @default(now())
+
+  serviceFeeBase    Decimal  @default(0) @db.Decimal(10, 2)
+  serviceFeeComms   Decimal  @default(0) @db.Decimal(10, 2)
+  serviceFeeGateway Decimal  @default(0) @db.Decimal(10, 2)
+  serviceFeeTotal   Decimal  @default(0) @db.Decimal(10, 2)
+  serviceFee        Decimal? @db.Decimal(12, 2)
+
+  billingAddressId String?
+
+  billingAddress  Address? @relation("OrderBillingAddress", fields: [billingAddressId], references: [id])
+  shippingAddress Address  @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id])
+
+  user User @relation(fields: [userId], references: [id])
+
+  activities   OrderActivity[] @relation("OrderToActivities")
+  comms        OrderComms[]    @relation("OrderToComms")
+  orderCoupons OrderCoupon[]
+
+  items       OrderItem[]
+  itemProfits OrderItemProfit[] @relation("Order_ItemProfits")
+
+  payments       Payment[]
+  purchaseOrders PurchaseOrder[]
+  refunds        Refund[]
+
+  // ✅ Order OTP requests
+  otpRequests OrderOtpRequest[] @relation("OrderOtpRequests")
+
+  // ✅ PO Delivery OTPs
+  deliveryOtps PurchaseOrderDeliveryOtp[]
+
+  allocations SupplierPaymentAllocation[] @relation("OrderAllocations")
+
+  refundRequests RefundRequest[]
+  disputeCases   DisputeCase[]
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+model SupplierRider {
+  id         String @id @default(cuid())
+  supplierId String
+  userId     String @unique
+
+  name     String?
+  phone    String?
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  supplier       Supplier        @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purchaseOrders PurchaseOrder[] @relation("PurchaseOrderRider")
+
+  @@index([supplierId])
+}
+
+/**
+ * =========================
+ * OrderItem (chosen supplier + chosen offer ids)
+ * =========================
+ */
+model OrderItem {
+  id      String @id @default(cuid())
+  orderId String
+
+  variantId String?
+  productId String?
+
+  title     String
+  unitPrice Decimal  @db.Decimal(10, 2)
+  quantity  Int
+  lineTotal Decimal? @db.Decimal(10, 2)
+
+  status          String?
+  selectedOptions Json?
+  createdAt       DateTime @default(now())
+
+  chosenSupplierId        String?
+  chosenSupplierUnitPrice Decimal? @db.Decimal(10, 2)
+
+  weightGrams Int?
+
+  chosenSupplierProductOfferId String?
+  chosenSupplierVariantOfferId String?
+
+  chosenSupplier             Supplier?             @relation("OrderItemChosenSupplier", fields: [chosenSupplierId], references: [id])
+  chosenSupplierProductOffer SupplierProductOffer? @relation("OrderItemChosenSupplierProductOffer", fields: [chosenSupplierProductOfferId], references: [id])
+  chosenSupplierVariantOffer SupplierVariantOffer? @relation("OrderItemChosenSupplierVariantOffer", fields: [chosenSupplierVariantOfferId], references: [id])
+
+  order   Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product?         @relation(fields: [productId], references: [id])
+  variant ProductVariant?  @relation("VariantOrderItems", fields: [variantId], references: [id])
+  profit  OrderItemProfit? @relation("OrderItem_Profit")
+
+  purchaseOrderItems PurchaseOrderItem[]
+  refundItems        RefundItem[]
+
+  @@index([chosenSupplierId])
+  @@index([chosenSupplierProductOfferId])
+  @@index([chosenSupplierVariantOfferId])
+  @@index([orderId])
+  @@index([productId])
+}
+
+/**
+ * =========================
+ * Payment (allocations + supplier breakdown snapshot)
+ * =========================
+ */
+model Payment {
+  id        String @id @default(cuid())
+  orderId   String
+  reference String @unique
+
+  amount Decimal       @db.Decimal(12, 2)
+  status PaymentStatus @default(PENDING)
+
+  provider  String?
+  channel   String?
+  attemptNo Int?
+
+  initPayload     Json?
+  providerPayload Json?
+
+  // ✅ NEW (minimal + very useful)
+  providerTxId String? @db.VarChar(64) // Paystack transaction id (e.g. "123456789")
+  providerEnv  String? @db.VarChar(16) // "test" | "live" | "trial"
+  providerMeta Json? // any extra ids: transfer_code, refund id, etc.
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  feeAmount Decimal? @default(0) @db.Decimal(12, 2)
+
+  receiptNo       String?   @unique
+  receiptIssuedAt DateTime?
+  receiptData     Json?
+
+  paidAt     DateTime?
+  refundedAt DateTime?
+
+  supplierBreakdownJson Json?
+
+  supplierId   String?
+  supplierName String?
+
+  orderComms OrderComms? @relation("PaymentToComms")
+  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  supplier   Supplier?   @relation("SupplierPayments", fields: [supplierId], references: [id])
+
+  events      PaymentEvent[]
+  allocations SupplierPaymentAllocation[]
+
+  @@index([supplierId])
+  @@index([status, paidAt])
+  @@index([orderId, createdAt])
+  // ✅ NEW index helpful for refunds/support
+  @@index([provider, providerTxId])
+}
+
+/**
+ * =========================
+ * PurchaseOrder + items + delivery OTPs
+ * =========================
+ */
 model PurchaseOrder {
-  id               String                      @id @default(cuid())
-  orderId          String
-  supplierId       String
-  supplierOrderRef String?                     @unique
-  subtotal         Decimal                     @db.Decimal(10, 2)
-  platformFee      Decimal                     @db.Decimal(10, 2)
-  supplierAmount   Decimal                     @db.Decimal(10, 2)
-  whatsappMsgId    String?
-  createdAt        DateTime                    @default(now())
-  status           PurchaseOrderStatus         @default(CREATED)
+  id         String @id @default(cuid())
+  orderId    String
+  supplierId String
 
-  payoutStatus     PurchaseOrderPayoutStatus @default(PENDING)
-  paidOutAt        DateTime?
+  supplierOrderRef String? @unique
 
-  order            Order                       @relation(fields: [orderId], references: [id])
-  supplier         Supplier                    @relation(fields: [supplierId], references: [id])
-  items            PurchaseOrderItem[]
-  allocations      SupplierPaymentAllocation[] @relation("PurchaseOrderAllocations")
-  refund Refund?
+  subtotal       Decimal @db.Decimal(10, 2)
+  platformFee    Decimal @db.Decimal(10, 2)
+  supplierAmount Decimal @db.Decimal(10, 2)
 
-  confirmedAt      DateTime?
-  packedAt         DateTime?
-  shippedAt        DateTime?
-  deliveredAt      DateTime?
-  canceledAt       DateTime?
-  cancelReason     String?   // e.g. OUT_OF_STOCK, CUSTOMER_REQUEST, SUPPLIER_CANCEL, ADDRESS_ISSUE, OTHER
-  cancelNote       String?   // free text
+  whatsappMsgId String?
+  createdAt     DateTime @default(now())
+
+  status PurchaseOrderStatus @default(CREATED)
+
+  payoutStatus PurchaseOrderPayoutStatus @default(PENDING)
+  paidOutAt    DateTime?
+
+  order    Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  items       PurchaseOrderItem[]
+  allocations SupplierPaymentAllocation[] @relation("PurchaseOrderAllocations")
+  refund      Refund?
+
+  confirmedAt  DateTime?
+  packedAt     DateTime?
+  shippedAt    DateTime?
+  deliveredAt  DateTime?
+  canceledAt   DateTime?
+  cancelReason String?
+  cancelNote   String?
+
+  // ✅ legacy fields kept (if you still use them elsewhere)
+  deliveryOtpHash           String?
+  deliveryOtpIssuedAt       DateTime?
+  deliveryOtpExpiresAt      DateTime?
+  deliveryOtpVerifiedAt     DateTime?
+  deliveryOtpAttempts       Int       @default(0)
+  deliveryOtpLockedUntil    DateTime?
+  deliveryOtpIssuedToUserId String?
+  deliveredByUserId         String?
+  deliveredMetaJson         Json?
+
+  // ✅ normalized table
+  deliveryOtps PurchaseOrderDeliveryOtp[]
+
+  refundRequests RefundRequest[]
+  disputeCases   DisputeCase[]
+
+  riderId String?
+  rider   SupplierRider? @relation("PurchaseOrderRider", fields: [riderId], references: [id], onDelete: SetNull)
 
   @@unique([orderId, supplierId])
+  @@index([riderId])
   @@index([orderId])
   @@index([supplierId])
   @@index([status])
+  @@index([supplierId, status])
 }
 
 model PurchaseOrderItem {
-  id              String        @id @default(cuid())
+  id              String @id @default(cuid())
   purchaseOrderId String
   orderItemId     String
-  externalRef     String?
-  externalStatus  String?
-  receiptUrl      String?
-  orderItem       OrderItem     @relation(fields: [orderItemId], references: [id])
-  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+
+  externalRef    String?
+  externalStatus String?
+  receiptUrl     String?
+
+  orderItem     OrderItem     @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@index([purchaseOrderId])
+  @@index([orderItemId])
+}
+
+/**
+ * =========================
+ * Supplier offers (used in cheapest-allocation logic)
+ * =========================
+ */
+model SupplierProductOffer {
+  id         String @id @default(cuid())
+  supplierId String
+  productId  String
+
+  basePrice Decimal @db.Decimal(10, 2)
+  currency  String  @default("NGN")
+
+  availableQty Int  @default(0)
+  leadDays     Int?
+
+  isActive Boolean @default(true)
+  inStock  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orderItemsChosen OrderItem[] @relation("OrderItemChosenSupplierProductOffer")
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  variantOffers SupplierVariantOffer[]
+
+  @@unique([supplierId, productId])
+  @@index([productId])
+  @@index([supplierId])
+  @@index([isActive, inStock])
+}
+
+model SupplierVariantOffer {
+  id         String @id @default(cuid())
+  supplierId String
+  productId  String
+  variantId  String
+
+  supplierProductOfferId String?
+
+  priceBump Decimal @db.Decimal(10, 2)
+  currency  String  @default("NGN")
+
+  availableQty Int  @default(0)
+  leadDays     Int?
+
+  isActive Boolean @default(true)
+  inStock  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orderItemsChosen OrderItem[] @relation("OrderItemChosenSupplierVariantOffer")
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  supplierProductOffer SupplierProductOffer? @relation(fields: [supplierProductOfferId], references: [id])
+  variant              ProductVariant        @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@unique([supplierId, variantId])
+  @@index([variantId])
+  @@index([productId])
+  @@index([supplierId])
+  @@index([isActive, inStock])
+}
+
+/**
+ * =========================
+ * Order OTP Request (✅ FIXED)
+ * - id is the requestId / otpToken
+ * - purpose is enum
+ * - requestId field removed
+ * =========================
+ */
+model OrderOtpRequest {
+  id String @id @default(cuid())
+
+  orderId String
+  userId  String
+  purpose OrderOtpPurpose
+
+  codeHash  String
+  salt      String
+  expiresAt DateTime
+
+  consumedAt  DateTime?
+  attempts    Int       @default(0)
+  lockedUntil DateTime?
+  verifiedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  order Order @relation("OrderOtpRequests", fields: [orderId], references: [id], onDelete: Cascade)
+  user  User  @relation("UserOtpRequests", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([userId])
+  @@index([purpose])
+  @@index([orderId, purpose, createdAt])
+  @@index([expiresAt])
+}
+
+/**
+ * =========================
+ * PurchaseOrderDeliveryOtp (unchanged structurally, but with good onDelete)
+ * =========================
+ */
+model PurchaseOrderDeliveryOtp {
+  id              String @id @default(cuid())
+  purchaseOrderId String
+  orderId         String
+  customerId      String
+
+  codeHash   String
+  salt       String
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  consumedAt DateTime?
+
+  attempts    Int       @default(0)
+  lockedUntil DateTime?
+
+  deliveredAt       DateTime?
+  deliveredByUserId String?
+  createdAt         DateTime  @default(now())
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customer      User          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([purchaseOrderId])
+  @@index([orderId])
+  @@index([customerId])
 }
 
 model OrderActivity {
@@ -902,10 +1360,14 @@ enum PurchaseOrderStatus {
   SHIPPED
   DELIVERED
   CANCELED
+  REFUND_REQUESTED
+  OUT_FOR_DELIVERY
 }
 
 enum SupplierPaymentStatus {
   PENDING
+  APPROVED
   PAID
   FAILED
+  HELD
 }

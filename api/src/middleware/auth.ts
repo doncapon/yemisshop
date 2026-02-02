@@ -1,10 +1,9 @@
 // src/lib/authMiddleware.ts
-import type { Request, Response, NextFunction, RequestHandler } from 'express';
-import jwt from 'jsonwebtoken';
-import { prisma } from '../lib/prisma.js';
+import type { Request, Response, NextFunction, RequestHandler } from "express";
+import jwt from "jsonwebtoken";
+import { prisma } from "../lib/prisma.js";
 
-export type Role = 'SHOPPER' | 'ADMIN' | 'SUPER_ADMIN' | 'SUPPLIER';
-
+export type Role = "SHOPPER" | "ADMIN" | "SUPER_ADMIN" | "SUPPLIER" | "SUPPLIER_RIDER";
 export type TokenKind = "access" | "verify";
 
 export type AuthedUser = {
@@ -12,13 +11,15 @@ export type AuthedUser = {
   email: string;
   role: Role;
 
-  // ✅ change #2: preserve token kind for requireAuth/requireVerifySession
+  // ✅ preserve token kind for requireAuth/requireVerifySession
   k?: TokenKind | string;
 
-  // ✅ change #3: session id for access tokens
+  // ✅ session id for access tokens
   sid?: string | null;
-};
 
+  // ✅ optional (helps if you have other Request.user typings that include supplierId)
+  supplierId?: string | null;
+};
 
 declare global {
   namespace Express {
@@ -28,35 +29,36 @@ declare global {
   }
 }
 
-const AUTH_DEBUG = String(process.env.AUTH_DEBUG || '').toLowerCase() === 'true';
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+const AUTH_DEBUG = String(process.env.AUTH_DEBUG || "").toLowerCase() === "true";
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 
-const IDLE_MINUTES_DEFAULT = 60;  // shopper default
-const IDLE_MINUTES_ADMIN = 20;    // admin/supplier default
+const IDLE_MINUTES_DEFAULT = 60; // shopper default
+const IDLE_MINUTES_ADMIN = 20; // admin/supplier/rider default
 
 function idleMinutesForRole(role: string) {
-  return role === "ADMIN" || role === "SUPER_ADMIN" || role === "SUPPLIER"
+  return role === "ADMIN" || role === "SUPER_ADMIN" || role === "SUPPLIER" || role === "SUPPLIER_RIDER"
     ? IDLE_MINUTES_ADMIN
     : IDLE_MINUTES_DEFAULT;
 }
-
 
 /* ---------- helpers ---------- */
 
 function normalizeRole(r?: string | null): Role | null {
   if (!r) return null;
-  const v = r.replace(/[\s-]/g, '').toUpperCase();
-  if (v === 'SUPERADMIN' || v === 'SUPER_ADMIN') return 'SUPER_ADMIN';
-  if (v === 'ADMIN') return 'ADMIN';
-  if (v === 'SUPPLIER') return 'SUPPLIER'; // ✅ FIX: recognize supplier
-  if (v === 'SHOPPER' || v === 'USER') return 'SHOPPER';
+  const v = r.replace(/[\s-]/g, "").toUpperCase();
+
+  if (v === "SUPERADMIN" || v === "SUPER_ADMIN") return "SUPER_ADMIN";
+  if (v === "ADMIN") return "ADMIN";
+  if (v === "SUPPLIER") return "SUPPLIER";
+  if (v === "SUPPLIERRIDER" || v === "SUPPLIER_RIDER") return "SUPPLIER_RIDER";
+  if (v === "SHOPPER" || v === "USER") return "SHOPPER";
   return null;
 }
 
 function getToken(req: Request): string | null {
   // 1) Authorization: Bearer
   const h = req.headers.authorization;
-  if (h && /^Bearer\s+/i.test(h)) return h.replace(/^Bearer\s+/i, '').trim();
+  if (h && /^Bearer\s+/i.test(h)) return h.replace(/^Bearer\s+/i, "").trim();
 
   // 2) cookies (requires app.use(cookieParser()))
   const c1 = (req as any).cookies?.access_token;
@@ -91,65 +93,49 @@ async function verifyAndHydrate(token: string): Promise<AuthedUser | null> {
     const roleFromToken = normalizeRole(payload.role);
     const role: Role = (roleFromDb ?? roleFromToken ?? "SHOPPER") as Role;
 
-    // ✅ change #3: if this is an access token and it has sid, validate the session
+    // ✅ If this is an access token and it has sid, validate the session
     if (String(k || "") === "access" && sid) {
-      const sess = await (prisma as any).userSession.findFirst({
-        where: {
-          id: String(sid),
-          userId: String(id),
-          revokedAt: null,
-        },
-        select: { id: true, lastSeenAt: true },
+      const sessionDelegate = (prisma as any).userSession;
+
+      // If your schema doesn't have UserSession, treat as invalid token
+      if (!sessionDelegate?.findFirst) return null;
+
+      const sess = await sessionDelegate.findFirst({
+        where: { id: String(sid), userId: String(id), revokedAt: null },
+        select: { id: true, lastSeenAt: true, createdAt: true, expiresAt: true },
       });
 
       if (!sess) return null;
 
-      if (String(k || "") === "access" && sid) {
-        const sess = await prisma.userSession.findFirst({
-          where: { id: String(sid), userId: String(id), revokedAt: null },
-          select: { id: true, lastSeenAt: true, createdAt: true, expiresAt: true },
-        });
+      const now = new Date();
 
-        if (!sess) return null;
+      // ✅ absolute expiry
+      if (sess.expiresAt && +sess.expiresAt <= +now) return null;
 
-        const now = new Date();
+      // ✅ idle expiry
+      const idleMs = idleMinutesForRole(role) * 60_000;
+      const last = sess.lastSeenAt ? +new Date(sess.lastSeenAt) : 0;
+      if (last && +now - last > idleMs) return null;
 
-        // ✅ absolute expiry
-        if (sess.expiresAt && +sess.expiresAt <= +now) return null;
-
-        // ✅ idle expiry
-        const idleMs = idleMinutesForRole(role) * 60_000;
-        const last = sess.lastSeenAt ? +new Date(sess.lastSeenAt) : 0;
-        if (last && (+now - last) > idleMs) return null;
-
-        // best-effort update lastSeenAt (throttle)
-        if (!last || (+now - last) > 60_000) {
-          await prisma.userSession.update({
+      // best-effort update lastSeenAt at most once per minute
+      if (!last || +now - last > 60_000) {
+        try {
+          await sessionDelegate.update({
             where: { id: String(sid) },
             data: { lastSeenAt: now },
           });
+        } catch {
+          // ignore (non-critical)
         }
-      }
-
-
-      // best-effort: update lastSeenAt at most once per minute
-      const now = new Date();
-      const last = sess.lastSeenAt ? +new Date(sess.lastSeenAt) : 0;
-      if (!last || (+now - last) > 60_000) {
-        await (prisma as any).userSession.update({
-          where: { id: String(sid) },
-          data: { lastSeenAt: now },
-        });
       }
     }
 
-    return { id, email, role, k, sid };
+    return { id: String(id), email, role, k, sid };
   } catch (e) {
     if (AUTH_DEBUG) console.warn("[auth] jwt verify failed:", (e as any)?.message);
     return null;
   }
 }
-
 
 /* ---------- middlewares ---------- */
 
@@ -164,9 +150,9 @@ export const attachUser: RequestHandler = async (req, _res, next) => {
   const user = await verifyAndHydrate(token);
   if (user) {
     req.user = user;
-    if (AUTH_DEBUG) console.log('[auth] user attached:', user);
+    if (AUTH_DEBUG) console.log("[auth] user attached:", user);
   } else if (AUTH_DEBUG) {
-    console.log('[auth] token present but invalid');
+    console.log("[auth] token present but invalid");
   }
   next();
 };
@@ -174,18 +160,18 @@ export const attachUser: RequestHandler = async (req, _res, next) => {
 /** Hard requirement: must be authenticated. */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const u = req.user as any;
-  if (!u?.id) return res.status(401).json({ error: 'Unauthorized' });
-  if (u.k && u.k !== 'access') return res.status(403).json({ error: 'Forbidden' });
+  if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
+  if (u.k && u.k !== "access") return res.status(403).json({ error: "Forbidden" });
   next();
 }
 
 export function requireVerifySession(req: Request, res: Response, next: NextFunction) {
   const u = req.user as any;
-  if (!u?.id) return res.status(401).json({ error: 'Unauthorized' });
+  if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
 
   // allow verify token OR full access token (handy if already logged in)
-  if (u.k && u.k !== 'verify' && u.k !== 'access') {
-    return res.status(403).json({ error: 'Forbidden' });
+  if (u.k && u.k !== "verify" && u.k !== "access") {
+    return res.status(403).json({ error: "Forbidden" });
   }
 
   next();
@@ -193,24 +179,24 @@ export function requireVerifySession(req: Request, res: Response, next: NextFunc
 
 /** Admin or Super Admin only. */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+  if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
   const role = normalizeRole(req.user.role);
-  if (role === 'ADMIN' || role === 'SUPER_ADMIN') return next();
-  return res.status(403).json({ error: 'Forbidden' });
+  if (role === "ADMIN" || role === "SUPER_ADMIN") return next();
+  return res.status(403).json({ error: "Forbidden" });
 }
 
 /** Super Admin only. */
 export function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+  if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
   const role = normalizeRole(req.user.role);
-  if (role === 'SUPER_ADMIN') return next();
-  return res.status(403).json({ error: 'Forbidden' });
+  if (role === "SUPER_ADMIN") return next();
+  return res.status(403).json({ error: "Forbidden" });
 }
 
 /** Supplier only. */
 export function requireSupplier(req: Request, res: Response, next: NextFunction) {
-  if (!req.user?.id) return res.status(401).json({ error: 'Unauthorized' });
+  if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
   const role = normalizeRole(req.user.role);
-  if (role === 'SUPPLIER') return next();
-  return res.status(403).json({ error: 'Forbidden' });
+  if (role === "SUPPLIER") return next();
+  return res.status(403).json({ error: "Forbidden" });
 }

@@ -214,14 +214,14 @@ async function fetchActiveOffersFor(productId: string, variantId?: string | null
     const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
     const out = norm(list);
     if (out.length) return out;
-  } catch {}
+  } catch { }
 
   try {
     const { data } = await api.get(fb1);
     const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
     const out = norm(list);
     if (out.length) return out;
-  } catch {}
+  } catch { }
 
   try {
     const resp = await api.get(fb2);
@@ -231,17 +231,17 @@ async function fetchActiveOffersFor(productId: string, variantId?: string | null
     const fromVariant =
       variantId && Array.isArray(payload?.variants)
         ? norm(
-            payload.variants
-              .filter((v: any) => String(v.id) === String(variantId))
-              .flatMap((v: any) => (Array.isArray(v.offers) ? v.offers : []))
-          )
+          payload.variants
+            .filter((v: any) => String(v.id) === String(variantId))
+            .flatMap((v: any) => (Array.isArray(v.offers) ? v.offers : []))
+        )
         : [];
 
     const fromProduct = Array.isArray(payload?.supplierOffers) ? norm(payload.supplierOffers) : [];
 
     const combined = [...fromVariant, ...fromProduct];
     if (combined.length) return combined;
-  } catch {}
+  } catch { }
 
   return [];
 }
@@ -302,10 +302,10 @@ function Card({
     tone === 'primary'
       ? 'border-primary-200'
       : tone === 'emerald'
-      ? 'border-emerald-200'
-      : tone === 'amber'
-      ? 'border-amber-200'
-      : 'border-border';
+        ? 'border-emerald-200'
+        : tone === 'amber'
+          ? 'border-amber-200'
+          : 'border-border';
 
   return (
     <div
@@ -333,19 +333,19 @@ function CardHeader({
     tone === 'primary'
       ? 'from-primary-50 to-white'
       : tone === 'emerald'
-      ? 'from-emerald-50 to-white'
-      : tone === 'amber'
-      ? 'from-amber-50 to-white'
-      : 'from-surface to-white';
+        ? 'from-emerald-50 to-white'
+        : tone === 'amber'
+          ? 'from-amber-50 to-white'
+          : 'from-surface to-white';
 
   const toneIcon =
     tone === 'primary'
       ? 'text-primary-600'
       : tone === 'emerald'
-      ? 'text-emerald-600'
-      : tone === 'amber'
-      ? 'text-amber-600'
-      : 'text-ink-soft';
+        ? 'text-emerald-600'
+        : tone === 'amber'
+          ? 'text-amber-600'
+          : 'text-ink-soft';
 
   return (
     <div className={`flex items-center justify-between p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
@@ -365,9 +365,8 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 ${
-        props.className || ''
-      }`}
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 ${props.className || ''
+        }`}
     />
   );
 }
@@ -551,12 +550,17 @@ export default function Checkout() {
   const vatAddOn = fee?.vatAddOn ?? 0;
 
   const taxRate = useMemo(() => (Number.isFinite(taxRatePct) ? taxRatePct / 100 : 0), [taxRatePct]);
+  const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
   // Display-only: VAT "included" estimate (when mode is INCLUDED)
   const estimatedVATIncluded = useMemo(() => {
-    if (taxMode !== 'INCLUDED' || taxRate <= 0) return 0;
-    return itemsSubtotal * taxRate;
+    if (taxMode !== "INCLUDED" || taxRate <= 0) return 0;
+
+    const gross = itemsSubtotal; // this already includes VAT
+    const vat = gross - gross / (1 + taxRate); // ✅ correct extraction
+    return round2(vat);
   }, [itemsSubtotal, taxMode, taxRate]);
+
 
   const serviceFeeTotal = fee?.serviceFeeTotal ?? 0;
 
@@ -633,13 +637,13 @@ export default function Checkout() {
 
   const onChangeHome =
     (k: keyof Address) =>
-    (e: React.ChangeEvent<HTMLInputElement>) =>
-      setHomeAddr((a) => ({ ...a, [k]: e.target.value }));
+      (e: React.ChangeEvent<HTMLInputElement>) =>
+        setHomeAddr((a) => ({ ...a, [k]: e.target.value }));
 
   const onChangeShip =
     (k: keyof Address) =>
-    (e: React.ChangeEvent<HTMLInputElement>) =>
-      setShipAddr((a) => ({ ...a, [k]: e.target.value }));
+      (e: React.ChangeEvent<HTMLInputElement>) =>
+        setShipAddr((a) => ({ ...a, [k]: e.target.value }));
 
   function validateAddress(a: Address, isShipping = false): string | null {
     const label = isShipping ? 'Shipping' : 'Home';
@@ -857,7 +861,7 @@ export default function Checkout() {
             >
               Back to cart
             </button>
-            <button className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm" onClick={() => {}} disabled title="Complete the steps above">
+            <button className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm" onClick={() => { }} disabled title="Complete the steps above">
               Continue
             </button>
           </div>

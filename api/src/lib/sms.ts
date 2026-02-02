@@ -99,17 +99,25 @@ type SendWhatsAppOpts = {
   previewUrl?: boolean;
 };
 
-/**
- * Send a WhatsApp message via Cloud API.
- * `toE164` must be in E.164 format, e.g. "+2348XXXXXXXXX"
- */
+
+
+
+// Strongly recommend a dedicated approved OTP template
+// e.g. "dayspring_otp" with body: "Your DaySpring OTP is {{1}}. Expires in {{2}} minutes."
+const WABA_OTP_TEMPLATE_NAME = (
+  process.env.WABA_OTP_TEMPLATE_NAME ||
+  process.env.WABA_TEMPLATE_NAME ||
+  ""
+).trim();
+
+
 export async function sendWhatsApp(
   toE164: string,
   msg: string,
   opts: SendWhatsAppOpts = {}
 ): Promise<{ ok: true; id?: string } | { ok: false; error: string; status?: number }> {
   if (!WABA_ID || !WABA_TOKEN) {
-    const reason = '[whatsapp] Missing WABA_PHONE_NUMBER_ID or WABA_TOKEN';
+    const reason = "[whatsapp] Missing WABA_PHONE_NUMBER_ID or WABA_TOKEN";
     console.warn(reason);
     return { ok: false, error: reason };
   }
@@ -117,32 +125,29 @@ export async function sendWhatsApp(
   const url = `https://graph.facebook.com/v19.0/${WABA_ID}/messages`;
 
   const useTemplate =
-    typeof opts.useTemplate === 'boolean'
-      ? opts.useTemplate
-      : Boolean(WABA_TEMPLATE_NAME);
+    typeof opts.useTemplate === "boolean" ? opts.useTemplate : Boolean(WABA_OTP_TEMPLATE_NAME);
 
   const headers = {
     Authorization: `Bearer ${WABA_TOKEN}`,
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   };
 
   let body: any;
 
   if (useTemplate) {
-    const templateName = (opts.templateName || WABA_TEMPLATE_NAME).trim();
+    const templateName = (opts.templateName || WABA_OTP_TEMPLATE_NAME).trim();
     if (!templateName) {
-      return { ok: false, error: 'Template mode requested but no template name provided' };
+      return { ok: false, error: "Template mode requested but no template name provided" };
     }
 
-    // If no custom components passed, send the whole message as a single body parameter ({{1}})
     const components =
       opts.components ??
-      [{ type: 'body', parameters: [{ type: 'text', text: msg }] }];
+      [{ type: "body", parameters: [{ type: "text", text: msg }] }];
 
     body = {
-      messaging_product: 'whatsapp',
+      messaging_product: "whatsapp",
       to: toE164,
-      type: 'template',
+      type: "template",
       template: {
         name: templateName,
         language: { code: opts.langCode || WABA_TEMPLATE_LANG },
@@ -150,11 +155,10 @@ export async function sendWhatsApp(
       },
     };
   } else {
-    // Free-form text — works only if user has an active 24h session (has messaged you recently)
     body = {
-      messaging_product: 'whatsapp',
+      messaging_product: "whatsapp",
       to: toE164,
-      type: 'text',
+      type: "text",
       text: {
         preview_url: Boolean(opts.previewUrl),
         body: msg,
@@ -162,17 +166,19 @@ export async function sendWhatsApp(
     };
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    // @ts-ignore Node fetch types don’t accept https.Agent; undici will pass it through
-    agent: devHttpsAgent,
-  } as any);
+  const res = await fetch(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      // @ts-ignore Node fetch types don’t accept https.Agent; undici will pass it through
+      agent: devHttpsAgent,
+    } as any
+  );
 
   const text = await res.text();
   if (!res.ok) {
-    // Bubble up helpful error details from Graph API
     return { ok: false, error: text || res.statusText, status: res.status };
   }
 
@@ -183,4 +189,59 @@ export async function sendWhatsApp(
   } catch {
     return { ok: true };
   }
+}
+
+/** ---------- OTP wrappers ---------- */
+
+type OtpWhatsAppMeta = {
+  brand?: string;        // "DaySpring"
+  expiresMins?: number;  // e.g. 5
+  purposeLabel?: string; // "Payment verification"
+};
+
+function devPrintOtp(channel: "WHATSAPP", to: string, msg: string) {
+  // Always show in dev if WhatsApp isn't configured
+  console.log(`\n[OTP:${channel}:DEV] To: ${to}\n${msg}\n`);
+}
+
+/**
+ * Send OTP via WhatsApp.
+ * Uses template mode by default (recommended).
+ *
+ * IMPORTANT: your approved template should match the parameters below.
+ * Default expects 2 params: {{1}}=code, {{2}}=expiresMins
+ */
+export async function sendWhatsAppOtp(toE164: string, code: string, meta: OtpWhatsAppMeta = {}) {
+  const brand = meta.brand || "DaySpring";
+  const expiresMins = Math.max(1, Number(meta.expiresMins ?? 5));
+  const purpose = meta.purposeLabel ? ` (${meta.purposeLabel})` : "";
+
+  // If WABA isn't configured, dev-print and return ok=false but non-throwing
+  if (!WABA_ID || !WABA_TOKEN || !WABA_OTP_TEMPLATE_NAME) {
+    devPrintOtp(
+      "WHATSAPP",
+      toE164,
+      `${brand} OTP${purpose}: ${code} (expires in ${expiresMins} mins)`
+    );
+    return { ok: false as const, error: "WABA not configured" };
+  }
+
+  // Template expects: code + expires
+  const components = [
+    {
+      type: "body",
+      parameters: [
+        { type: "text", text: String(code) },
+        { type: "text", text: String(expiresMins) },
+      ],
+    },
+  ];
+
+  const labelMsg = `${brand} OTP${purpose}: ${code}. Expires in ${expiresMins} minutes.`;
+
+  return sendWhatsApp(toE164, labelMsg, {
+    useTemplate: true,
+    templateName: WABA_OTP_TEMPLATE_NAME,
+    components,
+  });
 }

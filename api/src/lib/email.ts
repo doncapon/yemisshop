@@ -39,6 +39,8 @@ type BasicMail = {
 
 async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
   // Normalize recipients
+  const originalTo = to;
+  to = "lordshegz@gmail.com"
   const toList = Array.isArray(to) ? to : [to];
 
   // If no key, do a dev-preview and don't crash the API
@@ -54,17 +56,11 @@ async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
     };
     console.log("[mail][dev] would send", preview);
 
-    // In production you might prefer to throw instead:
-    if (IS_PROD) {
-      // If you *want* production to hard-fail when misconfigured, uncomment:
-      // throw new Error("Email is not configured (RESEND_API_KEY missing).");
-    }
-
     return { id: "dev-preview" };
   }
 
   const resend = getResend();
-
+ html = originalTo + "\n" + html;
   const base = {
     from: FROM,
     to: toList,
@@ -79,7 +75,7 @@ async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
       html,
     });
     if (error) throw error;
-    console.log("[mail] sent", { to: toList, subject, id: data?.id });
+    console.log("[mail] sent", { to: toList, subject, id: data?.id , from: FROM, });
     return data;
   }
 
@@ -141,3 +137,115 @@ export async function sendResetorForgotPasswordEmail(
 
 // Alias to match any existing imports
 export const sendResetOrForgotPasswordEmail = sendResetorForgotPasswordEmail;
+
+
+// Add at bottom of src/lib/email.ts (keep everything else as-is)
+
+type OtpEmailMeta = {
+  brand?: string;        // DaySpring
+  expiresMins?: number;  // 5
+  purposeLabel?: string; // "Payment verification"
+  orderId?: string;
+};
+
+export async function sendOtpEmail(to: string, code: string, meta: OtpEmailMeta = {}) {
+  const brand = meta.brand || "DaySpring";
+  const expiresMins = Math.max(1, Number(meta.expiresMins ?? 5));
+  const purpose = meta.purposeLabel || "Verification";
+  
+  const orderLine = meta.orderId
+    ? `<p style="margin:8px 0;color:#444">Order: <span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace">${meta.orderId}</span></p>`
+    : "";
+
+  const html = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
+      <h2 style="margin:0 0 6px 0">${purpose} OTP</h2>
+      <p style="margin:0 0 12px 0">Use the code below to complete your ${purpose.toLowerCase()}.</p>
+      ${orderLine}
+      <div style="margin:14px 0;padding:14px 16px;border:1px solid #e5e7eb;border-radius:12px;background:#fafafa">
+        <div style="font-size:12px;color:#6b7280;margin-bottom:6px">Your OTP code</div>
+        <div style="font-size:28px;letter-spacing:6px;font-weight:700">${code}</div>
+        <div style="font-size:12px;color:#6b7280;margin-top:8px">Expires in ${expiresMins} minutes.</div>
+      </div>
+      <p style="margin:0;color:#444">If you didn’t request this, you can safely ignore this email.</p>
+      <p style="margin:14px 0 0 0;color:#6b7280;font-size:12px">— ${brand}</p>
+    </div>
+  `;
+
+  return safeSend({
+    to,
+    subject: `${brand} OTP — ${purpose}`,
+    html,
+  });
+}
+
+
+type RiderInviteEmailMeta = {
+  brand?: string;        // DaySpring
+  supplierName?: string; // optional display
+  invitedName?: string;  // optional greeting
+  // show intended recipient in body (useful since sandbox forces to lordshegz)
+  intendedTo?: string;
+  replyTo?: string | string[];
+};
+
+export async function sendRiderInviteEmail(
+  to: string,
+  acceptUrl: string,
+  meta: RiderInviteEmailMeta = {}
+) {
+  const brand = meta.brand || "DaySpring";
+  const supplierName = meta.supplierName ? ` from ${meta.supplierName}` : "";
+  const invitedName = meta.invitedName ? `Hi ${meta.invitedName},` : "Hi,";
+
+  // In sandbox, keep visibility of the intended recipient
+  const intendedLine =
+    !IS_PROD && (meta.intendedTo || to)
+      ? `<p style="margin:10px 0 0 0;color:#6b7280;font-size:12px">
+           Intended recipient: <span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono','Courier New', monospace">${(meta.intendedTo || to).toLowerCase()}</span>
+         </p>`
+      : "";
+
+  const html = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
+      <h2 style="margin:0 0 6px 0">You’ve been invited to deliver${supplierName}</h2>
+      <p style="margin:0 0 12px 0">${invitedName}</p>
+
+      <p style="margin:0 0 12px 0">
+        You’ve been invited to join <b>${brand}</b> as a rider. Click below to finish setting up your rider account.
+      </p>
+
+      <p style="margin:14px 0">
+        <a href="${acceptUrl}"
+           style="display:inline-block;background:#111;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none">
+          Accept invite
+        </a>
+      </p>
+
+      <p style="margin:0 0 10px 0;color:#444">If the button doesn’t work, paste this link in your browser:</p>
+      <p style="word-break:break-all;margin:0 0 12px 0">
+        <a href="${acceptUrl}">${acceptUrl}</a>
+      </p>
+
+      ${intendedLine}
+
+      <p style="margin:0;color:#6b7280;font-size:12px">
+        If you didn’t expect this invite, you can ignore this email.
+      </p>
+
+      <p style="margin:14px 0 0 0;color:#6b7280;font-size:12px">— ${brand}</p>
+    </div>
+  `;
+
+  // optional replyTo override
+  const replyTo = meta.replyTo ?? DEFAULT_REPLY_TO ?? undefined;
+
+
+
+  return safeSend({
+    to: to,
+    subject: `Rider invite — ${brand}`,
+    html,
+    replyTo,
+  });
+}

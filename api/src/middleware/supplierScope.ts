@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { prisma } from "../lib/prisma.js";
 
-type Role = "SHOPPER" | "ADMIN" | "SUPER_ADMIN" | "SUPPLIER";
+type Role = "SHOPPER" | "ADMIN" | "SUPER_ADMIN" | "SUPPLIER"| "SUPPLIER_RIDER";
 
 function asRole(r: any): Role | null {
   const v = String(r || "").replace(/[\s-]/g, "").toUpperCase();

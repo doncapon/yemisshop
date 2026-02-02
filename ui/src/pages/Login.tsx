@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
-import api from '../api/client.js';
-import { useAuthStore, type Role } from '../store/auth';
-import SiteLayout from '../layouts/SiteLayout.js';
+// src/pages/Login.tsx
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import api from "../api/client.js";
+import { useAuthStore, type Role } from "../store/auth";
+import SiteLayout from "../layouts/SiteLayout.js";
 
 type MeResponse = {
   id: string;
@@ -31,19 +32,15 @@ function normalizeProfile(raw: any): MeResponse | null {
   if (!raw) return null;
 
   const emailVerified =
-    raw.emailVerified === true ||
-    !!raw.emailVerifiedAt ||
-    raw.emailVerifiedAt === 1;
+    raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1;
 
   const phoneVerified =
-    raw.phoneVerified === true ||
-    !!raw.phoneVerifiedAt ||
-    raw.phoneVerifiedAt === 1;
+    raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
 
   return {
-    id: String(raw.id ?? ''),
-    email: String(raw.email ?? ''),
-    role: (raw.role ?? 'SHOPPER') as Role,
+    id: String(raw.id ?? ""),
+    email: String(raw.email ?? ""),
+    role: (raw.role ?? "SHOPPER") as Role,
     firstName: raw.firstName ?? null,
     lastName: raw.lastName ?? null,
     emailVerified,
@@ -51,9 +48,20 @@ function normalizeProfile(raw: any): MeResponse | null {
   };
 }
 
+function normRole(r: any): Role {
+  const x = String(r || "").trim().toUpperCase();
+  return (x === "ADMIN" ||
+    x === "SUPER_ADMIN" ||
+    x === "SHOPPER" ||
+    x === "SUPPLIER" ||
+    x === "SUPPLIER_RIDER"
+    ? x
+    : "SHOPPER") as Role;
+}
+
 export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -72,7 +80,7 @@ export default function Login() {
   const [otpBusy, setOtpBusy] = useState(false);
   const [otpMsg, setOtpMsg] = useState<string | null>(null);
   const [otpCooldown, setOtpCooldown] = useState(0);
-  const [otp, setOtp] = useState('');
+  const [otp, setOtp] = useState("");
 
   const nav = useNavigate();
   const loc = useLocation();
@@ -126,13 +134,13 @@ export default function Login() {
     setVerifyToken(null);
 
     if (!email.trim() || !password.trim()) {
-      setErr('Email and password are required');
+      setErr("Email and password are required");
       return;
     }
 
     setLoading(true);
     try {
-      const res = await api.post('/api/auth/login', { email, password });
+      const res = await api.post("/api/auth/login", { email, password });
 
       const { token, profile, needsVerification } = res.data as LoginOk;
 
@@ -141,19 +149,23 @@ export default function Login() {
       setNeedsVerification(needsVerification ?? false);
 
       try {
-        localStorage.setItem('verifyEmail', profile.email);
-        if (needsVerification) localStorage.setItem('verifyToken', token);
+        localStorage.setItem("verifyEmail", profile.email);
+        if (needsVerification) localStorage.setItem("verifyToken", token);
       } catch {}
 
       const from = (loc.state as any)?.from?.pathname as string | undefined;
+
+      // IMPORTANT: redirect targets must exist in App.tsx
       const defaultByRole: Record<Role, string> = {
-        ADMIN: '/admin',
-        SUPER_ADMIN: '/admin',
-        SHOPPER: '/dashboard',
-        SUPPLIER: '/supplier',
+        ADMIN: "/admin",
+        SUPER_ADMIN: "/admin",
+        SHOPPER: "/dashboard",
+        SUPPLIER: "/supplier",
+        SUPPLIER_RIDER: "/supplier/orders",
       };
 
-      nav(from || defaultByRole[profile.role] || '/', { replace: true });
+      const roleKey = normRole(profile.role);
+      nav(from || defaultByRole[roleKey] || "/", { replace: true });
     } catch (e: any) {
       const status = e?.response?.status;
 
@@ -161,7 +173,7 @@ export default function Login() {
       if (status === 403 && e?.response?.data?.needsVerification) {
         const data = e.response.data as LoginBlocked;
 
-        setErr(data.error || 'Please verify your email and phone number to continue.');
+        setErr(data.error || "Please verify your email and phone number to continue.");
         setNeedsVerification(true);
 
         const p = normalizeProfile(data.profile);
@@ -172,8 +184,8 @@ export default function Login() {
         setVerifyToken(vt);
 
         try {
-          if (p?.email) localStorage.setItem('verifyEmail', p.email);
-          if (vt) localStorage.setItem('verify_token', vt);
+          if (p?.email) localStorage.setItem("verifyEmail", p.email);
+          if (vt) localStorage.setItem("verify_token", vt);
         } catch {}
 
         setCooldown(1);
@@ -182,8 +194,8 @@ export default function Login() {
 
       const msg =
         e?.response?.data?.error ||
-        (status === 401 ? 'Invalid email or password' : null) ||
-        'Login failed';
+        (status === 401 ? "Invalid email or password" : null) ||
+        "Login failed";
 
       setErr(msg);
       clear();
@@ -201,9 +213,9 @@ export default function Login() {
     setEmailMsg(null);
     setEmailBusy(true);
     try {
-      const r = await api.post('/api/auth/resend-verification', { email: blockedProfile.email });
+      const r = await api.post("/api/auth/resend-verification", { email: blockedProfile.email });
 
-      setEmailMsg('Verification email sent. Please check your inbox (and spam).');
+      setEmailMsg("Verification email sent. Please check your inbox (and spam).");
       const next = Number(r.data?.nextResendAfterSec ?? 60);
       setEmailCooldown(Math.max(1, next));
     } catch (e: any) {
@@ -214,7 +226,7 @@ export default function Login() {
         setEmailMsg(`Please wait ${retry}s before resending.`);
         setEmailCooldown(retry);
       } else {
-        setEmailMsg(e?.response?.data?.error || 'Could not resend verification email.');
+        setEmailMsg(e?.response?.data?.error || "Could not resend verification email.");
       }
     } finally {
       setEmailBusy(false);
@@ -226,13 +238,13 @@ export default function Login() {
     setEmailMsg(null);
     setEmailBusy(true);
     try {
-      const r = await api.get('/api/auth/email-status', { params: { email: blockedProfile.email } });
+      const r = await api.get("/api/auth/email-status", { params: { email: blockedProfile.email } });
       const emailVerifiedAt = r.data?.emailVerifiedAt;
 
       setBlockedProfile((p) => (p ? { ...p, emailVerified: !!emailVerifiedAt } : p));
-      setEmailMsg(emailVerifiedAt ? 'Email verified ✅' : 'Email not verified yet. Check your inbox.');
+      setEmailMsg(emailVerifiedAt ? "Email verified ✅" : "Email not verified yet. Check your inbox.");
     } catch (e: any) {
-      setEmailMsg(e?.response?.data?.error || 'Could not check email status.');
+      setEmailMsg(e?.response?.data?.error || "Could not check email status.");
     } finally {
       setEmailBusy(false);
     }
@@ -245,9 +257,9 @@ export default function Login() {
     setOtpBusy(true);
     try {
       const headers = verifyToken ? { Authorization: `Bearer ${verifyToken}` } : undefined;
-      const r = await api.post('/api/auth/resend-otp', {}, { headers });
+      const r = await api.post("/api/auth/resend-otp", {}, { headers });
 
-      setOtpMsg('OTP sent via WhatsApp. Enter the code to verify your phone.');
+      setOtpMsg("OTP sent via WhatsApp. Enter the code to verify your phone.");
       const next = Number(r.data?.nextResendAfterSec ?? 60);
       setOtpCooldown(Math.max(1, next));
     } catch (e: any) {
@@ -255,12 +267,12 @@ export default function Login() {
       const retry = Number(e?.response?.data?.retryAfterSec ?? 0);
 
       if (status === 401) {
-        setOtpMsg('Verification session expired. Please login again to request OTP.');
+        setOtpMsg("Verification session expired. Please login again to request OTP.");
       } else if (status === 429 && retry > 0) {
         setOtpMsg(`Please wait ${retry}s before resending OTP.`);
         setOtpCooldown(retry);
       } else {
-        setOtpMsg(e?.response?.data?.error || 'Could not send OTP.');
+        setOtpMsg(e?.response?.data?.error || "Could not send OTP.");
       }
     } finally {
       setOtpBusy(false);
@@ -270,7 +282,7 @@ export default function Login() {
   const verifyOtp = async () => {
     const code = otp.trim();
     if (!code) {
-      setOtpMsg('Enter the OTP code.');
+      setOtpMsg("Enter the OTP code.");
       return;
     }
 
@@ -278,24 +290,24 @@ export default function Login() {
     setOtpBusy(true);
     try {
       const headers = verifyToken ? { Authorization: `Bearer ${verifyToken}` } : undefined;
-      const r = await api.post('/api/auth/verify-otp', { otp: code }, { headers });
+      const r = await api.post("/api/auth/verify-otp", { otp: code }, { headers });
 
       if (r.data?.ok && r.data?.profile) {
         const p = normalizeProfile(r.data.profile);
         if (p) setBlockedProfile(p);
 
         if (p?.emailVerified && p?.phoneVerified) {
-          setOtp('');
-          setOtpMsg('All set ✅ Please login again.');
+          setOtp("");
+          setOtpMsg("All set ✅ Please login again.");
           setErr(null); // ✅ clear the red banner
         } else {
-          setOtpMsg('Phone verified ✅');
+          setOtpMsg("Phone verified ✅");
         }
       } else {
-        setOtpMsg('Could not verify OTP. Try again.');
+        setOtpMsg("Could not verify OTP. Try again.");
       }
     } catch (e: any) {
-      setOtpMsg(e?.response?.data?.error || 'Invalid OTP. Please try again.');
+      setOtpMsg(e?.response?.data?.error || "Invalid OTP. Please try again.");
     } finally {
       setOtpBusy(false);
     }
@@ -335,8 +347,8 @@ export default function Login() {
               )}
 
               {/* ✅ Supplier verification panel (ALWAYS show when blockedProfile exists) */}
-              {blockedProfile?.role === 'SUPPLIER' && (
-                fullyVerified ? (
+              {blockedProfile?.role === "SUPPLIER" &&
+                (fullyVerified ? (
                   <div className="rounded-xl border border-emerald-200 bg-emerald-50/90 px-3 py-3 text-sm text-emerald-800 space-y-2">
                     <div className="font-semibold text-emerald-900">Verification complete ✅</div>
                     <div className="text-xs text-emerald-800">
@@ -364,7 +376,11 @@ export default function Login() {
                             disabled={emailBusy || emailCooldown > 0}
                             className="inline-flex items-center justify-center rounded-lg bg-slate-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
                           >
-                            {emailBusy ? 'Sending…' : emailCooldown > 0 ? `Resend in ${emailCooldown}s` : 'Resend verification email'}
+                            {emailBusy
+                              ? "Sending…"
+                              : emailCooldown > 0
+                              ? `Resend in ${emailCooldown}s`
+                              : "Resend verification email"}
                           </button>
                           <button
                             type="button"
@@ -372,7 +388,7 @@ export default function Login() {
                             disabled={emailBusy}
                             className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
                           >
-                            {emailBusy ? 'Checking…' : 'I verified email (check)'}
+                            {emailBusy ? "Checking…" : "I verified email (check)"}
                           </button>
                         </div>
                         {emailMsg && <div className="text-xs text-slate-700">{emailMsg}</div>}
@@ -382,7 +398,9 @@ export default function Login() {
                     {/* Phone verification */}
                     {!blockedProfile.phoneVerified && (
                       <div className="space-y-2">
-                        <div className="text-sm font-semibold text-slate-900">Verify your phone (WhatsApp OTP)</div>
+                        <div className="text-sm font-semibold text-slate-900">
+                          Verify your phone (WhatsApp OTP)
+                        </div>
                         <div className="text-xs text-slate-600">
                           We’ll send a one-time code to your WhatsApp number on file.
                         </div>
@@ -394,7 +412,11 @@ export default function Login() {
                             disabled={otpBusy || otpCooldown > 0}
                             className="inline-flex items-center justify-center rounded-lg bg-violet-700 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
                           >
-                            {otpBusy ? 'Sending…' : otpCooldown > 0 ? `Send again in ${otpCooldown}s` : 'Send OTP'}
+                            {otpBusy
+                              ? "Sending…"
+                              : otpCooldown > 0
+                              ? `Send again in ${otpCooldown}s`
+                              : "Send OTP"}
                           </button>
 
                           <input
@@ -410,13 +432,14 @@ export default function Login() {
                             disabled={otpBusy}
                             className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
                           >
-                            {otpBusy ? 'Verifying…' : 'Verify OTP'}
+                            {otpBusy ? "Verifying…" : "Verify OTP"}
                           </button>
                         </div>
 
                         {!verifyToken && (
                           <div className="text-xs text-rose-700">
-                            Missing verifyToken from server. Your login(403) should return <code>verifyToken</code> so OTP endpoints can work.
+                            Missing verifyToken from server. Your login(403) should return{" "}
+                            <code>verifyToken</code> so OTP endpoints can work.
                           </div>
                         )}
 
@@ -424,8 +447,7 @@ export default function Login() {
                       </div>
                     )}
                   </div>
-                )
-              )}
+                ))}
 
               <div className="space-y-1">
                 <label className="block text-sm font-medium text-slate-800">Email</label>
@@ -470,11 +492,11 @@ export default function Login() {
                 disabled={loading || cooldown > 0}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white px-4 py-3 font-semibold shadow-[0_10px_30px_-12px_rgba(14,165,233,0.6)] hover:scale-[1.01] active:scale-[0.995] focus:outline-none focus:ring-4 focus:ring-cyan-300/40 transition disabled:opacity-50"
               >
-                {loading ? 'Logging in…' : cooldown > 0 ? `Try again in ${cooldown}s` : 'Login'}
+                {loading ? "Logging in…" : cooldown > 0 ? `Try again in ${cooldown}s` : "Login"}
               </button>
 
               <div className="pt-1 text-center text-sm text-slate-700">
-                Don’t have an account?{' '}
+                Don’t have an account?{" "}
                 <Link className="text-violet-700 hover:underline" to="/register">
                   Create one
                 </Link>
@@ -482,7 +504,7 @@ export default function Login() {
             </form>
 
             <p className="mt-5 text-center text-xs text-white/80">
-              Secured by industry-standard encryption • Need help?{' '}
+              Secured by industry-standard encryption • Need help?{" "}
               <Link className="text-cyan-200 hover:underline" to="/support">
                 Contact support
               </Link>

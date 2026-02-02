@@ -7,6 +7,12 @@ import { syncProductInStockCacheTx } from "../services/inventory.service.js";
 import { Prisma } from "@prisma/client";
 import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
 
+import crypto from "crypto";
+// If you created the orchestrator:
+import { sendOrderOtpNotifications } from "../services/otpNotify.service.js";
+import { z } from "zod";
+import { assertVerifiedOrderOtp } from "./adminOrders.js";
+import { requestOrderOtpForPurposeTx, verifyOrderOtpForPurposeTx } from "../services/orderOtp.service.js";
 
 const router = Router();
 
@@ -84,33 +90,73 @@ const asNumber = (v: any, d = 0) => {
 
 const ACTIVE_PRODUCT_STATUSES = new Set(["LIVE", "ACTIVE"]);
 
-/* ---------------- Service fee helpers (ALIGN TO settings.ts) ---------------- */
+
+const OTP_LEN = 6;
+const OTP_EXPIRES_MINS = 10;
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_LOCK_MINS = 30;
+const OTP_RESEND_COOLDOWN_SECS = 60;
+
+function now() {
+  return new Date();
+}
+
+function addMinutes(d: Date, mins: number) {
+  return new Date(d.getTime() + mins * 60_000);
+}
+
+function addSeconds(d: Date, secs: number) {
+  return new Date(d.getTime() + secs * 1000);
+}
+
+function genOtp6() {
+  // 000000-999999
+  const n = crypto.randomInt(0, 1_000_000);
+  return String(n).padStart(6, "0");
+}
+
+// Hash OTP with a per-record salt
+function hashOtp(code: string, salt: string) {
+  return crypto.createHash("sha256").update(`${salt}:${code}`).digest("hex");
+}
+
+// E.164 normalization (basic). You may already have better.
+function normalizeE164(phone?: string | null) {
+  if (!phone) return null;
+  const p = phone.trim();
+  if (!p) return null;
+  // If user stores E.164 already, keep it
+  if (p.startsWith("+")) return p;
+  // Otherwise you *must* decide default country. For NG example:
+  // return `+234${p.replace(/^0/, "")}`;
+  return p; // safest: do not guess
+}
+
+
 /* ---------------- Supplier payout-ready gating ---------------- */
 
 function payoutReadySupplierWhere() {
   return {
-    // ✅ NEW: require supplier active too
     status: "ACTIVE",
-
     isPayoutEnabled: true,
+    bankVerificationStatus: "VERIFIED",
 
     AND: [
-      { accountNumber: { not: null } },
       { accountNumber: { not: "" } },
-
-      { accountName: { not: null } },
       { accountName: { not: "" } },
-
-      { bankCode: { not: null } },
       { bankCode: { not: "" } },
-
-      { bankCountry: { not: null } },
       { bankCountry: { not: "" } },
-
-      { bankVerificationStatus: "VERIFIED" },
     ],
   } as const;
 }
+
+async function getSupplierForUser(userId: string) {
+  return prisma.supplier.findFirst({
+    where: { userId },
+    select: { id: true, name: true, status: true },
+  });
+}
+
 
 // ✅ Prisma-safe: relation filter wrapper (works whether supplier relation is optional or required)
 function supplierPayoutReadyRelationFilter() {
@@ -185,6 +231,16 @@ async function getCommsUnitCostNGNTx(tx: any): Promise<number> {
     (await readSettingValueTx(tx, "commsServiceFeeUnitNGN")) ??
     (await readSettingValueTx(tx, "commsUnitFeeNGN"));
   return Math.max(0, toNumber(unitRaw, 0));
+}
+
+function actorRole(req: any): string {
+  return String(req.user?.role ?? req.auth?.role ?? "").toUpperCase();
+}
+
+
+function isSupplier(role?: string) {
+  const r = String(role || "").toUpperCase();
+  return r === "SUPPLIER";
 }
 
 function money(n: any): number {
@@ -1339,8 +1395,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         const taxMode = await getTaxModeTx(tx);
         const taxRatePct = await getTaxRatePctTx(tx);
 
-        const vatIncluded = taxMode === "INCLUDED" && taxRatePct > 0 ? (subtotal * taxRatePct) / 100 : 0;
-        const vatAddOn = taxMode === "ADDED" && taxRatePct > 0 ? (subtotal * taxRatePct) / 100 : 0;
+        const rate = Math.max(0, taxRatePct) / 100;
+
+        // ✅ If INCLUDED: extract VAT portion from subtotal (which already includes VAT)
+        const vatIncluded =
+          taxMode === "INCLUDED" && rate > 0 ? subtotal - subtotal / (1 + rate) : 0;
+
+        // ✅ If ADDED: compute VAT to add on top
+        const vatAddOn =
+          taxMode === "ADDED" && rate > 0 ? subtotal * rate : 0;
 
         const svc = await computeServiceFeeForOrderTx(tx, order.id, subtotal);
         const total = round2(subtotal + vatAddOn + svc.serviceFeeTotal);
@@ -1422,6 +1485,7 @@ export async function computeAvailabilityForPairsTx(
         _sum: { availableQty: true },
         where: {
           productId: { in: basePairs.map((p) => p.productId) },
+          basePrice: { gt: 0 },
           isActive: true,
           inStock: true,
 
@@ -1516,9 +1580,9 @@ router.get("/", requireAuth, async (req, res) => {
     };
 
     const orders = await prisma.order.findMany({
-      where,
+      where: {},
       orderBy: { createdAt: "desc" },
-      take,
+      take: 50,
       select: {
         id: true,
         status: true,
@@ -1526,15 +1590,31 @@ router.get("/", requireAuth, async (req, res) => {
         tax: true,
         total: true,
         createdAt: true,
-
         serviceFeeBase: true,
         serviceFeeComms: true,
         serviceFeeGateway: true,
         serviceFeeTotal: true,
 
-        user: { select: { email: true } },
+        user: {
+          select: { email: true },
+        },
+
+        // ✅ MUST be nested under select
+        purchaseOrders: {
+          select: {
+            id: true,
+            supplierId: true,
+            status: true,
+            payoutStatus: true,
+            deliveryOtpVerifiedAt: true,
+            deliveredAt: true,
+            shippedAt: true,
+            createdAt: true,
+          },
+        },
       },
     });
+
 
     const orderIds = orders.map((o: any) => o.id);
     if (orderIds.length === 0) return res.json({ data: [] });
@@ -1679,8 +1759,15 @@ router.get("/", requireAuth, async (req, res) => {
       items: itemsByOrder[o.id] || [],
       payments: paymentsByOrder[o.id] || [],
     }));
+    return res.json({
+      data: orders.map((o: { purchaseOrder: { deliveryOtpVerifiedAt: any; }; }) => ({
+        ...o,
+        deliveryOtpVerifiedAt: o.purchaseOrder?.deliveryOtpVerifiedAt ?? null,
+        // optional: keep purchaseOrder object or drop it
+        purchaseOrder: undefined,
+      })),
+    });
 
-    res.json({ data });
   } catch (e: any) {
     console.error("GET /api/orders failed:", e?.message, e?.stack);
     res.status(500).json({ error: e?.message || "Failed to fetch orders" });
@@ -2147,5 +2234,520 @@ router.get("/:orderId/profit", requireSuperAdmin, async (req, res) => {
     res.status(500).json({ error: e?.message || "Failed to fetch profit" });
   }
 });
+
+const OrderOtpPurpose = z.enum(["PAY_ORDER", "CANCEL_ORDER"]);
+router.post("/:id/otp/request", requireAuth, async (req, res) => {
+  const orderId = String(req.params.id);
+  const actorId = getUserId(req);
+  if (!actorId) return res.status(401).json({ error: "Unauthorized" });
+
+  const parsed = OrderOtpPurpose.safeParse(req.body?.purpose);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid purpose" });
+  const purpose = parsed.data;
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: {
+      id: true,
+      userId: true,
+      user: { select: { email: true, phone: true } },
+      status: true,
+      createdAt: true,
+    },
+  });
+  if (!order) return res.status(404).json({ error: "Order not found" });
+
+  // Auth rules
+  if (purpose === "PAY_ORDER") {
+    if (String(order.userId) !== String(actorId)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+  }
+
+  if (purpose === "CANCEL_ORDER") {
+    const adminOk = isAdmin((req as any).user?.role);
+    const ownerOk = String(order.userId) === String(actorId);
+    if (!adminOk && !ownerOk) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+  }
+
+  const t = now();
+
+  // Resend cooldown (latest OTP for this order+purpose)
+  const last = await prisma.orderOtpRequest.findFirst({
+    where: { orderId, purpose },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  if (last?.createdAt) {
+    const nextAllowed = addSeconds(last.createdAt, OTP_RESEND_COOLDOWN_SECS);
+    if (nextAllowed > t) {
+      return res.status(429).json({
+        error: "Please wait before requesting another OTP",
+        retryAt: nextAllowed,
+      });
+    }
+  }
+
+  const expiresInSec = OTP_EXPIRES_MINS * 60;
+
+  const code = genOtp6();
+  const salt = crypto.randomUUID();
+  const codeHash = hashOtp(code, salt);
+  const expiresAt = addSeconds(t, expiresInSec);
+
+  // ✅ bind userId + notification target based on purpose
+  const bindUserId = purpose === "PAY_ORDER" ? String(order.userId) : String(actorId);
+  const targetEmail =
+    purpose === "PAY_ORDER" ? (order.user?.email ?? null) : ((req as any).user?.email ?? null);
+  const targetPhoneE164 =
+    purpose === "PAY_ORDER"
+      ? normalizeE164(order.user?.phone ?? null)
+      : normalizeE164((req as any).user?.phone ?? null);
+
+  const reqRow = await prisma.orderOtpRequest.create({
+    data: {
+      orderId,
+      userId: bindUserId,
+      purpose,
+      salt,
+      codeHash,
+      expiresAt,
+      attempts: 0,
+      lockedUntil: null,
+      verifiedAt: null,
+      consumedAt: null,
+    } as any,
+    select: { id: true },
+  });
+
+  // Notify (best-effort)
+  try {
+    await sendOrderOtpNotifications({
+      userEmail: targetEmail,
+      userPhoneE164: targetPhoneE164,
+      code,
+      expiresMins: OTP_EXPIRES_MINS,
+      purposeLabel: purpose === "PAY_ORDER" ? "Pay order" : "Cancel order",
+      orderId,
+      brand: "DaySpring",
+    });
+  } catch (e) {
+    console.error("order otp notify failed:", e);
+  }
+
+  const channelHint =
+    targetPhoneE164 && targetPhoneE164.length >= 4
+      ? `sms/whatsapp to ***${targetPhoneE164.slice(-4)}`
+      : targetEmail
+        ? `email to ${String(targetEmail).replace(/(^.).+(@.*$)/, "$1***$2")}`
+        : null;
+
+  return res.json({
+    requestId: reqRow.id,
+    expiresInSec,
+    channelHint,
+  });
+});
+
+async function assertValidOtpTokenTx(
+  tx: any,
+  args: { orderId: string; purpose: "PAY_ORDER" | "CANCEL_ORDER"; otpToken: string; actorId: string; actorRole: string }
+) {
+  const { orderId, purpose, otpToken, actorId } = args;
+
+  const row = await tx.orderOtpRequest.findFirst({
+    where: {
+      id: otpToken,
+      orderId,
+      purpose,
+      verifiedAt: { not: null },
+    },
+    select: { id: true, userId: true, expiresAt: true, consumedAt: true },
+  });
+
+  if (!row) throw new Error("OTP token invalid");
+  if (row.consumedAt) throw new Error("OTP token already used");
+  if (row.expiresAt && row.expiresAt <= now()) throw new Error("OTP token expired");
+
+  // ✅ Strong binding: token can only be used by the same user it was issued to
+  if (String(row.userId) !== String(actorId)) {
+    throw new Error("OTP token not valid for this user");
+  }
+
+  // mark as used (one-time token)
+  await tx.orderOtpRequest.update({
+    where: { id: row.id },
+    data: { consumedAt: now() },
+  });
+
+  return true;
+}
+
+
+function requireOtp(purpose: "PAY_ORDER" | "CANCEL_ORDER") {
+  return async (req: any, res: any, next: any) => {
+    try {
+      const orderId = String(req.params.id);
+      const otpToken = String(req.header("x-otp-token") ?? "").trim();
+      if (!otpToken) return res.status(401).json({ error: "Missing x-otp-token" });
+
+      const actorId = getUserId(req);
+      if (!actorId) return res.status(401).json({ error: "Unauthorized" });
+
+      await prisma.$transaction(async (tx: any) => {
+        await assertValidOtpTokenTx(tx, {
+          orderId,
+          purpose,
+          otpToken,
+          actorId,
+          actorRole: actorRole(req),
+        });
+      });
+
+      next();
+    } catch (e: any) {
+      return res.status(401).json({ error: e?.message || "OTP required" });
+    }
+  };
+}
+
+router.post("/:id/otp/verify", requireAuth, async (req, res) => {
+  const orderId = String(req.params.id);
+  const actorId = getUserId(req);
+  if (!actorId) return res.status(401).json({ error: "Unauthorized" });
+
+  const purposeP = OrderOtpPurpose.safeParse(req.body?.purpose);
+  if (!purposeP.success) return res.status(400).json({ error: "Invalid purpose" });
+  const purpose = purposeP.data;
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, userId: true },
+  });
+  if (!order) return res.status(404).json({ error: "Order not found" });
+
+  const requestId = String(req.body?.requestId ?? "").trim();
+  const otp = String(req.body?.otp ?? "").trim();
+
+  if (!requestId) return res.status(400).json({ error: "Missing requestId" });
+  if (!/^\d{6}$/.test(otp)) return res.status(400).json({ error: "Invalid otp format" });
+
+  const row = await prisma.orderOtpRequest.findFirst({
+    where: { id: requestId, orderId, purpose },
+    select: {
+      id: true,
+      userId: true,
+      salt: true,
+      codeHash: true,
+      expiresAt: true,
+      verifiedAt: true,
+      attempts: true,
+      lockedUntil: true,
+      consumedAt: true,
+    },
+  });
+
+  if (!row) return res.status(404).json({ error: "OTP request not found" });
+
+  // ✅ Permission rules
+  if (purpose === "PAY_ORDER") {
+    // only order owner
+    if (String(order.userId) !== String(actorId)) return res.status(403).json({ error: "Forbidden" });
+    if (String(row.userId) !== String(actorId)) return res.status(403).json({ error: "Forbidden" });
+  } else {
+    // CANCEL_ORDER: admin OR owner
+    const adminOk = isAdmin((req as any).user?.role);
+    const ownerOk = String(order.userId) === String(actorId);
+    if (!adminOk && !ownerOk) return res.status(403).json({ error: "Forbidden" });
+
+    // token must still belong to the actor (strong binding)
+    if (String(row.userId) !== String(actorId)) return res.status(403).json({ error: "Forbidden" });
+  }
+
+  const t = now();
+
+  if (row.consumedAt) return res.status(400).json({ error: "OTP token already used" });
+  if (row.verifiedAt) return res.json({ token: row.id });
+
+  if (row.lockedUntil && row.lockedUntil > t) {
+    return res.status(429).json({ error: "OTP verification temporarily locked", lockedUntil: row.lockedUntil });
+  }
+
+  if (row.expiresAt <= t) return res.status(400).json({ error: "OTP expired" });
+
+  const attemptedHash = hashOtp(otp, row.salt);
+  const a = Buffer.from(attemptedHash, "hex");
+  const b = Buffer.from(row.codeHash, "hex");
+  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+
+  if (!ok) {
+    const nextAttempts = (row.attempts ?? 0) + 1;
+    const lockedUntil = nextAttempts >= OTP_MAX_ATTEMPTS ? addMinutes(t, OTP_LOCK_MINS) : null;
+
+    await prisma.orderOtpRequest.update({
+      where: { id: row.id },
+      data: { attempts: nextAttempts, lockedUntil },
+    });
+
+    return res.status(400).json({ error: "Incorrect OTP", attempts: nextAttempts, lockedUntil });
+  }
+
+  await prisma.orderOtpRequest.update({
+    where: { id: row.id },
+    data: { verifiedAt: t, attempts: 0, lockedUntil: null },
+  });
+
+  return res.json({ token: row.id });
+});
+
+
+
+// /api/orders
+router.post("/:orderId/cancel", requireAuth, async (req, res) => {
+  const { orderId } = req.params;
+  const actorId = String((req as any).user?.id ?? "");
+
+  if (!actorId) return res.status(401).json({ error: "Unauthorized" });
+
+  // ✅ OTP REQUIRED
+  try {
+    const otpToken = String(req.headers["x-otp-token"] ?? req.body?.otpToken ?? "").trim();
+    await assertVerifiedOrderOtp(orderId, "CANCEL_ORDER", otpToken, actorId);
+  } catch (e: any) {
+    return res.status(400).json({ error: e?.message || "OTP verification required" });
+  }
+
+  try {
+    const updated = await prisma.$transaction(async (tx: any) => {
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: {
+          items: {
+            select: {
+              id: true,
+              productId: true,
+              variantId: true,
+              quantity: true,
+              chosenSupplierProductOfferId: true,
+              chosenSupplierVariantOfferId: true,
+            },
+          },
+          payments: { select: { status: true } },
+        },
+      });
+
+      if (!order) throw new Error("Order not found");
+
+      // ✅ must be the owner (adjust field name to your schema: userId/customerId/buyerId)
+      const ownerId = String((order as any).userId ?? (order as any).customerId ?? "");
+      if (!ownerId || ownerId !== actorId) {
+        return res.status(403).json({ error: "Not allowed to cancel this order" });
+      }
+
+      const os = String(order.status || "").toUpperCase();
+      if (os === "CANCELED") return order;
+
+      const hasPaid = (order.payments || []).some((p: any) => {
+        const s = String(p.status || "").toUpperCase();
+        return ["PAID", "SUCCESS", "SUCCESSFUL", "VERIFIED", "COMPLETED"].includes(s);
+      });
+
+      if (hasPaid || ["PAID", "COMPLETED"].includes(os)) {
+        throw new Error("Cannot cancel an order that has been paid/completed.");
+      }
+
+      // restock
+      for (const it of order.items) {
+        const qty = Number(it.quantity || 0);
+        if (!qty || qty <= 0) continue;
+
+        if (it.chosenSupplierVariantOfferId) {
+          const updatedOffer = await tx.supplierVariantOffer.update({
+            where: { id: it.chosenSupplierVariantOfferId },
+            data: { availableQty: { increment: qty } },
+            select: { id: true, availableQty: true, productId: true },
+          });
+
+          if (Number(updatedOffer.availableQty) > 0) {
+            await tx.supplierVariantOffer.update({
+              where: { id: updatedOffer.id },
+              data: { inStock: true },
+            });
+          }
+
+          if (updatedOffer.productId) {
+            await recomputeProductStockTx(tx, String(updatedOffer.productId));
+          }
+        } else if (it.chosenSupplierProductOfferId) {
+          const updatedOffer = await tx.supplierProductOffer.update({
+            where: { id: it.chosenSupplierProductOfferId },
+            data: { availableQty: { increment: qty } },
+            select: { id: true, availableQty: true, productId: true },
+          });
+
+          if (Number(updatedOffer.availableQty) > 0) {
+            await tx.supplierProductOffer.update({
+              where: { id: updatedOffer.id },
+              data: { inStock: true },
+            });
+          }
+
+          if (updatedOffer.productId) {
+            await recomputeProductStockTx(tx, String(updatedOffer.productId));
+          }
+        }
+
+        if (it.productId) {
+          await syncProductInStockCacheTx(tx, String(it.productId));
+        }
+      }
+
+      const canceled = await tx.order.update({
+        where: { id: orderId },
+        data: { status: "CANCELED" },
+      });
+
+      await logOrderActivityTx(tx, orderId, ACT.STATUS_CHANGE as any, "Order canceled by customer");
+
+      return canceled;
+    });
+
+    return res.json({ ok: true, data: updated });
+  } catch (e: any) {
+    const msg = e?.message || "Failed to cancel order";
+    return res.status(400).json({ error: msg });
+  }
+});
+
+
+// Map PO status into flow base (same logic as your PATCH)
+const toFlowBase = (s: string) => {
+  const x = String(s || "").toUpperCase().trim();
+  if (x === "CANCELLED") return "CANCELED";
+  if (["CREATED", "FUNDED", "PROCESSING"].includes(x)) return "PENDING";
+  if (x === "OUT_FOR_DELIVERY") return "SHIPPED";
+  return x;
+};
+
+// Option A rule: cancel OTP required only at CONFIRMED/PACKED (supplier only)
+const cancelRequiresOtp = (curBase: string) => {
+  const cur = toFlowBase(curBase);
+  return cur === "CONFIRMED" || cur === "PACKED";
+};
+
+/**
+ * POST /api/orders/:orderId/cancel-otp/request
+ * Sends OTP to customer so supplier can cancel a CONFIRMED/PACKED order.
+ */
+router.post("/:orderId/cancel-otp/request", requireAuth, async (req: any, res) => {
+  try {
+    const userId = req.user?.id;
+    const role = req.user?.role;
+    const { orderId } = req.params;
+
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    if (!isSupplier(role) && !isAdmin(role)) return res.status(403).json({ error: "Forbidden" });
+
+    // ... your supplierId + PO checks ...
+
+    const out = await prisma.$transaction(async (tx: any) => {
+      return requestOrderOtpForPurposeTx(tx as any, {
+        orderId: String(orderId),
+        purpose: "CANCEL_ORDER",
+        actorUserId: String(userId),
+        notifyTo: "ORDER_OWNER",
+        brand: "DaySpring",
+      });
+    });
+
+    return res.json({ ok: true, ...out });
+  } catch (e: any) {
+    const status = Number(e?.status) || 500;
+
+    // ✅ Cooldown / expected client errors should NOT look like backend crash
+    if (status === 429) {
+      console.warn("Cancel OTP cooldown:", e?.message, { retryAt: e?.retryAt, orderId: req.params.orderId });
+    } else if (status >= 400 && status < 500) {
+      console.warn("Cancel OTP client error:", e?.message, { status, orderId: req.params.orderId });
+    } else {
+      console.error("POST /api/orders/:orderId/cancel-otp/request failed:", e);
+    }
+
+    return res.status(status).json({
+      error: e?.message || "Failed to request cancel OTP",
+      ...(e?.retryAt ? { retryAt: e.retryAt } : {}),
+      ...(e?.requestId ? { requestId: e.requestId } : {}),
+      ...(e?.expiresAt ? { expiresAt: e.expiresAt } : {}),
+    });
+  }
+});
+
+
+/**
+ * POST /api/orders/:orderId/cancel-otp/verify
+ * Body: { otp: "123456" } OR { code: "123456" }
+ * Returns { otpToken } which the supplier will pass as x-otp-token
+ */
+router.post("/:orderId/cancel-otp/verify", requireAuth, async (req: any, res) => {
+  const userId = req.user?.id;
+  const role = req.user?.role;
+  const { orderId } = req.params;
+
+  if (!userId) return res.status(200).json({ ok: false, code: "UNAUTHORIZED", message: "Unauthorized" });
+  if (!isSupplier(role) && !isAdmin(role)) {
+    return res.status(200).json({ ok: false, code: "FORBIDDEN", message: "Forbidden" });
+  }
+
+  const raw = req.body?.otp ?? req.body?.code ?? "";
+  const otp = String(raw).trim();
+
+  const requestId = req.body?.requestId ? String(req.body.requestId).trim() : undefined;
+
+  if (!/^\d{6}$/.test(otp)) {
+    return res.status(200).json({ ok: false, code: "OTP_FORMAT", message: "OTP must be 6 digits" });
+  }
+
+  try {
+    const out = await prisma.$transaction(async (tx: any) => {
+      return verifyOrderOtpForPurposeTx(tx, {
+        orderId: String(orderId),
+        purpose: "CANCEL_ORDER",
+        code: otp,
+        actorUserId: String(userId),
+        requestId, // ✅ pass through
+      });
+    });
+
+    return res.json({ ok: true, otpToken: out.otpToken, requestId: out.requestId });
+  } catch (e: any) {
+    const isOtpFailure =
+      !!e?.code && (String(e.code).startsWith("OTP_") || ["UNAUTHORIZED", "FORBIDDEN"].includes(String(e.code)));
+
+    if (isOtpFailure) {
+      return res.status(200).json({
+        ok: false,
+        code: e.code,
+        message: e.message || "OTP verification failed",
+        ...(e?.requestId ? { requestId: e.requestId } : {}),
+        ...(e?.expiresAt ? { expiresAt: e.expiresAt } : {}),
+        ...(e?.attempts != null ? { attempts: e.attempts } : {}),
+        ...(e?.remainingAttempts != null ? { remainingAttempts: e.remainingAttempts } : {}),
+        ...(e?.lockedUntil ? { lockedUntil: e.lockedUntil } : {}),
+      });
+    }
+
+    const status = Number(e?.status) || 500;
+    return res.status(status).json({
+      ok: false,
+      code: e?.code || "OTP_FAILED",
+      message: e?.message || "OTP verification failed",
+    });
+  }
+});
+
+
+
 
 export default router;
