@@ -7,11 +7,12 @@ export type SupplierDashboardSummaryDTO = {
   pendingOrders: number;
   shippedToday: number;
   balance: number;
+  paidOutTotal: number;
   rating: number;
-  currency: "NGN" | string;
+  currency: string;
 };
 
 export async function fetchSupplierDashboardSummary(): Promise<SupplierDashboardSummaryDTO> {
-  const { data } = await api.get("/api/supplier/dashboard/summary");
-  return data?.data;
+  const res = await api.get("/api/supplier/dashboard/summary");
+  return res.data?.data;
 }

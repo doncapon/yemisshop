@@ -1,6 +1,6 @@
 // server/routes/adminSuppliers.ts
 import { Router, type Request, type Response } from 'express';
-import { SupplierType } from '@prisma/client'
+import { Prisma, SupplierType } from '@prisma/client'
 import axios from 'axios';
 
 import paystack from './paystack.js';
@@ -95,7 +95,7 @@ async function createPaystackRecipientIfNeeded(supplier: {
     if (supplier.paystackRecipientCode) return;
     if (!supplier.accountNumber || !supplier.bankCode) return;
 
-    const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+    const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_TEST_SECRET_KEY;
     if (!PAYSTACK_SECRET_KEY) {
       console.warn('Paystack recipient skipped: PAYSTACK_SECRET_KEY missing');
       return;
@@ -222,6 +222,58 @@ router.get('/', requireAdmin, async (_req, res) => {
     res.json({ data: suppliers });
   } catch (e: any) {
     res.status(400).json({ error: e?.message || 'Failed to fetch suppliers' });
+  }
+});
+
+/**
+ * GET /api/admin/suppliers/ledger
+ * Query:
+ * - supplierId (optional)
+ * - q (optional): matches referenceId/referenceType/id
+ * - type (optional): CREDIT|DEBIT
+ * - take, skip
+ */
+router.get('/ledger', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const supplierId = String((req.query as any)?.supplierId ?? '').trim() || null;
+    const qRaw = String((req.query as any)?.q ?? '').trim();
+    const typeRaw = String((req.query as any)?.type ?? '').trim().toUpperCase();
+    const take = Math.min(200, Math.max(1, Number((req.query as any)?.take ?? 50) || 50));
+    const skip = Math.max(0, Number((req.query as any)?.skip ?? 0) || 0);
+
+    const where: any = {};
+    if (supplierId) where.supplierId = supplierId;
+    if (typeRaw) where.type = typeRaw;
+
+    if (qRaw) {
+      const q = qRaw;
+      where.OR = [
+        { id: { contains: q } },
+        { referenceId: { contains: q } },
+        { referenceType: { contains: q } },
+        { supplierId: { contains: q } },
+      ];
+    }
+
+    const rows = await prisma.supplierLedgerEntry.findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take,
+      skip,
+      include: {
+        supplier: { select: { id: true, name: true } },
+      },
+    });
+
+    const total = await prisma.supplierLedgerEntry.count({ where });
+
+    return res.json({
+      ok: true,
+      data: rows,
+      meta: { supplierId, q: qRaw || null, type: typeRaw || null, take, skip, total },
+    });
+  } catch (e: any) {
+    return res.status(400).json({ error: e?.message || 'Failed to fetch ledger' });
   }
 });
 
@@ -638,5 +690,72 @@ router.post('/:id/bank-verify', requireSuperAdmin, async (req: Request, res: Res
     return res.status(400).json({ error: e?.message || 'Failed to verify bank details' });
   }
 });
+
+/**
+ * POST /api/admin/suppliers/:id/ledger-adjust
+ * Manual adjustment (CREDIT/DEBIT)
+ * Body:
+ * - type: CREDIT|DEBIT
+ * - amount: number (positive)
+ * - currency?: string (default NGN)
+ * - note?: string
+ * - referenceType?: string (default MANUAL)
+ * - referenceId?: string | null
+ */
+router.post('/:id/ledger-adjust', requireSuperAdmin, async (req: Request, res: Response) => {
+  try {
+    const supplierId = String(req.params.id || '').trim();
+    if (!supplierId) return res.status(400).json({ error: 'Missing supplier id' });
+
+    const adminId = (req as any)?.user?.id ?? null;
+
+    const body = z
+      .object({
+        type: z.enum(['CREDIT', 'DEBIT']),
+        amount: z.union([z.number(), z.string()]),
+        currency: z.string().min(1).optional(),
+        note: z.string().max(500).optional(),
+        referenceType: z.string().max(60).optional(),
+        referenceId: z.string().max(200).nullable().optional(),
+      })
+      .parse(req.body ?? {});
+
+    const amountNum = Number(body.amount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      return res.status(400).json({ error: 'amount must be a positive number' });
+    }
+
+    const supplier = await prisma.supplier.findUnique({
+      where: { id: supplierId },
+      select: { id: true, name: true },
+    });
+    if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
+
+    const entry = await prisma.supplierLedgerEntry.create({
+      data: {
+        supplierId,
+        type: body.type,
+        amount: new Prisma.Decimal(amountNum),
+        currency: (body.currency || 'NGN').toUpperCase(),
+        referenceType: (body.referenceType || 'MANUAL').toUpperCase(),
+        referenceId: body.referenceId ?? null,
+        meta: {
+          manual: true,
+          note: body.note ?? null,
+          adminId,
+          supplierName: supplier.name,
+        },
+      },
+      include: {
+        supplier: { select: { id: true, name: true } },
+      },
+    });
+
+    return res.json({ ok: true, data: entry });
+  } catch (e: any) {
+    return res.status(400).json({ error: e?.message || 'Failed to post ledger adjustment' });
+  }
+});
+
 
 export default router;

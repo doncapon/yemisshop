@@ -8,6 +8,8 @@ import { prisma } from "../lib/prisma.js";
 const router = Router();
 
 /* ------------------------------ Utilities ------------------------------- */
+const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
+const isSupplier = (role?: string) => role === "SUPPLIER";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -18,6 +20,47 @@ const toDecimal = (v: Decimalish) => {
   if (v instanceof Prisma.Decimal) return v;
   return new Prisma.Decimal(String(v ?? 0));
 };
+
+type SupplierCtx =
+  | { ok: true; supplierId: string; supplier: { id: string; name?: string | null; status?: any; userId?: string | null }; impersonating: boolean }
+  | { ok: false; status: number; error: string };
+
+async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
+  const role = req.user?.role;
+  const userId = req.user?.id;
+  if (!userId) return { ok: false, status: 401, error: "Unauthorized" };
+
+  // ADMIN/SUPER_ADMIN view-as supplier
+  if (isAdmin(role)) {
+    const supplierId = String(req.query?.supplierId ?? "").trim();
+    if (!supplierId) {
+      return { ok: false, status: 400, error: "Missing supplierId query param for admin view" };
+    }
+
+    const supplier = await prisma.supplier.findUnique({
+      where: { id: supplierId },
+      select: { id: true, name: true, status: true, userId: true },
+    });
+
+    if (!supplier) return { ok: false, status: 404, error: "Supplier not found" };
+
+    return { ok: true, supplierId: supplier.id, supplier, impersonating: true };
+  }
+
+  // Supplier normal mode
+  if (isSupplier(role)) {
+    const supplier = await prisma.supplier.findFirst({
+      where: { userId },
+      select: { id: true, name: true, status: true, userId: true },
+    });
+    if (!supplier) return { ok: false, status: 403, error: "Supplier profile not found for this user" };
+
+    return { ok: true, supplierId: supplier.id, supplier, impersonating: false };
+  }
+
+  return { ok: false, status: 403, error: "Forbidden" };
+}
+
 
 const asNumber = (v: any) => {
   if (v === "" || v == null) return undefined;
@@ -667,22 +710,24 @@ const UpdateSchema = z.object({
   variants: z.array(z.union([VariantOfferUpdateSchema, VariantCreateSchema])).optional(),
 }).extend(
   {
-  stockOnly: z.boolean().optional(),
-  meta: z
-    .object({
-      stockOnly: z.boolean().optional(),
-    })
-    .passthrough()
-    .optional(),
-}
+    stockOnly: z.boolean().optional(),
+    meta: z
+      .object({
+        stockOnly: z.boolean().optional(),
+      })
+      .passthrough()
+      .optional(),
+  }
 );
 
 /* -------------------------------- Products ------------------------------ */
 
 // LIST
-router.get("/", requireAuth, requireSupplier, async (req, res) => {
-  const s = await getSupplierForUser(req.user!.id);
-  if (!s) return res.status(403).json({ error: "Supplier profile not found for this user" });
+router.get("/", requireAuth, async (req, res) => {
+  const ctx = await resolveSupplierContext(req);
+  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
+
+  const s = ctx.supplier;
 
   const q = String(req.query.q ?? "").trim();
   const status = String(req.query.status ?? "ANY").toUpperCase();
@@ -715,9 +760,7 @@ router.get("/", requireAuth, requireSupplier, async (req, res) => {
     const isLive = statusUpper === "LIVE" || statusUpper === "PUBLISHED" || statusUpper === "APPROVED";
 
     if (args.nextQty > MAX_QTY_PER_SKU) {
-      throw err400(
-        `Qty too high for ${args.label}. Max allowed is ${MAX_QTY_PER_SKU}.`
-      );
+      throw err400(`Qty too high for ${args.label}. Max allowed is ${MAX_QTY_PER_SKU}.`);
     }
 
     // Only apply delta guard when product is already live in marketplace
@@ -731,9 +774,13 @@ router.get("/", requireAuth, requireSupplier, async (req, res) => {
     }
   }
 
+  // ✅ Key fix: products belong to supplier by supplierId (new), but keep legacy fallback
   const where: Prisma.ProductWhereInput = {
     isDeleted: false,
-    OR: [{ ownerId: req.user!.id }, { userId: req.user!.id }],
+    OR: [
+      { supplierId: s.id } as any,
+      ...(s.userId ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[]) : []),
+    ],
     ...(status !== "ANY" ? { status: status as any } : {}),
     ...(q
       ? {
@@ -833,8 +880,7 @@ router.get("/", requireAuth, requireSupplier, async (req, res) => {
       // choose displayed stock flag:
       // - if we have offers, "in stock" means qty > 0 (or offer says inStock)
       // - otherwise fall back to product.inStock
-      const inStock =
-        offer != null ? (availableQty > 0 || offer.inStock === true) : Boolean(p.inStock);
+      const inStock = offer != null ? (availableQty > 0 || offer.inStock === true) : Boolean(p.inStock);
 
       return {
         id: p.id,
@@ -862,10 +908,13 @@ router.get("/", requireAuth, requireSupplier, async (req, res) => {
 });
 
 
+
 // DETAIL
-router.get("/:id", requireAuth, requireSupplier, async (req, res) => {
-  const s = await getSupplierForUser(req.user!.id);
-  if (!s) return res.status(403).json({ error: "Supplier profile not found for this user" });
+router.get("/:id", requireAuth, async (req, res) => {
+  const ctx = await resolveSupplierContext(req);
+  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
+
+  const s = ctx.supplier;
 
   const { id } = req.params;
 
@@ -873,7 +922,12 @@ router.get("/:id", requireAuth, requireSupplier, async (req, res) => {
     where: {
       id,
       isDeleted: false,
-      OR: [{ ownerId: req.user!.id }, { userId: req.user!.id }],
+
+      // ✅ Key fix: supplier-owned via supplierId (new), keep legacy fallback
+      OR: [
+        { supplierId: s.id } as any,
+        ...(s.userId ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[]) : []),
+      ],
     },
     include: {
       ProductVariant: {
@@ -985,6 +1039,7 @@ router.get("/:id", requireAuth, requireSupplier, async (req, res) => {
     },
   });
 });
+
 
 // CREATE
 router.post("/", requireAuth, requireSupplier, async (req, res) => {
@@ -1614,24 +1669,24 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       typeof baseQtyFromOffer === "number"
         ? baseQtyFromOffer
         : typeof baseQtyFromTop === "number"
-        ? baseQtyFromTop
-        : placeholderQty;
+          ? baseQtyFromTop
+          : placeholderQty;
 
     const validSubmittedVariants = rawVariantsProvided
       ? rawSubmittedVariants.filter((v: any) => {
-          const direct = String(v?.variantId ?? v?.id ?? "").trim();
-          const opts = normalizeOptions(
-            v?.options ??
-              v?.optionSelections ??
-              v?.attributes ??
-              v?.attributeSelections ??
-              v?.variantOptions ??
-              v?.VariantOptions ??
-              []
-          );
-          const bump = asNumber(v?.priceBump) ?? 0;
-          return !!direct || opts.length > 0 || bump !== 0;
-        })
+        const direct = String(v?.variantId ?? v?.id ?? "").trim();
+        const opts = normalizeOptions(
+          v?.options ??
+          v?.optionSelections ??
+          v?.attributes ??
+          v?.attributeSelections ??
+          v?.variantOptions ??
+          v?.VariantOptions ??
+          []
+        );
+        const bump = asNumber(v?.priceBump) ?? 0;
+        return !!direct || opts.length > 0 || bump !== 0;
+      })
       : [];
 
     const isExplicitClearVariants = rawVariantsProvided && rawSubmittedVariants.length === 0;
@@ -1645,12 +1700,12 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         if (direct) return false;
         const opts = normalizeOptions(
           v?.options ??
-            v?.optionSelections ??
-            v?.attributes ??
-            v?.attributeSelections ??
-            v?.variantOptions ??
-            v?.VariantOptions ??
-            []
+          v?.optionSelections ??
+          v?.attributes ??
+          v?.attributeSelections ??
+          v?.variantOptions ??
+          v?.VariantOptions ??
+          []
         );
         return opts.length > 0;
       });
@@ -1722,12 +1777,12 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         // allow qty/inStock/isActive, but NOT priceBump or options
         const hasOpts = normalizeOptions(
           v?.options ??
-            v?.optionSelections ??
-            v?.attributes ??
-            v?.attributeSelections ??
-            v?.variantOptions ??
-            v?.VariantOptions ??
-            []
+          v?.optionSelections ??
+          v?.attributes ??
+          v?.attributeSelections ??
+          v?.variantOptions ??
+          v?.VariantOptions ??
+          []
         ).length > 0;
 
         const bump = asNumber(v?.priceBump);
@@ -2020,12 +2075,12 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
             const opts = normalizeOptions(
               v?.options ??
-                v?.optionSelections ??
-                v?.attributes ??
-                v?.attributeSelections ??
-                v?.variantOptions ??
-                v?.VariantOptions ??
-                []
+              v?.optionSelections ??
+              v?.attributes ??
+              v?.attributeSelections ??
+              v?.variantOptions ??
+              v?.VariantOptions ??
+              []
             );
             const key = comboKey(opts);
 

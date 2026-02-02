@@ -6,7 +6,7 @@
     "seed": "node prisma/seed.ts"
   },
   "scripts": {
-    "dev": "tsx watch src/server.ts && node -r dotenv/config src/server.ts",
+    "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",

@@ -23,7 +23,7 @@ router.get("/", async (_req, res) => {
 
     const { data } = await axios.get("https://api.paystack.co/bank", {
       params: { currency: "NGN" }, // Nigeria (NUBAN)
-      headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+      headers: { Authorization: `Bearer ${process.env.PAYSTACK_TEST_SECRET_KEY}` },
       timeout: 15_000,
     });
 

@@ -1,7 +1,7 @@
 // src/pages/supplier/SupplierProducts.tsx
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowRight, Package, Plus, Search, SlidersHorizontal, Pencil } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -52,11 +52,53 @@ function Badge({
   );
 }
 
+const ADMIN_SUPPLIER_KEY = "adminSupplierId";
 
 export default function SupplierProductsPage() {
   const token = useAuthStore((s) => s.token);
+  const role = useAuthStore((s: any) => s.user?.role);
+  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
+
   const nav = useNavigate();
   const qc = useQueryClient();
+
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const adminSupplierId = useMemo(() => {
+    if (!isAdmin) return undefined;
+    const v = String(searchParams.get("supplierId") ?? "").trim();
+    return v || undefined;
+  }, [isAdmin, searchParams]);
+
+  // ✅ persist supplier selection across supplier pages
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const fromUrl = String(searchParams.get("supplierId") ?? "").trim();
+    const fromStore = String(localStorage.getItem(ADMIN_SUPPLIER_KEY) ?? "").trim();
+
+    if (fromUrl) {
+      if (fromUrl !== fromStore) localStorage.setItem(ADMIN_SUPPLIER_KEY, fromUrl);
+      return;
+    }
+
+    if (fromStore) {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("supplierId", fromStore);
+          return next;
+        },
+        { replace: true }
+      );
+    }
+  }, [isAdmin, searchParams, setSearchParams]);
+
+  const withSupplierCtx = (to: string) => {
+    if (!adminSupplierId) return to;
+    const sep = to.includes("?") ? "&" : "?";
+    return `${to}${sep}supplierId=${encodeURIComponent(adminSupplierId)}`;
+  };
 
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<"ANY" | "PENDING" | "APPROVED" | "REJECTED" | "PUBLISHED">("ANY");
@@ -66,8 +108,8 @@ export default function SupplierProductsPage() {
   const { categories, brands } = useCatalogMeta({ enabled: !!token });
 
   const productsQ = useQuery({
-    queryKey: ["supplier", "products", { q, status }],
-    enabled: !!token,
+    queryKey: ["supplier", "products", { q, status, supplierId: adminSupplierId }],
+    enabled: !!token && (!isAdmin || !!adminSupplierId),
     queryFn: async () => {
       const { data } = await api.get<{
         data: SupplierProductListItem[];
@@ -75,7 +117,7 @@ export default function SupplierProductsPage() {
         meta?: { lowStockThreshold?: number };
       }>("/api/supplier/products", {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        params: { q: q.trim() || undefined, status, take: 100, skip: 0 },
+        params: { q: q.trim() || undefined, status, take: 100, skip: 0, supplierId: adminSupplierId },
       });
       return data;
     },
@@ -109,6 +151,16 @@ export default function SupplierProductsPage() {
   return (
     <SiteLayout>
       <SupplierLayout>
+        {/* Admin hint if no supplier selected */}
+        {isAdmin && !adminSupplierId && (
+          <div className="mt-6 rounded-2xl border bg-amber-50 text-amber-900 border-amber-200 p-4 text-sm">
+            Select a supplier on the dashboard first (Admin view) to inspect their products.
+            <Link to="/supplier" className="ml-2 underline font-semibold">
+              Go to dashboard
+            </Link>
+          </div>
+        )}
+
         {/* Hero */}
         <div className="relative overflow-hidden rounded-3xl mt-6 border">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
@@ -125,13 +177,13 @@ export default function SupplierProductsPage() {
 
             <div className="mt-4 flex flex-wrap gap-2">
               <Link
-                to="/supplier/products/add"
+                to={withSupplierCtx("/supplier/products/add")}
                 className="inline-flex items-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95"
               >
                 <Plus size={16} /> Add product
               </Link>
               <Link
-                to="/supplier"
+                to={withSupplierCtx("/supplier")}
                 className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/15"
               >
                 Back to dashboard <ArrowRight size={16} />
@@ -264,26 +316,24 @@ export default function SupplierProductsPage() {
                       <td className="py-3">₦{Number.isFinite(p.price) ? p.price.toLocaleString("en-NG") : "—"}</td>
 
                       <td className="py-3">
-                        {/* ✅ force fresh data on edit */}
                         <button
                           type="button"
                           onClick={async () => {
-                            // mark stale
                             qc.invalidateQueries({ queryKey: ["supplier", "product", p.id] });
 
-                            // optional: prefetch so edit page opens “fresh” immediately
                             await qc.prefetchQuery({
                               queryKey: ["supplier", "product", p.id],
                               queryFn: async () => {
                                 const { data } = await api.get(`/api/supplier/products/${p.id}`, {
                                   headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                                  params: { supplierId: adminSupplierId },
                                 });
                                 return (data as any)?.data ?? (data as any);
                               },
                               staleTime: 0,
                             });
 
-                            nav(`/supplier/products/${p.id}/edit`);
+                            nav(withSupplierCtx(`/supplier/products/${p.id}/edit`));
                           }}
                           className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5"
                         >
@@ -297,7 +347,7 @@ export default function SupplierProductsPage() {
                     <tr>
                       <td colSpan={8} className="py-8 text-center text-zinc-500">
                         No products yet.{" "}
-                        <Link className="underline" to="/supplier/products/add">
+                        <Link className="underline" to={withSupplierCtx("/supplier/products/add")}>
                           Add one
                         </Link>
                         .

@@ -8,6 +8,7 @@ import { Prisma } from "@prisma/client";
 
 // If you created the orchestrator:
 import { sendOrderOtpNotifications } from "../services/otpNotify.service.js";
+import { paySupplierForPurchaseOrder } from "../services/payout.service.js";
 // OR if not, you can swap to direct:
 // import { sendWhatsAppOtp } from "../lib/sms.js";
 // import { sendOtpEmail } from "../lib/email.js";
@@ -362,6 +363,16 @@ router.post(
         },
       } as any,
     });
+
+    // after successful delivery OTP verification:
+try {
+  await paySupplierForPurchaseOrder(updated.id, { id: req.user?.id, role: req.user?.role });
+} catch (e: any) {
+  // Don't fail OTP verification because payout failed.
+  // Just log it so admin/supplier can retry from UI.
+  console.error("Auto payout release failed:", e?.message);
+}
+
 
     return res.json({ ok: true, purchaseOrder: updated });
   }

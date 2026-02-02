@@ -1,4 +1,5 @@
 // src/server.ts
+import "dotenv/config";
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -60,6 +61,15 @@ import dojahRouter from './routes/dojahProxy.js';
 import deliveryOtpRouter from "./routes/deliveryOtp.js";
 
 
+import supplierPayoutsAction from "./routes/supplierPayoutsAction.js";
+import adminPayouts from "./routes/adminPayouts.js";
+
+import refundsRouter from "./routes/refunds.js";
+import supplierRefundsRouter from "./routes/supplierRefunds.js";
+import adminRefundsRouter from "./routes/adminRefunds.js";
+import disputesRouter from "./routes/disputes.js";
+import notificationsRouter from "./routes/notifications.js";
+import ridersRouter from "./routes/riders.js";
 
 import 'dotenv/config';
 
@@ -141,6 +151,7 @@ app.use('/api/supplier/products', supplierProducts);
 app.use('/api/supplier/orders', supplierOrders);
 
 app.use("/api", deliveryOtpRouter);
+app.use("/api/supplier/payouts", supplierPayoutsAction);
 
 
 app.post(
@@ -158,8 +169,8 @@ app.use('/api', supplierOffersList);
 
 /* 9) Domain routes */
 app.use('/api/products', productsRouter);
-app.use('/api/orders', ordersRouter);
 app.use("/api/orders", orderOtpRouter);
+app.use('/api/orders', ordersRouter);
 app.use('/api/wishlist', wishlistRouter);
 app.use('/api/favorites', favoritesRouter);
 app.use("/api/catalog", catalogRoutes);
@@ -168,6 +179,19 @@ app.use('/api/integrations/dojah', dojahRouter);
 
 app.use("/api/supplier/catalog-requests", supplierCatalogRequests);
 app.use("/api/admin/catalog-requests", adminCatalogRequests);
+app.use("/api/admin/payouts", adminPayouts);
+
+app.use("/api/refunds", refundsRouter);
+app.use("/api/supplier/refunds", supplierRefundsRouter);
+app.use("/api/admin/refunds", adminRefundsRouter);
+
+app.use("/api/disputes", disputesRouter);
+
+app.use("/api/notifications", notificationsRouter);
+app.use("/api/riders", ridersRouter);
+
+
+
 
 /* 10) Error handler */
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

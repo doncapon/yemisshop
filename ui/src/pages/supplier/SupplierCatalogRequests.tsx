@@ -393,7 +393,7 @@ export default function SupplierCatalogRequests() {
 
             <div className="mt-4 flex flex-wrap gap-2">
               <Link
-                to="/dashboard"
+                to="/supplier"
                 className="inline-flex items-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95"
               >
                 Back to overview <ArrowRight size={16} />

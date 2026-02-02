@@ -400,7 +400,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
   const user = order.user;
   if (!user?.email) return;
 
-  const to ="lordshegz@gmail.com" //user.email;
+  const to =user.email;
   const displayName = [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Customer';
 
   const paidAt = payment.paidAt || new Date();

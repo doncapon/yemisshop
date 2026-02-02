@@ -202,12 +202,19 @@ function toSupplierMeDto(s: any) {
  * GET /api/supplier/me
  * Returns supplier profile for the authenticated supplier user
  */
-router.get("/me", requireAuth, requireSupplier, async (req, res) => {
-  const uid = getUserId(req);
-  if (!uid) return res.status(401).json({ error: "Unauthenticated" });
+router.get("/me", requireAuth, async (req, res) => {
 
+  const role = req.user?.role;
+  const userId = req.user?.id;
+  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
+
+  let supplierId: string | null = null;
+  if (isAdmin) supplierId = String(req.query?.supplierId ?? "").trim() || null;
+  else supplierId = (await prisma.supplier.findFirst({ where: { userId }, select: { id: true } }))?.id ?? null;
+
+  if (!supplierId) return res.status(403).json({ error: "Supplier access required" });
   const supplier = await prisma.supplier.findFirst({
-    where: { userId: uid },
+  where: { id: supplierId }, 
     select: {
       id: true,
       name: true,
@@ -237,8 +244,6 @@ router.get("/me", requireAuth, requireSupplier, async (req, res) => {
       },
     },
   });
-
-  if (!supplier) return res.status(404).json({ error: "Supplier not found" });
 
   return res.json({ data: toSupplierMeDto(supplier) });
 });

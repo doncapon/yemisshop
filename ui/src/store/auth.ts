@@ -3,7 +3,12 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { setAccessToken } from "../api/client";
 
-export type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER";
+export type Role =
+  | "ADMIN"
+  | "SUPER_ADMIN"
+  | "SHOPPER"
+  | "SUPPLIER"
+  | "SUPPLIER_RIDER";
 
 export type User = {
   id: string;
@@ -31,7 +36,7 @@ type AuthState = {
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       hydrated: false,
       token: null,
       user: null,
