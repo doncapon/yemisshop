@@ -29,6 +29,9 @@ type SupplierOfferLite = {
   inStock?: boolean;
   availableQty?: number | null;
   price?: number | null; // not used for retail display (kept for compatibility)
+
+  supplierRatingAvg?: number | null;
+  supplierRatingCount?: number | null;
 };
 
 type Variant = {
@@ -351,6 +354,31 @@ function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceB
 const inBucket = (price: number, b: PriceBucket) =>
   b.max == null ? price >= b.min : price >= b.min && price <= b.max;
 
+function bestSupplierRatingScore(p: Product): number {
+  const offers = collectAllOffers(p);
+
+  let best = 0;
+
+  for (const o of offers) {
+    if (!o || o.isActive === false) continue;
+
+    const avg = Number(o.supplierRatingAvg);
+    const cnt = Number(o.supplierRatingCount);
+
+    if (!Number.isFinite(avg) || avg <= 0) continue;
+
+    // ✅ confidence boost: bigger count => slightly better score
+    // (keeps "5.0 with 1 review" below "4.9 with 500 reviews")
+    const weight = Number.isFinite(cnt) && cnt > 0 ? Math.min(1, Math.log10(cnt + 1) / 3) : 0; // 0..~1
+    const score = avg + 0.15 * weight; // small bump, doesn’t dominate purchases/clicks
+
+    if (score > best) best = score;
+  }
+
+  return best; // 0..~5.15
+}
+
+
 /* ---------------- Component ---------------- */
 
 export default function Catalog() {
@@ -441,27 +469,56 @@ export default function Catalog() {
                   offers: Array.isArray(v.offers)
                     ? v.offers.map((o: any) => ({
                       id: String(o.id),
+                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
+
                       isActive: o.isActive === true,
                       inStock: o.inStock === true,
-                      availableQty: Number.isFinite(Number(o.availableQty))
-                        ? Number(o.availableQty)
-                        : null,
+                      availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+
+                      supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
+                        ? Number(o.supplierRatingAvg)
+                        : Number.isFinite(Number(o.supplier?.ratingAvg))
+                          ? Number(o.supplier.ratingAvg)
+                          : null,
+
+                      supplierRatingCount: Number.isFinite(Number(o.supplierRatingCount))
+                        ? Number(o.supplierRatingCount)
+                        : Number.isFinite(Number(o.supplier?.ratingCount))
+                          ? Number(o.supplier.ratingCount)
+                          : null,
+
                       price: null,
                     }))
                     : [],
+
                 };
               })
               : [];
-
             const supplierOffers: SupplierOfferLite[] = Array.isArray(x.supplierOffers)
               ? x.supplierOffers.map((o: any) => ({
                 id: String(o.id),
+                supplierId: o.supplierId ?? o.supplier?.id ?? null,
+
                 isActive: o.isActive === true,
                 inStock: o.inStock === true,
                 availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+
+                supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
+                  ? Number(o.supplierRatingAvg)
+                  : Number.isFinite(Number(o.supplier?.ratingAvg))
+                    ? Number(o.supplier.ratingAvg)
+                    : null,
+
+                supplierRatingCount: Number.isFinite(Number(o.supplierRatingCount))
+                  ? Number(o.supplierRatingCount)
+                  : Number.isFinite(Number(o.supplier?.ratingCount))
+                    ? Number(o.supplier.ratingCount)
+                    : null,
+
                 price: null,
               }))
               : [];
+
 
             // ✅ category name
             const catNameRaw = (x.categoryName ?? x.category?.name ?? x.category?.title ?? '')
@@ -795,10 +852,15 @@ export default function Catalog() {
         const av = productSellable(a.p) ? 1 : 0;
         const bv = productSellable(b.p) ? 1 : 0;
         if (bv !== av) return bv - av;
-
         if (b.score !== a.score) return b.score - a.score;
 
+        // ✅ tie-break by best supplier store rating (desc)
+        const ar = bestSupplierRatingScore(a.p);
+        const br = bestSupplierRatingScore(b.p);
+        if (br !== ar) return br - ar;
+
         return priceForFiltering(a.p) - priceForFiltering(b.p);
+
       })
       .map((x) => x.p);
   }, [filtered, sortKey, purchasedQ.data, inStockOnly]);

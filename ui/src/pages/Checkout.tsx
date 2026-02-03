@@ -7,6 +7,7 @@ import api from '../api/client.js';
 import { useAuthStore } from '../store/auth';
 import { useModal } from '../components/ModalProvider';
 import SiteLayout from '../layouts/SiteLayout.js';
+import { getAttribution } from '../utils/attribution.js';
 
 /* ----------------------------- Config ----------------------------- */
 const VERIFY_PATH = '/verify';
@@ -726,10 +727,11 @@ export default function Checkout() {
         // ✅ optional pass-through (harmless if backend ignores)
         kind: it.kind,
       }));
-
+      const at = getAttribution();
       const payload = {
         items,
         shippingAddress: finalShip,
+        attribution: at,
 
         // ✅ Send EXACT backend-computed breakdown (do not recompute locally)
         serviceFeeBase: fee.serviceFeeBase ?? 0,

@@ -70,6 +70,7 @@ import adminRefundsRouter from "./routes/adminRefunds.js";
 import disputesRouter from "./routes/disputes.js";
 import notificationsRouter from "./routes/notifications.js";
 import ridersRouter from "./routes/riders.js";
+import privacyRouter from "./routes/privacy.js";
 
 import 'dotenv/config';
 
@@ -153,6 +154,10 @@ app.use('/api/supplier/orders', supplierOrders);
 app.use("/api", deliveryOtpRouter);
 app.use("/api/supplier/payouts", supplierPayoutsAction);
 
+app.set("trust proxy", 1); // ✅ if behind Railway/NGINX/Cloudflare etc.
+
+
+app.set("trust proxy", 1);
 
 app.post(
   '/api/payments/webhook',
@@ -189,6 +194,7 @@ app.use("/api/disputes", disputesRouter);
 
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/riders", ridersRouter);
+app.use("/api/privacy", privacyRouter);
 
 
 
