@@ -28,6 +28,7 @@ import { computePaystackSplitForOrder } from '../lib/splits.js';
 
 // ✅ FIX: import enum directly (instead of Prisma.SupplierPaymentStatus)
 import { SupplierPaymentStatus } from '@prisma/client'
+import { trackPurchaseIfNeeded } from '../services/tracking.service.js';
 
 const router = Router();
 
@@ -481,134 +482,6 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
   return rows;
 }
 
-async function paySupplierForPurchaseOrder(purchaseOrderId: string) {
-  const po = await prisma.purchaseOrder.findUnique({
-    where: { id: purchaseOrderId },
-    select: {
-      id: true,
-      orderId: true,
-      supplierId: true,
-      supplierAmount: true,
-      status: true,
-    },
-  });
-  if (!po) throw new Error("PO not found");
-
-  // Find latest PAID payment for order (so paymentId exists for logging)
-  const pay = await prisma.payment.findFirst({
-    where: { orderId: po.orderId, status: "PAID" },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
-  });
-  const paymentId = pay?.id;
-  if (!paymentId) throw new Error("No PAID payment found for order");
-
-  // Idempotency: don’t pay twice
-  const already = await prisma.paymentEvent.findFirst({
-    where: { paymentId, type: "TRANSFER_INIT", data: { path: ["purchaseOrderId"], equals: purchaseOrderId } },
-  });
-  if (already) return;
-
-  const s = await prisma.supplier.findUnique({
-    where: { id: po.supplierId },
-    select: {
-      id: true,
-      name: true,
-      paystackRecipientCode: true,
-      bankName: true,
-      bankCode: true,
-      bankCountry: true,
-      accountNumber: true,
-      accountName: true,
-      isPayoutEnabled: true,
-      bankVerificationStatus: true,
-    },
-  });
-  if (!s) throw new Error("Supplier not found");
-
-  const amount = Number(po.supplierAmount ?? 0);
-  if (!(amount > 0)) return;
-
-  const payoutOk =
-    s.isPayoutEnabled === true &&
-    s.bankVerificationStatus === "VERIFIED" &&
-    !!s.bankCode &&
-    !!s.bankCountry &&
-    !!s.accountNumber &&
-    !!s.accountName;
-
-  if (!payoutOk) {
-    await prisma.paymentEvent.create({
-      data: {
-        paymentId,
-        type: "TRANSFER_SKIPPED",
-        data: { supplierId: s.id, purchaseOrderId, reason: "supplier_not_payout_ready_or_verified" },
-      },
-    });
-    return;
-  }
-
-  if (TRIAL_MODE) {
-    await prisma.paymentEvent.create({
-      data: {
-        paymentId,
-        type: "TRANSFER_SKIPPED",
-        data: { supplierId: s.id, purchaseOrderId, reason: "TRIAL_MODE", amount },
-      },
-    });
-    return;
-  }
-
-  // Create recipient code if missing (re-use your existing code)
-  let recipientCode = s.paystackRecipientCode || null;
-  if (!recipientCode) {
-    const bank_code = await lookupBankCode(s.bankCode ?? s.bankName);
-    const r = await ps.post("/transferrecipient", {
-      type: "nuban",
-      name: s.accountName || s.name || "Supplier",
-      account_number: s.accountNumber,
-      bank_code,
-      currency: "NGN",
-    });
-    recipientCode = r.data?.data?.recipient_code || null;
-    if (recipientCode) {
-      await prisma.supplier.update({ where: { id: s.id }, data: { paystackRecipientCode: recipientCode } });
-    }
-  }
-
-  if (!recipientCode) {
-    await prisma.paymentEvent.create({
-      data: {
-        paymentId,
-        type: "TRANSFER_SKIPPED",
-        data: { supplierId: s.id, purchaseOrderId, reason: "no recipient" },
-      },
-    });
-    return;
-  }
-
-  const tr = await ps.post("/transfer", {
-    source: "balance",
-    amount: Math.round(amount * 100),
-    recipient: recipientCode,
-    reason: `PO ${purchaseOrderId} payout for order ${po.orderId}`,
-  });
-
-  await prisma.paymentEvent.create({
-    data: {
-      paymentId,
-      type: "TRANSFER_INIT",
-      data: { supplierId: s.id, purchaseOrderId, amount, transfer: tr.data?.data },
-    },
-  });
-
-  // update allocation status to PAID_OUT
-  await prisma.supplierPaymentAllocation.updateMany({
-    where: { purchaseOrderId, paymentId },
-    data: { status: SupplierPaymentStatus.PAID }, // adjust to your enum
-  });
-}
-
 
 /* ----------------------------- Core finalize ----------------------------- */
 
@@ -657,6 +530,8 @@ async function finalizePaidFlow(paymentId: string) {
       data: { status: next },
     });
 
+
+
     // Record service fee slice (if applicable)
     const total = Number(p.order?.total) || 0;
     const svc = Number(p.order?.serviceFeeTotal) || 0;
@@ -688,6 +563,8 @@ async function finalizePaidFlow(paymentId: string) {
         data: { reference: p.reference },
       },
     });
+
+    await trackPurchaseIfNeeded(p.id);
 
     // ✅ FIX BUG #2 HERE:
     // Create/refresh Purchase Orders + write SupplierPaymentAllocations in the SAME PAID finalize TX.

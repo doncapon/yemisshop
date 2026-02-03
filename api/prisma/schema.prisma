@@ -590,6 +590,9 @@ model User {
   createdAt DateTime @default(now())
   joinedAt  DateTime @default(now())
 
+  consentAnalyticsAt DateTime?
+  consentMarketingAt DateTime?
+
   reviewedCatalogRequests CatalogRequest[]   @relation("CatalogRequestReviewedBy")
   EmailVerifyToken        EmailVerifyToken[]
   Favorite                Favorite[]
@@ -604,7 +607,9 @@ model User {
   products        Product[] @relation("ProductUser")
 
   supplier Supplier?
-
+  
+  supplierReviews SupplierReview[]
+  
   address         Address? @relation("UserPrimaryAddress", fields: [addressId], references: [id])
   shippingAddress Address? @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
 
@@ -633,6 +638,23 @@ model User {
   @@index([emailVerifiedAt])
   @@index([phoneVerifiedAt])
 }
+
+
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  userId    String?
+  sessionId String?
+  orderId   String?
+
+  name      String   // "PRODUCT_VIEW", "ADD_TO_CART", "BEGIN_CHECKOUT", "PURCHASE"
+  data      Json?
+  createdAt DateTime @default(now())
+
+  @@index([name, createdAt])
+  @@index([userId, createdAt])
+  @@index([orderId, createdAt])
+}
+
 
 /**
  * =========================
@@ -705,6 +727,11 @@ model Supplier {
   products       Product[]       @relation("ProductSupplier")
   purchaseOrders PurchaseOrder[]
 
+  ratingAvg   Decimal? @default(0) @db.Decimal(3, 2)
+  ratingCount Int      @default(0)
+
+  reviews SupplierReview[]
+
   registeredAddress Address? @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
   user              User?    @relation(fields: [userId], references: [id])
 
@@ -721,6 +748,29 @@ model Supplier {
   @@index([isPayoutEnabled])
   @@index([bankVerificationStatus])
 }
+
+model SupplierReview {
+  id              String        @id @default(cuid())
+  supplierId      String
+  userId          String
+  purchaseOrderId String
+
+  rating          Int
+  comment         String?
+  createdAt       DateTime      @default(now())
+
+  supplier      Supplier      @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // ✅ Add a relation name
+  purchaseOrder  PurchaseOrder @relation("PurchaseOrderToSupplierReviews", fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId, createdAt])
+  @@index([purchaseOrderId])
+  @@unique([purchaseOrderId, userId]) // optional: prevents same user reviewing same PO twice
+}
+
+
 
 /**
  * =========================
@@ -773,6 +823,22 @@ model Order {
 
   refundRequests RefundRequest[]
   disputeCases   DisputeCase[]
+
+
+    // Attribution (store first touch / last touch if you want later)
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  utmContent  String?
+  utmTerm     String?
+
+  // Click IDs
+  gclid String?
+  fbclid String?
+
+  // Optional: a generic referrer or landing page
+  referrerUrl String?
+  landingPath String?
 
   @@index([createdAt])
   @@index([userId, createdAt])
@@ -893,6 +959,7 @@ model Payment {
 
   events      PaymentEvent[]
   allocations SupplierPaymentAllocation[]
+  purchaseEventSentAt DateTime?
 
   @@index([supplierId])
   @@index([status, paidAt])
@@ -956,6 +1023,8 @@ model PurchaseOrder {
 
   refundRequests RefundRequest[]
   disputeCases   DisputeCase[]
+
+  supplierReviews SupplierReview[] @relation("PurchaseOrderToSupplierReviews")
 
   riderId String?
   rider   SupplierRider? @relation("PurchaseOrderRider", fields: [riderId], references: [id], onDelete: SetNull)

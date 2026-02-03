@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
+import { clearAccessTokenCookie } from "../lib/authCookies.js";
 
 const router = Router();
 
@@ -116,7 +117,7 @@ router.post("/logout", requireAuth, async (req, res) => {
       data: { revokedAt: new Date(), revokedReason: "Logged out" },
     });
   }
-
+  clearAccessTokenCookie(res);
   res.json({ ok: true });
 });
 

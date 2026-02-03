@@ -11,6 +11,7 @@ import { signJwt, signAccessJwt } from '../lib/jwt.js';
 import { requireAuth, requireVerifySession } from '../middleware/auth.js';
 import { issueOtp, verifyOtp } from '../lib/otp.js';
 import { Prisma, SupplierType } from '@prisma/client'
+import { setAccessTokenCookie } from '../lib/authCookies.js';
 
 // ---------------- ENV / constants ----------------
 const APP_URL = process.env.APP_URL || 'http://localhost:5173';
@@ -81,7 +82,7 @@ function signVerifyJwt(payload: { id: string; email: string; role: string }, exp
   return signAccessJwt({ ...payload, k: 'verify' } as any, expiresIn);
 }
 
-async function createUserSession(req: Request, userId: string) {
+async function createUserSession(req: Request, userId: string, role?: string | null) {
   const ua = String(req.headers["user-agent"] ?? "").slice(0, 500) || null;
 
   // best-effort IP (works behind proxies too if you trust x-forwarded-for)
@@ -92,8 +93,14 @@ async function createUserSession(req: Request, userId: string) {
 
   const deviceName = String(req.headers["x-device-name"] ?? "").slice(0, 120) || null;
 
-  // Create a DB-backed session
-  const ABSOLUTE_DAYS = 7; // shoppers; use shorter for admins if you want
+  const r = String(role || "").replace(/[\s-]/g, "").toUpperCase();
+
+  // ✅ role-based absolute session lifetime
+  // - shoppers: 30 days
+  // - admins/suppliers/riders: 7 days (tighter security)
+  const ABSOLUTE_DAYS =
+    r === "ADMIN" || r === "SUPER_ADMIN" || r === "SUPPLIER" || r === "SUPPLIER_RIDER" ? 7 : 30;
+
   const expiresAt = new Date(Date.now() + ABSOLUTE_DAYS * 24 * 60 * 60 * 1000);
 
   const session = await prisma.userSession.create({
@@ -108,9 +115,9 @@ async function createUserSession(req: Request, userId: string) {
     select: { id: true },
   });
 
-
   return session.id;
 }
+
 
 
 router.post('/login', wrap(async (req, res) => {
@@ -146,13 +153,21 @@ router.post('/login', wrap(async (req, res) => {
       verifyToken, // ✅ this is what UI uses to call verify endpoints
     });
   }
+  const sid = await createUserSession(req, user.id, user.role);
 
-  const sid = await createUserSession(req, user.id);
+  const roleNorm = String(user.role || "").replace(/[\s-]/g, "").toUpperCase();
+  const ttlDays =
+    roleNorm === "ADMIN" || roleNorm === "SUPER_ADMIN" || roleNorm === "SUPPLIER" || roleNorm === "SUPPLIER_RIDER"
+      ? 7
+      : 30;
 
   const token = signAccessJwt(
     { id: user.id, email: user.email, role: user.role, k: "access", sid } as any,
-    "7d"
+    `${ttlDays}d`
   );
+
+  // ✅ make cookie match token/session
+  setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
 
   return res.json({
     token,
@@ -160,6 +175,7 @@ router.post('/login', wrap(async (req, res) => {
     profile,
     needsVerification: !(profile.emailVerified && profile.phoneVerified),
   });
+
 }));
 
 

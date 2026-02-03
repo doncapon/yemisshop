@@ -1,5 +1,6 @@
+// src/pages/ProductDetail.tsx
 import * as React from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
@@ -85,6 +86,14 @@ type VariantWire = {
   options?: VariantOptionWire[];
 };
 
+type SimilarProductWire = {
+  id: string;
+  title: string;
+  price: number | null;
+  imagesJson?: string[];
+  inStock?: boolean;
+};
+
 function selectionPairsOf(sel: Record<string, string>) {
   return Object.entries(sel)
     .filter(([, v]) => !!String(v || "").trim())
@@ -163,7 +172,11 @@ function normalizeVariants(p: any): VariantWire[] {
             }
             : undefined,
           value: o.value
-            ? { id: String(o.value.id), name: String(o.value.name), code: o.value.code ?? null }
+            ? {
+              id: String(o.value.id),
+              name: String(o.value.name),
+              code: o.value.code ?? null,
+            }
             : undefined,
         }))
         .filter((o: any) => o.attributeId && o.valueId)
@@ -305,7 +318,7 @@ function normalizeBaseDefaultsFromAttributes(p: any): Record<string, string> {
   return out;
 }
 
-/* ---------------- Local cart helpers (NEW: PDP uses mini-cart toast) ---------------- */
+/* ---------------- Local cart helpers ---------------- */
 
 type CartRowLS = {
   productId: string;
@@ -320,7 +333,7 @@ type CartRowLS = {
   price?: number;
   image?: string | null;
 
-  // optional (ignored by mini toast but useful elsewhere)
+  // optional
   selectedOptions?: any[];
 };
 
@@ -417,6 +430,9 @@ const buildLabelMaps = (
 
 function shallowEqualSelected(a: Record<string, string>, b: Record<string, string>, keys: string[]) {
   for (const k of keys) {
+    if (String(a?.[k] ?? "") !== String(b?.[k] ?? "") !== false) {
+      // keep behaviour: strict compare
+    }
     if (String(a?.[k] ?? "") !== String(b?.[k] ?? "")) return false;
   }
   return true;
@@ -522,6 +538,25 @@ export default function ProductDetail() {
         baseDefaultsFromAttributes,
       };
     },
+    enabled: !!id,
+    staleTime: 60_000,
+  });
+
+  const similarQ = useQuery({
+    queryKey: ["product-similar", id],
+    queryFn: async () => {
+      const { data } = await api.get(`/api/products/${id}/similar`);
+      const arr = (data as any)?.data ?? data ?? [];
+      const list: any[] = Array.isArray(arr) ? arr : [];
+      return list.map((x) => ({
+        id: String(x?.id ?? ""),
+        title: String(x?.title ?? ""),
+        price: x?.price != null && Number.isFinite(Number(x.price)) ? Number(x.price) : null,
+        imagesJson: Array.isArray(x?.imagesJson) ? x.imagesJson : [],
+        inStock: x?.inStock !== false,
+      })) as SimilarProductWire[];
+    },
+    enabled: !!id,
     staleTime: 60_000,
   });
 
@@ -1091,7 +1126,7 @@ export default function ProductDetail() {
   const [hoverPx, setHoverPx] = React.useState({ x: 0, y: 0 });
   const [showZoom, setShowZoom] = React.useState(false);
 
-  const ZOOM_REQUEST = 2.5;
+  const ZOOM_REQUEST = 2.2;
   const ZOOM_PANE = { w: 360, h: 360 };
   const [zoomAnchor, setZoomAnchor] = React.useState<{ top: number; left: number } | null>(null);
 
@@ -1143,34 +1178,24 @@ export default function ProductDetail() {
     const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
     setHoverPx({ x, y });
   }
-
   const hasBox = imgBox.w > 0 && imgBox.h > 0;
-  const maxScaleW = naturalSize.w > 0 && imgBox.w > 0 ? naturalSize.w / imgBox.w : Infinity;
-  const maxScaleH = naturalSize.h > 0 && imgBox.h > 0 ? naturalSize.h / imgBox.h : Infinity;
-  const MAX_NATIVE_SCALE = Math.max(1, Math.min(maxScaleW, maxScaleH));
 
-  let EFFECTIVE_ZOOM = Math.max(1, Math.min(ZOOM_REQUEST, MAX_NATIVE_SCALE));
-  if (hasBox) {
-    const cover = Math.max(ZOOM_PANE.w / imgBox.w, ZOOM_PANE.h / imgBox.h);
-    if (EFFECTIVE_ZOOM < cover) EFFECTIVE_ZOOM = cover;
-  }
+  // Keep at least some zoom; you can tweak ZOOM_REQUEST above if you want stronger/weaker zoom
+  const EFFECTIVE_ZOOM = hasBox ? ZOOM_REQUEST : 1;
 
-  const zoomImgWidth = (hasBox ? imgBox.w : 0) * EFFECTIVE_ZOOM;
-  const zoomImgHeight = (hasBox ? imgBox.h : 0) * EFFECTIVE_ZOOM;
-
+  // Where is the cursor relative to the displayed image?
   const relX = hasBox ? hoverPx.x / imgBox.w : 0.5;
   const relY = hasBox ? hoverPx.y / imgBox.h : 0.5;
 
-  const maxOffsetX = Math.max(zoomImgWidth - ZOOM_PANE.w, 0);
-  const maxOffsetY = Math.max(zoomImgHeight - ZOOM_PANE.h, 0);
+  // Convert that into background-position percentages
+  const bgPosX = `${relX * 100}%`;
+  const bgPosY = `${relY * 100}%`;
 
-  let offsetX = relX * zoomImgWidth - ZOOM_PANE.w / 2;
-  let offsetY = relY * zoomImgHeight - ZOOM_PANE.h / 2;
+  // How "zoomed" the background should be. 2.5 => 250% size
+  const bgSize = `${EFFECTIVE_ZOOM * 100}%`;
 
-  offsetX = Math.max(0, Math.min(offsetX, maxOffsetX));
-  offsetY = Math.max(0, Math.min(offsetY, maxOffsetY));
 
-  /* ---------------- Add to cart (UPDATED: new toast + mini cart summary) ---------------- */
+  /* ---------------- Add to cart ---------------- */
   const handleAddToCart = React.useCallback(async () => {
     if (!product) return;
     if (purchaseMeta.disableAddToCart) return;
@@ -1184,7 +1209,6 @@ export default function ProductDetail() {
     const unitPriceClient = purchaseMeta.mode === "VARIANT" ? computed.final : computed.base;
     const unit = Number(unitPriceClient) || 0;
 
-    // pick best image for the line (variant image > product image)
     const variantImg =
       variantId
         ? (product.variants || [])
@@ -1194,7 +1218,6 @@ export default function ProductDetail() {
 
     const primaryImg = variantImg || (product.imagesJson || [])[0] || null;
 
-    // 1) try to sync server cart (don’t block UX)
     try {
       await api.post("/api/cart/items", {
         productId: product.id,
@@ -1209,7 +1232,6 @@ export default function ProductDetail() {
       queryClient.invalidateQueries({ queryKey: ["cart"] });
     }
 
-    // 2) always upsert local cart + show mini-cart toast summary
     const { attrNameById, valueNameByAttrId } = buildLabelMaps(axes);
     const selectedOptionsLabeled = selectedOptionsWire.map(({ attributeId, valueId }) => ({
       attributeId,
@@ -1246,11 +1268,23 @@ export default function ProductDetail() {
     };
   }, [showZoom, updateZoomAnchor]);
 
+  /* ---------------- Similar products carousel helpers ---------------- */
+  const similarRef = React.useRef<HTMLDivElement | null>(null);
+
+  const scrollSimilarBy = React.useCallback((dir: -1 | 1) => {
+    const el = similarRef.current;
+    if (!el) return;
+    const step = Math.max(260, Math.floor(el.clientWidth * 0.85));
+    el.scrollBy({ left: dir * step, behavior: "smooth" });
+  }, []);
+
   /* ---------------- Render ---------------- */
   if (productQ.isLoading) {
     return (
       <SiteLayout>
-        <div className="p-6">Loading product…</div>
+        <div className="max-w-6xl mx-auto p-6">
+          <div className="rounded-2xl border bg-white p-5">Loading product…</div>
+        </div>
       </SiteLayout>
     );
   }
@@ -1258,10 +1292,12 @@ export default function ProductDetail() {
   if (productQ.isError || !product) {
     return (
       <SiteLayout>
-        <div className="p-6 text-rose-600">
-          Could not load product.
-          <div className="text-xs opacity-70 mt-1">
-            {String((productQ.error as any)?.message || "Unknown error")}
+        <div className="max-w-6xl mx-auto p-6">
+          <div className="rounded-2xl border bg-white p-5 text-rose-600">
+            Could not load product.
+            <div className="text-xs opacity-70 mt-1">
+              {String((productQ.error as any)?.message || "Unknown error")}
+            </div>
           </div>
         </div>
       </SiteLayout>
@@ -1289,7 +1325,7 @@ export default function ProductDetail() {
           <button
             type="button"
             onClick={() => onChange("")}
-            className={`px-3 py-2 rounded-xl border text-base md:text-lg
+            className={`px-2.5 py-1.5 rounded-xl border text-sm md:text-base
             ${!value ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "bg-white hover:bg-zinc-50"}`}
           >
             No {axis.name.toLowerCase()}
@@ -1305,18 +1341,18 @@ export default function ProductDetail() {
                 type="button"
                 disabled={st.disabled}
                 onClick={() => onChange(opt.id)}
-                className={`px-3 py-2 rounded-xl border text-base md:text-lg transition flex items-center gap-2
+                className={`px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2
                 ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "bg-white hover:bg-zinc-50"}
                 ${st.disabled ? "opacity-60 cursor-not-allowed hover:bg-white" : ""}`}
               >
                 <span className={st.disabled ? "line-through" : ""}>{opt.name}</span>
 
                 {st.disabled && st.reason ? (
-                  <span className="text-xs px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200">
+                  <span className="text-[10px] px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200">
                     {st.reason}
                   </span>
                 ) : st.stock > 0 ? (
-                  <span className="text-xs px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
+                  <span className="text-[10px] px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
                     {st.stock}
                   </span>
                 ) : null}
@@ -1331,11 +1367,11 @@ export default function ProductDetail() {
 
     return (
       <Select value={value} onValueChange={(v) => onChange(v === "__NONE__" ? "" : v)}>
-        <SelectTrigger className="h-12 rounded-xl text-base md:text-lg">
+        <SelectTrigger className="h-11 rounded-xl text-sm md:text-base">
           <SelectValue placeholder={`No ${axis.name.toLowerCase()}`} />
         </SelectTrigger>
 
-        <SelectContent className="text-base md:text-lg">
+        <SelectContent className="text-sm md:text-base">
           <SelectItem value="__NONE__">{`No ${axis.name.toLowerCase()}`}</SelectItem>
           {filtered.map((opt) => {
             const st = states[opt.id] ?? { exists: true, stock: 0, disabled: false };
@@ -1359,270 +1395,420 @@ export default function ProductDetail() {
 
   return (
     <SiteLayout>
-      <div className="max-w-6xl mx-auto p-4 md:p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-        {/* Images */}
-        <div className="space-y-3">
-          <div
-            className="relative mx-auto"
-            style={{ maxWidth: "90%" }}
-            onMouseEnter={() => {
-              setShowZoom(true);
-              setPaused(true);
-              updateZoomAnchor();
-            }}
-            onMouseLeave={() => {
-              setShowZoom(false);
-              setPaused(false);
-            }}
-            onMouseMove={onMouseMove}
-          >
-            <div className="rounded-2xl overflow-hidden bg-zinc-100 border" style={{ aspectRatio: "1 / 1" }}>
-              <img
-                ref={mainImgRef}
-                src={images[mainIndex]}
-                alt={product.title}
-                className="w-full h-full object-cover cursor-zoom-in"
-                onLoad={handleImageLoad}
-                onError={(e) => (e.currentTarget.style.opacity = "0.25")}
-              />
+      {/* nicer page chrome */}
+      <div className="bg-gradient-to-b from-zinc-50 to-white">
+        <div className="max-w-6xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => navigate(-1)}
+              className="text-sm px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50"
+            >
+              ← Back
+            </button>
+
+            <div className="text-xs text-zinc-500">
+              {product.brand?.name ? (
+                <span className="truncate max-w-[60vw] inline-block">
+                  {product.brand.name} / {product.title}
+                </span>
+              ) : (
+                <span className="truncate max-w-[60vw] inline-block">{product.title}</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="max-w-6xl mx-auto p-4 md:p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+          {/* Images + description (desktop) */}
+          <div className="space-y-3 md:space-y-5">
+            <div className="relative mx-auto" style={{ maxWidth: "92%" }}>
+              <div
+                className="rounded-2xl overflow-hidden bg-white border shadow-sm"
+                style={{ aspectRatio: "1 / 1" }}
+                onMouseEnter={() => {
+                  setShowZoom(true);
+                  setPaused(true);
+                  updateZoomAnchor();
+                }}
+                onMouseLeave={() => {
+                  setShowZoom(false);
+                  setPaused(false);
+                }}
+                onMouseMove={onMouseMove}
+              >
+                <img
+                  ref={mainImgRef}
+                  src={images[mainIndex]}
+                  alt={product.title}
+                  className="w-full h-full object-cover cursor-zoom-in"
+                  onLoad={handleImageLoad}
+                  onError={(e) => (e.currentTarget.style.opacity = "0.25")}
+                />
+              </div>
+
+              {/* Availability badge on image */}
+              <span
+                className={`absolute left-3 top-3 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls}`}
+              >
+                {availabilityBadge.text}
+              </span>
+
+              {showZoom &&
+                hasBox &&
+                zoomAnchor &&
+                createPortal(
+                  <div
+                    className="hidden md:block rounded-xl border shadow bg-white overflow-hidden pointer-events-none z-[9999]"
+                    style={{
+                      position: "fixed",
+                      top: zoomAnchor.top,
+                      left: zoomAnchor.left,
+                      width: ZOOM_PANE.w,
+                      height: ZOOM_PANE.h,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        backgroundImage: `url(${images[mainIndex]})`,
+                        backgroundRepeat: "no-repeat",
+                        backgroundPosition: `${bgPosX} ${bgPosY}`,
+                        backgroundSize: bgSize,
+                      }}
+                    />
+                  </div>,
+                  document.body
+                )}
+
+
+              {images.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+                    className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/90 hover:bg-white border shadow px-3 py-2"
+                    aria-label="Previous image"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMainIndex((i) => (i + 1) % images.length)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/90 hover:bg-white border shadow px-3 py-2"
+                    aria-label="Next image"
+                  >
+                    ›
+                  </button>
+                  <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1">
+                    {images.map((_, i) => (
+                      <span
+                        key={i}
+                        onClick={() => setMainIndex(i)}
+                        className={`h-1.5 w-1.5 rounded-full cursor-pointer ${i === mainIndex ? "bg-fuchsia-600" : "bg-white/70 border"
+                          }`}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
 
-            {/* Availability badge on image */}
-            <span
-              className={`absolute left-3 top-3 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls}`}
+            {/* Thumbnails */}
+            <div
+              className="flex items-center justify-center gap-2"
+              onMouseEnter={() => setPaused(true)}
+              onMouseLeave={() => setPaused(false)}
             >
-              {availabilityBadge.text}
-            </span>
+              <button
+                type="button"
+                onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+                className="rounded-full border px-2.5 py-1.5 text-sm bg-white hover:bg-zinc-50"
+                aria-label="Previous thumbnails"
+              >
+                ‹
+              </button>
 
-            {showZoom &&
-              hasBox &&
-              zoomAnchor &&
-              createPortal(
-                <div
-                  className="hidden md:block rounded-xl border shadow bg-white overflow-hidden pointer-events-none z-[9999]"
-                  style={{
-                    position: "fixed",
-                    top: zoomAnchor.top,
-                    left: zoomAnchor.left,
-                    width: ZOOM_PANE.w,
-                    height: ZOOM_PANE.h,
-                  }}
-                >
-                  <img
-                    src={images[mainIndex]}
-                    alt="zoom"
-                    draggable={false}
-                    style={{
-                      position: "absolute",
-                      width: `${zoomImgWidth}px`,
-                      height: `${zoomImgHeight}px`,
-                      transform: `translate(${-offsetX}px, ${-offsetY}px)`,
-                    }}
-                  />
-                </div>,
-                document.body
+              <div className="flex gap-2">
+                {visibleThumbs.map((u, i) => {
+                  const absoluteIndex = thumbStart + i;
+                  const isActive = absoluteIndex === mainIndex;
+                  return (
+                    <img
+                      key={`${u}:${absoluteIndex}`}
+                      src={u}
+                      alt={`thumb-${absoluteIndex}`}
+                      onClick={() => setMainIndex(absoluteIndex)}
+                      className={`w-24 h-20 rounded-xl border object-cover select-none cursor-pointer ${isActive
+                        ? "ring-2 ring-fuchsia-500 border-fuchsia-500"
+                        : "hover:opacity-90 bg-white"
+                        }`}
+                      onError={(e) => (e.currentTarget.style.opacity = "0.25")}
+                    />
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setMainIndex((i) => (i + 1) % images.length)}
+                className="rounded-full border px-2.5 py-1.5 text-sm bg-white hover:bg-zinc-50"
+                aria-label="Next thumbnails"
+              >
+                ›
+              </button>
+            </div>
+
+            {/* Description – desktop / larger screens */}
+            <div className="hidden md:block rounded-2xl border bg-white shadow-sm p-4 md:p-5">
+              <h2 className="text-base font-semibold mb-1">Description</h2>
+              <p className="text-sm text-zinc-700 whitespace-pre-line">
+                {product.description || "No description yet."}
+              </p>
+
+              {import.meta.env.DEV && (
+                <div className="text-[10px] text-zinc-500 mt-3">
+                  totalStockQty: {totalStockQty}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Details + variants + description (mobile) */}
+          <div className="space-y-5">
+            <div className="rounded-2xl border bg-white shadow-sm p-4 md:p-5">
+              <h1 className="text-2xl font-semibold leading-tight">{product.title}</h1>
+              {product.brand?.name && (
+                <div className="text-sm text-zinc-600 mt-1">{product.brand.name}</div>
               )}
 
-            {images.length > 1 && (
-              <>
+              <div className="mt-4 rounded-2xl bg-zinc-50 border p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm text-zinc-500">Current price (retail)</div>
+                    <div className="text-3xl font-bold">{priceLabel}</div>
+                  </div>
+
+                  <span
+                    className={`shrink-0 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls}`}
+                  >
+                    {availabilityBadge.text}
+                  </span>
+                </div>
+
+                <div className="text-xs text-zinc-500 mt-1">
+                  Base: {NGN.format(toNum(product.price, 0))}
+                  {purchaseMeta.mode === "VARIANT" && purchaseMeta.variantId && (
+                    <> • Variant price = base + option bumps</>
+                  )}
+                </div>
+              </div>
+
+              {/* Variant selects */}
+              {axes.length > 0 && (
+                <div className="space-y-3 mt-5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-medium text-zinc-700">Choose options</div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelected({ ...baseDefaults })}
+                        className="px-2 py-1 text-[10px] rounded-lg border bg-white hover:bg-zinc-50"
+                        title="Select the base product default options"
+                      >
+                        Choose base option
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setSelected(buildEmptySelection(axes))}
+                        className="px-2 py-1 text-[10px] rounded-lg border bg-white hover:bg-zinc-50"
+                        title="Clear selections (No variant)"
+                      >
+                        Reset all variants(None)
+                      </button>
+                    </div>
+                  </div>
+
+                  {axes.map((a) => (
+                    <div key={a.id} className="grid gap-2">
+                      <label className="text-sm md:text-base font-medium text-zinc-700">
+                        {a.name}
+                      </label>
+
+                      <VariantAxisPicker
+                        axis={a}
+                        value={selected[a.id] ?? ""}
+                        onChange={(val) => {
+                          setSelected((prev) => {
+                            const draft = { ...prev, [a.id]: val };
+                            if (!val) return draft;
+                            if (isSelectionCompatible(draft)) return draft;
+
+                            const resetOthers: Record<string, string> = { ...draft };
+                            for (const ax of axes) if (ax.id !== a.id) resetOthers[ax.id] = "";
+                            return resetOthers;
+                          });
+                        }}
+                      />
+                    </div>
+                  ))}
+
+                  {purchaseMeta.helperNote && (
+                    <div className="text-[11px] mt-2 px-3 py-2 rounded-xl border bg-zinc-50 text-zinc-700">
+                      {purchaseMeta.helperNote}
+                    </div>
+                  )}
+
+                  <div className="text-[11px] text-zinc-600">
+                    {selectionInfo.exact.length > 0 && selectionInfo.totalStockExact > 0
+                      ? `Available for this selection: ${selectionInfo.totalStockExact}`
+                      : "Select a sellable combination to see availability"}
+                  </div>
+                </div>
+              )}
+
+              {/* CTAs */}
+              <div className="pt-4 flex items-center gap-3 flex-wrap">
                 <button
                   type="button"
-                  onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-                  className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/80 hover:bg-white border shadow px-2 py-1"
-                  aria-label="Previous image"
+                  onClick={handleAddToCart}
+                  disabled={purchaseMeta.disableAddToCart}
+                  className={`inline-flex items-center gap-2 rounded-2xl px-5 py-3 shadow-sm active:scale-[0.99] transition focus:outline-none focus:ring-4
+                ${purchaseMeta.disableAddToCart
+                      ? "bg-zinc-300 text-zinc-600 cursor-not-allowed focus:ring-zinc-200"
+                      : "bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white hover:shadow-md focus:ring-fuchsia-300/40"
+                    }`}
+                >
+                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+                  Add to cart — {NGN.format(computed.final)}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => navigate("/cart")}
+                  className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 border bg-white text-zinc-900 hover:bg-zinc-50 active:scale-[0.99] transition focus:outline-none focus:ring-4 focus:ring-zinc-300/40"
+                >
+                  Go to Cart
+                </button>
+              </div>
+            </div>
+
+            {/* Description – mobile / small screens */}
+            <div className="block md:hidden rounded-2xl border bg-white shadow-sm p-4 md:p-5">
+              <h2 className="text-base font-semibold mb-1">Description</h2>
+              <p className="text-sm text-zinc-700 whitespace-pre-line">
+                {product.description || "No description yet."}
+              </p>
+
+              {import.meta.env.DEV && (
+                <div className="text-[10px] text-zinc-500 mt-3">
+                  totalStockQty: {totalStockQty}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Similar products section – stays at the very bottom */}
+        <div className="max-w-6xl mx-auto px-4 md:px-6 pb-10">
+          <div className="rounded-2xl border bg-white shadow-sm p-4 md:p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">Similar products</h2>
+                <div className="text-xs text-zinc-500">You might also like these</div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => scrollSimilarBy(-1)}
+                  className="rounded-full border bg-white hover:bg-zinc-50 px-3 py-2"
+                  aria-label="Scroll similar products left"
                 >
                   ‹
                 </button>
                 <button
                   type="button"
-                  onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/80 hover:bg-white border shadow px-2 py-1"
-                  aria-label="Next image"
+                  onClick={() => scrollSimilarBy(1)}
+                  className="rounded-full border bg-white hover:bg-zinc-50 px-3 py-2"
+                  aria-label="Scroll similar products right"
                 >
                   ›
                 </button>
-                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1">
-                  {images.map((_, i) => (
-                    <span
+              </div>
+            </div>
+
+            <div className="mt-4">
+              {similarQ.isLoading ? (
+                <div className="flex gap-3 overflow-hidden">
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <div
                       key={i}
-                      onClick={() => setMainIndex(i)}
-                      className={`h-1.5 w-1.5 rounded-full cursor-pointer ${i === mainIndex ? "bg-fuchsia-600" : "bg-white/70 border"
-                        }`}
-                    />
+                      className="w-[220px] shrink-0 rounded-2xl border bg-zinc-50 p-3 animate-pulse"
+                    >
+                      <div className="rounded-xl bg-zinc-200 h-[170px]" />
+                      <div className="mt-3 h-3 bg-zinc-200 rounded w-3/4" />
+                      <div className="mt-2 h-3 bg-zinc-200 rounded w-1/2" />
+                    </div>
                   ))}
                 </div>
-              </>
-            )}
-          </div>
+              ) : (similarQ.data?.length ?? 0) === 0 ? (
+                <div className="text-sm text-zinc-600">No similar products found.</div>
+              ) : (
+                <div
+                  ref={similarRef}
+                  className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1 scroll-smooth"
+                  style={{ scrollSnapType: "x mandatory" as any }}
+                >
+                  {(similarQ.data || []).map((sp) => {
+                    const img = (sp.imagesJson || [])[0] || "/placeholder.svg";
+                    const price = sp.price != null ? NGN.format(sp.price) : "—";
+                    return (
+                      <Link
+                        key={sp.id}
+                        to={`/product/${sp.id}`}
+                        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+                        className="w-[220px] md:w-[240px] shrink-0 rounded-2xl border bg-white hover:shadow-sm transition overflow-hidden"
+                        style={{ scrollSnapAlign: "start" as any }}
+                      >
+                        <div className="relative bg-zinc-100" style={{ aspectRatio: "4 / 3" }}>
+                          <img
+                            src={img}
+                            alt={sp.title}
+                            className="absolute inset-0 w-full h-full object-cover"
+                            onError={(e) => (e.currentTarget.style.opacity = "0.25")}
+                          />
+                          <span
+                            className={`absolute left-2 top-2 inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium border ${sp.inStock !== false
+                              ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
+                              : "bg-rose-600/10 text-rose-700 border-rose-600/20"
+                              }`}
+                          >
+                            {sp.inStock !== false ? "In stock" : "Out of stock"}
+                          </span>
+                        </div>
 
-          {/* Thumbnails */}
-          <div
-            className="flex items-center justify-center gap-2"
-            onMouseEnter={() => setPaused(true)}
-            onMouseLeave={() => setPaused(false)}
-          >
-            <button
-              type="button"
-              onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-              className="rounded-full border px-2 py-1 text-sm bg-white hover:bg-zinc-50"
-              aria-label="Previous thumbnails"
-            >
-              ‹
-            </button>
-
-            <div className="flex gap-2">
-              {visibleThumbs.map((u, i) => {
-                const absoluteIndex = thumbStart + i;
-                const isActive = absoluteIndex === mainIndex;
-                return (
-                  <img
-                    key={`${u}:${absoluteIndex}`}
-                    src={u}
-                    alt={`thumb-${absoluteIndex}`}
-                    onClick={() => setMainIndex(absoluteIndex)}
-                    className={`w-24 h-20 rounded-lg border object-cover select-none cursor-pointer ${isActive ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "hover:opacity-90"
-                      }`}
-                    onError={(e) => (e.currentTarget.style.opacity = "0.25")}
-                  />
-                );
-              })}
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-              className="rounded-full border px-2 py-1 text-sm bg-white hover:bg-zinc-50"
-              aria-label="Next thumbnails"
-            >
-              ›
-            </button>
-          </div>
-        </div>
-
-        {/* Details */}
-        <div className="space-y-5">
-          <div>
-            <h1 className="text-2xl font-semibold">{product.title}</h1>
-            {product.brand?.name && <div className="text-sm text-zinc-600">{product.brand.name}</div>}
-          </div>
-
-          <div className="rounded-2xl bg-zinc-50 border p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-sm text-zinc-500">Current price (retail)</div>
-                <div className="text-3xl font-bold">{priceLabel}</div>
-              </div>
-
-              <span
-                className={`shrink-0 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls}`}
-              >
-                {availabilityBadge.text}
-              </span>
-            </div>
-
-            <div className="text-xs text-zinc-500 mt-1">
-              Base: {NGN.format(toNum(product.price, 0))}
-              {purchaseMeta.mode === "VARIANT" && purchaseMeta.variantId && <> • Variant price = base + option bumps</>}
-            </div>
-          </div>
-
-          {/* Variant selects */}
-          {axes.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-xs font-medium text-zinc-700">Choose options</div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setSelected({ ...baseDefaults })}
-                    className="px-2 py-1 text-[10px] rounded-lg border bg-white hover:bg-zinc-50"
-                    title="Select the base product default options"
-                  >
-                    Choose base option
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setSelected(buildEmptySelection(axes))}
-                    className="px-2 py-1 text-[10px] rounded-lg border bg-white hover:bg-zinc-50"
-                    title="Clear selections (No variant)"
-                  >
-                    Reset all variants(None)
-                  </button>
-                </div>
-              </div>
-
-              {axes.map((a) => (
-                <div key={a.id} className="grid gap-2">
-                  <label className="text-sm md:text-base font-medium text-zinc-700">{a.name}</label>
-
-                  <VariantAxisPicker
-                    axis={a}
-                    value={selected[a.id] ?? ""}
-                    onChange={(val) => {
-                      setSelected((prev) => {
-                        const draft = { ...prev, [a.id]: val };
-                        if (!val) return draft;
-                        if (isSelectionCompatible(draft)) return draft;
-
-                        const resetOthers: Record<string, string> = { ...draft };
-                        for (const ax of axes) if (ax.id !== a.id) resetOthers[ax.id] = "";
-                        return resetOthers;
-                      });
-                    }}
-                  />
-                </div>
-              ))}
-
-              {purchaseMeta.helperNote && (
-                <div className="text-[11px] mt-2 px-2 py-2 rounded-md border bg-zinc-50 text-zinc-700">
-                  {purchaseMeta.helperNote}
+                        <div className="p-3">
+                          <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
+                          <div className="mt-1 text-sm text-zinc-800">{price}</div>
+                          <div className="mt-2 text-xs text-fuchsia-700">View product →</div>
+                        </div>
+                      </Link>
+                    );
+                  })}
                 </div>
               )}
 
-              <div className="text-[11px] text-zinc-600">
-                {selectionInfo.exact.length > 0 && selectionInfo.totalStockExact > 0
-                  ? `Available for this selection: ${selectionInfo.totalStockExact}`
-                  : "Select a sellable combination to see availability"}
-              </div>
+              {!similarQ.isLoading && (similarQ.data?.length ?? 0) > 0 ? (
+                <div className="mt-2 text-[11px] text-zinc-500">
+                  Tip: swipe to scroll the list.
+                </div>
+              ) : null}
             </div>
-          )}
-
-          {/* CTAs */}
-          <div className="pt-2 flex items-center gap-3 flex-wrap">
-            <button
-              type="button"
-              onClick={handleAddToCart}
-              disabled={purchaseMeta.disableAddToCart}
-              className={`inline-flex items-center gap-2 rounded-2xl px-5 py-3 shadow-sm active:scale-[0.99] transition focus:outline-none focus:ring-4
-                ${purchaseMeta.disableAddToCart
-                  ? "bg-zinc-300 text-zinc-600 cursor-not-allowed focus:ring-zinc-200"
-                  : "bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white hover:shadow-md focus:ring-fuchsia-300/40"
-                }`}
-            >
-              <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
-              Add to cart — {NGN.format(computed.final)}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => navigate("/cart")}
-              className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 border bg-white text-zinc-900 hover:bg-zinc-50 active:scale-[0.99] transition focus:outline-none focus:ring-4 focus:ring-zinc-300/40"
-            >
-              Go to Cart
-            </button>
           </div>
-
-          {/* Description */}
-          <div className="pt-2">
-            <h2 className="text-base font-semibold mb-1">Description</h2>
-            <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description}</p>
-          </div>
-
-          {import.meta.env.DEV && (
-            <div className="text-[10px] text-zinc-500">totalStockQty: {totalStockQty}</div>
-          )}
         </div>
       </div>
     </SiteLayout>

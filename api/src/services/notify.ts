@@ -364,6 +364,7 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
           serviceFeeBase: true,
           serviceFeeComms: true,
           serviceFeeGateway: true,
+          tax: true,
 
           user: {
             select: {
@@ -424,11 +425,16 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
   const serviceFeeTotal = Number((order as any).serviceFeeTotal ?? 0);
   const safeServiceFeeTotal = Number.isFinite(serviceFeeTotal) ? serviceFeeTotal : 0;
 
-  // ✅ Prefer Order.total when present; else compute it
+
+
+  const tax = Number((order as any).tax ?? 0);
+  const safeTax = Number.isFinite(tax) ? tax : 0;
+
+  // ✅ Prefer Order.total; else compute total from items + fee + tax
   const orderTotal =
     Number.isFinite(Number(order.total)) && Number(order.total) > 0
       ? Number(order.total)
-      : itemsSubtotal + safeServiceFeeTotal;
+      : itemsSubtotal + safeServiceFeeTotal + safeTax;
 
   // If payment.amount isn't present, fall back to total
   const safeAmountPaid =
@@ -503,6 +509,11 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
           <tr>
             <td style="padding:4px 0;color:#374151;">Items subtotal</td>
             <td style="padding:4px 0;text-align:right;color:#111827;">₦${itemsSubtotal.toLocaleString()}</td>
+          </tr>
+
+          <tr>
+            <td style="padding:4px 0;color:#374151;">Tax (included)</td>
+            <td style="padding:4px 0;text-align:right;color:#111827;">₦${safeTax.toLocaleString()}</td>
           </tr>
 
           <tr>
