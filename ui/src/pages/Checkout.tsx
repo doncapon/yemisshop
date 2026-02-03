@@ -1,4 +1,4 @@
-// src/pages/Checkout.tsx (or wherever your Checkout component lives)
+// src/pages/Checkout.tsx
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -20,10 +20,13 @@ type SelectedOption = {
 };
 
 type CartLine = {
+  kind?: 'BASE' | 'VARIANT'; // ✅ preserve cart separation
+
   productId: string;
   title: string;
   qty: number;
 
+  offerId?: string; // ✅ chosen offer (if your cart stores it)
   unitPrice?: number;
   variantId?: string | null;
   selectedOptions?: SelectedOption[];
@@ -68,27 +71,91 @@ const num = (v: any, d = 0) => {
   return Number.isFinite(n) ? n : d;
 };
 
+function toArray<T = any>(x: any): T[] {
+  if (!x) return [];
+  return Array.isArray(x) ? x : [x];
+}
+
+function normalizeSelectedOptions(raw: any): SelectedOption[] {
+  const arr = toArray<SelectedOption>(raw)
+    .map((o: any) => ({
+      attributeId: String(o.attributeId ?? ''),
+      attribute: String(o.attribute ?? ''),
+      valueId: o.valueId ? String(o.valueId) : undefined,
+      value: String(o.value ?? ''),
+    }))
+    .filter((o) => o.attributeId || o.attribute || o.valueId || o.value);
+
+  // stable order so the same combo always hashes the same
+  arr.sort((a, b) => {
+    const aKey = `${a.attributeId}:${a.valueId ?? a.value}`;
+    const bKey = `${b.attributeId}:${b.valueId ?? b.value}`;
+    return aKey.localeCompare(bKey);
+  });
+
+  return arr;
+}
+
+function optionsKey(sel?: SelectedOption[]) {
+  const s = (sel ?? []).filter(Boolean);
+  if (!s.length) return '';
+  return s.map((o) => `${o.attributeId}=${o.valueId ?? o.value}`).join('|');
+}
+
+/**
+ * ✅ Stable cart line key (must match Cart.tsx intent)
+ * - base product: productId::base
+ * - variant by id: productId::v:<variantId>
+ * - options-only fallback: productId::o:<optionsKey>
+ */
+function lineKeyFor(item: Pick<CartLine, 'productId' | 'variantId' | 'selectedOptions' | 'kind'>) {
+  const pid = String(item.productId);
+  const vid = item.variantId == null ? null : String(item.variantId);
+  const sel = normalizeSelectedOptions(item.selectedOptions);
+
+  const kind: 'BASE' | 'VARIANT' =
+    item.kind === 'BASE' || item.kind === 'VARIANT' ? item.kind : item.variantId ? 'VARIANT' : 'BASE';
+
+  if (kind === 'VARIANT') {
+    if (vid) return `${pid}::v:${vid}`;
+    return sel.length ? `${pid}::o:${optionsKey(sel)}` : `${pid}::v:unknown`;
+  }
+
+  return `${pid}::base`;
+}
+
 // Normalize whatever we find in localStorage to a consistent shape
 function readCart(): CartLine[] {
   try {
     const raw = localStorage.getItem('cart');
     const arr: any[] = raw ? JSON.parse(raw) : [];
+
     return arr.map((x) => {
       const unit = num(x.unitPrice, num(x.price, 0));
       const qty = Math.max(1, num(x.qty, 1));
+
+      const rawKind = x.kind === 'BASE' || x.kind === 'VARIANT' ? x.kind : undefined;
+      const inferredKind: 'BASE' | 'VARIANT' = rawKind ?? (x.variantId ? 'VARIANT' : 'BASE');
+
+      const selectedOptions = normalizeSelectedOptions(x.selectedOptions);
+
       return {
+        kind: inferredKind,
+
         productId: String(x.productId),
         title: String(x.title ?? ''),
         qty,
         unitPrice: unit,
         variantId: x.variantId ?? null,
-        selectedOptions: Array.isArray(x.selectedOptions) ? x.selectedOptions : undefined,
+        selectedOptions,
+
         price: unit,
         totalPrice: num(x.totalPrice, unit * qty),
         image: x.image ?? null,
 
-        // ✅ keep supplierId if present
+        // ✅ keep supplier + offer if present
         supplierId: x.supplierId ?? null,
+        offerId: x.offerId ? String(x.offerId) : undefined,
       };
     });
   } catch {
@@ -102,18 +169,28 @@ function writeCart(lines: CartLine[]) {
     const qty = Math.max(1, num(l.qty, 1));
     const total = unit * qty;
 
+    const rawKind = l.kind === 'BASE' || l.kind === 'VARIANT' ? l.kind : undefined;
+    const inferredKind: 'BASE' | 'VARIANT' = rawKind ?? (l.variantId ? 'VARIANT' : 'BASE');
+
+    const sel = normalizeSelectedOptions(l.selectedOptions);
+
     return {
+      kind: inferredKind,
+
       productId: l.productId,
       title: l.title,
       qty,
       unitPrice: unit,
       variantId: l.variantId ?? null,
-      selectedOptions: l.selectedOptions ?? [],
+      selectedOptions: sel,
+
       image: l.image ?? null,
 
-      // ✅ KEEP IT so supplierIdsParam is not empty
+      // ✅ keep supplier + offer so server can price consistently
       supplierId: l.supplierId ?? null,
+      offerId: l.offerId ?? undefined,
 
+      // legacy mirror
       price: unit,
       totalPrice: total,
     };
@@ -126,14 +203,6 @@ function computeLineTotal(line: CartLine): number {
   const unit = num(line.unitPrice, num(line.price, 0));
   const qty = Math.max(1, num(line.qty, 1));
   return unit * qty;
-}
-
-/** Paystack (local) fees estimate: 1.5% + ₦100 (> ₦2,500), cap ₦2,000 */
-function estimateGatewayFee(amountNaira: number) {
-  if (!Number.isFinite(amountNaira) || amountNaira <= 0) return 0;
-  const percent = amountNaira * 0.015;
-  const extra = amountNaira > 2500 ? 100 : 0;
-  return Math.min(percent + extra, 2000);
 }
 
 /* -------- Verification helpers -------- */
@@ -160,17 +229,6 @@ function computeVerificationFlags(p?: ProfileMe) {
 
 /* ---------------- Supplier offers helpers (for price fallback) --------------- */
 
-type PublicOffer = {
-  id: string;
-  productId: string;
-  variantId: string | null;
-  supplierId: string;
-  price: number;
-  currency?: string;
-  isActive: boolean;
-  availableQty: number;
-};
-
 const asInt = (v: any, d = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : d;
@@ -179,83 +237,6 @@ const asMoney = (v: any, d = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
 };
-
-// Fetch active offers; used ONLY as a fallback to avoid unitPrice=0.
-async function fetchActiveOffersFor(productId: string, variantId?: string | null): Promise<PublicOffer[]> {
-  const buildParams = (pid: string, vid?: string | null) => {
-    const qs = new URLSearchParams();
-    qs.set('productId', pid);
-    if (vid) qs.set('variantId', vid);
-    qs.set('active', 'true');
-    qs.set('limit', '100');
-    return qs.toString();
-  };
-
-  const primary = `/api/supplier-offers?${buildParams(productId, variantId ?? undefined)}`;
-  const fb1 = `/api/supplier-offers?${buildParams(productId)}`;
-  const fb2 = `/api/products/${productId}?include=offers,variants`;
-
-  const norm = (arr: any[]): PublicOffer[] =>
-    (arr || [])
-      .map((o) => ({
-        id: String(o.id),
-        productId: String(o.productId ?? productId),
-        variantId: o.variantId ?? null,
-        supplierId: String(o.supplierId),
-        price: asMoney(o.price, NaN),
-        currency: o.currency ?? 'NGN',
-        isActive: o.isActive === true,
-        availableQty: asInt(o.availableQty ?? o.available_quantity ?? o.qty ?? 0, 0),
-      }))
-      .filter((o) => o.isActive && o.availableQty > 0 && Number.isFinite(o.price) && o.price > 0);
-
-  try {
-    const { data } = await api.get(primary);
-    const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-    const out = norm(list);
-    if (out.length) return out;
-  } catch { }
-
-  try {
-    const { data } = await api.get(fb1);
-    const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-    const out = norm(list);
-    if (out.length) return out;
-  } catch { }
-
-  try {
-    const resp = await api.get(fb2);
-    const body = resp.data;
-    const payload = body?.data ?? body ?? null;
-
-    const fromVariant =
-      variantId && Array.isArray(payload?.variants)
-        ? norm(
-          payload.variants
-            .filter((v: any) => String(v.id) === String(variantId))
-            .flatMap((v: any) => (Array.isArray(v.offers) ? v.offers : []))
-        )
-        : [];
-
-    const fromProduct = Array.isArray(payload?.supplierOffers) ? norm(payload.supplierOffers) : [];
-
-    const combined = [...fromVariant, ...fromProduct];
-    if (combined.length) return combined;
-  } catch { }
-
-  return [];
-}
-
-function pickMinOfferPrice(offers: PublicOffer[]): number | null {
-  let min = Infinity;
-  for (const o of offers) {
-    if (!o.isActive) continue;
-    if (!Number.isFinite(o.price) || o.price <= 0) continue;
-    if (!Number.isFinite(o.availableQty) || o.availableQty <= 0) continue;
-    if (o.price < min) min = o.price;
-  }
-  return min === Infinity ? null : min;
-}
 
 /* ----------------------------- Small UI bits ----------------------------- */
 const IconCart = (props: any) => (
@@ -410,84 +391,90 @@ export default function Checkout() {
     writeCart(cart);
   }, [cart]);
 
-  // Hydrate missing prices (include variants + offers correctly)
+  // This prevents “client sent X, server computed Y” mismatches.
   useEffect(() => {
-    (async () => {
-      const needs = cart.filter((l) => num(l.unitPrice, num(l.price, 0)) <= 0);
-      if (needs.length === 0) return;
+    let mounted = true;
 
+    (async () => {
       try {
+        // cache product fetches so we only hit API once per productId
+        const productCache = new Map<string, any>();
+
+        const getProduct = async (productId: string) => {
+          const pid = String(productId);
+          if (productCache.has(pid)) return productCache.get(pid);
+
+          const resp = await api.get(`/api/products/${pid}`, {
+            params: { include: "variants" }, // keep light; add "variants.options" only if your API supports it
+          });
+          const productData = resp.data?.data ?? resp.data ?? null;
+          productCache.set(pid, productData);
+          return productData;
+        };
+
+        const computeRetailUnit = (productData: any, line: CartLine): number => {
+          const baseRetail = num(productData?.retailPrice, 0);
+          if (!(baseRetail > 0)) return 0;
+
+          const isVariant = line.kind === "VARIANT" || !!line.variantId;
+          if (!isVariant) return baseRetail;
+
+          const vid = line.variantId ? String(line.variantId) : null;
+
+          // Prefer explicit variant bump if present
+          if (vid && Array.isArray(productData?.variants)) {
+            const v = productData.variants.find((vv: any) => String(vv.id) === vid);
+            if (v) {
+              // In your backend: Variant.retailPrice is treated as a bump
+              const bump1 = Math.max(0, num(v?.retailPrice, 0));
+              if (bump1 > 0) return baseRetail + bump1;
+
+              // Optional fallback: if your product endpoint includes options with priceBump
+              const optionBumps: number[] = Array.isArray(v?.options)
+                ? v.options.map((o: any) => Math.max(0, num(o?.priceBump, 0))).filter((x: number) => x > 0)
+                : [];
+
+              const bump2 = optionBumps.length ? Math.max(...optionBumps) : 0;
+              return baseRetail + bump2;
+            }
+          }
+
+          // If we cannot resolve the variant record, still price as base retail (safer than offers)
+          return baseRetail;
+        };
+
         const updated = await Promise.all(
           cart.map(async (line) => {
-            const currentUnit = num(line.unitPrice, num(line.price, 0));
-            if (currentUnit > 0) return line;
+            const productData = await getProduct(line.productId);
 
-            // 1) Fetch product + variants
-            let unit = 0;
-            let img: string | null = line.image ?? null;
+            const retailUnit = computeRetailUnit(productData, line);
 
-            let productData: any = null;
-            try {
-              const resp = await api.get(`/api/products/${line.productId}`, {
-                params: { include: 'variants,offers,supplierOffers' },
-              });
-              productData = resp.data?.data ?? resp.data ?? null;
-            } catch {
-              productData = null;
-            }
-
-            // 2) Try variant-specific price
-            if (line.variantId && productData && Array.isArray(productData.variants)) {
-              const v = productData.variants.find((vv: any) => String(vv.id) === String(line.variantId));
-              if (v) {
-                const vPrice = num(v.price, 0);
-                if (vPrice > 0) {
-                  unit = vPrice;
-                  if (!img && Array.isArray(v.imagesJson) && v.imagesJson[0]) {
-                    img = v.imagesJson[0];
-                  }
-                }
-              }
-            }
-
-            // 3) If still no price, try active offers for this variant
-            if (!unit && line.variantId) {
-              const offers = await fetchActiveOffersFor(line.productId, line.variantId);
-              const offerPrice = pickMinOfferPrice(offers);
-              if (offerPrice && offerPrice > 0) unit = offerPrice;
-            }
-
-            // 4) If no variant or still no price, try product base price
-            if (!unit && productData) {
-              const base = num(productData.price, 0);
-              if (base > 0) {
-                unit = base;
-                if (!img && Array.isArray(productData.imagesJson) && productData.imagesJson[0]) {
-                  img = productData.imagesJson[0];
-                }
-              }
-            }
-
-            // 5) Fallback to active base-level offers
-            if (!unit) {
-              const offers = await fetchActiveOffersFor(line.productId, null);
-              const offerPrice = pickMinOfferPrice(offers);
-              if (offerPrice && offerPrice > 0) unit = offerPrice;
-            }
-
-            // 6) Final fallback: keep existing (even if 0) to avoid NaN
-            if (!unit && currentUnit > 0) unit = currentUnit;
+            // If we cannot compute retail, keep existing value (but createOrder will block if 0)
+            const finalUnit = retailUnit > 0 ? retailUnit : num(line.unitPrice, num(line.price, 0));
 
             const qty = Math.max(1, num(line.qty, 1));
+
+            // Image refresh (optional)
+            let img: string | null = line.image ?? null;
+            if (!img && productData) {
+              if (line.variantId && Array.isArray(productData?.variants)) {
+                const v = productData.variants.find((vv: any) => String(vv.id) === String(line.variantId));
+                if (!img && Array.isArray(v?.imagesJson) && v.imagesJson[0]) img = v.imagesJson[0];
+              }
+              if (!img && Array.isArray(productData?.imagesJson) && productData.imagesJson[0]) img = productData.imagesJson[0];
+            }
+
             return {
               ...line,
-              unitPrice: unit,
-              price: unit,
-              totalPrice: unit * qty,
+              unitPrice: finalUnit,
+              price: finalUnit, // keep legacy mirror in sync
+              totalPrice: finalUnit * qty,
               image: img,
             };
           })
         );
+
+        if (!mounted) return;
 
         setCart(updated);
         writeCart(updated);
@@ -495,8 +482,13 @@ export default function Checkout() {
         // ignore; we still have original cart
       }
     })();
+
+    return () => {
+      mounted = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
 
   const authHeader = token ? { Authorization: `Bearer ${token}` } : undefined;
 
@@ -520,7 +512,7 @@ export default function Checkout() {
       qs.set('itemsSubtotal', String(itemsSubtotal));
       qs.set('units', String(units));
 
-      // display-only (but you asked they should show up)
+      // display-only
       if (productIds.length) qs.set('productIds', productIds.join(','));
       if (supplierIds.length) qs.set('supplierIds', supplierIds.join(','));
 
@@ -554,17 +546,15 @@ export default function Checkout() {
 
   // Display-only: VAT "included" estimate (when mode is INCLUDED)
   const estimatedVATIncluded = useMemo(() => {
-    if (taxMode !== "INCLUDED" || taxRate <= 0) return 0;
-
-    const gross = itemsSubtotal; // this already includes VAT
-    const vat = gross - gross / (1 + taxRate); // ✅ correct extraction
+    if (taxMode !== 'INCLUDED' || taxRate <= 0) return 0;
+    const gross = itemsSubtotal; // includes VAT
+    const vat = gross - gross / (1 + taxRate);
     return round2(vat);
   }, [itemsSubtotal, taxMode, taxRate]);
 
-
   const serviceFeeTotal = fee?.serviceFeeTotal ?? 0;
 
-  // ✅ This now matches backend/orders: subtotal + vatAddOn (if ADDED) + serviceFeeTotal (base+comms+gateway)
+  // ✅ Matches backend: subtotal + vatAddOn (if ADDED) + serviceFeeTotal
   const payableTotal = itemsSubtotal + (taxMode === 'ADDED' ? vatAddOn : 0) + serviceFeeTotal;
 
   // ADDRESSES
@@ -727,8 +717,14 @@ export default function Checkout() {
         productId: it.productId,
         variantId: it.variantId || undefined,
         qty: Math.max(1, num(it.qty, 1)),
-        unitPrice: num(it.unitPrice, num(it.price, 0)),
+
+        // ✅ send offerId if present
+        offerId: it.offerId || undefined,
+
         selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : undefined,
+
+        // ✅ optional pass-through (harmless if backend ignores)
+        kind: it.kind,
       }));
 
       const payload = {
@@ -793,7 +789,12 @@ export default function Checkout() {
   }
 
   const NotVerifiedModal = () => {
-    const title = !emailOk && !phoneOk ? 'Email and password not verified' : !emailOk ? 'Email not verified' : 'Phone is not verified';
+    const title =
+      !emailOk && !phoneOk
+        ? 'Email and password not verified'
+        : !emailOk
+          ? 'Email not verified'
+          : 'Phone is not verified';
 
     const lines: string[] = [];
     if (!emailOk) lines.push('• Your email is not verified.');
@@ -861,7 +862,12 @@ export default function Checkout() {
             >
               Back to cart
             </button>
-            <button className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm" onClick={() => { }} disabled title="Complete the steps above">
+            <button
+              className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
+              onClick={() => { }}
+              disabled
+              title="Complete the steps above"
+            >
               Continue
             </button>
           </div>
@@ -886,7 +892,9 @@ export default function Checkout() {
             </nav>
             <h1 className="mt-2 text-2xl font-semibold text-ink">Checkout</h1>
             {profileErr && (
-              <p className="mt-2 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">{profileErr}</p>
+              <p className="mt-2 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
+                {profileErr}
+              </p>
             )}
           </div>
 
@@ -906,11 +914,11 @@ export default function Checkout() {
                     const lineTotal = computeLineTotal(it);
                     const hasOptions = Array.isArray(it.selectedOptions) && it.selectedOptions!.length > 0;
                     const optionsText = hasOptions
-                      ? it.selectedOptions!.map((o) => `${o.attribute}: ${o.value}`).join(' • ')
+                      ? normalizeSelectedOptions(it.selectedOptions).map((o) => `${o.attribute}: ${o.value}`).join(' • ')
                       : null;
 
                     return (
-                      <li key={`${it.productId}-${it.variantId ?? 'base'}`} className="p-4">
+                      <li key={lineKeyFor(it)} className="p-4">
                         <div className="flex items-center gap-4">
                           {it.image ? (
                             <img src={it.image} alt={it.title} className="w-14 h-14 rounded-md object-cover border" />
@@ -925,7 +933,7 @@ export default function Checkout() {
                               <div className="min-w-0">
                                 <div className="font-medium text-ink truncate">
                                   {it.title}
-                                  {it.variantId ? ' (Variant)' : ''}
+                                  {it.kind === 'VARIANT' || it.variantId ? ' (Variant)' : ''}
                                 </div>
                                 <div className="text-xs text-ink-soft">
                                   Qty: {it.qty} • Unit: {ngn.format(unit)}

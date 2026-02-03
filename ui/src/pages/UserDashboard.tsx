@@ -25,7 +25,7 @@ import { motion } from 'framer-motion';
 import SiteLayout from '../layouts/SiteLayout';
 
 /* ---------------------- Types ---------------------- */
-type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SUPER_USER' | 'SHOPPER'| "SUPPLIER_RIDER";
+type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SUPER_USER' | 'SHOPPER' | 'SUPPLIER_RIDER';
 
 type MeResponse = {
   id: string;
@@ -129,7 +129,9 @@ function mergeIntoLocalCart(items: LocalCartItem[]) {
     for (const it of items) byId.set(it.productId, (byId.get(it.productId) || 0) + (it.qty || 0));
     const merged: LocalCartItem[] = Array.from(byId.entries()).map(([productId, qty]) => ({ productId, qty }));
     localStorage.setItem(key, JSON.stringify(merged));
-  } catch {/* noop */ }
+  } catch {
+    /* noop */
+  }
 }
 
 /* ---------------------- Utils ---------------------- */
@@ -190,7 +192,8 @@ function useMe() {
   return useQuery({
     queryKey: ['me'],
     queryFn: async () =>
-      (await api.get<MeResponse>('/api/auth/me', { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
+      (await api.get<MeResponse>('/api/auth/me', { headers: token ? { Authorization: `Bearer ${token}` } : undefined }))
+        .data,
     enabled: !!token,
   });
 }
@@ -301,22 +304,16 @@ function useRecentTransactions(limit = 5) {
     queryFn: async (): Promise<RecentTransaction[]> => {
       const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
 
-      const res = await api.get<{ data: any[] }>(
-        `/api/payments/recent?limit=${limit}`,
-        { headers }
-      );
+      const res = await api.get<{ data: any[] }>(`/api/payments/recent?limit=${limit}`, { headers });
 
       const orders = Array.isArray(res.data?.data) ? res.data.data : [];
 
       const txs: RecentTransaction[] = orders.map((o: any) => {
         const p = o.latestPayment || null;
 
-        const createdAt =
-          p?.paidAt || p?.createdAt || o.createdAt || new Date().toISOString();
+        const createdAt = p?.paidAt || p?.createdAt || o.createdAt || new Date().toISOString();
 
-        const total = Number(
-          o.total ?? p?.amount ?? 0
-        );
+        const total = Number(o.total ?? p?.amount ?? 0);
 
         const orderStatus = String(p?.status || 'PENDING');
 
@@ -340,9 +337,6 @@ function useRecentTransactions(limit = 5) {
         };
       });
 
-      // If you only want rows that actually have a payment, uncomment:
-      // return txs.filter((t) => !!t.payment);
-
       return txs;
     },
     enabled: !!token,
@@ -360,18 +354,20 @@ function useTotalSpent() {
 
       // 1) payments summary (if you have it)
       try {
-        const r = await api.get<{ totalPaid?: number; totalPaidNgn?: number }>('/api/payments/summary', {
-          headers,
-        });
+        const r = await api.get<{ totalPaid?: number; totalPaidNgn?: number }>('/api/payments/summary', { headers });
         const v = r.data?.totalPaid ?? r.data?.totalPaidNgn;
         if (typeof v === 'number' && Number.isFinite(v)) return v;
-      } catch { }
+      } catch {
+        /* noop */
+      }
 
       // 2) orders summary
       try {
         const s = await api.get<{ ordersCount: number; totalSpent: number }>('/api/orders/summary', { headers });
         if (typeof s.data?.totalSpent === 'number') return s.data.totalSpent;
-      } catch { }
+      } catch {
+        /* noop */
+      }
 
       // 3) derive from /orders/mine
       try {
@@ -394,27 +390,92 @@ function useResendEmail() {
   const token = useAuthStore((s) => s.token);
   return useMutation({
     mutationFn: async () =>
-      (await api.post('/api/auth/resend-email', {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })).data,
+      (await api.post('/api/auth/resend-email', {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined }))
+        .data,
   });
 }
+
 function useResendOtp() {
   const token = useAuthStore((s) => s.token);
   return useMutation({
     mutationFn: async () =>
-      (await api.post('/api/auth/resend-otp', {}, {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      })).data as { nextResendAfterSec?: number },
+      (
+        await api.post(
+          '/api/auth/resend-otp',
+          {},
+          {
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          }
+        )
+      ).data as { nextResendAfterSec?: number },
+  });
+}
+
+/**
+ * Verify phone OTP
+ * - tries a few common endpoints (your backend may name it differently)
+ * - expects either { ok: true } or a successful 2xx with no error
+ */
+function useVerifyOtp() {
+  const token = useAuthStore((s) => s.token);
+
+  return useMutation({
+    mutationFn: async (code: string) => {
+      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+      const payload = { otp: code };
+
+      const endpoints = [
+        '/api/auth/verify-otp',
+        '/api/auth/otp/verify',
+        '/api/auth/phone/verify',
+        '/api/auth/verify-phone',
+      ];
+
+      let lastErr: any = null;
+
+      for (const url of endpoints) {
+        try {
+          const r = await api.post(url, payload, { headers });
+
+          // If your API returns { ok: false, ... } on 200, handle that too
+          if (r?.data && typeof r.data === 'object' && r.data.ok === false) {
+            const msg = (r.data.message || r.data.error || 'Invalid OTP') as string;
+            throw new Error(msg);
+          }
+
+          return r.data;
+        } catch (e: any) {
+          lastErr = e;
+          // keep trying next endpoint
+        }
+      }
+
+      const msg =
+        lastErr?.response?.data?.error ||
+        lastErr?.response?.data?.message ||
+        lastErr?.message ||
+        'Could not verify OTP';
+      throw new Error(msg);
+    },
   });
 }
 
 /* ---------------------- UI primitives ---------------------- */
-function GlassCard(props: { title: string; icon?: React.ReactNode; children: React.ReactNode; right?: React.ReactNode; className?: string }) {
+function GlassCard(props: {
+  title: string;
+  icon?: React.ReactNode;
+  children: React.ReactNode;
+  right?: React.ReactNode;
+  className?: string;
+}) {
   return (
     <motion.section
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35 }}
-      className={`rounded-2xl border border-white/40 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-5 ${props.className || ''}`}
+      className={`rounded-2xl border border-white/40 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-5 ${
+        props.className || ''
+      }`}
     >
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
@@ -435,26 +496,25 @@ function Stat(props: { label: string; value: string; icon?: React.ReactNode; acc
     props.accent === 'emerald'
       ? 'ring-emerald-400/25 text-emerald-700'
       : props.accent === 'cyan'
-        ? 'ring-cyan-400/25 text-cyan-700'
-        : 'ring-violet-400/25 text-violet-700';
+      ? 'ring-cyan-400/25 text-cyan-700'
+      : 'ring-violet-400/25 text-violet-700';
   const iconBg =
     props.accent === 'emerald'
       ? 'from-emerald-400/20 to-emerald-500/20 text-emerald-600'
       : props.accent === 'cyan'
-        ? 'from-cyan-400/20 to-cyan-500/20 text-cyan-600'
-        : 'from-violet-400/20 to-violet-500/20 text-violet-600';
+      ? 'from-cyan-400/20 to-cyan-500/20 text-cyan-600'
+      : 'from-violet-400/20 to-violet-500/20 text-violet-600';
 
   return (
-    <motion.div
-      whileHover={{ y: -2 }}
-      className={`p-4 rounded-2xl border bg-white ring-1 ${ring} shadow-sm`}
-    >
+    <motion.div whileHover={{ y: -2 }} className={`p-4 rounded-2xl border bg-white ring-1 ${ring} shadow-sm`}>
       <div className="flex items-center gap-3">
         <span className={`inline-grid place-items-center w-10 h-10 rounded-xl bg-gradient-to-br ${iconBg}`}>
           {props.icon}
         </span>
-        <div>
-          <div className="text-[11px] uppercase tracking-wide text-zinc-500">{props.label}</div>
+
+        {/* FIX: prevent ugly wrapping in narrow cards */}
+        <div className="min-w-0">
+          <div className="text-[11px] uppercase tracking-wide text-zinc-500 truncate">{props.label}</div>
           <div className="mt-0.5 text-xl font-semibold">{props.value}</div>
         </div>
       </div>
@@ -467,12 +527,12 @@ function StatusPill({ label, count }: { label: string; count: number }) {
     label === 'PAID'
       ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
       : label === 'PENDING'
-        ? 'bg-amber-100 text-amber-700 border-amber-200'
-        : label === 'SHIPPED' || label === 'DELIVERED' || label === 'PROCESSING'
-          ? 'bg-cyan-100 text-cyan-700 border-cyan-200'
-          : label === 'FAILED' || label === 'CANCELLED'
-            ? 'bg-rose-100 text-rose-700 border-rose-200'
-            : 'bg-zinc-100 text-zinc-700 border-zinc-200';
+      ? 'bg-amber-100 text-amber-700 border-amber-200'
+      : label === 'SHIPPED' || label === 'DELIVERED' || label === 'PROCESSING'
+      ? 'bg-cyan-100 text-cyan-700 border-cyan-200'
+      : label === 'FAILED' || label === 'CANCELLED'
+      ? 'bg-rose-100 text-rose-700 border-rose-200'
+      : 'bg-zinc-100 text-zinc-700 border-zinc-200';
   return (
     <span className={`inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-full border ${tone}`}>
       <b className="font-semibold">{label}</b>
@@ -487,8 +547,8 @@ function PaymentBadgeInline({ status }: { status: string | undefined }) {
     s === 'PAID'
       ? 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20'
       : s === 'FAILED' || s === 'CANCELLED'
-        ? 'bg-rose-500/10 text-rose-700 border-rose-600/20'
-        : 'bg-amber-500/10 text-amber-700 border-amber-600/20';
+      ? 'bg-rose-500/10 text-rose-700 border-rose-600/20'
+      : 'bg-amber-500/10 text-amber-700 border-amber-600/20';
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${tone}`}>{s}</span>;
 }
 
@@ -506,9 +566,11 @@ export default function UserDashboard() {
 
   const resendEmail = useResendEmail();
   const resendOtp = useResendOtp();
+  const verifyOtp = useVerifyOtp();
   const { openModal } = useModal();
 
   const [otpCooldown, setOtpCooldown] = useState(0);
+  const [otpCode, setOtpCode] = useState('');
   const [rebuyingId, setRebuyingId] = useState<string | null>(null);
 
   async function buyAgain(orderId: string) {
@@ -517,7 +579,11 @@ export default function UserDashboard() {
       const res = await api.get(`/api/orders/${orderId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
-      const items = Array.isArray(res.data?.data?.items) ? res.data.data.items : Array.isArray(res.data?.items) ? res.data.items : [];
+      const items = Array.isArray(res.data?.data?.items)
+        ? res.data.data.items
+        : Array.isArray(res.data?.items)
+        ? res.data.items
+        : [];
       const toCart = items.map((it: any) => ({
         productId: it.productId ?? it.product?.id ?? it.id,
         qty: it.qty ?? it.quantity ?? 1,
@@ -545,12 +611,38 @@ export default function UserDashboard() {
   const byStatusEntries = useMemo(() => {
     const map = ordersSummaryQ.data?.byStatus || {};
     const known = statusOrder.filter((k) => map[k] > 0).map((k) => [k, map[k]] as const);
-    const unknown = Object.entries(map).filter(([k]) => !statusOrder.includes(k)).sort((a, b) => a[0].localeCompare(b[0])) as Array<[string, number]>;
+    const unknown = Object.entries(map)
+      .filter(([k]) => !statusOrder.includes(k))
+      .sort((a, b) => a[0].localeCompare(b[0])) as Array<[string, number]>;
     return [...known, ...unknown];
   }, [ordersSummaryQ.data, statusOrder]);
 
   /* ---------------------- Skeletons ---------------------- */
-  const Shimmer = () => <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />;
+  const Shimmer = () => (
+    <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />
+  );
+
+  // FIX: cards never shrink into skinny pills on the right rail
+  const statsGridClass =
+    'grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))] sm:[grid-template-columns:repeat(auto-fit,minmax(200px,1fr))]';
+
+  async function handleVerifyOtp() {
+    const code = String(otpCode || '').trim();
+    if (!/^\d{6}$/.test(code)) {
+      openModal({ title: 'Invalid code', message: 'OTP must be 6 digits.' });
+      return;
+    }
+
+    try {
+      await verifyOtp.mutateAsync(code);
+      setOtpCode('');
+      setOtpCooldown(0);
+      await qc.invalidateQueries({ queryKey: ['me'] });
+      openModal({ title: 'Verified', message: 'Your phone number has been verified.' });
+    } catch (e: any) {
+      openModal({ title: 'Could not verify', message: e?.message || 'Please try again.' });
+    }
+  }
 
   return (
     <SiteLayout>
@@ -611,7 +703,9 @@ export default function UserDashboard() {
                   <div className="font-semibold truncate">
                     {me ? `${me.firstName ?? ''} ${me?.lastName ?? ''}`.trim() || me.email : <Shimmer />}
                   </div>
-                  <div className="text-sm text-zinc-600 truncate">{me?.email || (meQ.isLoading ? <Shimmer /> : '—')}</div>
+                  <div className="text-sm text-zinc-600 truncate">
+                    {me?.email || (meQ.isLoading ? <Shimmer /> : '—')}
+                  </div>
                   <div className="text-xs text-zinc-600 mt-1 flex items-center gap-2">
                     <Clock3 size={14} className="text-cyan-600" />
                     Joined {dateFmt(me?.joinedAt)}{' '}
@@ -644,7 +738,8 @@ export default function UserDashboard() {
               <div className="space-y-3 text-sm">
                 <div className="flex items-center justify-between gap-3">
                   <span className="inline-flex items-center gap-2">
-                    <MailCheck size={16} className="text-emerald-600" /> Email {me?.emailVerified ? 'verified' : 'pending'}
+                    <MailCheck size={16} className="text-emerald-600" /> Email{' '}
+                    {me?.emailVerified ? 'verified' : 'pending'}
                   </span>
                   {!me?.emailVerified && (
                     <motion.button
@@ -665,10 +760,15 @@ export default function UserDashboard() {
                     </motion.button>
                   )}
                 </div>
+
+                {/* PHONE VERIFICATION (send + verify) */}
                 <div className="flex items-center justify-between gap-3">
                   <span className="inline-flex items-center gap-2">
-                    <Phone size={16} className="text-cyan-600" /> Phone {me?.phoneVerified ? 'verified' : 'pending'}
+                    <Phone size={16} className="text-cyan-600" /> Phone{' '}
+                    {me?.phoneVerified ? 'verified' : 'pending'}
                   </span>
+
+                  {/* Once verified, remove resend + inputs */}
                   {!me?.phoneVerified && (
                     <motion.button
                       whileHover={{ y: -1 }}
@@ -679,11 +779,11 @@ export default function UserDashboard() {
                         try {
                           const resp = await resendOtp.mutateAsync();
                           setOtpCooldown(resp?.nextResendAfterSec ?? 60);
-                          alert('OTP sent to your phone.');
+                          openModal({ title: 'OTP sent', message: 'OTP sent to your phone.' });
                         } catch (e: any) {
                           const retryAfter = e?.response?.data?.retryAfterSec;
                           if (retryAfter) setOtpCooldown(retryAfter);
-                          alert(e?.response?.data?.error || 'Failed to resend OTP');
+                          openModal({ title: 'Failed', message: e?.response?.data?.error || 'Failed to resend OTP' });
                         }
                       }}
                     >
@@ -691,6 +791,31 @@ export default function UserDashboard() {
                     </motion.button>
                   )}
                 </div>
+
+                {/* Verify input row (only when not verified) */}
+                {!me?.phoneVerified && (
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={otpCode}
+                      onChange={(e) => setOtpCode(e.target.value.replace(/[^\d]/g, '').slice(0, 6))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleVerifyOtp();
+                      }}
+                      inputMode="numeric"
+                      placeholder="Enter 6-digit OTP"
+                      className="flex-1 rounded-full border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-fuchsia-200"
+                    />
+                    <motion.button
+                      whileHover={{ y: -1 }}
+                      className="rounded-full border px-4 py-2 bg-white hover:bg-zinc-50 transition disabled:opacity-50 text-sm font-semibold"
+                      disabled={verifyOtp.isPending || otpCode.trim().length !== 6}
+                      onClick={handleVerifyOtp}
+                      title="Verify phone OTP"
+                    >
+                      {verifyOtp.isPending ? 'Verifying…' : 'Verify'}
+                    </motion.button>
+                  </div>
+                )}
               </div>
             </GlassCard>
 
@@ -699,7 +824,7 @@ export default function UserDashboard() {
                 <Link to="/forgot-password" className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline">
                   Change password <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
                 </Link>
-                <Link to="/security/sessions" className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline">
+                <Link to="/account/sessions" className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline">
                   Sessions & devices <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
                 </Link>
                 <Link to="/privacy" className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline">
@@ -734,7 +859,7 @@ export default function UserDashboard() {
               }
             >
               {ordersSummaryQ.isLoading ? (
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                <div className={statsGridClass}>
                   {Array.from({ length: 6 }).map((_, i) => (
                     <div key={i} className="p-4 rounded-2xl border bg-white">
                       <Shimmer />
@@ -750,7 +875,7 @@ export default function UserDashboard() {
                 </div>
               ) : (
                 <>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                  <div className={statsGridClass}>
                     <Stat
                       label="Total orders"
                       value={String(ordersSummaryQ.data?.ordersCount ?? 0)}
@@ -763,16 +888,19 @@ export default function UserDashboard() {
                         label={k}
                         value={String(v)}
                         icon={
-                          k === 'PAID'
-                            ? <CheckCircle2 size={18} />
-                            : k === 'SHIPPED' || k === 'DELIVERED' || k === 'PROCESSING'
-                              ? <Truck size={18} />
-                              : <Clock3 size={18} />
+                          k === 'PAID' ? (
+                            <CheckCircle2 size={18} />
+                          ) : k === 'SHIPPED' || k === 'DELIVERED' || k === 'PROCESSING' ? (
+                            <Truck size={18} />
+                          ) : (
+                            <Clock3 size={18} />
+                          )
                         }
                         accent={k === 'PAID' ? 'emerald' : k === 'PENDING' ? 'cyan' : 'violet'}
                       />
                     ))}
                   </div>
+
                   {byStatusEntries.length > 5 && (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {byStatusEntries.slice(5).map(([k, v]) => (
@@ -825,8 +953,8 @@ export default function UserDashboard() {
                           {o.items.length === 0
                             ? 'No items'
                             : o.items.length === 1
-                              ? o.items[0].title
-                              : `${o.items[0].title} + ${o.items.length - 1} more`}
+                            ? o.items[0].title
+                            : `${o.items[0].title} + ${o.items.length - 1} more`}
                         </div>
                       </div>
                       <div className="ml-auto flex items-center gap-2">
@@ -891,8 +1019,8 @@ export default function UserDashboard() {
                         <div className="text-xs text-zinc-600 mt-1">
                           {t.payment ? (
                             <>
-                              <PaymentBadgeInline status={t.payment.status} />{' '}
-                              {t.payment.provider || '—'} • {t.payment.channel || '—'} • Ref:{' '}
+                              <PaymentBadgeInline status={t.payment.status} /> {t.payment.provider || '—'} •{' '}
+                              {t.payment.channel || '—'} • Ref:{' '}
                               <span className="font-mono">{t.payment.reference || '—'}</span>
                             </>
                           ) : (
@@ -938,14 +1066,7 @@ export default function UserDashboard() {
                   icon={<ShoppingBag size={18} />}
                   accent="cyan"
                 />
-                <Stat
-                  label="Member since"
-                  value={
-                    me?.joinedAt
-                      ? `${dateFmt(me.joinedAt)} • ${sinceJoined(me.joinedAt)} ago`
-                      : '—'
-                  }
-                />
+                <Stat label="Member since" value={me?.joinedAt ? `${dateFmt(me.joinedAt)} • ${sinceJoined(me.joinedAt)} ago` : '—'} />
               </div>
               <p className="text-xs text-zinc-600 mt-3">
                 Tip: Turn on personalised recommendations in Preferences to see smarter picks here.

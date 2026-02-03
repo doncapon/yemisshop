@@ -1,7 +1,5 @@
 // src/components/admin/ManageProducts.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import StatusDot from "../StatusDot";
-import { Search } from "lucide-react";
 import { useModal } from "../ModalProvider";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebounced } from "../../utils/useDebounced";
@@ -13,11 +11,6 @@ import SuppliersOfferManager from "./SuppliersOfferManager";
 /* ============================
    Types
 ============================ */
-
-
-// ============================
-// Offer summary helpers (ManageProducts)
-// ============================
 
 type SupplierOfferLite = {
   id: string;
@@ -31,46 +24,16 @@ type SupplierOfferLite = {
   available?: number;
   qty?: number;
   stock?: number;
+
+  // pricing variants
+  unitCost?: number | string | null;
+  unitPrice?: number | string | null;
+  cost?: number | string | null;
+  supplierPrice?: number | string | null;
+  basePrice?: number | string | null;
+  price?: number | string | null;
+  amount?: number | string | null;
 };
-
-function coerceQty(o: SupplierOfferLite): number {
-  const raw = o.availableQty ?? o.available ?? o.qty ?? o.stock ?? 0;
-  const n = typeof raw === "number" ? raw : Number(raw);
-  return Number.isFinite(n) ? Math.max(0, n) : 0;
-}
-
-/**
- * IMPORTANT:
- * - "offerCount" should be TOTAL rows (even if qty=0)
- * - "availableTotal" should be SUM of qty where row is active+inStock+qty>0
- */
-export function buildOfferSummaryByProduct(
-  offers: SupplierOfferLite[]
-): Map<string, { availableTotal: number; offerCount: number }> {
-  const map = new Map<string, { availableTotal: number; offerCount: number }>();
-
-  for (const o of offers ?? []) {
-    const pid = String(o.productId);
-    const cur = map.get(pid) ?? { availableTotal: 0, offerCount: 0 };
-
-    // Count ALL offers for that product (even if qty=0)
-    cur.offerCount += 1;
-
-    // Available is only from offers that actually have qty > 0 and are active+inStock
-    const qty = coerceQty(o);
-    const active = o.isActive != null ? !!o.isActive : true;
-    const inStock = o.inStock != null ? !!o.inStock : qty > 0;
-
-    if (active && inStock && qty > 0) {
-      cur.availableTotal += qty;
-    }
-
-    map.set(pid, cur);
-  }
-
-  return map;
-}
-
 
 type AdminProduct = {
   id: string;
@@ -186,11 +149,12 @@ type VariantRow = {
   selections: Record<string, string>; // attributeId -> valueId
   priceBump: string;
 
-  // optional (safe defaults)
   inStock?: boolean;
   availableQty?: number;
   imagesJson?: string[];
 };
+
+type AttrDef = { id: string; name?: string };
 
 /* ============================
    Helpers
@@ -245,6 +209,48 @@ function normalizeNullableId(raw: any): string | null {
   return s;
 }
 
+function normalizeId(x: any): string | null {
+  if (x == null) return null;
+  const s = String(x).trim();
+  if (!s || s === "null" || s === "undefined") return null;
+  return s;
+}
+
+function toNumberLoose(v: any): number | null {
+  if (v == null || v === "") return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (typeof v === "object" && typeof v.toString === "function") {
+    const n = Number(String(v.toString()));
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/**
+ * Extracts supplier-side "cost/price" from a supplier offer row across DTO variants.
+ */
+function offerUnitCost(o: any): number | null {
+  if (!o) return null;
+
+  const directKeys = ["unitCost", "unitPrice", "cost", "supplierPrice", "basePrice", "price", "amount"];
+  for (const k of directKeys) {
+    const n = toNumberLoose(o?.[k]);
+    if (n != null) return n;
+  }
+
+  const nested = [o?.pricing?.unitCost, o?.pricing?.cost, o?.pricing?.price, o?.unitCost?.amount, o?.price?.amount, o?.amount?.amount];
+  for (const v of nested) {
+    const n = toNumberLoose(v);
+    if (n != null) return n;
+  }
+
+  return null;
+}
+
 async function fetchSupplierOffersForProduct(productId: string, token?: string | null) {
   const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
 
@@ -269,95 +275,13 @@ async function fetchSupplierOffersForProduct(productId: string, token?: string |
   return [];
 }
 
-function normalizeId(x: any): string | null {
-  if (x == null) return null;
-  const s = String(x).trim();
-  if (!s || s === "null" || s === "undefined") return null;
-  return s;
+function extractProductVariants(p: any): any[] {
+  if (Array.isArray(p?.variants)) return p.variants;
+  if (Array.isArray(p?.ProductVariant)) return p.ProductVariant;
+  if (Array.isArray(p?.productVariants)) return p.productVariants;
+  return [];
 }
 
-async function persistVariantsStrict(
-  productId: string,
-  variants: any[],
-  token?: string | null,
-  opts?: { replace?: boolean }
-) {
-  const replace = opts?.replace ?? true;
-  const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
-
-  const clean = (variants || []).map((v) => {
-    const id = normalizeId(v?.id);
-    const sku = String(v?.sku ?? "").trim();
-
-    return {
-      ...(id ? { id } : {}),
-      ...(!id && sku ? { sku } : {}),
-      options: (v?.options || v?.optionSelections || []).map((o: any) => {
-        const rawPb = o?.priceBump;
-        const n = rawPb === "" || rawPb == null ? NaN : Number(rawPb);
-
-        return {
-          attributeId: o.attributeId || o.attribute?.id,
-          valueId: o.valueId || o.attributeValueId || o.value?.id,
-          priceBump: Number.isFinite(n) ? n : null,
-        };
-      }),
-    };
-  });
-
-  const attempts: Array<{ method: "post" | "put"; url: string; body: any }> = [
-    {
-      method: "post",
-      url: `/api/admin/products/${encodeURIComponent(productId)}/variants/bulk`,
-      body: { variants: clean, replace },
-    },
-    {
-      method: "post",
-      url: `/api/admin/products/${encodeURIComponent(productId)}/variants/bulk-replace`,
-      body: { variants: clean, replace },
-    },
-    {
-      method: "put",
-      url: `/api/admin/products/${encodeURIComponent(productId)}/variants`,
-      body: { variants: clean, replace },
-    },
-    {
-      method: "post",
-      url: `/api/admin/products/${encodeURIComponent(productId)}/variants`,
-      body: { variants: clean, replace },
-    },
-    {
-      method: "post",
-      url: `/api/admin/variants/bulk?productId=${encodeURIComponent(productId)}`,
-      body: { variants: clean, replace },
-    },
-  ];
-
-  let lastErr: any = null;
-
-  for (const a of attempts) {
-    try {
-      const req =
-        a.method === "put" ? api.put(a.url, a.body, { headers: hdr }) : api.post(a.url, a.body, { headers: hdr });
-      const { data } = await req;
-      return data;
-    } catch (e: any) {
-      const status = e?.response?.status;
-      if (status === 404 || status === 405) {
-        lastErr = e;
-        continue;
-      }
-      const msg = e?.response?.data?.detail || e?.response?.data?.error || e?.message || "Failed to persist variants";
-      console.error("persistVariantsStrict error:", status, e?.response?.data || e);
-      throw new Error(msg);
-    }
-  }
-
-  console.error("No variants bulk endpoint found. Last error:", lastErr?.response?.status, lastErr?.response?.data);
-  throw new Error("Your API does not expose a variants bulk endpoint. Add one server-side or update the frontend to match your backend route.");
-}
-
-type AttrDef = { id: string; name?: string };
 const rowKey = (row: VariantRow, index: number) => String(row?.id ?? index);
 
 function buildComboKey(row: VariantRow, attrs: AttrDef[]): string {
@@ -382,10 +306,71 @@ function findDuplicateCombos(rows: VariantRow[], attrs: AttrDef[]): Record<strin
   for (const [, list] of keyToRows.entries()) {
     if (list.length <= 1) continue;
     list.forEach((rk) => {
-      errors[rk] = "Duplicate variant combination. Each row’s Size/Volume/Weight combo must be unique.";
+      errors[rk] = "Duplicate variant combination. Each row’s combo must be unique.";
     });
   }
   return errors;
+}
+
+/* ============================
+   Variants persistence (tries multiple endpoints)
+============================ */
+
+async function persistVariantsStrict(productId: string, variants: any[], token?: string | null, opts?: { replace?: boolean }) {
+  const replace = opts?.replace ?? true;
+  const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+  const clean = (variants || []).map((v) => {
+    const id = normalizeId(v?.id);
+    const sku = String(v?.sku ?? "").trim();
+
+    return {
+      ...(id ? { id } : {}),
+      ...(!id && sku ? { sku } : {}),
+      options: (v?.options || v?.optionSelections || []).map((o: any) => {
+        const rawPb = o?.priceBump;
+        const n = rawPb === "" || rawPb == null ? NaN : Number(rawPb);
+
+        return {
+          attributeId: o.attributeId || o.attribute?.id,
+          valueId: o.valueId || o.attributeValueId || o.value?.id,
+          priceBump: Number.isFinite(n) ? n : null,
+        };
+      }),
+    };
+  });
+
+  const attempts: Array<{ method: "post" | "put"; url: string; body: any }> = [
+    { method: "post", url: `/api/admin/products/${encodeURIComponent(productId)}/variants/bulk`, body: { variants: clean, replace } },
+    { method: "post", url: `/api/admin/products/${encodeURIComponent(productId)}/variants/bulk-replace`, body: { variants: clean, replace } },
+    { method: "put", url: `/api/admin/products/${encodeURIComponent(productId)}/variants`, body: { variants: clean, replace } },
+    { method: "post", url: `/api/admin/products/${encodeURIComponent(productId)}/variants`, body: { variants: clean, replace } },
+    { method: "post", url: `/api/admin/variants/bulk?productId=${encodeURIComponent(productId)}`, body: { variants: clean, replace } },
+  ];
+
+  let lastErr: any = null;
+
+  for (const a of attempts) {
+    try {
+      const req = a.method === "put" ? api.put(a.url, a.body, { headers: hdr }) : api.post(a.url, a.body, { headers: hdr });
+      const { data } = await req;
+      return data;
+    } catch (e: any) {
+      const status = e?.response?.status;
+      if (status === 404 || status === 405) {
+        lastErr = e;
+        continue;
+      }
+      const msg = e?.response?.data?.detail || e?.response?.data?.error || e?.message || "Failed to persist variants";
+      // eslint-disable-next-line no-console
+      console.error("persistVariantsStrict error:", status, e?.response?.data || e);
+      throw new Error(msg);
+    }
+  }
+
+  // eslint-disable-next-line no-console
+  console.error("No variants bulk endpoint found. Last error:", lastErr?.response?.status, lastErr?.response?.data);
+  throw new Error("Your API does not expose a variants bulk endpoint. Add one server-side or update the frontend to match your backend route.");
 }
 
 /* ============================
@@ -410,38 +395,33 @@ export function ManageProducts({
   const { openModal } = useModal();
   const isSuper = role === "SUPER_ADMIN";
   const isAdmin = role === "ADMIN";
-  const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const qc = useQueryClient();
-  const staleTImeInSecs = 300_000;
+  const staleTimeInMs = 300_000;
 
-  // ✅ FIX #1: stop spamming /has-orders when route doesn't exist (404)
-  // unknown -> we probe once; unsupported -> we never call again
+  // stop spamming /has-orders when route doesn't exist (404)
   const hasOrdersSupportRef = useRef<"unknown" | "supported" | "unsupported">("unknown");
   const hasOrdersProbeDoneRef = useRef(false);
 
-  const ngn = new Intl.NumberFormat("en-NG", {
-    style: "currency",
-    currency: "NGN",
-    maximumFractionDigits: 2,
-  });
+  /**
+   * ✅ FIX:
+   * ManageProducts previously called setSearch(debounced) while typing.
+   * That pushes state into the parent, which can remount this tab (depending on the dashboard implementation).
+   * Refunds works because it keeps q local.
+   *
+   * We now keep search fully local and use it directly for React Query keys + API params.
+   * We still accept (search/setSearch) props to avoid forcing parent refactors, but we DO NOT spam setSearch.
+   */
+  const [qInput, setQInput] = useState(search || "");
+  useEffect(() => {
+    // if parent wants to inject a search value (e.g. deep link), we accept it
+    setQInput(search || "");
+  }, [search]);
 
-  const getRetailPrice = (p: any) => {
-    const v = p?.retailPrice ?? p?.price ?? 0;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : 0;
-  };
-
-  const extractProductVariants = (p: any): any[] => {
-    if (Array.isArray(p?.variants)) return p.variants;
-    if (Array.isArray(p?.ProductVariant)) return p.ProductVariant;
-    if (Array.isArray(p?.productVariants)) return p.productVariants;
-    return [];
-  };
+  const debouncedQ = useDebounced(qInput, 350);
 
   /* ---------------- Tabs / Filters ---------------- */
-
   const [searchParams, setSearchParams] = useSearchParams();
+
   const urlPreset = (searchParams.get("view") as FilterPreset) || "all";
   const [preset, setPreset] = useState<FilterPreset>(urlPreset);
 
@@ -472,21 +452,17 @@ export function ManageProducts({
 
   const statusParam = statusFromPreset(preset);
 
-  const [searchInput, setSearchInput] = useState(search);
-  useEffect(() => setSearchInput(search), [search]);
-  const debouncedSearch = useDebounced(searchInput, 350);
-
   /* ---------------- Queries ---------------- */
 
   const listQ = useQuery<AdminProduct[]>({
-    queryKey: ["admin", "products", "manage", { q: debouncedSearch, statusParam }],
+    queryKey: ["admin", "products", "manage", { q: debouncedQ, statusParam }],
     enabled: !!token,
     queryFn: async () => {
       const { data } = await api.get("/api/admin/products", {
         headers: { Authorization: `Bearer ${token}` },
         params: {
           status: statusParam,
-          q: debouncedSearch,
+          q: debouncedQ,
           take: 50,
           skip: 0,
           include: "owner,variants,supplierOffers",
@@ -495,7 +471,7 @@ export function ManageProducts({
       const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
       return (arr ?? []) as AdminProduct[];
     },
-    staleTime: staleTImeInSecs,
+    staleTime: staleTimeInMs,
     gcTime: 300_000,
     refetchOnWindowFocus: false,
     placeholderData: keepPreviousData,
@@ -504,15 +480,14 @@ export function ManageProducts({
   useEffect(() => {
     if (listQ.isError) {
       const e: any = listQ.error;
+      // eslint-disable-next-line no-console
       console.error("Products list failed:", e?.response?.status, e?.response?.data || e?.message);
     }
   }, [listQ.isError, listQ.error]);
 
   const rows = listQ.data ?? [];
 
-  /**
-   * productId -> Set(variantIds)
-   */
+  // productId -> Set(variantIds)
   const validVariantIdsByProduct = useMemo(() => {
     const by: Record<string, Set<string>> = {};
     for (const p of rows) {
@@ -558,16 +533,14 @@ export function ManageProducts({
       const byProduct: Record<
         string,
         {
-          // availability (qty-based)
           totalAvailable: number;
           baseAvailable: number;
           variantAvailable: number;
 
-          // ✅ counts (row-based)
           offerCountTotal: number; // ALL rows (even qty=0)
-          activeOfferCount: number; // active rows (even qty=0) - optional
-          inStock: boolean;
+          activeOfferCount: number; // active rows (even qty=0)
 
+          inStock: boolean;
           perSupplier: Array<{ supplierId: string; supplierName?: string; availableQty: number }>;
         }
       > = {};
@@ -601,24 +574,16 @@ export function ManageProducts({
           };
         }
 
-        // ✅ count ALL offer rows (even if qty=0, even if inactive)
         byProduct[pid].offerCountTotal += 1;
-
-        // optional: count active rows (still regardless of qty)
         if (isActive) byProduct[pid].activeOfferCount += 1;
 
-        // ✅ availability uses qty + active + inStock
         if (isActive && isInStock && availableQty > 0) {
           byProduct[pid].totalAvailable += availableQty;
 
           if (vid) byProduct[pid].variantAvailable += availableQty;
           else byProduct[pid].baseAvailable += availableQty;
 
-          byProduct[pid].perSupplier.push({
-            supplierId,
-            supplierName: (o as any).supplierName,
-            availableQty,
-          });
+          byProduct[pid].perSupplier.push({ supplierId, supplierName: (o as any).supplierName, availableQty });
         }
       }
 
@@ -630,12 +595,7 @@ export function ManageProducts({
     },
   });
 
-
-  /**
-   * ✅ Derive "Avail" and "offers count":
-   * - total stock = base product qty + sum(offers summary qty)
-   * - offers count from offers summary; fallback to variant qty>0 count only if summary missing
-   */
+  // Derive availability and offer count into the product rows
   const rowsWithDerived: AdminProduct[] = useMemo(() => {
     const summary = (offersSummaryQ.data || {}) as any;
 
@@ -652,20 +612,15 @@ export function ManageProducts({
       const s = summary[p.id];
 
       const baseQty = pickQty(p as any, ["availableQty", "baseQty", "baseQuantity", "baseAvailableQty"]);
-
-      // qty from offers that have qty > 0 (already computed in summary)
       const offerQty = toInt(s?.totalAvailable ?? 0, 0);
-
       const finalAvail = baseQty + offerQty;
 
-      // ✅ Offer count should be TOTAL rows (even if qty=0)
-      // if summary missing, fall back to product.supplierOffers length if present
       const offerCount =
         s != null
           ? toInt(s?.offerCountTotal ?? 0, 0)
           : Array.isArray((p as any)?.supplierOffers)
-            ? (p as any).supplierOffers.length
-            : 0;
+          ? (p as any).supplierOffers.length
+          : 0;
 
       const inStock = finalAvail > 0;
 
@@ -683,7 +638,6 @@ export function ManageProducts({
   /* ---------------- Status helpers ---------------- */
 
   type EffectiveStatus = "PUBLISHED" | "PENDING" | "REJECTED" | "ARCHIVED" | "LIVE";
-
   const getStatus = (p: any): EffectiveStatus => (p?.isDelete || p?.isDeleted ? "ARCHIVED" : (p?.status ?? "PENDING"));
 
   const statusRank: Record<EffectiveStatus, number> = {
@@ -716,9 +670,7 @@ export function ManageProducts({
   function findEmptyRowErrors(rows: VariantRow[]): Record<string, string> {
     const errors: Record<string, string> = {};
     rows.forEach((r, idx) => {
-      if (isRowEmpty(r)) {
-        errors[rowKey(r, idx)] = "Pick at least 1 option (or remove this row).";
-      }
+      if (isRowEmpty(r)) errors[rowKey(r, idx)] = "Pick at least 1 option (or remove this row).";
     });
     return errors;
   }
@@ -736,11 +688,11 @@ export function ManageProducts({
           const { data } = await api.get(url, { headers: hdr });
           const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
-        } catch { }
+        } catch {}
       }
       return [];
     },
-    staleTime: staleTImeInSecs,
+    staleTime: staleTimeInMs,
     refetchOnWindowFocus: false,
   });
 
@@ -755,11 +707,11 @@ export function ManageProducts({
           const { data } = await api.get(url, { headers: hdr });
           const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
-        } catch { }
+        } catch {}
       }
       return [];
     },
-    staleTime: staleTImeInSecs,
+    staleTime: staleTimeInMs,
     refetchOnWindowFocus: false,
   });
 
@@ -767,7 +719,7 @@ export function ManageProducts({
     queryKey: ["admin", "products", "suppliers"],
     enabled: !!token,
     refetchOnWindowFocus: false,
-    staleTime: staleTImeInSecs,
+    staleTime: staleTimeInMs,
     queryFn: async () => {
       const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
       const attempts = ["/api/admin/suppliers"];
@@ -776,7 +728,7 @@ export function ManageProducts({
           const { data } = await api.get(url, { headers: hdr });
           const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
-        } catch { }
+        } catch {}
       }
       return [];
     },
@@ -793,19 +745,18 @@ export function ManageProducts({
           const { data } = await api.get(url, { headers });
           const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
-        } catch { }
+        } catch {}
       }
       return [];
     },
-    staleTime: staleTImeInSecs,
+    staleTime: staleTimeInMs,
     refetchOnWindowFocus: false,
   });
 
   /* ---------------- Mutations ---------------- */
 
   const createM = useMutation({
-    mutationFn: async (payload: any) =>
-      (await api.post("/api/admin/products", payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    mutationFn: async (payload: any) => (await api.post("/api/admin/products", payload, { headers: { Authorization: `Bearer ${token}` } })).data,
     onError: (e) =>
       openModal({
         title: "Products",
@@ -814,8 +765,7 @@ export function ManageProducts({
   });
 
   const updateM = useMutation({
-    mutationFn: async ({ id, ...payload }: any) =>
-      (await api.patch(`/api/admin/products/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    mutationFn: async ({ id, ...payload }: any) => (await api.patch(`/api/admin/products/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
     onError: (e) =>
       openModal({
         title: "Products",
@@ -839,7 +789,6 @@ export function ManageProducts({
       }),
   });
 
-  // ✅ FIX #1 continued: probe /has-orders once; if 404 => disable permanently
   async function ensureHasOrdersSupport(sampleId: string) {
     if (!token) return "unsupported" as const;
     if (hasOrdersSupportRef.current !== "unknown") return hasOrdersSupportRef.current;
@@ -858,7 +807,6 @@ export function ManageProducts({
         hasOrdersSupportRef.current = "unsupported";
         return "unsupported" as const;
       }
-      // non-404 errors: treat as supported (route exists) but failing
       hasOrdersSupportRef.current = "supported";
       return "supported" as const;
     }
@@ -876,10 +824,7 @@ export function ManageProducts({
       if (!ids.length) return {};
 
       const support = await ensureHasOrdersSupport(ids[0]);
-      if (support === "unsupported") {
-        // no network calls; silence the 404 spam completely
-        return Object.fromEntries(ids.map((id) => [id, false] as const));
-      }
+      if (support === "unsupported") return Object.fromEntries(ids.map((id) => [id, false] as const));
 
       const results = await Promise.all(
         ids.map(async (id) => {
@@ -889,20 +834,19 @@ export function ManageProducts({
               typeof data === "boolean"
                 ? data
                 : typeof data?.hasOrders === "boolean"
-                  ? data.hasOrders
-                  : typeof data?.data?.hasOrders === "boolean"
-                    ? data.data.hasOrders
-                    : typeof data?.has === "boolean"
-                      ? data.has
-                      : typeof data?.data?.has === "boolean"
-                        ? data.data.has
-                        : false;
+                ? data.hasOrders
+                : typeof data?.data?.hasOrders === "boolean"
+                ? data.data.hasOrders
+                : typeof data?.has === "boolean"
+                ? data.has
+                : typeof data?.data?.has === "boolean"
+                ? data.data.has
+                : false;
 
             return [id, has] as const;
           } catch (e: any) {
             const status = e?.response?.status;
             if (status === 404) {
-              // if backend removed the route mid-session, disable from now on
               hasOrdersSupportRef.current = "unsupported";
               return [id, false] as const;
             }
@@ -923,11 +867,9 @@ export function ManageProducts({
 
       let has = hasOrder(id);
 
-      // ✅ FIX #1 continued: if /has-orders unsupported, never call it here
       if (hasOrdersSupportRef.current === "unsupported") {
         has = false;
       } else if (hasOrdersQ.isLoading || hasOrdersQ.data == null) {
-        // if unknown, probe once; 404 => mark unsupported and proceed without has-orders
         const support = await ensureHasOrdersSupport(id);
         if (support === "unsupported") {
           has = false;
@@ -952,7 +894,7 @@ export function ManageProducts({
     },
   });
 
-  /* ---------------- Top form state ---------------- */
+  /* ---------------- Editor state ---------------- */
 
   const defaultPending = {
     title: "",
@@ -970,6 +912,60 @@ export function ManageProducts({
   const [offersProductId, setOffersProductId] = useState<string | null>(null);
   const [pending, setPending] = useState(defaultPending);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [showEditor, setShowEditor] = useState(false);
+
+  const selectableAttrs = useMemo(() => (attrsQ.data || []).filter((a) => a.type === "SELECT" && a.isActive), [attrsQ.data]);
+
+  const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
+  const [offerVariants, setOfferVariants] = useState<any[]>([]);
+  const [selectedAttrs, setSelectedAttrs] = useState<Record<string, string | string[]>>({});
+  const [variantsDirty, setVariantsDirty] = useState(false);
+  const [clearAllVariantsIntent, setClearAllVariantsIntent] = useState(false);
+  const initialVariantIdsRef = useRef<Set<string>>(new Set());
+
+  const comboErrors = useMemo(() => findDuplicateCombos(variantRows ?? [], selectableAttrs ?? []), [variantRows, selectableAttrs]);
+  const hasDuplicateCombos = Object.keys(comboErrors).length > 0;
+  const emptyRowErrors = useMemo(() => findEmptyRowErrors(variantRows ?? []), [variantRows]);
+
+  function isRealVariantId(id?: string) {
+    return !!id && !id.startsWith("vr-") && !id.startsWith("new-") && !id.startsWith("temp-") && !id.startsWith("tmp:");
+  }
+
+  useEffect(() => {
+    if (!selectableAttrs.length) return;
+    const ids = selectableAttrs.map((a) => a.id);
+    setVariantRows((rows) =>
+      rows.map((row) => {
+        const next: Record<string, string> = {};
+        ids.forEach((id) => {
+          next[id] = row.selections[id] || "";
+        });
+        return { ...row, selections: next };
+      })
+    );
+  }, [selectableAttrs]);
+
+  const DRAFT_KEY = useMemo(() => `adminProductDraft:${editingId ?? "new"}`, [editingId]);
+  const skipDraftLoadRef = useRef(false);
+
+  useEffect(() => {
+    if (skipDraftLoadRef.current) return;
+
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return;
+
+    try {
+      const d = JSON.parse(raw);
+      if (d?.pending) setPending(d.pending);
+      if (Array.isArray(d?.variantRows)) setVariantRows(d.variantRows);
+      if (d?.selectedAttrs) setSelectedAttrs(d.selectedAttrs);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [DRAFT_KEY]);
+
+  useEffect(() => {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ pending, variantRows, selectedAttrs }));
+  }, [DRAFT_KEY, pending, variantRows, selectedAttrs]);
 
   const lockedVariantIdsQ = useQuery<string[]>({
     queryKey: ["admin", "products", "locked-variant-ids", { productId: editingId }],
@@ -990,7 +986,37 @@ export function ManageProducts({
 
   const lockedVariantIds = useMemo(() => new Set<string>(lockedVariantIdsQ.data ?? []), [lockedVariantIdsQ.data]);
 
-  const [showEditor, setShowEditor] = useState(false);
+  const offerPriceCapsQ = useQuery<{ maxBase: number; maxByVariant: Record<string, number> }>({
+    queryKey: ["admin", "products", "offer-price-caps", { productId: editingId }],
+    enabled: !!token && !!editingId,
+    refetchOnWindowFocus: false,
+    staleTime: 30_000,
+    queryFn: async () => {
+      const offers = await fetchSupplierOffersForProduct(editingId!, token);
+
+      let maxBase = 0;
+      const maxByVariant: Record<string, number> = {};
+
+      for (const o of offers ?? []) {
+        const rawVid = o?.variantId?.id ?? o?.variant?.id ?? o?.variantId;
+        const vid = normalizeNullableId(rawVid);
+
+        const price = offerUnitCost(o);
+        if (price == null || !Number.isFinite(price) || price <= 0) continue;
+
+        if (!vid) {
+          if (price > maxBase) maxBase = price;
+        } else {
+          const cur = maxByVariant[vid] ?? 0;
+          if (price > cur) maxByVariant[vid] = price;
+        }
+      }
+
+      return { maxBase, maxByVariant };
+    },
+  });
+
+  const offerPriceCaps = offerPriceCapsQ.data ?? { maxBase: 0, maxByVariant: {} };
 
   const parseUrlList = (s: string) =>
     s
@@ -1015,58 +1041,11 @@ export function ManageProducts({
           .filter(isUrlish);
       }
     }
-    const cands = [
-      ...(toArray(p?.imageUrls) as string[]),
-      ...(toArray(p?.images) as string[]),
-      p?.image,
-      p?.primaryImage,
-      p?.coverUrl,
-    ].filter(Boolean);
+    const cands = [...(toArray(p?.imageUrls) as string[]), ...(toArray(p?.images) as string[]), p?.image, p?.primaryImage, p?.coverUrl].filter(Boolean);
     return cands.filter(isUrlish);
   }
 
-  const [files, setFiles] = useState<File[]>([]);
-  const UPLOAD_ENDPOINT = "/api/uploads";
-
-  function dedupe(list: string[]) {
-    return Array.from(new Set(list.map((x) => x.trim()).filter(Boolean)));
-  }
-
-  function appendUploadedUrlsToForm(urls: string[]) {
-    if (!urls?.length) return;
-
-    setPending((p) => {
-      const existing = parseUrlList(p.imageUrls || "");
-      const next = dedupe([...existing, ...urls]);
-      return { ...p, imageUrls: next.join("\n") };
-    });
-
-    setFiles([]);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  }
-
-  async function uploadLocalFiles(): Promise<string[]> {
-    if (!files.length) return [];
-    const fd = new FormData();
-    files.forEach((f) => fd.append("files", f));
-    try {
-      setUploading(true);
-      const res = await api.post(UPLOAD_ENDPOINT, fd, {
-        headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          "Content-Type": "multipart/form-data",
-        },
-      });
-      const urls: string[] = (res as any)?.data?.urls || (Array.isArray((res as any)?.data) ? (res as any).data : []);
-      return Array.isArray(urls) ? urls : [];
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  // ------------------------------
-  // Variant rows helpers (FULL)
-  // ------------------------------
+  /* ---------------- Variant row helpers ---------------- */
 
   function makeTempRowId() {
     return `tmp:${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1082,15 +1061,11 @@ export function ManageProducts({
     return selections;
   }
 
-  /**
-   * Add a blank row (same as your old Add row button)
-   */
   function addVariantCombo() {
     if (hasDuplicateCombos) {
       openModal({ title: "Variants", message: "Fix duplicate combinations before adding more rows." });
       return;
     }
-
     const row: VariantRow = {
       id: makeTempRowId(),
       selections: makeEmptySelections(),
@@ -1099,14 +1074,10 @@ export function ManageProducts({
       availableQty: 0,
       imagesJson: [],
     };
-
     setVariantRows((prev) => [...(Array.isArray(prev) ? prev : []), row]);
     touchVariants();
   }
 
-  /**
-   * Remove a row (marks variantsDirty so save persists)
-   */
   function removeVariantRow(rowId: string) {
     const rid = String(rowId || "").trim();
     if (!rid) return;
@@ -1127,10 +1098,6 @@ export function ManageProducts({
     touchVariants();
   }
 
-  /**
-   * Selection change
-   * Keeps keys aligned with selectableAttrs (no delete needed)
-   */
   function setVariantRowSelection(rowId: string, attributeId: string, valueId: string | null) {
     const rid = String(rowId || "").trim();
     const aid = String(attributeId || "").trim();
@@ -1140,25 +1107,19 @@ export function ManageProducts({
 
     setVariantRows((prev) => {
       const rows = Array.isArray(prev) ? prev : [];
-      return rows.map((r) => {
-        if (String(r?.id) !== rid) return r;
-
-        return {
-          ...r,
-          selections: {
-            ...(r.selections || {}),
-            [aid]: vid,
-          },
-        };
-      });
+      return rows.map((r) =>
+        String(r?.id) !== rid
+          ? r
+          : {
+              ...r,
+              selections: { ...(r.selections || {}), [aid]: vid },
+            }
+      );
     });
 
     touchVariants();
   }
 
-  /**
-   * Price bump change
-   */
   function setVariantRowPriceBump(rowId: string, bump: string) {
     const rid = String(rowId || "").trim();
     if (!rid) return;
@@ -1171,222 +1132,7 @@ export function ManageProducts({
     touchVariants();
   }
 
-  /* ---------------- Variants: row-based editor ---------------- */
-
-  const selectableAttrs = useMemo(() => (attrsQ.data || []).filter((a) => a.type === "SELECT" && a.isActive), [attrsQ.data]);
-
-  const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
-  const [offerVariants, setOfferVariants] = useState<any[]>([]);
-
-  const comboErrors = React.useMemo(() => {
-    return findDuplicateCombos(variantRows ?? [], selectableAttrs ?? []);
-  }, [variantRows, selectableAttrs]);
-
-  const hasDuplicateCombos = Object.keys(comboErrors).length > 0;
-
-  useEffect(() => {
-    if (!selectableAttrs.length) return;
-    const ids = selectableAttrs.map((a) => a.id);
-    setVariantRows((rows) =>
-      rows.map((row) => {
-        const next: Record<string, string> = {};
-        ids.forEach((id) => {
-          next[id] = row.selections[id] || "";
-        });
-        return { ...row, selections: next };
-      })
-    );
-  }, [selectableAttrs]);
-
-  const [selectedAttrs, setSelectedAttrs] = useState<Record<string, string | string[]>>({});
-  const [variantsDirty, setVariantsDirty] = useState(false);
-  const initialVariantIdsRef = useRef<Set<string>>(new Set());
-  const [clearAllVariantsIntent, setClearAllVariantsIntent] = useState(false);
-
-  const DRAFT_KEY = useMemo(() => `adminProductDraft:${editingId ?? "new"}`, [editingId]);
-  const skipDraftLoadRef = useRef(false);
-
-  useEffect(() => {
-    if (skipDraftLoadRef.current) return;
-
-    const raw = localStorage.getItem(DRAFT_KEY);
-    if (!raw) return;
-
-    try {
-      const d = JSON.parse(raw);
-      if (d?.pending) setPending(d.pending);
-      if (Array.isArray(d?.variantRows)) setVariantRows(d.variantRows);
-      if (d?.selectedAttrs) setSelectedAttrs(d.selectedAttrs);
-    } catch { }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [DRAFT_KEY]);
-
-  useEffect(() => {
-    localStorage.setItem(DRAFT_KEY, JSON.stringify({ pending, variantRows, selectedAttrs }));
-  }, [DRAFT_KEY, pending, variantRows, selectedAttrs]);
-
-  /* ---------------- JWT / me ---------------- */
-
-  function base64UrlDecode(str: string) {
-    const pad = str.length % 4 === 2 ? "==" : str.length % 4 === 3 ? "=" : "";
-    const b64 = str.replace(/-/g, "+").replace(/_/g, "/") + pad;
-    const bin = atob(b64);
-    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    const dec = new TextDecoder("utf-8");
-    return dec.decode(bytes);
-  }
-
-  function parseJwtClaims(jwt?: string | null): Record<string, any> | undefined {
-    if (!jwt) return;
-    try {
-      const parts = jwt.split(".");
-      if (parts.length < 2) return;
-      const json = base64UrlDecode(parts[1]);
-      return JSON.parse(json);
-    } catch {
-      return;
-    }
-  }
-
-  const claims = useMemo(() => parseJwtClaims(token), [token]);
-
-  const meQ = useQuery<{ id?: string; email?: string }>({
-    queryKey: ["auth", "me"],
-    enabled: !!token,
-    refetchOnWindowFocus: false,
-    queryFn: async () => {
-      try {
-        const { data } = await api.get("/api/auth/me", {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        });
-        const d = data?.data ?? data ?? {};
-        return {
-          id: d.id || d.user?.id || d.profile?.id || d.account?.id,
-          email: d.email || d.user?.email || d.profile?.email || d.account?.email,
-        };
-      } catch {
-        return {};
-      }
-    },
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const adminUserId = claims?.sub || claims?.id || meQ.data?.id;
-
-  /* ---------------- Payload builder (variants) ---------------- */
-
-  function buildProductPayload({
-    base,
-    selectedAttrs,
-    variantRows,
-    attrsAll,
-  }: {
-    base: {
-      title: string;
-      price: number;
-      status: string;
-      sku?: string;
-      categoryId?: string;
-      brandId?: string;
-      supplierId?: string;
-      imagesJson?: string[];
-      description?: string | null;
-      ownerId?: string | null;
-      availableQty?: number;
-      inStock?: boolean;
-    };
-    selectedAttrs: Record<string, string | string[]>;
-    variantRows: VariantRow[];
-    attrsAll: AdminAttribute[];
-  }) {
-    const payload: any = { ...base };
-
-    const attributeSelections: any[] = [];
-    const attributeValues: Array<{ attributeId: string; valueId?: string; valueIds?: string[] }> = [];
-    const attributeTexts: Array<{ attributeId: string; value: string }> = [];
-
-    for (const a of attrsAll) {
-      const sel = selectedAttrs[a.id];
-      if (
-        sel == null ||
-        (Array.isArray(sel) && sel.length === 0) ||
-        (typeof sel === "string" && sel.trim() === "")
-      )
-        continue;
-
-      if (a.type === "TEXT") {
-        attributeSelections.push({ attributeId: a.id, text: String(sel) });
-        attributeTexts.push({ attributeId: a.id, value: String(sel) });
-      } else if (a.type === "SELECT") {
-        const valueId = String(sel);
-        attributeSelections.push({ attributeId: a.id, valueId });
-        attributeValues.push({ attributeId: a.id, valueId });
-      } else if (a.type === "MULTISELECT") {
-        const valueIds = (sel as string[]).map(String);
-        attributeSelections.push({ attributeId: a.id, valueIds });
-        attributeValues.push({ attributeId: a.id, valueIds });
-      }
-    }
-
-    if (attributeSelections.length) payload.attributeSelections = attributeSelections;
-    if (attributeValues.length) payload.attributeValues = attributeValues;
-    if (attributeTexts.length) payload.attributeTexts = attributeTexts;
-
-    const selectable = (attrsAll || []).filter((a) => a.type === "SELECT" && a.isActive);
-    const selectableById = new Map(selectable.map((a) => [String(a.id), a]));
-
-    if (variantRows.length > 0) {
-      const variants: any[] = [];
-
-      const isRealVariantIdLocal = (id?: string) =>
-        !!id &&
-        !id.startsWith("vr-") &&
-        !id.startsWith("new-") &&
-        !id.startsWith("temp-") &&
-        !id.startsWith("tmp:");
-
-      for (const row of variantRows) {
-        const picks = Object.entries(row.selections || {}).filter(([, valueId]) => !!valueId);
-        if (picks.length === 0) continue;
-
-        const raw = (row.priceBump ?? "").trim();
-        const bumpNum = raw === "" ? NaN : Number(raw);
-        const hasBump = raw !== "" && Number.isFinite(bumpNum);
-
-        const options = picks.map(([attributeId, valueId]) => {
-          const option: any = { attributeId, valueId, attributeValueId: valueId };
-          if (hasBump) option.priceBump = bumpNum;
-          return option;
-        });
-
-        const labelParts: string[] = [];
-        for (const [attributeId, valueId] of picks) {
-          const attr = selectableById.get(String(attributeId));
-          const val = attr?.values?.find((v) => String(v.id) === String(valueId));
-          const code = String(val?.code || val?.name || valueId || "").trim();
-          if (code) labelParts.push(code.toUpperCase().replace(/\s+/g, ""));
-        }
-
-        const comboLabel = labelParts.join("-");
-        const sku = base.sku && comboLabel ? `${base.sku}-${comboLabel}` : base.sku || comboLabel || undefined;
-
-        variants.push({
-          ...(isRealVariantIdLocal(row.id) ? { id: row.id } : {}),
-          sku,
-          options,
-          optionSelections: options,
-          attributes: options.map((o: any) => ({ attributeId: o.attributeId, valueId: o.valueId })),
-        });
-      }
-
-      payload.variants = variants.length ? variants : [];
-      payload.variantOptions = variants.length ? variants.map((v: any) => v.options) : [];
-    }
-
-    return payload;
-  }
-
-  /* ---------------- Load full product into top form ---------------- */
+  /* ---------------- Full product loader ---------------- */
 
   async function fetchProductFull(id: string) {
     const { data } = await api.get(`/api/admin/products/${id}`, {
@@ -1403,17 +1149,12 @@ export function ManageProducts({
       [];
 
     const pickFirstNonEmptyArray = (...cands: any[]): any[] => {
-      for (const c of cands) {
-        if (Array.isArray(c) && c.length > 0) return c;
-      }
+      for (const c of cands) if (Array.isArray(c) && c.length > 0) return c;
       return [];
     };
 
     const variantsNormalized = (rawVariants || []).map((v: any) => {
-      const vid =
-        normalizeNullableId(v?.id) ||
-        normalizeNullableId(v?.variantId) ||
-        normalizeNullableId(v?.variant?.id);
+      const vid = normalizeNullableId(v?.id) || normalizeNullableId(v?.variantId) || normalizeNullableId(v?.variant?.id);
 
       const pickedOptions = pickFirstNonEmptyArray(
         v?.options,
@@ -1459,149 +1200,39 @@ export function ManageProducts({
     };
   }
 
-  function startNewProduct() {
-    setEditingId(null);
-    setOffersProductId(null);
-    setPending(defaultPending);
-    setShowEditor(true);
-
-    setSelectedAttrs({});
-
-    setVariantRows([]);
-    initialVariantIdsRef.current = new Set();
-    setClearAllVariantsIntent(false);
-    setVariantsDirty(false);
-
-    setNewCombo({});
-    setNewComboBump("");
-
-    setOfferVariants([]);
-    setFiles([]);
-  }
-
   function findSupplierIdFallbackFromOwner(full: any): string | null {
-    const ownerUserId =
-      normalizeNullableId(full?.ownerId) ||
-      normalizeNullableId(full?.owner?.id) ||
-      normalizeNullableId(full?.userId);
+    const ownerUserId = normalizeNullableId(full?.ownerId) || normalizeNullableId(full?.owner?.id) || normalizeNullableId(full?.userId);
     if (!ownerUserId) return null;
 
     const match = (suppliersQ.data ?? []).find((s) => normalizeNullableId(s.userId) === ownerUserId);
     return match ? String(match.id) : null;
   }
 
-  async function startEdit(p: any) {
-    try {
-      setShowEditor(true);
-
-      const full = await fetchProductFull(p.id);
-
-      skipDraftLoadRef.current = true;
-
-      setOffersProductId(full.id);
-      setEditingId(full.id);
-
-      const resolvedSupplierId = normalizeNullableId(full.supplierId) || findSupplierIdFallbackFromOwner(full) || "";
-
-      const nextPending = {
-        title: full.title || "",
-        price: String(full.price ?? full.retailPrice ?? ""),
-        status: full.status === "PUBLISHED" || full.status === "LIVE" ? full.status : "PENDING",
-        categoryId: full.categoryId || "",
-        brandId: full.brandId || "",
-        supplierId: resolvedSupplierId || "",
-        supplierAvailableQty: "",
-        sku: full.sku || "",
-        imageUrls: (extractImageUrls(full) || []).join("\n"),
-        description: full.description ?? "",
-      };
-
-      const nextSel: Record<string, string | string[]> = {};
-      (full.attributeValues || full.attributeSelections || []).forEach((av: any) => {
-        if (Array.isArray(av.valueIds)) nextSel[av.attributeId] = av.valueIds;
-        else if (av.valueId) nextSel[av.attributeId] = av.valueId;
-      });
-      (full.attributeTexts || []).forEach((at: any) => {
-        nextSel[at.attributeId] = at.value;
-      });
-
-      const serverVariants = (full as any).variants || (full as any).variantsNormalized || [];
-      const vr = buildVariantRowsFromServerVariants(serverVariants);
-
-      setPending(nextPending);
-      setSelectedAttrs(nextSel);
-
-      initialVariantIdsRef.current = new Set(vr.map((r) => r.id).filter((id) => isRealVariantId(id)));
-      setClearAllVariantsIntent(false);
-      setVariantRows(vr);
-      setVariantsDirty(false);
-
-      await loadOfferVariants(full.id);
-
-      localStorage.setItem(`adminProductDraft:${full.id}`, JSON.stringify({ pending: nextPending, variantRows: vr, selectedAttrs: nextSel }));
-    } catch (e) {
-      console.error(e);
-      openModal({ title: "Products", message: "Could not load product for editing." });
-    } finally {
-      queueMicrotask(() => {
-        skipDraftLoadRef.current = false;
-      });
-    }
-  }
-
-  function isRealVariantId(id?: string) {
-    return !!id && !id.startsWith("vr-") && !id.startsWith("new-") && !id.startsWith("temp-") && !id.startsWith("tmp:");
-  }
-
-  // ✅ FIX #2: only use replace=true when variants were actually removed / cleared.
-  // This prevents unnecessary “bulk replace” that can accidentally break offer-linked variants on some backends.
-  function shouldReplaceVariants(args: {
-    variantRows: any[] | undefined;
-    initialVariantIds: Set<string>;
-    clearAllVariantsIntent: boolean;
-  }) {
-    const { variantRows, initialVariantIds, clearAllVariantsIntent } = args;
-
-    if (clearAllVariantsIntent) return true;
-
-    const currentIds = new Set(
-      (variantRows ?? [])
-        .map((r: any) => String(r?.id ?? "").trim())
-        .filter((id: string) => !!id && id !== "NEW" && id !== "TEMP")
-    );
-
-    for (const id of initialVariantIds) {
-      if (!currentIds.has(id)) return true;
-    }
-
-    return false;
-  }
-
   function pickAttrId(o: any): string | null {
     return normalizeNullableId(
       o?.attributeId ??
-      o?.productAttributeId ??
-      o?.productAttribute?.id ??
-      o?.attribute?.id ??
-      o?.attributeValue?.attributeId ??
-      o?.attributeValue?.attribute?.id ??
-      o?.productAttributeOption?.attributeId ??
-      o?.productAttributeValue?.attributeId ??
-      o?.attribute_value?.attributeId
+        o?.productAttributeId ??
+        o?.productAttribute?.id ??
+        o?.attribute?.id ??
+        o?.attributeValue?.attributeId ??
+        o?.attributeValue?.attribute?.id ??
+        o?.productAttributeOption?.attributeId ??
+        o?.productAttributeValue?.attributeId ??
+        o?.attribute_value?.attributeId
     );
   }
 
   function pickValueId(o: any): string | null {
     return normalizeNullableId(
       o?.valueId ??
-      o?.attributeValueId ??
-      o?.productAttributeOptionId ??
-      o?.productAttributeValueId ??
-      o?.attributeValue?.id ??
-      o?.productAttributeOption?.id ??
-      o?.productAttributeValue?.id ??
-      o?.value?.id ??
-      o?.attribute_value?.id
+        o?.attributeValueId ??
+        o?.productAttributeOptionId ??
+        o?.productAttributeValueId ??
+        o?.attributeValue?.id ??
+        o?.productAttributeOption?.id ??
+        o?.productAttributeValue?.id ??
+        o?.value?.id ??
+        o?.attribute_value?.id
     );
   }
 
@@ -1666,9 +1297,40 @@ export function ManageProducts({
       const full = await fetchProductFull(productId);
       setOfferVariants((full as any).variants || (full as any).variantsNormalized || []);
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.error(e);
       alert("Could not load product variants for offers.");
     }
+  }
+
+  function validateRetailAboveSupplierPrices(args: { baseRetail: number; variantRows: VariantRow[]; caps: { maxBase: number; maxByVariant: Record<string, number> } }) {
+    const { baseRetail, variantRows, caps } = args;
+    const errors: string[] = [];
+
+    if (caps.maxBase > 0 && !(baseRetail > caps.maxBase)) {
+      errors.push(`Base retail price must be greater than the highest base supplier price (₦${caps.maxBase.toLocaleString()}).`);
+    }
+
+    for (const r of variantRows ?? []) {
+      const vid = String(r?.id ?? "").trim();
+      if (!vid || !isRealVariantId(vid)) continue;
+
+      const cap = caps.maxByVariant[vid];
+      if (!cap || cap <= 0) continue;
+
+      const bumpRaw = String(r?.priceBump ?? "").trim();
+      const bump = bumpRaw === "" ? 0 : Number(bumpRaw);
+      const bumpNum = Number.isFinite(bump) ? bump : 0;
+
+      const variantRetail = baseRetail + bumpNum;
+      if (!(variantRetail > cap)) {
+        errors.push(
+          `Variant (${vid}) retail (base ₦${baseRetail.toLocaleString()} + bump ₦${bumpNum.toLocaleString()}) must be greater than supplier price ₦${cap.toLocaleString()}.`
+        );
+      }
+    }
+
+    return { ok: errors.length === 0, errors };
   }
 
   function dedupeVariantRowsByCombo(rows: VariantRow[], attrs: AttrDef[]) {
@@ -1683,6 +1345,205 @@ export function ManageProducts({
     }
 
     return Array.from(byKey.values());
+  }
+
+  function shouldReplaceVariants(args: { variantRows: any[] | undefined; initialVariantIds: Set<string>; clearAllVariantsIntent: boolean }) {
+    const { variantRows, initialVariantIds, clearAllVariantsIntent } = args;
+
+    if (clearAllVariantsIntent) return true;
+
+    const currentIds = new Set(
+      (variantRows ?? [])
+        .map((r: any) => String(r?.id ?? "").trim())
+        .filter((id: string) => !!id && id !== "NEW" && id !== "TEMP")
+    );
+
+    for (const id of initialVariantIds) {
+      if (!currentIds.has(id)) return true;
+    }
+
+    return false;
+  }
+
+  /* ---------------- Payload builder (variants) ---------------- */
+
+  function buildProductPayload({
+    base,
+    selectedAttrs,
+    variantRows,
+    attrsAll,
+  }: {
+    base: {
+      title: string;
+      price: number;
+      status: string;
+      sku?: string;
+      categoryId?: string;
+      brandId?: string;
+      supplierId?: string;
+      imagesJson?: string[];
+      description?: string | null;
+      ownerId?: string | null;
+      availableQty?: number;
+      inStock?: boolean;
+      retailPrice?: number;
+    };
+    selectedAttrs: Record<string, string | string[]>;
+    variantRows: VariantRow[];
+    attrsAll: AdminAttribute[];
+  }) {
+    const payload: any = { ...base };
+
+    const attributeSelections: any[] = [];
+    const attributeValues: Array<{ attributeId: string; valueId?: string; valueIds?: string[] }> = [];
+    const attributeTexts: Array<{ attributeId: string; value: string }> = [];
+
+    for (const a of attrsAll) {
+      const sel = selectedAttrs[a.id];
+      if (sel == null || (Array.isArray(sel) && sel.length === 0) || (typeof sel === "string" && sel.trim() === "")) continue;
+
+      if (a.type === "TEXT") {
+        attributeSelections.push({ attributeId: a.id, text: String(sel) });
+        attributeTexts.push({ attributeId: a.id, value: String(sel) });
+      } else if (a.type === "SELECT") {
+        const valueId = String(sel);
+        attributeSelections.push({ attributeId: a.id, valueId });
+        attributeValues.push({ attributeId: a.id, valueId });
+      } else if (a.type === "MULTISELECT") {
+        const valueIds = (sel as string[]).map(String);
+        attributeSelections.push({ attributeId: a.id, valueIds });
+        attributeValues.push({ attributeId: a.id, valueIds });
+      }
+    }
+
+    if (attributeSelections.length) payload.attributeSelections = attributeSelections;
+    if (attributeValues.length) payload.attributeValues = attributeValues;
+    if (attributeTexts.length) payload.attributeTexts = attributeTexts;
+
+    const selectable = (attrsAll || []).filter((a) => a.type === "SELECT" && a.isActive);
+    const selectableById = new Map(selectable.map((a) => [String(a.id), a]));
+
+    if (variantRows.length > 0) {
+      const variants: any[] = [];
+
+      const isRealVariantIdLocal = (id?: string) =>
+        !!id && !id.startsWith("vr-") && !id.startsWith("new-") && !id.startsWith("temp-") && !id.startsWith("tmp:");
+
+      for (const row of variantRows) {
+        const picks = Object.entries(row.selections || {}).filter(([, valueId]) => !!valueId);
+        if (picks.length === 0) continue;
+
+        const raw = (row.priceBump ?? "").trim();
+        const bumpNum = raw === "" ? NaN : Number(raw);
+        const hasBump = raw !== "" && Number.isFinite(bumpNum);
+
+        const options = picks.map(([attributeId, valueId]) => {
+          const option: any = { attributeId, valueId, attributeValueId: valueId };
+          if (hasBump) option.priceBump = bumpNum;
+          return option;
+        });
+
+        const labelParts: string[] = [];
+        for (const [attributeId, valueId] of picks) {
+          const attr = selectableById.get(String(attributeId));
+          const val = attr?.values?.find((v) => String(v.id) === String(valueId));
+          const code = String(val?.code || val?.name || valueId || "").trim();
+          if (code) labelParts.push(code.toUpperCase().replace(/\s+/g, ""));
+        }
+
+        const comboLabel = labelParts.join("-");
+        const sku = base.sku && comboLabel ? `${base.sku}-${comboLabel}` : base.sku || comboLabel || undefined;
+
+        variants.push({
+          ...(isRealVariantIdLocal(row.id) ? { id: row.id } : {}),
+          sku,
+          options,
+          optionSelections: options,
+          attributes: options.map((o: any) => ({ attributeId: o.attributeId, valueId: o.valueId })),
+        });
+      }
+
+      payload.variants = variants.length ? variants : [];
+      payload.variantOptions = variants.length ? variants.map((v: any) => v.options) : [];
+    }
+
+    return payload;
+  }
+
+  /* ---------------- Editor actions ---------------- */
+
+  function startNewProduct() {
+    setEditingId(null);
+    setOffersProductId(null);
+    setPending(defaultPending);
+    setShowEditor(true);
+
+    setSelectedAttrs({});
+    setVariantRows([]);
+    initialVariantIdsRef.current = new Set();
+    setClearAllVariantsIntent(false);
+    setVariantsDirty(false);
+
+    setOfferVariants([]);
+  }
+
+  async function startEdit(p: any) {
+    try {
+      setShowEditor(true);
+
+      const full = await fetchProductFull(p.id);
+      skipDraftLoadRef.current = true;
+
+      setOffersProductId(full.id);
+      setEditingId(full.id);
+
+      const resolvedSupplierId = normalizeNullableId(full.supplierId) || findSupplierIdFallbackFromOwner(full) || "";
+
+      const nextPending = {
+        title: full.title || "",
+        price: String(full.price ?? full.retailPrice ?? ""),
+        status: full.status === "PUBLISHED" || full.status === "LIVE" ? full.status : "PENDING",
+        categoryId: full.categoryId || "",
+        brandId: full.brandId || "",
+        supplierId: resolvedSupplierId || "",
+        supplierAvailableQty: "",
+        sku: full.sku || "",
+        imageUrls: (extractImageUrls(full) || []).join("\n"),
+        description: full.description ?? "",
+      };
+
+      const nextSel: Record<string, string | string[]> = {};
+      (full.attributeValues || full.attributeSelections || []).forEach((av: any) => {
+        if (Array.isArray(av.valueIds)) nextSel[av.attributeId] = av.valueIds;
+        else if (av.valueId) nextSel[av.attributeId] = av.valueId;
+      });
+      (full.attributeTexts || []).forEach((at: any) => {
+        nextSel[at.attributeId] = at.value;
+      });
+
+      const serverVariants = (full as any).variants || (full as any).variantsNormalized || [];
+      const vr = buildVariantRowsFromServerVariants(serverVariants);
+
+      setPending(nextPending);
+      setSelectedAttrs(nextSel);
+
+      initialVariantIdsRef.current = new Set(vr.map((r) => r.id).filter((id) => isRealVariantId(id)));
+      setClearAllVariantsIntent(false);
+      setVariantRows(vr);
+      setVariantsDirty(false);
+
+      await loadOfferVariants(full.id);
+
+      localStorage.setItem(`adminProductDraft:${full.id}`, JSON.stringify({ pending: nextPending, variantRows: vr, selectedAttrs: nextSel }));
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error(e);
+      openModal({ title: "Products", message: "Could not load product for editing." });
+    } finally {
+      queueMicrotask(() => {
+        skipDraftLoadRef.current = false;
+      });
+    }
   }
 
   /* ---------------- Save / Create ---------------- */
@@ -1702,21 +1563,30 @@ export function ManageProducts({
     }
 
     if (hasDuplicateCombos) {
-      openModal({
-        title: "Variants",
-        message: "Fix duplicate variant combinations before saving.",
-      });
+      openModal({ title: "Variants", message: "Fix duplicate variant combinations before saving." });
       return;
     }
 
     const emptyRowErrorsNow = findEmptyRowErrors(variantRows ?? []);
-    const hasEmptyRows = Object.keys(emptyRowErrorsNow).length > 0;
-    if (hasEmptyRows) {
+    if (Object.keys(emptyRowErrorsNow).length > 0) {
       openModal({
         title: "Variants",
         message: "You have a variant row with no option selected. Pick at least 1 option or remove the row.",
       });
       return;
+    }
+
+    // enforce supplier price caps if any exist
+    {
+      const check = validateRetailAboveSupplierPrices({
+        baseRetail: priceNum,
+        variantRows,
+        caps: offerPriceCaps,
+      });
+      if (!check.ok) {
+        openModal({ title: "Retail price too low", message: check.errors.join("\n") });
+        return;
+      }
     }
 
     const supplierQty = toInt((pending as any).supplierAvailableQty, 0);
@@ -1727,8 +1597,8 @@ export function ManageProducts({
 
     const base: any = {
       title,
-      retailPrice: priceNum,   // ✅ IMPORTANT
-      price: priceNum,         // keep for backward compatibility (optional)
+      retailPrice: priceNum,
+      price: priceNum,
       status: pending.status,
       sku: pending.sku.trim() || undefined,
       description: pending.description != null ? pending.description : undefined,
@@ -1768,38 +1638,14 @@ export function ManageProducts({
       }
     }
 
-    if (files.length) {
-      try {
-        const uploaded = await uploadLocalFiles();
-        if (uploaded.length) {
-          appendUploadedUrlsToForm(uploaded);
-          fullPayload.imagesJson = dedupe([...(fullPayload.imagesJson || []), ...uploaded]);
-        }
-      } catch (e: any) {
-        openModal({
-          title: "Uploads",
-          message: getHttpErrorMessage(e, "Upload failed"),
-        });
-        return;
-      }
-    }
-
-    // -----------------------------
     // EDIT FLOW
-    // -----------------------------
     if (editingId) {
-      const { variantOptions, ...payloadForPatch } = fullPayload as any; // keep variants!
-
-
+      const { variantOptions, ...payloadForPatch } = fullPayload as any;
       const userTouchedVariants = variantsDirty || clearAllVariantsIntent;
 
       if (userTouchedVariants) {
-        const submittedIds = new Set(
-          (variants || []).map((v: any) => normalizeNullableId(v?.id)).filter(Boolean) as string[]
-        );
-
+        const submittedIds = new Set((variants || []).map((v: any) => normalizeNullableId(v?.id)).filter(Boolean) as string[]);
         const missingLocked = Array.from(lockedVariantIds).filter((id) => !submittedIds.has(id));
-
         if (missingLocked.length > 0) {
           openModal({
             title: "Cannot remove variants in use",
@@ -1811,9 +1657,8 @@ export function ManageProducts({
         }
       }
 
-      updateM.mutate({
-        id: editingId, ...payloadForPatch
-      },
+      updateM.mutate(
+        { id: editingId, ...payloadForPatch },
         {
           onSuccess: async () => {
             const pid = editingId;
@@ -1821,7 +1666,6 @@ export function ManageProducts({
 
             if (pid && touched) {
               try {
-                // ✅ FIX #2: choose replace based on actual removals/clear-all
                 const replaceFlag = shouldReplaceVariants({
                   variantRows: variants || [],
                   initialVariantIds: initialVariantIdsRef.current,
@@ -1837,11 +1681,9 @@ export function ManageProducts({
                   queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }],
                 });
               } catch (e) {
+                // eslint-disable-next-line no-console
                 console.error("Failed to persist variants on update", e);
-                openModal({
-                  title: "Products",
-                  message: getHttpErrorMessage(e, "Failed to save variants"),
-                });
+                openModal({ title: "Products", message: getHttpErrorMessage(e, "Failed to save variants") });
                 return;
               }
             }
@@ -1849,14 +1691,11 @@ export function ManageProducts({
             try {
               if (pid) {
                 const refreshed = await fetchProductFull(pid);
-
                 const nextRowsRaw = buildVariantRowsFromServerVariants(refreshed.variants || []);
                 const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, selectableAttrs);
 
                 setVariantRows(nextRows);
-
                 initialVariantIdsRef.current = new Set(nextRows.map((r) => r.id).filter((id) => isRealVariantId(id)));
-
                 setOfferVariants(refreshed.variants || []);
 
                 qc.invalidateQueries({
@@ -1864,6 +1703,7 @@ export function ManageProducts({
                 });
               }
             } catch (e) {
+              // eslint-disable-next-line no-console
               console.warn("Product saved but refresh failed", e);
             }
 
@@ -1871,6 +1711,7 @@ export function ManageProducts({
               qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] }),
               qc.invalidateQueries({ queryKey: ["admin", "overview"] }),
               qc.invalidateQueries({ queryKey: ["admin", "products", "offers-summary"] }),
+              qc.invalidateQueries({ queryKey: ["admin", "products", "offer-price-caps"] }),
               pid ? qc.invalidateQueries({ queryKey: ["admin", "product", pid, "variants"] }) : Promise.resolve(),
               pid ? qc.invalidateQueries({ queryKey: ["admin", "products", pid, "supplier-offers"] }) : Promise.resolve(),
             ]);
@@ -1883,9 +1724,7 @@ export function ManageProducts({
       return;
     }
 
-    // -----------------------------
     // CREATE FLOW
-    // -----------------------------
     createM.mutate(fullPayload, {
       onSuccess: async (res) => {
         const created = (res?.data ?? res) as any;
@@ -1897,24 +1736,18 @@ export function ManageProducts({
             await persistVariantsStrict(pid, vars, token, { replace: true });
 
             const refreshed = await fetchProductFull(pid);
-
             const nextRowsRaw = buildVariantRowsFromServerVariants(refreshed.variants || []);
             const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, selectableAttrs);
+
             setVariantRows(nextRows);
-
             initialVariantIdsRef.current = new Set(nextRows.map((r) => r.id).filter((id) => isRealVariantId(id)));
-
             setOfferVariants(refreshed.variants || []);
 
-            qc.invalidateQueries({
-              queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }],
-            });
+            qc.invalidateQueries({ queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }] });
           } catch (e) {
+            // eslint-disable-next-line no-console
             console.error("Failed to persist variants on create", e);
-            openModal({
-              title: "Products",
-              message: getHttpErrorMessage(e, "Failed to save variants"),
-            });
+            openModal({ title: "Products", message: getHttpErrorMessage(e, "Failed to save variants") });
           }
         }
 
@@ -1929,6 +1762,7 @@ export function ManageProducts({
           qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] }),
           qc.invalidateQueries({ queryKey: ["admin", "overview"] }),
           qc.invalidateQueries({ queryKey: ["admin", "products", "offers-summary"] }),
+          qc.invalidateQueries({ queryKey: ["admin", "products", "offer-price-caps"] }),
           pid ? qc.invalidateQueries({ queryKey: ["admin", "product", pid, "variants"] }) : Promise.resolve(),
           pid ? qc.invalidateQueries({ queryKey: ["admin", "products", pid, "supplier-offers"] }) : Promise.resolve(),
         ]);
@@ -1936,7 +1770,7 @@ export function ManageProducts({
     });
   }
 
-  /* ---------------- Focus handoff from moderation ---------------- */
+  /* ---------------- Focus handoff ---------------- */
 
   useEffect(() => {
     if (!focusId || !rowsWithDerived?.length) return;
@@ -1946,122 +1780,6 @@ export function ManageProducts({
     onFocusedConsumed();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId, rowsWithDerived]);
-
-  /* ---------------- Previews helpers ---------------- */
-
-  const urlPreviews = useMemo(() => parseUrlList(pending.imageUrls), [pending.imageUrls]);
-
-  function setUrlAt(i: number, newUrl: string) {
-    const list = parseUrlList(pending.imageUrls);
-    list[i] = newUrl.trim();
-    setPending((d) => ({ ...d, imageUrls: list.filter(Boolean).join("\n") }));
-  }
-
-  function removeUrlAt(i: number) {
-    const list = parseUrlList(pending.imageUrls);
-    list.splice(i, 1);
-    setPending((d) => ({ ...d, imageUrls: list.join("\n") }));
-  }
-
-  /* ---------------- Primary actions / status ---------------- */
-
-  function submitStatusEdit(pId: string, intent: "approvePublished" | "movePending") {
-    const source = rowsWithDerived.find((r: any) => r.id === pId);
-    if (!source) return;
-
-    const patch: any = {};
-
-    if (intent === "approvePublished") {
-      const avail = (source.availableQty ?? 0) > 0 || source.inStock !== false;
-      if (!avail) {
-        openModal({
-          title: "Cannot publish",
-          message: "This product is not in stock. Please add stock or active supplier offers first.",
-        });
-        return;
-      }
-      patch.status = "PUBLISHED";
-    } else if (intent === "movePending") {
-      patch.status = "PENDING";
-    }
-
-    updateStatusM.mutate({ id: pId, ...patch });
-  }
-
-  function primaryActionForRow(p: any): any {
-    const eff = getStatus(p);
-    const hasActiveOffer = (Number(p.availableQty ?? 0) || 0) > 0;
-
-    const ordersKnown = !!hasOrdersQ.data || hasOrdersSupportRef.current === "unsupported";
-    const ordered = hasOrder(p.id);
-
-    if (!ordersKnown || offersSummaryQ.isLoading) {
-      return {
-        label: "…",
-        title: "Checking…",
-        disabled: true,
-        onClick: () => { },
-        className: "px-2 py-1 rounded bg-zinc-400 text-white",
-      };
-    }
-
-    if (eff === "PENDING" && hasActiveOffer) {
-      return {
-        label: "Approve PUBLISHED",
-        title: "Publish product",
-        onClick: () => submitStatusEdit(p.id, "approvePublished"),
-        className: "px-3 py-2 rounded-lg bg-emerald-600 text-white",
-      };
-    }
-
-    if (eff === "PENDING" && !hasActiveOffer) {
-      return ordered
-        ? {
-          label: "Archive",
-          title: "Archive (soft delete)",
-          onClick: () => deleteM.mutate(p.id),
-          className: "px-2 py-1 rounded bg-rose-600 text-white",
-        }
-        : {
-          label: "Delete",
-          title: "Delete permanently",
-          onClick: () => deleteM.mutate(p.id),
-          className: "px-2 py-1 rounded bg-rose-600 text-white",
-        };
-    }
-
-    if (eff === "PUBLISHED" || eff === "LIVE") {
-      return {
-        label: "Move to PENDING",
-        title: "Unpublish product",
-        onClick: () => submitStatusEdit(p.id, "movePending"),
-        className: "px-3 py-2 rounded-lg border bg-amber-400 text-white",
-      };
-    }
-
-    if (eff === "ARCHIVED") {
-      return {
-        label: "Revive",
-        title: "Restore archived product",
-        onClick: () => restoreM.mutate(p.id),
-        className: "px-3 py-2 rounded-lg bg-sky-600 text-white",
-      };
-    }
-
-    return ordered
-      ? {
-        label: "Archive",
-        title: "Archive (soft delete)",
-        onClick: () => deleteM.mutate(p.id),
-        className: "px-2 py-1 rounded bg-rose-600 text-white",
-      }
-      : {
-        label: "Delete",
-        title: "Delete permanently",
-        onClick: () => deleteM.mutate(p.id),
-        className: "px-2 py-1 rounded bg-rose-600 text-white",
-      };
-  }
 
   /* ---------------- Filters / sorting ---------------- */
 
@@ -2073,13 +1791,13 @@ export function ManageProducts({
     const hasAnyOffer = (pId: string, p: any) => {
       const offerCount = toInt((p as any).__offerCount ?? 0, 0);
       const s = offers[pId];
-      return offerCount > 0 || (!!s && (s.activeOffers > 0 || s.perSupplier?.length > 0));
+      return offerCount > 0 || (!!s && ((s.activeOfferCount ?? 0) > 0 || s.perSupplier?.length > 0));
     };
 
     const hasActiveOffer = (pId: string, p: any) => {
       const s = offers[pId];
       const offerCount = toInt((p as any).__offerCount ?? 0, 0);
-      return (offerCount > 0 && (p.availableQty ?? 0) > 0) || (!!s && s.activeOffers > 0 && (s.totalAvailable ?? 0) > 0);
+      return (offerCount > 0 && (p.availableQty ?? 0) > 0) || (!!s && (s.activeOfferCount ?? 0) > 0 && (s.totalAvailable ?? 0) > 0);
     };
 
     const isAvailableVariantAware = (pId: string, p: any) => {
@@ -2172,45 +1890,23 @@ export function ManageProducts({
 
     return (offerVariants || [])
       .map((v: any, index: number) => {
-        const vid =
-          norm(v?.id) ||
-          norm(v?.variantId) ||
-          norm(v?.variant?.id) ||
-          norm(v?.id?.id) ||
-          norm(v?.variantId?.id);
-
+        const vid = norm(v?.id) || norm(v?.variantId) || norm(v?.variant?.id) || norm(v?.id?.id) || norm(v?.variantId?.id);
         if (!vid) return null;
 
-        const optsRaw =
-          v?.options ??
-          v?.optionSelections ??
-          v?.variantOptions ??
-          v?.ProductVariantOption ??
-          v?.ProductVariantOptions ??
-          [];
-
+        const optsRaw = v?.options ?? v?.optionSelections ?? v?.variantOptions ?? v?.ProductVariantOption ?? v?.ProductVariantOptions ?? [];
         const opts = Array.isArray(optsRaw) ? optsRaw : [];
 
         const parts = opts
           .map((o: any) => {
             const attrId = norm(
               o?.attributeId ??
-              o?.attribute?.id ??
-              o?.productAttributeId ??
-              o?.attribute?.attributeId ??
-              o?.attributeValue?.attributeId
+                o?.attribute?.id ??
+                o?.productAttributeId ??
+                o?.attribute?.attributeId ??
+                o?.attributeValue?.attributeId
             );
-
-            const valId = norm(
-              o?.valueId ??
-              o?.attributeValueId ??
-              o?.attributeValue?.id ??
-              o?.value?.id ??
-              o?.valId
-            );
-
+            const valId = norm(o?.valueId ?? o?.attributeValueId ?? o?.attributeValue?.id ?? o?.value?.id ?? o?.valId);
             if (!attrId || !valId) return "";
-
             const attr = attrById.get(attrId);
             const valName = attr?.values?.find((vv) => String(vv.id) === valId)?.name;
             return valName || valId;
@@ -2225,37 +1921,89 @@ export function ManageProducts({
       .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
   }, [offerVariants, selectableAttrs]);
 
-  const emptyRowErrors = useMemo(() => findEmptyRowErrors(variantRows ?? []), [variantRows]);
+  /* ---------------- Primary actions ---------------- */
 
-  /* ---------------- Attributes (Form UI) ---------------- */
+  function submitStatusEdit(pId: string, intent: "approvePublished" | "movePending") {
+    const source = rowsWithDerived.find((r: any) => r.id === pId);
+    if (!source) return;
 
-  const activeAttrs = useMemo(() => (attrsQ.data ?? []).filter((a) => a?.isActive), [attrsQ.data]);
+    const patch: any = {};
 
-  function findAttrByNames(names: string[]) {
-    const lower = names.map((n) => n.toLowerCase());
-    return activeAttrs.find((a) => lower.includes(String(a.name ?? "").toLowerCase()));
+    if (intent === "approvePublished") {
+      const avail = (source.availableQty ?? 0) > 0 || source.inStock !== false;
+      if (!avail) {
+        openModal({ title: "Cannot publish", message: "This product is not in stock. Please add stock or active supplier offers first." });
+        return;
+      }
+      patch.status = "PUBLISHED";
+    } else if (intent === "movePending") {
+      patch.status = "PENDING";
+    }
+
+    updateStatusM.mutate({ id: pId, ...patch });
   }
 
-  const attrColor = useMemo(() => findAttrByNames(["color", "colour"]), [activeAttrs]);
-  const attrMaterial = useMemo(() => findAttrByNames(["material"]), [activeAttrs]);
-  const attrSize = useMemo(() => findAttrByNames(["size"]), [activeAttrs]);
-  const attrVolume = useMemo(() => findAttrByNames(["volume"]), [activeAttrs]);
-  const attrWeight = useMemo(() => findAttrByNames(["weight"]), [activeAttrs]);
+  function primaryActionForRow(p: any): any {
+    const eff = getStatus(p);
+    const hasActiveOffer = (Number(p.availableQty ?? 0) || 0) > 0;
+
+    const ordersKnown = !!hasOrdersQ.data || hasOrdersSupportRef.current === "unsupported";
+    const ordered = hasOrder(p.id);
+
+    if (!ordersKnown || offersSummaryQ.isLoading) {
+      return {
+        label: "…",
+        title: "Checking…",
+        disabled: true,
+        onClick: () => {},
+        className: "px-2 py-1 rounded bg-zinc-400 text-white",
+      };
+    }
+
+    if (eff === "PENDING" && hasActiveOffer) {
+      return {
+        label: "Approve PUBLISHED",
+        title: "Publish product",
+        onClick: () => submitStatusEdit(p.id, "approvePublished"),
+        className: "px-3 py-2 rounded-lg bg-emerald-600 text-white",
+      };
+    }
+
+    if (eff === "PENDING" && !hasActiveOffer) {
+      return ordered
+        ? { label: "Archive", title: "Archive (soft delete)", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" }
+        : { label: "Delete", title: "Delete permanently", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" };
+    }
+
+    if (eff === "PUBLISHED" || eff === "LIVE") {
+      return {
+        label: "Move to PENDING",
+        title: "Unpublish product",
+        onClick: () => submitStatusEdit(p.id, "movePending"),
+        className: "px-3 py-2 rounded-lg border bg-amber-400 text-white",
+      };
+    }
+
+    if (eff === "ARCHIVED") {
+      return { label: "Revive", title: "Restore archived product", onClick: () => restoreM.mutate(p.id), className: "px-3 py-2 rounded-lg bg-sky-600 text-white" };
+    }
+
+    return ordered
+      ? { label: "Archive", title: "Archive (soft delete)", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" }
+      : { label: "Delete", title: "Delete permanently", onClick: () => deleteM.mutate(p.id), className: "px-2 py-1 rounded bg-rose-600 text-white" };
+  }
+
+  /* ---------------- Attribute helpers ---------------- */
+
+  const activeAttrs = useMemo(() => (attrsQ.data ?? []).filter((a) => a?.isActive), [attrsQ.data]);
 
   function setAttr(attrId: string, value: string | string[]) {
     setSelectedAttrs((prev) => ({ ...prev, [attrId]: value }));
   }
 
-  function getAttrValue(attrId?: string) {
-    if (!attrId) return "";
-    const v = selectedAttrs?.[attrId];
-    if (Array.isArray(v)) return v[0] ?? "";
-    return String(v ?? "");
-  }
-
   /* ============================
      Render
-  ============================ */
+  ============================= */
 
   const presetButtons: Array<{ key: FilterPreset; label: string }> = [
     { key: "all", label: "All" },
@@ -2268,61 +2016,9 @@ export function ManageProducts({
     { key: "rejected", label: "Rejected" },
   ];
 
-  const [newCombo, setNewCombo] = useState<Record<string, string>>({});
-  const [newComboBump, setNewComboBump] = useState<string>("");
-
-  useEffect(() => {
-    if (!selectableAttrs.length) return;
-    setNewCombo((prev) => {
-      const next: Record<string, string> = {};
-      selectableAttrs.forEach((a) => (next[a.id] = prev[a.id] || ""));
-      return next;
-    });
-  }, [selectableAttrs]);
-
-  function addNewComboRow() {
-    setVariantsDirty(true);
-
-    const picks = Object.entries(newCombo || {}).filter(([, v]) => !!String(v || "").trim());
-    if (picks.length === 0) {
-      openModal({ title: "Variants", message: "Pick at least 1 option before adding a variant row." });
-      return;
-    }
-
-    const id = `vr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-
-    const selections: Record<string, string> = {};
-    selectableAttrs.forEach((a) => (selections[a.id] = newCombo[a.id] || ""));
-
-    const candidate: VariantRow = {
-      id,
-      selections,
-      priceBump: (newComboBump || "").trim(),
-      inStock: true,
-      availableQty: 0,
-      imagesJson: [],
-    };
-
-    const candKey = buildComboKey(candidate, selectableAttrs);
-    const isDup = (variantRows || []).some((r) => buildComboKey(r, selectableAttrs) === candKey && candKey !== "");
-    if (isDup) {
-      openModal({ title: "Variants", message: "That variant combination already exists." });
-      return;
-    }
-
-    setVariantRows((prev) => [...prev, candidate]);
-
-    setNewCombo((prev) => {
-      const next: Record<string, string> = {};
-      selectableAttrs.forEach((a) => (next[a.id] = ""));
-      return next;
-    });
-    setNewComboBump("");
-  }
-
   return (
     <div
-      className="space-y-3"
+      className="space-y-4"
       onKeyDownCapture={(e) => {
         if (e.key === "Enter") {
           const target = e.target as HTMLElement;
@@ -2337,65 +2033,55 @@ export function ManageProducts({
         e.stopPropagation();
       }}
     >
-      {/* Top toolbar */}
+      {/* ================= Toolbar ================= */}
       <div className="rounded-2xl border bg-white shadow-sm p-3">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap gap-2">
             {presetButtons.map((b) => (
               <button
                 key={b.key}
                 type="button"
                 onClick={() => setPresetAndUrl(b.key)}
-                className={[
-                  "px-3 py-1.5 rounded-xl text-sm border",
-                  preset === b.key ? "bg-slate-900 text-white border-slate-900" : "bg-white hover:bg-slate-50",
-                ].join(" ")}
+                className={b.key === preset ? "px-3 py-2 rounded-xl bg-slate-900 text-white text-sm" : "px-3 py-2 rounded-xl border text-sm hover:bg-slate-50"}
               >
                 {b.label}
               </button>
             ))}
           </div>
 
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex-1 min-w-[220px]" onMouseDown={(e) => e.stopPropagation()}>
               <input
-                value={searchInput}
+                value={qInput}
                 onChange={(e) => {
-                  setSearchInput(e.target.value);
-                  setSearch(e.target.value);
+                  setQInput(e.target.value);
+                  // Optional: if you still want parent state to know final search, update on idle/blur instead.
                 }}
-                placeholder="Search products…"
-                className="pl-9 pr-3 py-2 rounded-xl border w-[260px] max-w-full"
+                onBlur={() => {
+                  // if you still need to keep parent search in sync, do it here (NOT per keypress)
+                  // This avoids remount loops from parent while typing.
+                  try {
+                    setSearch(qInput);
+                  } catch {}
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                placeholder="Search by title / SKU / owner / etc…"
+                className="w-full rounded-xl border px-3 py-2 text-sm"
               />
             </div>
 
-            {!editingId && !showEditor && (isSuper || isAdmin) && (
-              <button
-                type="button"
-                onClick={startNewProduct}
-                className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
-              >
-                Add new product
-              </button>
-            )}
-
             <button
               type="button"
-              onClick={async () => { await Promise.all([listQ.refetch(), offersSummaryQ.refetch()]); }
-
-              }
-              disabled={listQ.isFetching}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm hover:bg-slate-50 disabled:opacity-60"
-              title="Reload products"
+              onClick={startNewProduct}
+              className="ml-auto shrink-0 whitespace-nowrap rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
             >
-              {listQ.isFetching ? "Refreshing..." : "Refresh"}
+              + New product
             </button>
           </div>
         </div>
       </div>
 
-      {/* ✅ Editor area */}
+      {/* ================= Editor ================= */}
       {(showEditor || !!editingId) && (
         <div className="space-y-3">
           <button
@@ -2404,14 +2090,14 @@ export function ManageProducts({
               setShowEditor(false);
               setEditingId(null);
               setOffersProductId(null);
-
               setPending(defaultPending);
-              setFiles([]);
               setVariantRows([]);
               setSelectedAttrs({});
               setOfferVariants([]);
+              setVariantsDirty(false);
+              setClearAllVariantsIntent(false);
             }}
-            className="rounded-xl border border-slate-300 bg-danger text-white px-3 py-2 text-sm hover:bg-slate-50 ml-auto mx-10 hover:text-black"
+            className="rounded-xl border border-slate-300 bg-rose-600 text-white px-3 py-2 text-sm hover:bg-rose-700 ml-auto"
           >
             Close Form
           </button>
@@ -2435,10 +2121,9 @@ export function ManageProducts({
                 readOnly={!(isSuper || isAdmin)}
                 defaultUnitCost={Number(pending.price) || 0}
                 onSaved={() => {
-                  qc.invalidateQueries({
-                    queryKey: ["admin", "products", "locked-variant-ids", { productId: editingId }],
-                  });
+                  qc.invalidateQueries({ queryKey: ["admin", "products", "locked-variant-ids", { productId: editingId }] });
                   qc.invalidateQueries({ queryKey: ["admin", "products", "offers-summary"] });
+                  qc.invalidateQueries({ queryKey: ["admin", "products", "offer-price-caps"] });
                   qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] });
                 }}
               />
@@ -2460,34 +2145,17 @@ export function ManageProducts({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="text-sm font-medium text-slate-700">Title</label>
-                    <input
-                      value={pending.title}
-                      onChange={(e) => setPending((p) => ({ ...p, title: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2"
-                      placeholder="Product title"
-                    />
+                    <input value={pending.title} onChange={(e) => setPending((p) => ({ ...p, title: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2" placeholder="Product title" />
                   </div>
 
                   <div>
                     <label className="text-sm font-medium text-slate-700">Price (NGN)</label>
-                    <input
-                      value={pending.price}
-                      onChange={(e) => setPending((p) => ({ ...p, price: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2"
-                      placeholder="0"
-                      inputMode="decimal"
-                    />
+                    <input value={pending.price} onChange={(e) => setPending((p) => ({ ...p, price: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2" placeholder="0" inputMode="decimal" />
                   </div>
-                </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="text-sm font-medium text-slate-700">Status</label>
-                    <select
-                      value={pending.status}
-                      onChange={(e) => setPending((p) => ({ ...p, status: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2 bg-white"
-                    >
+                    <select value={pending.status} onChange={(e) => setPending((p) => ({ ...p, status: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2">
                       <option value="PENDING">PENDING</option>
                       <option value="PUBLISHED">PUBLISHED</option>
                       <option value="LIVE">LIVE</option>
@@ -2496,587 +2164,332 @@ export function ManageProducts({
                   </div>
 
                   <div>
-                    <label className="text-sm font-medium text-slate-700">SKU</label>
-                    <input
-                      value={pending.sku}
-                      onChange={(e) => setPending((p) => ({ ...p, sku: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2"
-                      placeholder="SKU"
-                    />
+                    <label className="text-sm font-medium text-slate-700">Supplier</label>
+                    <select value={pending.supplierId} onChange={(e) => setPending((p) => ({ ...p, supplierId: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2">
+                      <option value="">Select supplier…</option>
+                      {(suppliersQ.data ?? []).map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="text-sm font-medium text-slate-700">Category</label>
-                    <select
-                      value={pending.categoryId}
-                      onChange={(e) => setPending((p) => ({ ...p, categoryId: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2 bg-white"
-                    >
-                      <option value="">— Select category —</option>
-                      {(catsQ.data ?? [])
-                        .filter((c) => c.isActive)
-                        .map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
+                    <select value={pending.categoryId} onChange={(e) => setPending((p) => ({ ...p, categoryId: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2">
+                      <option value="">Select category…</option>
+                      {(catsQ.data ?? []).map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
                   <div>
                     <label className="text-sm font-medium text-slate-700">Brand</label>
-                    <select
-                      value={pending.brandId}
-                      onChange={(e) => setPending((p) => ({ ...p, brandId: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2 bg-white"
-                    >
-                      <option value="">— Select brand —</option>
-                      {(brandsQ.data ?? [])
-                        .filter((b) => b.isActive)
-                        .map((b) => (
-                          <option key={b.id} value={b.id}>
-                            {b.name}
-                          </option>
-                        ))}
+                    <select value={pending.brandId} onChange={(e) => setPending((p) => ({ ...p, brandId: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2">
+                      <option value="">Select brand…</option>
+                      {(brandsQ.data ?? []).map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))}
                     </select>
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-medium text-slate-700">SKU</label>
+                    <input value={pending.sku} onChange={(e) => setPending((p) => ({ ...p, sku: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2" placeholder="SKU" />
                   </div>
                 </div>
 
-                <div>
-                  <label className="text-sm font-medium text-slate-700">Supplier</label>
-                  <select
-                    value={pending.supplierId || ""}
-                    onChange={(e) => setPending((p) => ({ ...p, supplierId: e.target.value }))}
-                    className="mt-1 w-full rounded-xl border px-3 py-2 bg-white"
-                  >
-                    <option value="">— Select supplier —</option>
-                    {(suppliersQ.data ?? [])
-                      .filter((s) => (s.status || "").toUpperCase() === "ACTIVE")
-                      .map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                  </select>
-                  <div className="text-xs text-slate-500 mt-1">Required. This also defaults the supplier in the offers manager.</div>
-                </div>
-
-                {!editingId && (
-                  <div>
-                    <label className="text-sm font-medium text-slate-700">Supplier available qty (create)</label>
-                    <input
-                      value={pending.supplierAvailableQty}
-                      onChange={(e) => setPending((p) => ({ ...p, supplierAvailableQty: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2"
-                      placeholder="e.g. 10"
-                      inputMode="numeric"
-                    />
+                {editingId && (offerPriceCaps.maxBase > 0 || Object.keys(offerPriceCaps.maxByVariant).length > 0) && (
+                  <div className="text-xs text-slate-500">
+                    Supplier max prices:{" "}
+                    {offerPriceCaps.maxBase > 0 ? <span>base ₦{offerPriceCaps.maxBase.toLocaleString()}</span> : <span>base —</span>}
+                    {Object.keys(offerPriceCaps.maxByVariant).length > 0 && <span className="ml-2">• variants tracked: {Object.keys(offerPriceCaps.maxByVariant).length}</span>}
                   </div>
                 )}
 
                 <div>
-                  <label className="text-sm font-medium text-slate-700">Description</label>
-                  <textarea
-                    value={pending.description}
-                    onChange={(e) => setPending((p) => ({ ...p, description: e.target.value }))}
-                    className="mt-1 w-full rounded-xl border px-3 py-2 min-h-[120px]"
-                    placeholder="Product description"
-                  />
-                </div>
-              </div>
-
-              {/* Right */}
-              <div className="space-y-3">
-                <div className="rounded-2xl border p-4">
-                  <div className="text-sm font-semibold">Images</div>
-                  <div className="text-xs text-slate-500">Paste URLs (one per line) and/or upload local files.</div>
-
-                  <div className="mt-3">
-                    <label className="text-sm font-medium text-slate-700">Image URLs</label>
-                    <textarea
-                      value={pending.imageUrls}
-                      onChange={(e) => setPending((p) => ({ ...p, imageUrls: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2 min-h-[110px]"
-                      placeholder="https://…"
-                    />
-                  </div>
-
-                  <div className="mt-3 flex flex-col md:flex-row md:items-center gap-2">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      onChange={(e) => setFiles(Array.from(e.target.files || []))}
-                      className="text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          const uploaded = await uploadLocalFiles();
-                          appendUploadedUrlsToForm(uploaded);
-                        } catch (e: any) {
-                          openModal({ title: "Uploads", message: getHttpErrorMessage(e, "Upload failed") });
-                        }
-                      }}
-                      disabled={!files.length || uploading}
-                      className="rounded-xl bg-slate-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                    >
-                      {uploading ? "Uploading…" : "Upload selected"}
-                    </button>
-                  </div>
-
-                  {urlPreviews.length > 0 && (
-                    <div className="mt-4">
-                      <div className="text-xs font-semibold text-slate-600">URL previews</div>
-                      <div className="mt-2 grid grid-cols-2 md:grid-cols-3 gap-2">
-                        {urlPreviews.map((u, idx) => (
-                          <div key={u + idx} className="rounded-xl border p-2">
-                            <div className="aspect-square rounded-lg overflow-hidden bg-slate-50">
-                              <img src={u} alt="" className="w-full h-full object-cover" />
-                            </div>
-                            <input
-                              value={u}
-                              onChange={(e) => setUrlAt(idx, e.target.value)}
-                              className="mt-2 w-full rounded-lg border px-2 py-1 text-xs"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => removeUrlAt(idx)}
-                              className="mt-2 w-full rounded-lg border px-2 py-1 text-xs hover:bg-slate-50"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  <label className="text-sm font-medium text-slate-700">Image URLs (one per line)</label>
+                  <textarea value={pending.imageUrls} onChange={(e) => setPending((p) => ({ ...p, imageUrls: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2 min-h-[90px]" placeholder="https://..." />
                 </div>
 
-                {/* Attributes */}
-                <div className="rounded-2xl border bg-white">
-                  <div className="p-4 border-b">
-                    <div className="font-semibold">Attributes</div>
-                    <div className="text-xs text-slate-500">Optional details used for filtering and variant setup.</div>
-                  </div>
-
-                  <div className="p-4 space-y-3">
-                    {attrColor?.type === "SELECT" && (
-                      <div>
-                        <label className="text-sm font-medium text-slate-700">{attrColor.name}</label>
-                        <select
-                          value={getAttrValue(attrColor.id)}
-                          onChange={(e) => setAttr(attrColor.id, e.target.value)}
-                          className="mt-1 w-full rounded-xl border px-3 py-2 bg-white"
-                        >
-                          <option value="">— Select —</option>
-                          {(attrColor.values ?? [])
-                            .filter((v) => v.isActive)
-                            .map((v) => (
-                              <option key={v.id} value={v.id}>
-                                {v.name}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                    )}
-
-                    {attrMaterial && (
-                      <div>
-                        <label className="text-sm font-medium text-slate-700">{attrMaterial.name}</label>
-                        <input
-                          value={getAttrValue(attrMaterial.id)}
-                          onChange={(e) => setAttr(attrMaterial.id, e.target.value)}
-                          className="mt-1 w-full rounded-xl border px-3 py-2"
-                          placeholder={attrMaterial.placeholder || "Enter material..."}
-                        />
-                      </div>
-                    )}
-
-                    {attrSize?.type === "SELECT" && (
-                      <div>
-                        <label className="text-sm font-medium text-slate-700">{attrSize.name}</label>
-                        <select
-                          value={getAttrValue(attrSize.id)}
-                          onChange={(e) => setAttr(attrSize.id, e.target.value)}
-                          className="mt-1 w-full rounded-xl border px-3 py-2 bg-white"
-                        >
-                          <option value="">— Select —</option>
-                          {(attrSize.values ?? [])
-                            .filter((v) => v.isActive)
-                            .map((v) => (
-                              <option key={v.id} value={v.id}>
-                                {v.name}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                    )}
-
-                    {attrVolume?.type === "SELECT" && (
-                      <div>
-                        <label className="text-sm font-medium text-slate-700">{attrVolume.name}</label>
-                        <select
-                          value={getAttrValue(attrVolume.id)}
-                          onChange={(e) => setAttr(attrVolume.id, e.target.value)}
-                          className="mt-1 w-full rounded-xl border px-3 py-2 bg-white"
-                        >
-                          <option value="">— Select —</option>
-                          {(attrVolume.values ?? [])
-                            .filter((v) => v.isActive)
-                            .map((v) => (
-                              <option key={v.id} value={v.id}>
-                                {v.name}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                    )}
-
-                    {attrWeight?.type === "SELECT" && (
-                      <div>
-                        <label className="text-sm font-medium text-slate-700">{attrWeight.name}</label>
-                        <select
-                          value={getAttrValue(attrWeight.id)}
-                          onChange={(e) => setAttr(attrWeight.id, e.target.value)}
-                          className="mt-1 w-full rounded-xl border px-3 py-2 bg-white"
-                        >
-                          <option value="">— Select —</option>
-                          {(attrWeight.values ?? [])
-                            .filter((v) => v.isActive)
-                            .map((v) => (
-                              <option key={v.id} value={v.id}>
-                                {v.name}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                    )}
-
-                    {!attrColor && !attrMaterial && !attrSize && !attrVolume && !attrWeight && (
-                      <div className="text-sm text-slate-500">No active attributes found (Color/Material/Size/Volume/Weight).</div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Variants editor */}
-            <div className="mt-4 rounded-2xl border p-4">
-              <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-sm font-semibold">Variants</div>
-                  <div className="text-xs text-slate-500">Add combinations (SELECT attributes only). Optional price bump per row.</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={addVariantCombo}
-                    className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50"
-                    disabled={!selectableAttrs.length}
-                  >
-                    Add row
-                  </button>
-
-                  {editingId && initialVariantIdsRef.current.size > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setClearAllVariantsIntent(true);
-                        setVariantsDirty(true);
-                        setVariantRows([]);
-                      }}
-                      className="rounded-xl border px-3 py-2 text-sm hover:bg-rose-50 text-rose-700 border-rose-200"
-                      title="Explicitly remove all variants (will replace on save)"
-                    >
-                      Remove all variants
-                    </button>
-                  )}
+                  <label className="text-sm font-medium text-slate-700">Description</label>
+                  <textarea value={pending.description} onChange={(e) => setPending((p) => ({ ...p, description: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2 min-h-[90px]" placeholder="Product description" />
                 </div>
               </div>
 
-              {/* Quick add */}
-              <div className="mt-3 rounded-xl border bg-slate-50 p-3">
-                <div className="text-xs font-semibold text-slate-600 mb-2">Add a new variant combo</div>
+              {/* Right: Attributes + Variants */}
+              <div className="space-y-3">
+                <div className="rounded-2xl border p-3">
+                  <div className="font-semibold mb-2">Attributes</div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {activeAttrs.map((a) => {
+                      if (a.type === "TEXT") {
+                        return (
+                          <div key={a.id}>
+                            <label className="text-sm font-medium text-slate-700">{a.name}</label>
+                            <input value={String((selectedAttrs[a.id] as any) ?? "")} onChange={(e) => setAttr(a.id, e.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2" placeholder={a.placeholder ?? ""} />
+                          </div>
+                        );
+                      }
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                  {selectableAttrs.map((a) => (
-                    <div key={a.id}>
-                      <label className="text-xs text-slate-600">{a.name}</label>
-                      <select
-                        value={newCombo[a.id] || ""}
-                        onChange={(e) => setNewCombo((p) => ({ ...p, [a.id]: e.target.value }))}
-                        className="mt-1 w-full rounded-lg border px-2 py-1 bg-white"
-                      >
-                        <option value="">—</option>
-                        {(a.values || []).filter((v) => v.isActive).map((v) => (
-                          <option key={v.id} value={v.id}>
-                            {v.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  ))}
+                      if (a.type === "SELECT") {
+                        const val = String((selectedAttrs[a.id] as any) ?? "");
+                        return (
+                          <div key={a.id}>
+                            <label className="text-sm font-medium text-slate-700">{a.name}</label>
+                            <select value={val} onChange={(e) => setAttr(a.id, e.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2">
+                              <option value="">—</option>
+                              {(a.values ?? [])
+                                .filter((v) => v.isActive)
+                                .map((v) => (
+                                  <option key={v.id} value={v.id}>
+                                    {v.name}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                        );
+                      }
 
-                  <div>
-                    <label className="text-xs text-slate-600">Price bump</label>
-                    <input
-                      value={newComboBump}
-                      onChange={(e) => setNewComboBump(e.target.value)}
-                      className="mt-1 w-full rounded-lg border px-2 py-1 bg-white"
-                      placeholder="e.g. 1000"
-                      inputMode="decimal"
-                    />
+                      // MULTISELECT
+                      const vals = Array.isArray(selectedAttrs[a.id]) ? (selectedAttrs[a.id] as string[]) : [];
+                      return (
+                        <div key={a.id}>
+                          <label className="text-sm font-medium text-slate-700">{a.name}</label>
+                          <select
+                            multiple
+                            value={vals}
+                            onChange={(e) => {
+                              const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
+                              setAttr(a.id, selected);
+                            }}
+                            className="mt-1 w-full rounded-xl border px-3 py-2 min-h-[90px]"
+                          >
+                            {(a.values ?? [])
+                              .filter((v) => v.isActive)
+                              .map((v) => (
+                                <option key={v.id} value={v.id}>
+                                  {v.name}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
-                <div className="mt-3 flex justify-end">
-                  <button
-                    type="button"
-                    onClick={addNewComboRow}
-                    disabled={!selectableAttrs.length}
-                    className="rounded-xl bg-slate-900 text-white px-4 py-2 text-sm disabled:opacity-60"
-                  >
-                    Add variant combo
-                  </button>
-                </div>
-              </div>
+                <div className="rounded-2xl border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-semibold">Variants</div>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={addVariantCombo} className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50">
+                        + Add row
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setClearAllVariantsIntent(true);
+                          setVariantRows([]);
+                          setVariantsDirty(true);
+                        }}
+                        className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50"
+                      >
+                        Remove all variants
+                      </button>
+                    </div>
+                  </div>
 
-              {variantRows.length === 0 && <div className="mt-3 text-sm text-slate-500">No variant rows yet.</div>}
+                  {hasDuplicateCombos && (
+                    <div className="mt-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2 text-sm">
+                      You have duplicate variant combinations. Fix them before saving.
+                    </div>
+                  )}
 
-              {variantRows.length > 0 && (
-                <div className="mt-3 overflow-auto">
-                  <table className="min-w-[720px] w-full text-sm">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        {selectableAttrs.map((a) => (
-                          <th key={a.id} className="text-left px-3 py-2">
-                            {a.name}
-                          </th>
-                        ))}
-                        <th className="text-left px-3 py-2">Price bump</th>
-                        <th className="text-right px-3 py-2">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {variantRows.map((row, index) => {
-                        const isLocked = lockedVariantIds.has(row.id);
-                        const rk = rowKey(row, index);
+                  {Object.keys(emptyRowErrors).length > 0 && (
+                    <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 text-sm">
+                      You have an empty variant row. Pick at least 1 option or remove the row.
+                    </div>
+                  )}
 
-                        return (
-                          <React.Fragment key={row.id}>
-                            <tr>
+                  <div className="mt-3 overflow-x-auto">
+                    <table className="min-w-[760px] w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-slate-600">
+                          {selectableAttrs.map((a) => (
+                            <th key={a.id} className="py-2 pr-3">
+                              {a.name}
+                            </th>
+                          ))}
+                          <th className="py-2 pr-3">Price bump</th>
+                          <th className="py-2 pr-3">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(variantRows ?? []).map((r, idx) => {
+                          const rk = rowKey(r, idx);
+                          const comboErr = comboErrors[rk];
+                          const emptyErr = emptyRowErrors[rk];
+                          const isLocked = isRealVariantId(r.id) && lockedVariantIds.has(r.id);
+
+                          return (
+                            <tr key={rk} className="border-t">
                               {selectableAttrs.map((a) => (
-                                <td key={a.id} className="px-3 py-2">
+                                <td key={a.id} className="py-2 pr-3">
                                   <select
-                                    value={row.selections[a.id] || ""}
-                                    onChange={(e) => setVariantRowSelection(row.id, a.id, e.target.value)}
+                                    value={r.selections?.[a.id] ?? ""}
+                                    onChange={(e) => setVariantRowSelection(r.id, a.id, e.target.value || "")}
+                                    className="w-full rounded-lg border px-2 py-2"
                                     disabled={isLocked}
-                                    className={[
-                                      "w-full rounded-lg border px-2 py-1 bg-white",
-                                      isLocked ? "opacity-60 cursor-not-allowed" : "",
-                                    ].join(" ")}
+                                    title={isLocked ? "Locked: linked to supplier offers" : ""}
                                   >
                                     <option value="">—</option>
-                                    {(a.values || []).filter((v) => v.isActive).map((v) => (
-                                      <option key={v.id} value={v.id}>
-                                        {v.name}
-                                      </option>
-                                    ))}
+                                    {(a.values ?? [])
+                                      .filter((v) => v.isActive)
+                                      .map((v) => (
+                                        <option key={v.id} value={v.id}>
+                                          {v.name}
+                                        </option>
+                                      ))}
                                   </select>
                                 </td>
                               ))}
 
-                              <td className="px-3 py-2">
+                              <td className="py-2 pr-3">
                                 <input
-                                  value={row.priceBump}
-                                  onChange={(e) => setVariantRowPriceBump(row.id, e.target.value)}
-                                  className="w-full rounded-lg border px-2 py-1"
-                                  placeholder="e.g. 1000"
+                                  value={r.priceBump ?? ""}
+                                  onChange={(e) => setVariantRowPriceBump(r.id, e.target.value)}
+                                  className="w-full rounded-lg border px-2 py-2"
                                   inputMode="decimal"
+                                  disabled={isLocked}
+                                  title={isLocked ? "Locked: linked to supplier offers" : ""}
                                 />
-                                {isLocked && <div className="text-[11px] text-slate-500 mt-1">In use: only price bump can be edited</div>}
+                                {(comboErr || emptyErr) && <div className="mt-1 text-xs text-rose-700">{comboErr || emptyErr}</div>}
                               </td>
 
-                              <td className="px-3 py-2 text-right">
+                              <td className="py-2 pr-3">
                                 <button
                                   type="button"
-                                  onClick={() => removeVariantRow(row.id)}
+                                  onClick={() => removeVariantRow(r.id)}
+                                  className="rounded-lg border px-3 py-2 hover:bg-slate-50 disabled:opacity-60"
                                   disabled={isLocked}
-                                  className={[
-                                    "rounded-lg border px-2 py-1 text-xs",
-                                    isLocked ? "opacity-60 cursor-not-allowed bg-slate-50" : "hover:bg-slate-50",
-                                  ].join(" ")}
+                                  title={isLocked ? "Locked: linked to supplier offers" : "Remove row"}
                                 >
-                                  {isLocked ? "In use" : "Remove"}
+                                  Remove
                                 </button>
                               </td>
                             </tr>
+                          );
+                        })}
 
-                            {comboErrors[rk] && (
-                              <tr>
-                                <td colSpan={selectableAttrs.length + 2} className="px-3 pb-2">
-                                  <div className="text-sm text-red-600">{comboErrors[rk]}</div>
-                                </td>
-                              </tr>
-                            )}
-
-                            {emptyRowErrors[rk] && (
-                              <tr>
-                                <td colSpan={selectableAttrs.length + 2} className="px-3 pb-2">
-                                  <div className="text-sm text-red-600">{emptyRowErrors[rk]}</div>
-                                </td>
-                              </tr>
-                            )}
-                          </React.Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                        {variantRows.length === 0 && (
+                          <tr>
+                            <td colSpan={selectableAttrs.length + 2} className="py-4 text-slate-500">
+                              No variants (simple product).
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
-              )}
+
+                <button
+                  type="button"
+                  onClick={saveOrCreate}
+                  className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                  disabled={createM.isPending || updateM.isPending}
+                >
+                  {editingId ? (updateM.isPending ? "Saving..." : "Save changes") : createM.isPending ? "Creating..." : "Create product"}
+                </button>
+              </div>
             </div>
-
-
-            <button
-              type="button"
-              onClick={saveOrCreate}
-              className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60 my-3"
-              disabled={createM.isPending || updateM.isPending || uploading || hasDuplicateCombos}
-            >
-              {editingId ? (updateM.isPending ? "Saving..." : "Save changes") : createM.isPending ? "Creating..." : "Create product"}
-            </button>
           </div>
         </div>
       )}
 
-      {/* Products table */}
-      <div className="border rounded-md overflow-auto bg-white">
-        <table className="w-full text-sm">
-          <thead className="bg-zinc-50">
-            <tr>
-              <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("title")}>
-                Title <SortIndicator k="title" />
-              </th>
-              <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("price")}>
-                Price <SortIndicator k="price" />
-              </th>
-              <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("avail")}>
-                Avail. <SortIndicator k="avail" />
-              </th>
-              <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("stock")}>
-                Stock <SortIndicator k="stock" />
-              </th>
-              <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("status")}>
-                Status <SortIndicator k="status" />
-              </th>
-              {isSuper && (
-                <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("owner")}>
+      {/* ================= Products Table ================= */}
+      <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="min-w-[980px] w-full text-sm">
+            <thead className="bg-slate-50 text-slate-700">
+              <tr className="text-left">
+                <th className="p-3 cursor-pointer" onClick={() => toggleSort("title")}>
+                  Title <SortIndicator k="title" />
+                </th>
+                <th className="p-3 cursor-pointer" onClick={() => toggleSort("price")}>
+                  Price <SortIndicator k="price" />
+                </th>
+                <th className="p-3 cursor-pointer" onClick={() => toggleSort("avail")}>
+                  Avail <SortIndicator k="avail" />
+                </th>
+                <th className="p-3 cursor-pointer" onClick={() => toggleSort("stock")}>
+                  In stock <SortIndicator k="stock" />
+                </th>
+                <th className="p-3 cursor-pointer" onClick={() => toggleSort("status")}>
+                  Status <SortIndicator k="status" />
+                </th>
+                <th className="p-3 cursor-pointer" onClick={() => toggleSort("owner")}>
                   Owner <SortIndicator k="owner" />
                 </th>
-              )}
-              <th className="text-right px-3 py-2">Actions</th>
-            </tr>
-          </thead>
-
-          <tbody className="divide-y">
-            {listQ.isLoading && (
-              <tr>
-                <td className="px-3 py-3" colSpan={isSuper ? 7 : 6}>
-                  Loading products…
-                </td>
+                <th className="p-3">Actions</th>
               </tr>
-            )}
+            </thead>
 
-            {!listQ.isLoading &&
-              displayRows.map((p: any) => {
-                const stockCell =
-                  p.inStock === true ? (
-                    <span className="inline-flex items-center gap-1 text-emerald-700">
-                      <span className="inline-block w-2 h-2 rounded-full bg-emerald-600" />
-                      In stock
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-rose-700">
-                      <span className="inline-block w-2 h-2 rounded-full bg-rose-600" />
-                      Out of stock
-                    </span>
-                  );
-
+            <tbody>
+              {displayRows.map((p) => {
+                const action = primaryActionForRow(p);
                 return (
-                  <tr key={p.id}>
-                    <td className="px-3 py-2">{p.title}</td>
-                    <td className="px-3 py-2">{ngn.format(getRetailPrice(p))}</td>
-                    <td className="px-3 py-2">
-                      {offersSummaryQ.isLoading ? (
-                        <span className="text-zinc-500 text-xs">…</span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1">
-                          <span className="font-medium">{p.availableQty ?? 0}</span>
-                          <span className="text-xs text-zinc-500">
-                            ({((p as any).__offerCount ?? 0)} offer{((p as any).__offerCount ?? 0) === 1 ? "" : "s"})
-                          </span>
-                        </span>
-                      )}
+                  <tr key={p.id} className="border-t">
+                    <td className="p-3">
+                      <div className="font-medium">{p.title}</div>
+                      <div className="text-xs text-slate-500 font-mono">{p.sku || p.id}</div>
                     </td>
-                    <td className="px-3 py-2">{stockCell}</td>
-                    <td className="px-3 py-2">
-                      <StatusDot label={getStatus(p)} />
-                    </td>
-
-                    {isSuper && (
-                      <td className="px-3 py-2">{p.owner?.email || p.ownerEmail || p.createdByEmail || p.createdBy?.email || "—"}</td>
-                    )}
-
-                    <td className="px-3 py-2 text-right">
-                      <div className="inline-flex gap-2">
-                        <button type="button" onClick={() => startEdit(p)} className="px-2 py-1 rounded border text-xs">
-                          Edit in form
+                    <td className="p-3">₦{Number(p.price ?? p.retailPrice ?? 0).toLocaleString()}</td>
+                    <td className="p-3">{Number(p.availableQty ?? 0).toLocaleString()}</td>
+                    <td className="p-3">{p.inStock ? "Yes" : "No"}</td>
+                    <td className="p-3">{getStatus(p)}</td>
+                    <td className="p-3">{getOwner(p) || "—"}</td>
+                    <td className="p-3">
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => startEdit(p)} className="rounded-lg border px-3 py-2 hover:bg-slate-50">
+                          Edit
                         </button>
 
-                        {isAdmin && (
-                          <button
-                            type="button"
-                            onClick={() => updateStatusM.mutate({ id: p.id, status: "PENDING" })}
-                            className="px-2 py-1 rounded bg-amber-600 text-white text-xs"
-                          >
-                            Submit for Review
-                          </button>
-                        )}
-
-                        {isSuper &&
-                          (() => {
-                            const action = primaryActionForRow(p);
-                            return (
-                              <button
-                                type="button"
-                                onClick={action.onClick}
-                                className={action.className || "px-2 py-1 rounded border text-xs"}
-                                disabled={deleteM.isPending || restoreM.isPending || action.disabled}
-                                title={action.title}
-                              >
-                                {action.label}
-                              </button>
-                            );
-                          })()}
+                        <button type="button" title={action.title} onClick={action.onClick} className={action.className} disabled={action.disabled || deleteM.isPending || restoreM.isPending}>
+                          {action.label}
+                        </button>
                       </div>
                     </td>
                   </tr>
                 );
               })}
 
-            {!listQ.isLoading && displayRows.length === 0 && (
-              <tr>
-                <td colSpan={isSuper ? 7 : 6} className="px-3 py-4 text-center text-zinc-500">
-                  No products
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+              {!listQ.isLoading && displayRows.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="p-6 text-slate-500">
+                    No products found.
+                  </td>
+                </tr>
+              )}
+
+              {listQ.isLoading && (
+                <tr>
+                  <td colSpan={7} className="p-6 text-slate-500">
+                    Loading…
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

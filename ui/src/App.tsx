@@ -40,13 +40,16 @@ import SupplierOrdersPage from "./pages/supplier/SupplierOrders";
 import SupplierPayoutsPage from "./pages/supplier/SupplierPayouts";
 import SupplierSettingsPage from "./pages/supplier/SupplierSettings";
 import SupplierCatalogRequests from "./pages/supplier/SupplierCatalogRequests";
-import SupplierSessions from "./pages/supplier/AccountSessions";
+import AccountSessions from "./pages/supplier/AccountSessions";
 import SupplierRefunds from "./pages/supplier/SupplierRefunds";
 import SupplierRiders from "./pages/supplier/SupplierRiders";
 
 import RiderAcceptInvite from "./pages/RiderAcceptInvite";
 
 import ModalProvider from "./components/ModalProvider";
+import { Toaster } from 'react-hot-toast';
+import DataPrivacy from "./pages/DataPrivacy";
+
 
 function AdminLayout() {
   return <Outlet />;
@@ -91,6 +94,7 @@ export default function App() {
       <div className="min-h-screen flex flex-col">
         <main className="w-full px-4 md:px-8 flex-1 bg-primary-100">
           <div className="max-w-7xl mx-auto">
+            <Toaster position="top-right" />
             <Routes>
               {/* ---------------- Public site ---------------- */}
               <Route path="/" element={<Catalog />} />
@@ -151,6 +155,7 @@ export default function App() {
                   </ProtectedRoute>
                 }
               />
+              <Route path="/privacy" element={<DataPrivacy />} />
 
               <Route path="/payment" element={<Payment />} />
               <Route path="/payment-callback" element={<PaymentCallback />} />
@@ -161,7 +166,7 @@ export default function App() {
                 path="/account/sessions"
                 element={
                   <ProtectedRoute roles={["SHOPPER", "SUPPLIER", "ADMIN", "SUPER_ADMIN"]}>
-                    <SupplierSessions />
+                    <AccountSessions />
                   </ProtectedRoute>
                 }
               />

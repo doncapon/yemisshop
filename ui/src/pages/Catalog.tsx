@@ -19,6 +19,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import SiteLayout from '../layouts/SiteLayout.js';
+import { showMiniCartToast } from '../components/cart/MiniCartToast';
 
 /* ---------------- Types ---------------- */
 
@@ -282,8 +283,8 @@ function usePurchasedCounts(enabledOverride = true) {
         const orders: any[] = Array.isArray((data as any)?.data)
           ? (data as any).data
           : Array.isArray(data)
-          ? (data as any)
-          : [];
+            ? (data as any)
+            : [];
 
         const map: Record<string, number> = {};
 
@@ -404,8 +405,8 @@ export default function Catalog() {
         const raw: any[] = Array.isArray(rawData)
           ? rawData
           : Array.isArray(rawData?.data)
-          ? rawData.data
-          : [];
+            ? rawData.data
+            : [];
 
         return (raw || [])
           .filter((x) => x && x.id != null)
@@ -415,51 +416,51 @@ export default function Catalog() {
               Number.isFinite(Number((x as any).retailPrice))
                 ? Number((x as any).retailPrice)
                 : Number.isFinite(Number((x as any).retailBasePrice))
-                ? Number((x as any).retailBasePrice)
-                : Number.isFinite(Number((x as any).price))
-                ? Number((x as any).price)
-                : null;
+                  ? Number((x as any).retailBasePrice)
+                  : Number.isFinite(Number((x as any).price))
+                    ? Number((x as any).price)
+                    : null;
 
             const variants: Variant[] = Array.isArray(x.variants)
               ? x.variants.map((v: any) => {
-                  const variantRetail =
-                    Number.isFinite(Number(v.retailPrice))
-                      ? Number(v.retailPrice)
-                      : Number.isFinite(Number(v.retailBasePrice))
+                const variantRetail =
+                  Number.isFinite(Number(v.retailPrice))
+                    ? Number(v.retailPrice)
+                    : Number.isFinite(Number(v.retailBasePrice))
                       ? Number(v.retailBasePrice)
                       : Number.isFinite(Number(v.price))
-                      ? Number(v.price)
-                      : null;
+                        ? Number(v.price)
+                        : null;
 
-                  return {
-                    id: String(v.id),
-                    sku: v.sku ?? null,
-                    price: variantRetail,
-                    inStock: v.inStock === true,
-                    imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-                    offers: Array.isArray(v.offers)
-                      ? v.offers.map((o: any) => ({
-                          id: String(o.id),
-                          isActive: o.isActive === true,
-                          inStock: o.inStock === true,
-                          availableQty: Number.isFinite(Number(o.availableQty))
-                            ? Number(o.availableQty)
-                            : null,
-                          price: null,
-                        }))
-                      : [],
-                  };
-                })
+                return {
+                  id: String(v.id),
+                  sku: v.sku ?? null,
+                  price: variantRetail,
+                  inStock: v.inStock === true,
+                  imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+                  offers: Array.isArray(v.offers)
+                    ? v.offers.map((o: any) => ({
+                      id: String(o.id),
+                      isActive: o.isActive === true,
+                      inStock: o.inStock === true,
+                      availableQty: Number.isFinite(Number(o.availableQty))
+                        ? Number(o.availableQty)
+                        : null,
+                      price: null,
+                    }))
+                    : [],
+                };
+              })
               : [];
 
             const supplierOffers: SupplierOfferLite[] = Array.isArray(x.supplierOffers)
               ? x.supplierOffers.map((o: any) => ({
-                  id: String(o.id),
-                  isActive: o.isActive === true,
-                  inStock: o.inStock === true,
-                  availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
-                  price: null,
-                }))
+                id: String(o.id),
+                isActive: o.isActive === true,
+                inStock: o.inStock === true,
+                availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                price: null,
+              }))
               : [];
 
             // ✅ category name
@@ -562,7 +563,11 @@ export default function Catalog() {
 
   const setCartQty = (p: Product, nextQty: number) => {
     try {
-      const unit = getMinPrice(p);
+      const unit = getBasePrice(p) ?? 0;
+      if (!(unit > 0) && nextQty > 0) {
+        openModal({ title: 'Cart', message: 'This product has no retail price yet.' });
+        return;
+      }
 
       // ✅ block purchase unless LIVE + available + has retail price
       if (!productSellable(p) && nextQty > 0) {
@@ -592,6 +597,7 @@ export default function Catalog() {
         null;
 
       const idx = cart.findIndex((x: any) => x.productId === p.id && (!x.variantId || x.variantId === null));
+      const prevQty = idx >= 0 ? Math.max(0, Number(cart[idx]?.qty) || 0) : 0;
 
       if (nextQty === 0) {
         if (idx >= 0) cart.splice(idx, 1);
@@ -623,6 +629,11 @@ export default function Catalog() {
 
       localStorage.setItem('cart', JSON.stringify(cart));
       setCartVersion((v) => v + 1);
+
+      // ✅ show mini-cart toast only when quantity increased (Add / +)
+      if (nextQty > prevQty) {
+        showMiniCartToast(cart, { productId: p.id, variantId: null }, { title: 'Added to cart' });
+      }
     } catch (err) {
       console.error(err);
       openModal({ title: 'Cart', message: 'Could not update cart.' });
@@ -995,10 +1006,10 @@ export default function Catalog() {
                     selectedBucketIdxs.length > 0 ||
                     selectedBrands.length > 0 ||
                     !inStockOnly) && (
-                    <button className="text-sm text-fuchsia-700 hover:underline" onClick={clearFilters}>
-                      Clear all
-                    </button>
-                  )}
+                      <button className="text-sm text-fuchsia-700 hover:underline" onClick={clearFilters}>
+                        Clear all
+                      </button>
+                    )}
                 </div>
               </div>
 
@@ -1022,11 +1033,10 @@ export default function Catalog() {
                       <li key={c.id}>
                         <button
                           onClick={() => toggleCategory(c.id)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
-                            checked
-                              ? 'bg-zinc-900 text-white'
-                              : 'bg-white/80 hover:bg-black/5 text-zinc-800'
-                          }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
+                            ? 'bg-zinc-900 text-white'
+                            : 'bg-white/80 hover:bg-black/5 text-zinc-800'
+                            }`}
                         >
                           <span className="truncate">{c.name}</span>
                           <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1059,11 +1069,10 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
-                              checked
-                                ? 'bg-zinc-900 text-white'
-                                : 'bg-white/80 hover:bg-black/5 text-zinc-800'
-                            }`}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
+                              ? 'bg-zinc-900 text-white'
+                              : 'bg-white/80 hover:bg-black/5 text-zinc-800'
+                              }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1097,11 +1106,10 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
-                            checked
-                              ? 'bg-zinc-900 text-white'
-                              : 'bg-white/80 hover:bg-black/5 text-zinc-800'
-                          }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
+                            ? 'bg-zinc-900 text-white'
+                            : 'bg-white/80 hover:bg-black/5 text-zinc-800'
+                            }`}
                         >
                           <span>{bucket.label}</span>
                           <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1184,9 +1192,8 @@ export default function Catalog() {
                           <li key={p.id} className="mb-3 last:mb-0">
                             <Link
                               to={`/product/${p.id}`}
-                              className={`flex items-center gap-4 px-3 py-3 rounded-xl hover:bg-black/5 ${
-                                active ? 'bg-black/5' : ''
-                              }`}
+                              className={`flex items-center gap-4 px-3 py-3 rounded-xl hover:bg-black/5 ${active ? 'bg-black/5' : ''
+                                }`}
                               onClick={() => bumpClick(p.id)}
                             >
                               {p.imagesJson?.[0] ? (
@@ -1287,15 +1294,15 @@ export default function Catalog() {
 
                     const badge = !live
                       ? {
-                          text: 'Pending approval',
-                          cls: 'bg-amber-600/10 text-amber-700 border border-amber-600/20',
-                        }
+                        text: 'Pending approval',
+                        cls: 'bg-amber-600/10 text-amber-700 border border-amber-600/20',
+                      }
                       : available
-                      ? {
+                        ? {
                           text: 'In stock',
                           cls: 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20',
                         }
-                      : {
+                        : {
                           text: 'Out of stock',
                           cls: 'bg-rose-600/10 text-rose-700 border border-rose-600/20',
                         };
@@ -1313,9 +1320,8 @@ export default function Catalog() {
                                 <img
                                   src={primaryImg}
                                   alt={p.title}
-                                  className={`w-full h-full object-cover transition-opacity duration-300 ${
-                                    hasDifferentHover ? 'opacity-100 group-hover:opacity-0' : 'opacity-100'
-                                  }`}
+                                  className={`w-full h-full object-cover transition-opacity duration-300 ${hasDifferentHover ? 'opacity-100 group-hover:opacity-0' : 'opacity-100'
+                                    }`}
                                 />
                                 {hasDifferentHover && (
                                   <img
@@ -1364,11 +1370,10 @@ export default function Catalog() {
                             <div className="mt-3 flex flex-wrap items-center justify-between gap-1.5">
                               <button
                                 aria-label={fav ? 'Remove from wishlist' : 'Add to wishlist'}
-                                className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full border px-2.5 py-1.5 transition ${
-                                  fav
-                                    ? 'bg-rose-50 text-rose-600 border-rose-200'
-                                    : 'bg-white hover:bg-zinc-50 text-zinc-700'
-                                }`}
+                                className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full border px-2.5 py-1.5 transition ${fav
+                                  ? 'bg-rose-50 text-rose-600 border-rose-200'
+                                  : 'bg-white hover:bg-zinc-50 text-zinc-700'
+                                  }`}
                                 onClick={() => {
                                   if (!token) {
                                     openModal({
@@ -1420,11 +1425,10 @@ export default function Catalog() {
                                 <button
                                   disabled={!allowQuickAdd}
                                   onClick={() => setCartQty(p, 1)}
-                                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] md:text-xs border transition ${
-                                    allowQuickAdd
-                                      ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
-                                      : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
-                                  }`}
+                                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] md:text-xs border transition ${allowQuickAdd
+                                    ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
+                                    : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
+                                    }`}
                                   aria-label="Add to cart"
                                   title={allowQuickAdd ? 'Add to cart' : 'Not available'}
                                 >
@@ -1501,11 +1505,10 @@ export default function Catalog() {
                               <button
                                 type="button"
                                 onClick={() => goTo(n)}
-                                className={`px-3 py-1.5 text-xs border rounded-xl ${
-                                  n === currentPage
-                                    ? 'bg-zinc-900 text-white border-zinc-900'
-                                    : 'bg-white hover:bg-zinc-50'
-                                }`}
+                                className={`px-3 py-1.5 text-xs border rounded-xl ${n === currentPage
+                                  ? 'bg-zinc-900 text-white border-zinc-900'
+                                  : 'bg-white hover:bg-zinc-50'
+                                  }`}
                                 aria-current={n === currentPage ? 'page' : undefined}
                               >
                                 {n}
@@ -1598,9 +1601,8 @@ export default function Catalog() {
                     <li key={c.id}>
                       <button
                         onClick={() => toggleCategory(c.id)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${
-                          checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
-                        }`}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
+                          }`}
                       >
                         <span className="truncate">{c.name}</span>
                         <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1633,9 +1635,8 @@ export default function Catalog() {
                       <li key={b.name}>
                         <button
                           onClick={() => toggleBrand(b.name)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${
-                            checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
-                          }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
+                            }`}
                         >
                           <span className="truncate">{b.name}</span>
                           <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1668,9 +1669,8 @@ export default function Catalog() {
                     <li key={bucket.label}>
                       <button
                         onClick={() => toggleBucket(idx)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${
-                          checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
-                        }`}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
+                          }`}
                       >
                         <span>{bucket.label}</span>
                         <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1684,14 +1684,17 @@ export default function Catalog() {
             </div>
 
             {/* Clear all (mobile) */}
-            {(selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly) && (
-              <button
-                className="mt-2 text-xs font-medium text-fuchsia-700 hover:underline self-start"
-                onClick={clearFilters}
-              >
-                Clear all
-              </button>
-            )}
+            {(selectedCategories.length > 0 ||
+              selectedBucketIdxs.length > 0 ||
+              selectedBrands.length > 0 ||
+              !inStockOnly) && (
+                <button
+                  className="mt-2 text-xs font-medium text-fuchsia-700 hover:underline self-start"
+                  onClick={clearFilters}
+                >
+                  Clear all
+                </button>
+              )}
           </motion.div>
         </motion.div>
       )}

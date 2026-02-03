@@ -342,11 +342,6 @@ Please confirm availability and delivery timeline. Thank you!`;
   };
 }
 
-/**
- * Notify shopper that their order has been paid.
- * - Called from finalizePaidFlow in payments.ts
- * - Idempotency is handled in payments.ts via PAYMENT_EVENT ORDER_PAID_EMAIL_SENT
- */
 export async function notifyCustomerOrderPaid(orderId: string, paymentId: string) {
   const payment = await prisma.payment.findUnique({
     where: { id: paymentId },
@@ -362,6 +357,14 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
           total: true,
           status: true,
           createdAt: true,
+
+          // ✅ pull service fee from Order
+          serviceFeeTotal: true,
+          // optional if you later want a detailed breakdown:
+          serviceFeeBase: true,
+          serviceFeeComms: true,
+          serviceFeeGateway: true,
+
           user: {
             select: {
               email: true,
@@ -394,21 +397,45 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
 
   // Safety checks
   if (!payment || !payment.order) return;
-  if (payment.status !== 'PAID') return;
+  if (payment.status !== "PAID") return;
 
   const order = payment.order;
   const user = order.user;
   if (!user?.email) return;
 
-  const to =user.email;
-  const displayName = [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Customer';
+  const to = user.email;
+  const displayName = [user.firstName, user.lastName].filter(Boolean).join(" ") || "Customer";
 
   const paidAt = payment.paidAt || new Date();
-  const total = Number(order.total || payment.amount || 0);
-  const amountPaid = Number(payment.amount || total);
+
+  const amountPaid = Number(payment.amount ?? 0);
+
+  // ✅ Compute items subtotal from items so it always matches the table
+  const itemsSubtotal = Number(
+    (order.items || []).reduce((sum: number, it: any) => {
+      const qty = Number(it.quantity || 1);
+      const unit = Number(it.unitPrice || 0);
+      const line = it.lineTotal != null ? Number(it.lineTotal) : unit * qty;
+      return sum + (Number.isFinite(line) ? line : 0);
+    }, 0)
+  );
+
+  // ✅ Service fee from Order (fallback to 0 if missing)
+  const serviceFeeTotal = Number((order as any).serviceFeeTotal ?? 0);
+  const safeServiceFeeTotal = Number.isFinite(serviceFeeTotal) ? serviceFeeTotal : 0;
+
+  // ✅ Prefer Order.total when present; else compute it
+  const orderTotal =
+    Number.isFinite(Number(order.total)) && Number(order.total) > 0
+      ? Number(order.total)
+      : itemsSubtotal + safeServiceFeeTotal;
+
+  // If payment.amount isn't present, fall back to total
+  const safeAmountPaid =
+    Number.isFinite(amountPaid) && amountPaid > 0 ? amountPaid : orderTotal;
 
   const subject = `Payment received for your order ${order.id}`;
-  const preview = `We’ve received your payment of ₦${amountPaid.toLocaleString()} for order ${order.id}.`;
+  const preview = `We’ve received your payment of ₦${safeAmountPaid.toLocaleString()} for order ${order.id}.`;
 
   const shippingLines = [
     order.shippingAddress?.houseNumber,
@@ -419,38 +446,39 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     order.shippingAddress?.country,
   ]
     .filter(Boolean)
-    .join(', ');
+    .join(", ");
 
   const itemsHtml =
     (order.items || [])
-      .map((it: { quantity: any; unitPrice: any; lineTotal: null; title: any }) => {
+      .map((it: { quantity: any; unitPrice: any; lineTotal: any; title: any }) => {
         const qty = Number(it.quantity || 1);
         const unit = Number(it.unitPrice || 0);
         const line = it.lineTotal != null ? Number(it.lineTotal) : unit * qty;
 
         return `
           <tr>
-            <td style="padding:4px 0;">${it.title || 'Item'}</td>
+            <td style="padding:4px 0;">${it.title || "Item"}</td>
             <td style="padding:4px 8px; text-align:center;">${qty}</td>
             <td style="padding:4px 8px; text-align:right;">₦${unit.toLocaleString()}</td>
-            <td style="padding:4px 0; text-align:right;">₦${line.toLocaleString()}</td>
+            <td style="padding:4px 0; text-align:right;">₦${Number(line || 0).toLocaleString()}</td>
           </tr>
         `;
       })
-      .join('') ||
+      .join("") ||
     `
       <tr>
         <td colspan="4" style="padding:4px 0;">Order details are available in your dashboard.</td>
       </tr>
     `;
 
+  // ✅ Insert service fee row + totals so subtotal matches items
   const html = `
     <div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;color:#111827;line-height:1.6;">
       <p>Hi ${displayName},</p>
       <p>We’ve received your payment for your order <strong>${order.id}</strong>. Thank you for shopping with us.</p>
 
       <p>
-        <strong>Amount paid:</strong> ₦${amountPaid.toLocaleString()}<br/>
+        <strong>Amount paid:</strong> ₦${safeAmountPaid.toLocaleString()}<br/>
         <strong>Payment ref:</strong> ${payment.reference || payment.id}<br/>
         <strong>Paid at:</strong> ${paidAt.toLocaleString()}
       </p>
@@ -470,11 +498,26 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
         </tbody>
       </table>
 
-      <p style="margin-top:10px;">
-        <strong>Order total:</strong> ₦${total.toLocaleString()}
-      </p>
+      <table style="width:100%;border-collapse:collapse;margin-top:10px;">
+        <tbody>
+          <tr>
+            <td style="padding:4px 0;color:#374151;">Items subtotal</td>
+            <td style="padding:4px 0;text-align:right;color:#111827;">₦${itemsSubtotal.toLocaleString()}</td>
+          </tr>
 
-      ${shippingLines ? `<p><strong>Shipping to:</strong><br/>${shippingLines}</p>` : ''}
+          <tr>
+            <td style="padding:4px 0;color:#374151;">Service fee</td>
+            <td style="padding:4px 0;text-align:right;color:#111827;">₦${safeServiceFeeTotal.toLocaleString()}</td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 0;border-top:1px solid #e5e7eb;font-weight:600;">Order total</td>
+            <td style="padding:8px 0;border-top:1px solid #e5e7eb;text-align:right;font-weight:600;">₦${orderTotal.toLocaleString()}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      ${shippingLines ? `<p style="margin-top:10px;"><strong>Shipping to:</strong><br/>${shippingLines}</p>` : ""}
 
       <p>You can view your full order details and download your receipt from your dashboard at any time.</p>
 
@@ -488,12 +531,16 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     `Hi ${displayName},`,
     ``,
     `We’ve received your payment for order ${order.id}.`,
-    `Amount paid: ₦${amountPaid.toLocaleString()}`,
+    `Amount paid: ₦${safeAmountPaid.toLocaleString()}`,
     `Payment ref: ${payment.reference || payment.id}`,
     `Paid at: ${paidAt.toLocaleString()}`,
     ``,
+    `Items subtotal: ₦${itemsSubtotal.toLocaleString()}`,
+    `Service fee: ₦${safeServiceFeeTotal.toLocaleString()}`,
+    `Order total: ₦${orderTotal.toLocaleString()}`,
+    ``,
     `You can view your order and receipt in your dashboard.`,
-  ].join('\n');
+  ].join("\n");
 
   await sendMail({
     to,
@@ -502,10 +549,14 @@ export async function notifyCustomerOrderPaid(orderId: string, paymentId: string
     text,
   });
 
-  console.log('[mail] order paid email sent', {
+  console.log("[mail] order paid email sent", {
     to,
     orderId: order.id,
     paymentId: payment.id,
     preview,
+    itemsSubtotal,
+    serviceFeeTotal: safeServiceFeeTotal,
+    orderTotal,
   });
 }
+

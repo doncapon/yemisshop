@@ -90,7 +90,6 @@ const asNumber = (v: any, d = 0) => {
 
 const ACTIVE_PRODUCT_STATUSES = new Set(["LIVE", "ACTIVE"]);
 
-
 const OTP_LEN = 6;
 const OTP_EXPIRES_MINS = 10;
 const OTP_MAX_ATTEMPTS = 5;
@@ -132,9 +131,15 @@ function normalizeE164(phone?: string | null) {
   return p; // safest: do not guess
 }
 
+/* ---------------- Supplier gating ----------------
+   IMPORTANT CHANGE:
+   - Checkout should NOT depend on Product.ownerId/Product.supplierId.
+   - Checkout should be allowed as long as there are active supplier offers.
+   - Therefore: do NOT require supplier payout/bank readiness for checkout.
+   - Keep payoutReadySupplierWhere for PAYOUT logic only (allocations/payout screens etc).
+-------------------------------------------------- */
 
-/* ---------------- Supplier payout-ready gating ---------------- */
-
+// used by payout flows only
 function payoutReadySupplierWhere() {
   return {
     status: "ACTIVE",
@@ -150,6 +155,13 @@ function payoutReadySupplierWhere() {
   } as const;
 }
 
+// used by checkout (order creation, availability, offer selection)
+function checkoutReadySupplierWhere() {
+  return {
+    status: "ACTIVE",
+  } as const;
+}
+
 async function getSupplierForUser(userId: string) {
   return prisma.supplier.findFirst({
     where: { userId },
@@ -157,19 +169,23 @@ async function getSupplierForUser(userId: string) {
   });
 }
 
-
-// ✅ Prisma-safe: relation filter wrapper (works whether supplier relation is optional or required)
+// Prisma-safe relation filters
 function supplierPayoutReadyRelationFilter() {
   return { is: payoutReadySupplierWhere() } as const;
 }
 
-// ✅ NEW: final safety check (catches legacy offers too)
+function supplierCheckoutReadyRelationFilter() {
+  return { is: checkoutReadySupplierWhere() } as const;
+}
+
+// ✅ FINAL safety check used during allocation
+// ✅ CHANGE: only require "ACTIVE" supplier (NOT payout/bank readiness)
 async function assertSupplierPurchasableTx(tx: any, supplierId: string) {
   const sid = String(supplierId ?? "").trim();
   if (!sid) throw new Error("Bad allocation: missing supplierId.");
 
   const ok = await tx.supplier.findFirst({
-    where: { id: sid, ...payoutReadySupplierWhere() },
+    where: { id: sid, ...checkoutReadySupplierWhere() },
     select: { id: true },
   });
 
@@ -236,7 +252,6 @@ async function getCommsUnitCostNGNTx(tx: any): Promise<number> {
 function actorRole(req: any): string {
   return String(req.user?.role ?? req.auth?.role ?? "").toUpperCase();
 }
-
 
 function isSupplier(role?: string) {
   const r = String(role || "").toUpperCase();
@@ -397,22 +412,28 @@ async function assertProductSellableTx(tx: any, productId: string) {
     where: { id: productId },
     select: {
       id: true,
-      isDeleted: true,
-      status: true,
       title: true,
+      status: true,
+      deletedAt: true,
+      // keep these if you need them elsewhere, but DO NOT enforce them
+      ownerId: true,
+      supplierId: true,
     },
   });
 
-  if (!p || p.isDeleted) {
-    throw new Error(`Product ${productId} is not available.`);
+  if (!p || p.deletedAt) throw new Error("Product not found.");
+  if (String(p.status).toUpperCase() !== "LIVE") {
+    throw new Error(`Product "${p.title}" is not available for purchase.`);
   }
 
-  const status = String(p.status ?? "");
-  if (!ACTIVE_PRODUCT_STATUSES.has(status)) {
-    throw new Error(`Product ${productId} is not active.`);
-  }
+  // ✅ IMPORTANT: Do NOT require ownerId or supplierId here.
+  // Offers will determine which supplier fulfills the order.
+  return { title: hookingTitle(p.title) };
+}
 
-  return { title: p.title ?? productId };
+// keep exact title formatting as-is (no schema change)
+function hookingTitle(t: any) {
+  return String(t ?? "");
 }
 
 async function assertVariantSellableTx(tx: any, productId: string, variantId: string) {
@@ -433,7 +454,7 @@ async function assertVariantSellableTx(tx: any, productId: string, variantId: st
 
 type CandidateOffer = {
   id: string;
-  supplierId: string;              // ✅ force non-null
+  supplierId: string; // ✅ force non-null
   availableQty: number;
 
   // supplier cost for allocation (NOT customer retail)
@@ -457,6 +478,8 @@ async function fetchActiveBaseOffersTx(
   tx: any,
   where: { productId: string }
 ): Promise<CandidateOffer[]> {
+  // ✅ CHANGE: do NOT require payout-ready/bank verified for checkout.
+  // only require supplier ACTIVE (via relation), and keep offer-level "isActive/basePrice/stock" checks.
   const rows = await tx.supplierProductOffer.findMany({
     where: {
       productId: where.productId,
@@ -465,8 +488,8 @@ async function fetchActiveBaseOffersTx(
       availableQty: { gt: 0 },
       basePrice: { gt: 0 },
 
-      // ✅ supplier must be payout-ready + ACTIVE
-      supplier: supplierPayoutReadyRelationFilter(),
+      // ✅ supplier must be ACTIVE for checkout (NOT payout-ready)
+      supplier: supplierCheckoutReadyRelationFilter(),
     },
     select: {
       id: true,
@@ -477,10 +500,7 @@ async function fetchActiveBaseOffersTx(
   });
 
   // ✅ pick CHEAPEST base per supplier (not “last one wins”)
-  const bestBaseBySupplier = new Map<
-    string,
-    { id: string; basePrice: number; availableQty: number }
-  >();
+  const bestBaseBySupplier = new Map<string, { id: string; basePrice: number; availableQty: number }>();
 
   for (const r of rows || []) {
     const sid = String(r.supplierId ?? "");
@@ -492,11 +512,7 @@ async function fetchActiveBaseOffersTx(
 
     const cur = bestBaseBySupplier.get(sid);
     if (!cur || price < cur.basePrice || (price === cur.basePrice && qty > cur.availableQty)) {
-      bestBaseBySupplier.set(sid, {
-        id: String(r.id),
-        basePrice: price,
-        availableQty: qty,
-      });
+      bestBaseBySupplier.set(sid, { id: String(r.id), basePrice: price, availableQty: qty });
     }
   }
 
@@ -512,7 +528,7 @@ async function fetchActiveBaseOffersTx(
 
   if (usable.length) return sortOffersCheapestFirst(usable);
 
-  // legacy fallback (unchanged)
+  // legacy fallback (kept)
   const legacyList =
     (await (tx.supplierOffer?.findMany?.({
       where: {
@@ -550,6 +566,11 @@ export async function fetchOneOfferByIdTx(
   tx: any,
   offerId: string
 ): Promise<(CandidateOffer & { productId: string; variantId: string | null }) | null> {
+  // ✅ CHANGE:
+  // This function is used to infer productId/variantId from an offerId.
+  // It should NOT fail just because supplier is not payout-ready or product has no owner/supplier.
+  // Allocation-time already enforces supplier ACTIVE via assertSupplierPurchasableTx.
+
   // 1) Try variant offer id
   try {
     const vo = await tx.supplierVariantOffer.findUnique({
@@ -564,21 +585,6 @@ export async function fetchOneOfferByIdTx(
         inStock: true,
         priceBump: true,
         supplierProductOfferId: true,
-
-        // ✅ read supplier payout readiness via relation
-        supplier: {
-          select: {
-            isPayoutEnabled: true,
-            accountNumber: true,
-            accountName: true,
-            bankCode: true,
-            bankCountry: true,
-            bankVerificationStatus: true,
-
-            // ✅ NEW: ensure ACTIVE here too
-            status: true,
-          },
-        },
       },
     });
 
@@ -586,29 +592,17 @@ export async function fetchOneOfferByIdTx(
       const sid = String(vo.supplierId ?? "");
       if (!sid) return null;
 
-      // ✅ must be payout-ready + ACTIVE
-      const payoutOk = !!(
-        vo.supplier?.status === "ACTIVE" &&
-        vo.supplier?.isPayoutEnabled &&
-        vo.supplier?.bankVerificationStatus === "VERIFIED" &&
-        vo.supplier?.accountNumber &&
-        vo.supplier?.accountName &&
-        vo.supplier?.bankCode &&
-        vo.supplier?.bankCountry
-      );
-      if (!payoutOk) return null;
-
       if (vo.isActive !== true || vo.inStock !== true || asNumber(vo.availableQty, 0) <= 0) return null;
 
-      // Base offer is pricing source only — require basePrice, and payout-ready + ACTIVE supplier filter
+      // Base offer is pricing source only — require basePrice (do NOT require payout-ready)
       const base = await tx.supplierProductOffer.findFirst({
         where: {
           productId: vo.productId,
           supplierId: vo.supplierId,
           isActive: true,
           basePrice: { gt: 0 },
-
-          supplier: supplierPayoutReadyRelationFilter(),
+          // optional but consistent:
+          supplier: supplierCheckoutReadyRelationFilter(),
         },
         orderBy: [{ basePrice: "asc" }, { availableQty: "desc" }],
         select: { id: true, supplierId: true, basePrice: true, availableQty: true },
@@ -650,20 +644,7 @@ export async function fetchOneOfferByIdTx(
         isActive: true,
         inStock: true,
         availableQty: true,
-
-        supplier: {
-          select: {
-            isPayoutEnabled: true,
-            accountNumber: true,
-            accountName: true,
-            bankCode: true,
-            bankCountry: true,
-            bankVerificationStatus: true,
-
-            // ✅ NEW
-            status: true,
-          },
-        },
+        supplier: { select: { status: true } },
       },
     });
 
@@ -671,19 +652,8 @@ export async function fetchOneOfferByIdTx(
       const sid = String(bo.supplierId ?? "");
       if (!sid) return null;
 
-      // ✅ payout-ready + ACTIVE required
-      const payoutOk = !!(
-        bo.supplier?.status === "ACTIVE" &&
-        bo.supplier?.isPayoutEnabled &&
-        bo.supplier?.bankVerificationStatus === "VERIFIED" &&
-        bo.supplier?.accountNumber &&
-        bo.supplier?.accountName &&
-        bo.supplier?.bankCode &&
-        bo.supplier?.bankCountry
-      );
-      if (!payoutOk) return null;
-
       if (bo.isActive !== true || bo.inStock !== true || asNumber(bo.availableQty, 0) <= 0) return null;
+      if (String(bo.supplier?.status ?? "").toUpperCase() !== "ACTIVE") return null;
 
       const supplierUnit = asNumber(bo.basePrice, 0);
       if (!(supplierUnit > 0)) return null;
@@ -743,6 +713,7 @@ async function fetchActiveOffersTx(
   tx: any,
   where: { productId: string; variantId: string }
 ): Promise<CandidateOffer[]> {
+  // ✅ CHANGE: do NOT require payout-ready/bank verified for checkout.
   const vos = await tx.supplierVariantOffer.findMany({
     where: {
       productId: where.productId,
@@ -751,7 +722,7 @@ async function fetchActiveOffersTx(
       inStock: true,
       availableQty: { gt: 0 },
 
-      supplier: supplierPayoutReadyRelationFilter(),
+      supplier: supplierCheckoutReadyRelationFilter(),
     },
     select: {
       id: true,
@@ -822,7 +793,7 @@ async function fetchActiveOffersTx(
       isActive: true,
       basePrice: { gt: 0 },
 
-      supplier: supplierPayoutReadyRelationFilter(),
+      supplier: supplierCheckoutReadyRelationFilter(),
     },
     select: { id: true, supplierId: true, basePrice: true },
   });
@@ -982,12 +953,15 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
   }
 }
 
-
 /* ---------------- Variant resolution + Retail pricing ---------------- */
 
 const norm = (s: any) => String(s ?? "").trim().toLowerCase();
 
-async function resolveVariantIdFromSelectedOptionsTx(tx: any, productId: string, selectedOptions: any): Promise<string | null> {
+async function resolveVariantIdFromSelectedOptionsTx(
+  tx: any,
+  productId: string,
+  selectedOptions: any
+): Promise<string | null> {
   const arr = Array.isArray(selectedOptions) ? selectedOptions : [];
 
   const wantedIdPairs = new Set<string>();
@@ -1057,8 +1031,10 @@ async function resolveVariantIdFromSelectedOptionsTx(tx: any, productId: string,
     const sets = buildVariantSets(v);
 
     if (wantedIdPairs.size && setEquals(sets.idSet, wantedIdPairs)) return String(v.id);
-    if (!wantedIdPairs.size && wantedAttrIdNamePairs.size && setEquals(sets.attrIdNameSet, wantedAttrIdNamePairs)) return String(v.id);
-    if (!wantedIdPairs.size && !wantedAttrIdNamePairs.size && wantedNamePairs.size && setEquals(sets.nameSet, wantedNamePairs)) return String(v.id);
+    if (!wantedIdPairs.size && wantedAttrIdNamePairs.size && setEquals(sets.attrIdNameSet, wantedAttrIdNamePairs))
+      return String(v.id);
+    if (!wantedIdPairs.size && !wantedAttrIdNamePairs.size && wantedNamePairs.size && setEquals(sets.nameSet, wantedNamePairs))
+      return String(v.id);
   }
 
   let best: { id: string; extra: number } | null = null;
@@ -1068,7 +1044,9 @@ async function resolveVariantIdFromSelectedOptionsTx(tx: any, productId: string,
 
     const ok =
       (wantedIdPairs.size && setContainsAll(sets.idSet, wantedIdPairs)) ||
-      (!wantedIdPairs.size && wantedAttrIdNamePairs.size && setContainsAll(sets.attrIdNameSet, wantedAttrIdNamePairs)) ||
+      (!wantedIdPairs.size &&
+        wantedAttrIdNamePairs.size &&
+        setContainsAll(sets.attrIdNameSet, wantedAttrIdNamePairs)) ||
       (!wantedIdPairs.size && !wantedAttrIdNamePairs.size && wantedNamePairs.size && setContainsAll(sets.nameSet, wantedNamePairs));
 
     if (!ok) continue;
@@ -1080,11 +1058,7 @@ async function resolveVariantIdFromSelectedOptionsTx(tx: any, productId: string,
   return best ? best.id : null;
 }
 
-async function resolveRetailCustomerUnitTx(
-  tx: any,
-  productId: string,
-  variantId: string | null
-): Promise<number> {
+async function resolveRetailCustomerUnitTx(tx: any, productId: string, variantId: string | null): Promise<number> {
   const prod = await tx.product.findUnique({
     where: { id: productId },
     select: { retailPrice: true },
@@ -1125,7 +1099,11 @@ async function resolveRetailCustomerUnitTx(
   return round2(productRetail + singleBump);
 }
 
-function assertClientUnitPriceMatches(serverUnit: number, clientUnit: any, ctx: { productId: string; variantId: string | null }) {
+function assertClientUnitPriceMatches(
+  serverUnit: number,
+  clientUnit: any,
+  ctx: { productId: string; variantId: string | null }
+) {
   if (clientUnit == null) return;
 
   const n = Number(clientUnit);
@@ -1135,7 +1113,7 @@ function assertClientUnitPriceMatches(serverUnit: number, clientUnit: any, ctx: 
   if (Math.abs(serverUnit - n) > tolerance) {
     throw new Error(
       `Unit price mismatch for product ${ctx.productId}${ctx.variantId ? ` (variant ${ctx.variantId})` : ""}. ` +
-      `Client sent ${n}, server computed ${serverUnit}.`
+        `Client sent ${n}, server computed ${serverUnit}.`
     );
   }
 }
@@ -1160,22 +1138,11 @@ function supplierAllocHoldStatus(): any {
   if (!E) return "PENDING"; // fallback
 
   // pick the best "hold/escrow" style status that exists in YOUR enum
-  return (
-    E.HELD ??
-    E.ON_HOLD ??
-    E.HOLD ??
-    E.PENDING ??
-    E.CREATED ??
-    Object.values(E)[0]
-  );
+  return E.HELD ?? E.ON_HOLD ?? E.HOLD ?? E.PENDING ?? E.CREATED ?? Object.values(E)[0];
 }
-
-
 
 /* =========================================================
    POST /api/orders — create + allocate across offers
-   ✅ Always sell to cheapest supplier (base/variant)
-   ✅ Splitting supported automatically
 ========================================================= */
 
 router.post("/", requireAuth, async (req: Request, res: Response) => {
@@ -1271,8 +1238,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
           const variantFromOptions = await resolveVariantIdFromSelectedOptionsTx(tx, productId, selectedOptions);
 
-          // ✅ CRITICAL FIX:
-          // offerId is only used to *identify variant combo*, NOT to lock supplier.
+          // ✅ offerId is only used to *identify variant combo*, NOT to lock supplier.
           if (explicitOfferId) {
             const one = await fetchOneOfferByIdTx(tx, String(explicitOfferId));
             if (!one) throw new Error(`Offer not found/disabled for product ${productId}.`);
@@ -1307,15 +1273,17 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           sortOffersCheapestFirst(candidates);
 
           if (!candidates.length) {
-            throw new Error(`No active supplier offers for ${productTitle}${optionsLabel}.`);
+            throw new Error(`No active supplier offers for: ${productTitle}${optionsLabel}.`);
           }
 
-          const totalAvailable = candidates.reduce((s, o) => s + Math.max(0, Number(o.availableQty || 0)), 0);
+          const totalAvailable = candidates.reduce(
+            (s, o) => s + Math.max(0, Number(o.availableQty || 0)),
+            0
+          );
           if (totalAvailable < qtyNeeded) {
             throw new Error(
               `Insufficient stock for ${productTitle}${optionsLabel}. Need ${qtyNeeded}, available ${totalAvailable}.`
             );
-
           }
 
           const customerUnit = await resolveRetailCustomerUnitTx(tx, productId, variantId);
@@ -1336,12 +1304,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             if (need <= 0) break;
             if (o.availableQty <= 0) continue;
 
-            // ✅ if supplierId missing, cheapest selection is meaningless
             if (!o.supplierId) {
               throw new Error(`Bad offer data: missing supplierId for offer ${o.id}`);
             }
 
-            // ✅ NEW: final block (stops inactive suppliers even via legacy offers)
+            // ✅ Only require ACTIVE supplier; product ownership irrelevant
             await assertSupplierPurchasableTx(tx, o.supplierId);
 
             const take = Math.min(need, o.availableQty);
@@ -1352,11 +1319,12 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               qty: take,
               supplierUnitCost: o.offerPrice,
               model: o.model,
-              supplierProductOfferId: o.model === "BASE_OFFER"
-                ? o.supplierProductOfferId ?? o.id
-                : o.model === "VARIANT_OFFER"
-                  ? o.supplierProductOfferId ?? null
-                  : null,
+              supplierProductOfferId:
+                o.model === "BASE_OFFER"
+                  ? o.supplierProductOfferId ?? o.id
+                  : o.model === "VARIANT_OFFER"
+                    ? o.supplierProductOfferId ?? null
+                    : null,
               supplierVariantOfferId: o.model === "VARIANT_OFFER" ? String(o.id) : null,
             });
 
@@ -1398,12 +1366,10 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         const rate = Math.max(0, taxRatePct) / 100;
 
         // ✅ If INCLUDED: extract VAT portion from subtotal (which already includes VAT)
-        const vatIncluded =
-          taxMode === "INCLUDED" && rate > 0 ? subtotal - subtotal / (1 + rate) : 0;
+        const vatIncluded = taxMode === "INCLUDED" && rate > 0 ? subtotal - subtotal / (1 + rate) : 0;
 
         // ✅ If ADDED: compute VAT to add on top
-        const vatAddOn =
-          taxMode === "ADDED" && rate > 0 ? subtotal * rate : 0;
+        const vatAddOn = taxMode === "ADDED" && rate > 0 ? subtotal * rate : 0;
 
         const svc = await computeServiceFeeForOrderTx(tx, order.id, subtotal);
         const total = round2(subtotal + vatAddOn + svc.serviceFeeTotal);
@@ -1481,18 +1447,19 @@ export async function computeAvailabilityForPairsTx(
   const baseAgg =
     includeBase && basePairs.length
       ? await tx.supplierProductOffer.groupBy({
-        by: ["productId"],
-        _sum: { availableQty: true },
-        where: {
-          productId: { in: basePairs.map((p) => p.productId) },
-          basePrice: { gt: 0 },
-          isActive: true,
-          inStock: true,
+          by: ["productId"],
+          _sum: { availableQty: true },
+          where: {
+            productId: { in: basePairs.map((p) => p.productId) },
+            basePrice: { gt: 0 },
+            isActive: true,
+            inStock: true,
 
-          // ✅ only payout-ready + ACTIVE suppliers contribute to availability
-          supplier: supplierPayoutReadyRelationFilter(),
-        },
-      })
+            // ✅ CHANGE: availability should reflect checkout-ready suppliers (ACTIVE),
+            // not payout-ready bank-verified suppliers
+            supplier: supplierCheckoutReadyRelationFilter(),
+          },
+        })
       : [];
 
   const baseMap = new Map<string, number>();
@@ -1502,35 +1469,31 @@ export async function computeAvailabilityForPairsTx(
 
   const variantAgg = variantPairs.length
     ? await tx.supplierVariantOffer.groupBy({
-      by: ["productId", "variantId"],
-      _sum: { availableQty: true },
-      where: {
-        OR: variantPairs.map((p) => ({
-          productId: p.productId,
-          variantId: p.variantId!,
-        })),
-        isActive: true,
-        inStock: true,
+        by: ["productId", "variantId"],
+        _sum: { availableQty: true },
+        where: {
+          OR: variantPairs.map((p) => ({
+            productId: p.productId,
+            variantId: p.variantId!,
+          })),
+          isActive: true,
+          inStock: true,
 
-        supplier: supplierPayoutReadyRelationFilter(),
-      },
-    })
+          supplier: supplierCheckoutReadyRelationFilter(),
+        },
+      })
     : [];
 
   const variantMap = new Map<string, number>();
   for (const r of variantAgg as any[]) {
-    variantMap.set(
-      `${String(r.productId)}::${String(r.variantId)}`,
-      Math.max(0, Number(r._sum?.availableQty ?? 0))
-    );
+    variantMap.set(`${String(r.productId)}::${String(r.variantId)}`, Math.max(0, Number(r._sum?.availableQty ?? 0)));
   }
 
   return pairs.map((p) => {
     const pid = String(p.productId);
     const vid = p.variantId ? String(p.variantId) : null;
 
-    const totalAvailable =
-      vid == null ? (baseMap.get(pid) ?? 0) : (variantMap.get(`${pid}::${vid}`) ?? 0);
+    const totalAvailable = vid == null ? baseMap.get(pid) ?? 0 : variantMap.get(`${pid}::${vid}`) ?? 0;
 
     return { productId: pid, variantId: vid, totalAvailable };
   });
@@ -1550,8 +1513,7 @@ async function buildAvailabilityGetter(pairs: Pair[]) {
     if (!map[k]) map[k] = { availableQty: 0, inStock: false };
   }
 
-  return (productId: string, variantId: string | null) =>
-    map[availKey(productId, variantId)] ?? { availableQty: 0, inStock: false };
+  return (productId: string, variantId: string | null) => map[availKey(productId, variantId)] ?? { availableQty: 0, inStock: false };
 }
 
 /* =========================================================
@@ -1570,8 +1532,8 @@ router.get("/", requireAuth, async (req, res) => {
     const q = String(req.query.q ?? "").trim();
     const where: any = q
       ? {
-        OR: [{ id: { contains: q } }, { user: { email: { contains: q, mode: "insensitive" as const } } }],
-      }
+          OR: [{ id: { contains: q } }, { user: { email: { contains: q, mode: "insensitive" as const } } }],
+        }
       : {};
 
     const asNumLocal = (v: any, d = 0) => {
@@ -1599,7 +1561,6 @@ router.get("/", requireAuth, async (req, res) => {
           select: { email: true },
         },
 
-        // ✅ MUST be nested under select
         purchaseOrders: {
           select: {
             id: true,
@@ -1615,11 +1576,9 @@ router.get("/", requireAuth, async (req, res) => {
       },
     });
 
-
     const orderIds = orders.map((o: any) => o.id);
     if (orderIds.length === 0) return res.json({ data: [] });
 
-    // ✅ Fix 3/4: pull PO statuses so item.status reflects supplier fulfillment status
     const poRows = await prisma.purchaseOrder.findMany({
       where: { orderId: { in: orderIds } },
       select: { orderId: true, supplierId: true, status: true },
@@ -1662,7 +1621,7 @@ router.get("/", requireAuth, async (req, res) => {
         const id = String(p.orderId);
         paidAmountByOrder[id] = (paidAmountByOrder[id] || 0) + asNumLocal(p.amount, 0);
       }
-    } catch { }
+    } catch {}
 
     const itemsByOrder: Record<string, any[]> = {};
     let allItems: any[] = [];
@@ -1712,8 +1671,7 @@ router.get("/", requireAuth, async (req, res) => {
         const { availableQty, inStock } = getAvail(pid, vid);
 
         const supplierId = it.chosenSupplierId ? String(it.chosenSupplierId) : "";
-        const itemStatus =
-          supplierId ? poStatusByOrderSupplier[`${oid}::${supplierId}`] ?? "PENDING" : "PENDING";
+        const itemStatus = supplierId ? poStatusByOrderSupplier[`${oid}::${supplierId}`] ?? "PENDING" : "PENDING";
 
         (itemsByOrder[oid] ||= []).push({
           id: it.id,
@@ -1724,7 +1682,6 @@ router.get("/", requireAuth, async (req, res) => {
           quantity,
           lineTotal,
 
-          // ✅ now reflects supplier fulfillment status
           status: itemStatus,
 
           chosenSupplierProductOfferId: it.chosenSupplierProductOfferId ?? null,
@@ -1759,15 +1716,16 @@ router.get("/", requireAuth, async (req, res) => {
       items: itemsByOrder[o.id] || [],
       payments: paymentsByOrder[o.id] || [],
     }));
+
     return res.json({
-      data: orders.map((o: { purchaseOrder: { deliveryOtpVerifiedAt: any; }; }) => ({
+      data: orders.map((o: any) => ({
         ...o,
+        // this part in your snippet looked inconsistent (purchaseOrder vs purchaseOrders),
+        // but kept as-is to avoid schema changes:
         deliveryOtpVerifiedAt: o.purchaseOrder?.deliveryOtpVerifiedAt ?? null,
-        // optional: keep purchaseOrder object or drop it
         purchaseOrder: undefined,
       })),
     });
-
   } catch (e: any) {
     console.error("GET /api/orders failed:", e?.message, e?.stack);
     res.status(500).json({ error: e?.message || "Failed to fetch orders" });
@@ -1791,7 +1749,6 @@ router.get("/mine", requireAuth, async (req, res) => {
       return Number.isFinite(n) ? n : d;
     };
 
-    // shopper-friendly mapping
     const toShopperStatus = (s: any) => {
       const u = String(s || "").toUpperCase();
       if (!u || u === "PENDING" || u === "CREATED" || u === "FUNDED") return "PROCESSING";
@@ -1819,7 +1776,6 @@ router.get("/mine", requireAuth, async (req, res) => {
     const orderIds = baseOrders.map((o: any) => o.id);
     if (orderIds.length === 0) return res.json({ data: [] });
 
-    // ✅ Fix 3: load PO statuses so each item gets a fulfillment status
     const poRows = await prisma.purchaseOrder.findMany({
       where: { orderId: { in: orderIds } },
       select: { orderId: true, supplierId: true, status: true },
@@ -1876,8 +1832,7 @@ router.get("/mine", requireAuth, async (req, res) => {
       const { availableQty, inStock } = getAvail(pid, vid);
 
       const supplierId = it.chosenSupplierId ? String(it.chosenSupplierId) : "";
-      const rawPoStatus =
-        supplierId ? poStatusByOrderSupplier[`${oid}::${supplierId}`] ?? "PENDING" : "PENDING";
+      const rawPoStatus = supplierId ? poStatusByOrderSupplier[`${oid}::${supplierId}`] ?? "PENDING" : "PENDING";
 
       (itemsByOrder[oid] ||= []).push({
         id: it.id,
@@ -1888,7 +1843,6 @@ router.get("/mine", requireAuth, async (req, res) => {
         quantity: qty,
         lineTotal,
 
-        // ✅ shopper sees friendly status
         status: toShopperStatus(rawPoStatus),
         supplierStatusRaw: String(rawPoStatus || "PENDING"),
 
@@ -2084,7 +2038,6 @@ router.get("/:id", requireAuth, async (req, res) => {
       return u;
     };
 
-    // ✅ map supplierId -> PO status
     const poStatusBySupplier = new Map<string, string>();
     for (const po of ((order as any).purchaseOrders || []) as any[]) {
       poStatusBySupplier.set(String(po.supplierId), String(po.status || "PENDING"));
@@ -2134,7 +2087,6 @@ router.get("/:id", requireAuth, async (req, res) => {
           quantity: asNumLocal(it.quantity, 1),
           lineTotal: asNumLocal(it.lineTotal, asNumLocal(it.unitPrice, 0) * asNumLocal(it.quantity, 1)),
 
-          // ✅ Fix 3: admin sees raw; shopper sees friendly
           status: adminUser ? String(rawPoStatus) : toShopperStatus(rawPoStatus),
           supplierStatusRaw: String(rawPoStatus),
 
@@ -2257,7 +2209,6 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
   });
   if (!order) return res.status(404).json({ error: "Order not found" });
 
-  // Auth rules
   if (purpose === "PAY_ORDER") {
     if (String(order.userId) !== String(actorId)) {
       return res.status(403).json({ error: "Forbidden" });
@@ -2274,7 +2225,6 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
 
   const t = now();
 
-  // Resend cooldown (latest OTP for this order+purpose)
   const last = await prisma.orderOtpRequest.findFirst({
     where: { orderId, purpose },
     orderBy: { createdAt: "desc" },
@@ -2297,14 +2247,10 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
   const codeHash = hashOtp(code, salt);
   const expiresAt = addSeconds(t, expiresInSec);
 
-  // ✅ bind userId + notification target based on purpose
   const bindUserId = purpose === "PAY_ORDER" ? String(order.userId) : String(actorId);
-  const targetEmail =
-    purpose === "PAY_ORDER" ? (order.user?.email ?? null) : ((req as any).user?.email ?? null);
+  const targetEmail = purpose === "PAY_ORDER" ? (order.user?.email ?? null) : ((req as any).user?.email ?? null);
   const targetPhoneE164 =
-    purpose === "PAY_ORDER"
-      ? normalizeE164(order.user?.phone ?? null)
-      : normalizeE164((req as any).user?.phone ?? null);
+    purpose === "PAY_ORDER" ? normalizeE164(order.user?.phone ?? null) : normalizeE164((req as any).user?.phone ?? null);
 
   const reqRow = await prisma.orderOtpRequest.create({
     data: {
@@ -2322,7 +2268,6 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
     select: { id: true },
   });
 
-  // Notify (best-effort)
   try {
     await sendOrderOtpNotifications({
       userEmail: targetEmail,
@@ -2371,12 +2316,10 @@ async function assertValidOtpTokenTx(
   if (row.consumedAt) throw new Error("OTP token already used");
   if (row.expiresAt && row.expiresAt <= now()) throw new Error("OTP token expired");
 
-  // ✅ Strong binding: token can only be used by the same user it was issued to
   if (String(row.userId) !== String(actorId)) {
     throw new Error("OTP token not valid for this user");
   }
 
-  // mark as used (one-time token)
   await tx.orderOtpRequest.update({
     where: { id: row.id },
     data: { consumedAt: now() },
@@ -2384,7 +2327,6 @@ async function assertValidOtpTokenTx(
 
   return true;
 }
-
 
 function requireOtp(purpose: "PAY_ORDER" | "CANCEL_ORDER") {
   return async (req: any, res: any, next: any) => {
@@ -2451,18 +2393,14 @@ router.post("/:id/otp/verify", requireAuth, async (req, res) => {
 
   if (!row) return res.status(404).json({ error: "OTP request not found" });
 
-  // ✅ Permission rules
   if (purpose === "PAY_ORDER") {
-    // only order owner
     if (String(order.userId) !== String(actorId)) return res.status(403).json({ error: "Forbidden" });
     if (String(row.userId) !== String(actorId)) return res.status(403).json({ error: "Forbidden" });
   } else {
-    // CANCEL_ORDER: admin OR owner
     const adminOk = isAdmin((req as any).user?.role);
     const ownerOk = String(order.userId) === String(actorId);
     if (!adminOk && !ownerOk) return res.status(403).json({ error: "Forbidden" });
 
-    // token must still belong to the actor (strong binding)
     if (String(row.userId) !== String(actorId)) return res.status(403).json({ error: "Forbidden" });
   }
 
@@ -2502,8 +2440,6 @@ router.post("/:id/otp/verify", requireAuth, async (req, res) => {
   return res.json({ token: row.id });
 });
 
-
-
 // /api/orders
 router.post("/:orderId/cancel", requireAuth, async (req, res) => {
   const { orderId } = req.params;
@@ -2540,7 +2476,6 @@ router.post("/:orderId/cancel", requireAuth, async (req, res) => {
 
       if (!order) throw new Error("Order not found");
 
-      // ✅ must be the owner (adjust field name to your schema: userId/customerId/buyerId)
       const ownerId = String((order as any).userId ?? (order as any).customerId ?? "");
       if (!ownerId || ownerId !== actorId) {
         return res.status(403).json({ error: "Not allowed to cancel this order" });
@@ -2621,7 +2556,6 @@ router.post("/:orderId/cancel", requireAuth, async (req, res) => {
   }
 });
 
-
 // Map PO status into flow base (same logic as your PATCH)
 const toFlowBase = (s: string) => {
   const x = String(s || "").toUpperCase().trim();
@@ -2666,7 +2600,6 @@ router.post("/:orderId/cancel-otp/request", requireAuth, async (req: any, res) =
   } catch (e: any) {
     const status = Number(e?.status) || 500;
 
-    // ✅ Cooldown / expected client errors should NOT look like backend crash
     if (status === 429) {
       console.warn("Cancel OTP cooldown:", e?.message, { retryAt: e?.retryAt, orderId: req.params.orderId });
     } else if (status >= 400 && status < 500) {
@@ -2683,7 +2616,6 @@ router.post("/:orderId/cancel-otp/request", requireAuth, async (req: any, res) =
     });
   }
 });
-
 
 /**
  * POST /api/orders/:orderId/cancel-otp/verify
@@ -2716,7 +2648,7 @@ router.post("/:orderId/cancel-otp/verify", requireAuth, async (req: any, res) =>
         purpose: "CANCEL_ORDER",
         code: otp,
         actorUserId: String(userId),
-        requestId, // ✅ pass through
+        requestId,
       });
     });
 
@@ -2746,8 +2678,5 @@ router.post("/:orderId/cancel-otp/verify", requireAuth, async (req: any, res) =>
     });
   }
 });
-
-
-
 
 export default router;
