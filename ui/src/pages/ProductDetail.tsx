@@ -13,6 +13,8 @@ import {
   SelectValue,
 } from "../components/Select";
 
+import { showMiniCartToast } from "../components/cart/MiniCartToast";
+
 /* ---------------- Types ---------------- */
 type Brand = { id: string; name: string } | null;
 
@@ -48,16 +50,12 @@ type ProductWire = {
   brand?: Brand;
   variants?: VariantWire[];
   offers?: OfferWire[];
-  // public endpoint may return attributes as:
-  // (A) { options: [...], texts: [...] }  OR
-  // (B) attributes: [{attributeId,attributeName,valueId,valueName}], attributeTexts: [...]
   attributes?: {
     options?: Array<{
       attributeId: string;
       valueId: string;
       attribute?: { id: string; name: string };
       value?: { id: string; name: string };
-      // allow backend shapes too:
       attributeName?: string;
       valueName?: string;
     }>;
@@ -81,7 +79,7 @@ type VariantWire = {
   id: string;
   sku?: string | null;
   price?: number | null;
-  priceBump?: number | null; // ✅ add
+  priceBump?: number | null;
   inStock?: boolean;
   imagesJson?: string[];
   options?: VariantOptionWire[];
@@ -111,15 +109,9 @@ function idOfOption(o: VariantOptionWire) {
   return { a: String(a), v: String(v) };
 }
 
-/**
- * ✅ FIX #1 (THE REAL BUG):
- * Number(null) === 0, so your old code treated "no variant priceBump provided"
- * as "bump is 0" and NEVER fell back to summing option bumps.
- */
 function variantBump(v?: VariantWire | null) {
   if (!v) return 0;
 
-  // if variant bump exists explicitly, use it
   if (v.priceBump !== null && v.priceBump !== undefined) {
     return toNum(v.priceBump, 0);
   }
@@ -131,12 +123,9 @@ function variantBump(v?: VariantWire | null) {
 
   if (!bumps.length) return 0;
 
-  // ✅ If all option bumps are the same (typical when total bump is duplicated per row),
-  // treat it as a single total bump.
   const allSame = bumps.every((b) => b === bumps[0]);
   if (allSame) return bumps[0];
 
-  // otherwise, treat them as incremental bumps and sum
   return bumps.reduce((acc, n) => acc + n, 0);
 }
 
@@ -144,7 +133,6 @@ function normalizeVariants(p: any): VariantWire[] {
   const src: any[] = Array.isArray(p?.variants) ? p.variants : [];
 
   const readBump = (x: any) => {
-    // accept multiple backend field names
     const raw =
       x?.priceBump ??
       x?.retailPriceBump ??
@@ -158,10 +146,7 @@ function normalizeVariants(p: any): VariantWire[] {
     id: String(v.id),
     sku: v.sku ?? null,
     price: v.price != null ? Number(v.price) : null,
-
-    // ✅ IMPORTANT: capture admin “retail bump” even if backend names differ
     priceBump: readBump(v),
-
     inStock: v.inStock !== false,
     imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
     options: Array.isArray(v.options)
@@ -169,10 +154,7 @@ function normalizeVariants(p: any): VariantWire[] {
         .map((o: any) => ({
           attributeId: String(o.attributeId ?? o.attribute?.id ?? ""),
           valueId: String(o.valueId ?? o.value?.id ?? ""),
-
-          // ✅ capture option bump (admin-set)
           priceBump: readBump(o),
-
           attribute: o.attribute
             ? {
               id: String(o.attribute.id),
@@ -206,14 +188,7 @@ function normalizeOffers(p: any): OfferWire[] {
   }));
 }
 
-/**
- * ✅ Normalize attributes coming from backend.
- * Accepts:
- *  - { attributes: { options, texts } }
- *  - { attributes: [..], attributeTexts: [..] }  (your current public route shape)
- */
 function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
-  // Case A: already has { options, texts }
   if (p?.attributes && typeof p.attributes === "object" && !Array.isArray(p.attributes)) {
     const opts = Array.isArray(p.attributes.options) ? p.attributes.options : [];
     const texts = Array.isArray(p.attributes.texts) ? p.attributes.texts : [];
@@ -257,7 +232,6 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
     };
   }
 
-  // Case B: public route returns attributes as array + attributeTexts separately
   const attrsArr: any[] = Array.isArray(p?.attributes) ? p.attributes : [];
   const textsArr: any[] = Array.isArray(p?.attributeTexts) ? p.attributeTexts : [];
 
@@ -305,7 +279,6 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
 function normalizeBaseDefaultsFromAttributes(p: any): Record<string, string> {
   const out: Record<string, string> = {};
 
-  // ✅ Prefer explicit saved defaults from backend if present
   const explicit =
     (Array.isArray(p?.attributeSelections) && p.attributeSelections) ||
     (Array.isArray(p?.baseAttributeSelections) && p.baseAttributeSelections) ||
@@ -322,7 +295,6 @@ function normalizeBaseDefaultsFromAttributes(p: any): Record<string, string> {
     if (Object.keys(out).length) return out;
   }
 
-  // ✅ Fallback: use product.attributes.options
   const opts: any[] = Array.isArray(p?.attributes?.options) ? p.attributes.options : [];
   for (const row of opts) {
     const a = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
@@ -333,40 +305,97 @@ function normalizeBaseDefaultsFromAttributes(p: any): Record<string, string> {
   return out;
 }
 
-/* Cart helpers */
-type CartItemLite = {
-  kind?: "BASE" | "VARIANT"; // ✅ NEW
+/* ---------------- Local cart helpers (NEW: PDP uses mini-cart toast) ---------------- */
+
+type CartRowLS = {
   productId: string;
-  variantId: string | null;
-  title: string;
+  variantId?: string | null;
+  title?: string;
   qty: number;
-  unitPrice: number;
-  totalPrice: number;
-  selectedOptions?: {
-    attributeId: string;
-    attribute: string;
-    valueId?: string;
-    value: string;
-  }[];
-  image?: string;
+
+  unitPrice?: number;
+  totalPrice?: number;
+
+  // legacy fields
+  price?: number;
+  image?: string | null;
+
+  // optional (ignored by mini toast but useful elsewhere)
+  selectedOptions?: any[];
 };
 
 const CART_KEY = "cart";
 
-const loadCartLS = (): CartItemLite[] => {
+function readCartLS(): any[] {
   try {
     const raw = localStorage.getItem(CART_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
   } catch {
     return [];
   }
-};
+}
 
-const saveCartLS = (items: CartItemLite[]) => localStorage.setItem(CART_KEY, JSON.stringify(items));
+function writeCartLS(cart: any[]) {
+  try {
+    localStorage.setItem(CART_KEY, JSON.stringify(cart));
+  } catch {
+    // ignore
+  }
+}
 
-const sameLine = (a: CartItemLite, productId: string, variantId: string | null) =>
-  a.productId === productId && (a.variantId ?? null) === (variantId ?? null);
+function upsertCartLineLS(input: {
+  productId: string;
+  variantId: string | null;
+  title: string;
+  unitPrice: number;
+  image?: string | null;
+  selectedOptions?: any[];
+}) {
+  const cart = readCartLS();
+
+  const pid = input.productId;
+  const vid = input.variantId ?? null;
+
+  const idx = cart.findIndex(
+    (x: any) => String(x?.productId ?? "") === pid && (x?.variantId ?? null) === vid
+  );
+
+  if (idx >= 0) {
+    const prevQty = Math.max(0, Number(cart[idx]?.qty) || 0);
+    const nextQty = Math.max(1, prevQty + 1);
+
+    cart[idx] = {
+      ...cart[idx],
+      productId: pid,
+      variantId: vid,
+      title: input.title,
+      qty: nextQty,
+      unitPrice: input.unitPrice,
+      totalPrice: input.unitPrice * nextQty,
+      price: input.unitPrice, // legacy compatibility
+      image: input.image ?? cart[idx]?.image ?? null,
+      selectedOptions: input.selectedOptions ?? cart[idx]?.selectedOptions ?? [],
+    };
+  } else {
+    cart.push({
+      productId: pid,
+      variantId: vid,
+      title: input.title,
+      qty: 1,
+      unitPrice: input.unitPrice,
+      totalPrice: input.unitPrice,
+      price: input.unitPrice, // legacy compatibility
+      image: input.image ?? null,
+      selectedOptions: input.selectedOptions ?? [],
+    });
+  }
+
+  writeCartLS(cart);
+  return cart as CartRowLS[];
+}
+
+/* ---------------- UI helpers ---------------- */
 
 const buildLabelMaps = (
   axes: Array<{
@@ -418,19 +447,14 @@ export default function ProductDetail() {
       const variants = normalizeVariants(p);
       const offers = normalizeOffers(p);
 
-      // base offer availability
       const baseOffers = offers.filter((o) => o.model === "BASE");
       const baseStockQty = baseOffers
         .filter((o) => o.isActive && o.inStock && o.availableQty > 0)
         .reduce((acc, o) => acc + (o.availableQty ?? 0), 0);
 
-      // ---------------------- STOCK (FIXED) ----------------------
-      // Treat BASE offer qty as the primary stock pool.
-      // Variant offer qty (if >0) acts as an extra constraint (min).
       const baseQtyBySupplier: Record<string, number> = {};
       const stockByVariantId: Record<string, number> = {};
 
-      // 1) Base pool by supplier
       for (const o of offers) {
         if (o.model !== "BASE") continue;
         if (!o.isActive || !o.inStock) continue;
@@ -441,10 +465,6 @@ export default function ProductDetail() {
         baseQtyBySupplier[o.supplierId] = (baseQtyBySupplier[o.supplierId] ?? 0) + qty;
       }
 
-      // 2) Variant pool per variantId (per supplier)
-      // Effective qty per supplier is:
-      // - if variant.availableQty > 0: min(baseQty, variantQty) when base exists, else variantQty
-      // - else: baseQty (when base exists), else 0
       for (const o of offers) {
         if (o.model !== "VARIANT") continue;
         if (!o.variantId) continue;
@@ -473,7 +493,14 @@ export default function ProductDetail() {
         id: String(p.id),
         title: String(p.title ?? ""),
         description: p.description ?? "",
-        price: p.price != null ? Number(p.price) : null, // base retail
+        price:
+          Number.isFinite(Number((p as any).retailPrice))
+            ? Number((p as any).retailPrice)
+            : Number.isFinite(Number((p as any).retailBasePrice))
+              ? Number((p as any).retailBasePrice)
+              : p.price != null && Number.isFinite(Number(p.price))
+                ? Number(p.price)
+                : null,
         inStock: p.inStock !== false,
         imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
         brand: p.brand ? { id: String(p.brand.id), name: String(p.brand.name) } : null,
@@ -511,26 +538,13 @@ export default function ProductDetail() {
 
   const allVariants = product?.variants ?? [];
 
-  // variants that actually have ACTIVE+inStock supplier offers
   const sellableVariants = React.useMemo(() => {
     if (!allVariants.length) return [];
     return allVariants.filter((v) => sellableVariantIds.has(v.id));
   }, [allVariants, sellableVariantIds]);
 
-  /**
-   * ✅ IMPORTANT CHANGE:
-   * Build dropdown axes & combinations from ALL variants (not only sellable ones),
-   * so options don't "disappear" just because there isn't a variant offer for them.
-   *
-   * Availability is still gated using stockByVariantId when choosing a purchasable variant.
-   */
   const variantsForOptions = allVariants;
 
-  /**
-   * ✅ Axes:
-   * 1) Prefer building from variant.options (best for permutations)
-   * 2) Fallback to product.attributes.options if variant.options are missing
-   */
   const axes = React.useMemo(() => {
     if (!product) return [];
 
@@ -545,7 +559,6 @@ export default function ProductDetail() {
       if (!m.has(vId)) m.set(vId, vName || "Value");
     };
 
-    // 1) variants (all combos)
     for (const v of variantsForOptions || []) {
       for (const o of v.options || []) {
         const aId = String(o.attributeId ?? o.attribute?.id ?? "").trim();
@@ -556,7 +569,6 @@ export default function ProductDetail() {
       }
     }
 
-    // 2) ✅ merge in base attributeOptions (your “Attributes” section in admin)
     const baseOpts = Array.isArray(product?.attributes?.options) ? product.attributes!.options! : [];
     for (const row of baseOpts) {
       const aId = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
@@ -582,9 +594,6 @@ export default function ProductDetail() {
   const axisIds = React.useMemo(() => axes.map((a) => a.id), [axes]);
   const axisIdSet = React.useMemo(() => new Set(axisIds), [axisIds]);
 
-  /**
-   * ✅ Scoped pair sets (only compare option pairs for visible axes)
-   */
   const variantPairSetsScoped = React.useMemo(() => {
     const arr: { v: VariantWire; set: Set<string> }[] = [];
 
@@ -621,18 +630,15 @@ export default function ProductDetail() {
     return best;
   }, [variantPairSetsScoped, stockByVariantId]);
 
-  /* ---------------- Base defaults ---------------- */
   const baseDefaults = React.useMemo(() => {
     const out: Record<string, string> = {};
     for (const ax of axes) out[ax.id] = "";
 
-    // 1) Apply saved defaults (from backend attributeSelections) FIRST
     for (const ax of axes) {
       const v = baseDefaultsFromAttributes?.[ax.id];
       if (v) out[ax.id] = String(v);
     }
 
-    // 2) If still empty, default to the best real variant (valid combo)
     if (bestVariantForDefault?.options?.length) {
       for (const o of bestVariantForDefault.options) {
         const aId = String(o.attributeId ?? "").trim();
@@ -657,7 +663,6 @@ export default function ProductDetail() {
     [axisIds, baseDefaults]
   );
 
-  /* ---------------- Selection state ---------------- */
   const [selected, setSelected] = React.useState<Record<string, string>>({});
 
   React.useEffect(() => {
@@ -683,11 +688,9 @@ export default function ProductDetail() {
         entries.every(([aid, vid]) => set.has(`${aid}:${vid}`))
       );
     },
-    // ✅ FIX #2: correct dependency (was variantPairSets)
     [variantPairSetsScoped]
   );
 
-  /* ---------------- Dropdown filtering ---------------- */
   const getFilteredValuesForAttribute = React.useCallback(
     (attrId: string) => {
       const axis = axes.find((a) => a.id === attrId);
@@ -725,7 +728,6 @@ export default function ProductDetail() {
     [axes, selected, variantPairSetsScoped]
   );
 
-  /* ---------------- Selection resolution ---------------- */
   const selectionInfo = React.useMemo(() => {
     if (!product || !variantPairSetsScoped.length) {
       return {
@@ -774,11 +776,9 @@ export default function ProductDetail() {
     return { picked, exact, supers, totalStockExact, missingAxisIds };
   }, [product, selected, variantPairSetsScoped, stockByVariantId]);
 
-  /* ---------------- Pricing (RETAIL display) ---------------- */
   const computed = React.useMemo(() => {
     const baseRetail = toNum(product?.price, 0);
 
-    // BASE view: exactly base defaults
     if (axes.length > 0 && isAtBaseDefaults(selected)) {
       return {
         base: baseRetail,
@@ -790,9 +790,7 @@ export default function ProductDetail() {
       };
     }
 
-    // ✅ NEW: "complete" means "selection identifies a real variant",
-    // not "all axes have a value".
-    const pickedPairs = selectionPairsOf(selected); // only non-empty
+    const pickedPairs = selectionPairsOf(selected);
     if (!pickedPairs.length) {
       return {
         base: baseRetail,
@@ -804,8 +802,6 @@ export default function ProductDetail() {
       };
     }
 
-    // Find an EXACT variant match for the picked pairs:
-    // (variant must contain all picked pairs AND have no extra pairs)
     let matched: VariantWire | null = null;
     const selPairs = new Set(pickedPairs);
 
@@ -818,14 +814,12 @@ export default function ProductDetail() {
         }
       }
       if (!ok) continue;
-
-      if (set.size !== selPairs.size) continue; // exact identity for this selection
+      if (set.size !== selPairs.size) continue;
       matched = v;
       break;
     }
 
     if (!matched) {
-      // Not enough info (or invalid combo) to identify a variant uniquely
       return {
         base: baseRetail,
         final: baseRetail,
@@ -850,7 +844,6 @@ export default function ProductDetail() {
     };
   }, [product?.price, axes, selected, isAtBaseDefaults, variantPairSetsScoped, stockByVariantId]);
 
-  /* ---------------- Purchase gating ---------------- */
   const purchaseMeta = React.useMemo(() => {
     const hasVariantAxes = axes.length > 0;
     const { picked, exact, supers, totalStockExact, missingAxisIds } = selectionInfo;
@@ -952,12 +945,6 @@ export default function ProductDetail() {
     sellableVariants.length,
   ]);
 
-  /* ---------------- Toast ---------------- */
-  const [toast, setToast] = React.useState<{ show: boolean; title: string; img?: string } | null>(
-    null
-  );
-  const hideToastRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-
   /* ---------------- Images / Zoom ---------------- */
   const images = React.useMemo(
     () => (product?.imagesJson?.length ? product.imagesJson! : ["/placeholder.svg"]),
@@ -971,11 +958,9 @@ export default function ProductDetail() {
     return stockByVariantId[vid] ?? 0;
   }, [purchaseMeta.mode, purchaseMeta.variantId, baseStockQty, stockByVariantId]);
 
-  /* ---------------- Availability badge (PDP standard) ---------------- */
   const availabilityBadge = React.useMemo(() => {
     const qty = currentSelectionQty;
 
-    // ready to buy
     if (!purchaseMeta.disableAddToCart && qty > 0) {
       return {
         text: `In stock${Number.isFinite(qty) ? ` • ${qty}` : ""}`,
@@ -983,7 +968,6 @@ export default function ProductDetail() {
       };
     }
 
-    // user chose base defaults but base offer missing
     if (purchaseMeta.mode === "BASE" && !canBuyBase) {
       return {
         text: "Out of stock",
@@ -991,7 +975,6 @@ export default function ProductDetail() {
       };
     }
 
-    // user has an exact variant selected but it’s not sellable
     if (purchaseMeta.mode === "VARIANT" && selectionInfo.exact.length > 0) {
       return {
         text: "Out of stock",
@@ -999,7 +982,6 @@ export default function ProductDetail() {
       };
     }
 
-    // otherwise selection isn’t complete enough to guarantee availability
     return {
       text: "Select options",
       cls: "bg-amber-600/10 text-amber-700 border-amber-600/20",
@@ -1077,14 +1059,7 @@ export default function ProductDetail() {
     }
 
     return byAxis;
-  }, [
-    axes,
-    selected,
-    baseDefaults,
-    variantPairSetsScoped, // ✅ FIX #4: dependency + source
-    stockByVariantId,
-    baseStockQty,
-  ]);
+  }, [axes, selected, baseDefaults, variantPairSetsScoped, stockByVariantId, baseStockQty]);
 
   const [mainIndex, setMainIndex] = React.useState(0);
 
@@ -1125,21 +1100,17 @@ export default function ProductDetail() {
     if (!img) return;
     const r = img.getBoundingClientRect();
 
-    // Default: to the right of the image
     let left = r.right + 12;
     let top = r.top;
 
-    // Keep inside viewport horizontally
     const pad = 12;
     const paneW = ZOOM_PANE.w;
     const paneH = ZOOM_PANE.h;
 
     if (left + paneW + pad > window.innerWidth) {
-      // put it on the left if it would overflow
       left = Math.max(pad, r.left - paneW - 12);
     }
 
-    // Keep inside viewport vertically
     if (top + paneH + pad > window.innerHeight) {
       top = Math.max(pad, window.innerHeight - paneH - pad);
     }
@@ -1199,20 +1170,31 @@ export default function ProductDetail() {
   offsetX = Math.max(0, Math.min(offsetX, maxOffsetX));
   offsetY = Math.max(0, Math.min(offsetY, maxOffsetY));
 
-  /* ---------------- Add to cart ---------------- */
+  /* ---------------- Add to cart (UPDATED: new toast + mini cart summary) ---------------- */
   const handleAddToCart = React.useCallback(async () => {
     if (!product) return;
     if (purchaseMeta.disableAddToCart) return;
 
     const variantId = purchaseMeta.mode === "VARIANT" ? purchaseMeta.variantId : null;
 
-    // ✅ store attributes for BOTH base and variant lines
     const selectedOptionsWire = Object.entries(selected)
       .filter(([, v]) => !!String(v || "").trim())
       .map(([attributeId, valueId]) => ({ attributeId, valueId }));
 
     const unitPriceClient = purchaseMeta.mode === "VARIANT" ? computed.final : computed.base;
+    const unit = Number(unitPriceClient) || 0;
 
+    // pick best image for the line (variant image > product image)
+    const variantImg =
+      variantId
+        ? (product.variants || [])
+          .find((v) => v.id === variantId)
+          ?.imagesJson?.[0]
+        : undefined;
+
+    const primaryImg = variantImg || (product.imagesJson || [])[0] || null;
+
+    // 1) try to sync server cart (don’t block UX)
     try {
       await api.post("/api/cart/items", {
         productId: product.id,
@@ -1222,11 +1204,12 @@ export default function ProductDetail() {
         unitPriceClient,
       });
     } catch {
-      // ignore; still update local
+      // ignore
     } finally {
       queryClient.invalidateQueries({ queryKey: ["cart"] });
     }
 
+    // 2) always upsert local cart + show mini-cart toast summary
     const { attrNameById, valueNameByAttrId } = buildLabelMaps(axes);
     const selectedOptionsLabeled = selectedOptionsWire.map(({ attributeId, valueId }) => ({
       attributeId,
@@ -1235,47 +1218,21 @@ export default function ProductDetail() {
       value: valueId ? valueNameByAttrId.get(attributeId)?.get(valueId) ?? "" : "",
     }));
 
-    const newLine: CartItemLite = {
-      kind: purchaseMeta.mode, // ✅ NEW
+    const cart = upsertCartLineLS({
       productId: product.id,
       variantId,
       title: product.title ?? "",
-      qty: 1,
-      unitPrice: Number(unitPriceClient) || 0,
-      totalPrice: Number(unitPriceClient) || 0,
-      selectedOptions: selectedOptionsLabeled, // ✅ now base lines will have it too
-      image: (product.imagesJson || [])[0],
-    };
+      unitPrice: unit,
+      image: primaryImg,
+      selectedOptions: selectedOptionsLabeled,
+    });
 
-    const cart = loadCartLS();
-    const idx = cart.findIndex((c) => sameLine(c, newLine.productId, newLine.variantId));
-    if (idx >= 0) {
-      const unit = Number.isFinite(cart[idx].unitPrice) ? cart[idx].unitPrice : newLine.unitPrice;
-      const nextQty = cart[idx].qty + 1;
-      cart[idx] = { ...cart[idx], qty: nextQty, unitPrice: unit, totalPrice: unit * nextQty };
-    } else {
-      cart.push(newLine);
-    }
-    saveCartLS(cart);
-
-    setToast({ show: true, title: "Added to cart", img: (product.imagesJson || [])[0] });
-
-    if (hideToastRef.current) window.clearTimeout(hideToastRef.current);
-    hideToastRef.current = window.setTimeout(
-      () => setToast((t) => (t ? { ...t, show: false } : t)),
-      3000
+    showMiniCartToast(
+      cart,
+      { productId: product.id, variantId },
+      { title: "Added to cart", duration: 3500, maxItems: 4 }
     );
   }, [product, purchaseMeta, selected, computed.final, computed.base, axes, queryClient]);
-
-  React.useEffect(
-    () => () => {
-      if (hideToastRef.current) {
-        clearTimeout(hideToastRef.current);
-        hideToastRef.current = null;
-      }
-    },
-    []
-  );
 
   React.useEffect(() => {
     if (!showZoom) return;
@@ -1312,7 +1269,7 @@ export default function ProductDetail() {
   }
 
   const priceLabel = NGN.format(computed.final);
-  const CHIP_THRESHOLD = 8; // <= 8 values => chips, else dropdown
+  const CHIP_THRESHOLD = 8;
 
   function VariantAxisPicker({
     axis,
@@ -1370,7 +1327,8 @@ export default function ProductDetail() {
       );
     }
 
-    // dropdown path unchanged…
+    const filtered = getFilteredValuesForAttribute(axis.id);
+
     return (
       <Select value={value} onValueChange={(v) => onChange(v === "__NONE__" ? "" : v)}>
         <SelectTrigger className="h-12 rounded-xl text-base md:text-lg">
@@ -1379,7 +1337,7 @@ export default function ProductDetail() {
 
         <SelectContent className="text-base md:text-lg">
           <SelectItem value="__NONE__">{`No ${axis.name.toLowerCase()}`}</SelectItem>
-          {axis.values.map((opt) => {
+          {filtered.map((opt) => {
             const st = states[opt.id] ?? { exists: true, stock: 0, disabled: false };
             const label =
               st.disabled && st.reason
@@ -1401,358 +1359,272 @@ export default function ProductDetail() {
 
   return (
     <SiteLayout>
-      <>
-        {/* Toast */}
-        {toast?.show &&
-          createPortal(
-            <div
-              className="fixed top-4 right-4 z-[99999] w-[320px] rounded-2xl border shadow-lg bg-white p-3"
-              onMouseEnter={() => {
-                if (hideToastRef.current) window.clearTimeout(hideToastRef.current);
-              }}
-              onMouseLeave={() => {
-                hideToastRef.current = window.setTimeout(
-                  () => setToast((t) => (t ? { ...t, show: false } : t)),
-                  1500
-                );
-              }}
-              role="status"
-              aria-live="polite"
-            >
-              <div className="flex gap-3">
-                <img
-                  src={toast.img || "/placeholder.svg"}
-                  alt="item"
-                  className="w-14 h-14 rounded-xl border object-cover"
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-semibold">{toast.title}</div>
-                  <div className="text-xs text-zinc-600 truncate">{product.title}</div>
-                  <div className="mt-1 text-sm font-medium">{priceLabel}</div>
+      <div className="max-w-6xl mx-auto p-4 md:p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+        {/* Images */}
+        <div className="space-y-3">
+          <div
+            className="relative mx-auto"
+            style={{ maxWidth: "90%" }}
+            onMouseEnter={() => {
+              setShowZoom(true);
+              setPaused(true);
+              updateZoomAnchor();
+            }}
+            onMouseLeave={() => {
+              setShowZoom(false);
+              setPaused(false);
+            }}
+            onMouseMove={onMouseMove}
+          >
+            <div className="rounded-2xl overflow-hidden bg-zinc-100 border" style={{ aspectRatio: "1 / 1" }}>
+              <img
+                ref={mainImgRef}
+                src={images[mainIndex]}
+                alt={product.title}
+                className="w-full h-full object-cover cursor-zoom-in"
+                onLoad={handleImageLoad}
+                onError={(e) => (e.currentTarget.style.opacity = "0.25")}
+              />
+            </div>
 
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white text-xs"
-                      onClick={() => navigate("/cart")}
-                      type="button"
-                    >
-                      View cart
-                    </button>
-                    <button
-                      className="px-3 py-1.5 rounded-lg border text-xs hover:bg-zinc-50"
-                      onClick={() => setToast((t) => (t ? { ...t, show: false } : t))}
-                      type="button"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
+            {/* Availability badge on image */}
+            <span
+              className={`absolute left-3 top-3 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls}`}
+            >
+              {availabilityBadge.text}
+            </span>
+
+            {showZoom &&
+              hasBox &&
+              zoomAnchor &&
+              createPortal(
+                <div
+                  className="hidden md:block rounded-xl border shadow bg-white overflow-hidden pointer-events-none z-[9999]"
+                  style={{
+                    position: "fixed",
+                    top: zoomAnchor.top,
+                    left: zoomAnchor.left,
+                    width: ZOOM_PANE.w,
+                    height: ZOOM_PANE.h,
+                  }}
+                >
+                  <img
+                    src={images[mainIndex]}
+                    alt="zoom"
+                    draggable={false}
+                    style={{
+                      position: "absolute",
+                      width: `${zoomImgWidth}px`,
+                      height: `${zoomImgHeight}px`,
+                      transform: `translate(${-offsetX}px, ${-offsetY}px)`,
+                    }}
+                  />
+                </div>,
+                document.body
+              )}
+
+            {images.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+                  className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/80 hover:bg-white border shadow px-2 py-1"
+                  aria-label="Previous image"
+                >
+                  ‹
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMainIndex((i) => (i + 1) % images.length)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/80 hover:bg-white border shadow px-2 py-1"
+                  aria-label="Next image"
+                >
+                  ›
+                </button>
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1">
+                  {images.map((_, i) => (
+                    <span
+                      key={i}
+                      onClick={() => setMainIndex(i)}
+                      className={`h-1.5 w-1.5 rounded-full cursor-pointer ${i === mainIndex ? "bg-fuchsia-600" : "bg-white/70 border"
+                        }`}
+                    />
+                  ))}
                 </div>
-              </div>
-            </div>,
-            document.body
-          )}
+              </>
+            )}
+          </div>
 
-        <div className="max-w-6xl mx-auto p-4 md:p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-          {/* Images */}
-          <div className="space-y-3">
-            <div
-              className="relative mx-auto"
-              style={{ maxWidth: "90%" }}
-              onMouseEnter={() => {
-                setShowZoom(true);
-                setPaused(true);
-                updateZoomAnchor();
-              }}
-              onMouseLeave={() => {
-                setShowZoom(false);
-                setPaused(false);
-              }}
-              onMouseMove={onMouseMove}
+          {/* Thumbnails */}
+          <div
+            className="flex items-center justify-center gap-2"
+            onMouseEnter={() => setPaused(true)}
+            onMouseLeave={() => setPaused(false)}
+          >
+            <button
+              type="button"
+              onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+              className="rounded-full border px-2 py-1 text-sm bg-white hover:bg-zinc-50"
+              aria-label="Previous thumbnails"
             >
-              <div
-                className="rounded-2xl overflow-hidden bg-zinc-100 border"
-                style={{ aspectRatio: "1 / 1" }}
-              >
-                <img
-                  ref={mainImgRef}
-                  src={images[mainIndex]}
-                  alt={product.title}
-                  className="w-full h-full object-cover cursor-zoom-in"
-                  onLoad={handleImageLoad}
-                  onError={(e) => (e.currentTarget.style.opacity = "0.25")}
-                />
+              ‹
+            </button>
+
+            <div className="flex gap-2">
+              {visibleThumbs.map((u, i) => {
+                const absoluteIndex = thumbStart + i;
+                const isActive = absoluteIndex === mainIndex;
+                return (
+                  <img
+                    key={`${u}:${absoluteIndex}`}
+                    src={u}
+                    alt={`thumb-${absoluteIndex}`}
+                    onClick={() => setMainIndex(absoluteIndex)}
+                    className={`w-24 h-20 rounded-lg border object-cover select-none cursor-pointer ${isActive ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "hover:opacity-90"
+                      }`}
+                    onError={(e) => (e.currentTarget.style.opacity = "0.25")}
+                  />
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setMainIndex((i) => (i + 1) % images.length)}
+              className="rounded-full border px-2 py-1 text-sm bg-white hover:bg-zinc-50"
+              aria-label="Next thumbnails"
+            >
+              ›
+            </button>
+          </div>
+        </div>
+
+        {/* Details */}
+        <div className="space-y-5">
+          <div>
+            <h1 className="text-2xl font-semibold">{product.title}</h1>
+            {product.brand?.name && <div className="text-sm text-zinc-600">{product.brand.name}</div>}
+          </div>
+
+          <div className="rounded-2xl bg-zinc-50 border p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm text-zinc-500">Current price (retail)</div>
+                <div className="text-3xl font-bold">{priceLabel}</div>
               </div>
 
-              {/* ✅ Availability badge on image (PDP standard) */}
               <span
-                className={`absolute left-3 top-3 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls}`}
+                className={`shrink-0 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls}`}
               >
                 {availabilityBadge.text}
               </span>
+            </div>
 
-              {showZoom &&
-                hasBox &&
-                zoomAnchor &&
-                createPortal(
-                  <div
-                    className="hidden md:block rounded-xl border shadow bg-white overflow-hidden pointer-events-none z-[9999]"
-                    style={{
-                      position: "fixed",
-                      top: zoomAnchor.top,
-                      left: zoomAnchor.left,
-                      width: ZOOM_PANE.w,
-                      height: ZOOM_PANE.h,
+            <div className="text-xs text-zinc-500 mt-1">
+              Base: {NGN.format(toNum(product.price, 0))}
+              {purchaseMeta.mode === "VARIANT" && purchaseMeta.variantId && <> • Variant price = base + option bumps</>}
+            </div>
+          </div>
+
+          {/* Variant selects */}
+          {axes.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-medium text-zinc-700">Choose options</div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelected({ ...baseDefaults })}
+                    className="px-2 py-1 text-[10px] rounded-lg border bg-white hover:bg-zinc-50"
+                    title="Select the base product default options"
+                  >
+                    Choose base option
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelected(buildEmptySelection(axes))}
+                    className="px-2 py-1 text-[10px] rounded-lg border bg-white hover:bg-zinc-50"
+                    title="Clear selections (No variant)"
+                  >
+                    Reset all variants(None)
+                  </button>
+                </div>
+              </div>
+
+              {axes.map((a) => (
+                <div key={a.id} className="grid gap-2">
+                  <label className="text-sm md:text-base font-medium text-zinc-700">{a.name}</label>
+
+                  <VariantAxisPicker
+                    axis={a}
+                    value={selected[a.id] ?? ""}
+                    onChange={(val) => {
+                      setSelected((prev) => {
+                        const draft = { ...prev, [a.id]: val };
+                        if (!val) return draft;
+                        if (isSelectionCompatible(draft)) return draft;
+
+                        const resetOthers: Record<string, string> = { ...draft };
+                        for (const ax of axes) if (ax.id !== a.id) resetOthers[ax.id] = "";
+                        return resetOthers;
+                      });
                     }}
-                  >
-                    <img
-                      src={images[mainIndex]}
-                      alt="zoom"
-                      draggable={false}
-                      style={{
-                        position: "absolute",
-                        width: `${zoomImgWidth}px`,
-                        height: `${zoomImgHeight}px`,
-                        transform: `translate(${-offsetX}px, ${-offsetY}px)`,
-                      }}
-                    />
-                  </div>,
-                  document.body
-                )}
+                  />
+                </div>
+              ))}
 
-              {images.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-                    className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/80 hover:bg-white border shadow px-2 py-1"
-                    aria-label="Previous image"
-                  >
-                    ‹
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-white/80 hover:bg-white border shadow px-2 py-1"
-                    aria-label="Next image"
-                  >
-                    ›
-                  </button>
-                  <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1">
-                    {images.map((_, i) => (
-                      <span
-                        key={i}
-                        onClick={() => setMainIndex(i)}
-                        className={`h-1.5 w-1.5 rounded-full cursor-pointer ${i === mainIndex ? "bg-fuchsia-600" : "bg-white/70 border"
-                          }`}
-                      />
-                    ))}
-                  </div>
-                </>
+              {purchaseMeta.helperNote && (
+                <div className="text-[11px] mt-2 px-2 py-2 rounded-md border bg-zinc-50 text-zinc-700">
+                  {purchaseMeta.helperNote}
+                </div>
               )}
-            </div>
 
-            {/* Thumbnails */}
-            <div
-              className="flex items-center justify-center gap-2"
-              onMouseEnter={() => setPaused(true)}
-              onMouseLeave={() => setPaused(false)}
+              <div className="text-[11px] text-zinc-600">
+                {selectionInfo.exact.length > 0 && selectionInfo.totalStockExact > 0
+                  ? `Available for this selection: ${selectionInfo.totalStockExact}`
+                  : "Select a sellable combination to see availability"}
+              </div>
+            </div>
+          )}
+
+          {/* CTAs */}
+          <div className="pt-2 flex items-center gap-3 flex-wrap">
+            <button
+              type="button"
+              onClick={handleAddToCart}
+              disabled={purchaseMeta.disableAddToCart}
+              className={`inline-flex items-center gap-2 rounded-2xl px-5 py-3 shadow-sm active:scale-[0.99] transition focus:outline-none focus:ring-4
+                ${purchaseMeta.disableAddToCart
+                  ? "bg-zinc-300 text-zinc-600 cursor-not-allowed focus:ring-zinc-200"
+                  : "bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white hover:shadow-md focus:ring-fuchsia-300/40"
+                }`}
             >
-              <button
-                type="button"
-                onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-                className="rounded-full border px-2 py-1 text-sm bg-white hover:bg-zinc-50"
-                aria-label="Previous thumbnails"
-              >
-                ‹
-              </button>
+              <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+              Add to cart — {NGN.format(computed.final)}
+            </button>
 
-              <div className="flex gap-2">
-                {visibleThumbs.map((u, i) => {
-                  const absoluteIndex = thumbStart + i;
-                  const isActive = absoluteIndex === mainIndex;
-                  return (
-                    <img
-                      key={`${u}:${absoluteIndex}`}
-                      src={u}
-                      alt={`thumb-${absoluteIndex}`}
-                      onClick={() => setMainIndex(absoluteIndex)}
-                      className={`w-24 h-20 rounded-lg border object-cover select-none cursor-pointer ${isActive
-                          ? "ring-2 ring-fuchsia-500 border-fuchsia-500"
-                          : "hover:opacity-90"
-                        }`}
-                      onError={(e) => (e.currentTarget.style.opacity = "0.25")}
-                    />
-                  );
-                })}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                className="rounded-full border px-2 py-1 text-sm bg-white hover:bg-zinc-50"
-                aria-label="Next thumbnails"
-              >
-                ›
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => navigate("/cart")}
+              className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 border bg-white text-zinc-900 hover:bg-zinc-50 active:scale-[0.99] transition focus:outline-none focus:ring-4 focus:ring-zinc-300/40"
+            >
+              Go to Cart
+            </button>
           </div>
 
-          {/* Details */}
-          <div className="space-y-5">
-            <div>
-              <h1 className="text-2xl font-semibold">{product.title}</h1>
-              {product.brand?.name && <div className="text-sm text-zinc-600">{product.brand.name}</div>}
-            </div>
-
-            <div className="rounded-2xl bg-zinc-50 border p-4">
-              {/* ✅ Availability badge near price (PDP standard) */}
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-sm text-zinc-500">Current price (retail)</div>
-                  <div className="text-3xl font-bold">{priceLabel}</div>
-                </div>
-
-                <span
-                  className={`shrink-0 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls}`}
-                >
-                  {availabilityBadge.text}
-                </span>
-              </div>
-
-              <div className="text-xs text-zinc-500 mt-1">
-                Base: {NGN.format(toNum(product.price, 0))}
-                {purchaseMeta.mode === "VARIANT" && purchaseMeta.variantId && (
-                  <> • Variant price = base + option bumps</>
-                )}
-              </div>
-
-              {canBuyBase ? (
-                <div className="mt-2 text-[11px] text-emerald-700">
-                  <div className="text-[11px] text-zinc-600">
-                    {purchaseMeta.mode === "BASE" ? (
-                      canBuyBase ? (
-                        <>Available (base): {currentSelectionQty}</>
-                      ) : (
-                        <>Base offer not available</>
-                      )
-                    ) : purchaseMeta.variantId ? (
-                      <>Available (this variant): {currentSelectionQty}</>
-                    ) : (
-                      <>Select a complete sellable combination to see availability</>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-2 text-[11px] text-amber-700">
-                  Base offer is not available. Select a variant combo with an active supplier offer.
-                </div>
-              )}
-            </div>
-
-            {/* Variant selects */}
-            {axes.length > 0 && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-medium text-zinc-700">Choose options</div>
-
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setSelected({ ...baseDefaults })}
-                        className="px-2 py-1 text-[10px] rounded-lg border bg-white hover:bg-zinc-50"
-                        title="Select the base product default options"
-                      >
-                        Choose base option
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setSelected(buildEmptySelection(axes))}
-                        className="px-2 py-1 text-[10px] rounded-lg border bg-white hover:bg-zinc-50"
-                        title="Clear selections (No variant)"
-                      >
-                        Reset all variants(None)
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {axes.map((a) => (
-                  <div key={a.id} className="grid gap-2">
-                    <label className="text-sm md:text-base font-medium text-zinc-700">{a.name}</label>
-
-                    <VariantAxisPicker
-                      axis={a}
-                      value={selected[a.id] ?? ""}
-                      onChange={(val) => {
-                        setSelected((prev) => {
-                          const draft = { ...prev, [a.id]: val };
-                          if (!val) return draft;
-                          if (isSelectionCompatible(draft)) return draft;
-
-                          const resetOthers: Record<string, string> = { ...draft };
-                          for (const ax of axes) if (ax.id !== a.id) resetOthers[ax.id] = "";
-                          return resetOthers;
-                        });
-                      }}
-                    />
-                  </div>
-                ))}
-
-                {purchaseMeta.helperNote && (
-                  <div className="text-[11px] mt-2 px-2 py-2 rounded-md border bg-zinc-50 text-zinc-700">
-                    {purchaseMeta.helperNote}
-                  </div>
-                )}
-
-                <div className="text-[11px] text-zinc-600">
-                  {selectionInfo.exact.length > 0 && selectionInfo.totalStockExact > 0
-                    ? `Available for this selection: ${selectionInfo.totalStockExact}`
-                    : "Select a sellable combination to see availability"}
-                </div>
-              </div>
-            )}
-
-            {/* CTAs */}
-            <div className="pt-2 flex items-center gap-3 flex-wrap">
-              <button
-                type="button"
-                onClick={handleAddToCart}
-                disabled={purchaseMeta.disableAddToCart}
-                className={`inline-flex items-center gap-2 rounded-2xl px-5 py-3 shadow-sm active:scale-[0.99] transition focus:outline-none focus:ring-4
-                  ${purchaseMeta.disableAddToCart
-                    ? "bg-zinc-300 text-zinc-600 cursor-not-allowed focus:ring-zinc-200"
-                    : "bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white hover:shadow-md focus:ring-fuchsia-300/40"
-                  }`}
-              >
-                <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
-                Add to cart — {NGN.format(computed.final)}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => navigate("/cart")}
-                className="inline-flex items-center gap-2 rounded-2xl px-5 py-3 border bg-white text-zinc-900 hover:bg-zinc-50 active:scale-[0.99] transition focus:outline-none focus:ring-4 focus:ring-zinc-300/40"
-              >
-                Go to Cart
-              </button>
-            </div>
-
-            {/* Description */}
-            <div className="pt-2">
-              <h2 className="text-base font-semibold mb-1">Description</h2>
-              <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description}</p>
-            </div>
-
-            {import.meta.env.DEV && (
-              <div className="text-[10px] text-zinc-500">
-                totalStockQty: {totalStockQty}
-              </div>
-            )}
+          {/* Description */}
+          <div className="pt-2">
+            <h2 className="text-base font-semibold mb-1">Description</h2>
+            <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description}</p>
           </div>
+
+          {import.meta.env.DEV && (
+            <div className="text-[10px] text-zinc-500">totalStockQty: {totalStockQty}</div>
+          )}
         </div>
-      </>
+      </div>
     </SiteLayout>
   );
 }

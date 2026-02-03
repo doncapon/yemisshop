@@ -4,14 +4,16 @@ import { requireAdmin } from '../middleware/auth.js';
 import { fetchOffersByProducts } from '../services/offerList.service.js';
 import { prisma } from '../lib/prisma.js';
 
-
 const router = Router();
 
 function parseIds(q: any): string[] | undefined {
   const raw = q.productIds ?? q.productId ?? q.ids;
   if (!raw) return;
   if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
-  return String(raw).split(',').map(s => s.trim()).filter(Boolean);
+  return String(raw)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function flattenOffers(data: any): any[] {
@@ -43,10 +45,10 @@ function flattenOffers(data: any): any[] {
 
   // Case C: single grouped object: { baseOffers, variantOffers } or { data: { baseOffers... } }
   if (raw && typeof raw === "object") {
-    const pid = raw.productId ?? raw.product?.id;
-    if (raw.baseOffers || raw.variantOffers) {
-      (raw.baseOffers ?? []).forEach((o: any) => pushOffer(o, pid));
-      (raw.variantOffers ?? []).forEach((o: any) => pushOffer(o, pid));
+    const pid = (raw as any).productId ?? (raw as any).product?.id;
+    if ((raw as any).baseOffers || (raw as any).variantOffers) {
+      ((raw as any).baseOffers ?? []).forEach((o: any) => pushOffer(o, pid));
+      ((raw as any).variantOffers ?? []).forEach((o: any) => pushOffer(o, pid));
       return out.filter((x) => !!x?.productId);
     }
   }
@@ -59,12 +61,11 @@ function isTruthyNonEmpty(v: any) {
 }
 
 function isSupplierPayoutReadyRow(s: any) {
-  // tolerate different schema field names
   const enabled =
     s?.isPayoutEnabled === true ||
     s?.payoutEnabled === true ||
     s?.payoutsEnabled === true ||
-    s?.isPayoutEnabled == null; // if no flag exists, don't block
+    s?.isPayoutEnabled == null;
 
   const accNum =
     isTruthyNonEmpty(s?.accountNumber) || isTruthyNonEmpty(s?.bankAccountNumber) || s?.accountNumber == null;
@@ -85,7 +86,6 @@ async function getPayoutReadySupplierIdSet(supplierIds: string[]) {
   const uniq = Array.from(new Set(supplierIds.map(String).filter(Boolean)));
   if (!uniq.length) return new Set<string>();
 
-  // Try selecting common fields; if your schema differs, we still won’t crash the route.
   try {
     const rows = await prisma.supplier.findMany({
       where: { id: { in: uniq } },
@@ -110,57 +110,26 @@ async function getPayoutReadySupplierIdSet(supplierIds: string[]) {
     }
     return ok;
   } catch {
-    // Ultra-safe fallback: if select fields don't exist, do NOT block purchasing here.
-    // (Better enforcement should be in the service layer.)
-    const ok = new Set<string>(uniq);
-    return ok;
+    return new Set<string>(uniq);
   }
 }
 
-function filterOfferPayloadBySupplierIds(raw: unknown, allowed: Set<string>): unknown {
-  if (raw == null) return raw;
+function filterFlatOffersByAllowedSuppliers(flat: any[], allowed: Set<string>) {
+  return (flat || []).filter((o: any) => {
+    const sid = String(o?.supplierId ?? o?.supplier?.id ?? "");
+    if (!sid) return false;
+    return allowed.has(sid);
+  });
+}
 
-  // array case
-  if (Array.isArray(raw)) {
-    return raw
-      .map((item) => filterOfferPayloadBySupplierIds(item, allowed))
-      .filter((x) => x != null);
-  }
-
-  // object case
-  if (typeof raw === "object") {
-    const obj = raw as Record<string, unknown>;
-
-    // grouped payload: { baseOffers, variantOffers, ... }
-    if ("baseOffers" in obj || "variantOffers" in obj) {
-      const baseOffers = Array.isArray(obj.baseOffers) ? obj.baseOffers : [];
-      const variantOffers = Array.isArray(obj.variantOffers) ? obj.variantOffers : [];
-
-      const filterBySupplier = (o: unknown) => {
-        if (!o || typeof o !== "object") return false;
-        const sid = String((o as any).supplierId ?? "");
-        return allowed.has(sid);
-      };
-
-      return {
-        ...obj,
-        baseOffers: baseOffers.filter(filterBySupplier),
-        variantOffers: variantOffers.filter(filterBySupplier),
-      };
-    }
-
-    // single offer row: { supplierId, ... }
-    if ("supplierId" in obj) {
-      const sid = String((obj as any).supplierId ?? "");
-      return allowed.has(sid) ? raw : null;
-    }
-
-    // unknown object shape: leave untouched
-    return raw;
-  }
-
-  // primitives: leave untouched
-  return raw;
+function filterFlatOffersByActive(flat: any[], active?: boolean) {
+  if (active == null) return flat;
+  return (flat || []).filter((o: any) => {
+    const v = o?.isActive;
+    if (typeof v === "boolean") return v === active;
+    // if backend doesn’t send isActive, treat as active (don’t accidentally hide offers)
+    return active === true;
+  });
 }
 
 // Admin: /api/admin/supplier-offers?productIds=a,b,c
@@ -169,12 +138,15 @@ router.get('/admin/supplier-offers', requireAdmin, async (req, res, next) => {
     const ids = parseIds(req.query) ?? [];
     const active = req.query.active != null ? req.query.active === "true" : undefined;
 
-    const data = await fetchOffersByProducts(ids); // ✅ matches string[]
+    const data = await fetchOffersByProducts(ids);
 
-    const flat = flattenOffers(data);
+    let flat = flattenOffers(data);
+    flat = filterFlatOffersByActive(flat, active);
 
     res.json({ data: flat });
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
 router.get('/admin/products/offers', requireAdmin, async (req, res, next) => {
@@ -182,43 +154,41 @@ router.get('/admin/products/offers', requireAdmin, async (req, res, next) => {
     const ids = parseIds(req.query) ?? [];
     const active = req.query.active != null ? req.query.active === "true" : undefined;
 
-    const data = await fetchOffersByProducts(ids); // ✅ matches string[]
+    const data = await fetchOffersByProducts(ids);
 
-    const flat = flattenOffers(data);
+    let flat = flattenOffers(data);
+    flat = filterFlatOffersByActive(flat, active);
 
     res.json({ data: flat });
-  } catch (e) { next(e); }
+  } catch (e) {
+    next(e);
+  }
 });
 
-function unwrapDataPayload(input: unknown): unknown {
-  if (Array.isArray(input)) return input;
-  if (input && typeof input === "object" && "data" in input) {
-    return (input as any).data;
-  }
-  return input;
-}
-
-// Public/fallback: /api/supplier-offers?productIds=a,b,c
 // Public/fallback: /api/supplier-offers?productIds=a,b,c
 router.get('/supplier-offers', async (req, res, next) => {
   try {
     const ids = parseIds(req.query) ?? [];
     const active = req.query.active != null ? req.query.active === "true" : undefined;
 
-    const data = await fetchOffersByProducts(ids); // ✅ matches string[]
+    const data = await fetchOffersByProducts(ids);
+
+    // ✅ flatten always
+    let flat = flattenOffers(data);
+
+    // ✅ active filter (public too)
+    flat = filterFlatOffersByActive(flat, active);
 
     // ✅ filter payout-unready suppliers (public endpoint only)
-    const flat = flattenOffers(data);
     const supplierIds = flat.map((o: any) => String(o?.supplierId ?? '')).filter(Boolean);
     const allowedSupplierIds = await getPayoutReadySupplierIdSet(supplierIds);
 
+    flat = filterFlatOffersByAllowedSuppliers(flat, allowedSupplierIds);
 
-    const payload = unwrapDataPayload(data);
-    const filteredPayload = filterOfferPayloadBySupplierIds(payload, allowedSupplierIds);
-
-    res.json({ data: filteredPayload });
-  } catch (e) { next(e); }
+    res.json({ data: flat });
+  } catch (e) {
+    next(e);
+  }
 });
-
 
 export default router;

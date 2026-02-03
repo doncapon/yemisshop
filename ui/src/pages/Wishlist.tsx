@@ -5,6 +5,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import { useAuthStore } from '../store/auth';
 import SiteLayout from '../layouts/SiteLayout';
+import { showMiniCartToast } from '../components/cart/MiniCartToast';
 
 /* ---------------- Types (aligned with Catalog) ---------------- */
 type Variant = {
@@ -42,22 +43,31 @@ function getBrandName(p: Product) {
   return (p.brand?.name || p.brandName || '').trim();
 }
 function hasVariantInStock(p: Product) {
-  return (p.variants || []).some(v => v.inStock !== false);
+  return (p.variants || []).some((v) => v.inStock !== false);
 }
 function getMinPrice(p: Product): number {
   const base = Number(p.price ?? 0);
-  const mins = [base, ...(p.variants ?? []).map(v => Number(v?.price ?? base))].filter(Number.isFinite);
+  const mins = [base, ...(p.variants ?? []).map((v) => Number(v?.price ?? base))].filter(Number.isFinite);
   return mins.length ? Math.min(...mins) : 0;
 }
+
+
 function normalizeProductsPayload(payload: any): Product[] {
-  const raw: any[] = Array.isArray(payload) ? payload : (payload?.data ?? []);
+  const raw: any[] = Array.isArray(payload) ? payload : payload?.data ?? [];
+
   return raw
     .filter((x) => x && typeof x.id === 'string')
     .map((x) => ({
       id: String(x.id),
       title: String(x.title ?? ''),
       description: x.description ?? '',
-      price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
+      price: Number.isFinite(Number((x as any).retailPrice))
+        ? Number((x as any).retailPrice)
+        : Number.isFinite(Number((x as any).retailBasePrice))
+          ? Number((x as any).retailBasePrice)
+          : Number.isFinite(Number((x as any).price))
+            ? Number((x as any).price)
+            : undefined,
       inStock: x.inStock !== false,
       imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
       categoryId: x.categoryId ?? null,
@@ -72,30 +82,52 @@ function normalizeProductsPayload(payload: any): Product[] {
 }
 
 /* ---------------- Local cart helper ---------------- */
-function addToLocalCart(p: Product) {
+function addToLocalCart(p: Product): any[] {
   try {
     const raw = localStorage.getItem('cart');
     const cart: any[] = raw ? JSON.parse(raw) : [];
-    const idx = cart.findIndex((x) => x.productId === p.id);
 
-    const unit = getMinPrice(p);
+    // ✅ base retail only for base cart line
+    const unit = Number(p.price ?? 0) || 0;
+    if (!(unit > 0)) return cart;
+
+    const primaryImg =
+      p.imagesJson?.[0] ||
+      p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
+      null;
+
+    const idx = cart.findIndex((x) => x.productId === p.id && (!x.variantId || x.variantId === null));
+
     if (idx >= 0) {
-      cart[idx].qty = Math.max(1, Number(cart[idx].qty) || 1) + 1;
-      cart[idx].price = unit;           // legacy
-      cart[idx].totalPrice = unit * cart[idx].qty;
-      cart[idx].title = p.title;
+      const nextQty = Math.max(1, Number(cart[idx].qty) || 1) + 1;
+      cart[idx] = {
+        ...cart[idx],
+        title: p.title,
+        qty: nextQty,
+        unitPrice: unit,
+        totalPrice: unit * nextQty,
+        price: unit, // legacy
+        image: primaryImg ?? cart[idx].image ?? null,
+        variantId: null,
+      };
     } else {
       cart.push({
         productId: p.id,
+        variantId: null,
         title: p.title,
         qty: 1,
-        totalPrice: unit, // preferred
-        price: unit,      // legacy
+        unitPrice: unit,
+        totalPrice: unit,
+        price: unit, // legacy
+        image: primaryImg,
+        selectedOptions: [],
       });
     }
+
     localStorage.setItem('cart', JSON.stringify(cart));
+    return cart;
   } catch {
-    // no-op
+    return [];
   }
 }
 
@@ -313,7 +345,10 @@ export default function Wishlist() {
 
                           <span
                             className={`absolute left-3 top-3 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium
-                                      ${available ? 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20' : 'bg-rose-600/10 text-rose-700 border border-rose-600/20'}`}
+                                      ${available
+                                ? 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20'
+                                : 'bg-rose-600/10 text-rose-700 border border-rose-600/20'
+                              }`}
                           >
                             {available ? 'In stock' : 'Out of stock'}
                           </span>
@@ -343,15 +378,11 @@ export default function Wishlist() {
                         </div>
 
                         <div className="mt-1 text-xs text-ink-soft line-clamp-1">
-                          {brand ? `${brand} • ` : ''}{available ? 'Available' : 'Unavailable'}
+                          {brand ? `${brand} • ` : ''}
+                          {available ? 'Available' : 'Unavailable'}
                         </div>
 
-                        <div className="mt-2 text-lg font-semibold">
-                          {ngn.format(minPrice)}
-                          {p.variants && p.variants.length > 0 && minPrice < Number(p.price ?? Infinity) && (
-                            <span className="ml-1 text-[11px] text-ink-soft">from variants</span>
-                          )}
-                        </div>
+                        <div className="mt-2 text-lg font-semibold">{ngn.format(minPrice)}</div>
 
                         <div className="mt-3 flex items-center gap-2">
                           <Link
@@ -362,7 +393,10 @@ export default function Wishlist() {
                             View
                           </Link>
                           <button
-                            onClick={() => addToLocalCart(p)}
+                            onClick={() => {
+                              const cart = addToLocalCart(p);
+                              showMiniCartToast(cart, { productId: p.id, variantId: null }, { title: 'Added to cart' });
+                            }}
                             className="inline-flex items-center justify-center rounded-xl bg-primary-600 text-white px-3 py-2 text-sm font-medium
                                      hover:bg-primary-700 active:bg-primary-800 focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
                           >

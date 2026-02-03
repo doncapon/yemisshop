@@ -255,6 +255,17 @@ body {
   display: block !important;
 }
 
+/* Prevent horizontal layout shift when content height changes */
+html {
+  scrollbar-gutter: stable;
+}
+
+/* Fallback for older browsers */
+body {
+  overflow-y: scroll;
+}
+
+
 /* 5) Root must not be constrained/centered by any old template styles */
 #root {
   width: 100%;
