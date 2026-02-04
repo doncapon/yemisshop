@@ -12,7 +12,17 @@ import crypto from "crypto";
 import { sendOrderOtpNotifications } from "../services/otpNotify.service.js";
 import { z } from "zod";
 import { assertVerifiedOrderOtp } from "./adminOrders.js";
-import { requestOrderOtpForPurposeTx, verifyOrderOtpForPurposeTx } from "../services/orderOtp.service.js";
+import {
+  requestOrderOtpForPurposeTx,
+  verifyOrderOtpForPurposeTx,
+} from "../services/orderOtp.service.js";
+
+// ✅ NEW: notifications helpers
+import {
+  notifyUser,
+  notifyAdmins,
+  notifySupplierBySupplierId,
+} from "../services/notifications.service.js";
 
 const router = Router();
 
@@ -316,7 +326,9 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
     where: { id: { in: supplierIds } },
     select: { id: true, name: true },
   });
-  const supplierNameById = new Map(suppliers.map((s: any) => [String(s.id), String(s.name)]));
+  const supplierNameById = new Map(
+    suppliers.map((s: any) => [String(s.id), String(s.name)])
+  );
 
   const createdPOs: any[] = [];
 
@@ -372,7 +384,11 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
  * - grossBeforeGateway = itemsSubtotal + vatAddOn + base + comms
  * - gateway estimated on grossBeforeGateway
  */
-async function computeServiceFeeForOrderTx(tx: any, orderId: string, itemsSubtotal: number) {
+async function computeServiceFeeForOrderTx(
+  tx: any,
+  orderId: string,
+  itemsSubtotal: number
+) {
   const base = await getBaseServiceFeeNGNTx(tx);
   const unitFee = await getCommsUnitCostNGNTx(tx);
 
@@ -381,19 +397,28 @@ async function computeServiceFeeForOrderTx(tx: any, orderId: string, itemsSubtot
     select: { quantity: true },
   });
 
-  const totalUnits = rows.reduce((s: number, r: any) => s + Math.max(0, Number(r.quantity ?? 0)), 0);
+  const totalUnits = rows.reduce(
+    (s: number, r: any) => s + Math.max(0, Number(r.quantity ?? 0)),
+    0
+  );
 
   const taxMode = await getTaxModeTx(tx);
   const taxRatePct = await getTaxRatePctTx(tx);
 
-  const vatAddOn = taxMode === "ADDED" && taxRatePct > 0 ? (itemsSubtotal * taxRatePct) / 100 : 0;
+  const vatAddOn =
+    taxMode === "ADDED" && taxRatePct > 0
+      ? (itemsSubtotal * taxRatePct) / 100
+      : 0;
 
   const serviceFeeBase = round2(Math.max(0, base));
   const serviceFeeComms = round2(Math.max(0, unitFee * totalUnits));
 
-  const grossBeforeGateway = itemsSubtotal + vatAddOn + serviceFeeBase + serviceFeeComms;
+  const grossBeforeGateway =
+    itemsSubtotal + vatAddOn + serviceFeeBase + serviceFeeComms;
   const serviceFeeGateway = round2(estimateGatewayFee(grossBeforeGateway));
-  const serviceFeeTotal = round2(serviceFeeBase + serviceFeeComms + serviceFeeGateway);
+  const serviceFeeTotal = round2(
+    serviceFeeBase + serviceFeeComms + serviceFeeGateway
+  );
 
   return {
     serviceFeeBase,
@@ -436,14 +461,20 @@ function hookingTitle(t: any) {
   return String(t ?? "");
 }
 
-async function assertVariantSellableTx(tx: any, productId: string, variantId: string) {
+async function assertVariantSellableTx(
+  tx: any,
+  productId: string,
+  variantId: string
+) {
   const v = await tx.productVariant.findUnique({
     where: { id: variantId },
     select: { id: true, productId: true, isActive: true, archivedAt: true },
   });
 
   if (!v || String(v.productId) !== String(productId)) {
-    throw new Error(`Variant ${variantId} does not belong to product ${productId}.`);
+    throw new Error(
+      `Variant ${variantId} does not belong to product ${productId}.`
+    );
   }
   if (v.isActive !== true || v.archivedAt != null) {
     throw new Error(`Variant ${variantId} is not active.`);
@@ -469,7 +500,9 @@ type CandidateOffer = {
 
 function sortOffersCheapestFirst(list: CandidateOffer[]) {
   list.sort((a, b) =>
-    a.offerPrice !== b.offerPrice ? a.offerPrice - b.offerPrice : b.availableQty - a.availableQty
+    a.offerPrice !== b.offerPrice
+      ? a.offerPrice - b.offerPrice
+      : b.availableQty - a.availableQty
   );
   return list;
 }
@@ -500,7 +533,10 @@ async function fetchActiveBaseOffersTx(
   });
 
   // ✅ pick CHEAPEST base per supplier (not “last one wins”)
-  const bestBaseBySupplier = new Map<string, { id: string; basePrice: number; availableQty: number }>();
+  const bestBaseBySupplier = new Map<
+    string,
+    { id: string; basePrice: number; availableQty: number }
+  >();
 
   for (const r of rows || []) {
     const sid = String(r.supplierId ?? "");
@@ -511,12 +547,22 @@ async function fetchActiveBaseOffersTx(
     if (!(price > 0) || !(qty > 0)) continue;
 
     const cur = bestBaseBySupplier.get(sid);
-    if (!cur || price < cur.basePrice || (price === cur.basePrice && qty > cur.availableQty)) {
-      bestBaseBySupplier.set(sid, { id: String(r.id), basePrice: price, availableQty: qty });
+    if (
+      !cur ||
+      price < cur.basePrice ||
+      (price === cur.basePrice && qty > cur.availableQty)
+    ) {
+      bestBaseBySupplier.set(sid, {
+        id: String(r.id),
+        basePrice: price,
+        availableQty: qty,
+      });
     }
   }
 
-  const usable: CandidateOffer[] = Array.from(bestBaseBySupplier.entries()).map(([sid, b]) => ({
+  const usable: CandidateOffer[] = Array.from(
+    bestBaseBySupplier.entries()
+  ).map(([sid, b]) => ({
     id: b.id,
     supplierId: sid,
     availableQty: b.availableQty,
@@ -539,7 +585,12 @@ async function fetchActiveBaseOffersTx(
         availableQty: { gt: 0 },
         offerPrice: { gt: 0 },
       },
-      select: { id: true, supplierId: true, availableQty: true, offerPrice: true },
+      select: {
+        id: true,
+        supplierId: true,
+        availableQty: true,
+        offerPrice: true,
+      },
     }) ?? [])) ?? [];
 
   const legacy: CandidateOffer[] = (legacyList || [])
@@ -565,7 +616,9 @@ async function fetchActiveBaseOffersTx(
 export async function fetchOneOfferByIdTx(
   tx: any,
   offerId: string
-): Promise<(CandidateOffer & { productId: string; variantId: string | null }) | null> {
+): Promise<
+  (CandidateOffer & { productId: string; variantId: string | null }) | null
+> {
   // ✅ CHANGE:
   // This function is used to infer productId/variantId from an offerId.
   // It should NOT fail just because supplier is not payout-ready or product has no owner/supplier.
@@ -592,7 +645,12 @@ export async function fetchOneOfferByIdTx(
       const sid = String(vo.supplierId ?? "");
       if (!sid) return null;
 
-      if (vo.isActive !== true || vo.inStock !== true || asNumber(vo.availableQty, 0) <= 0) return null;
+      if (
+        vo.isActive !== true ||
+        vo.inStock !== true ||
+        asNumber(vo.availableQty, 0) <= 0
+      )
+        return null;
 
       // Base offer is pricing source only — require basePrice (do NOT require payout-ready)
       const base = await tx.supplierProductOffer.findFirst({
@@ -605,12 +663,18 @@ export async function fetchOneOfferByIdTx(
           supplier: supplierCheckoutReadyRelationFilter(),
         },
         orderBy: [{ basePrice: "asc" }, { availableQty: "desc" }],
-        select: { id: true, supplierId: true, basePrice: true, availableQty: true },
+        select: {
+          id: true,
+          supplierId: true,
+          basePrice: true,
+          availableQty: true,
+        },
       });
 
       if (!base) return null;
 
-      const supplierFullPrice = asNumber(base.basePrice, 0) + asNumber(vo.priceBump, 0);
+      const supplierFullPrice =
+        asNumber(base.basePrice, 0) + asNumber(vo.priceBump, 0);
       if (!(supplierFullPrice > 0)) return null;
 
       const effectiveQty = Math.max(0, asNumber(vo.availableQty, 0));
@@ -652,8 +716,14 @@ export async function fetchOneOfferByIdTx(
       const sid = String(bo.supplierId ?? "");
       if (!sid) return null;
 
-      if (bo.isActive !== true || bo.inStock !== true || asNumber(bo.availableQty, 0) <= 0) return null;
-      if (String(bo.supplier?.status ?? "").toUpperCase() !== "ACTIVE") return null;
+      if (
+        bo.isActive !== true ||
+        bo.inStock !== true ||
+        asNumber(bo.availableQty, 0) <= 0
+      )
+        return null;
+      if (String(bo.supplier?.status ?? "").toUpperCase() !== "ACTIVE")
+        return null;
 
       const supplierUnit = asNumber(bo.basePrice, 0);
       if (!(supplierUnit > 0)) return null;
@@ -744,7 +814,12 @@ async function fetchActiveOffersTx(
           availableQty: { gt: 0 },
           offerPrice: { gt: 0 },
         },
-        select: { id: true, supplierId: true, availableQty: true, offerPrice: true },
+        select: {
+          id: true,
+          supplierId: true,
+          availableQty: true,
+          offerPrice: true,
+        },
       }) ?? [])) ?? [];
 
     const legacyOut: CandidateOffer[] = (legacy || [])
@@ -756,7 +831,7 @@ async function fetchActiveOffersTx(
           supplierId: sid,
           availableQty: Math.max(0, asNumber(o.availableQty, 0)),
           offerPrice: asNumber(o.offerPrice, 0),
-          model: "LEGACY_OFFER",
+          model: "LEGACY_OFFER" as const,
           supplierProductOfferId: null,
           supplierVariantOfferId: null,
         };
@@ -768,7 +843,10 @@ async function fetchActiveOffersTx(
   }
 
   // ✅ CHEAPEST bump per supplier for THIS variant
-  const bestVarBySupplier = new Map<string, { id: string; bump: number; qty: number }>();
+  const bestVarBySupplier = new Map<
+    string,
+    { id: string; bump: number; qty: number }
+  >();
   for (const vo of vos) {
     const sid = String(vo.supplierId ?? "");
     if (!sid) continue;
@@ -799,7 +877,10 @@ async function fetchActiveOffersTx(
   });
 
   // ✅ CHEAPEST base per supplier
-  const bestBaseBySupplier = new Map<string, { id: string; basePrice: number }>();
+  const bestBaseBySupplier = new Map<
+    string,
+    { id: string; basePrice: number }
+  >();
   for (const b of baseRows || []) {
     const sid = String(b.supplierId ?? "");
     if (!sid) continue;
@@ -837,7 +918,11 @@ async function fetchActiveOffersTx(
 
 /* ---------------- Stock decrement (atomic) ---------------- */
 
-async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, orderId: string) {
+async function recordSupplierAllocationsOnPaidTx(
+  tx: any,
+  paymentId: string,
+  orderId: string
+) {
   const pos = await tx.purchaseOrder.findMany({
     where: { orderId },
     include: { supplier: { select: { id: true, name: true } } },
@@ -882,7 +967,11 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
   return rows;
 }
 
-async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number) {
+async function decrementOfferQtyTx(
+  tx: any,
+  offer: CandidateOffer,
+  take: number
+) {
   if (take <= 0) return;
 
   if (offer.model === "BASE_OFFER") {
@@ -903,7 +992,10 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
     }
 
     if (asNumber(after?.availableQty, 0) <= 0) {
-      await tx.supplierProductOffer.update({ where: { id: offer.id }, data: { inStock: false } });
+      await tx.supplierProductOffer.update({
+        where: { id: offer.id },
+        data: { inStock: false },
+      });
     }
 
     return;
@@ -914,7 +1006,8 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
       where: { id: offer.id, availableQty: { gte: take } },
       data: { availableQty: { decrement: take } },
     });
-    if (r.count !== 1) throw new Error("Concurrent stock update detected (variant).");
+    if (r.count !== 1)
+      throw new Error("Concurrent stock update detected (variant).");
 
     const afterVar = await tx.supplierVariantOffer.findUnique({
       where: { id: offer.id },
@@ -926,7 +1019,10 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
     }
 
     if (asNumber(afterVar?.availableQty, 0) <= 0) {
-      await tx.supplierVariantOffer.update({ where: { id: offer.id }, data: { inStock: false } });
+      await tx.supplierVariantOffer.update({
+        where: { id: offer.id },
+        data: { inStock: false },
+      });
     }
 
     return;
@@ -949,7 +1045,10 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
   }
 
   if (asNumber(after?.availableQty, 0) <= 0) {
-    await tx.supplierOffer.update({ where: { id: offer.id }, data: { inStock: false } });
+    await tx.supplierOffer.update({
+      where: { id: offer.id },
+      data: { inStock: false },
+    });
   }
 }
 
@@ -975,11 +1074,17 @@ async function resolveVariantIdFromSelectedOptionsTx(
     const valueName = x?.value != null ? norm(x.value) : "";
 
     if (attributeId && valueId) wantedIdPairs.add(`${attributeId}::${valueId}`);
-    if (attributeId && valueName) wantedAttrIdNamePairs.add(`${attributeId}::${valueName}`);
-    if (attributeName && valueName) wantedNamePairs.add(`${attributeName}::${valueName}`);
+    if (attributeId && valueName)
+      wantedAttrIdNamePairs.add(`${attributeId}::${valueName}`);
+    if (attributeName && valueName)
+      wantedNamePairs.add(`${attributeName}::${valueName}`);
   }
 
-  const wantedCount = Math.max(wantedIdPairs.size, wantedAttrIdNamePairs.size, wantedNamePairs.size);
+  const wantedCount = Math.max(
+    wantedIdPairs.size,
+    wantedAttrIdNamePairs.size,
+    wantedNamePairs.size
+  );
   if (!wantedCount) return null;
 
   const variants = await tx.productVariant.findMany({
@@ -1030,10 +1135,20 @@ async function resolveVariantIdFromSelectedOptionsTx(
   for (const v of variants) {
     const sets = buildVariantSets(v);
 
-    if (wantedIdPairs.size && setEquals(sets.idSet, wantedIdPairs)) return String(v.id);
-    if (!wantedIdPairs.size && wantedAttrIdNamePairs.size && setEquals(sets.attrIdNameSet, wantedAttrIdNamePairs))
+    if (wantedIdPairs.size && setEquals(sets.idSet, wantedIdPairs))
       return String(v.id);
-    if (!wantedIdPairs.size && !wantedAttrIdNamePairs.size && wantedNamePairs.size && setEquals(sets.nameSet, wantedNamePairs))
+    if (
+      !wantedIdPairs.size &&
+      wantedAttrIdNamePairs.size &&
+      setEquals(sets.attrIdNameSet, wantedAttrIdNamePairs)
+    )
+      return String(v.id);
+    if (
+      !wantedIdPairs.size &&
+      !wantedAttrIdNamePairs.size &&
+      wantedNamePairs.size &&
+      setEquals(sets.nameSet, wantedNamePairs)
+    )
       return String(v.id);
   }
 
@@ -1047,7 +1162,10 @@ async function resolveVariantIdFromSelectedOptionsTx(
       (!wantedIdPairs.size &&
         wantedAttrIdNamePairs.size &&
         setContainsAll(sets.attrIdNameSet, wantedAttrIdNamePairs)) ||
-      (!wantedIdPairs.size && !wantedAttrIdNamePairs.size && wantedNamePairs.size && setContainsAll(sets.nameSet, wantedNamePairs));
+      (!wantedIdPairs.size &&
+        !wantedAttrIdNamePairs.size &&
+        wantedNamePairs.size &&
+        setContainsAll(sets.nameSet, wantedNamePairs));
 
     if (!ok) continue;
 
@@ -1058,7 +1176,11 @@ async function resolveVariantIdFromSelectedOptionsTx(
   return best ? best.id : null;
 }
 
-async function resolveRetailCustomerUnitTx(tx: any, productId: string, variantId: string | null): Promise<number> {
+async function resolveRetailCustomerUnitTx(
+  tx: any,
+  productId: string,
+  variantId: string | null
+): Promise<number> {
   const prod = await tx.product.findUnique({
     where: { id: productId },
     select: { retailPrice: true },
@@ -1066,7 +1188,9 @@ async function resolveRetailCustomerUnitTx(tx: any, productId: string, variantId
 
   const productRetail = asNumber(prod?.retailPrice, 0);
   if (!(productRetail > 0)) {
-    throw new Error(`Missing retail base price (Product.retailPrice) for product ${productId}.`);
+    throw new Error(
+      `Missing retail base price (Product.retailPrice) for product ${productId}.`
+    );
   }
 
   if (!variantId) return round2(productRetail);
@@ -1082,7 +1206,9 @@ async function resolveRetailCustomerUnitTx(tx: any, productId: string, variantId
   });
 
   if (!v || String((v as any).productId) !== String(productId)) {
-    throw new Error(`Variant ${variantId} does not belong to product ${productId}.`);
+    throw new Error(
+      `Variant ${variantId} does not belong to product ${productId}.`
+    );
   }
 
   const bumpFromVariant = Math.max(0, asNumber((v as any).retailPrice, 0));
@@ -1112,7 +1238,9 @@ function assertClientUnitPriceMatches(
   const tolerance = 1;
   if (Math.abs(serverUnit - n) > tolerance) {
     throw new Error(
-      `Unit price mismatch for product ${ctx.productId}${ctx.variantId ? ` (variant ${ctx.variantId})` : ""}. ` +
+      `Unit price mismatch for product ${ctx.productId}${
+        ctx.variantId ? ` (variant ${ctx.variantId})` : ""
+      }. ` +
         `Client sent ${n}, server computed ${serverUnit}.`
     );
   }
@@ -1138,7 +1266,14 @@ function supplierAllocHoldStatus(): any {
   if (!E) return "PENDING"; // fallback
 
   // pick the best "hold/escrow" style status that exists in YOUR enum
-  return E.HELD ?? E.ON_HOLD ?? E.HOLD ?? E.PENDING ?? E.CREATED ?? Object.values(E)[0];
+  return (
+    E.HELD ??
+    E.ON_HOLD ??
+    E.HOLD ??
+    E.PENDING ??
+    E.CREATED ??
+    Object.values(E)[0]
+  );
 }
 
 /* =========================================================
@@ -1151,7 +1286,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
   if (items.length === 0) return res.status(400).json({ error: "No items." });
   if (!body.shippingAddressId && !body.shippingAddress) {
-    return res.status(400).json({ error: "shippingAddress or shippingAddressId is required." });
+    return res
+      .status(400)
+      .json({ error: "shippingAddress or shippingAddressId is required." });
   }
 
   const userId = getUserId(req);
@@ -1204,26 +1341,44 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
         const order = await tx.order.create({ data });
 
-        await logOrderActivityTx(tx, order.id, ACT.ORDER_CREATED as any, "Order created");
+        await logOrderActivityTx(
+          tx,
+          order.id,
+          ACT.ORDER_CREATED as any,
+          "Order created"
+        );
         if (body.notes && String(body.notes).trim()) {
-          await logOrderActivityTx(tx, order.id, ACT.NOTE as any, String(body.notes).trim());
+          await logOrderActivityTx(
+            tx,
+            order.id,
+            ACT.NOTE as any,
+            String(body.notes).trim()
+          );
         }
 
         let runningSubtotal = 0;
 
         for (const line of items) {
           const productId = String((line as any).productId ?? "").trim();
-          if (!productId) throw new Error("Invalid line item: missing productId.");
+          if (!productId)
+            throw new Error("Invalid line item: missing productId.");
 
-          const qtyNeeded = Number((line as any).qty ?? (line as any).quantity ?? 0);
-          if (!Number.isFinite(qtyNeeded) || qtyNeeded <= 0) throw new Error("Invalid line item.");
+          const qtyNeeded = Number(
+            (line as any).qty ?? (line as any).quantity ?? 0
+          );
+          if (!Number.isFinite(qtyNeeded) || qtyNeeded <= 0)
+            throw new Error("Invalid line item.");
 
-          const { title: productTitle } = await assertProductSellableTx(tx, productId);
+          const { title: productTitle } = await assertProductSellableTx(
+            tx,
+            productId
+          );
 
           const selectedOptionsRaw = (line as any).selectedOptions ?? null;
           let selectedOptions: any = null;
           try {
-            if (typeof selectedOptionsRaw === "string") selectedOptions = JSON.parse(selectedOptionsRaw);
+            if (typeof selectedOptionsRaw === "string")
+              selectedOptions = JSON.parse(selectedOptionsRaw);
             else selectedOptions = selectedOptionsRaw;
           } catch {
             selectedOptions = selectedOptionsRaw;
@@ -1231,23 +1386,38 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
           const optionsLabel = formatSelectedOptionsForMsg(selectedOptions);
 
-          const explicitOfferId = (line as any).offerId ?? (line as any).supplierOfferId ?? null;
+          const explicitOfferId =
+            (line as any).offerId ?? (line as any).supplierOfferId ?? null;
 
           let variantId: string | null = null;
           let candidates: CandidateOffer[] = [];
 
-          const variantFromOptions = await resolveVariantIdFromSelectedOptionsTx(tx, productId, selectedOptions);
+          const variantFromOptions =
+            await resolveVariantIdFromSelectedOptionsTx(
+              tx,
+              productId,
+              selectedOptions
+            );
 
           // ✅ offerId is only used to *identify variant combo*, NOT to lock supplier.
           if (explicitOfferId) {
-            const one = await fetchOneOfferByIdTx(tx, String(explicitOfferId));
-            if (!one) throw new Error(`Offer not found/disabled for product ${productId}.`);
+            const one = await fetchOneOfferByIdTx(
+              tx,
+              String(explicitOfferId)
+            );
+            if (!one)
+              throw new Error(
+                `Offer not found/disabled for product ${productId}.`
+              );
             if (String(one.productId) !== productId) {
-              throw new Error(`Offer mismatch: wrong product for offer ${explicitOfferId}.`);
+              throw new Error(
+                `Offer mismatch: wrong product for offer ${explicitOfferId}.`
+              );
             }
 
             variantId = one.variantId ? String(one.variantId) : null;
-            if (!variantId && variantFromOptions) variantId = String(variantFromOptions);
+            if (!variantId && variantFromOptions)
+              variantId = String(variantFromOptions);
 
             if (variantId) {
               await assertVariantSellableTx(tx, productId, variantId);
@@ -1257,10 +1427,14 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             }
           } else {
             const rawVariantId = (line as any).variantId ?? null;
-            const trimmed = rawVariantId && String(rawVariantId).trim() ? String(rawVariantId).trim() : null;
+            const trimmed =
+              rawVariantId && String(rawVariantId).trim()
+                ? String(rawVariantId).trim()
+                : null;
 
             if (trimmed) variantId = trimmed;
-            else if (variantFromOptions) variantId = String(variantFromOptions);
+            else if (variantFromOptions)
+              variantId = String(variantFromOptions);
 
             if (variantId) {
               await assertVariantSellableTx(tx, productId, variantId);
@@ -1273,7 +1447,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           sortOffersCheapestFirst(candidates);
 
           if (!candidates.length) {
-            throw new Error(`No active supplier offers for: ${productTitle}${optionsLabel}.`);
+            throw new Error(
+              `No active supplier offers for: ${productTitle}${optionsLabel}.`
+            );
           }
 
           const totalAvailable = candidates.reduce(
@@ -1286,8 +1462,16 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             );
           }
 
-          const customerUnit = await resolveRetailCustomerUnitTx(tx, productId, variantId);
-          assertClientUnitPriceMatches(customerUnit, (line as any).unitPrice, { productId, variantId });
+          const customerUnit = await resolveRetailCustomerUnitTx(
+            tx,
+            productId,
+            variantId
+          );
+          assertClientUnitPriceMatches(
+            customerUnit,
+            (line as any).unitPrice,
+            { productId, variantId }
+          );
 
           let need = qtyNeeded;
 
@@ -1305,7 +1489,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             if (o.availableQty <= 0) continue;
 
             if (!o.supplierId) {
-              throw new Error(`Bad offer data: missing supplierId for offer ${o.id}`);
+              throw new Error(
+                `Bad offer data: missing supplierId for offer ${o.id}`
+              );
             }
 
             // ✅ Only require ACTIVE supplier; product ownership irrelevant
@@ -1323,9 +1509,10 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 o.model === "BASE_OFFER"
                   ? o.supplierProductOfferId ?? o.id
                   : o.model === "VARIANT_OFFER"
-                    ? o.supplierProductOfferId ?? null
-                    : null,
-              supplierVariantOfferId: o.model === "VARIANT_OFFER" ? String(o.id) : null,
+                  ? o.supplierProductOfferId ?? null
+                  : null,
+              supplierVariantOfferId:
+                o.model === "VARIANT_OFFER" ? String(o.id) : null,
             });
 
             need -= take;
@@ -1366,21 +1553,35 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         const rate = Math.max(0, taxRatePct) / 100;
 
         // ✅ If INCLUDED: extract VAT portion from subtotal (which already includes VAT)
-        const vatIncluded = taxMode === "INCLUDED" && rate > 0 ? subtotal - subtotal / (1 + rate) : 0;
+        const vatIncluded =
+          taxMode === "INCLUDED" && rate > 0
+            ? subtotal - subtotal / (1 + rate)
+            : 0;
 
         // ✅ If ADDED: compute VAT to add on top
-        const vatAddOn = taxMode === "ADDED" && rate > 0 ? subtotal * rate : 0;
+        const vatAddOn =
+          taxMode === "ADDED" && rate > 0 ? subtotal * rate : 0;
 
         const svc = await computeServiceFeeForOrderTx(tx, order.id, subtotal);
         const total = round2(subtotal + vatAddOn + svc.serviceFeeTotal);
 
-        const purchaseOrders = await ensurePurchaseOrdersForOrderTx(tx, order.id);
+        const purchaseOrders = await ensurePurchaseOrdersForOrderTx(
+          tx,
+          order.id
+        );
 
         const updatedOrder = await tx.order.update({
           where: { id: order.id },
           data: {
             subtotal,
-            tax: round2(taxMode === "INCLUDED" ? vatIncluded : taxMode === "ADDED" ? vatAddOn : 0),
+            tax: round2(
+              taxMode === "INCLUDED"
+                ? vatIncluded
+                : taxMode === "ADDED"
+                ? vatAddOn
+                : 0
+            ),
+
             total,
 
             serviceFeeBase: svc.serviceFeeBase,
@@ -1403,6 +1604,60 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           },
         });
 
+        // ✅ Notifications: shopper, suppliers, admins
+        try {
+          // shopper
+          await notifyUser(
+            userId,
+            {
+              type: "ORDER_CREATED" as any,
+              title: "Order placed",
+              body: `Your order ${updatedOrder.id} has been created.`,
+              data: {
+                orderId: updatedOrder.id,
+                total: updatedOrder.total,
+              },
+            },
+            tx
+          );
+
+          // suppliers (one per PO)
+          for (const po of purchaseOrders) {
+            await notifySupplierBySupplierId(
+              String(po.supplierId),
+              {
+                type: "ORDER_CREATED_SUPPLIER" as any,
+                title: "New order received",
+                body: `You have a new purchase order ${po.id} from order ${updatedOrder.id}.`,
+                data: {
+                  orderId: updatedOrder.id,
+                  purchaseOrderId: po.id,
+                },
+              },
+              tx
+            );
+          }
+
+          // admins
+          await notifyAdmins(
+            {
+              type: "ORDER_CREATED_ADMIN" as any,
+              title: "New order created",
+              body: `Order ${updatedOrder.id} was created with total ₦${updatedOrder.total}.`,
+              data: {
+                orderId: updatedOrder.id,
+                total: updatedOrder.total,
+              },
+            },
+            tx
+          );
+        } catch (notifyErr) {
+          console.error(
+            "Failed to send order-created notifications:",
+            notifyErr
+          );
+        }
+
         return {
           ...updatedOrder,
           meta: {
@@ -1421,14 +1676,20 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     return res.status(201).json({ data: created });
   } catch (e: any) {
     console.error("create order failed:", e);
-    return res.status(400).json({ error: e?.message || "Could not create order" });
+    return res
+      .status(400)
+      .json({ error: e?.message || "Could not create order" });
   }
 });
 
 /* ---------------- Availability helpers (used by GET routes) ---------------- */
 
 type Pair = { productId: string; variantId: string | null };
-type AvailabilityRow = { productId: string; variantId: string | null; totalAvailable: number };
+type AvailabilityRow = {
+  productId: string;
+  variantId: string | null;
+  totalAvailable: number;
+};
 
 function availKey(productId: string, variantId: string | null) {
   return `${String(productId)}::${variantId ?? "null"}`;
@@ -1464,7 +1725,10 @@ export async function computeAvailabilityForPairsTx(
 
   const baseMap = new Map<string, number>();
   for (const r of baseAgg as any[]) {
-    baseMap.set(String(r.productId), Math.max(0, Number(r._sum?.availableQty ?? 0)));
+    baseMap.set(
+      String(r.productId),
+      Math.max(0, Number(r._sum?.availableQty ?? 0))
+    );
   }
 
   const variantAgg = variantPairs.length
@@ -1486,26 +1750,40 @@ export async function computeAvailabilityForPairsTx(
 
   const variantMap = new Map<string, number>();
   for (const r of variantAgg as any[]) {
-    variantMap.set(`${String(r.productId)}::${String(r.variantId)}`, Math.max(0, Number(r._sum?.availableQty ?? 0)));
+    variantMap.set(
+      `${String(r.productId)}::${String(r.variantId)}`,
+      Math.max(0, Number(r._sum?.availableQty ?? 0))
+    );
   }
 
   return pairs.map((p) => {
     const pid = String(p.productId);
     const vid = p.variantId ? String(p.variantId) : null;
 
-    const totalAvailable = vid == null ? baseMap.get(pid) ?? 0 : variantMap.get(`${pid}::${vid}`) ?? 0;
+    const totalAvailable =
+      vid == null
+        ? baseMap.get(pid) ?? 0
+        : variantMap.get(`${pid}::${vid}`) ?? 0;
 
     return { productId: pid, variantId: vid, totalAvailable };
   });
 }
 
 async function buildAvailabilityGetter(pairs: Pair[]) {
-  const rows = await computeAvailabilityForPairsTx(prisma as any, pairs, { includeBase: true });
+  const rows = await computeAvailabilityForPairsTx(prisma as any, pairs, {
+    includeBase: true,
+  });
 
-  const map: Record<string, { availableQty: number; inStock: boolean }> = {};
+  const map: Record<
+    string,
+    { availableQty: number; inStock: boolean }
+  > = {};
   for (const r of rows) {
     const qty = Math.max(0, Number((r as any).totalAvailable || 0));
-    map[availKey((r as any).productId, (r as any).variantId)] = { availableQty: qty, inStock: qty > 0 };
+    map[availKey((r as any).productId, (r as any).variantId)] = {
+      availableQty: qty,
+      inStock: qty > 0,
+    };
   }
 
   for (const p of pairs) {
@@ -1513,7 +1791,11 @@ async function buildAvailabilityGetter(pairs: Pair[]) {
     if (!map[k]) map[k] = { availableQty: 0, inStock: false };
   }
 
-  return (productId: string, variantId: string | null) => map[availKey(productId, variantId)] ?? { availableQty: 0, inStock: false };
+  return (productId: string, variantId: string | null) =>
+    map[availKey(productId, variantId)] ?? {
+      availableQty: 0,
+      inStock: false,
+    };
 }
 
 /* =========================================================
@@ -1527,12 +1809,21 @@ router.get("/", requireAuth, async (req, res) => {
     }
 
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 50;
+    const take = Number.isFinite(limitRaw)
+      ? Math.min(100, Math.max(1, limitRaw))
+      : 50;
 
     const q = String(req.query.q ?? "").trim();
     const where: any = q
       ? {
-          OR: [{ id: { contains: q } }, { user: { email: { contains: q, mode: "insensitive" as const } } }],
+          OR: [
+            { id: { contains: q } },
+            {
+              user: {
+                email: { contains: q, mode: "insensitive" as const },
+              },
+            },
+          ],
         }
       : {};
 
@@ -1585,7 +1876,9 @@ router.get("/", requireAuth, async (req, res) => {
     });
     const poStatusByOrderSupplier: Record<string, string> = {};
     for (const po of poRows as any[]) {
-      poStatusByOrderSupplier[`${String(po.orderId)}::${String(po.supplierId)}`] = String(po.status || "PENDING");
+      poStatusByOrderSupplier[
+        `${String(po.orderId)}::${String(po.supplierId)}`
+      ] = String(po.status || "PENDING");
     }
 
     const paymentsByOrder: Record<string, any[]> = {};
@@ -1593,7 +1886,15 @@ router.get("/", requireAuth, async (req, res) => {
       const payRows = await prisma.payment.findMany({
         where: { orderId: { in: orderIds } },
         orderBy: { createdAt: "desc" },
-        select: { id: true, orderId: true, status: true, provider: true, reference: true, amount: true, createdAt: true },
+        select: {
+          id: true,
+          orderId: true,
+          status: true,
+          provider: true,
+          reference: true,
+          amount: true,
+          createdAt: true,
+        },
       });
 
       for (const p of payRows as any[]) {
@@ -1619,7 +1920,8 @@ router.get("/", requireAuth, async (req, res) => {
       });
       for (const p of paid as any[]) {
         const id = String(p.orderId);
-        paidAmountByOrder[id] = (paidAmountByOrder[id] || 0) + asNumLocal(p.amount, 0);
+        paidAmountByOrder[id] =
+          (paidAmountByOrder[id] || 0) + asNumLocal(p.amount, 0);
       }
     } catch {}
 
@@ -1664,14 +1966,21 @@ router.get("/", requireAuth, async (req, res) => {
         const oid = String(it.orderId);
         const unitPrice = asNumLocal(it.unitPrice, 0);
         const quantity = asNumLocal(it.quantity, 1);
-        const lineTotal = asNumLocal(it.lineTotal ?? unitPrice * quantity, unitPrice * quantity);
+        const lineTotal = asNumLocal(
+          it.lineTotal ?? unitPrice * quantity,
+          unitPrice * quantity
+        );
 
         const pid = String(it.productId);
         const vid = it.variantId == null ? null : String(it.variantId);
         const { availableQty, inStock } = getAvail(pid, vid);
 
-        const supplierId = it.chosenSupplierId ? String(it.chosenSupplierId) : "";
-        const itemStatus = supplierId ? poStatusByOrderSupplier[`${oid}::${supplierId}`] ?? "PENDING" : "PENDING";
+        const supplierId = it.chosenSupplierId
+          ? String(it.chosenSupplierId)
+          : "";
+        const itemStatus = supplierId
+          ? poStatusByOrderSupplier[`${oid}::${supplierId}`] ?? "PENDING"
+          : "PENDING";
 
         (itemsByOrder[oid] ||= []).push({
           id: it.id,
@@ -1684,10 +1993,15 @@ router.get("/", requireAuth, async (req, res) => {
 
           status: itemStatus,
 
-          chosenSupplierProductOfferId: it.chosenSupplierProductOfferId ?? null,
-          chosenSupplierVariantOfferId: it.chosenSupplierVariantOfferId ?? null,
+          chosenSupplierProductOfferId:
+            it.chosenSupplierProductOfferId ?? null,
+          chosenSupplierVariantOfferId:
+            it.chosenSupplierVariantOfferId ?? null,
           chosenSupplierId: it.chosenSupplierId ?? null,
-          chosenSupplierUnitPrice: it.chosenSupplierUnitPrice != null ? asNumLocal(it.chosenSupplierUnitPrice, 0) : null,
+          chosenSupplierUnitPrice:
+            it.chosenSupplierUnitPrice != null
+              ? asNumLocal(it.chosenSupplierUnitPrice, 0)
+              : null,
 
           selectedOptions: it.selectedOptions ?? null,
           currentAvailableQty: availableQty,
@@ -1728,7 +2042,9 @@ router.get("/", requireAuth, async (req, res) => {
     });
   } catch (e: any) {
     console.error("GET /api/orders failed:", e?.message, e?.stack);
-    res.status(500).json({ error: e?.message || "Failed to fetch orders" });
+    res
+      .status(500)
+      .json({ error: e?.message || "Failed to fetch orders" });
   }
 });
 
@@ -1739,7 +2055,9 @@ router.get("/", requireAuth, async (req, res) => {
 router.get("/mine", requireAuth, async (req, res) => {
   try {
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 50;
+    const take = Number.isFinite(limitRaw)
+      ? Math.min(100, Math.max(1, limitRaw))
+      : 50;
 
     const userId = (req as any).user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
@@ -1751,7 +2069,8 @@ router.get("/mine", requireAuth, async (req, res) => {
 
     const toShopperStatus = (s: any) => {
       const u = String(s || "").toUpperCase();
-      if (!u || u === "PENDING" || u === "CREATED" || u === "FUNDED") return "PROCESSING";
+      if (!u || u === "PENDING" || u === "CREATED" || u === "FUNDED")
+        return "PROCESSING";
       return u;
     };
 
@@ -1782,7 +2101,9 @@ router.get("/mine", requireAuth, async (req, res) => {
     });
     const poStatusByOrderSupplier: Record<string, string> = {};
     for (const po of poRows as any[]) {
-      poStatusByOrderSupplier[`${String(po.orderId)}::${String(po.supplierId)}`] = String(po.status || "PENDING");
+      poStatusByOrderSupplier[
+        `${String(po.orderId)}::${String(po.supplierId)}`
+      ] = String(po.status || "PENDING");
     }
 
     const allItems = await prisma.orderItem.findMany({
@@ -1825,14 +2146,21 @@ router.get("/mine", requireAuth, async (req, res) => {
 
       const qty = asNumLocal(it.quantity, 1);
       const unitPrice = asNumLocal(it.unitPrice, 0);
-      const lineTotal = asNumLocal(it.lineTotal ?? unitPrice * qty, unitPrice * qty);
+      const lineTotal = asNumLocal(
+        it.lineTotal ?? unitPrice * qty,
+        unitPrice * qty
+      );
 
       const pid = String(it.productId);
       const vid = it.variantId == null ? null : String(it.variantId);
       const { availableQty, inStock } = getAvail(pid, vid);
 
-      const supplierId = it.chosenSupplierId ? String(it.chosenSupplierId) : "";
-      const rawPoStatus = supplierId ? poStatusByOrderSupplier[`${oid}::${supplierId}`] ?? "PENDING" : "PENDING";
+      const supplierId = it.chosenSupplierId
+        ? String(it.chosenSupplierId)
+        : "";
+      const rawPoStatus = supplierId
+        ? poStatusByOrderSupplier[`${oid}::${supplierId}`] ?? "PENDING"
+        : "PENDING";
 
       (itemsByOrder[oid] ||= []).push({
         id: it.id,
@@ -1846,10 +2174,15 @@ router.get("/mine", requireAuth, async (req, res) => {
         status: toShopperStatus(rawPoStatus),
         supplierStatusRaw: String(rawPoStatus || "PENDING"),
 
-        chosenSupplierProductOfferId: it.chosenSupplierProductOfferId ?? null,
-        chosenSupplierVariantOfferId: it.chosenSupplierVariantOfferId ?? null,
+        chosenSupplierProductOfferId:
+          it.chosenSupplierProductOfferId ?? null,
+        chosenSupplierVariantOfferId:
+          it.chosenSupplierVariantOfferId ?? null,
         chosenSupplierId: it.chosenSupplierId ?? null,
-        chosenSupplierUnitPrice: it.chosenSupplierUnitPrice != null ? asNumLocal(it.chosenSupplierUnitPrice, 0) : null,
+        chosenSupplierUnitPrice:
+          it.chosenSupplierUnitPrice != null
+            ? asNumLocal(it.chosenSupplierUnitPrice, 0)
+            : null,
 
         currentAvailableQty: availableQty,
         currentInStock: inStock,
@@ -1875,7 +2208,9 @@ router.get("/mine", requireAuth, async (req, res) => {
     res.json({ data });
   } catch (e: any) {
     console.error("list my orders failed:", e?.message, e?.stack);
-    res.status(500).json({ error: e?.message || "Failed to fetch your orders" });
+    res
+      .status(500)
+      .json({ error: e?.message || "Failed to fetch your orders" });
   }
 });
 
@@ -1913,7 +2248,9 @@ router.get("/summary", requireAuth, async (req, res) => {
     });
   } catch (err: any) {
     console.error("orders summary failed:", err);
-    res.status(500).json({ error: err?.message || "Failed to fetch summary" });
+    res
+      .status(500)
+      .json({ error: err?.message || "Failed to fetch summary" });
   }
 });
 
@@ -2012,7 +2349,9 @@ router.get("/:id", requireAuth, async (req, res) => {
 
     if (adminUser) {
       const hasPOs = (order as any).purchaseOrders?.length > 0;
-      const latestPaidPayment = ((order as any).payments || []).find((p: any) => String(p.status) === "PAID");
+      const latestPaidPayment = ((order as any).payments || []).find(
+        (p: any) => String(p.status) === "PAID"
+      );
       const hasAlloc = latestPaidPayment?.allocations?.length > 0;
 
       if (!hasPOs || (latestPaidPayment && !hasAlloc)) {
@@ -2021,7 +2360,11 @@ router.get("/:id", requireAuth, async (req, res) => {
             await ensurePurchaseOrdersForOrderTx(tx, id);
           }
           if (latestPaidPayment && !hasAlloc) {
-            await recordSupplierAllocationsOnPaidTx(tx, String(latestPaidPayment.id), id);
+            await recordSupplierAllocationsOnPaidTx(
+              tx,
+              String(latestPaidPayment.id),
+              id
+            );
           }
         });
       }
@@ -2034,13 +2377,17 @@ router.get("/:id", requireAuth, async (req, res) => {
 
     const toShopperStatus = (s: any) => {
       const u = String(s || "").toUpperCase();
-      if (!u || u === "PENDING" || u === "CREATED" || u === "FUNDED") return "PROCESSING";
+      if (!u || u === "PENDING" || u === "CREATED" || u === "FUNDED")
+        return "PROCESSING";
       return u;
     };
 
     const poStatusBySupplier = new Map<string, string>();
     for (const po of ((order as any).purchaseOrders || []) as any[]) {
-      poStatusBySupplier.set(String(po.supplierId), String(po.status || "PENDING"));
+      poStatusBySupplier.set(
+        String(po.supplierId),
+        String(po.status || "PENDING")
+      );
     }
 
     const uniqPairs: Pair[] = [];
@@ -2069,14 +2416,20 @@ router.get("/:id", requireAuth, async (req, res) => {
       serviceFeeGateway: Number((order as any).serviceFeeGateway ?? 0),
       serviceFeeTotal: Number((order as any).serviceFeeTotal ?? 0),
 
-      createdAt: (order as any).createdAt?.toISOString?.() ?? (order as any).createdAt,
+      createdAt:
+        (order as any).createdAt?.toISOString?.() ??
+        (order as any).createdAt,
       items: ((order as any).items as any[]).map((it: any) => {
         const pid = String(it.productId);
         const vid = it.variantId == null ? null : String(it.variantId);
         const { availableQty, inStock } = getAvail(pid, vid);
 
-        const supplierId = it.chosenSupplierId ? String(it.chosenSupplierId) : "";
-        const rawPoStatus = supplierId ? poStatusBySupplier.get(supplierId) ?? "PENDING" : "PENDING";
+        const supplierId = it.chosenSupplierId
+          ? String(it.chosenSupplierId)
+          : "";
+        const rawPoStatus = supplierId
+          ? poStatusBySupplier.get(supplierId) ?? "PENDING"
+          : "PENDING";
 
         return {
           id: it.id,
@@ -2085,16 +2438,26 @@ router.get("/:id", requireAuth, async (req, res) => {
           title: it.title ?? "—",
           unitPrice: asNumLocal(it.unitPrice, 0),
           quantity: asNumLocal(it.quantity, 1),
-          lineTotal: asNumLocal(it.lineTotal, asNumLocal(it.unitPrice, 0) * asNumLocal(it.quantity, 1)),
+          lineTotal: asNumLocal(
+            it.lineTotal,
+            asNumLocal(it.unitPrice, 0) * asNumLocal(it.quantity, 1)
+          ),
 
-          status: adminUser ? String(rawPoStatus) : toShopperStatus(rawPoStatus),
+          status: adminUser
+            ? String(rawPoStatus)
+            : toShopperStatus(rawPoStatus),
           supplierStatusRaw: String(rawPoStatus),
 
-          chosenSupplierProductOfferId: it.chosenSupplierProductOfferId ?? null,
-          chosenSupplierVariantOfferId: it.chosenSupplierVariantOfferId ?? null,
+          chosenSupplierProductOfferId:
+            it.chosenSupplierProductOfferId ?? null,
+          chosenSupplierVariantOfferId:
+            it.chosenSupplierVariantOfferId ?? null,
 
           chosenSupplierId: it.chosenSupplierId ?? null,
-          chosenSupplierUnitPrice: it.chosenSupplierUnitPrice != null ? asNumLocal(it.chosenSupplierUnitPrice, 0) : null,
+          chosenSupplierUnitPrice:
+            it.chosenSupplierUnitPrice != null
+              ? asNumLocal(it.chosenSupplierUnitPrice, 0)
+              : null,
 
           currentAvailableQty: availableQty,
           currentInStock: inStock,
@@ -2108,7 +2471,9 @@ router.get("/:id", requireAuth, async (req, res) => {
     res.json({ data });
   } catch (e: any) {
     console.error("get order failed:", e);
-    res.status(500).json({ error: e?.message || "Failed to fetch order" });
+    res
+      .status(500)
+      .json({ error: e?.message || "Failed to fetch order" });
   }
 });
 
@@ -2175,15 +2540,23 @@ router.get("/:orderId/profit", requireSuperAdmin, async (req, res) => {
         status: order.status,
         total: Number(order.total || 0),
         serviceFeeRecorded: Number((order as any).serviceFeeTotal || 0),
-        paidAmount: payments.reduce((a: number, p: any) => a + Number(p.amount || 0), 0),
-        gatewayFeeActual: payments.reduce((a: number, p: any) => a + Number(p.feeAmount || 0), 0),
+        paidAmount: payments.reduce(
+          (a: number, p: any) => a + Number(p.amount || 0),
+          0
+        ),
+        gatewayFeeActual: payments.reduce(
+          (a: number, p: any) => a + Number(p.feeAmount || 0),
+          0
+        ),
       },
       summary,
       items: itemMetrics,
     });
   } catch (e: any) {
     console.error("profit endpoint failed:", e);
-    res.status(500).json({ error: e?.message || "Failed to fetch profit" });
+    res
+      .status(500)
+      .json({ error: e?.message || "Failed to fetch profit" });
   }
 });
 
@@ -2248,9 +2621,14 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
   const expiresAt = addSeconds(t, expiresInSec);
 
   const bindUserId = purpose === "PAY_ORDER" ? String(order.userId) : String(actorId);
-  const targetEmail = purpose === "PAY_ORDER" ? (order.user?.email ?? null) : ((req as any).user?.email ?? null);
+  const targetEmail =
+    purpose === "PAY_ORDER"
+      ? order.user?.email ?? null
+      : ((req as any).user?.email ?? null);
   const targetPhoneE164 =
-    purpose === "PAY_ORDER" ? normalizeE164(order.user?.phone ?? null) : normalizeE164((req as any).user?.phone ?? null);
+    purpose === "PAY_ORDER"
+      ? normalizeE164(order.user?.phone ?? null)
+      : normalizeE164((req as any).user?.phone ?? null);
 
   const reqRow = await prisma.orderOtpRequest.create({
     data: {
@@ -2286,8 +2664,11 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
     targetPhoneE164 && targetPhoneE164.length >= 4
       ? `sms/whatsapp to ***${targetPhoneE164.slice(-4)}`
       : targetEmail
-        ? `email to ${String(targetEmail).replace(/(^.).+(@.*$)/, "$1***$2")}`
-        : null;
+      ? `email to ${String(targetEmail).replace(
+          /(^.).+(@.*$)/,
+          "$1***$2"
+        )}`
+      : null;
 
   return res.json({
     requestId: reqRow.id,
@@ -2298,7 +2679,13 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
 
 async function assertValidOtpTokenTx(
   tx: any,
-  args: { orderId: string; purpose: "PAY_ORDER" | "CANCEL_ORDER"; otpToken: string; actorId: string; actorRole: string }
+  args: {
+    orderId: string;
+    purpose: "PAY_ORDER" | "CANCEL_ORDER";
+    otpToken: string;
+    actorId: string;
+    actorRole: string;
+  }
 ) {
   const { orderId, purpose, otpToken, actorId } = args;
 
@@ -2314,7 +2701,8 @@ async function assertValidOtpTokenTx(
 
   if (!row) throw new Error("OTP token invalid");
   if (row.consumedAt) throw new Error("OTP token already used");
-  if (row.expiresAt && row.expiresAt <= now()) throw new Error("OTP token expired");
+  if (row.expiresAt && row.expiresAt <= now())
+    throw new Error("OTP token expired");
 
   if (String(row.userId) !== String(actorId)) {
     throw new Error("OTP token not valid for this user");
@@ -2333,7 +2721,8 @@ function requireOtp(purpose: "PAY_ORDER" | "CANCEL_ORDER") {
     try {
       const orderId = String(req.params.id);
       const otpToken = String(req.header("x-otp-token") ?? "").trim();
-      if (!otpToken) return res.status(401).json({ error: "Missing x-otp-token" });
+      if (!otpToken)
+        return res.status(401).json({ error: "Missing x-otp-token" });
 
       const actorId = getUserId(req);
       if (!actorId) return res.status(401).json({ error: "Unauthorized" });
@@ -2350,7 +2739,9 @@ function requireOtp(purpose: "PAY_ORDER" | "CANCEL_ORDER") {
 
       next();
     } catch (e: any) {
-      return res.status(401).json({ error: e?.message || "OTP required" });
+      return res
+        .status(401)
+        .json({ error: e?.message || "OTP required" });
     }
   };
 }
@@ -2361,7 +2752,8 @@ router.post("/:id/otp/verify", requireAuth, async (req, res) => {
   if (!actorId) return res.status(401).json({ error: "Unauthorized" });
 
   const purposeP = OrderOtpPurpose.safeParse(req.body?.purpose);
-  if (!purposeP.success) return res.status(400).json({ error: "Invalid purpose" });
+  if (!purposeP.success)
+    return res.status(400).json({ error: "Invalid purpose" });
   const purpose = purposeP.data;
 
   const order = await prisma.order.findUnique({
@@ -2374,7 +2766,8 @@ router.post("/:id/otp/verify", requireAuth, async (req, res) => {
   const otp = String(req.body?.otp ?? "").trim();
 
   if (!requestId) return res.status(400).json({ error: "Missing requestId" });
-  if (!/^\d{6}$/.test(otp)) return res.status(400).json({ error: "Invalid otp format" });
+  if (!/^\d{6}$/.test(otp))
+    return res.status(400).json({ error: "Invalid otp format" });
 
   const row = await prisma.orderOtpRequest.findFirst({
     where: { id: requestId, orderId, purpose },
@@ -2394,26 +2787,35 @@ router.post("/:id/otp/verify", requireAuth, async (req, res) => {
   if (!row) return res.status(404).json({ error: "OTP request not found" });
 
   if (purpose === "PAY_ORDER") {
-    if (String(order.userId) !== String(actorId)) return res.status(403).json({ error: "Forbidden" });
-    if (String(row.userId) !== String(actorId)) return res.status(403).json({ error: "Forbidden" });
+    if (String(order.userId) !== String(actorId))
+      return res.status(403).json({ error: "Forbidden" });
+    if (String(row.userId) !== String(actorId))
+      return res.status(403).json({ error: "Forbidden" });
   } else {
     const adminOk = isAdmin((req as any).user?.role);
     const ownerOk = String(order.userId) === String(actorId);
-    if (!adminOk && !ownerOk) return res.status(403).json({ error: "Forbidden" });
+    if (!adminOk && !ownerOk)
+      return res.status(403).json({ error: "Forbidden" });
 
-    if (String(row.userId) !== String(actorId)) return res.status(403).json({ error: "Forbidden" });
+    if (String(row.userId) !== String(actorId))
+      return res.status(403).json({ error: "Forbidden" });
   }
 
   const t = now();
 
-  if (row.consumedAt) return res.status(400).json({ error: "OTP token already used" });
+  if (row.consumedAt)
+    return res.status(400).json({ error: "OTP token already used" });
   if (row.verifiedAt) return res.json({ token: row.id });
 
   if (row.lockedUntil && row.lockedUntil > t) {
-    return res.status(429).json({ error: "OTP verification temporarily locked", lockedUntil: row.lockedUntil });
+    return res.status(429).json({
+      error: "OTP verification temporarily locked",
+      lockedUntil: row.lockedUntil,
+    });
   }
 
-  if (row.expiresAt <= t) return res.status(400).json({ error: "OTP expired" });
+  if (row.expiresAt <= t)
+    return res.status(400).json({ error: "OTP expired" });
 
   const attemptedHash = hashOtp(otp, row.salt);
   const a = Buffer.from(attemptedHash, "hex");
@@ -2422,14 +2824,19 @@ router.post("/:id/otp/verify", requireAuth, async (req, res) => {
 
   if (!ok) {
     const nextAttempts = (row.attempts ?? 0) + 1;
-    const lockedUntil = nextAttempts >= OTP_MAX_ATTEMPTS ? addMinutes(t, OTP_LOCK_MINS) : null;
+    const lockedUntil =
+      nextAttempts >= OTP_MAX_ATTEMPTS ? addMinutes(t, OTP_LOCK_MINS) : null;
 
     await prisma.orderOtpRequest.update({
       where: { id: row.id },
       data: { attempts: nextAttempts, lockedUntil },
     });
 
-    return res.status(400).json({ error: "Incorrect OTP", attempts: nextAttempts, lockedUntil });
+    return res.status(400).json({
+      error: "Incorrect OTP",
+      attempts: nextAttempts,
+      lockedUntil,
+    });
   }
 
   await prisma.orderOtpRequest.update({
@@ -2449,10 +2856,14 @@ router.post("/:orderId/cancel", requireAuth, async (req, res) => {
 
   // ✅ OTP REQUIRED
   try {
-    const otpToken = String(req.headers["x-otp-token"] ?? req.body?.otpToken ?? "").trim();
+    const otpToken = String(
+      req.headers["x-otp-token"] ?? req.body?.otpToken ?? ""
+    ).trim();
     await assertVerifiedOrderOtp(orderId, "CANCEL_ORDER", otpToken, actorId);
   } catch (e: any) {
-    return res.status(400).json({ error: e?.message || "OTP verification required" });
+    return res
+      .status(400)
+      .json({ error: e?.message || "OTP verification required" });
   }
 
   try {
@@ -2476,9 +2887,13 @@ router.post("/:orderId/cancel", requireAuth, async (req, res) => {
 
       if (!order) throw new Error("Order not found");
 
-      const ownerId = String((order as any).userId ?? (order as any).customerId ?? "");
+      const ownerId = String(
+        (order as any).userId ?? (order as any).customerId ?? ""
+      );
       if (!ownerId || ownerId !== actorId) {
-        return res.status(403).json({ error: "Not allowed to cancel this order" });
+        return res
+          .status(403)
+          .json({ error: "Not allowed to cancel this order" });
       }
 
       const os = String(order.status || "").toUpperCase();
@@ -2486,7 +2901,9 @@ router.post("/:orderId/cancel", requireAuth, async (req, res) => {
 
       const hasPaid = (order.payments || []).some((p: any) => {
         const s = String(p.status || "").toUpperCase();
-        return ["PAID", "SUCCESS", "SUCCESSFUL", "VERIFIED", "COMPLETED"].includes(s);
+        return ["PAID", "SUCCESS", "SUCCESSFUL", "VERIFIED", "COMPLETED"].includes(
+          s
+        );
       });
 
       if (hasPaid || ["PAID", "COMPLETED"].includes(os)) {
@@ -2544,7 +2961,62 @@ router.post("/:orderId/cancel", requireAuth, async (req, res) => {
         data: { status: "CANCELED" },
       });
 
-      await logOrderActivityTx(tx, orderId, ACT.STATUS_CHANGE as any, "Order canceled by customer");
+      await logOrderActivityTx(
+        tx,
+        orderId,
+        ACT.STATUS_CHANGE as any,
+        "Order canceled by customer"
+      );
+
+      // ✅ Notifications on cancel: shopper, suppliers, admins
+      try {
+        // shopper
+        await notifyUser(
+          ownerId,
+          {
+            type: "ORDER_CANCELED" as any,
+            title: "Order canceled",
+            body: `Your order ${orderId} has been canceled.`,
+            data: { orderId },
+          },
+          tx
+        );
+
+        // suppliers for this order (via POs)
+        const pos = await tx.purchaseOrder.findMany({
+          where: { orderId },
+          select: { supplierId: true, id: true },
+        });
+
+        for (const po of pos) {
+          await notifySupplierBySupplierId(
+            String(po.supplierId),
+            {
+              type: "ORDER_CANCELED_SUPPLIER" as any,
+              title: "Order canceled",
+              body: `Purchase order ${po.id} (from order ${orderId}) was canceled by the customer.`,
+              data: { orderId, purchaseOrderId: po.id },
+            },
+            tx
+          );
+        }
+
+        // admins
+        await notifyAdmins(
+          {
+            type: "ORDER_CANCELED_ADMIN" as any,
+            title: "Order canceled",
+            body: `Order ${orderId} was canceled by the customer.`,
+            data: { orderId },
+          },
+          tx
+        );
+      } catch (notifyErr) {
+        console.error(
+          "Failed to send order-canceled notifications:",
+          notifyErr
+        );
+      }
 
       return canceled;
     });
@@ -2582,7 +3054,8 @@ router.post("/:orderId/cancel-otp/request", requireAuth, async (req: any, res) =
     const { orderId } = req.params;
 
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    if (!isSupplier(role) && !isAdmin(role)) return res.status(403).json({ error: "Forbidden" });
+    if (!isSupplier(role) && !isAdmin(role))
+      return res.status(403).json({ error: "Forbidden" });
 
     // ... your supplierId + PO checks ...
 
@@ -2601,11 +3074,20 @@ router.post("/:orderId/cancel-otp/request", requireAuth, async (req: any, res) =
     const status = Number(e?.status) || 500;
 
     if (status === 429) {
-      console.warn("Cancel OTP cooldown:", e?.message, { retryAt: e?.retryAt, orderId: req.params.orderId });
+      console.warn("Cancel OTP cooldown:", e?.message, {
+        retryAt: e?.retryAt,
+        orderId: req.params.orderId,
+      });
     } else if (status >= 400 && status < 500) {
-      console.warn("Cancel OTP client error:", e?.message, { status, orderId: req.params.orderId });
+      console.warn("Cancel OTP client error:", e?.message, {
+        status,
+        orderId: req.params.orderId,
+      });
     } else {
-      console.error("POST /api/orders/:orderId/cancel-otp/request failed:", e);
+      console.error(
+        "POST /api/orders/:orderId/cancel-otp/request failed:",
+        e
+      );
     }
 
     return res.status(status).json({
@@ -2627,18 +3109,29 @@ router.post("/:orderId/cancel-otp/verify", requireAuth, async (req: any, res) =>
   const role = req.user?.role;
   const { orderId } = req.params;
 
-  if (!userId) return res.status(200).json({ ok: false, code: "UNAUTHORIZED", message: "Unauthorized" });
+  if (!userId)
+    return res
+      .status(200)
+      .json({ ok: false, code: "UNAUTHORIZED", message: "Unauthorized" });
   if (!isSupplier(role) && !isAdmin(role)) {
-    return res.status(200).json({ ok: false, code: "FORBIDDEN", message: "Forbidden" });
+    return res
+      .status(200)
+      .json({ ok: false, code: "FORBIDDEN", message: "Forbidden" });
   }
 
   const raw = req.body?.otp ?? req.body?.code ?? "";
   const otp = String(raw).trim();
 
-  const requestId = req.body?.requestId ? String(req.body.requestId).trim() : undefined;
+  const requestId = req.body?.requestId
+    ? String(req.body.requestId).trim()
+    : undefined;
 
   if (!/^\d{6}$/.test(otp)) {
-    return res.status(200).json({ ok: false, code: "OTP_FORMAT", message: "OTP must be 6 digits" });
+    return res.status(200).json({
+      ok: false,
+      code: "OTP_FORMAT",
+      message: "OTP must be 6 digits",
+    });
   }
 
   try {
@@ -2652,10 +3145,16 @@ router.post("/:orderId/cancel-otp/verify", requireAuth, async (req: any, res) =>
       });
     });
 
-    return res.json({ ok: true, otpToken: out.otpToken, requestId: out.requestId });
+    return res.json({
+      ok: true,
+      otpToken: out.otpToken,
+      requestId: out.requestId,
+    });
   } catch (e: any) {
     const isOtpFailure =
-      !!e?.code && (String(e.code).startsWith("OTP_") || ["UNAUTHORIZED", "FORBIDDEN"].includes(String(e.code)));
+      !!e?.code &&
+      (String(e.code).startsWith("OTP_") ||
+        ["UNAUTHORIZED", "FORBIDDEN"].includes(String(e.code)));
 
     if (isOtpFailure) {
       return res.status(200).json({
@@ -2665,7 +3164,9 @@ router.post("/:orderId/cancel-otp/verify", requireAuth, async (req: any, res) =>
         ...(e?.requestId ? { requestId: e.requestId } : {}),
         ...(e?.expiresAt ? { expiresAt: e.expiresAt } : {}),
         ...(e?.attempts != null ? { attempts: e.attempts } : {}),
-        ...(e?.remainingAttempts != null ? { remainingAttempts: e.remainingAttempts } : {}),
+        ...(e?.remainingAttempts != null
+          ? { remainingAttempts: e.remainingAttempts }
+          : {}),
         ...(e?.lockedUntil ? { lockedUntil: e.lockedUntil } : {}),
       });
     }

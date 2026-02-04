@@ -1,13 +1,16 @@
-// api/src/routes/adminOrders.ts (or wherever this file lives)
+// api/src/routes/adminOrders.ts
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAdmin, requireSuperAdmin } from "../middleware/auth.js";
 import { logOrderActivityTx } from "../services/activity.service.js";
-import { notifySuppliersForOrder } from "../services/notify.js";
+import {
+  notifySuppliersForOrder,
+} from "../services/notify.js";
 import { syncProductInStockCacheTx } from "../services/inventory.service.js";
 import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
 import { ps, PAYSTACK_MODE, PAYSTACK_SECRET_KEY } from "../lib/paystack.js";
 import { Prisma } from "@prisma/client";
+import { notifyCustomerOrderCancelled, notifyCustomerOrderRefunded } from "../services/notifications.service.js";
 
 export const TRIAL_MODE =
   String(process.env.TRIAL_MODE || "").toLowerCase() === "true" ||
@@ -173,10 +176,10 @@ router.get("/:orderId", requireAdmin, async (req, res) => {
         product: it.product ? { title: it.product.title ?? null } : null,
         variant: it.variant
           ? {
-            id: it.variant.id,
-            sku: it.variant.sku ?? null,
-            imagesJson: it.variant.imagesJson ?? [],
-          }
+              id: it.variant.id,
+              sku: it.variant.sku ?? null,
+              imagesJson: it.variant.imagesJson ?? [],
+            }
           : null,
       })),
 
@@ -334,6 +337,13 @@ router.post("/:orderId/cancel", requireAdmin, async (req, res) => {
 
       return canceled;
     });
+
+    // 🔔 Customer notification: order cancelled
+    try {
+      await notifyCustomerOrderCancelled(orderId);
+    } catch (e) {
+      console.error("notifyCustomerOrderCancelled failed", e);
+    }
 
     return res.json({ ok: true, data: updated });
   } catch (e: any) {
@@ -649,6 +659,13 @@ router.post("/:orderId/refund", requireAdmin, async (req, res) => {
         await logOrderActivityTx(tx, orderId, ACT.STATUS_CHANGE as any, "Refund completed (trial/manual)");
       });
 
+      // 🔔 Notify customer that order has been refunded (trial/manual path)
+      try {
+        await notifyCustomerOrderRefunded(orderId, paidPayment.id);
+      } catch (e) {
+        console.error("notifyCustomerOrderRefunded failed (trial/manual)", e);
+      }
+
       return res.json({
         ok: true,
         mode: "trial",
@@ -765,6 +782,13 @@ router.post("/:orderId/refund", requireAdmin, async (req, res) => {
       await logOrderActivityTx(tx, orderId, ACT.STATUS_CHANGE as any, "Refund completed (Paystack)");
     });
 
+    // 🔔 Notify customer that order has been refunded (Paystack path)
+    try {
+      await notifyCustomerOrderRefunded(orderId, paidPayment.id);
+    } catch (e) {
+      console.error("notifyCustomerOrderRefunded failed (paystack)", e);
+    }
+
     return res.json({
       ok: true,
       provider: "PAYSTACK",
@@ -783,9 +807,15 @@ router.post("/:orderId/refund", requireAdmin, async (req, res) => {
         await prisma.$transaction(async (tx: any) => {
           // best effort event
           // (safe even if duplicates; if you have unique constraint on PaymentEvent you can ignore)
-          await tx.paymentEvent.create({
-            data: { paymentId: (createdRefunds as any)?.[0]?.meta?.paymentId || undefined, type: "REFUND_ERROR", data: errPayload },
-          }).catch(() => null);
+          await tx.paymentEvent
+            .create({
+              data: {
+                paymentId: (createdRefunds as any)?.[0]?.meta?.paymentId || undefined,
+                type: "REFUND_ERROR",
+                data: errPayload,
+              },
+            })
+            .catch(() => null);
 
           for (const r of createdRefunds) {
             await tx.refund.update({

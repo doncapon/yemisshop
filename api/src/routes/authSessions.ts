@@ -1,10 +1,16 @@
 // api/src/routes/authSessions.ts
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction, type RequestHandler } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { clearAccessTokenCookie } from "../lib/authCookies.js";
 
 const router = Router();
+
+const wrap =
+  (fn: (req: Request, res: Response, next: NextFunction) => Promise<any>): RequestHandler =>
+  (req, res, next) => {
+    fn(req, res, next).catch(next);
+  };
 
 function getUserId(req: any) {
   return req.user?.id || req.auth?.userId;
@@ -106,19 +112,23 @@ router.patch("/sessions/:id", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// ✅ POST /api/auth/logout (revoke current session)
-router.post("/logout", requireAuth, async (req, res) => {
-  const userId = getUserId(req);
-  const sid = getSessionId(req);
-
-  if (userId && sid) {
-    await prisma.userSession.updateMany({
-      where: { id: String(sid), userId: String(userId), revokedAt: null },
-      data: { revokedAt: new Date(), revokedReason: "Logged out" },
-    });
+// POST /api/auth/logout  ✅ ALWAYS clears cookie, even if auth is broken
+router.post("/logout", wrap(async (req, res) => {
+  // Best-effort revoke current session if present (optional)
+  try {
+    const sid = (req as any)?.user?.sid as string | undefined;
+    if (sid) {
+      await prisma.userSession.updateMany({
+        where: { id: sid },
+        data: { revokedAt: new Date(), revokedReason: "Logged out" } as any,
+      });
+    }
+  } catch {
+    // ignore
   }
+
   clearAccessTokenCookie(res);
-  res.json({ ok: true });
-});
+  return res.json({ ok: true });
+}));
 
 export default router;

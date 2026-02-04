@@ -9,10 +9,14 @@ import { sendOrderOtpNotifications } from "../services/otpNotify.service.js";
 import crypto from "crypto";
 import { PurchaseOrderStatus } from "@prisma/client";
 
+// ✅ notifications helpers
+import {
+  notifyUser,
+  notifyAdmins,
+  notifySupplierBySupplierId,
+} from "../services/notifications.service.js";
 
 const router = Router();
-
-
 
 // ✅ ADD this helper near the top (after router const is fine)
 function normRole(role: any): string {
@@ -27,7 +31,6 @@ const isAdmin = (role?: string) => {
 const isSupplier = (role?: string) => normRole(role) === "SUPPLIER";
 const isRider = (role?: string) => normRole(role) === "SUPPLIER_RIDER";
 
-
 /**
  * Supplier context:
  * - Admin can impersonate by ?supplierId=
@@ -36,12 +39,12 @@ const isRider = (role?: string) => normRole(role) === "SUPPLIER_RIDER";
  */
 type SupplierCtx =
   | {
-    ok: true;
-    supplierId: string;
-    supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
-    impersonating: boolean;
-    riderId?: string | null; // ✅ present for rider sessions
-  }
+      ok: true;
+      supplierId: string;
+      supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
+      impersonating: boolean;
+      riderId?: string | null; // ✅ present for rider sessions
+    }
   | { ok: false; status: number; error: string };
 
 async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
@@ -132,7 +135,7 @@ async function ensureRefundRequestedForPOTx(
   if (!Refund) {
     throw new Error(
       "Refund model delegate not found on Prisma client. " +
-      "Your Prisma model is not named 'refund'. Rename calls to your real model (e.g. refundRequest/orderRefund)."
+        "Your Prisma model is not named 'refund'. Rename calls to your real model (e.g. refundRequest/orderRefund)."
     );
   }
 
@@ -513,20 +516,16 @@ async function bestEffortSendDeliveryOtp(opts: {
       report.attempted.push("NOTIFY_SERVICE");
 
       const notifyReport = await sendOrderOtpNotifications({
-        // ✅ map to your OtpNotifyParams shape
         brand: "DaySpring",
         purposeLabel: "Delivery OTP",
         expiresMins: 10,
-
         orderId: opts.orderId,
         purchaseOrderId: opts.purchaseOrderId,
-
         code: opts.otp,
         userEmail: opts.email ?? undefined,
         userPhoneE164: phoneE164 ?? undefined,
       } as any);
 
-      // If notify reports success per channel, mark it
       if (Array.isArray((notifyReport as any)?.channels)) {
         if ((notifyReport as any).channels.includes("EMAIL")) {
           notifySentEmail = true;
@@ -538,7 +537,6 @@ async function bestEffortSendDeliveryOtp(opts: {
         }
       }
 
-      // Merge errors for debugging
       const errs = (notifyReport as any)?.errors;
       if (Array.isArray(errs) && errs.length) report.errors.push(...errs.map((x: any) => `NOTIFY_SERVICE: ${x}`));
     }
@@ -574,8 +572,6 @@ async function bestEffortSendDeliveryOtp(opts: {
   return report;
 }
 
-
-
 /**
  * GET /api/supplier/orders
  * ✅ SUPPLIER + ADMIN + SUPPLIER_RIDER
@@ -586,7 +582,6 @@ router.get("/", requireAuth, async (req: any, res) => {
     const ctx = await resolveSupplierContext(req);
     if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
-
     const role = req.user?.role;
     const userId = String(req.user?.id || "");
     const isRiderSession = isRider(role);
@@ -594,7 +589,7 @@ router.get("/", requireAuth, async (req: any, res) => {
     const viewRaw = String(req.query?.view ?? "").trim().toLowerCase();
     // Rider default view:
     const view: "active" | "delivered" | "all" =
-      (viewRaw === "delivered" || viewRaw === "all" || viewRaw === "active")
+      viewRaw === "delivered" || viewRaw === "all" || viewRaw === "active"
         ? (viewRaw as any)
         : (isRiderSession ? "active" : "all");
 
@@ -603,9 +598,11 @@ router.get("/", requireAuth, async (req: any, res) => {
     const riderDeliveredStatuses = [PurchaseOrderStatus.DELIVERED];
 
     const riderStatuses =
-      view === "delivered" ? riderDeliveredStatuses :
-        view === "all" ? [...riderActiveStatuses, ...riderDeliveredStatuses] :
-          riderActiveStatuses;
+      view === "delivered"
+        ? riderDeliveredStatuses
+        : view === "all"
+        ? [...riderActiveStatuses, ...riderDeliveredStatuses]
+        : riderActiveStatuses;
 
     // If your PurchaseOrder has deliveredByUserId, use it to ensure "jobs THEY marked as delivered"
     const poHasDeliveredBy = hasScalarField("PurchaseOrder", "deliveredByUserId");
@@ -670,10 +667,6 @@ router.get("/", requireAuth, async (req: any, res) => {
       return res.json({ data: [] });
     }
 
-    // 2) Fetch PurchaseOrders for those orders
-    // ✅ if rider: only assigned + only delivery mode
-    const riderDeliveryStatuses = [PurchaseOrderStatus.SHIPPED, PurchaseOrderStatus.OUT_FOR_DELIVERY];
-
     const pos = await prisma.purchaseOrder.findMany({
       where: {
         supplierId,
@@ -681,12 +674,11 @@ router.get("/", requireAuth, async (req: any, res) => {
 
         ...(riderId
           ? {
-            riderId,
-            status: { in: riderStatuses as any },
+              riderId,
+              status: { in: riderStatuses as any },
 
-            // ✅ Only show delivered jobs that this rider delivered (if view=delivered or all)
-            ...(view !== "active" && poHasDeliveredBy ? { deliveredByUserId: userId } : {}),
-          }
+              ...(view !== "active" && poHasDeliveredBy ? { deliveredByUserId: userId } : {}),
+            }
           : {}),
       },
       select: {
@@ -700,7 +692,6 @@ router.get("/", requireAuth, async (req: any, res) => {
         payoutStatus: true,
         paidOutAt: true,
 
-        // ✅ add these to show rider history + who delivered
         ...(hasScalarField("PurchaseOrder", "deliveredAt") ? { deliveredAt: true } : {}),
         ...(poHasDeliveredBy ? { deliveredByUserId: true } : {}),
 
@@ -708,12 +699,10 @@ router.get("/", requireAuth, async (req: any, res) => {
       },
     });
 
-    // If rider (or supplier) has no POs for these orderIds, return empty
     if (!pos.length) {
       return res.json({ data: [] });
     }
 
-    // ✅ Only include orders that actually have a PO for this supplier (+ rider filter if applicable)
     const allowedOrderIds = new Set(pos.map((p: any) => String(p.orderId)).filter(Boolean));
     const poIds = pos.map((p: any) => String(p.id)).filter(Boolean);
 
@@ -751,13 +740,11 @@ router.get("/", requireAuth, async (req: any, res) => {
 
         riderId: po.riderId ?? null,
 
-        // ✅ delivery audit fields
         deliveredAt: (po as any).deliveredAt?.toISOString?.() ?? (po as any).deliveredAt ?? null,
         deliveredByUserId: (po as any).deliveredByUserId ?? null,
 
         deliveryOtpVerifiedAt: verifiedByPoId[String(po.id)] ?? null,
       };
-
     }
 
     // 5) Group order items by orderId -> API payload
@@ -765,41 +752,37 @@ router.get("/", requireAuth, async (req: any, res) => {
     for (const r of rows as any[]) {
       const oid = String(r.orderId);
 
-      // ✅ filter out orders that don’t have a PO for this supplier (+ rider filter)
       if (!allowedOrderIds.has(oid)) continue;
 
       if (!grouped[oid]) {
         const riderView = isRider(req.user?.role);
 
-        // ... inside grouped init:
         grouped[oid] = {
           id: r.order?.id ?? oid,
           status: r.order?.status ?? "CREATED",
           createdAt: (r.order as any)?.createdAt?.toISOString?.() ?? r.order?.createdAt ?? null,
-          customerEmail: riderView ? null : (r.order?.user?.email ?? null), // optional: hide email too
+          customerEmail: riderView ? null : r.order?.user?.email ?? null,
           shippingAddress: r.order?.shippingAddress ?? null,
 
           purchaseOrderId: poByOrder[oid]?.id ?? null,
           supplierStatus: poByOrder[oid]?.status ?? "CREATED",
 
-          // ✅ hide money/payout/refund info from riders
           ...(riderView
             ? {}
             : {
-              supplierAmount: poByOrder[oid]?.supplierAmount ?? null,
-              poSubtotal: poByOrder[oid]?.subtotal ?? null,
-              payoutStatus: poByOrder[oid]?.payoutStatus ?? null,
-              paidOutAt: poByOrder[oid]?.paidOutAt ?? null,
-              refundId: poByOrder[oid]?.refundId ?? null,
-              refundStatus: poByOrder[oid]?.refundStatus ?? null,
-            }),
+                supplierAmount: poByOrder[oid]?.supplierAmount ?? null,
+                poSubtotal: poByOrder[oid]?.subtotal ?? null,
+                payoutStatus: poByOrder[oid]?.payoutStatus ?? null,
+                paidOutAt: poByOrder[oid]?.paidOutAt ?? null,
+                refundId: poByOrder[oid]?.refundId ?? null,
+                refundStatus: poByOrder[oid]?.refundStatus ?? null,
+              }),
 
           riderId: poByOrder[oid]?.riderId ?? null,
           deliveryOtpVerifiedAt: poByOrder[oid]?.deliveryOtpVerifiedAt ?? null,
 
           items: [],
         };
-
       }
 
       grouped[oid].items.push({
@@ -850,7 +833,6 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
         throw new Error("Delivery OTP can only be requested when PO is SHIPPED / OUT_FOR_DELIVERY");
       }
 
-      // pull customer contact
       const userSelect: any = { email: true };
       if (hasScalarField("User", "phone")) userSelect.phone = true;
 
@@ -867,13 +849,11 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
       const email = order?.user?.email ?? null;
       const phone = (order?.shippingAddress as any)?.phone ?? (order?.user as any)?.phone ?? null;
 
-      // generate otp + hash fields REQUIRED by your schema: codeHash + salt
       const otp = sixDigitOtp();
       const salt = newSalt();
       const codeHash = makeCodeHash(otp, salt);
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-      // find existing otp row for this PO
       const existing = await tx.purchaseOrderDeliveryOtp.findFirst({
         where: { purchaseOrderId: po.id },
         orderBy: { createdAt: "desc" },
@@ -917,20 +897,15 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
         phone,
       });
 
-      // ✅ optional hard fail if there is literally no contact
       if (!sendReport.hasEmail && !sendReport.hasPhone) {
         throw new Error("Customer has no email/phone to send delivery OTP.");
       }
 
       return {
         expiresAt: expiresAt.toISOString(),
-        sendReport, // ✅ so you can see what happened
-        // ✅ DEV-ONLY: return otp for testing (REMOVE/disable in prod)
+        sendReport,
         ...(process.env.NODE_ENV !== "production" ? { devOtp: otp } : {}),
       };
-
-
-      return { expiresAt: expiresAt.toISOString() };
     });
 
     return res.json({ ok: true, data: out });
@@ -971,7 +946,6 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
       if (poStatus === "CANCELED") throw new Error("Cannot verify delivery OTP for a CANCELED PO");
       if (poStatus === "DELIVERED") return { poAlreadyDelivered: true };
 
-      // latest active otp row
       const row = await tx.purchaseOrderDeliveryOtp.findFirst({
         where: {
           purchaseOrderId: po.id,
@@ -993,7 +967,7 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
 
       if (!safeEqual(expected, actual)) {
         const nextAttempts = attempt + 1;
-        const lockAfter = 5; // tweak if you want
+        const lockAfter = 5;
         const lockMinutes = 10;
 
         await tx.purchaseOrderDeliveryOtp.update({
@@ -1007,7 +981,6 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         throw new Error(nextAttempts >= lockAfter ? "Too many attempts. OTP locked. Please request a new one." : "Invalid OTP");
       }
 
-      // mark otp verified/consumed
       await tx.purchaseOrderDeliveryOtp.update({
         where: { id: row.id },
         data: {
@@ -1018,7 +991,6 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         },
       });
 
-      // mark PO delivered
       const updatedPo = await tx.purchaseOrder.update({
         where: { id: po.id },
         data: {
@@ -1034,21 +1006,77 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         },
       });
 
-      // release payout
       await assertSupplierPayoutReadyTx(tx, updatedPo.supplierId);
       const payout = await releasePayoutForPOTx(tx, updatedPo.id);
 
-      // (optional) mark whole order delivered if all POs delivered
+      // ✅ Notifications: customer, supplier, admins on delivery
+      try {
+        const orderRow = await tx.order.findUnique({
+          where: { id: updatedPo.orderId },
+          select: { id: true, userId: true },
+        });
+
+        const orderId = orderRow?.id ?? updatedPo.orderId;
+        const shopperId = orderRow?.userId ? String(orderRow.userId) : null;
+        const supplierIdStr = String(updatedPo.supplierId);
+
+        if (shopperId) {
+          await notifyUser(
+            shopperId,
+            {
+              type: "ORDER_DELIVERED" as any,
+              title: "Order delivered",
+              body: `Your delivery for order ${orderId} is complete.`,
+              data: {
+                orderId,
+                purchaseOrderId: updatedPo.id,
+              },
+            },
+            tx
+          );
+        }
+
+        await notifySupplierBySupplierId(
+          supplierIdStr,
+          {
+            type: "PURCHASE_ORDER_DELIVERED_SUPPLIER" as any,
+            title: "Order delivered",
+            body: `Purchase order ${updatedPo.id} for order ${orderId} has been delivered. Payout has been released (or queued).`,
+            data: {
+              orderId,
+              purchaseOrderId: updatedPo.id,
+            },
+          },
+          tx
+        );
+
+        await notifyAdmins(
+          {
+            type: "PURCHASE_ORDER_DELIVERED_ADMIN" as any,
+            title: "Purchase order delivered",
+            body: `Purchase order ${updatedPo.id} for order ${orderId} was marked delivered and payout released.`,
+            data: {
+              orderId,
+              purchaseOrderId: updatedPo.id,
+            },
+          },
+          tx
+        );
+      } catch (notifyErr) {
+        console.error("Failed to send delivery notifications:", notifyErr);
+      }
+
       try {
         const all = await tx.purchaseOrder.findMany({
           where: { orderId: updatedPo.orderId },
           select: { status: true },
         });
-        const allDelivered = all.length > 0 && all.every((x: any) => String(x.status || "").toUpperCase() === "DELIVERED");
+        const allDelivered =
+          all.length > 0 && all.every((x: any) => String(x.status || "").toUpperCase() === "DELIVERED");
         if (allDelivered) {
           await tx.order.update({ where: { id: updatedPo.orderId }, data: { status: "DELIVERED" } });
         }
-      } catch { }
+      } catch {}
 
       return { po: updatedPo, payout };
     });
@@ -1060,10 +1088,9 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
   }
 });
 
-
 /**
  * PATCH /api/supplier/orders/:orderId/status
- * (kept as your major; only minor guard notes)
+ * (kept as your major; only minor guard notes + notifications)
  */
 router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
   try {
@@ -1166,9 +1193,10 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
         throw new Error(`Invalid transition: ${currentStatus} → ${normalizedNext}`);
       }
 
-      // supplier cannot set DELIVERED directly (must use OTP endpoint)
       if (normalizedNext === "DELIVERED" && isSupplier(role)) {
-        throw new Error("Delivery must be confirmed with OTP. Use POST /api/supplier/orders/purchase-orders/:poId/delivery-otp/verify");
+        throw new Error(
+          "Delivery must be confirmed with OTP. Use POST /api/supplier/orders/purchase-orders/:poId/delivery-otp/verify"
+        );
       }
 
       if (normalizedNext === "CANCELED" && isSupplier(role) && cancelRequiresOtp(curBase)) {
@@ -1222,10 +1250,53 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
         });
       }
 
+      const orderRow = await tx.order.findUnique({
+        where: { id: orderId },
+        select: { id: true, userId: true },
+      });
+      const orderIdStr = orderRow?.id ?? orderId;
+      const shopperId = orderRow?.userId ? String(orderRow.userId) : null;
+      const supplierIdStr = String(supplierId);
+
       if (normalizedNext === "CANCELED") {
         const base = toFlowBase(curBase);
 
         if (isSupplier(role) && base === "PENDING") {
+          try {
+            if (shopperId) {
+              await notifyUser(
+                shopperId,
+                {
+                  type: "PURCHASE_ORDER_CANCELED" as any,
+                  title: "Items canceled",
+                  body: `Some items in your order ${orderIdStr} were canceled by the supplier before processing.`,
+                  data: {
+                    orderId: orderIdStr,
+                    purchaseOrderId: po.id,
+                    supplierId: supplierIdStr,
+                  },
+                },
+                tx
+              );
+            }
+
+            await notifyAdmins(
+              {
+                type: "PURCHASE_ORDER_CANCELED_ADMIN" as any,
+                title: "Purchase order canceled (pending stage)",
+                body: `Purchase order ${po.id} for order ${orderIdStr} was canceled at PENDING stage by supplier.`,
+                data: {
+                  orderId: orderIdStr,
+                  purchaseOrderId: po.id,
+                  supplierId: supplierIdStr,
+                },
+              },
+              tx
+            );
+          } catch (notifyErr) {
+            console.error("Failed to send supplier-cancel (pending) notifications:", notifyErr);
+          }
+
           return {
             po,
             refund: null,
@@ -1242,13 +1313,150 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
           mode: "SUPPLIER_CANCEL_AFTER_CONFIRM",
         });
 
+        try {
+          if (shopperId) {
+            await notifyUser(
+              shopperId,
+              {
+                type: "PURCHASE_ORDER_CANCELED_REFUND_REQUESTED" as any,
+                title: "Items canceled & refund requested",
+                body: `Some items in your order ${orderIdStr} were canceled by the supplier. A refund has been requested and will be reviewed.`,
+                data: {
+                  orderId: orderIdStr,
+                  purchaseOrderId: po.id,
+                  supplierId: supplierIdStr,
+                  refundId: refund.id,
+                },
+              },
+              tx
+            );
+          }
+
+          await notifyAdmins(
+            {
+              type: "PURCHASE_ORDER_CANCELED_REFUND_ADMIN" as any,
+              title: "Purchase order canceled & refund requested",
+              body: `Purchase order ${po.id} for order ${orderIdStr} was canceled after confirmation. A refund request (${refund.id}) was created.`,
+              data: {
+                orderId: orderIdStr,
+                purchaseOrderId: po.id,
+                supplierId: supplierIdStr,
+                refundId: refund.id,
+              },
+            },
+            tx
+          );
+        } catch (notifyErr) {
+          console.error("Failed to send supplier-cancel (refund) notifications:", notifyErr);
+        }
+
         return { po, refund, payout: null };
       }
 
       if (normalizedNext === "DELIVERED") {
         await assertSupplierPayoutReadyTx(tx, supplierId);
         const payout = await releasePayoutForPOTx(tx, po.id);
+
+        try {
+          if (shopperId) {
+            await notifyUser(
+              shopperId,
+              {
+                type: "ORDER_DELIVERED" as any,
+                title: "Order delivered",
+                body: `Your items for order ${orderIdStr} have been delivered.`,
+                data: {
+                  orderId: orderIdStr,
+                  purchaseOrderId: po.id,
+                },
+              },
+              tx
+            );
+          }
+
+          await notifySupplierBySupplierId(
+            supplierIdStr,
+            {
+              type: "PURCHASE_ORDER_DELIVERED_SUPPLIER" as any,
+              title: "Order delivered",
+              body: `Purchase order ${po.id} for order ${orderIdStr} has been marked delivered. Payout has been released (or queued).`,
+              data: {
+                orderId: orderIdStr,
+                purchaseOrderId: po.id,
+              },
+            },
+            tx
+          );
+
+          await notifyAdmins(
+            {
+              type: "PURCHASE_ORDER_DELIVERED_ADMIN" as any,
+              title: "Purchase order delivered",
+              body: `Purchase order ${po.id} for order ${orderIdStr} was marked delivered (via status patch).`,
+              data: {
+                orderId: orderIdStr,
+                purchaseOrderId: po.id,
+              },
+            },
+            tx
+          );
+        } catch (notifyErr) {
+          console.error("Failed to send delivered (patch) notifications:", notifyErr);
+        }
+
         return { po, refund: null, payout };
+      }
+
+      // ✅ intermediate statuses (CONFIRMED, PACKED, SHIPPED, OUT_FOR_DELIVERY, etc.)
+      try {
+        if (shopperId) {
+          const friendly = normalizedNext.replace(/_/g, " ").toLowerCase();
+          await notifyUser(
+            shopperId,
+            {
+              type: "PURCHASE_ORDER_STATUS_UPDATED" as any,
+              title: "Order update",
+              body: `Status for part of your order ${orderIdStr} is now ${friendly}.`,
+              data: {
+                orderId: orderIdStr,
+                purchaseOrderId: po.id,
+                status: normalizedNext,
+              },
+            },
+            tx
+          );
+        }
+
+        await notifySupplierBySupplierId(
+          supplierIdStr,
+          {
+            type: "PURCHASE_ORDER_STATUS_UPDATED_SUPPLIER" as any,
+            title: "Purchase order updated",
+            body: `Status for purchase order ${po.id} (order ${orderIdStr}) is now ${normalizedNext}.`,
+            data: {
+              orderId: orderIdStr,
+              purchaseOrderId: po.id,
+              status: normalizedNext,
+            },
+          },
+          tx
+        );
+
+        await notifyAdmins(
+          {
+            type: "PURCHASE_ORDER_STATUS_UPDATED_ADMIN" as any,
+            title: "Purchase order status updated",
+            body: `Purchase order ${po.id} for order ${orderIdStr} is now ${normalizedNext}.`,
+            data: {
+              orderId: orderIdStr,
+              purchaseOrderId: po.id,
+              status: normalizedNext,
+            },
+          },
+          tx
+        );
+      } catch (notifyErr) {
+        console.error("Failed to send intermediate status notifications:", notifyErr);
       }
 
       return { po, refund: null, payout: null };
@@ -1260,7 +1468,12 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
     const msg = e?.message || "Failed to update supplier status";
 
     const m = String(msg).toLowerCase();
-    if (m.includes("invalid transition") || m.includes("otp") || m.includes("reason is required") || m.includes("delivery must be confirmed")) {
+    if (
+      m.includes("invalid transition") ||
+      m.includes("otp") ||
+      m.includes("reason is required") ||
+      m.includes("delivery must be confirmed")
+    ) {
       return res.status(400).json({ error: msg });
     }
 
@@ -1271,12 +1484,10 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
 });
 
 function orderItemHasField(field: string) {
-  // Prisma 5/6 exposes the DMMF at runtime
   const model = (Prisma as any)?.dmmf?.datamodel?.models?.find((m: any) => m.name === "OrderItem");
   if (!model) return false;
   return (model.fields || []).some((f: any) => f.name === field);
 }
-
 
 /**
  * PATCH /api/supplier/orders/purchase-orders/:poId/assign-rider
@@ -1303,7 +1514,7 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
     const out = await prisma.$transaction(async (tx: any) => {
       const po = await tx.purchaseOrder.findUnique({
         where: { id: poId },
-        select: { id: true, supplierId: true, status: true, riderId: true },
+        select: { id: true, supplierId: true, status: true, riderId: true, orderId: true },
       });
       if (!po) throw new Error("PurchaseOrder not found");
       if (String(po.supplierId) !== String(ctx.supplierId)) throw new Error("Forbidden");
@@ -1314,28 +1525,98 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
       if (riderId) {
         const rider = await tx.supplierRider.findUnique({
           where: { id: riderId },
-          select: { id: true, supplierId: true, isActive: true },
+          select: { id: true, supplierId: true, isActive: true, userId: true },
         });
         if (!rider) throw new Error("Rider not found");
         if (!rider.isActive) throw new Error("Rider is inactive");
         if (String(rider.supplierId) !== String(ctx.supplierId)) throw new Error("Rider does not belong to this supplier");
+
+        let nextStatus: string | undefined = "OUT_FOR_DELIVERY";
+
+        const updated = await tx.purchaseOrder.update({
+          where: { id: poId },
+          data: {
+            riderId,
+            status: nextStatus,
+          },
+          select: { id: true, riderId: true, status: true, orderId: true, supplierId: true },
+        });
+
+        // ✅ Notifications on rider assignment
+        try {
+          const orderRow = await tx.order.findUnique({
+            where: { id: updated.orderId },
+            select: { id: true, userId: true },
+          });
+
+          const orderIdStr = orderRow?.id ?? updated.orderId;
+          const shopperId = orderRow?.userId ? String(orderRow.userId) : null;
+
+          if (rider.userId) {
+            await notifyUser(
+              String(rider.userId),
+              {
+                type: "RIDER_ASSIGNED" as any,
+                title: "New delivery assigned",
+                body: `You have been assigned to deliver purchase order ${updated.id} for order ${orderIdStr}.`,
+                data: {
+                  orderId: orderIdStr,
+                  purchaseOrderId: updated.id,
+                },
+              },
+              tx
+            );
+          }
+
+          if (shopperId) {
+            await notifyUser(
+              shopperId,
+              {
+                type: "ORDER_OUT_FOR_DELIVERY" as any,
+                title: "Order out for delivery",
+                body: `Your order ${orderIdStr} is now out for delivery.`,
+                data: {
+                  orderId: orderIdStr,
+                  purchaseOrderId: updated.id,
+                },
+              },
+              tx
+            );
+          }
+
+          await notifyAdmins(
+            {
+              type: "PURCHASE_ORDER_RIDER_ASSIGNED_ADMIN" as any,
+              title: "Rider assigned",
+              body: `Rider was assigned to purchase order ${updated.id} for order ${orderIdStr}.`,
+              data: {
+                orderId: orderIdStr,
+                purchaseOrderId: updated.id,
+                riderId: rider.id,
+              },
+            },
+            tx
+          );
+        } catch (notifyErr) {
+          console.error("Failed to send rider assignment notifications:", notifyErr);
+        }
+
+        return updated;
+      } else {
+        let nextStatus: string | undefined = undefined;
+        if (!riderId && st === "OUT_FOR_DELIVERY") nextStatus = "SHIPPED";
+
+        const updated = await tx.purchaseOrder.update({
+          where: { id: poId },
+          data: {
+            riderId: null,
+            ...(nextStatus ? { status: nextStatus } : {}),
+          },
+          select: { id: true, riderId: true, status: true },
+        });
+
+        return updated;
       }
-
-      // ✅ status rule:
-      // - if assigning rider -> move to OUT_FOR_DELIVERY
-      // - if unassigning and it was OUT_FOR_DELIVERY -> revert to SHIPPED
-      let nextStatus: string | undefined = undefined;
-      if (riderId) nextStatus = "OUT_FOR_DELIVERY";
-      else if (!riderId && st === "OUT_FOR_DELIVERY") nextStatus = "SHIPPED";
-
-      return tx.purchaseOrder.update({
-        where: { id: poId },
-        data: {
-          riderId,
-          ...(nextStatus ? { status: nextStatus } : {}),
-        },
-        select: { id: true, riderId: true, status: true },
-      });
     });
 
     return res.json({ ok: true, data: out });
@@ -1343,6 +1624,5 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
     return res.status(400).json({ error: e?.message || "Failed to assign rider" });
   }
 });
-
 
 export default router;

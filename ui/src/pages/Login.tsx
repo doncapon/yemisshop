@@ -60,6 +60,8 @@ function normRole(r: any): Role {
 }
 
 export default function Login() {
+  const hydrated = useAuthStore((s) => s.hydrated);
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -123,6 +125,7 @@ export default function Login() {
 
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (!hydrated) return;
     if (loading || cooldown > 0) return;
 
     setErr(null);
@@ -146,12 +149,13 @@ export default function Login() {
 
       // Persist auth normally
       setAuth({ token, user: profile });
+
       setNeedsVerification(needsVerification ?? false);
 
       try {
         localStorage.setItem("verifyEmail", profile.email);
         if (needsVerification) localStorage.setItem("verifyToken", token);
-      } catch {}
+      } catch { }
 
       const from = (loc.state as any)?.from?.pathname as string | undefined;
 
@@ -159,7 +163,7 @@ export default function Login() {
       const defaultByRole: Record<Role, string> = {
         ADMIN: "/admin",
         SUPER_ADMIN: "/admin",
-        SHOPPER: "/dashboard",
+        SHOPPER: "/",
         SUPPLIER: "/supplier",
         SUPPLIER_RIDER: "/supplier/orders",
       };
@@ -186,7 +190,7 @@ export default function Login() {
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
           if (vt) localStorage.setItem("verify_token", vt);
-        } catch {}
+        } catch { }
 
         setCooldown(1);
         return;
@@ -379,8 +383,8 @@ export default function Login() {
                             {emailBusy
                               ? "Sending…"
                               : emailCooldown > 0
-                              ? `Resend in ${emailCooldown}s`
-                              : "Resend verification email"}
+                                ? `Resend in ${emailCooldown}s`
+                                : "Resend verification email"}
                           </button>
                           <button
                             type="button"
@@ -415,8 +419,8 @@ export default function Login() {
                             {otpBusy
                               ? "Sending…"
                               : otpCooldown > 0
-                              ? `Send again in ${otpCooldown}s`
-                              : "Send OTP"}
+                                ? `Send again in ${otpCooldown}s`
+                                : "Send OTP"}
                           </button>
 
                           <input
@@ -489,10 +493,10 @@ export default function Login() {
 
               <button
                 type="submit"
-                disabled={loading || cooldown > 0}
+                disabled={!hydrated || loading || cooldown > 0}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white px-4 py-3 font-semibold shadow-[0_10px_30px_-12px_rgba(14,165,233,0.6)] hover:scale-[1.01] active:scale-[0.995] focus:outline-none focus:ring-4 focus:ring-cyan-300/40 transition disabled:opacity-50"
               >
-                {loading ? "Logging in…" : cooldown > 0 ? `Try again in ${cooldown}s` : "Login"}
+                {!hydrated ? "Preparing…" : loading ? "Logging in…" : cooldown > 0 ? `Try again in ${cooldown}s` : "Login"}
               </button>
 
               <div className="pt-1 text-center text-sm text-slate-700">

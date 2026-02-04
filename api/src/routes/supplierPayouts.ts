@@ -51,7 +51,8 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
       where: { userId },
       select: { id: true, name: true, status: true, userId: true },
     });
-    if (!supplier) return { ok: false, status: 403, error: "Supplier profile not found for this user" };
+    if (!supplier)
+      return { ok: false, status: 403, error: "Supplier profile not found for this user" };
 
     return { ok: true, supplierId: supplier.id, supplier, impersonating: false };
   }
@@ -143,8 +144,10 @@ export async function computeSupplierBalance(supplierId: string) {
 
     if (!amt) continue;
 
-    const isDebit = debitTypes.has(t) || t.endsWith("_DEBIT") || t.includes("WITHDRAW") || t.includes("REFUND");
-    const isCredit = creditTypes.has(t) || t.endsWith("_CREDIT") || t.includes("CREDIT") || t.includes("REVERSAL");
+    const isDebit =
+      debitTypes.has(t) || t.endsWith("_DEBIT") || t.includes("WITHDRAW") || t.includes("REFUND");
+    const isCredit =
+      creditTypes.has(t) || t.endsWith("_CREDIT") || t.includes("CREDIT") || t.includes("REVERSAL");
 
     if (isDebit && !isCredit) {
       if (amt > 0) ledgerDebits += amt;
@@ -207,6 +210,7 @@ router.get("/summary", requireAuth, async (req: any, res: Response) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
+    // supplierId resolution (admin can query any supplier via ?supplierId=)
     let supplierId: string | null = null;
     if (isAdmin(role) && req.query?.supplierId) supplierId = String(req.query.supplierId);
     else if (isSupplier(role)) supplierId = (await getSupplierForUser(String(userId)))?.id ?? null;
@@ -221,10 +225,10 @@ router.get("/summary", requireAuth, async (req: any, res: Response) => {
         currency: bal.currency,
 
         availableBalance: bal.availableBalance,
-        outstandingDebt: bal.outstandingDebt,
+        outstandingDebt: bal.outstandingDebt, // ✅ if refunds exceed payout credits
 
-        credits: bal.credits,
-        debits: bal.debits,
+        credits: bal.credits, // paid allocations total
+        debits: bal.debits, // ledger debits total
 
         pending: bal.pending,
         approved: bal.approved,
@@ -560,7 +564,9 @@ router.post("/purchase-orders/:poId/release", requireAuth, async (req: any, res)
 
     // suppliers only here; admin has separate admin routes
     if (isAdmin(req.user?.role)) {
-      return res.status(403).json({ error: "Read-only supplier view. Admin payout actions must use admin routes." });
+      return res
+        .status(403)
+        .json({ error: "Read-only supplier view. Admin payout actions must use admin routes." });
     }
 
     if (!userId) return res.status(401).json({ error: "Unauthorized" });

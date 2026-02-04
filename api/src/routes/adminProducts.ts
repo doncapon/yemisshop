@@ -6,7 +6,7 @@ import express, {
   type NextFunction,
   type RequestHandler,
 } from 'express';
-import { Prisma, type PrismaClient } from '@prisma/client'
+import { Prisma, type PrismaClient } from '@prisma/client';
 import { requireAdmin, requireAuth, requireSuperAdmin } from '../middleware/auth.js';
 import { z } from 'zod';
 
@@ -65,36 +65,34 @@ const PRODUCT_OWNER_REL =
   PRODUCT_USER_RELS.find((n) => n === 'createdBy') ??
   null;
 
-// detect Product -> variants list relation
 // detect Product -> variants list relation (MUST be ProductVariant; avoid Offer relations)
 const PRODUCT_VARIANTS_REL = (() => {
   const fields = Array.from(PRODUCT_FIELDS.values());
 
   // 1) Strong preference: relation list where type is exactly ProductVariant
   const exact = fields.find(
-    (f: any) => f.kind === "object" && f.isList === true && String(f.type) === "ProductVariant"
+    (f: any) => f.kind === 'object' && f.isList === true && String(f.type) === 'ProductVariant'
   );
   if (exact) return exact.name ?? null;
 
   // 2) Next: name suggests variants AND type suggests variant, but NOT offer/offer-like
   const fallback = fields.find((f: any) => {
-    if (!(f.kind === "object" && f.isList === true)) return false;
+    if (!(f.kind === 'object' && f.isList === true)) return false;
 
-    const name = String(f.name || "").toLowerCase();
-    const type = String(f.type || "").toLowerCase();
+    const name = String(f.name || '').toLowerCase();
+    const type = String(f.type || '').toLowerCase();
 
     const looksLikeVariantsName =
-      name === "variants" || name.endsWith("variants") || name.includes("productvariants");
+      name === 'variants' || name.endsWith('variants') || name.includes('productvariants');
 
-    const looksLikeVariantType = type.includes("variant");
-    const looksLikeOffer = name.includes("offer") || type.includes("offer");
+    const looksLikeVariantType = type.includes('variant');
+    const looksLikeOffer = name.includes('offer') || type.includes('offer');
 
     return looksLikeVariantsName && looksLikeVariantType && !looksLikeOffer;
   });
 
   return fallback?.name ?? null;
 })();
-
 
 // detect Product -> supplierOffers list relation (name could differ)
 const PRODUCT_SUPPLIER_OFFERS_REL =
@@ -140,9 +138,6 @@ function findVariantOptionsRel(variantModelName: string): string | null {
 }
 
 /* --------------------- Product status enum values (SAFE) ---------------------- */
-
-
-
 
 const PRODUCT_STATUS_FIELD = getProductField('status');
 const PRODUCT_STATUS_ENUM_NAME =
@@ -202,8 +197,8 @@ const toDecimal = (v: any) => new Prisma.Decimal(String(v));
 
 const wrap =
   (fn: (req: Request, res: Response, next: NextFunction) => any): RequestHandler =>
-    (req, res, next) =>
-      Promise.resolve(fn(req, res, next)).catch(next);
+  (req, res, next) =>
+    Promise.resolve(fn(req, res, next)).catch(next);
 
 /**
  * ✅ supplier id may come as:
@@ -367,11 +362,10 @@ function sumBumps(options: Array<{ priceBump: number | null }>) {
 
 function variantActiveWhere(variantModelName: string) {
   const where: any = {};
-  if (variantModelName && hasScalar(variantModelName, "isActive")) where.isActive = true;
-  if (variantModelName && hasScalar(variantModelName, "isDeleted")) where.isDeleted = false;
+  if (variantModelName && hasScalar(variantModelName, 'isActive')) where.isActive = true;
+  if (variantModelName && hasScalar(variantModelName, 'isDeleted')) where.isDeleted = false;
   return Object.keys(where).length ? where : undefined;
 }
-
 
 async function writeAttributesAndVariants(
   tx: Prisma.TransactionClient,
@@ -550,18 +544,13 @@ const NumLikeNullable = z
 
 const emptyToNull = (v: any) => (v === '' ? null : v);
 
-const SupplierIdUpdate = z
-  .preprocess(emptyToNull, z.union([z.string().min(1), z.null()]))
-  .optional();
+const SupplierIdUpdate = z.preprocess(emptyToNull, z.union([z.string().min(1), z.null()])).optional();
 
-const NullableIdUpdate = z
-  .preprocess(emptyToNull, z.string().min(1).nullable())
-  .optional();
+const NullableIdUpdate = z.preprocess(emptyToNull, z.string().min(1).nullable()).optional();
 
 const UpdateProductSchema = z
   .object({
     supplierId: SupplierIdUpdate,
-
 
     title: z.string().min(1).optional(),
     description: z.string().optional(),
@@ -677,12 +666,14 @@ function normalizeVariantsForApiResponse(product: any, includeOptions = false) {
 
     if (includeOptions) {
       const optsRaw = pickOptionsArray(v);
-      out.options = (optsRaw || []).map((o: any) => ({
-        id: o?.id,
-        attributeId: String(o?.attributeId ?? o?.attribute?.id ?? ''),
-        valueId: String(o?.valueId ?? o?.attributeValueId ?? o?.value?.id ?? ''),
-        priceBump: toNum(o?.priceBump),
-      })).filter((o: any) => o.attributeId && o.valueId);
+      out.options = (optsRaw || [])
+        .map((o: any) => ({
+          id: o?.id,
+          attributeId: String(o?.attributeId ?? o?.attribute?.id ?? ''),
+          valueId: String(o?.valueId ?? o?.attributeValueId ?? o?.value?.id ?? ''),
+          priceBump: toNum(o?.priceBump),
+        }))
+        .filter((o: any) => o.attributeId && o.valueId);
     }
 
     return out;
@@ -691,7 +682,6 @@ function normalizeVariantsForApiResponse(product: any, includeOptions = false) {
   product.variants = normalized;
   return product.variants;
 }
-
 
 /**
  * Normalize supplier offers list field name into `supplierOffers` (optional)
@@ -807,23 +797,20 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
 
       variantSelect[optionsRel] = {
         select: optionSelect,
-        ...(optionSelect.attributeId
-          ? { orderBy: { attributeId: 'asc' as const } }
-          : {}),
+        ...(optionSelect.attributeId ? { orderBy: { attributeId: 'asc' as const } } : {}),
       };
     }
 
     const vWhere = variantActiveWhere(variantModelName);
 
     select[PRODUCT_VARIANTS_REL] = {
-      ...(vWhere ? { where: vWhere } : {}),  // ✅ FILTER OUT REMOVED VARIANTS
+      ...(vWhere ? { where: vWhere } : {}), // ✅ FILTER OUT REMOVED VARIANTS
       select: variantSelect,
       orderBy:
-        variantModelName && hasScalar(variantModelName, "createdAt")
-          ? ({ createdAt: "asc" } as any)
+        variantModelName && hasScalar(variantModelName, 'createdAt')
+          ? ({ createdAt: 'asc' } as any)
           : undefined,
     };
-
   }
 
   // include supplierOffers (list) - schema-safe
@@ -889,7 +876,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
           v?.ProductVariantOptions ||
           v?.ProductVariantOption ||
           [];
-
         return {
           ...v,
           options: Array.isArray(opts) ? opts : [],
@@ -909,54 +895,50 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
   return res.json({ data: mapped });
 }
 
-
 async function computeHasLiveEligibleOffer(productId: string): Promise<boolean> {
-  const pid = String(productId || "").trim();
+  const pid = String(productId || '').trim();
   if (!pid) return false;
 
   // Prefer your 2-table offers if they exist (most accurate)
-  const has2Table =
-    modelExists("SupplierProductOffer") || modelExists("SupplierVariantOffer");
+  const has2Table = modelExists('SupplierProductOffer') || modelExists('SupplierVariantOffer');
 
   if (has2Table) {
     let count = 0;
 
-    if (modelExists("SupplierProductOffer")) {
+    if (modelExists('SupplierProductOffer')) {
       const where: any = { productId: pid };
 
       // schema-safe fields
-      if (getModelField("SupplierProductOffer", "isActive")) where.isActive = true;
-      if (getModelField("SupplierProductOffer", "inStock")) where.inStock = true;
-      if (getModelField("SupplierProductOffer", "availableQty"))
-        where.availableQty = { gt: 0 };
+      if (getModelField('SupplierProductOffer', 'isActive')) where.isActive = true;
+      if (getModelField('SupplierProductOffer', 'inStock')) where.inStock = true;
+      if (getModelField('SupplierProductOffer', 'availableQty')) where.availableQty = { gt: 0 };
 
       // prefer offerPrice if it exists; fallback to price if present
-      if (getModelField("SupplierProductOffer", "offerPrice")) {
-        where.offerPrice = { not: null, gt: new Prisma.Decimal("0") };
-      } else if (getModelField("SupplierProductOffer", "price")) {
-        where.price = { not: null, gt: new Prisma.Decimal("0") };
+      if (getModelField('SupplierProductOffer', 'offerPrice')) {
+        where.offerPrice = { not: null, gt: new Prisma.Decimal('0') };
+      } else if (getModelField('SupplierProductOffer', 'price')) {
+        where.price = { not: null, gt: new Prisma.Decimal('0') };
       }
 
-      count += await safeCount("SupplierProductOffer", where);
+      count += await safeCount('SupplierProductOffer', where);
     }
 
     if (count > 0) return true;
 
-    if (modelExists("SupplierVariantOffer")) {
+    if (modelExists('SupplierVariantOffer')) {
       const where: any = { variant: { productId: pid } };
-      
-      if (getModelField("SupplierVariantOffer", "isActive")) where.isActive = true;
-      if (getModelField("SupplierVariantOffer", "inStock")) where.inStock = true;
-      if (getModelField("SupplierVariantOffer", "availableQty"))
-        where.availableQty = { gt: 0 };
 
-      if (getModelField("SupplierVariantOffer", "offerPrice")) {
-        where.offerPrice = { not: null, gt: new Prisma.Decimal("0") };
-      } else if (getModelField("SupplierVariantOffer", "price")) {
-        where.price = { not: null, gt: new Prisma.Decimal("0") };
+      if (getModelField('SupplierVariantOffer', 'isActive')) where.isActive = true;
+      if (getModelField('SupplierVariantOffer', 'inStock')) where.inStock = true;
+      if (getModelField('SupplierVariantOffer', 'availableQty')) where.availableQty = { gt: 0 };
+
+      if (getModelField('SupplierVariantOffer', 'offerPrice')) {
+        where.offerPrice = { not: null, gt: new Prisma.Decimal('0') };
+      } else if (getModelField('SupplierVariantOffer', 'price')) {
+        where.price = { not: null, gt: new Prisma.Decimal('0') };
       }
 
-      count += await safeCount("SupplierVariantOffer", where);
+      count += await safeCount('SupplierVariantOffer', where);
     }
 
     return count > 0;
@@ -964,19 +946,19 @@ async function computeHasLiveEligibleOffer(productId: string): Promise<boolean> 
 
   // Fallback: single-table relation off Product (PRODUCT_SUPPLIER_OFFERS_REL)
   if (PRODUCT_SUPPLIER_OFFERS_REL) {
-    const offerModelName = String(getProductField(PRODUCT_SUPPLIER_OFFERS_REL)?.type ?? "");
+    const offerModelName = String(getProductField(PRODUCT_SUPPLIER_OFFERS_REL)?.type ?? '');
     if (offerModelName && modelExists(offerModelName)) {
       const where: any = { productId: pid };
 
-      if (getModelField(offerModelName, "isActive")) where.isActive = true;
-      if (getModelField(offerModelName, "inStock")) where.inStock = true;
-      if (getModelField(offerModelName, "availableQty")) where.availableQty = { gt: 0 };
+      if (getModelField(offerModelName, 'isActive')) where.isActive = true;
+      if (getModelField(offerModelName, 'inStock')) where.inStock = true;
+      if (getModelField(offerModelName, 'availableQty')) where.availableQty = { gt: 0 };
 
       // prefer offerPrice if present
-      if (getModelField(offerModelName, "offerPrice")) {
-        where.offerPrice = { not: null, gt: new Prisma.Decimal("0") };
-      } else if (getModelField(offerModelName, "price")) {
-        where.price = { not: null, gt: new Prisma.Decimal("0") };
+      if (getModelField(offerModelName, 'offerPrice')) {
+        where.offerPrice = { not: null, gt: new Prisma.Decimal('0') };
+      } else if (getModelField(offerModelName, 'price')) {
+        where.price = { not: null, gt: new Prisma.Decimal('0') };
       }
 
       const c = await safeCount(offerModelName, where);
@@ -986,8 +968,6 @@ async function computeHasLiveEligibleOffer(productId: string): Promise<boolean> 
 
   return false;
 }
-
-
 
 // ✅ This is the endpoint your frontend calls:
 router.get(
@@ -1002,8 +982,6 @@ router.get(
   requireAdmin,
   wrap(async (req, res) => listProductsCore(req, res, 'PUBLISHED'))
 );
-
-
 
 /* --------------------- GET single product (admin) --------------------- */
 
@@ -1071,7 +1049,6 @@ router.get(
     });
   })
 );
-
 
 router.get(
   '/:id',
@@ -1216,7 +1193,6 @@ router.get(
   })
 );
 
-
 /* --------------------- Status / Approve / Reject --------------------- */
 
 router.post(
@@ -1226,13 +1202,12 @@ router.post(
     const { id } = req.params;
     const { status } = StatusSchema.parse(req.body ?? {});
 
-    if (status === "PUBLISHED" || status === "LIVE") {
+    if (status === 'PUBLISHED' || status === 'LIVE') {
       const role = (req as any).user?.role;
-      if (role !== "SUPER_ADMIN") {
-        return res.status(403).json({ error: "Only SUPER_ADMIN can set status to PUBLISHED or LIVE." });
+      if (role !== 'SUPER_ADMIN') {
+        return res.status(403).json({ error: 'Only SUPER_ADMIN can set status to PUBLISHED or LIVE.' });
       }
     }
-
 
     const updated = await prisma.product.update({
       where: { id },
@@ -1340,11 +1315,10 @@ router.use(requireAdmin);
 
 /* --------------------- Create product (admin) --------------------- */
 
-
 // ---- PriceMode enum values (SAFE) ----
-const PRICE_MODE_FIELD = getProductField("priceMode");
+const PRICE_MODE_FIELD = getProductField('priceMode');
 const PRICE_MODE_ENUM_NAME =
-  PRICE_MODE_FIELD?.kind === "enum" ? String(PRICE_MODE_FIELD.type) : null;
+  PRICE_MODE_FIELD?.kind === 'enum' ? String(PRICE_MODE_FIELD.type) : null;
 
 const PRICE_MODE_VALUES = new Set(
   (Prisma.dmmf.datamodel.enums.find((e) => e.name === PRICE_MODE_ENUM_NAME)?.values ?? []).map(
@@ -1354,12 +1328,12 @@ const PRICE_MODE_VALUES = new Set(
 
 function pickAdminPriceModeValue(): string | null {
   // prefer common “manual/admin” names across schemas
-  const preferred = ["ADMIN", "MANUAL", "FIXED", "OVERRIDE", "CUSTOM", "RETAIL"];
+  const preferred = ['ADMIN', 'MANUAL', 'FIXED', 'OVERRIDE', 'CUSTOM', 'RETAIL'];
   for (const p of preferred) if (PRICE_MODE_VALUES.has(p)) return p;
 
   // fallback: any value that isn't AUTO (best-effort)
   for (const v of PRICE_MODE_VALUES) {
-    if (String(v).toUpperCase() !== "AUTO") return v;
+    if (String(v).toUpperCase() !== 'AUTO') return v;
   }
   return null;
 }
@@ -1367,9 +1341,8 @@ function pickAdminPriceModeValue(): string | null {
 const hasProductWritableField = (name: string) => {
   const f = getProductField(name);
   // writable fields are scalar OR enum (not relation objects)
-  return !!f && (f.kind === "scalar" || f.kind === "enum");
+  return !!f && (f.kind === 'scalar' || f.kind === 'enum');
 };
-
 
 export const createProductHandler = wrap(async (req, res) => {
   const parsed = CreateProductSchema.safeParse(req.body ?? {});
@@ -1385,7 +1358,7 @@ export const createProductHandler = wrap(async (req, res) => {
     body.price != null ? body.price : body.retailPrice != null ? body.retailPrice : undefined;
 
   const created = await prisma.$transaction(async (tx: any) => {
-    const adminMode = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
+    const adminMode = hasProductWritableField('priceMode') ? pickAdminPriceModeValue() : null;
     const data: any = {
       title: body.title,
       description: body.description,
@@ -1426,9 +1399,9 @@ export const createProductHandler = wrap(async (req, res) => {
     }
 
     if (nextRetail !== undefined) {
-      const adminMode = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
+      const adminMode = hasProductWritableField('priceMode') ? pickAdminPriceModeValue() : null;
       if (adminMode) data.priceMode = adminMode;
-      if (hasProductScalarField("autoPrice")) data.autoPrice = null;
+      if (hasProductScalarField('autoPrice')) data.autoPrice = null;
     }
 
     const product = await (tx as any).product.create({
@@ -1464,7 +1437,8 @@ export const createProductHandler = wrap(async (req, res) => {
       ...created,
       retailPrice: created.retailPrice != null ? Number(created.retailPrice) : null,
       autoPrice: created.autoPrice != null ? Number(created.autoPrice) : null,
-      communicationCost: (created as any).communicationCost != null ? Number((created as any).communicationCost) : null,
+      communicationCost:
+        (created as any).communicationCost != null ? Number((created as any).communicationCost) : null,
     },
   });
 });
@@ -1505,14 +1479,13 @@ export const updateProductHandler = wrap(async (req, res) => {
     };
 
     if (nextRetail !== undefined) {
-      const adminMode = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
+      const adminMode = hasProductWritableField('priceMode') ? pickAdminPriceModeValue() : null;
 
-      if (adminMode) data.priceMode = adminMode;  // ✅ will now work for enum fields
+      if (adminMode) data.priceMode = adminMode; // ✅ will now work for enum fields
 
       // optional but recommended: stop AUTO logic winning
-      if (hasProductWritableField("autoPrice")) data.autoPrice = null;
+      if (hasProductWritableField('autoPrice')) data.autoPrice = null;
     }
-
 
     if (data.status !== undefined && !isValidProductStatus(String(data.status))) {
       throw new Error('Invalid status for Product enum');
@@ -1536,11 +1509,11 @@ export const updateProductHandler = wrap(async (req, res) => {
       }
     }
     if (nextRetail !== undefined) {
-      const adminMode = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
+      const adminMode = hasProductWritableField('priceMode') ? pickAdminPriceModeValue() : null;
       if (adminMode) data.priceMode = adminMode;
 
       // IMPORTANT: stop AUTO “winning” by clearing autoPrice
-      if (hasProductScalarField("autoPrice")) data.autoPrice = null;
+      if (hasProductScalarField('autoPrice')) data.autoPrice = null;
     }
 
     const product = await (tx as any).product.update({
@@ -1564,7 +1537,6 @@ export const updateProductHandler = wrap(async (req, res) => {
       },
     });
 
-
     if (Array.isArray(body.attributeSelections)) {
       await writeAttributesAndVariants(tx as any, String(product.id), body.attributeSelections as any, undefined);
     }
@@ -1577,7 +1549,8 @@ export const updateProductHandler = wrap(async (req, res) => {
       ...updated,
       retailPrice: updated.retailPrice != null ? Number(updated.retailPrice) : null,
       autoPrice: updated.autoPrice != null ? Number(updated.autoPrice) : null,
-      communicationCost: (updated as any).communicationCost != null ? Number((updated as any).communicationCost) : null,
+      communicationCost:
+        (updated as any).communicationCost != null ? Number((updated as any).communicationCost) : null,
     },
   });
 });
@@ -1637,19 +1610,18 @@ function toDecimalOrNull(x: any) {
 function pickAttrId(o: any): string | null {
   return normalizeNullableId(
     o?.attributeId ??
-    o?.productAttributeId ??
-    o?.attribute?.id ??
-    o?.attributeValue?.attributeId ??
-    o?.value?.attributeId
+      o?.productAttributeId ??
+      o?.attribute?.id ??
+      o?.attributeValue?.attributeId ??
+      o?.value?.attributeId
   );
 }
 
 function pickValueId(o: any): string | null {
   return normalizeNullableId(
-    o?.valueId ??
-    o?.attributeValueId ?? // ✅ common frontend alias
-    o?.value?.id ??
-    o?.attributeValue?.id
+    o?.valueId ?? o?.attributeValueId ?? // ✅ common frontend alias
+      o?.value?.id ??
+      o?.attributeValue?.id
   );
 }
 
@@ -1712,7 +1684,7 @@ function normalizeVariantsPayloadForDb(variantsRaw: any[]) {
 }
 
 router.post(
-  "/:id/variants/bulk",
+  '/:id/variants/bulk',
   requireAdmin,
   wrap(async (req, res) => {
     const productId = String(req.params.id);
@@ -1722,23 +1694,23 @@ router.post(
 
     const variants = normalizeVariantsPayloadForDb(variantsRaw);
 
-    const variantModelName = "ProductVariant";
+    const variantModelName = 'ProductVariant';
     let optionsRel: string | null = findVariantOptionsRel(variantModelName);
-    if (!optionsRel && hasRelation(variantModelName, "options")) optionsRel = "options";
+    if (!optionsRel && hasRelation(variantModelName, 'options')) optionsRel = 'options';
 
     const comboKey = (opts: Array<{ attributeId: string; valueId: string }>) => {
       const parts = (opts || [])
         .filter((o) => o?.attributeId && o?.valueId)
         .map((o) => `${String(o.attributeId)}::${String(o.valueId)}`)
         .sort();
-      return parts.join("||");
+      return parts.join('||');
     };
 
     const canSoftDisable =
-      hasScalar(variantModelName, "isActive") || hasScalar(variantModelName, "isDeleted");
+      hasScalar(variantModelName, 'isActive') || hasScalar(variantModelName, 'isDeleted');
 
-    const hasIsActive = hasScalar(variantModelName, "isActive");
-    const hasIsDeleted = hasScalar(variantModelName, "isDeleted");
+    const hasIsActive = hasScalar(variantModelName, 'isActive');
+    const hasIsDeleted = hasScalar(variantModelName, 'isDeleted');
 
     const result = await prisma.$transaction(async (tx: any) => {
       // --- 1) Load existing variants (+ options if we can) ---
@@ -1768,7 +1740,7 @@ router.post(
 
       // --- 2) Locked IDs (supplier variant offers) ---
       let lockedIds = new Set<string>();
-      if (modelExists("SupplierVariantOffer") && existingIds.length) {
+      if (modelExists('SupplierVariantOffer') && existingIds.length) {
         const lockedRows = await tx.supplierVariantOffer.findMany({
           where: { productId, variantId: { in: existingIds } },
           select: { variantId: true },
@@ -1784,9 +1756,7 @@ router.post(
         const k = comboKey(v?.options || []);
 
         const matchedId =
-          incomingId && existingById.has(incomingId)
-            ? incomingId
-            : (k ? existingByCombo.get(k) : null);
+          incomingId && existingById.has(incomingId) ? incomingId : k ? existingByCombo.get(k) : null;
 
         // IMPORTANT: if model supports isDeleted, always clear it when keeping/upserting
         const data: any = {
@@ -1880,9 +1850,9 @@ router.post(
 
       const fresh = await tx.productVariant.findMany({
         where: whereFresh, // ✅ key fix: only return active variants
-        orderBy: hasScalar(variantModelName, "createdAt")
-          ? ({ createdAt: "asc" } as any)
-          : ({ id: "asc" } as any),
+        orderBy: hasScalar(variantModelName, 'createdAt')
+          ? ({ createdAt: 'asc' } as any)
+          : ({ id: 'asc' } as any),
         ...(Object.keys(include2).length ? { include: include2 } : {}),
       });
 
@@ -1902,14 +1872,14 @@ router.post(
 );
 
 router.post(
-  "/:productId/go-live",
+  '/:productId/go-live',
   requireSuperAdmin,
   wrap(async (req, res) => {
     const { productId } = req.params;
 
     // Ensure schema supports LIVE before writing
-    if (!isValidProductStatus("LIVE")) {
-      return res.status(400).json({ error: "Schema does not support LIVE status" });
+    if (!isValidProductStatus('LIVE')) {
+      return res.status(400).json({ error: 'Schema does not support LIVE status' });
     }
 
     const product = await prisma.product.findUnique({
@@ -1918,48 +1888,49 @@ router.post(
         id: true,
         title: true,
         status: true,
-        ...(hasProductScalarField("isActive") ? { isActive: true } : {}),
-        ...(hasProductScalarField("isDeleted") ? { isDeleted: true } : {}),
-        ...(hasProductScalarField("isDelete") ? { isDelete: true } : {}),
-        ...(hasProductScalarField("isArchived") ? { isArchived: true } : {}),
+        ...(hasProductScalarField('isActive') ? { isActive: true } : {}),
+        ...(hasProductScalarField('isDeleted') ? { isDeleted: true } : {}),
+        ...(hasProductScalarField('isDelete') ? { isDelete: true } : {}),
+        ...(hasProductScalarField('isArchived') ? { isArchived: true } : {}),
       } as any,
     });
 
-    if (!product) return res.status(404).json({ error: "Product not found" });
+    if (!product) return res.status(404).json({ error: 'Product not found' });
 
     // Must be active (if your schema has isActive)
-    if (hasProductScalarField("isActive") && (product as any).isActive === false) {
-      return res.status(400).json({ error: "Product is not active. Activate it before going LIVE." });
+    if (hasProductScalarField('isActive') && (product as any).isActive === false) {
+      return res.status(400).json({ error: 'Product is not active. Activate it before going LIVE.' });
     }
 
     // Also block soft-deleted/archived if those exist
-    if (hasProductScalarField("isDeleted") && (product as any).isDeleted) {
-      return res.status(400).json({ error: "Product is deleted and cannot go LIVE." });
+    if (hasProductScalarField('isDeleted') && (product as any).isDeleted) {
+      return res.status(400).json({ error: 'Product is deleted and cannot go LIVE.' });
     }
-    if (hasProductScalarField("isDelete") && (product as any).isDelete) {
-      return res.status(400).json({ error: "Product is deleted and cannot go LIVE." });
+    if (hasProductScalarField('isDelete') && (product as any).isDelete) {
+      return res.status(400).json({ error: 'Product is deleted and cannot go LIVE.' });
     }
-    if (hasProductScalarField("isArchived") && (product as any).isArchived) {
-      return res.status(400).json({ error: "Product is archived and cannot go LIVE." });
+    if (hasProductScalarField('isArchived') && (product as any).isArchived) {
+      return res.status(400).json({ error: 'Product is archived and cannot go LIVE.' });
     }
 
     // Must already be published
-    const st = String((product as any).status ?? "").toUpperCase();
-    if (st !== "PUBLISHED") {
-      return res.status(400).json({ error: "Only PUBLISHED products can be made LIVE." });
+    const st = String((product as any).status ?? '').toUpperCase();
+    if (st !== 'PUBLISHED') {
+      return res.status(400).json({ error: 'Only PUBLISHED products can be made LIVE.' });
     }
 
     // Must have at least one eligible offer (active + inStock + qty>0 + price>0)
     const okOffer = await computeHasLiveEligibleOffer(productId);
     if (!okOffer) {
       return res.status(400).json({
-        error: "Cannot go LIVE: needs at least one active in-stock supplier offer with availableQty > 0 and price > 0.",
+        error:
+          'Cannot go LIVE: needs at least one active in-stock supplier offer with availableQty > 0 and price > 0.',
       });
     }
 
     const updated = await prisma.product.update({
       where: { id: productId },
-      data: { status: "LIVE" } as any,
+      data: { status: 'LIVE' } as any,
       select: {
         id: true,
         title: true,
@@ -1982,8 +1953,6 @@ router.post(
     });
   })
 );
-
-
 
 /* --------------------- HAS ORDERS (admin) --------------------- */
 /**
@@ -2098,7 +2067,6 @@ async function safeFindManyIds(modelName: string, where: any): Promise<string[]>
   }
 }
 
-
 router.delete(
   '/:id',
   requireAdmin,
@@ -2202,6 +2170,5 @@ router.delete(
     }
   })
 );
-
 
 export default router;

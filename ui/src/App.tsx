@@ -49,6 +49,7 @@ import RiderAcceptInvite from "./pages/RiderAcceptInvite";
 import ModalProvider from "./components/ModalProvider";
 import { Toaster } from 'react-hot-toast';
 import DataPrivacy from "./pages/DataPrivacy";
+import AuthBootstrap from "./components/AuthBootstrap";
 
 
 function AdminLayout() {
@@ -92,6 +93,7 @@ export default function App() {
   return (
     <ModalProvider>
       <div className="min-h-screen flex flex-col">
+         <AuthBootstrap />
         <main className="w-full px-4 md:px-8 flex-1 bg-primary-100">
           <div className="max-w-7xl mx-auto">
             <Toaster position="top-right" />

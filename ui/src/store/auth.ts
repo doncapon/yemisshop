@@ -28,11 +28,22 @@ type AuthState = {
 
   setHydrated: (v: boolean) => void;
   setAuth: (p: { token: string; user: User }) => void;
+
+  // ✅ NEW: use this when /me succeeded via cookie but we don’t want Bearer
+  setCookieSession: (user: User) => void;
+
   setNeedsVerification: (v: boolean) => void;
 
   logout: () => void;
   clear: () => void;
 };
+
+const COOKIE_SESSION_TOKEN = "__cookie__";
+
+function looksLikeJwt(t: string | null) {
+  // JWT has 3 dot-separated parts
+  return !!t && t.split(".").length === 3;
+}
 
 export const useAuthStore = create<AuthState>()(
   persist(
@@ -42,14 +53,21 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       needsVerification: false,
 
-      setHydrated: (v) => set({ hydrated: v }),
+      setHydrated: (v: any) => set({ hydrated: v }),
 
-      setAuth: ({ token, user }) => {
-        setAccessToken(token); // keep axios/localStorage in sync
+      setAuth: ({ token, user }: { token: string; user: User }) => {
+        // Only apply Bearer header if it’s a real JWT
+        setAccessToken(looksLikeJwt(token) ? token : null);
         set({ token, user });
       },
 
-      setNeedsVerification: (v) => set({ needsVerification: v }),
+      setCookieSession: (user: User) => {
+        // Cookie auth should NOT set Authorization header
+        setAccessToken(null);
+        set({ token: COOKIE_SESSION_TOKEN, user });
+      },
+
+      setNeedsVerification: (v: any) => set({ needsVerification: v }),
 
       logout: () => {
         setAccessToken(null);
@@ -68,15 +86,20 @@ export const useAuthStore = create<AuthState>()(
         user: s.user,
         needsVerification: s.needsVerification,
       }),
-      onRehydrateStorage: () => (state) => {
-        // When rehydration from storage is done, mark hydrated = true
-        queueMicrotask(() => {
-          state?.setHydrated(true);
 
-          // IMPORTANT: make sure axios has the persisted token too
-          const t = state?.token ?? null;
-          setAccessToken(t);
-        });
+      merge: (persisted: any, current: any) => {
+        const p = persisted ?? {};
+        const c = current ?? {};
+        if (c.token && !p.token) return { ...p, ...c };
+        return { ...c, ...p };
+      },
+
+      onRehydrateStorage: () => (state) => {
+        state?.setHydrated(true);
+
+        const t = state?.token ?? null;
+        // Don’t ever put "__cookie__" into Authorization header
+        setAccessToken(looksLikeJwt(t) ? t : null);
       },
     }
   )
