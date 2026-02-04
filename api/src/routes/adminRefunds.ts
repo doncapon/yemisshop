@@ -103,7 +103,41 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
   }
 
   try {
-    const updated = await prisma.$transaction(async (tx: { refund: { findUnique: (arg0: { where: { id: string; }; select: { id: boolean; status: boolean; orderId: boolean; purchaseOrderId: boolean; supplierId: boolean; requestedByUserId: boolean; }; }) => any; update: (arg0: { where: { id: string; }; data: { status: any; adminResolvedAt: Date; adminResolvedById: any; adminDecision: string; adminNote: string | undefined; }; }) => any; }; refundEvent: { create: (arg0: { data: { refundId: string; type: string; message: string | undefined; meta: { adminId: any; decision: string; }; }; }) => any; }; }) => {
+    const updated = await prisma.$transaction(async (tx: {
+      refund: {
+        findUnique: (args: {
+          where: { id: string };
+          select: {
+            id: boolean;
+            status: boolean;
+            orderId: boolean;
+            purchaseOrderId: boolean;
+            supplierId: boolean;
+            requestedByUserId: boolean;
+          };
+        }) => any;
+        update: (args: {
+          where: { id: string };
+          data: {
+            status: any;
+            adminResolvedAt: Date;
+            adminResolvedById: any;
+            adminDecision: string;
+            adminNote: string | undefined;
+          };
+        }) => any;
+      };
+      refundEvent: {
+        create: (args: {
+          data: {
+            refundId: string;
+            type: string;
+            message: string | undefined;
+            meta: { adminId: any; decision: string };
+          };
+        }) => any;
+      };
+    }) => {
       const refund = await tx.refund.findUnique({
         where: { id },
         select: {
@@ -117,8 +151,7 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
       });
       if (!refund) throw new Error("Refund not found");
 
-      // Guard: only allow admin decision from supplier rejected / escalated / supplier accepted / supplier review.
-      // Adjust if you want admin to be able to override anytime.
+      // Guard: only allow admin decision from specific statuses
       const allowed = new Set([
         "SUPPLIER_REVIEW",
         "SUPPLIER_ACCEPTED",
@@ -151,11 +184,6 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
           meta: { adminId: req.user?.id, decision },
         },
       });
-
-      // Optional: on approve, reflect PO payout status (your schema supports REFUNDED)
-      // I recommend doing this only when actually marked REFUNDED (money done).
-      // But if you want to freeze payouts early, you can set HELD here.
-      // await tx.purchaseOrder.update({ where: { id: refund.purchaseOrderId }, data: { payoutStatus: "HELD" } });
 
       return { r2, refund };
     });
@@ -196,7 +224,7 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
       }
     }
 
-    // Notify all admins (optional but useful)
+    // Notify all admins
     const adminUserIds = await getAdminUserIds();
     await notifyMany(adminUserIds, {
       type: "REFUND_UPDATED",
@@ -233,7 +261,54 @@ router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
   const id = norm(req.params.id);
 
   try {
-    const updated = await prisma.$transaction(async (tx: { refund: { findUnique: (arg0: { where: { id: string; }; select: { id: boolean; status: boolean; orderId: boolean; purchaseOrderId: boolean; supplierId: boolean; requestedByUserId: boolean; }; }) => any; update: (arg0: { where: { id: string; }; data: { status: any; processedAt: Date; providerStatus: string | undefined; providerReference: string | undefined; providerPayload: any; paidAt: Date | undefined; }; }) => any; }; refundEvent: { create: (arg0: { data: { refundId: string; type: string; message: string; meta: { adminId: any; providerStatus: any; providerReference: any; }; }; }) => any; }; purchaseOrder: { update: (arg0: { where: { id: any; }; data: { payoutStatus: any; }; }) => any; }; payment: { updateMany: (arg0: { where: { orderId: any; }; data: { status: any; refundedAt: Date; }; }) => any; }; }) => {
+    const updated = await prisma.$transaction(async (tx: {
+      refund: {
+        findUnique: (args: {
+          where: { id: string };
+          select: {
+            id: boolean;
+            status: boolean;
+            orderId: boolean;
+            purchaseOrderId: boolean;
+            supplierId: boolean;
+            requestedByUserId: boolean;
+          };
+        }) => any;
+        update: (args: {
+          where: { id: string };
+          data: {
+            status: any;
+            processedAt: Date;
+            providerStatus: string | undefined;
+            providerReference: string | undefined;
+            providerPayload: any;
+            paidAt: Date | undefined;
+          };
+        }) => any;
+      };
+      refundEvent: {
+        create: (args: {
+          data: {
+            refundId: string;
+            type: string;
+            message: string;
+            meta: { adminId: any; providerStatus: any; providerReference: any };
+          };
+        }) => any;
+      };
+      purchaseOrder: {
+        update: (args: {
+          where: { id: any };
+          data: { payoutStatus: any };
+        }) => any;
+      };
+      payment: {
+        updateMany: (args: {
+          where: { orderId: any };
+          data: { status: any; refundedAt: Date };
+        }) => any;
+      };
+    }) => {
       const refund = await tx.refund.findUnique({
         where: { id },
         select: {
@@ -288,8 +363,6 @@ router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
       }
 
       // Reflect on payment (optional)
-      // If your payments are per-order, this will mark all as refunded.
-      // If you want PO-specific refunds, you'd need a PaymentAllocation based approach.
       try {
         await tx.payment.updateMany({
           where: { orderId: refund.orderId },

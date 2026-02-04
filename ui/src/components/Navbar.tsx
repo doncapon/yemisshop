@@ -4,6 +4,8 @@ import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { useAuthStore } from "../store/auth";
 import api from "../api/client";
 import { hardResetApp } from "../utils/resetApp";
+import { performLogout } from "../utils/logout";
+import NotificationsBell from "./notifications/NotificationsBell";
 
 type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
@@ -35,7 +37,6 @@ export default function Navbar() {
   const token = useAuthStore((s) => s.token);
   const userRole = useAuthStore((s) => s.user?.role ?? null);
   const userEmail = useAuthStore((s) => s.user?.email ?? null);
-  const clear = useAuthStore((s) => s.clear);
   const nav = useNavigate();
 
   const isSupplier = userRole === "SUPPLIER";
@@ -107,15 +108,10 @@ export default function Navbar() {
   }, [firstName, lastName]);
 
   const logout = useCallback(() => {
-    clear();
-    try {
-      localStorage.removeItem("cart");
-      localStorage.removeItem("auth");
-    } catch {
-      //
-    }
-    nav("/");
-  }, [clear, nav]);
+    setMenuOpen(false);
+    setMobileOpen(false);
+    performLogout("/"); // clears cookie + clears state + hard reset
+  }, []);
 
   const linkBase = "inline-flex items-center px-3 py-2 rounded-md text-sm font-medium transition";
   const linkInactive = "text-white/90 hover:bg-white/10";
@@ -158,11 +154,6 @@ export default function Navbar() {
                 Catalogue
               </NavLink>
 
-              {/* ✅ Dashboard label rules:
-                  - SUPPLIER sees "Dashboard" -> /supplier
-                  - SUPER_ADMIN sees "SupplierDashboard" -> /supplier
-                  - Others see "Dashboard" -> /dashboard
-              */}
               {token && isSupplier && (
                 <NavLink
                   to="/supplier"
@@ -193,7 +184,6 @@ export default function Navbar() {
                 </NavLink>
               )}
 
-              {/* Hide for suppliers */}
               {!isSupplier && (
                 <NavLink
                   to="/cart"
@@ -203,7 +193,6 @@ export default function Navbar() {
                 </NavLink>
               )}
 
-              {/* Hide for suppliers */}
               {token && !isSupplier && (
                 <NavLink
                   to="/wishlist"
@@ -214,7 +203,6 @@ export default function Navbar() {
                 </NavLink>
               )}
 
-              {/* Hide for suppliers */}
               {token && !isSupplier && (
                 <NavLink
                   to="/orders"
@@ -244,7 +232,6 @@ export default function Navbar() {
         <div className="hidden md:flex items-center gap-3">
           {!token ? (
             <>
-              {/* Supplier registration button */}
               <NavLink
                 to="/register-supplier"
                 className="inline-flex items-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-amber-300 hover:bg-amber-200 transition"
@@ -273,137 +260,141 @@ export default function Navbar() {
               </NavLink>
             </>
           ) : (
-            <div className="relative" ref={menuRef}>
-              <button
-                onClick={() => setMenuOpen((v) => !v)}
-                className="w-9 h-9 rounded-full grid place-items-center border border-white/25 bg-white/10 text-white font-semibold hover:bg-white/20 focus:outline-none focus:ring-4 focus:ring-white/25 transition"
-                aria-label="User menu"
-              >
-                {initials}
-              </button>
+            // ✅ FIX: bell + avatar on the same row
+            <div className="flex items-center gap-3">
+              <NotificationsBell placement="navbar" />
 
-              {menuOpen && (
-                <div
-                  className="absolute right-0 mt-2 w-64 rounded-xl border border-zinc-200 bg-white shadow-lg overflow-hidden"
-                  role="menu"
+              <div className="relative" ref={menuRef}>
+                <button
+                  onClick={() => setMenuOpen((v) => !v)}
+                  className="w-9 h-9 rounded-full grid place-items-center border border-white/25 bg-white/10 text-white font-semibold hover:bg-white/20 focus:outline-none focus:ring-4 focus:ring-white/25 transition"
+                  aria-label="User menu"
                 >
-                  <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
-                    <div className="text-xs text-zinc-500">Signed in as</div>
-                    <div className="text-sm font-medium truncate text-zinc-900">
-                      {displayName || userEmail || "User"}
+                  {initials}
+                </button>
+
+                {menuOpen && (
+                  <div
+                    className="absolute right-0 mt-2 w-64 rounded-xl border border-zinc-200 bg-white shadow-lg overflow-hidden"
+                    role="menu"
+                  >
+                    <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
+                      <div className="text-xs text-zinc-500">Signed in as</div>
+                      <div className="text-sm font-medium truncate text-zinc-900">
+                        {displayName || userEmail || "User"}
+                      </div>
+                      {userEmail && (
+                        <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>
+                      )}
+                      {isRider && <div className="mt-1 text-[10px] text-zinc-500">Role: Rider</div>}
                     </div>
-                    {userEmail && (
-                      <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>
-                    )}
-                    {isRider && (
-                      <div className="mt-1 text-[10px] text-zinc-500">Role: Rider</div>
+
+                    {isRider ? (
+                      <nav className="py-1 text-sm">
+                        <button
+                          className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            nav("/supplier/orders");
+                          }}
+                          role="menuitem"
+                        >
+                          Orders
+                        </button>
+                        <div className="my-1 border-t border-zinc-100" />
+                        <button
+                          className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition"
+                          onClick={logout}
+                          role="menuitem"
+                        >
+                          Logout
+                        </button>
+                      </nav>
+                    ) : (
+                      <nav className="py-1 text-sm">
+                        <button
+                          className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            nav("/profile");
+                          }}
+                          role="menuitem"
+                        >
+                          Edit Profile
+                        </button>
+
+                        <button
+                          className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            nav("/account/sessions");
+                          }}
+                          role="menuitem"
+                        >
+                          Sessions
+                        </button>
+
+                        {!isSupplier && (
+                          <button
+                            className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
+                            onClick={() => {
+                              setMenuOpen(false);
+                              nav("/orders");
+                            }}
+                            role="menuitem"
+                          >
+                            Purchase history
+                          </button>
+                        )}
+
+                        {userRole === "SUPER_ADMIN" && (
+                          <button
+                            className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
+                            onClick={() => {
+                              setMenuOpen(false);
+                              nav("/admin/settings");
+                            }}
+                            role="menuitem"
+                          >
+                            Admin Settings
+                          </button>
+                        )}
+
+                        <div className="my-1 border-t border-zinc-100" />
+                        <button
+                          className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition"
+                          onClick={logout}
+                          role="menuitem"
+                        >
+                          Logout
+                        </button>
+                      </nav>
                     )}
                   </div>
-
-                  {/* Riders: keep menu minimal (logout only) */}
-                  {isRider ? (
-                    <nav className="py-1 text-sm">
-                      <button
-                        className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                        onClick={() => {
-                          setMenuOpen(false);
-                          nav("/supplier/orders");
-                        }}
-                        role="menuitem"
-                      >
-                        Orders
-                      </button>
-                      <div className="my-1 border-t border-zinc-100" />
-                      <button
-                        className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition"
-                        onClick={logout}
-                        role="menuitem"
-                      >
-                        Logout
-                      </button>
-                    </nav>
-                  ) : (
-                    <nav className="py-1 text-sm">
-                      <button
-                        className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                        onClick={() => {
-                          setMenuOpen(false);
-                          nav("/profile");
-                        }}
-                        role="menuitem"
-                      >
-                        Edit Profile
-                      </button>
-
-                      <button
-                        className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                        onClick={() => {
-                          setMenuOpen(false);
-                          nav("/account/sessions");
-                        }}
-                        role="menuitem"
-                      >
-                        Sessions
-                      </button>
-
-                      {/* Hide purchase history for suppliers */}
-                      {!isSupplier && (
-                        <button
-                          className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            nav("/orders");
-                          }}
-                          role="menuitem"
-                        >
-                          Purchase history
-                        </button>
-                      )}
-
-                      {userRole === "SUPER_ADMIN" && (
-                        <button
-                          className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            nav("/admin/settings");
-                          }}
-                          role="menuitem"
-                        >
-                          Admin Settings
-                        </button>
-                      )}
-
-                      <div className="my-1 border-t border-zinc-100" />
-                      <button
-                        className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition"
-                        onClick={logout}
-                        role="menuitem"
-                      >
-                        Logout
-                      </button>
-                    </nav>
-                  )}
-                </div>
-              )}
+                )}
+              </div>
             </div>
           )}
         </div>
 
-        {/* Mobile menu toggle */}
-        <button
-          className="md:hidden inline-flex items-center justify-center w-9 h-9 rounded-md border border-white/25 text-white hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-white/25 transition"
-          aria-label="Toggle menu"
-          onClick={() => setMobileOpen((v) => !v)}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path
-              d="M4 7h16M4 12h16M4 17h16"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-            />
-          </svg>
-        </button>
+        {/* ✅ FIX: Mobile top-right cluster = bell + hamburger */}
+        <div className="md:hidden flex items-center gap-2">
+          <NotificationsBell placement="navbar" />
+          <button
+            className="inline-flex items-center justify-center w-9 h-9 rounded-md border border-white/25 text-white hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-white/25 transition"
+            aria-label="Toggle menu"
+            onClick={() => setMobileOpen((v) => !v)}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M4 7h16M4 12h16M4 17h16"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* Mobile drawer */}
@@ -417,7 +408,9 @@ export default function Navbar() {
                   to="/supplier/orders"
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                    `${linkBase} ${
+                      isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                    }`
                   }
                 >
                   Orders
@@ -441,20 +434,23 @@ export default function Navbar() {
                   end
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                    `${linkBase} ${
+                      isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                    }`
                   }
                 >
                   Catalogue
                 </NavLink>
 
-                {/* ✅ Mobile dashboard label rules (same as desktop) */}
                 {token && isSupplier && (
                   <NavLink
                     to="/supplier"
                     end
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                      `${linkBase} ${
+                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      }`
                     }
                   >
                     Dashboard
@@ -467,7 +463,9 @@ export default function Navbar() {
                     end
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                      `${linkBase} ${
+                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      }`
                     }
                   >
                     SupplierDashboard
@@ -480,46 +478,51 @@ export default function Navbar() {
                     end
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                      `${linkBase} ${
+                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      }`
                     }
                   >
                     Dashboard
                   </NavLink>
                 )}
 
-                {/* Hide cart for suppliers */}
                 {!isSupplier && (
                   <NavLink
                     to="/cart"
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                      `${linkBase} ${
+                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      }`
                     }
                   >
                     Cart
                   </NavLink>
                 )}
 
-                {/* Hide wishlist for suppliers */}
                 {token && !isSupplier && (
                   <NavLink
                     to="/wishlist"
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                      `${linkBase} ${
+                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      }`
                     }
                   >
                     Wishlist
                   </NavLink>
                 )}
 
-                {/* Hide orders for suppliers */}
                 {token && !isSupplier && (
                   <NavLink
                     to="/orders"
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                      `${linkBase} ${
+                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      }`
                     }
                   >
                     Orders
@@ -531,7 +534,9 @@ export default function Navbar() {
                     to="/admin"
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"}`
+                      `${linkBase} ${
+                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      }`
                     }
                   >
                     Admin
@@ -542,7 +547,6 @@ export default function Navbar() {
 
                 {!token ? (
                   <div className="flex gap-2">
-                    {/* Supplier registration button (mobile) */}
                     <NavLink
                       to="/register-supplier"
                       onClick={() => setMobileOpen(false)}
@@ -595,7 +599,6 @@ export default function Navbar() {
                       Sessions
                     </button>
 
-                    {/* Hide purchase history for suppliers */}
                     {!isSupplier && (
                       <button
                         className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"

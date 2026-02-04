@@ -3,6 +3,7 @@ import React, { useEffect, useMemo } from "react";
 import { NavLink, useSearchParams } from "react-router-dom";
 import { Package, ShoppingBag, Wallet, LayoutDashboard, Settings } from "lucide-react";
 import { useAuthStore } from "../store/auth";
+import NotificationsBell from "../components/notifications/NotificationsBell";
 
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
 

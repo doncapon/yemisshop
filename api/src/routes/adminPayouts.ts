@@ -4,6 +4,12 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { paySupplierForPurchaseOrder } from "../services/payout.service.js";
 
+// ✅ NEW: notifications helpers (same as in orders.ts)
+import {
+  notifyAdmins,
+  notifySupplierBySupplierId,
+} from "../services/notifications.service.js";
+
 const router = Router();
 const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
 
@@ -108,71 +114,141 @@ router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Res
     const note = String(req.body?.note ?? "").trim() || null;
     const adminId = String(req.user?.id ?? "") || null;
 
-    const out = await prisma.$transaction(async (tx: {
-            supplierPaymentAllocation: { findUnique: (arg0: { where: { id: string; }; include: { purchaseOrder: { select: { id: boolean; orderId: boolean; }; }; }; }) => any; update: (arg0: { where: { id: string; }; data: { status: any; releasedAt: Date; }; }) => any; }; supplierLedgerEntry: {
-                findFirst: (arg0: { where: any; select: { id: boolean; }; }) => any; create: (arg0: {
-                    data: {
-                        supplierId: any; type: string; amount: any; // Decimal passthrough
-                        currency: string; referenceType: string; referenceId: any; meta: { manual: boolean; note: string | null; adminId: string | null; purchaseOrderId: any; paymentId: any; orderId: any; };
-                    };
-                }) => any;
+    const out = await prisma.$transaction(
+      async (tx: {
+        supplierPaymentAllocation: {
+          findUnique: (arg0: {
+            where: { id: string };
+            include: { purchaseOrder: { select: { id: boolean; orderId: boolean } } };
+          }) => any;
+          update: (arg0: {
+            where: { id: string };
+            data: { status: any; releasedAt: Date };
+          }) => any;
+        };
+        supplierLedgerEntry: {
+          findFirst: (arg0: { where: any; select: { id: boolean } }) => any;
+          create: (arg0: {
+            data: {
+              supplierId: any;
+              type: string;
+              amount: any; // Decimal passthrough
+              currency: string;
+              referenceType: string;
+              referenceId: any;
+              meta: {
+                manual: boolean;
+                note: string | null;
+                adminId: string | null;
+                purchaseOrderId: any;
+                paymentId: any;
+                orderId: any;
+              };
             };
-        }) => {
-      const alloc = await tx.supplierPaymentAllocation.findUnique({
-        where: { id },
-        include: {
-          purchaseOrder: { select: { id: true, orderId: true } },
-        },
-      });
-      if (!alloc) throw new Error("Allocation not found");
+          }) => any;
+        };
+      }) => {
+        const alloc = await tx.supplierPaymentAllocation.findUnique({
+          where: { id },
+          include: {
+            purchaseOrder: { select: { id: true, orderId: true } },
+          },
+        });
+        if (!alloc) throw new Error("Allocation not found");
 
-      // idempotent
-      const cur = String(alloc.status || "").toUpperCase();
-      if (cur === "PAID") {
-        return { allocation: alloc, note: "Already PAID" };
-      }
+        // idempotent
+        const cur = String(alloc.status || "").toUpperCase();
+        if (cur === "PAID") {
+          return { allocation: alloc, note: "Already PAID" };
+        }
 
-      const updated = await tx.supplierPaymentAllocation.update({
-        where: { id },
-        data: { status: "PAID" as any, releasedAt: new Date() },
-      });
-
-      if (createLedger) {
-        // Guard: ensure we don't insert duplicate manual credits for same allocation
-        const existing = await tx.supplierLedgerEntry.findFirst({
-          where: {
-            supplierId: updated.supplierId,
-            referenceType: "ALLOCATION",
-            referenceId: updated.id,
-            type: "CREDIT",
-          } as any,
-          select: { id: true },
+        const updated = await tx.supplierPaymentAllocation.update({
+          where: { id },
+          data: { status: "PAID" as any, releasedAt: new Date() },
         });
 
-        if (!existing) {
-          await tx.supplierLedgerEntry.create({
-            data: {
+        if (createLedger) {
+          // Guard: ensure we don't insert duplicate manual credits for same allocation
+          const existing = await tx.supplierLedgerEntry.findFirst({
+            where: {
               supplierId: updated.supplierId,
-              type: "CREDIT",
-              amount: updated.amount as any, // Decimal passthrough
-              currency: "NGN",
               referenceType: "ALLOCATION",
               referenceId: updated.id,
-              meta: {
-                manual: true,
-                note,
-                adminId,
+              type: "CREDIT",
+            } as any,
+            select: { id: true },
+          });
+
+          if (!existing) {
+            await tx.supplierLedgerEntry.create({
+              data: {
+                supplierId: updated.supplierId,
+                type: "CREDIT",
+                amount: updated.amount as any, // Decimal passthrough
+                currency: "NGN",
+                referenceType: "ALLOCATION",
+                referenceId: updated.id,
+                meta: {
+                  manual: true,
+                  note,
+                  adminId,
+                  purchaseOrderId: updated.purchaseOrderId,
+                  paymentId: updated.paymentId,
+                  orderId: (alloc as any)?.purchaseOrder?.orderId ?? null,
+                },
+              },
+            });
+          }
+        }
+
+        // ✅ NEW: notifications – supplier + admins
+        try {
+          // Supplier notification: payout manually marked paid
+          await notifySupplierBySupplierId(
+            String(updated.supplierId),
+            {
+              type: "PAYOUT_MARKED_PAID_SUPPLIER" as any,
+              title: "Payout released",
+              body: `An allocation of ₦${String(updated.amount)} has been marked as PAID by an admin.`,
+              data: {
+                allocationId: updated.id,
                 purchaseOrderId: updated.purchaseOrderId,
                 paymentId: updated.paymentId,
                 orderId: (alloc as any)?.purchaseOrder?.orderId ?? null,
               },
             },
-          });
-        }
-      }
+            tx as any
+          );
 
-      return { allocation: updated };
-    });
+          // Admin broadcast (other admins)
+          await notifyAdmins(
+            {
+              type: "PAYOUT_MARKED_PAID_ADMIN" as any,
+              title: "Allocation marked as PAID",
+              body: `Allocation ${updated.id} was marked PAID (₦${String(
+                updated.amount
+              )}).`,
+              data: {
+                allocationId: updated.id,
+                supplierId: updated.supplierId,
+                purchaseOrderId: updated.purchaseOrderId,
+                paymentId: updated.paymentId,
+                orderId: (alloc as any)?.purchaseOrder?.orderId ?? null,
+                adminId,
+              },
+            },
+            tx as any
+          );
+        } catch (notifErr) {
+          console.error(
+            "adminPayouts: failed to send notifications for mark-paid allocation:",
+            notifErr
+          );
+        }
+
+        return { allocation: updated };
+      }
+    );
 
     return res.json({ ok: true, data: out });
   } catch (e: any) {
@@ -197,6 +273,56 @@ router.post(
         id: req.user?.id,
         role: req.user?.role,
       });
+
+      // ✅ NEW: notifications after payout release
+      try {
+        const po = await prisma.purchaseOrder.findUnique({
+          where: { id: String(purchaseOrderId) },
+          select: {
+            id: true,
+            orderId: true,
+            supplierId: true,
+            supplierAmount: true,
+            supplier: { select: { name: true } },
+          },
+        });
+
+        if (po && po.supplierId) {
+          // Supplier: payout released for this PO
+          await notifySupplierBySupplierId(
+            String(po.supplierId),
+            {
+              type: "PAYOUT_RELEASED_SUPPLIER" as any,
+              title: "Payout released",
+              body: `Your payout for purchase order ${po.id} (order ${po.orderId}) has been released.`,
+              data: {
+                purchaseOrderId: po.id,
+                orderId: po.orderId,
+                amount: Number(po.supplierAmount ?? 0),
+              },
+            }
+          );
+
+          // Admins: audit trail
+          await notifyAdmins({
+            type: "PAYOUT_RELEASED_ADMIN" as any,
+            title: "Payout released for PO",
+            body: `Payout released for purchase order ${po.id} (order ${po.orderId}) to supplier ${po.supplier?.name ?? po.supplierId}.`,
+            data: {
+              purchaseOrderId: po.id,
+              orderId: po.orderId,
+              supplierId: po.supplierId,
+              amount: Number(po.supplierAmount ?? 0),
+              triggeredByAdminId: req.user?.id ?? null,
+            },
+          });
+        }
+      } catch (notifErr) {
+        console.error(
+          "adminPayouts: failed to send notifications for PO release:",
+          notifErr
+        );
+      }
 
       return res.json({ ok: true, data: out });
     } catch (e: any) {

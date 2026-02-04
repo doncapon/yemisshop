@@ -22,7 +22,17 @@ const toDecimal = (v: Decimalish) => {
 };
 
 type SupplierCtx =
-  | { ok: true; supplierId: string; supplier: { id: string; name?: string | null; status?: any; userId?: string | null }; impersonating: boolean }
+  | {
+      ok: true;
+      supplierId: string;
+      supplier: {
+        id: string;
+        name?: string | null;
+        status?: any;
+        userId?: string | null;
+      };
+      impersonating: boolean;
+    }
   | { ok: false; status: number; error: string };
 
 async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
@@ -34,7 +44,11 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
   if (isAdmin(role)) {
     const supplierId = String(req.query?.supplierId ?? "").trim();
     if (!supplierId) {
-      return { ok: false, status: 400, error: "Missing supplierId query param for admin view" };
+      return {
+        ok: false,
+        status: 400,
+        error: "Missing supplierId query param for admin view",
+      };
     }
 
     const supplier = await prisma.supplier.findUnique({
@@ -53,14 +67,18 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
       where: { userId },
       select: { id: true, name: true, status: true, userId: true },
     });
-    if (!supplier) return { ok: false, status: 403, error: "Supplier profile not found for this user" };
+    if (!supplier)
+      return {
+        ok: false,
+        status: 403,
+        error: "Supplier profile not found for this user",
+      };
 
     return { ok: true, supplierId: supplier.id, supplier, impersonating: false };
   }
 
   return { ok: false, status: 403, error: "Forbidden" };
 }
-
 
 const asNumber = (v: any) => {
   if (v === "" || v == null) return undefined;
@@ -113,7 +131,10 @@ async function makeUniqueVariantSku(
   let i = 1;
 
   const existsInDb = async (sku: string) =>
-    !!(await (tx as any).productVariant.findUnique({ where: { sku }, select: { id: true } }));
+    !!(await (tx as any).productVariant.findUnique({
+      where: { sku },
+      select: { id: true },
+    }));
 
   while (seen.has(candidate) || (await existsInDb(candidate))) {
     i += 1;
@@ -131,10 +152,10 @@ function normalizeOptions(raw: any): Array<{ attributeId: string; valueId: strin
   const pickAttributeId = (o: any) =>
     String(
       o?.attributeId ??
-      o?.attribute?.id ??
-      o?.attributeValue?.attributeId ??
-      o?.value?.attributeId ??
-      ""
+        o?.attribute?.id ??
+        o?.attributeValue?.attributeId ??
+        o?.value?.attributeId ??
+        ""
     ).trim();
 
   const pickValueId = (o: any) =>
@@ -178,23 +199,24 @@ function placeholderVariantsQtyTotal(variants: any[] | undefined | null) {
     const direct = String(v?.variantId ?? v?.id ?? "").trim();
     const opts = normalizeOptions(
       v?.options ??
-      v?.optionSelections ??
-      v?.attributes ??
-      v?.attributeSelections ??
-      v?.variantOptions ??
-      v?.VariantOptions ??
-      []
+        v?.optionSelections ??
+        v?.attributes ??
+        v?.attributeSelections ??
+        v?.variantOptions ??
+        v?.VariantOptions ??
+        []
     );
     const bump = asNumber(v?.priceBump) ?? 0;
     if (!opts.length && bump === 0) {
-      throw new Error("Variant row has no options and no priceBump; refusing to create default variant.");
+      throw new Error(
+        "Variant row has no options and no priceBump; refusing to create default variant."
+      );
     }
 
     if (direct) continue;
     if (opts.length > 0) continue;
 
     if (bump !== 0) continue;
-
 
     const q = pickQty(v?.availableQty, v?.qty, v?.quantity);
     if (typeof q === "number") {
@@ -208,7 +230,10 @@ function placeholderVariantsQtyTotal(variants: any[] | undefined | null) {
 
 /* ------------------------- AUTO pricing helpers ------------------------- */
 
-async function refreshProductAutoPriceIfAutoMode(tx: Prisma.TransactionClient, productId: string) {
+async function refreshProductAutoPriceIfAutoMode(
+  tx: Prisma.TransactionClient,
+  productId: string
+) {
   const p = await tx.product.findUnique({
     where: { id: productId },
     select: { id: true, priceMode: true },
@@ -236,7 +261,6 @@ async function refreshProductAutoPriceIfAutoMode(tx: Prisma.TransactionClient, p
     data: { autoPrice: agg._min.basePrice ?? null },
   });
 }
-
 
 /* ------------------------- Offers helpers (2-table) ---------------------- */
 
@@ -306,7 +330,6 @@ async function upsertSupplierProductOffer(
   await refreshProductAutoPriceIfAutoMode(tx, productId);
   return offer;
 }
-
 
 /* -------------------------- Attributes writer --------------------------- */
 
@@ -474,8 +497,7 @@ async function createOrGetDefaultVariant(
   return created.id;
 }
 
-
-// ------- sku helpers ------ 
+// ------- sku helpers ------
 function prefixVariantSkuWithProductName(productTitle: string, rawSku?: string | null) {
   const prefix = slugSkuBase(productTitle).toUpperCase().slice(0, 30) || "PRODUCT";
   const s = String(rawSku ?? "").trim();
@@ -494,7 +516,6 @@ function prefixVariantSkuWithProductName(productTitle: string, rawSku?: string |
 
   return `${prefix}-${clean}`;
 }
-
 
 function payoutReadySupplierWhere() {
   const nonEmpty = { not: "" } as any;
@@ -522,8 +543,10 @@ function payoutReadySupplierWhere() {
   } as const;
 }
 
-
-async function isSupplierPayoutReadyTx(tx: Tx, supplierId: string): Promise<boolean> {
+async function isSupplierPayoutReadyTx(
+  tx: Tx,
+  supplierId: string
+): Promise<boolean> {
   const s = await (tx as any).supplier.findUnique({
     where: { id: supplierId },
     select: {
@@ -541,7 +564,8 @@ async function isSupplierPayoutReadyTx(tx: Tx, supplierId: string): Promise<bool
 
   if (!s) return false;
 
-  const nonEmpty = (v: any) => typeof v === "string" ? v.trim().length > 0 : !!v;
+  const nonEmpty = (v: any) =>
+    typeof v === "string" ? v.trim().length > 0 : !!v;
 
   return !!(
     s.isPayoutEnabled &&
@@ -552,7 +576,6 @@ async function isSupplierPayoutReadyTx(tx: Tx, supplierId: string): Promise<bool
     String(s.bankVerificationStatus ?? "").toUpperCase() === "VERIFIED"
   );
 }
-
 
 /**
  * "Eligible" offer = something that could make a product purchasable
@@ -579,14 +602,17 @@ async function assertSupplierPayoutReadyForPurchasableOfferTx(
 ) {
   const ok = await isSupplierPayoutReadyTx(tx, supplierId);
   if (!ok) {
+    // 🔔 Notification-style error payload (same pattern as other routes)
     const err: any = new Error(
       `${contextMsg} Supplier must complete bank details and have payouts enabled before an offer can be active/in-stock with quantity.`
     );
     err.statusCode = 400;
+    err.code = "SUPPLIER_PAYOUT_NOT_READY";
+    err.userMessage =
+      "Please complete and verify your bank details in Supplier Settings before activating offers with stock.";
     throw err;
   }
 }
-
 
 /* ------------------------------- Schemas -------------------------------- */
 
@@ -600,7 +626,10 @@ const zCoerceIntNonNegOpt = () =>
 
 const zCoerceIntNullableOpt = () =>
   z
-    .preprocess((v) => (v === "" || v == null ? undefined : Number(v)), z.number().int())
+    .preprocess(
+      (v) => (v === "" || v == null ? undefined : Number(v)),
+      z.number().int()
+    )
     .nullable()
     .optional();
 
@@ -637,13 +666,14 @@ const VariantOptionInputSchema = z
     // common aliases
     attributeValueId: z.string().optional(),
     attribute: z.object({ id: z.string().optional() }).optional(),
-    value: z.object({ id: z.string().optional(), attributeId: z.string().optional() }).optional(),
+    value: z
+      .object({ id: z.string().optional(), attributeId: z.string().optional() })
+      .optional(),
     attributeValue: z
       .object({ id: z.string().optional(), attributeId: z.string().optional() })
       .optional(),
   })
   .passthrough();
-
 
 const VariantCreateSchema = z
   .object({
@@ -692,24 +722,25 @@ const CreateSchema = z.object({
     .optional(),
 });
 
-const UpdateSchema = z.object({
-  title: z.string().min(1).optional(),
-  description: z.string().optional(),
-  price: z.union([z.number(), z.string()]).optional(),
-  sku: z.string().min(1).optional(),
-  inStock: z.boolean().optional(),
-  categoryId: z.string().nullable().optional(),
-  brandId: z.string().nullable().optional(),
-  imagesJson: z.array(z.string()).optional(),
-  communicationCost: z.union([z.number(), z.string()]).nullable().optional(),
-  availableQty: zCoerceIntNonNegOpt(),
-  qty: zCoerceIntNonNegOpt(),
-  quantity: zCoerceIntNonNegOpt(),
-  offer: OfferSchema,
-  attributeSelections: z.array(z.any()).optional(),
-  variants: z.array(z.union([VariantOfferUpdateSchema, VariantCreateSchema])).optional(),
-}).extend(
-  {
+const UpdateSchema = z
+  .object({
+    title: z.string().min(1).optional(),
+    description: z.string().optional(),
+    price: z.union([z.number(), z.string()]).optional(),
+    sku: z.string().min(1).optional(),
+    inStock: z.boolean().optional(),
+    categoryId: z.string().nullable().optional(),
+    brandId: z.string().nullable().optional(),
+    imagesJson: z.array(z.string()).optional(),
+    communicationCost: z.union([z.number(), z.string()]).nullable().optional(),
+    availableQty: zCoerceIntNonNegOpt(),
+    qty: zCoerceIntNonNegOpt(),
+    quantity: zCoerceIntNonNegOpt(),
+    offer: OfferSchema,
+    attributeSelections: z.array(z.any()).optional(),
+    variants: z.array(z.union([VariantOfferUpdateSchema, VariantCreateSchema])).optional(),
+  })
+  .extend({
     stockOnly: z.boolean().optional(),
     meta: z
       .object({
@@ -717,8 +748,7 @@ const UpdateSchema = z.object({
       })
       .passthrough()
       .optional(),
-  }
-);
+  });
 
 /* -------------------------------- Products ------------------------------ */
 
@@ -736,8 +766,14 @@ router.get("/", requireAuth, async (req, res) => {
 
   const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD ?? 3);
 
-  const MAX_QTY_PER_SKU = Math.max(0, Number(process.env.SUPPLIER_MAX_AVAILABLE_QTY ?? 10_000));
-  const MAX_DELTA_LIVE = Math.max(0, Number(process.env.SUPPLIER_MAX_STOCK_DELTA_LIVE ?? 500));
+  const MAX_QTY_PER_SKU = Math.max(
+    0,
+    Number(process.env.SUPPLIER_MAX_AVAILABLE_QTY ?? 10_000)
+  );
+  const MAX_DELTA_LIVE = Math.max(
+    0,
+    Number(process.env.SUPPLIER_MAX_STOCK_DELTA_LIVE ?? 500)
+  );
 
   function clampQty(n: number) {
     const v = Math.max(0, Math.trunc(Number(n) || 0));
@@ -757,15 +793,21 @@ router.get("/", requireAuth, async (req, res) => {
     label: string; // "base" or "variant:<id>"
   }) {
     const statusUpper = String(args.productStatus ?? "").toUpperCase();
-    const isLive = statusUpper === "LIVE" || statusUpper === "PUBLISHED" || statusUpper === "APPROVED";
+    const isLive =
+      statusUpper === "LIVE" ||
+      statusUpper === "PUBLISHED" ||
+      statusUpper === "APPROVED";
 
     if (args.nextQty > MAX_QTY_PER_SKU) {
-      throw err400(`Qty too high for ${args.label}. Max allowed is ${MAX_QTY_PER_SKU}.`);
+      throw err400(
+        `Qty too high for ${args.label}. Max allowed is ${MAX_QTY_PER_SKU}.`
+      );
     }
 
     // Only apply delta guard when product is already live in marketplace
     if (isLive) {
-      const delta = args.nextQty - Math.max(0, Math.trunc(args.prevQty || 0));
+      const delta =
+        args.nextQty - Math.max(0, Math.trunc(args.prevQty || 0));
       if (delta > MAX_DELTA_LIVE) {
         throw err400(
           `Stock increase too large for ${args.label} (+${delta}). Max per update for LIVE products is +${MAX_DELTA_LIVE}.`
@@ -779,21 +821,23 @@ router.get("/", requireAuth, async (req, res) => {
     isDeleted: false,
     OR: [
       { supplierId: s.id } as any,
-      ...(s.userId ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[]) : []),
+      ...(s.userId
+        ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[])
+        : []),
     ],
     ...(status !== "ANY" ? { status: status as any } : {}),
     ...(q
       ? {
-        AND: [
-          {
-            OR: [
-              { title: { contains: q, mode: "insensitive" } },
-              { sku: { contains: q, mode: "insensitive" } },
-              { description: { contains: q, mode: "insensitive" } },
-            ],
-          },
-        ],
-      }
+          AND: [
+            {
+              OR: [
+                { title: { contains: q, mode: "insensitive" } },
+                { sku: { contains: q, mode: "insensitive" } },
+                { description: { contains: q, mode: "insensitive" } },
+              ],
+            },
+          ],
+        }
       : {}),
   };
 
@@ -820,7 +864,13 @@ router.get("/", requireAuth, async (req, res) => {
         // ✅ Get base offer for price/currency display (1 row is fine)
         supplierProductOffers: {
           where: { supplierId: s.id, isActive: true },
-          select: { basePrice: true, currency: true, inStock: true, availableQty: true, isActive: true },
+          select: {
+            basePrice: true,
+            currency: true,
+            inStock: true,
+            availableQty: true,
+            isActive: true,
+          },
           take: 1,
         },
       },
@@ -857,11 +907,13 @@ router.get("/", requireAuth, async (req, res) => {
   const totalsByProduct: Record<string, number> = {};
   for (const r of baseAgg) {
     const pid = String(r.productId);
-    totalsByProduct[pid] = (totalsByProduct[pid] ?? 0) + Number(r._sum.availableQty ?? 0);
+    totalsByProduct[pid] =
+      (totalsByProduct[pid] ?? 0) + Number(r._sum.availableQty ?? 0);
   }
   for (const r of variantAgg) {
     const pid = String(r.productId);
-    totalsByProduct[pid] = (totalsByProduct[pid] ?? 0) + Number(r._sum.availableQty ?? 0);
+    totalsByProduct[pid] =
+      (totalsByProduct[pid] ?? 0) + Number(r._sum.availableQty ?? 0);
   }
 
   res.json({
@@ -875,12 +927,17 @@ router.get("/", requireAuth, async (req, res) => {
       // - prefer offer totals (more accurate for supplier)
       // - fallback to product.availableQty if no offers exist
       const availableQty =
-        offerQtyTotal > 0 ? offerQtyTotal : Number(offer?.availableQty ?? p.availableQty ?? 0);
+        offerQtyTotal > 0
+          ? offerQtyTotal
+          : Number(offer?.availableQty ?? p.availableQty ?? 0);
 
       // choose displayed stock flag:
       // - if we have offers, "in stock" means qty > 0 (or offer says inStock)
       // - otherwise fall back to product.inStock
-      const inStock = offer != null ? (availableQty > 0 || offer.inStock === true) : Boolean(p.inStock);
+      const inStock =
+        offer != null
+          ? availableQty > 0 || offer.inStock === true
+          : Boolean(p.inStock);
 
       return {
         id: p.id,
@@ -907,8 +964,6 @@ router.get("/", requireAuth, async (req, res) => {
   });
 });
 
-
-
 // DETAIL
 router.get("/:id", requireAuth, async (req, res) => {
   const ctx = await resolveSupplierContext(req);
@@ -926,7 +981,9 @@ router.get("/:id", requireAuth, async (req, res) => {
       // ✅ Key fix: supplier-owned via supplierId (new), keep legacy fallback
       OR: [
         { supplierId: s.id } as any,
-        ...(s.userId ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[]) : []),
+        ...(s.userId
+          ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[])
+          : []),
       ],
     },
     include: {
@@ -936,7 +993,13 @@ router.get("/:id", requireAuth, async (req, res) => {
           options: true,
           supplierVariantOffers: {
             where: { supplierId: s.id },
-            select: { id: true, priceBump: true, availableQty: true, inStock: true, isActive: true },
+            select: {
+              id: true,
+              priceBump: true,
+              availableQty: true,
+              inStock: true,
+              isActive: true,
+            },
           },
         },
         orderBy: { createdAt: "asc" },
@@ -995,7 +1058,9 @@ router.get("/:id", requireAuth, async (req, res) => {
       description: p.description,
       sku: p.sku,
       status: p.status,
-      imagesJson: Array.isArray((p as any).imagesJson) ? (p as any).imagesJson : [],
+      imagesJson: Array.isArray((p as any).imagesJson)
+        ? (p as any).imagesJson
+        : [],
       categoryId: p.categoryId ?? null,
       brandId: p.brandId ?? null,
       price: basePrice,
@@ -1003,14 +1068,14 @@ router.get("/:id", requireAuth, async (req, res) => {
       availableQty: baseQty,
       offer: myOffer
         ? {
-          id: myOffer.id,
-          basePrice,
-          currency: myOffer.currency,
-          inStock: myOffer.inStock,
-          isActive: myOffer.isActive,
-          leadDays: myOffer.leadDays ?? null,
-          availableQty: myOffer.availableQty ?? 0,
-        }
+            id: myOffer.id,
+            basePrice,
+            currency: myOffer.currency,
+            inStock: myOffer.inStock,
+            isActive: myOffer.isActive,
+            leadDays: myOffer.leadDays ?? null,
+            availableQty: myOffer.availableQty ?? 0,
+          }
         : null,
       variants:
         (p as any).ProductVariant?.map((v: any) => {
@@ -1024,15 +1089,18 @@ router.get("/:id", requireAuth, async (req, res) => {
             isActive: vo?.isActive ?? true,
             supplierVariantOffer: vo
               ? {
-                id: vo.id,
-                priceBump: Number(vo.priceBump ?? 0),
-                availableQty: vo.availableQty ?? 0,
-                inStock: vo.inStock ?? true,
-                isActive: vo.isActive ?? true,
-              }
+                  id: vo.id,
+                  priceBump: Number(vo.priceBump ?? 0),
+                  availableQty: vo.availableQty ?? 0,
+                  inStock: vo.inStock ?? true,
+                  isActive: vo.isActive ?? true,
+                }
               : null,
             options: Array.isArray(v.options)
-              ? v.options.map((o: any) => ({ attributeId: o.attributeId, valueId: o.valueId }))
+              ? v.options.map((o: any) => ({
+                  attributeId: o.attributeId,
+                  valueId: o.valueId,
+                }))
               : [],
           };
         }) ?? [],
@@ -1040,12 +1108,14 @@ router.get("/:id", requireAuth, async (req, res) => {
   });
 });
 
-
 // CREATE
 router.post("/", requireAuth, requireSupplier, async (req, res) => {
   try {
     const s = await getSupplierForUser(req.user!.id);
-    if (!s) return res.status(403).json({ error: "Supplier profile not found for this user" });
+    if (!s)
+      return res
+        .status(403)
+        .json({ error: "Supplier profile not found for this user" });
 
     const payload = CreateSchema.parse(req.body ?? {});
 
@@ -1056,7 +1126,9 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
       sku = `${base}-${randomSkuSuffix(4)}`.toUpperCase();
     }
 
-    const attributeSelections = Array.isArray(payload.attributeSelections) ? payload.attributeSelections : [];
+    const attributeSelections = Array.isArray(payload.attributeSelections)
+      ? payload.attributeSelections
+      : [];
     const variants = Array.isArray(payload.variants) ? payload.variants : [];
 
     const baseQtyFromInputs =
@@ -1070,179 +1142,203 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
       ) ?? undefined;
 
     const placeholderQty = placeholderVariantsQtyTotal(variants);
-    const qty = (typeof baseQtyFromInputs === "number" ? baseQtyFromInputs : placeholderQty) ?? 0;
+    const qty = (typeof baseQtyFromInputs === "number"
+      ? baseQtyFromInputs
+      : placeholderQty) ?? 0;
 
     const inStock = payload.offer?.inStock ?? payload.inStock ?? qty > 0;
 
-    const created = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const offerBasePrice = payload.offer?.basePrice ?? payload.price;
+    const created = await prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        const offerBasePrice = payload.offer?.basePrice ?? payload.price;
 
-      const product = await tx.product.create({
-        data: {
-          title: payload.title,
-          description: payload.description ?? "",
-          retailPrice: null,
-          sku,
-          status: "PENDING",
+        const product = await tx.product.create({
+          data: {
+            title: payload.title,
+            description: payload.description ?? "",
+            retailPrice: null,
+            sku,
+            status: "PENDING",
+            inStock,
+            imagesJson: Array.isArray(payload.imagesJson)
+              ? payload.imagesJson
+              : [],
+
+            ownerId: req.user!.id,
+            userId: req.user!.id,
+
+            // ✅ FIX: persist the creating supplier on the product
+            supplierId: s.id,
+
+            categoryId: payload.categoryId ?? null,
+            brandId: payload.brandId ?? null,
+            availableQty: Math.max(0, Math.trunc(qty)),
+            autoPrice: toDecimal(offerBasePrice),
+          } as any,
+          select: { id: true, sku: true, title: true },
+        });
+
+        const baseOffer = await upsertSupplierProductOffer(tx, s.id, product.id, {
+          basePrice: offerBasePrice,
+          currency: payload.offer?.currency ?? "NGN",
           inStock,
-          imagesJson: Array.isArray(payload.imagesJson) ? payload.imagesJson : [],
-
-          ownerId: req.user!.id,
-          userId: req.user!.id,
-
-          // ✅ FIX: persist the creating supplier on the product
-          supplierId: s.id,
-
-          categoryId: payload.categoryId ?? null,
-          brandId: payload.brandId ?? null,
+          isActive: payload.offer?.isActive ?? true,
+          leadDays: (payload.offer?.leadDays ?? null) as any,
           availableQty: Math.max(0, Math.trunc(qty)),
-          autoPrice: toDecimal(offerBasePrice),
-        } as any,
-        select: { id: true, sku: true, title: true },
-      });
+        });
 
-      const baseOffer = await upsertSupplierProductOffer(tx, s.id, product.id, {
-        basePrice: offerBasePrice,
-        currency: payload.offer?.currency ?? "NGN",
-        inStock,
-        isActive: payload.offer?.isActive ?? true,
-        leadDays: (payload.offer?.leadDays ?? null) as any,
-        availableQty: Math.max(0, Math.trunc(qty)),
-      });
+        await writeProductAttributes(tx, product.id, attributeSelections as any);
 
-      await writeProductAttributes(tx, product.id, attributeSelections as any);
+        if (Array.isArray(variants) && variants.length) {
+          const productSkuBase = String(
+            product.sku || slugSkuBase(product.title)
+          ).toUpperCase();
 
-      if (Array.isArray(variants) && variants.length) {
-        const productSkuBase = String(product.sku || slugSkuBase(product.title)).toUpperCase();
-
-        for (const v of variants as any[]) {
-          const opts = normalizeOptions(
-            v?.options ??
-            v?.optionSelections ??
-            v?.attributes ??
-            v?.attributeSelections ??
-            v?.variantOptions ??
-            v?.VariantOptions ??
-            []
-          );
-          const vQty = pickQty(v?.availableQty, v?.qty, v?.quantity) ?? 0;
-          const vInStock = v?.inStock ?? vQty > 0;
-          const bump = asNumber(v?.priceBump) ?? 0;
-
-          if (!opts.length && bump === 0) continue;
-
-          let variantId: string | null = null;
-
-          if (opts.length) {
-            variantId = await createOrGetVariantByCombo(tx, {
-              productId: product.id,
-              productSkuBase,
-              desiredSku: prefixVariantSkuWithProductName(product.title, v?.sku ?? null),
-              options: opts,
-              qty: vQty,
-              inStock: !!vInStock,
-            });
-          } else {
-            variantId = await createOrGetDefaultVariant(tx, {
-              productId: product.id,
-              productSkuBase,
-              desiredSku: prefixVariantSkuWithProductName(product.title, v?.sku ?? null),
-              qty: vQty,
-              inStock: !!vInStock,
-            });
-          }
-
-          if (!variantId) continue;
-
-          // ✅ If this variant offer would be purchasable, require payout-ready supplier
-          const vIsActive = v?.isActive ?? true;
-          const vQtyNonNeg = Math.max(0, Math.trunc(vQty));
-          const vInStockFinal = !!vInStock;
-
-          // IMPORTANT: your variant offer only stores priceBump.
-          // If you want "variant is purchasable" to require baseOffer price too,
-          // you can treat price as basePrice+priceBump. Here we gate using bump>0 OR baseOffer>0 implicitly via baseOffer existence.
-          const bumpNum = Number(bump ?? 0);
-          const effectiveTotalPrice = Number(baseOffer.basePrice ?? offerBasePrice ?? 0) + bumpNum;
-
-          if (
-            offerBecomesPurchasable({
-              isActive: vIsActive,
-              inStock: vInStockFinal,
-              availableQty: vQtyNonNeg,
-              price: effectiveTotalPrice,
-            })
-          ) {
-            await assertSupplierPayoutReadyForPurchasableOfferTx(
-              tx as any,
-              s.id,
-              "Cannot activate variant offer."
+          for (const v of variants as any[]) {
+            const opts = normalizeOptions(
+              v?.options ??
+                v?.optionSelections ??
+                v?.attributes ??
+                v?.attributeSelections ??
+                v?.variantOptions ??
+                v?.VariantOptions ??
+                []
             );
+            const vQty = pickQty(v?.availableQty, v?.qty, v?.quantity) ?? 0;
+            const vInStock = v?.inStock ?? vQty > 0;
+            const bump = asNumber(v?.priceBump) ?? 0;
+
+            if (!opts.length && bump === 0) continue;
+
+            let variantId: string | null = null;
+
+            if (opts.length) {
+              variantId = await createOrGetVariantByCombo(tx, {
+                productId: product.id,
+                productSkuBase,
+                desiredSku: prefixVariantSkuWithProductName(
+                  product.title,
+                  v?.sku ?? null
+                ),
+                options: opts,
+                qty: vQty,
+                inStock: !!vInStock,
+              });
+            } else {
+              variantId = await createOrGetDefaultVariant(tx, {
+                productId: product.id,
+                productSkuBase,
+                desiredSku: prefixVariantSkuWithProductName(
+                  product.title,
+                  v?.sku ?? null
+                ),
+                qty: vQty,
+                inStock: !!vInStock,
+              });
+            }
+
+            if (!variantId) continue;
+
+            // ✅ If this variant offer would be purchasable, require payout-ready supplier
+            const vIsActive = v?.isActive ?? true;
+            const vQtyNonNeg = Math.max(0, Math.trunc(vQty));
+            const vInStockFinal = !!vInStock;
+
+            // IMPORTANT: your variant offer only stores priceBump.
+            // If you want "variant is purchasable" to require baseOffer price too,
+            // you can treat price as basePrice+priceBump. Here we gate using bump>0 OR baseOffer>0 implicitly via baseOffer existence.
+            const bumpNum = Number(bump ?? 0);
+            const effectiveTotalPrice =
+              Number(baseOffer.basePrice ?? offerBasePrice ?? 0) + bumpNum;
+
+            if (
+              offerBecomesPurchasable({
+                isActive: vIsActive,
+                inStock: vInStockFinal,
+                availableQty: vQtyNonNeg,
+                price: effectiveTotalPrice,
+              })
+            ) {
+              await assertSupplierPayoutReadyForPurchasableOfferTx(
+                tx as any,
+                s.id,
+                "Cannot activate variant offer."
+              );
+            }
+
+            await tx.supplierVariantOffer.upsert({
+              where: {
+                supplierId_variantId: { supplierId: s.id, variantId },
+              },
+              update: {
+                productId: product.id,
+                supplierProductOfferId: baseOffer.id,
+                priceBump: toDecimal(bumpNum),
+                currency: baseOffer.currency ?? "NGN",
+                availableQty: vQtyNonNeg,
+                inStock: vInStockFinal,
+                isActive: vIsActive,
+                leadDays: baseOffer.leadDays ?? null,
+              },
+              create: {
+                supplierId: s.id,
+                productId: product.id,
+                variantId,
+                supplierProductOfferId: baseOffer.id,
+                priceBump: toDecimal(bumpNum),
+                currency: baseOffer.currency ?? "NGN",
+                availableQty: vQtyNonNeg,
+                inStock: vInStockFinal,
+                isActive: vIsActive,
+                leadDays: baseOffer.leadDays ?? null,
+              },
+            });
           }
-
-          await tx.supplierVariantOffer.upsert({
-            where: { supplierId_variantId: { supplierId: s.id, variantId } },
-            update: {
-              productId: product.id,
-              supplierProductOfferId: baseOffer.id,
-              priceBump: toDecimal(bumpNum),
-              currency: baseOffer.currency ?? "NGN",
-              availableQty: vQtyNonNeg,
-              inStock: vInStockFinal,
-              isActive: vIsActive,
-              leadDays: baseOffer.leadDays ?? null,
-            },
-            create: {
-              supplierId: s.id,
-              productId: product.id,
-              variantId,
-              supplierProductOfferId: baseOffer.id,
-              priceBump: toDecimal(bumpNum),
-              currency: baseOffer.currency ?? "NGN",
-              availableQty: vQtyNonNeg,
-              inStock: vInStockFinal,
-              isActive: vIsActive,
-              leadDays: baseOffer.leadDays ?? null,
-            },
-          });
-
         }
+
+        const variantAgg = await tx.supplierVariantOffer.aggregate({
+          where: { supplierId: s.id, productId: product.id, isActive: true },
+          _sum: { availableQty: true },
+        });
+
+        const variantQty = Number(variantAgg._sum?.availableQty ?? 0);
+        const effectiveQty = Math.max(0, Math.trunc(qty)) + variantQty;
+
+        await tx.product.update({
+          where: { id: product.id },
+          data: {
+            availableQty: effectiveQty as any,
+            inStock: effectiveQty > 0,
+          } as any,
+        });
+
+        await refreshProductAutoPriceIfAutoMode(tx, product.id);
+
+        return tx.product.findUnique({ where: { id: product.id } });
       }
-
-      const variantAgg = await tx.supplierVariantOffer.aggregate({
-        where: { supplierId: s.id, productId: product.id, isActive: true },
-        _sum: { availableQty: true },
-      });
-
-      const variantQty = Number(variantAgg._sum?.availableQty ?? 0);
-      const effectiveQty = Math.max(0, Math.trunc(qty)) + variantQty;
-
-      await tx.product.update({
-        where: { id: product.id },
-        data: {
-          availableQty: effectiveQty as any,
-          inStock: effectiveQty > 0,
-        } as any,
-      });
-
-      await refreshProductAutoPriceIfAutoMode(tx, product.id);
-
-      return tx.product.findUnique({ where: { id: product.id } });
-    });
+    );
 
     res.status(201).json({ data: created });
   } catch (e: any) {
-
     const status = Number(e?.statusCode) || 500;
     console.error("[supplier.products PATCH] error:", e);
-    res.status(status).json({ error: e?.message || "Internal Server Error" });
+    // 🔔 propagate notification fields so UI can show a nice banner/toast
+    res.status(status).json({
+      error: e?.message || "Internal Server Error",
+      code: e?.code,
+      userMessage: e?.userMessage,
+    });
   }
-
 });
 
-
-const MAX_QTY_PER_SKU = Math.max(0, Number(process.env.SUPPLIER_MAX_AVAILABLE_QTY ?? 10_000));
-const MAX_DELTA_LIVE = Math.max(0, Number(process.env.SUPPLIER_MAX_STOCK_DELTA_LIVE ?? 500));
+const MAX_QTY_PER_SKU = Math.max(
+  0,
+  Number(process.env.SUPPLIER_MAX_AVAILABLE_QTY ?? 10_000)
+);
+const MAX_DELTA_LIVE = Math.max(
+  0,
+  Number(process.env.SUPPLIER_MAX_STOCK_DELTA_LIVE ?? 500)
+);
 
 function clampQty(n: number) {
   const v = Math.max(0, Math.trunc(Number(n) || 0));
@@ -1262,7 +1358,10 @@ function assertStockUpdateAllowed(args: {
   label: string; // "base" or "variant:<id>"
 }) {
   const statusUpper = String(args.productStatus ?? "").toUpperCase();
-  const isLive = statusUpper === "LIVE" || statusUpper === "PUBLISHED" || statusUpper === "APPROVED";
+  const isLive =
+    statusUpper === "LIVE" ||
+    statusUpper === "PUBLISHED" ||
+    statusUpper === "APPROVED";
 
   if (args.nextQty > MAX_QTY_PER_SKU) {
     throw err400(
@@ -1282,7 +1381,9 @@ function assertStockUpdateAllowed(args: {
 }
 
 function modelHasField(modelName: string, fieldName: string) {
-  const m = (Prisma as any).dmmf?.datamodel?.models?.find((x: any) => x.name === modelName);
+  const m = (Prisma as any).dmmf?.datamodel?.models?.find(
+    (x: any) => x.name === modelName
+  );
   return !!m?.fields?.some((f: any) => f.name === fieldName);
 }
 
@@ -1309,7 +1410,13 @@ function isStockOnlySupplierUpdate(body: any) {
   // optional explicit hint from frontend
   if (body.stockOnly === true) return true;
 
-  const allowedTop = new Set(["availableQty", "inStock", "offer", "variants", "stockOnly"]);
+  const allowedTop = new Set([
+    "availableQty",
+    "inStock",
+    "offer",
+    "variants",
+    "stockOnly",
+  ]);
   for (const k of Object.keys(body)) {
     if (!allowedTop.has(k)) return false;
   }
@@ -1324,7 +1431,12 @@ function isStockOnlySupplierUpdate(body: any) {
 
   if (body.variants != null) {
     if (!Array.isArray(body.variants)) return false;
-    const allowedVar = new Set(["variantId", "availableQty", "inStock", "isActive"]);
+    const allowedVar = new Set([
+      "variantId",
+      "availableQty",
+      "inStock",
+      "isActive",
+    ]);
     for (const v of body.variants) {
       if (!v || typeof v !== "object") return false;
       for (const k of Object.keys(v)) {
@@ -1439,7 +1551,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
   }
 
   // ---------- helper: parse incoming attributeSelections into maps ----------
-  function parseIncomingAttributeSelections(attributeSelections: any[] | undefined | null) {
+  function parseIncomingAttributeSelections(
+    attributeSelections: any[] | undefined | null
+  ) {
     const incoming = {
       multi: new Map<string, Set<string>>(),
       single: new Map<string, string>(),
@@ -1511,7 +1625,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     }
 
     const clean = arr
-      .map((x) => (typeof x === "string" ? x : x?.url || x?.path || x?.src))
+      .map((x) =>
+        typeof x === "string" ? x : x?.url || x?.path || x?.src
+      )
       .map((x) => String(x ?? "").trim())
       .filter(Boolean);
 
@@ -1519,7 +1635,10 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     return Array.from(new Set(clean)).sort();
   }
 
-  function mapsEqualString(a: Map<string, string>, b: Map<string, string>) {
+  function mapsEqualString(
+    a: Map<string, string>,
+    b: Map<string, string>
+  ) {
     if (a.size !== b.size) return false;
     for (const [k, v] of a.entries()) {
       if ((b.get(k) ?? "") !== v) return false;
@@ -1527,7 +1646,10 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     return true;
   }
 
-  function mapsEqualSet(a: Map<string, Set<string>>, b: Map<string, Set<string>>) {
+  function mapsEqualSet(
+    a: Map<string, Set<string>>,
+    b: Map<string, Set<string>>
+  ) {
     if (a.size !== b.size) return false;
     for (const [k, setA] of a.entries()) {
       const setB = b.get(k);
@@ -1550,7 +1672,10 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
   try {
     const s = await getSupplierForUser(req.user!.id);
-    if (!s) return res.status(403).json({ error: "Supplier profile not found for this user" });
+    if (!s)
+      return res
+        .status(403)
+        .json({ error: "Supplier profile not found for this user" });
 
     const { id } = req.params;
 
@@ -1559,10 +1684,15 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     const payload = UpdateSchema.parse(base ?? {});
 
     // ✅ read client hint (but we validate it later before trusting)
-    const stockOnlyFlag = payload.stockOnly === true || payload?.meta?.stockOnly === true;
+    const stockOnlyFlag =
+      payload.stockOnly === true || payload?.meta?.stockOnly === true;
 
     const product = await prisma.product.findFirst({
-      where: { id, isDeleted: false, OR: [{ ownerId: req.user!.id }, { userId: req.user!.id }] },
+      where: {
+        id,
+        isDeleted: false,
+        OR: [{ ownerId: req.user!.id }, { userId: req.user!.id }],
+      },
       // ✅ include more fields so we can detect “actual changes”, not just “field present in payload”
       select: {
         id: true,
@@ -1598,35 +1728,45 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
     // ✅ “Actual change” detection (used for review/pending logic)
     const titleChanged =
-      payload.title !== undefined && normString(payload.title) !== normString((product as any).title);
+      payload.title !== undefined &&
+      normString(payload.title) !== normString((product as any).title);
     const skuChanged =
-      payload.sku !== undefined && normString(payload.sku) !== normString((product as any).sku);
+      payload.sku !== undefined &&
+      normString(payload.sku) !== normString((product as any).sku);
     const descChanged =
       payload.description !== undefined &&
-      normString(payload.description) !== normString((product as any).description);
+      normString(payload.description) !==
+        normString((product as any).description);
 
     const categoryChanged =
-      payload.categoryId !== undefined && normId(payload.categoryId) !== normId((product as any).categoryId);
+      payload.categoryId !== undefined &&
+      normId(payload.categoryId) !== normId((product as any).categoryId);
 
     const brandChanged =
-      payload.brandId !== undefined && normId(payload.brandId) !== normId((product as any).brandId);
+      payload.brandId !== undefined &&
+      normId(payload.brandId) !== normId((product as any).brandId);
 
     const imagesChanged =
       payload.imagesJson !== undefined &&
-      JSON.stringify(normImages(payload.imagesJson)) !== JSON.stringify(normImages((product as any).imagesJson));
+      JSON.stringify(normImages(payload.imagesJson)) !==
+        JSON.stringify(normImages((product as any).imagesJson));
 
     const communicationCostChanged =
       payload.communicationCost !== undefined &&
-      Number(payload.communicationCost ?? 0) !== Number((product as any).communicationCost ?? 0);
+      Number(payload.communicationCost ?? 0) !==
+        Number((product as any).communicationCost ?? 0);
 
     // attribute change detection (only if attributeSelections provided)
     let attributeSelectionsChanged = false;
     if (payload.attributeSelections !== undefined) {
       const current = await getCurrentAttributeState(prisma as any, id);
-      const incomingParsed = parseIncomingAttributeSelections(payload.attributeSelections as any[]);
+      const incomingParsed = parseIncomingAttributeSelections(
+        payload.attributeSelections as any[]
+      );
 
       attributeSelectionsChanged =
-        !mapsEqualString(current.text, incomingParsed.text) || !mapsEqualSet(current.multi, incomingParsed.multi);
+        !mapsEqualString(current.text, incomingParsed.text) ||
+        !mapsEqualSet(current.multi, incomingParsed.multi);
     }
 
     // ✅ this replaces your old “isTryingToEditCore” for review decisions
@@ -1651,15 +1791,24 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       (payload.offer as any)?.qty,
       (payload.offer as any)?.quantity
     );
-    const baseQtyFromTop = pickQty(payload.availableQty, (payload as any)?.qty, (payload as any)?.quantity);
+    const baseQtyFromTop = pickQty(
+      payload.availableQty,
+      (payload as any)?.qty,
+      (payload as any)?.quantity
+    );
 
     // ✅ never crash PATCH because of “empty/default” rows
     // ✅ and keep type strictly number (no number|undefined)
     let placeholderQty: number = 0;
 
-    if (typeof baseQtyFromOffer !== "number" && typeof baseQtyFromTop !== "number" && rawVariantsProvided) {
+    if (
+      typeof baseQtyFromOffer !== "number" &&
+      typeof baseQtyFromTop !== "number" &&
+      rawVariantsProvided
+    ) {
       try {
-        placeholderQty = (placeholderVariantsQtyTotal(rawSubmittedVariants) ?? 0) as number;
+        placeholderQty =
+          (placeholderVariantsQtyTotal(rawSubmittedVariants) ?? 0) as number;
       } catch {
         placeholderQty = 0;
       }
@@ -1669,28 +1818,30 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       typeof baseQtyFromOffer === "number"
         ? baseQtyFromOffer
         : typeof baseQtyFromTop === "number"
-          ? baseQtyFromTop
-          : placeholderQty;
+        ? baseQtyFromTop
+        : placeholderQty;
 
     const validSubmittedVariants = rawVariantsProvided
       ? rawSubmittedVariants.filter((v: any) => {
-        const direct = String(v?.variantId ?? v?.id ?? "").trim();
-        const opts = normalizeOptions(
-          v?.options ??
-          v?.optionSelections ??
-          v?.attributes ??
-          v?.attributeSelections ??
-          v?.variantOptions ??
-          v?.VariantOptions ??
-          []
-        );
-        const bump = asNumber(v?.priceBump) ?? 0;
-        return !!direct || opts.length > 0 || bump !== 0;
-      })
+          const direct = String(v?.variantId ?? v?.id ?? "").trim();
+          const opts = normalizeOptions(
+            v?.options ??
+              v?.optionSelections ??
+              v?.attributes ??
+              v?.attributeSelections ??
+              v?.variantOptions ??
+              v?.VariantOptions ??
+              []
+          );
+          const bump = asNumber(v?.priceBump) ?? 0;
+          return !!direct || opts.length > 0 || bump !== 0;
+        })
       : [];
 
-    const isExplicitClearVariants = rawVariantsProvided && rawSubmittedVariants.length === 0;
-    const hasValidVariants = rawVariantsProvided && validSubmittedVariants.length > 0;
+    const isExplicitClearVariants =
+      rawVariantsProvided && rawSubmittedVariants.length === 0;
+    const hasValidVariants =
+      rawVariantsProvided && validSubmittedVariants.length > 0;
 
     // detect new variant combo creation request (important for LIVE review)
     const isCreatingNewVariantCombo =
@@ -1700,12 +1851,12 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         if (direct) return false;
         const opts = normalizeOptions(
           v?.options ??
-          v?.optionSelections ??
-          v?.attributes ??
-          v?.attributeSelections ??
-          v?.variantOptions ??
-          v?.VariantOptions ??
-          []
+            v?.optionSelections ??
+            v?.attributes ??
+            v?.attributeSelections ??
+            v?.variantOptions ??
+            v?.VariantOptions ??
+            []
         );
         return opts.length > 0;
       });
@@ -1713,7 +1864,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     const nextInStock =
       payload.offer?.inStock ??
       payload.inStock ??
-      (typeof baseQtyCandidate === "number" ? baseQtyCandidate > 0 : undefined);
+      (typeof baseQtyCandidate === "number"
+        ? baseQtyCandidate > 0
+        : undefined);
 
     const currentBaseOffer = await prisma.supplierProductOffer.findUnique({
       where: { supplierId_productId: { supplierId: s.id, productId: id } },
@@ -1740,10 +1893,12 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     );
 
     const incomingBasePriceRaw = payload.offer?.basePrice ?? payload.price;
-    const incomingBasePrice = incomingBasePriceRaw == null ? undefined : Number(incomingBasePriceRaw);
+    const incomingBasePrice =
+      incomingBasePriceRaw == null ? undefined : Number(incomingBasePriceRaw);
 
     const basePriceChanged =
-      incomingBasePrice !== undefined && incomingBasePrice !== Number(currentBaseOffer?.basePrice ?? 0);
+      incomingBasePrice !== undefined &&
+      incomingBasePrice !== Number(currentBaseOffer?.basePrice ?? 0);
 
     const bumpChanged =
       Array.isArray(payload.variants) &&
@@ -1759,7 +1914,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
     // ✅ detect “removal intent” (not a pure qty update)
     const currentOfferVariantIds = new Set<string>(
-      (currentVariantOffers as Array<{ variantId: unknown }>).map((x) => String(x.variantId))
+      (currentVariantOffers as Array<{ variantId: unknown }>).map((x) =>
+        String(x.variantId)
+      )
     );
 
     const submittedDirectVariantIds = new Set<string>(
@@ -1775,18 +1932,20 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         const vid = String(v?.variantId ?? v?.id ?? "").trim();
         if (!vid) return false; // new combo / missing id => not qty-only
         // allow qty/inStock/isActive, but NOT priceBump or options
-        const hasOpts = normalizeOptions(
-          v?.options ??
-          v?.optionSelections ??
-          v?.attributes ??
-          v?.attributeSelections ??
-          v?.variantOptions ??
-          v?.VariantOptions ??
-          []
-        ).length > 0;
+        const hasOpts =
+          normalizeOptions(
+            v?.options ??
+              v?.optionSelections ??
+              v?.attributes ??
+              v?.attributeSelections ??
+              v?.variantOptions ??
+              v?.VariantOptions ??
+              []
+          ).length > 0;
 
         const bump = asNumber(v?.priceBump);
-        const bumpTouched = bump != null && Number(bump) !== (bumpByVariantId.get(vid) ?? 0);
+        const bumpTouched =
+          bump != null && Number(bump) !== (bumpByVariantId.get(vid) ?? 0);
 
         // if options present OR bump changed => not qty-only
         if (hasOpts) return false;
@@ -1798,7 +1957,10 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
     // ✅ Only trust stockOnly if the request is truly stock-only.
     const stockOnlyOverride =
-      stockOnlyFlag && !isTryingToEditCore && !priceChangeRequiresReview && !isCreatingNewVariantCombo;
+      stockOnlyFlag &&
+      !isTryingToEditCore &&
+      !priceChangeRequiresReview &&
+      !isCreatingNewVariantCombo;
 
     // ✅ CHANGED: removalRequested should NOT trigger when the variants payload is qty-only
     const removalRequested =
@@ -1807,11 +1969,16 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       !variantsPayloadIsQtyOnly &&
       (isExplicitClearVariants ||
         (hasValidVariants &&
-          Array.from(currentOfferVariantIds).some((vid) => !submittedDirectVariantIds.has(vid))));
+          Array.from(currentOfferVariantIds).some(
+            (vid) => !submittedDirectVariantIds.has(vid)
+          )));
 
     // ✅ STOCK-ONLY intent (structure/price/core unchanged)
     const stockOnlyIntent =
-      !isTryingToEditCore && !priceChangeRequiresReview && !isCreatingNewVariantCombo && !removalRequested;
+      !isTryingToEditCore &&
+      !priceChangeRequiresReview &&
+      !isCreatingNewVariantCombo &&
+      !removalRequested;
 
     // ✅ NEW: qty-only intent (actual changes are only qty/inStock flags)
     const baseQtyTouched =
@@ -1823,14 +1990,19 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       (payload.offer as any)?.quantity !== undefined;
 
     const baseQtyActuallyChanged =
-      baseQtyTouched && !sameQty(baseQtyCandidate, currentBaseOffer?.availableQty ?? 0);
+      baseQtyTouched &&
+      !sameQty(baseQtyCandidate, currentBaseOffer?.availableQty ?? 0);
 
     const anyVariantQtyActuallyChanged =
       rawVariantsProvided &&
       validSubmittedVariants.some((v: any) => {
         const vid = String(v?.variantId ?? v?.id ?? "").trim();
         if (!vid) return false;
-        const requestedQtyRaw = pickQty(v?.availableQty, v?.qty, v?.quantity);
+        const requestedQtyRaw = pickQty(
+          v?.availableQty,
+          v?.qty,
+          v?.quantity
+        );
         if (typeof requestedQtyRaw !== "number") return false;
         const prev = qtyByVariantId.get(vid) ?? 0;
         return clamp0(requestedQtyRaw) !== prev;
@@ -1846,7 +2018,8 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     // - LIVE + anything other than qty-only => set product PENDING
     // - BUT: qty-only NEVER sets PENDING
     // - BUT: if client explicitly sends stockOnly (and it's actually stock-only), never set PENDING
-    const submitForReview = isLive && !qtyOnlyIntent && !stockOnlyOverride && !stockOnlyIntent;
+    const submitForReview =
+      isLive && !qtyOnlyIntent && !stockOnlyOverride && !stockOnlyIntent;
 
     // ----- STOCK GUARDS (keep yours) -----
     const prevBase = Number(currentBaseOffer?.availableQty ?? 0);
@@ -1861,19 +2034,32 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       });
     }
 
-    if (rawVariantsProvided && Array.isArray(validSubmittedVariants) && validSubmittedVariants.length) {
+    if (
+      rawVariantsProvided &&
+      Array.isArray(validSubmittedVariants) &&
+      validSubmittedVariants.length
+    ) {
       const prevVariantQtyById = new Map<string, number>();
       for (const ov of currentVariantOffers as any[]) {
-        prevVariantQtyById.set(String(ov.variantId), Number(ov.availableQty ?? 0));
+        prevVariantQtyById.set(
+          String(ov.variantId),
+          Number(ov.availableQty ?? 0)
+        );
       }
 
       for (const v of validSubmittedVariants as any[]) {
         const variantIdMaybe = String(v?.variantId ?? v?.id ?? "").trim();
-        const requestedQtyRaw = pickQty(v?.availableQty, v?.qty, v?.quantity);
+        const requestedQtyRaw = pickQty(
+          v?.availableQty,
+          v?.qty,
+          v?.quantity
+        );
         if (typeof requestedQtyRaw !== "number") continue;
 
         const nextV = clampQty(requestedQtyRaw);
-        const prevV = variantIdMaybe ? (prevVariantQtyById.get(variantIdMaybe) ?? 0) : 0;
+        const prevV = variantIdMaybe
+          ? prevVariantQtyById.get(variantIdMaybe) ?? 0
+          : 0;
 
         assertStockUpdateAllowed({
           productStatus: product.status,
@@ -1896,20 +2082,25 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         // LIVE or ordered product: prevent removing existing attribute selections
         if (payload.attributeSelections) {
           const current = await getCurrentAttributeState(tx as any, id);
-          const incomingParsed = parseIncomingAttributeSelections(payload.attributeSelections as any[]);
+          const incomingParsed = parseIncomingAttributeSelections(
+            payload.attributeSelections as any[]
+          );
 
           if (isLive || productHasOrders) {
             // TEXT: if current had a value, incoming must not clear it
             for (const [aid, curText] of current.text.entries()) {
               const nextText = incomingParsed.text.get(aid);
               if (curText && (!nextText || !String(nextText).trim())) {
-                throw409("This product has orders / is LIVE. You can’t clear an existing text attribute.");
+                throw409(
+                  "This product has orders / is LIVE. You can’t clear an existing text attribute."
+                );
               }
             }
 
             // SELECT/MULTI: incoming must be a superset of current for that attributeId.
             for (const [aid, curSet] of current.multi.entries()) {
-              const nextSet = incomingParsed.multi.get(aid) ?? new Set<string>();
+              const nextSet =
+                incomingParsed.multi.get(aid) ?? new Set<string>();
               for (const v of curSet) {
                 if (!nextSet.has(v)) {
                   throw409(
@@ -1924,12 +2115,17 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         const data: Prisma.ProductUpdateInput = {};
 
         if (payload.title !== undefined) data.title = payload.title;
-        if (payload.description !== undefined) data.description = payload.description;
+        if (payload.description !== undefined)
+          data.description = payload.description;
         if (payload.sku !== undefined) data.sku = payload.sku.trim();
-        if (payload.categoryId !== undefined) (data as any).categoryId = payload.categoryId;
-        if (payload.brandId !== undefined) (data as any).brandId = payload.brandId;
-        if (payload.imagesJson !== undefined) (data as any).imagesJson = payload.imagesJson;
-        if (payload.communicationCost !== undefined) (data as any).communicationCost = payload.communicationCost;
+        if (payload.categoryId !== undefined)
+          (data as any).categoryId = payload.categoryId;
+        if (payload.brandId !== undefined)
+          (data as any).brandId = payload.brandId;
+        if (payload.imagesJson !== undefined)
+          (data as any).imagesJson = payload.imagesJson;
+        if (payload.communicationCost !== undefined)
+          (data as any).communicationCost = payload.communicationCost;
 
         // ✅ Submit for review ONLY if needed (qty-only will never set this true now)
         if (submitForReview) (data as any).status = "PENDING";
@@ -1937,7 +2133,11 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         await tx.product.update({ where: { id }, data });
 
         if (payload.attributeSelections) {
-          await writeProductAttributes(tx, id, payload.attributeSelections as any);
+          await writeProductAttributes(
+            tx,
+            id,
+            payload.attributeSelections as any
+          );
         }
       } else if (submitForReview) {
         // No core fields changed, but non-stock changes (price/bump/new combo/removal) require review
@@ -1972,16 +2172,30 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
       if (wantsBaseOfferUpdate) {
         const nextAvailableQty =
-          typeof baseQtyCandidate === "number" ? clampQty(baseQtyCandidate) : Number(baseOffer?.availableQty ?? 0);
+          typeof baseQtyCandidate === "number"
+            ? clampQty(baseQtyCandidate)
+            : Number(baseOffer?.availableQty ?? 0);
 
-        const createdOrUpdated = await upsertSupplierProductOffer(tx, s.id, id, {
-          basePrice: payload.offer?.basePrice ?? payload.price ?? baseOffer?.basePrice ?? 0,
-          currency: payload.offer?.currency ?? baseOffer?.currency ?? "NGN",
-          inStock: nextInStock ?? baseOffer?.inStock ?? true,
-          isActive: payload.offer?.isActive ?? baseOffer?.isActive ?? true,
-          leadDays: (payload.offer?.leadDays ?? baseOffer?.leadDays ?? null) as any,
-          availableQty: nextAvailableQty,
-        });
+        const createdOrUpdated = await upsertSupplierProductOffer(
+          tx,
+          s.id,
+          id,
+          {
+            basePrice:
+              payload.offer?.basePrice ??
+              payload.price ??
+              baseOffer?.basePrice ??
+              0,
+            currency:
+              payload.offer?.currency ?? baseOffer?.currency ?? "NGN",
+            inStock: nextInStock ?? baseOffer?.inStock ?? true,
+            isActive: payload.offer?.isActive ?? baseOffer?.isActive ?? true,
+            leadDays: (payload.offer?.leadDays ??
+              baseOffer?.leadDays ??
+              null) as any,
+            availableQty: nextAvailableQty,
+          }
+        );
 
         baseOffer = {
           id: createdOrUpdated.id,
@@ -2005,7 +2219,10 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
             inStock: nextInStock ?? true,
             isActive: payload.offer?.isActive ?? true,
             leadDays: (payload.offer?.leadDays ?? null) as any,
-            availableQty: typeof baseQtyCandidate === "number" ? Math.max(0, Math.trunc(baseQtyCandidate)) : 0,
+            availableQty:
+              typeof baseQtyCandidate === "number"
+                ? Math.max(0, Math.trunc(baseQtyCandidate))
+                : 0,
           });
           baseOffer = bo as any;
         }
@@ -2016,22 +2233,32 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           if (isLive) {
             for (const vid of currentOfferVariantIds) {
               if (await hasAnyOrdersForVariant(tx as any, vid)) {
-                throw409("Cannot remove/disable a variant that already has orders. Set qty to 0 instead.");
+                throw409(
+                  "Cannot remove/disable a variant that already has orders. Set qty to 0 instead."
+                );
               }
             }
 
             await tx.supplierVariantOffer.updateMany({
               where: { supplierId: s.id, productId: id },
-              data: { isActive: false, inStock: false, availableQty: 0 } as any,
+              data: {
+                isActive: false,
+                inStock: false,
+                availableQty: 0,
+              } as any,
             });
           } else {
             // not LIVE: allow delete only if none have orders
             for (const vid of currentOfferVariantIds) {
               if (await hasAnyOrdersForVariant(tx as any, vid)) {
-                throw409("Cannot delete a variant offer that already has orders.");
+                throw409(
+                  "Cannot delete a variant offer that already has orders."
+                );
               }
             }
-            await tx.supplierVariantOffer.deleteMany({ where: { supplierId: s.id, productId: id } });
+            await tx.supplierVariantOffer.deleteMany({
+              where: { supplierId: s.id, productId: id },
+            });
           }
         } else if (hasValidVariants) {
           const existingVariants = await tx.productVariant.findMany({
@@ -2046,11 +2273,14 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           const comboToVariantId = new Map<string, string>();
           for (const pv of existingVariants as any[]) {
             const key = comboKey(normalizeOptions(pv.options || []));
-            if (!comboToVariantId.has(key)) comboToVariantId.set(key, String(pv.id));
+            if (!comboToVariantId.has(key))
+              comboToVariantId.set(key, String(pv.id));
           }
 
           const makeVariantSku = async () => {
-            const baseSku = slugSkuBase(product.title || "item").toUpperCase().slice(0, 30) || "VAR";
+            const baseSku = slugSkuBase(product.title || "item")
+              .toUpperCase()
+              .slice(0, 30) || "VAR";
             for (let i = 1; i <= 500; i++) {
               const candidate = `${baseSku}-V${i}`;
               const exists = await tx.productVariant.findUnique({
@@ -2075,12 +2305,12 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
             const opts = normalizeOptions(
               v?.options ??
-              v?.optionSelections ??
-              v?.attributes ??
-              v?.attributeSelections ??
-              v?.variantOptions ??
-              v?.VariantOptions ??
-              []
+                v?.optionSelections ??
+                v?.attributes ??
+                v?.attributeSelections ??
+                v?.variantOptions ??
+                v?.VariantOptions ??
+                []
             );
             const key = comboKey(opts);
 
@@ -2089,7 +2319,10 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
             for (const o of opts) {
               const [attr, val] = await Promise.all([
-                (tx as any).attribute.findUnique({ where: { id: o.attributeId }, select: { id: true } }),
+                (tx as any).attribute.findUnique({
+                  where: { id: o.attributeId },
+                  select: { id: true },
+                }),
                 (tx as any).attributeValue.findUnique({
                   where: { id: o.valueId },
                   select: { id: true, attributeId: true },
@@ -2099,18 +2332,27 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
               if (!attr) throw new Error(`Invalid attributeId: ${o.attributeId}`);
               if (!val) throw new Error(`Invalid valueId: ${o.valueId}`);
               if (String(val.attributeId) !== String(o.attributeId)) {
-                throw new Error("Invalid variant option: value does not belong to attribute.");
+                throw new Error(
+                  "Invalid variant option: value does not belong to attribute."
+                );
               }
             }
 
             if (opts.length) {
               await tx.productAttributeOption.createMany({
-                data: opts.map((o) => ({ productId: id, attributeId: o.attributeId, valueId: o.valueId })),
+                data: opts.map((o) => ({
+                  productId: id,
+                  attributeId: o.attributeId,
+                  valueId: o.valueId,
+                })),
                 skipDuplicates: true,
               });
             }
 
-            const desired = prefixVariantSkuWithProductName(product.title, v?.sku ?? null);
+            const desired = prefixVariantSkuWithProductName(
+              product.title,
+              v?.sku ?? null
+            );
             const sku = desired ?? (await makeVariantSku());
 
             const qty = pickQty(v?.availableQty, v?.qty, v?.quantity) ?? 0;
@@ -2205,30 +2447,49 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
             await tx.productVariant.update({
               where: { id: variantId },
-              data: { availableQty: vQtyNonNeg as any, inStock: !!vInStock } as any,
+              data: {
+                availableQty: vQtyNonNeg as any,
+                inStock: !!vInStock,
+              } as any,
             });
           }
 
           // Handle “removals”:
           // - LIVE: disable (never delete)
           // - Not LIVE: delete only if no orders for those variants
-          const toRemove = Array.from(currentOfferVariantIds).filter((vid) => !keepIds.has(vid));
+          const toRemove = Array.from(currentOfferVariantIds).filter(
+            (vid) => !keepIds.has(vid)
+          );
 
           if (toRemove.length) {
             for (const vid of toRemove) {
               if (await hasAnyOrdersForVariant(tx as any, vid)) {
-                throw409("Cannot remove/disable a variant that already has orders. Set qty to 0 instead.");
+                throw409(
+                  "Cannot remove/disable a variant that already has orders. Set qty to 0 instead."
+                );
               }
             }
 
             if (isLive) {
               await tx.supplierVariantOffer.updateMany({
-                where: { supplierId: s.id, productId: id, variantId: { in: toRemove } as any },
-                data: { isActive: false, inStock: false, availableQty: 0 } as any,
+                where: {
+                  supplierId: s.id,
+                  productId: id,
+                  variantId: { in: toRemove } as any,
+                },
+                data: {
+                  isActive: false,
+                  inStock: false,
+                  availableQty: 0,
+                } as any,
               });
             } else {
               await tx.supplierVariantOffer.deleteMany({
-                where: { supplierId: s.id, productId: id, variantId: { in: toRemove } as any },
+                where: {
+                  supplierId: s.id,
+                  productId: id,
+                  variantId: { in: toRemove } as any,
+                },
               });
             }
           }
@@ -2258,13 +2519,20 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
       const baseQty = Number(refreshedBaseOffer?.availableQty ?? 0);
       const variantQty = Number(variantSum._sum?.availableQty ?? 0);
-      const effectiveProductQty = Math.max(0, Math.trunc(baseQty)) + Math.max(0, Math.trunc(variantQty));
+      const effectiveProductQty =
+        Math.max(0, Math.trunc(baseQty)) + Math.max(0, Math.trunc(variantQty));
 
       await tx.product.update({
         where: { id },
         data: {
-          inStock: payload.offer?.inStock ?? payload.inStock ?? effectiveProductQty > 0,
-          availableQty: Math.max(0, Math.trunc(effectiveProductQty)) as any,
+          inStock:
+            payload.offer?.inStock ??
+            payload.inStock ??
+            effectiveProductQty > 0,
+          availableQty: Math.max(
+            0,
+            Math.trunc(effectiveProductQty)
+          ) as any,
         } as any,
       });
 
@@ -2275,12 +2543,13 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
   } catch (e: any) {
     const status = Number(e?.statusCode) || 500;
     console.error("[supplier.products PATCH] error:", e);
-    res.status(status).json({ error: e?.message || "Internal Server Error" });
+    // 🔔 notification fields exposed for FE
+    res.status(status).json({
+      error: e?.message || "Internal Server Error",
+      code: e?.code,
+      userMessage: e?.userMessage,
+    });
   }
 });
-
-
-
-
 
 export default router;

@@ -28,11 +28,69 @@ enum DisputeStatus {
 }
 
 enum NotificationType {
-  REFUND_REQUESTED
-  REFUND_UPDATED
-  DISPUTE_OPENED
-  DISPUTE_UPDATED
+  // Orders & payments
+  ORDER_PLACED           // shopper -> admin/suppliers
+  ORDER_PAID             // shopper paid successfully
+  ORDER_CANCELED         // cancelled by shopper/admin/supplier
+
+  PURCHASE_ORDER_CREATED    // supplier sees new PO
+  PURCHASE_ORDER_FUNDED     // supplier sees payment secured for their part
+  PURCHASE_ORDER_STATUS_UPDATE // generic, see data.status
+
+  RIDER_ASSIGNED           // rider + supplier
+  RIDER_DELIVERED          // supplier + customer (if you want)
+
+  PAYMENT_FAILED           // customer + admin
+
+  // Products / catalog
+  PRODUCT_SUBMITTED        // supplier created product, admin to review
+  PRODUCT_APPROVED         // supplier informed
+  PRODUCT_REJECTED         // supplier informed, with reason
+  PRODUCT_DISABLED         // product taken offline by admin
+
+  // Refunds & disputes (you already have, just maybe rename/use)
+  REFUND_REQUESTED         // supplier + admin
+  REFUND_STATUS_CHANGED    // generic: customer/supplier/admin
+  DISPUTE_OPENED           // admin + supplier
+  DISPUTE_STATUS_CHANGED
+
+  // Supplier money
+  SUPPLIER_PAYOUT_RELEASED // when PO payout status becomes RELEASED
+  SUPPLIER_PAYOUT_HELD     // HELD with reason
+  SUPPLIER_PAYOUT_FAILED   // payout attempt failed
+
+  // Reviews
+  SUPPLIER_REVIEW_RECEIVED // supplier reviewed by shopper
+
+  // KYC / bank / RC etc
+  SUPPLIER_KYC_STATUS_CHANGED
+  SUPPLIER_BANK_STATUS_CHANGED
+
+  // Catch-all
+  GENERIC
 }
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  WHATSAPP
+}
+
+model UserNotificationPreference {
+  id            String               @id @default(cuid())
+  userId        String
+  type          NotificationType
+  inAppEnabled  Boolean              @default(true)
+  emailEnabled  Boolean              @default(false)
+  smsEnabled    Boolean              @default(false)
+  whatsappEnabled Boolean            @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+}
+
 
 model Notification {
   id        String           @id @default(cuid())

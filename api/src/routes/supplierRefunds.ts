@@ -7,7 +7,7 @@ import { notifyMany, notifyUser } from "../services/notifications.service.js";
 const router = Router();
 
 const isSupplier = (role?: string) => String(role || "").toUpperCase() === "SUPPLIER";
-const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
+const isAdmin = (role?: string) => ["ADMIN", "SUPER_ADMIN"].includes(String(role || "").toUpperCase());
 
 function norm(s?: any) {
   return String(s ?? "").trim();
@@ -157,9 +157,6 @@ router.patch("/:id", requireAuth, async (req: any, res) => {
     return res.status(500).json({ error: "Refund model delegate not found on Prisma client." });
   }
 
-  // refundEvent delegate may not exist in all schemas
-  const RefundEvent = (prisma as any).refundEvent || (prisma as any).refundEvents || null;
-
   const action = upper(req.body?.action);
   const note = norm(req.body?.note) || null;
 
@@ -217,7 +214,6 @@ router.patch("/:id", requireAuth, async (req: any, res) => {
         },
       });
 
-      // write event if model exists
       const RefundEventTx = (tx as any).refundEvent || (tx as any).refundEvents || null;
       if (RefundEventTx?.create) {
         await RefundEventTx.create({
@@ -238,9 +234,8 @@ router.patch("/:id", requireAuth, async (req: any, res) => {
       return { updated, refundMeta: refund, nextStatus };
     });
 
-    // Notify admins + customer
+    // 🔔 Notify admins
     const adminIds = await getAdminUserIds();
-
     await notifyMany(adminIds, {
       type: "REFUND_UPDATED",
       title: "Supplier responded to refund",
@@ -254,6 +249,7 @@ router.patch("/:id", requireAuth, async (req: any, res) => {
       },
     });
 
+    // 🔔 Notify customer (refund requester)
     if (out.refundMeta.requestedByUserId) {
       await notifyUser(out.refundMeta.requestedByUserId, {
         type: "REFUND_UPDATED",
@@ -264,7 +260,7 @@ router.patch("/:id", requireAuth, async (req: any, res) => {
           orderId: out.refundMeta.orderId,
           purchaseOrderId: out.refundMeta.purchaseOrderId,
           status: out.nextStatus,
-          requestedBy: out.refundMeta.requestedBy, // ✅ fix: was out.requestedBy (not in out)
+          requestedBy: out.refundMeta.requestedBy, // this is available from the select
         },
       });
     }

@@ -3,31 +3,8 @@ import axios, { AxiosError, AxiosHeaders, type InternalAxiosRequestConfig } from
 
 const V = (import.meta as any)?.env || {};
 const API_BASE = V.VITE_API_URL; // '' => same-origin, so call '/api/...'
+
 let accessToken: string | null = null;
-
-// Rehydrate once at module load
-try {
-  const t = window.localStorage.getItem("access_token");
-  if (t) accessToken = t;
-} catch {
-  /* ignore */
-}
-
-// Keep memory in sync across tabs/HMR
-window.addEventListener("storage", (e) => {
-  if (e.key === "access_token") accessToken = e.newValue;
-});
-
-// Exported setter so login/logout and the store can keep axios in sync
-export function setAccessToken(token: string | null) {
-  accessToken = token;
-  try {
-    if (token) window.localStorage.setItem("access_token", token);
-    else window.localStorage.removeItem("access_token");
-  } catch {
-    /* ignore */
-  }
-}
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -35,11 +12,73 @@ const api = axios.create({
   timeout: 20000,
 });
 
-// Attach Bearer when present + set JSON content-type for non-GET by default
+const looksLikeJwt = (t: string | null) => !!t && t.split(".").length === 3;
+
+function applyTokenToAxios(token: string | null) {
+  if (token && looksLikeJwt(token)) {
+    api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+  } else {
+    delete api.defaults.headers.common["Authorization"];
+  }
+}
+
+function readTokenFromStorage(): string | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const t = window.localStorage.getItem("access_token");
+    return looksLikeJwt(t) ? t : null; // ✅ only trust JWTs
+  } catch {
+    return null;
+  }
+}
+
+function writeTokenToStorage(token: string | null) {
+  try {
+    if (typeof window === "undefined") return;
+    if (token && looksLikeJwt(token)) window.localStorage.setItem("access_token", token);
+    else window.localStorage.removeItem("access_token");
+  } catch {
+    /* ignore */
+  }
+}
+
+// ---- Initial rehydrate at module load ----
+accessToken = readTokenFromStorage();
+applyTokenToAxios(accessToken);
+
+// ---- Keep in sync across tabs ----
+if (typeof window !== "undefined") {
+  const g = window as any;
+  if (!g.__access_token_storage_listener__) {
+    g.__access_token_storage_listener__ = true;
+
+    window.addEventListener("storage", (e) => {
+      if (e.key === "access_token") {
+        accessToken = looksLikeJwt(e.newValue) ? e.newValue : null;
+        applyTokenToAxios(accessToken);
+      }
+    });
+  }
+}
+
+export function setAccessToken(token: string | null) {
+  accessToken = looksLikeJwt(token) ? token : null;
+  writeTokenToStorage(accessToken);
+  applyTokenToAxios(accessToken);
+}
+
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const headers = AxiosHeaders.from(config.headers);
 
-  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+  // If memory token is missing, fall back to storage (JWT-only)
+  if (!accessToken) accessToken = readTokenFromStorage();
+
+  // ✅ only attach bearer for real JWTs
+  if (accessToken && looksLikeJwt(accessToken)) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
+  } else {
+    headers.delete("Authorization");
+  }
 
   const method = String(config.method || "get").toLowerCase();
   if (method !== "get" && !headers.has("Content-Type")) {
@@ -50,7 +89,7 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config;
 });
 
-// ✅ For CAC verify calls, treat expected outcomes as "handled" (don’t reject)
+// CAC verify special-case stays as-is
 api.interceptors.response.use(
   (r) => r,
   (e: AxiosError) => {

@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
+import { performLogout } from "../../utils/logout";
 
 type SessionDto = {
   id: string;
@@ -166,7 +167,8 @@ export default function AccountSessions() {
         title: "Logged out",
         message: "This device session was revoked. Please log in again.",
       });
-      logout?.();
+      await performLogout("/login"); // ✅ clears cookie + clears state
+
       navigate("/login");
     }
   };

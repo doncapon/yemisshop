@@ -1,54 +1,56 @@
-// src/routes/payments.ts
-import express, { Router } from 'express';
-import type { Request, Response } from 'express';
-import jwt from 'jsonwebtoken';
-import axios from 'axios';
-import crypto from 'crypto';
+// api/src/routes/payments.ts
+import express, { Router } from "express";
+import type { Request, Response } from "express";
+import jwt from "jsonwebtoken";
+import axios from "axios";
+import crypto from "crypto";
 
-import { prisma } from '../lib/prisma.js';
-import { requireAuth } from '../middleware/auth.js';
-import { logOrderActivity } from '../services/activity.service.js';
-import { ps, toKobo, PAYSTACK_SECRET_KEY } from '../lib/paystack.js';
+import { prisma } from "../lib/prisma.js";
+import { requireAuth } from "../middleware/auth.js";
+import { logOrderActivity } from "../services/activity.service.js";
+import { ps, toKobo, PAYSTACK_SECRET_KEY } from "../lib/paystack.js";
 
-import { generateRef8, isFresh, toNumber } from '../lib/payments.js';
-import { issueReceiptIfNeeded } from '../lib/receipts.js';
-import { getInitChannels } from '../config/paystack.js';
+import { generateRef8, isFresh, toNumber } from "../lib/payments.js";
+import { issueReceiptIfNeeded } from "../lib/receipts.js";
+import { getInitChannels } from "../config/paystack.js";
 import {
   WEBHOOK_ACCEPT_CARD,
   WEBHOOK_ACCEPT_BANK_TRANSFER,
-} from '../config/paystack.js';
+} from "../config/paystack.js";
 import {
   notifySuppliersForOrder,
-  notifyCustomerOrderPaid, // <-- NEW: send order-paid email
-} from '../services/notify.js';
-import PDFDocument from 'pdfkit';
+  notifyCustomerOrderPaid, // send order-paid email
+} from "../services/notify.js";
+import PDFDocument from "pdfkit";
 
-// NEW: dynamic split computation
-import { computePaystackSplitForOrder } from '../lib/splits.js';
+// dynamic split computation (we currently call it but *do not* apply split_code in Option A)
+import { computePaystackSplitForOrder } from "../lib/splits.js";
 
-// ✅ FIX: import enum directly (instead of Prisma.SupplierPaymentStatus)
-import { SupplierPaymentStatus } from '@prisma/client'
-import { trackPurchaseIfNeeded } from '../services/tracking.service.js';
+// import enum directly
+import { SupplierPaymentStatus } from "@prisma/client";
+import { trackPurchaseIfNeeded } from "../services/tracking.service.js";
 
 const router = Router();
 
 /* ----------------------------- Config ----------------------------- */
 
 const isTrue = (v?: string | null) =>
-  ['1', 'true', 'yes', 'on'].includes(String(v ?? '').toLowerCase());
+  ["1", "true", "yes", "on"].includes(String(v ?? "").toLowerCase());
 
 const TRIAL_MODE = isTrue(process.env.PAYMENTS_TRIAL_MODE);
-const APP_URL = process.env.APP_URL || 'http://localhost:5173';
+const APP_URL = process.env.APP_URL || "http://localhost:5173";
 
-const ACTIVE_PENDING_TTL_MIN = Number(process.env.PAYMENT_PENDING_TTL_MIN ?? 60);
+const ACTIVE_PENDING_TTL_MIN = Number(
+  process.env.PAYMENT_PENDING_TTL_MIN ?? 60,
+);
 
-const INLINE_APPROVAL = (process.env.INLINE_APPROVAL || 'auto').toLowerCase() as
-  | 'auto'
-  | 'manual';
+const INLINE_APPROVAL = (process.env.INLINE_APPROVAL || "auto").toLowerCase() as
+  | "auto"
+  | "manual";
 
-const BANK_NAME = process.env.BANK_NAME || '';
-const BANK_ACCOUNT_NAME = process.env.BANK_ACCOUNT_NAME || '';
-const BANK_ACCOUNT_NUMBER = process.env.BANK_ACCOUNT_NUMBER || '';
+const BANK_NAME = process.env.BANK_NAME || "";
+const BANK_ACCOUNT_NAME = process.env.BANK_ACCOUNT_NAME || "";
+const BANK_ACCOUNT_NUMBER = process.env.BANK_ACCOUNT_NUMBER || "";
 
 /* ----------------------------- Helpers ----------------------------- */
 
@@ -64,7 +66,7 @@ function isValidSignature(
   secret: string,
 ) {
   if (!signature) return false;
-  const hash = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
+  const hash = crypto.createHmac("sha512", secret).update(rawBody).digest("hex");
   return hash === signature;
 }
 
@@ -88,6 +90,14 @@ async function readSetting(key: string): Promise<string | null> {
   }
 }
 
+/**
+ * Payments-side OTP consumer for PAY_ORDER.
+ *
+ * NOTE:
+ * - We only call this IF a token is actually provided.
+ * - If you call without token, you'll get "Missing x-otp-token" – but we guard
+ *   against that at the call site now.
+ */
 async function consumePayOrderOtpOrThrow(args: {
   orderId: string;
   actorId: string;
@@ -109,7 +119,8 @@ async function consumePayOrderOtpOrThrow(args: {
   if (!row) throw httpErr(400, "Invalid or unverified OTP token");
   if (row.expiresAt <= new Date()) throw httpErr(400, "OTP token expired");
   if (row.consumedAt) throw httpErr(400, "OTP token already used");
-  if (String(row.userId) !== String(actorId)) throw httpErr(403, "OTP token not valid for this user");
+  if (String(row.userId) !== String(actorId))
+    throw httpErr(403, "OTP token not valid for this user");
 
   await prisma.orderOtpRequest.update({
     where: { id: row.id },
@@ -117,14 +128,13 @@ async function consumePayOrderOtpOrThrow(args: {
   });
 }
 
-
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /* ----------------------------- Split & Transfers ----------------------------- */
 
 async function lookupBankCode(bankName?: string | null) {
   // TODO: Map "GTBank"->"058" etc. If you already store the numeric code, return it as-is.
-  return (bankName || '').trim();
+  return (bankName || "").trim();
 }
 
 async function paySuppliersByTransfer(orderId: string, paymentId: string) {
@@ -182,19 +192,20 @@ async function paySuppliersByTransfer(orderId: string, paymentId: string) {
         data: {
           paymentId,
           type: "TRANSFER_SKIPPED",
-          data: { supplierId: s.id, reason: "supplier_not_payout_ready_or_verified" },
+          data: {
+            supplierId: s.id,
+            reason: "supplier_not_payout_ready_or_verified",
+          },
         },
       });
       continue;
     }
 
-    if (!(amount > 0)) continue;
-
     try {
       let recipientCode = s.paystackRecipientCode || null;
 
       if (!recipientCode) {
-        const bank_code = await lookupBankCode(s.bankCode ?? s.bankName); // ideally s.bankCode
+        const bank_code = await lookupBankCode(s.bankCode ?? s.bankName);
 
         const r = await ps.post("/transferrecipient", {
           type: "nuban",
@@ -216,15 +227,15 @@ async function paySuppliersByTransfer(orderId: string, paymentId: string) {
         await prisma.paymentEvent.create({
           data: {
             paymentId,
-            type: 'TRANSFER_SKIPPED',
-            data: { supplierId: s.id, reason: 'no recipient' },
+            type: "TRANSFER_SKIPPED",
+            data: { supplierId: s.id, reason: "no recipient" },
           },
         });
         continue;
       }
 
-      const tr = await ps.post('/transfer', {
-        source: 'balance',
+      const tr = await ps.post("/transfer", {
+        source: "balance",
         amount: Math.round(amount * 100),
         recipient: recipientCode,
         reason: `Order ${orderId} supplier payout`,
@@ -233,16 +244,16 @@ async function paySuppliersByTransfer(orderId: string, paymentId: string) {
       await prisma.paymentEvent.create({
         data: {
           paymentId,
-          type: 'TRANSFER_INIT',
+          type: "TRANSFER_INIT",
           data: { supplierId: s.id, amount, transfer: tr.data?.data },
         },
       });
     } catch (e: any) {
-      console.error('transfer failed', e?.response?.data || e?.message);
+      console.error("transfer failed", e?.response?.data || e?.message);
       await prisma.paymentEvent.create({
         data: {
           paymentId,
-          type: 'TRANSFER_ERROR',
+          type: "TRANSFER_ERROR",
           data: { supplierId: s.id, amount, error: e?.message },
         },
       });
@@ -266,20 +277,21 @@ async function ensureSupplierOrderRef(
   // 1) Existing PO
   const existingPO = await tx.purchaseOrder.findFirst({
     where: { orderId, supplierId },
-    orderBy: { createdAt: 'asc' },
+    orderBy: { createdAt: "asc" },
     select: { supplierOrderRef: true },
   });
   if (existingPO?.supplierOrderRef) return existingPO.supplierOrderRef;
 
   // 2) From activity log
   const refAct = await tx.orderActivity.findFirst({
-    where: { orderId, supplierId, type: 'SUPPLIER_REF_CREATED' },
-    orderBy: { createdAt: 'asc' },
+    where: { orderId, supplierId, type: "SUPPLIER_REF_CREATED" },
+    orderBy: { createdAt: "asc" },
     select: { meta: true },
   });
   const fromAct =
-    (refAct?.meta as any)?.supplierOrderRef || (refAct?.meta as any)?.supplierRef;
-  if (fromAct && typeof fromAct === 'string' && fromAct.trim()) {
+    (refAct?.meta as any)?.supplierOrderRef ||
+    (refAct?.meta as any)?.supplierRef;
+  if (fromAct && typeof fromAct === "string" && fromAct.trim()) {
     return fromAct.trim();
   }
 
@@ -290,7 +302,7 @@ async function ensureSupplierOrderRef(
       data: {
         orderId,
         supplierId,
-        type: 'SUPPLIER_REF_CREATED',
+        type: "SUPPLIER_REF_CREATED",
         message: `Supplier reference created for supplier ${supplierId}`,
         meta: { supplierOrderRef: ref },
       },
@@ -302,12 +314,10 @@ async function ensureSupplierOrderRef(
 }
 
 /**
- * ✅ Idempotent PO builder:
+ * Idempotent PO builder:
  * - groups OrderItems by chosenSupplierId
  * - upserts/updates one PurchaseOrder per supplier
  * - recreates PurchaseOrderItems links
- *
- * IMPORTANT: This runs inside the PAID finalize tx, so UI can show POs immediately.
  */
 async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
   const items = await tx.orderItem.findMany({
@@ -324,11 +334,16 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
 
   const bySupplier = new Map<
     string,
-    { supplierId: string; supplierAmount: number; customerSubtotal: number; itemIds: string[] }
+    {
+      supplierId: string;
+      supplierAmount: number;
+      customerSubtotal: number;
+      itemIds: string[];
+    }
   >();
 
   for (const it of items) {
-    const sid = it.chosenSupplierId ? String(it.chosenSupplierId) : '';
+    const sid = it.chosenSupplierId ? String(it.chosenSupplierId) : "";
     if (!sid) continue;
 
     const qty = Math.max(0, Number(it.quantity ?? 0));
@@ -341,7 +356,12 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
         : (Number(it.unitPrice ?? 0) || 0) * qty;
 
     const cur =
-      bySupplier.get(sid) ?? { supplierId: sid, supplierAmount: 0, customerSubtotal: 0, itemIds: [] };
+      bySupplier.get(sid) ?? {
+        supplierId: sid,
+        supplierAmount: 0,
+        customerSubtotal: 0,
+        itemIds: [],
+      };
 
     cur.supplierAmount += supplierLine;
     cur.customerSubtotal += customerLine;
@@ -364,15 +384,14 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
     // Keep a stable supplierOrderRef per (order,supplier)
     const supplierOrderRef = await ensureSupplierOrderRef(tx, orderId, sid);
 
-    // Upsert without requiring @@unique([orderId,supplierId]) (works even if you don't have it)
+    // Upsert without requiring @@unique([orderId,supplierId])
     let po = await tx.purchaseOrder.findFirst({
       where: { orderId, supplierId: sid },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: "asc" },
       select: { id: true },
     });
 
     if (!po) {
-      // create (handle possible race)
       try {
         po = await tx.purchaseOrder.create({
           data: {
@@ -381,23 +400,21 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
             subtotal: customerSubtotal,
             platformFee,
             supplierAmount,
-            status: 'CREATED',
+            status: "CREATED",
             supplierOrderRef,
           },
           select: { id: true },
         });
       } catch (e: any) {
-        // if concurrent create happened, re-read then update
         po = await tx.purchaseOrder.findFirst({
           where: { orderId, supplierId: sid },
-          orderBy: { createdAt: 'asc' },
+          orderBy: { createdAt: "asc" },
           select: { id: true },
         });
         if (!po) throw e;
       }
     }
 
-    // update amounts (idempotent)
     await tx.purchaseOrder.update({
       where: { id: po.id },
       data: {
@@ -408,7 +425,6 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
       },
     });
 
-    // recreate PO items
     await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: po.id } });
     for (const orderItemId of g.itemIds) {
       await tx.purchaseOrderItem.create({
@@ -428,10 +444,14 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
 }
 
 /**
- * ✅ Allocations must be written when a payment becomes PAID.
+ * Allocations must be written when a payment becomes PAID.
  * Your Orders UI reads: order.payments[].allocations[].
  */
-async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, orderId: string) {
+async function recordSupplierAllocationsOnPaidTx(
+  tx: any,
+  paymentId: string,
+  orderId: string,
+) {
   const pos = await tx.purchaseOrder.findMany({
     where: { orderId },
     include: { supplier: { select: { id: true, name: true } } },
@@ -452,7 +472,7 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
           supplierId: po.supplierId,
           purchaseOrderId: po.id,
           amount: po.supplierAmount,
-          status: SupplierPaymentStatus.HELD, // ✅ HELD concept maps to PENDING in your schema
+          status: SupplierPaymentStatus.HELD, // HELD = awaiting delivery OTP
           supplierNameSnapshot: po.supplier?.name ?? null,
           meta: { purchaseOrderStatus: po.status },
         },
@@ -462,11 +482,10 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
     // optional: mark PO funded
     await tx.purchaseOrder.update({
       where: { id: po.id },
-      data: { status: 'FUNDED' },
+      data: { status: "FUNDED" },
     });
   }
 
-  // optional snapshot on payment
   await tx.payment.update({
     where: { id: paymentId },
     data: {
@@ -482,11 +501,10 @@ async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, ord
   return rows;
 }
 
-
 /* ----------------------------- Core finalize ----------------------------- */
 
 async function finalizePaidFlow(paymentId: string) {
-  console.log('[finalizePaidFlow] start', { paymentId });
+  console.log("[finalizePaidFlow] start", { paymentId });
 
   const result = await prisma.$transaction(async (tx: any) => {
     const p = await tx.payment.findUnique({
@@ -509,30 +527,29 @@ async function finalizePaidFlow(paymentId: string) {
       },
     });
 
-    if (!p || p.status !== 'PAID' || !p.orderId) return null;
+    if (!p || p.status !== "PAID" || !p.orderId) return null;
 
     // Cancel other pending attempts for same order
     await tx.payment.updateMany({
       where: {
         orderId: p.orderId,
-        status: 'PENDING',
+        status: "PENDING",
         NOT: { id: p.id },
       },
-      data: { status: 'CANCELED' },
+      data: { status: "CANCELED" },
     });
 
-    // Move order to next status
+    // Next order status
     const next =
-      process.env.TURN_OFF_AWAIT_CONF === 'true' ? 'PAID' : 'AWAITING_FULFILLMENT';
+      process.env.TURN_OFF_AWAIT_CONF === "true"
+        ? "PAID"
+        : "AWAITING_FULFILLMENT";
 
     await tx.order.update({
       where: { id: p.orderId },
       data: { status: next },
     });
 
-
-
-    // Record service fee slice (if applicable)
     const total = Number(p.order?.total) || 0;
     const svc = Number(p.order?.serviceFeeTotal) || 0;
     const amt = Number(p.amount) || 0;
@@ -546,12 +563,12 @@ async function finalizePaidFlow(paymentId: string) {
           paymentId: p.id,
           amount: slice,
           channel: p.channel ?? null,
-          reason: 'SUPPLIER_NOTIFY',
+          reason: "SUPPLIER_NOTIFY",
         },
         update: {
           amount: slice,
           channel: p.channel ?? null,
-          reason: 'SUPPLIER_NOTIFY',
+          reason: "SUPPLIER_NOTIFY",
         },
       });
     }
@@ -559,15 +576,14 @@ async function finalizePaidFlow(paymentId: string) {
     await tx.paymentEvent.create({
       data: {
         paymentId: p.id,
-        type: 'FINALIZE_PAID',
+        type: "FINALIZE_PAID",
         data: { reference: p.reference },
       },
     });
 
     await trackPurchaseIfNeeded(p.id);
 
-    // ✅ FIX BUG #2 HERE:
-    // Create/refresh Purchase Orders + write SupplierPaymentAllocations in the SAME PAID finalize TX.
+    // PurchaseOrders + allocations inside same tx
     await ensurePurchaseOrdersForOrderTx(tx, p.orderId);
     await recordSupplierAllocationsOnPaidTx(tx, p.id, p.orderId);
 
@@ -578,11 +594,11 @@ async function finalizePaidFlow(paymentId: string) {
 
   const { orderId } = result;
 
-  // Supplier notifications (idempotent via SUPPLIER_NOTIFIED)
+  // Supplier notifications (idempotent)
   const alreadyNotified = await prisma.paymentEvent.findFirst({
     where: {
       paymentId: result.paymentId,
-      type: 'SUPPLIER_NOTIFIED',
+      type: "SUPPLIER_NOTIFIED",
     },
   });
 
@@ -592,23 +608,15 @@ async function finalizePaidFlow(paymentId: string) {
       await prisma.paymentEvent.create({
         data: {
           paymentId: result.paymentId,
-          type: 'SUPPLIER_NOTIFIED',
+          type: "SUPPLIER_NOTIFIED",
         },
       });
     } catch (e) {
-      console.error('notifySuppliersForOrder failed', e);
+      console.error("notifySuppliersForOrder failed", e);
     }
   }
 
-  // Payouts: if no split used at init, do transfers
-  const usedSplit = await prisma.paymentEvent.findFirst({
-    where: {
-      paymentId: result.paymentId,
-      type: 'SPLIT_USED',
-    },
-  });
-
-  // ✅ Option A: HOLD supplier funds until delivery OTP per PurchaseOrder is verified.
+  // Mark supplier payouts as HELD until delivery OTP per PO is verified
   await prisma.paymentEvent.create({
     data: {
       paymentId: result.paymentId,
@@ -617,28 +625,25 @@ async function finalizePaidFlow(paymentId: string) {
     },
   });
 
-  // ❌ REMOVE the old async PO creation (it causes “PO/allocations not showing” timing bugs)
-  // setImmediate(() => createPurchaseOrdersForOrder(orderId).catch(console.error));
-
   // Receipt
   try {
     await issueReceiptIfNeeded(result.paymentId);
   } catch (e) {
-    console.error('issueReceiptIfNeeded failed', e);
+    console.error("issueReceiptIfNeeded failed", e);
   }
 
   // Profit recomputation
   try {
     await recomputeProfitForPayment(result.paymentId);
   } catch (e) {
-    console.error('recomputeProfitForPayment failed', e);
+    console.error("recomputeProfitForPayment failed", e);
   }
 
-  // Customer email: Order Paid (idempotent via ORDER_PAID_EMAIL_SENT)
+  // Customer email: Order Paid
   const alreadyEmailed = await prisma.paymentEvent.findFirst({
     where: {
       paymentId: result.paymentId,
-      type: 'ORDER_PAID_EMAIL_SENT',
+      type: "ORDER_PAID_EMAIL_SENT",
     },
   });
 
@@ -648,24 +653,21 @@ async function finalizePaidFlow(paymentId: string) {
       await prisma.paymentEvent.create({
         data: {
           paymentId: result.paymentId,
-          type: 'ORDER_PAID_EMAIL_SENT',
+          type: "ORDER_PAID_EMAIL_SENT",
           data: { orderId },
         },
       });
     } catch (e) {
-      console.error('notifyCustomerOrderPaid failed', e);
+      console.error("notifyCustomerOrderPaid failed", e);
     }
   }
 
-  console.log('[finalizePaidFlow] done', result);
+  console.log("[finalizePaidFlow] done", result);
 }
 
 /* ----------------------------- Config helpers ----------------------------- */
 
-async function getSettingNumber(
-  key: string,
-  defaultVal = 0,
-): Promise<number> {
+async function getSettingNumber(key: string, defaultVal = 0): Promise<number> {
   try {
     const row = await prisma.setting.findUnique({ where: { key } });
     const n = Number(row?.value);
@@ -675,13 +677,8 @@ async function getSettingNumber(
   }
 }
 
-/* ----------------------------- Legacy PO builder (kept, but no longer used by finalize) ----------------------------- */
-/**
- * NOTE:
- * This method is now redundant for the paid flow because finalizePaidFlow
- * creates idempotent POs + allocations immediately.
- * Kept only if you call it elsewhere manually.
- */
+/* ----------------------------- Legacy PO builder (kept) ----------------------------- */
+
 export async function createPurchaseOrdersForOrder(orderId: string) {
   await prisma.$transaction(async (tx: any) => {
     await ensurePurchaseOrdersForOrderTx(tx, orderId);
@@ -691,7 +688,6 @@ export async function createPurchaseOrdersForOrder(orderId: string) {
 /* ----------------------------- Profit recompute ----------------------------- */
 
 async function getCheapestUnitCost(productId: string, variantId?: string | null) {
-  // Variant offer cost = basePrice + priceBump (if linked to a base offer)
   if (variantId) {
     const offers = await prisma.supplierVariantOffer.findMany({
       where: {
@@ -714,10 +710,8 @@ async function getCheapestUnitCost(productId: string, variantId?: string | null)
       best = Math.min(best, base + bump);
     }
     if (Number.isFinite(best)) return best;
-    // fall through to base offers if none
   }
 
-  // Base offer cost = basePrice
   const base = await prisma.supplierProductOffer.findFirst({
     where: {
       productId,
@@ -725,7 +719,7 @@ async function getCheapestUnitCost(productId: string, variantId?: string | null)
       inStock: true,
       availableQty: { gt: 0 },
     },
-    orderBy: { basePrice: 'asc' },
+    orderBy: { basePrice: "asc" },
     select: { basePrice: true },
   });
 
@@ -773,9 +767,12 @@ async function recomputeProfitForPayment(paymentId: string) {
     let unitCost = Number(it.chosenSupplierUnitPrice ?? 0);
 
     if (!(unitCost > 0)) {
-      const key = `${it.productId}|${it.variantId ?? 'NULL'}`;
+      const key = `${it.productId}|${it.variantId ?? "NULL"}`;
       if (!offerCache.has(key)) {
-        const cheapest = await getCheapestUnitCost(String(it.productId), it.variantId ?? null);
+        const cheapest = await getCheapestUnitCost(
+          String(it.productId),
+          it.variantId ?? null,
+        );
         offerCache.set(key, Number(cheapest ?? 0));
       }
       unitCost = offerCache.get(key)!;
@@ -788,25 +785,25 @@ async function recomputeProfitForPayment(paymentId: string) {
 
   const commsAgg = await prisma.orderComms.aggregate({
     _sum: { amount: true },
-    where: { orderId: p.orderId, reason: 'SUPPLIER_NOTIFY' },
+    where: { orderId: p.orderId, reason: "SUPPLIER_NOTIFY" },
   });
   const comms = Number(commsAgg._sum.amount || 0);
 
   const baseServiceFee =
     Number(
-      (await readSetting('serviceFeeBaseNGN')) ??
-      (await readSetting('platformBaseFeeNGN')) ??
-      0,
+      (await readSetting("serviceFeeBaseNGN")) ??
+        (await readSetting("platformBaseFeeNGN")) ??
+        0,
     ) || 0;
 
   const amountPaid = Number(p.amount || 0);
 
   const profitMode = (
-    (await readSetting('profitMode')) ?? 'accurate'
+    (await readSetting("profitMode")) ?? "accurate"
   ).toLowerCase(); // "accurate" | "simple"
 
   const profit =
-    profitMode === 'simple'
+    profitMode === "simple"
       ? amountPaid - cogs
       : amountPaid - (cogs + gateway + comms + baseServiceFee);
 
@@ -827,7 +824,7 @@ async function recomputeProfitForPayment(paymentId: string) {
   await prisma.paymentEvent.create({
     data: {
       paymentId,
-      type: 'PROFIT_COMPUTED',
+      type: "PROFIT_COMPUTED",
       data: breakdown,
     },
   });
@@ -835,7 +832,7 @@ async function recomputeProfitForPayment(paymentId: string) {
   await prisma.orderActivity.create({
     data: {
       orderId: p.orderId,
-      type: 'PROFIT_COMPUTED',
+      type: "PROFIT_COMPUTED",
       message: `Profit computed: ₦${profit.toLocaleString(undefined, {
         maximumFractionDigits: 2,
       })}`,
@@ -849,25 +846,24 @@ async function recomputeProfitForPayment(paymentId: string) {
 /**
  * GET /api/payments/summary
  */
-router.get('/summary', requireAuth, async (req, res, next) => {
+router.get("/summary", requireAuth, async (req, res, next) => {
   try {
     const agg = await prisma.payment.aggregate({
       _sum: { amount: true },
       where: {
-        status: 'PAID',
+        status: "PAID",
         order: { userId: req.user!.id },
       },
     });
     const totalPaid = Number(agg._sum.amount || 0);
-    res.json({ totalPaid, currency: 'NGN' });
+    res.json({ totalPaid, currency: "NGN" });
   } catch (e) {
     next(e);
   }
 });
 
 /**
- * POST /api/payments/init  { orderId, channel? }
- * (with dynamic split & logging)
+ * POST /api/payments/init  { orderId, channel?, otpToken? }
  */
 router.post("/init", requireAuth, async (req: Request, res: Response, next) => {
   try {
@@ -880,9 +876,10 @@ router.post("/init", requireAuth, async (req: Request, res: Response, next) => {
       return res.status(400).json({ error: "Missing orderId" });
     }
 
-    // ✅ OTP is OPTIONAL for payment init (Option A should not require OTP)
-    // If provided, we consume/validate it. If not provided, we continue.
-    const otpToken = String(req.get("x-otp-token") ?? req.body?.otpToken ?? "").trim();
+    // ✅ OTP is OPTIONAL for payment init
+    const otpToken = String(
+      req.get("x-otp-token") ?? req.body?.otpToken ?? "",
+    ).trim();
 
     if (otpToken) {
       await consumePayOrderOtpOrThrow({
@@ -923,12 +920,21 @@ router.post("/init", requireAuth, async (req: Request, res: Response, next) => {
       },
     });
 
-    if (pay && isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN) && channel === "paystack") {
+    if (
+      pay &&
+      isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN) &&
+      channel === "paystack"
+    ) {
       const authUrl = (pay.providerPayload as any)?.authorization_url;
       if (authUrl) {
-        await logOrderActivity(orderId, "PAYMENT_RESUME", "Resumed existing Paystack attempt", {
-          reference: pay.reference,
-        });
+        await logOrderActivity(
+          orderId,
+          "PAYMENT_RESUME",
+          "Resumed existing Paystack attempt",
+          {
+            reference: pay.reference,
+          },
+        );
         return res.json({
           mode: "paystack",
           reference: pay.reference,
@@ -950,12 +956,16 @@ router.post("/init", requireAuth, async (req: Request, res: Response, next) => {
         data: {
           orderId,
           reference: generateRef8(),
-
-          // ✅ mark properly
           channel: TRIAL_MODE ? "trial" : channel,
-          provider: TRIAL_MODE ? "TRIAL" : (channel === "paystack" ? "PAYSTACK" : null),
-          providerEnv: TRIAL_MODE ? "trial" : (process.env.PAYSTACK_LIVE_MODE === "true" ? "live" : "test"),
-
+          provider: TRIAL_MODE
+            ? "TRIAL"
+            : channel === "paystack"
+              ? "PAYSTACK"
+              : null,
+          providerEnv:
+            TRIAL_MODE || process.env.PAYSTACK_LIVE_MODE !== "true"
+              ? "test"
+              : "live",
           amount: order.total,
           status: "PENDING",
         },
@@ -999,12 +1009,15 @@ router.post("/init", requireAuth, async (req: Request, res: Response, next) => {
       try {
         const split = await computePaystackSplitForOrder(orderId);
 
-        // ✅ Option A: NO split codes. Platform receives full amount.
+        // Option A: no split applied (platform keeps full amount)
         await prisma.paymentEvent.create({
           data: { paymentId: pay.id, type: "SPLIT_DISABLED_OPTION_A" },
         });
       } catch (e: any) {
-        console.error("paystack split create failed", e?.response?.data || e?.message);
+        console.error(
+          "paystack split create failed",
+          e?.response?.data || e?.message,
+        );
       }
 
       const initPayload: any = {
@@ -1098,7 +1111,8 @@ async function verifyPaystack(reference: string) {
     feeNaira = Math.round(Number(tx.fees)) / 100;
   } else {
     const isIntl =
-      (tx.authorization?.country_code && tx.authorization.country_code !== "NG") ||
+      (tx.authorization?.country_code &&
+        tx.authorization.country_code !== "NG") ||
       tx.currency !== "NGN";
     feeNaira = calcPaystackFee(amountNaira, { international: !!isIntl });
   }
@@ -1112,9 +1126,8 @@ async function verifyPaystack(reference: string) {
       feeAmount: feeNaira,
       providerPayload: tx,
       provider: "PAYSTACK",
-      channel: String(tx.channel || tx.authorization?.channel || "paystack").toLowerCase(),
-
-      // ✅ NEW: store tx id + env
+      channel: String(tx.channel || tx.authorization?.channel || "paystack")
+        .toLowerCase(),
       providerTxId: tx?.id != null ? String(tx.id) : null,
       providerEnv: process.env.PAYSTACK_LIVE_MODE === "true" ? "live" : "test",
     },
@@ -1123,13 +1136,11 @@ async function verifyPaystack(reference: string) {
   return { amountNaira, feeNaira, tx };
 }
 
-
-
 // POST /api/payments/verify  { orderId, reference }
-router.post('/verify', requireAuth, async (req: Request, res: Response) => {
+router.post("/verify", requireAuth, async (req: Request, res: Response) => {
   const { orderId, reference } = req.body ?? {};
   if (!orderId || !reference) {
-    return res.status(400).json({ error: 'orderId and reference required' });
+    return res.status(400).json({ error: "orderId and reference required" });
   }
 
   const pay = await prisma.payment.findUnique({
@@ -1143,41 +1154,51 @@ router.post('/verify', requireAuth, async (req: Request, res: Response) => {
     },
   });
   if (!pay || pay.orderId !== orderId) {
-    return res.status(404).json({ error: 'Payment not found' });
+    return res.status(404).json({ error: "Payment not found" });
   }
 
-  if (pay.status === 'PAID') {
+  if (pay.status === "PAID") {
     return res.json({
       ok: true,
-      status: 'PAID',
-      message: 'Already verified',
+      status: "PAID",
+      message: "Already verified",
     });
   }
-  if (['FAILED', 'CANCELED', 'REFUNDED'].includes(pay.status)) {
-    await logOrderActivity(orderId, 'PAYMENT_FAILED', 'Verification attempted on non-pending payment', {
-      reference,
-    });
+  if (["FAILED", "CANCELED", "REFUNDED"].includes(pay.status)) {
+    await logOrderActivity(
+      orderId,
+      "PAYMENT_FAILED",
+      "Verification attempted on non-pending payment",
+      {
+        reference,
+      },
+    );
     return res.json({
       ok: true,
       status: pay.status,
-      message: 'Payment is not successful',
+      message: "Payment is not successful",
     });
   }
 
-  if (TRIAL_MODE || pay.channel !== 'paystack') {
-    if (INLINE_APPROVAL === 'manual') {
+  if (TRIAL_MODE || pay.channel !== "paystack") {
+    if (INLINE_APPROVAL === "manual") {
       await prisma.paymentEvent.create({
         data: {
           paymentId: pay.id,
-          type: 'VERIFY_PENDING',
-          data: { reference, note: 'Manual approval required' },
+          type: "VERIFY_PENDING",
+          data: { reference, note: "Manual approval required" },
         },
       });
-      await logOrderActivity(orderId, 'PAYMENT_PENDING', 'Awaiting manual confirmation', { reference });
+      await logOrderActivity(
+        orderId,
+        "PAYMENT_PENDING",
+        "Awaiting manual confirmation",
+        { reference },
+      );
       return res.json({
         ok: true,
-        status: 'PENDING',
-        message: 'Awaiting confirmation',
+        status: "PENDING",
+        message: "Awaiting confirmation",
       });
     }
     const updated = await prisma.payment.update({
@@ -1185,8 +1206,6 @@ router.post('/verify', requireAuth, async (req: Request, res: Response) => {
       data: {
         status: "PAID",
         paidAt: new Date(),
-
-        // ✅ keep consistent
         provider: "TRIAL",
         channel: "trial",
         providerEnv: "trial",
@@ -1199,12 +1218,11 @@ router.post('/verify', requireAuth, async (req: Request, res: Response) => {
       select: { id: true },
     });
 
-
     await finalizePaidFlow(updated.id);
     return res.json({
       ok: true,
-      status: 'PAID',
-      message: 'Payment verified (trial/virtual)',
+      status: "PAID",
+      message: "Payment verified (trial/virtual)",
     });
   }
 
@@ -1212,7 +1230,6 @@ router.post('/verify', requireAuth, async (req: Request, res: Response) => {
     try {
       const { tx } = await verifyPaystack(reference);
 
-      // (optional) store a verification event
       await prisma.paymentEvent.create({
         data: {
           paymentId: pay.id,
@@ -1233,7 +1250,6 @@ router.post('/verify', requireAuth, async (req: Request, res: Response) => {
         message: "Payment verified",
       });
     } catch (e: any) {
-      // if paystack says failed/not found etc
       await prisma.paymentEvent.create({
         data: {
           paymentId: pay.id,
@@ -1247,25 +1263,24 @@ router.post('/verify', requireAuth, async (req: Request, res: Response) => {
         message: "Could not verify yet; try again shortly",
       });
     }
-
   } catch (e: any) {
     await prisma.paymentEvent.create({
       data: {
         paymentId: pay.id,
-        type: 'VERIFY_ERROR',
+        type: "VERIFY_ERROR",
         data: { reference, err: e?.message },
       },
     });
     return res.json({
       ok: true,
-      status: 'PENDING',
-      message: 'Could not verify yet; try again shortly',
+      status: "PENDING",
+      message: "Could not verify yet; try again shortly",
     });
   }
 });
 
 // Optional admin helper: POST /api/payments/:reference/verify
-router.post('/:reference/verify', requireAuth, async (req, res) => {
+router.post("/:reference/verify", requireAuth, async (req, res) => {
   try {
     const { reference } = req.params;
     const result = await verifyPaystack(reference);
@@ -1278,7 +1293,7 @@ router.post('/:reference/verify', requireAuth, async (req, res) => {
     }
     return res.json({ data: result });
   } catch (e: any) {
-    return res.status(400).json({ error: e?.message || 'Verification failed' });
+    return res.status(400).json({ error: e?.message || "Verification failed" });
   }
 });
 
@@ -1291,7 +1306,6 @@ router.post(
     try {
       const sig = req.headers["x-paystack-signature"] as string | undefined;
 
-      // ✅ Use the same resolved key as ps uses
       const secret = PAYSTACK_SECRET_KEY || "";
       if (!isValidSignature(req.body as Buffer, sig, secret)) {
         return res.status(401).send("bad sig");
@@ -1302,11 +1316,12 @@ router.post(
       const data = evt?.data || {};
       const reference: string | undefined = data?.reference;
 
-      // log event etc...
-
       if (eventType === "charge.success" && reference) {
-        await verifyPaystack(reference); // now uses ps + stores tx.id
-        const p = await prisma.payment.findUnique({ where: { reference }, select: { id: true } });
+        await verifyPaystack(reference);
+        const p = await prisma.payment.findUnique({
+          where: { reference },
+          select: { id: true },
+        });
         if (p?.id) await finalizePaidFlow(p.id);
       }
 
@@ -1314,19 +1329,18 @@ router.post(
     } catch {
       return res.status(200).send("ok");
     }
-  }
+  },
 );
-
 
 /* ----------------------------- Status & receipts ----------------------------- */
 
-router.get('/status', requireAuth, async (req, res) => {
+router.get("/status", requireAuth, async (req, res) => {
   try {
-    const orderId = String(req.query.orderId || '');
-    const reference = String(req.query.reference || '');
+    const orderId = String(req.query.orderId || "");
+    const reference = String(req.query.reference || "");
     if (!orderId || !reference) {
       return res.status(400).json({
-        error: 'orderId and reference are required',
+        error: "orderId and reference are required",
       });
     }
 
@@ -1340,12 +1354,12 @@ router.get('/status', requireAuth, async (req, res) => {
     });
 
     if (!pay) {
-      return res.status(404).json({ error: 'Payment not found' });
+      return res.status(404).json({ error: "Payment not found" });
     }
     return res.json({ status: pay.status });
   } catch (e: any) {
-    console.error('payments/status error', e);
-    return res.status(500).json({ error: 'Failed to fetch payment status' });
+    console.error("payments/status error", e);
+    return res.status(500).json({ error: "Failed to fetch payment status" });
   }
 });
 
@@ -1362,35 +1376,40 @@ export async function assertCanViewReceipt(paymentKey: string, user: JwtUser) {
     },
   });
 
-  if (!row || row.status !== 'PAID') {
-    throw httpErr(404, 'Not found');
+  if (!row || row.status !== "PAID") {
+    throw httpErr(404, "Not found");
   }
 
-  const role = (user?.role || '').toUpperCase();
-  const isAdmin = role === 'ADMIN' || role === 'SUPER_ADMIN';
+  const role = (user?.role || "").toUpperCase();
+  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
   const isOwner = row.order?.userId && user?.id && row.order.userId === user.id;
 
   if (!isOwner && !isAdmin) {
-    throw httpErr(403, 'Forbidden');
+    throw httpErr(403, "Forbidden");
   }
 
   return row;
 }
 
-router.get('/:paymentKey/receipt', requireAuth, async (req, res) => {
+router.get("/:paymentKey/receipt", requireAuth, async (req, res) => {
   try {
     const { paymentKey } = req.params;
     const row = await assertCanViewReceipt(paymentKey, req.user!);
 
     const pay = await issueReceiptIfNeeded(row.id);
     if (!pay) {
-      return res.status(404).json({ error: 'Receipt not available' });
+      return res.status(404).json({ error: "Receipt not available" });
     }
 
     const r = (pay.receiptData || {}) as any;
 
     let serviceFee =
-      Number(r.order?.serviceFeeTotal ?? r.order?.commsTotal ?? r.order?.comms ?? 0) || 0;
+      Number(
+        r.order?.serviceFeeTotal ??
+          r.order?.commsTotal ??
+          r.order?.comms ??
+          0,
+      ) || 0;
 
     if (!serviceFee && row.orderId) {
       const order = await prisma.order.findUnique({
@@ -1419,12 +1438,12 @@ router.get('/:paymentKey/receipt', requireAuth, async (req, res) => {
   } catch (e: any) {
     const status = e?.status || 500;
     return res.status(status).json({
-      error: e?.message || 'Failed to fetch receipt',
+      error: e?.message || "Failed to fetch receipt",
     });
   }
 });
 
-router.get('/:paymentKey/receipt.pdf', requireAuth, async (req, res) => {
+router.get("/:paymentKey/receipt.pdf", requireAuth, async (req, res) => {
   try {
     const { paymentKey } = req.params;
 
@@ -1432,13 +1451,18 @@ router.get('/:paymentKey/receipt.pdf', requireAuth, async (req, res) => {
 
     const pay = await issueReceiptIfNeeded(row.id);
     if (!pay?.receiptData) {
-      return res.status(404).json({ error: 'Receipt not available' });
+      return res.status(404).json({ error: "Receipt not available" });
     }
 
     const r = pay.receiptData as any;
 
     let serviceFee =
-      Number(r.order?.serviceFeeTotal ?? r.order?.commsTotal ?? r.order?.comms ?? 0) || 0;
+      Number(
+        r.order?.serviceFeeTotal ??
+          r.order?.commsTotal ??
+          r.order?.comms ??
+          0,
+      ) || 0;
 
     if (!serviceFee && row.orderId) {
       const order = await prisma.order.findUnique({
@@ -1450,26 +1474,30 @@ router.get('/:paymentKey/receipt.pdf', requireAuth, async (req, res) => {
       }
     }
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${pay.receiptNo || 'receipt'}.pdf"`);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${pay.receiptNo || "receipt"}.pdf"`,
+    );
 
-    const doc = new PDFDocument({ size: 'A4', margin: 48 });
+    const doc = new PDFDocument({ size: "A4", margin: 48 });
     doc.pipe(res);
 
     // Header
-    doc.font('Helvetica-Bold').fontSize(18).text(r.merchant?.name || 'Receipt');
+    doc.font("Helvetica-Bold").fontSize(18).text(r.merchant?.name || "Receipt");
     doc.moveDown(0.5);
 
-    doc.font('Helvetica').fontSize(10).fillColor('#555');
-    doc.text(r.merchant?.addressLine1 || '');
+    doc.font("Helvetica").fontSize(10).fillColor("#555");
+    doc.text(r.merchant?.addressLine1 || "");
     if (r.merchant?.addressLine2) doc.text(r.merchant.addressLine2);
-    if (r.merchant?.supportEmail) doc.text(`Support: ${r.merchant.supportEmail}`);
+    if (r.merchant?.supportEmail)
+      doc.text(`Support: ${r.merchant.supportEmail}`);
     doc.moveDown();
-    doc.fillColor('#000');
+    doc.fillColor("#000");
 
     // Meta
-    doc.font('Helvetica').fontSize(12);
-    doc.text(`Receipt No: ${pay.receiptNo || ''}`);
+    doc.font("Helvetica").fontSize(12);
+    doc.text(`Receipt No: ${pay.receiptNo || ""}`);
     doc.text(`Reference: ${r.reference}`);
     if (r.paidAt) {
       doc.text(`Paid At: ${new Date(r.paidAt).toLocaleString()}`);
@@ -1477,15 +1505,19 @@ router.get('/:paymentKey/receipt.pdf', requireAuth, async (req, res) => {
     doc.moveDown();
 
     // Customer
-    doc.font('Helvetica-Bold').fontSize(11).text('Customer', { underline: true });
-    doc.font('Helvetica');
-    doc.text(`${r.customer?.name || '—'}`);
-    doc.text(`${r.customer?.email || '—'}`);
+    doc.font("Helvetica-Bold").fontSize(11).text("Customer", {
+      underline: true,
+    });
+    doc.font("Helvetica");
+    doc.text(`${r.customer?.name || "—"}`);
+    doc.text(`${r.customer?.email || "—"}`);
     if (r.customer?.phone) doc.text(r.customer.phone);
     doc.moveDown();
 
     // Ship To
-    doc.font('Helvetica-Bold').fontSize(11).text('Ship To', { underline: true });
+    doc.font("Helvetica-Bold").fontSize(11).text("Ship To", {
+      underline: true,
+    });
     const addr = r.order?.shippingAddress || {};
     [
       addr.houseNumber,
@@ -1500,17 +1532,17 @@ router.get('/:paymentKey/receipt.pdf', requireAuth, async (req, res) => {
     doc.moveDown();
 
     // Items
-    doc.font('Helvetica-Bold').fontSize(11).text('Items', { underline: true });
+    doc.font("Helvetica-Bold").fontSize(11).text("Items", { underline: true });
     doc.moveDown(0.25);
 
     r.order?.items?.forEach((it: any) => {
-      const title = it.title || 'Item';
+      const title = it.title || "Item";
       const qty = Number(it.quantity || 1);
       const unit = Number(it.unitPrice || 0);
       const line = Number(it.lineTotal || unit * qty);
 
       doc
-        .font('Helvetica')
+        .font("Helvetica")
         .fontSize(10)
         .text(
           `${title}  •  ${qty} × NGN ${unit.toLocaleString()}  =  NGN ${line.toLocaleString()}`,
@@ -1518,12 +1550,14 @@ router.get('/:paymentKey/receipt.pdf', requireAuth, async (req, res) => {
 
       if (Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0) {
         doc
-          .fillColor('#555')
+          .fillColor("#555")
           .fontSize(9)
           .text(
-            it.selectedOptions.map((o: any) => `${o.attribute}: ${o.value}`).join(' • '),
+            it.selectedOptions
+              .map((o: any) => `${o.attribute}: ${o.value}`)
+              .join(" • "),
           )
-          .fillColor('#000');
+          .fillColor("#000");
       }
       doc.moveDown(0.25);
     });
@@ -1535,7 +1569,7 @@ router.get('/:paymentKey/receipt.pdf', requireAuth, async (req, res) => {
     const shipping = Number(r.order?.shipping || 0);
     const total = Number(r.order?.total || 0);
 
-    doc.font('Helvetica').fontSize(11);
+    doc.font("Helvetica").fontSize(11);
     doc.text(`Subtotal: NGN ${subtotal.toLocaleString()}`);
     doc.text(`Tax: NGN ${tax.toLocaleString()}`);
     doc.text(`Shipping: NGN ${shipping.toLocaleString()}`);
@@ -1543,23 +1577,28 @@ router.get('/:paymentKey/receipt.pdf', requireAuth, async (req, res) => {
       doc.text(`Service fee: NGN ${serviceFee.toLocaleString()}`);
     }
 
-    doc.font('Helvetica-Bold').fontSize(12).text(`Total: NGN ${total.toLocaleString()}`);
+    doc.font("Helvetica-Bold")
+      .fontSize(12)
+      .text(`Total: NGN ${total.toLocaleString()}`);
     doc.moveDown(1);
 
     doc
-      .font('Helvetica')
+      .font("Helvetica")
       .fontSize(9)
-      .fillColor('#666')
-      .text('Thank you for your purchase. This document serves as a receipt.', {
-        align: 'left',
-      });
+      .fillColor("#666")
+      .text(
+        "Thank you for your purchase. This document serves as a receipt.",
+        {
+          align: "left",
+        },
+      );
 
     doc.end();
   } catch (e: any) {
     const status = e?.status || 500;
     if (!res.headersSent) {
       res.status(status).json({
-        error: e?.message || 'Failed to render receipt PDF',
+        error: e?.message || "Failed to render receipt PDF",
       });
     }
   }
@@ -1567,38 +1606,44 @@ router.get('/:paymentKey/receipt.pdf', requireAuth, async (req, res) => {
 
 /* ----------------------------- Listings ----------------------------- */
 
-router.post('/link', requireAuth, async (req, res, next) => {
+router.post("/link", requireAuth, async (req, res, next) => {
   try {
     const { orderId } = req.body as { orderId: string };
     if (!orderId) {
-      return res.status(400).json({ error: 'orderId is required' });
+      return res.status(400).json({ error: "orderId is required" });
     }
 
     const order = await prisma.order.findUnique({ where: { id: orderId } });
     if (!order || order.userId !== req.user!.id) {
-      return res.status(404).json({ error: 'Order not found' });
+      return res.status(404).json({ error: "Order not found" });
     }
 
     if (!process.env.JWT_SECRET) {
-      return res.status(500).json({ error: 'JWT_SECRET not configured' });
+      return res.status(500).json({ error: "JWT_SECRET not configured" });
     }
 
-    const token = jwt.sign({ oid: orderId }, process.env.JWT_SECRET, { expiresIn: '2d' });
-    const url = `${APP_URL}/payment?orderId=${orderId}&share=${encodeURIComponent(token)}`;
+    const token = jwt.sign({ oid: orderId }, process.env.JWT_SECRET, {
+      expiresIn: "2d",
+    });
+    const url = `${APP_URL}/payment?orderId=${orderId}&share=${encodeURIComponent(
+      token,
+    )}`;
     res.json({ shareUrl: url });
   } catch (e) {
     next(e);
   }
 });
 
-router.get('/mine', requireAuth, async (req, res, next) => {
+router.get("/mine", requireAuth, async (req, res, next) => {
   try {
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, limitRaw)) : 5;
+    const take = Number.isFinite(limitRaw)
+      ? Math.min(50, Math.max(1, limitRaw))
+      : 5;
 
     const rows = await prisma.payment.findMany({
       where: { order: { userId: req.user!.id } },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
       take,
       select: {
         id: true,
@@ -1618,10 +1663,12 @@ router.get('/mine', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/', requireAuth, async (req, res, next) => {
+router.get("/", requireAuth, async (req, res, next) => {
   try {
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 20;
+    const take = Number.isFinite(limitRaw)
+      ? Math.min(100, Math.max(1, limitRaw))
+      : 20;
 
     const { userId, orderId, status } = req.query as {
       userId?: string;
@@ -1635,7 +1682,7 @@ router.get('/', requireAuth, async (req, res, next) => {
 
     const payments = await prisma.payment.findMany({
       where: userId ? { ...where, order: { userId } } : where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
       take,
       select: {
         id: true,
@@ -1655,18 +1702,20 @@ router.get('/', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/recent', requireAuth, async (req, res, next) => {
+router.get("/recent", requireAuth, async (req, res, next) => {
   try {
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, limitRaw)) : 5;
+    const take = Number.isFinite(limitRaw)
+      ? Math.min(50, Math.max(1, limitRaw))
+      : 5;
 
     const orders = await prisma.order.findMany({
       where: { userId: req.user!.id },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
       take,
       include: {
         payments: {
-          orderBy: { createdAt: 'desc' },
+          orderBy: { createdAt: "desc" },
           take: 5,
           select: {
             id: true,
@@ -1702,7 +1751,7 @@ router.get('/recent', requireAuth, async (req, res, next) => {
         id: it.id,
         productId: it.productId,
         variantId: it.variantId,
-        title: it.title ?? '—',
+        title: it.title ?? "—",
         unitPrice: it.unitPrice,
         quantity: it.quantity,
         lineTotal: it.lineTotal,
@@ -1715,33 +1764,39 @@ router.get('/recent', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/admin/compat-alias', requireAuth, async (req, res, next) => {
+router.get("/admin/compat-alias", requireAuth, async (req, res, next) => {
   try {
-    const isAdmin = (r?: string) => r === 'ADMIN' || r === 'SUPER_ADMIN';
+    const isAdmin = (r?: string) => r === "ADMIN" || r === "SUPER_ADMIN";
     if (!isAdmin(req.user?.role)) {
-      return res.status(403).json({ error: 'Forbidden' });
+      return res.status(403).json({ error: "Forbidden" });
     }
 
-    (req as any).query.includeItems = req.query.includeItems ?? '1';
-    (req as any).query.limit = req.query.limit ?? '20';
+    (req as any).query.includeItems = req.query.includeItems ?? "1";
+    (req as any).query.limit = req.query.limit ?? "20";
 
-    const includeItems = String(req.query.includeItems || '') === '1';
-    const q = String(req.query.q || '').trim();
+    const includeItems = String(req.query.includeItems || "") === "1";
+    const q = String(req.query.q || "").trim();
     const limitRaw = Number(req.query.limit);
-    const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 20;
+    const take = Number.isFinite(limitRaw)
+      ? Math.min(100, Math.max(1, limitRaw))
+      : 20;
 
     const where: any = {};
     if (q) {
       where.OR = [
-        { reference: { contains: q, mode: 'insensitive' } },
-        { orderId: { contains: q, mode: 'insensitive' } },
-        { order: { user: { email: { contains: q, mode: 'insensitive' } } } },
+        { reference: { contains: q, mode: "insensitive" } },
+        { orderId: { contains: q, mode: "insensitive" } },
+        {
+          order: {
+            user: { email: { contains: q, mode: "insensitive" } },
+          },
+        },
       ];
     }
 
     const rows = await prisma.payment.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
       take,
       include: {
         order: {
@@ -1752,14 +1807,14 @@ router.get('/admin/compat-alias', requireAuth, async (req, res, next) => {
             user: { select: { email: true } },
             items: includeItems
               ? {
-                select: {
-                  id: true,
-                  title: true,
-                  unitPrice: true,
-                  quantity: true,
-                  status: true,
-                },
-              }
+                  select: {
+                    id: true,
+                    title: true,
+                    unitPrice: true,
+                    quantity: true,
+                    status: true,
+                  },
+                }
               : false,
           },
         },
@@ -1779,13 +1834,13 @@ router.get('/admin/compat-alias', requireAuth, async (req, res, next) => {
       orderStatus: p.order?.status,
       items: Array.isArray((p.order as any)?.items)
         ? (p.order as any).items.map((it: any) => ({
-          id: it.id,
-          title: it.title,
-          unitPrice: Number(it.unitPrice),
-          quantity: Number(it.quantity || 0),
-          lineTotal: Number(it.unitPrice) * Number(it.quantity || 0),
-          status: it.status,
-        }))
+            id: it.id,
+            title: it.title,
+            unitPrice: Number(it.unitPrice),
+            quantity: Number(it.quantity || 0),
+            lineTotal: Number(it.unitPrice) * Number(it.quantity || 0),
+            status: it.status,
+          }))
         : undefined,
     }));
 

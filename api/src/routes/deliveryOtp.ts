@@ -4,8 +4,7 @@ import crypto from "crypto";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { SupplierPaymentStatus } from "@prisma/client";
-
-// If you want: import { notifyCustomerDeliveryOtp } from "../services/notify.js";
+import { sendOrderOtpNotifications } from "../services/otpNotify.service.js";
 
 const router = Router();
 
@@ -39,6 +38,14 @@ function hashOtp(poId: string, otp: string) {
   const h = crypto.createHash("sha256");
   h.update(`${poId}:${otp}:${otpSecret()}`);
   return h.digest("hex");
+}
+
+function normalizeE164(phone?: string | null) {
+  if (!phone) return null;
+  const p = phone.trim();
+  if (!p) return null;
+  if (p.startsWith("+")) return p;
+  return p; // don't guess country code
 }
 
 // --- You already have these in your other file; keep single source of truth or inline ---
@@ -199,10 +206,25 @@ router.post(
         },
       });
 
-      // ✅ Send OTP to customer (choose your channel)
-      // await notifyCustomerDeliveryOtp(orderId, poId, otp, expiresAt);
+      // ✅ Send OTP to customer via unified notifier
+      const toEmail = order.user?.email ?? null;
+      const toE164 = normalizeE164(order.user?.phone ?? null);
 
-      // If you don't have SMS/email wired yet, you can return otp only in dev:
+      try {
+        await sendOrderOtpNotifications({
+          userEmail: toEmail,
+          userPhoneE164: toE164,
+          code: otp,
+          expiresMins: OTP_TTL_HOURS * 60, // convert hours to minutes for the message
+          purposeLabel: "Confirm delivery",
+          orderId,
+          brand: "DaySpring",
+        });
+      } catch (err) {
+        console.error("sendOrderOtpNotifications (deliveryOtp) failed:", err);
+      }
+
+      // Optional dev-only echo of the OTP
       const includeOtp = String(process.env.RETURN_DELIVERY_OTP_IN_RESPONSE ?? "") === "1";
 
       return res.json({

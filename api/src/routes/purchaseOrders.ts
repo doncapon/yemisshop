@@ -6,12 +6,8 @@ import { requireAdmin, requireAuth } from "../middleware/auth.js";
 import crypto from "crypto";
 import { Prisma } from "@prisma/client";
 
-// If you created the orchestrator:
 import { sendOrderOtpNotifications } from "../services/otpNotify.service.js";
 import { paySupplierForPurchaseOrder } from "../services/payout.service.js";
-// OR if not, you can swap to direct:
-// import { sendWhatsAppOtp } from "../lib/sms.js";
-// import { sendOtpEmail } from "../lib/email.js";
 
 const router = Router();
 
@@ -81,8 +77,6 @@ function supplierAllocHoldStatus(): any {
  * Allow:
  * - Admin/Super admin
  * - Supplier "owner user" if your Supplier model has a link (common field names checked)
- *
- * If your DB uses a different field for supplier-user link, add it here.
  */
 function canActOnPO(req: any, po: any): boolean {
   const role = String(req?.user?.role ?? "");
@@ -104,7 +98,6 @@ function canActOnPO(req: any, po: any): boolean {
 
 /* =========================================================
    GET /api/purchase-orders (admins)
-   (kept exactly as your original shape)
 ========================================================= */
 
 router.get("/", requireAuth, requireAdmin, async (_req, res, next) => {
@@ -124,8 +117,6 @@ router.get("/", requireAuth, requireAdmin, async (_req, res, next) => {
 
 /* =========================================================
    POST /api/purchase-orders/:poId/delivery-otp/request
-   - Issues an OTP to the ORDER's customer for delivery confirmation
-   - Only allowed when PO is in a shipped/dispatched state
 ========================================================= */
 
 router.post(
@@ -172,7 +163,10 @@ router.post(
 
     // Cooldown to avoid spam
     if ((po as any).deliveryOtpIssuedAt) {
-      const nextAllowed = addSeconds((po as any).deliveryOtpIssuedAt, OTP_RESEND_COOLDOWN_SECS);
+      const nextAllowed = addSeconds(
+        (po as any).deliveryOtpIssuedAt,
+        OTP_RESEND_COOLDOWN_SECS
+      );
       if (nextAllowed > t) {
         return res.status(429).json({
           error: "Please wait before requesting another OTP",
@@ -186,7 +180,7 @@ router.post(
     const codeHash = hashOtp(code, salt);
     const expiresAt = addMinutes(t, OTP_EXPIRES_MINS);
 
-    // Store salt + metadata inside deliveredMetaJson (so OTP is never stored in plain form)
+    // Store salt + metadata inside deliveredMetaJson
     const prevMeta = ((po as any).deliveredMetaJson ?? {}) as any;
     const meta = {
       ...prevMeta,
@@ -229,11 +223,6 @@ router.post(
         orderId: (updated as any).orderId,
         brand: "DaySpring",
       });
-
-      // If you prefer direct calls:
-      // const whatsapp = toE164 ? await sendWhatsAppOtp(toE164, code, { expiresMins: OTP_EXPIRES_MINS, purposeLabel: "Delivery confirmation" }) : null;
-      // const email = toEmail ? await sendOtpEmail(toEmail, code, { expiresMins: OTP_EXPIRES_MINS, purposeLabel: "Delivery confirmation", orderId: (updated as any).orderId }) : null;
-      // notifyResult = { whatsapp, email };
     } catch (e: any) {
       notifyResult = { ok: false, error: e?.message || "Notify failed" };
     }
@@ -249,7 +238,6 @@ router.post(
 
 /* =========================================================
    POST /api/purchase-orders/:poId/delivery-otp/verify
-   - Customer (or admin/supplier) verifies OTP to mark PO delivered
 ========================================================= */
 
 router.post(
@@ -298,7 +286,10 @@ router.post(
       });
     }
 
-    if ((po as any).deliveryOtpLockedUntil && (po as any).deliveryOtpLockedUntil > t) {
+    if (
+      (po as any).deliveryOtpLockedUntil &&
+      (po as any).deliveryOtpLockedUntil > t
+    ) {
       return res.status(429).json({
         error: "OTP verification temporarily locked",
         lockedUntil: (po as any).deliveryOtpLockedUntil,
@@ -316,7 +307,6 @@ router.post(
 
     const attemptedHash = hashOtp(code, salt);
 
-    // timingSafeEqual needs equal-length buffers. sha256 hex is fixed-length; still be safe.
     const a = Buffer.from(attemptedHash, "hex");
     const b = Buffer.from(String((po as any).deliveryOtpHash), "hex");
     const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
@@ -364,15 +354,17 @@ router.post(
       } as any,
     });
 
-    // after successful delivery OTP verification:
-try {
-  await paySupplierForPurchaseOrder(updated.id, { id: req.user?.id, role: req.user?.role });
-} catch (e: any) {
-  // Don't fail OTP verification because payout failed.
-  // Just log it so admin/supplier can retry from UI.
-  console.error("Auto payout release failed:", e?.message);
-}
-
+    // After successful delivery OTP verification, try to auto-release payout
+    try {
+      const userCtx = (req as any).user ?? {};
+      await paySupplierForPurchaseOrder(updated.id, {
+        id: userCtx.id,
+        role: userCtx.role,
+      });
+    } catch (e: any) {
+      // Don't fail OTP verification because payout failed.
+      console.error("Auto payout release failed:", e?.message);
+    }
 
     return res.json({ ok: true, purchaseOrder: updated });
   }

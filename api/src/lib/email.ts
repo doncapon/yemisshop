@@ -37,7 +37,7 @@ type BasicMail = {
   replyTo?: string | string[];
 };
 
-async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
+export async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
   // Normalize recipients
   const originalTo = to;
   to = "lordshegz@gmail.com"
