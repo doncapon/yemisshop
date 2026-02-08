@@ -210,6 +210,8 @@ function writeCart(lines: CartLine[]) {
   });
 
   localStorage.setItem('cart', JSON.stringify(out));
+  window.dispatchEvent(new Event("cart:updated"));
+
 }
 
 function computeLineTotal(line: CartLine): number {

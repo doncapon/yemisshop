@@ -181,18 +181,6 @@
   color: var(--color-ink);
 }
 
-select {
-  font-size: 18px;
-  line-height: 1.25;
-  color: #111827; /* zinc-900 */
-}
-
-select option {
-  font-size: 18px;
-  color: #111827;
-  background: #ffffff;
-}
-
 /* Animations */
 @keyframes modal-fade-in {
   from { opacity: 0; } to { opacity: 1; }

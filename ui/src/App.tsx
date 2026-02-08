@@ -111,7 +111,7 @@ export default function App() {
     <ModalProvider>
       <div className="min-h-screen flex flex-col">
         <AuthBootstrap />
-        <main className="w-full px-4 md:px-8 flex-1 bg-primary-100">
+        <main className="w-full flex-1 bg-slate-50">
           <div className="max-w-7xl mx-auto">
             <Toaster position="top-right" />
 
