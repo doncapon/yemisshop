@@ -8,7 +8,6 @@ import { Prisma } from "@prisma/client";
 import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
 
 import crypto from "crypto";
-// If you created the orchestrator:
 import { sendOrderOtpNotifications } from "../services/otpNotify.service.js";
 import { z } from "zod";
 import { assertVerifiedOrderOtp } from "./adminOrders.js";
@@ -17,7 +16,7 @@ import {
   verifyOrderOtpForPurposeTx,
 } from "../services/orderOtp.service.js";
 
-// ✅ NEW: notifications helpers
+// ✅ notifications helpers
 import {
   notifyUser,
   notifyAdmins,
@@ -98,8 +97,6 @@ const asNumber = (v: any, d = 0) => {
   return Number.isFinite(n) ? n : d;
 };
 
-const ACTIVE_PRODUCT_STATUSES = new Set(["LIVE", "ACTIVE"]);
-
 const OTP_LEN = 6;
 const OTP_EXPIRES_MINS = 10;
 const OTP_MAX_ATTEMPTS = 5;
@@ -119,7 +116,6 @@ function addSeconds(d: Date, secs: number) {
 }
 
 function genOtp6() {
-  // 000000-999999
   const n = crypto.randomInt(0, 1_000_000);
   return String(n).padStart(6, "0");
 }
@@ -134,10 +130,7 @@ function normalizeE164(phone?: string | null) {
   if (!phone) return null;
   const p = phone.trim();
   if (!p) return null;
-  // If user stores E.164 already, keep it
   if (p.startsWith("+")) return p;
-  // Otherwise you *must* decide default country. For NG example:
-  // return `+234${p.replace(/^0/, "")}`;
   return p; // safest: do not guess
 }
 
@@ -146,13 +139,19 @@ function truthySetting(v: any) {
   return ["1", "true", "yes", "y", "on"].includes(s);
 }
 
+async function readSettingValueTx(tx: any, key: string): Promise<string | null> {
+  try {
+    const s = await tx.setting.findUnique({ where: { key } });
+    return s?.value ?? null;
+  } catch {
+    const s = await tx.setting.findFirst({ where: { key } });
+    return s?.value ?? null;
+  }
+}
+
 async function shouldDebugSupplierSelectionTx(tx: any) {
-  // ✅ enable by either:
-  // - NODE_ENV != "production" (default on)
-  // - OR Setting key "debugSupplierSelection" = true (forces on even in prod)
   const forced = await readSettingValueTx(tx, "debugSupplierSelection");
   if (truthySetting(forced)) return true;
-
   return String(process.env.NODE_ENV ?? "").toLowerCase() !== "production";
 }
 
@@ -165,105 +164,8 @@ function fmt2(n: any) {
   return Math.round(safeNum(n, 0) * 100) / 100;
 }
 
+/* ---------------- Supplier gating ---------------- */
 
-async function debugSupplierSelectionTx(tx: any, args: {
-  productId: string;
-  variantId: string | null;
-  qtyNeeded: number;
-  policy: { minBayesRating: number; bandPercent: number; bayesM: number; globalRatingC: number };
-  before: CandidateOffer[];
-  after: CandidateOffer[];
-}) {
-  const enabled = await shouldDebugSupplierSelectionTx(tx);
-  if (!enabled) return;
-
-  const { productId, variantId, qtyNeeded, policy, before, after } = args;
-
-  if (!before.length) {
-    console.debug("[supplier-select] no candidates", { productId, variantId, qtyNeeded });
-    return;
-  }
-
-  const cheapest = Math.min(...before.map((c) => safeNum(c.offerPrice, Infinity)));
-  const bandMax = cheapest * (1 + policy.bandPercent / 100);
-
-  const score = (c: CandidateOffer) => {
-    const bayes =
-      (Number(c.supplierRatingCount ?? 0) / (Number(c.supplierRatingCount ?? 0) + policy.bayesM)) *
-      safeNum(c.supplierRatingAvg, 0) +
-      (policy.bayesM / (Number(c.supplierRatingCount ?? 0) + policy.bayesM)) * policy.globalRatingC;
-
-    const inBand = safeNum(c.offerPrice, Infinity) <= bandMax;
-    const passesGate = bayes >= policy.minBayesRating;
-
-    return { bayes: fmt2(bayes), inBand, passesGate };
-  };
-
-  const beforeScored = before
-    .map((c) => {
-      const s = score(c);
-      return {
-        supplierId: c.supplierId,
-        offerId: c.id,
-        model: c.model,
-        price: fmt2(c.offerPrice),
-        qty: safeNum(c.availableQty, 0),
-        leadDays: c.leadDays ?? null,
-        ratingAvg: c.supplierRatingAvg ?? null,
-        ratingCount: c.supplierRatingCount ?? null,
-        bayes: s.bayes,
-        inBand: s.inBand,
-        passesGate: s.passesGate,
-      };
-    })
-    .sort((a, b) => a.price - b.price);
-
-  const gatedCount = beforeScored.filter((x) => x.passesGate).length;
-  const fallbackUsed = gatedCount === 0;
-
-  const topAfter = (after || []).slice(0, 5).map((c) => {
-    const s = score(c);
-    return {
-      supplierId: c.supplierId,
-      offerId: c.id,
-      model: c.model,
-      price: fmt2(c.offerPrice),
-      qty: safeNum(c.availableQty, 0),
-      leadDays: c.leadDays ?? null,
-      bayes: s.bayes,
-      inBand: s.inBand,
-      passesGate: s.passesGate,
-    };
-  });
-
-  console.debug("[supplier-select]", {
-    productId,
-    variantId,
-    qtyNeeded,
-    policy: {
-      bandPercent: policy.bandPercent,
-      minBayesRating: policy.minBayesRating,
-      bayesM: policy.bayesM,
-      globalRatingC: policy.globalRatingC,
-    },
-    cheapest: fmt2(cheapest),
-    bandMax: fmt2(bandMax),
-    candidatesCheapestFirst: beforeScored.slice(0, 12), // cap to avoid spam
-    fallbackUsed,
-    orderedTop5: topAfter,
-  });
-}
-
-
-/* ---------------- Supplier gating ----------------
-   IMPORTANT CHANGE:
-   - Checkout should NOT depend on Product.ownerId/Product.supplierId.
-   - Checkout should be allowed as long as there are active supplier offers.
-   - Therefore: do NOT require supplier payout/bank readiness for checkout.
-   - Keep payoutReadySupplierWhere for PAYOUT logic only (allocations/payout screens etc).
--------------------------------------------------- */
-
-// used by payout flows only
 function payoutReadySupplierWhere() {
   return {
     status: "ACTIVE",
@@ -279,7 +181,6 @@ function payoutReadySupplierWhere() {
   } as const;
 }
 
-// used by checkout (order creation, availability, offer selection)
 function checkoutReadySupplierWhere() {
   return {
     status: "ACTIVE",
@@ -297,13 +198,11 @@ async function getSupplierForUser(userId: string) {
 function supplierPayoutReadyRelationFilter() {
   return { is: payoutReadySupplierWhere() } as const;
 }
-
 function supplierCheckoutReadyRelationFilter() {
   return { is: checkoutReadySupplierWhere() } as const;
 }
 
-// ✅ FINAL safety check used during allocation
-// ✅ CHANGE: only require "ACTIVE" supplier (NOT payout/bank readiness)
+// ✅ allocation safety: only ACTIVE supplier required
 async function assertSupplierPurchasableTx(tx: any, supplierId: string) {
   const sid = String(supplierId ?? "").trim();
   if (!sid) throw new Error("Bad allocation: missing supplierId.");
@@ -313,9 +212,7 @@ async function assertSupplierPurchasableTx(tx: any, supplierId: string) {
     select: { id: true },
   });
 
-  if (!ok) {
-    throw new Error(`Supplier ${sid} is not available for checkout.`);
-  }
+  if (!ok) throw new Error(`Supplier ${sid} is not available for checkout.`);
 }
 
 function estimateGatewayFee(amountNaira: number): number {
@@ -323,16 +220,6 @@ function estimateGatewayFee(amountNaira: number): number {
   const percent = amountNaira * 0.015;
   const extra = amountNaira > 2500 ? 100 : 0;
   return Math.min(percent + extra, 2000);
-}
-
-async function readSettingValueTx(tx: any, key: string): Promise<string | null> {
-  try {
-    const s = await tx.setting.findUnique({ where: { key } });
-    return s?.value ?? null;
-  } catch {
-    const s = await tx.setting.findFirst({ where: { key } });
-    return s?.value ?? null;
-  }
 }
 
 function toNumber(v: any, def = 0) {
@@ -403,11 +290,10 @@ function bayesRating(R: any, v: any, C: number, m: number) {
 }
 
 async function getSupplierSelectionPolicyTx(tx: any) {
-  // Optional settings (safe defaults)
   const minBayesRatingRaw = await readSettingValueTx(tx, "supplierMinBayesRating");
-  const bandPctRaw = await readSettingValueTx(tx, "supplierPriceBandPct"); // e.g. "2"
-  const bayesMRaw = await readSettingValueTx(tx, "supplierBayesM"); // e.g. "20"
-  const globalCRaw = await readSettingValueTx(tx, "supplierGlobalRatingC"); // e.g. "4.2"
+  const bandPctRaw = await readSettingValueTx(tx, "supplierPriceBandPct");
+  const bayesMRaw = await readSettingValueTx(tx, "supplierBayesM");
+  const globalCRaw = await readSettingValueTx(tx, "supplierGlobalRatingC");
 
   const minBayesRating = Math.max(0, toNumber(minBayesRatingRaw, 3.8));
   const bandPercent = Math.max(0, toNumber(bandPctRaw, 2));
@@ -417,21 +303,28 @@ async function getSupplierSelectionPolicyTx(tx: any) {
   return { minBayesRating, bandPercent, bayesM, globalRatingC };
 }
 
-/**
- * Order candidates for allocation:
- * 1) Gate suppliers by Bayesian rating (fallback to ungated if gate has 0)
- * 2) Apply price tolerance band relative to cheapest (e.g. 2%)
- * 3) Within band, prefer highest bayes -> shortest leadDays -> cheapest
- *
- * IMPORTANT: This returns an ORDERED LIST. Your existing allocation loop will then
- * allocate from best choice first, then next best, etc.
- */
+type CandidateOffer = {
+  id: string;
+  supplierId: string;
+  availableQty: number;
+
+  offerPrice: number;
+
+  model: "BASE_OFFER" | "VARIANT_OFFER" | "LEGACY_OFFER";
+
+  supplierProductOfferId: string | null;
+  supplierVariantOfferId: string | null;
+
+  leadDays?: number | null;
+  supplierRatingAvg?: number | null;
+  supplierRatingCount?: number | null;
+};
+
 async function orderCandidatesGateBandTx(tx: any, candidates: CandidateOffer[]) {
   if (!candidates.length) return candidates;
 
   const policy = await getSupplierSelectionPolicyTx(tx);
 
-  // compute cheapest
   let cheapest = Infinity;
   for (const c of candidates) cheapest = Math.min(cheapest, Number(c.offerPrice) || Infinity);
 
@@ -452,9 +345,8 @@ async function orderCandidatesGateBandTx(tx: any, candidates: CandidateOffer[]) 
   });
 
   const gated = scored.filter((x) => x.bayes >= policy.minBayesRating);
-  const pool = gated.length ? gated : scored; // fallback if nobody passes gate
+  const pool = gated.length ? gated : scored;
 
-  // Prefer in-band first; within in-band: best bayes, then leadDays, then price
   pool.sort((a, b) => {
     if (a.inBand !== b.inBand) return a.inBand ? -1 : 1;
     if (b.bayes !== a.bayes) return b.bayes - a.bayes;
@@ -465,240 +357,107 @@ async function orderCandidatesGateBandTx(tx: any, candidates: CandidateOffer[]) 
   return pool.map((x) => x.c);
 }
 
+async function debugSupplierSelectionTx(
+  tx: any,
+  args: {
+    productId: string;
+    variantId: string | null;
+    qtyNeeded: number;
+    policy: { minBayesRating: number; bandPercent: number; bayesM: number; globalRatingC: number };
+    before: CandidateOffer[];
+    after: CandidateOffer[];
+  }
+) {
+  const enabled = await shouldDebugSupplierSelectionTx(tx);
+  if (!enabled) return;
 
+  const { productId, variantId, qtyNeeded, policy, before, after } = args;
 
-/**
- * Build supplier POs from OrderItems (supports split orders automatically).
- * Uses chosenSupplierId and chosenSupplierUnitPrice to compute supplierAmount.
- */
-async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
-  const items = await tx.orderItem.findMany({
-    where: { orderId },
-    select: {
-      id: true,
-      quantity: true,
-      lineTotal: true,
-      unitPrice: true,
-      chosenSupplierId: true,
-      chosenSupplierUnitPrice: true,
-    },
-  });
-
-  const bySupplier = new Map<
-    string,
-    {
-      supplierId: string;
-      supplierAmount: number;
-      customerSubtotal: number;
-      itemIds: string[];
-    }
-  >();
-
-  for (const it of items) {
-    const sid = it.chosenSupplierId ? String(it.chosenSupplierId) : "";
-    if (!sid) continue;
-
-    const qty = Math.max(0, Number(it.quantity ?? 0));
-    const supplierUnit = money(it.chosenSupplierUnitPrice);
-    const supplierLine = supplierUnit * qty;
-
-    const customerUnit = money(it.unitPrice);
-    const customerLine = it.lineTotal != null ? money(it.lineTotal) : customerUnit * qty;
-
-    const cur =
-      bySupplier.get(sid) ??
-      { supplierId: sid, supplierAmount: 0, customerSubtotal: 0, itemIds: [] };
-
-    cur.supplierAmount += supplierLine;
-    cur.customerSubtotal += customerLine;
-    cur.itemIds.push(String(it.id));
-    bySupplier.set(sid, cur);
+  if (!before.length) {
+    console.debug("[supplier-select] no candidates", { productId, variantId, qtyNeeded });
+    return;
   }
 
-  const supplierIds = Array.from(bySupplier.keys());
-  const suppliers = await tx.supplier.findMany({
-    where: { id: { in: supplierIds } },
-    select: { id: true, name: true },
-  });
-  const supplierNameById = new Map(
-    suppliers.map((s: any) => [String(s.id), String(s.name)])
-  );
+  const cheapest = Math.min(...before.map((c) => safeNum(c.offerPrice, Infinity)));
+  const bandMax = cheapest * (1 + policy.bandPercent / 100);
 
-  const createdPOs: any[] = [];
+  const score = (c: CandidateOffer) => {
+    const bayes =
+      (Number(c.supplierRatingCount ?? 0) / (Number(c.supplierRatingCount ?? 0) + policy.bayesM)) *
+        safeNum(c.supplierRatingAvg, 0) +
+      (policy.bayesM / (Number(c.supplierRatingCount ?? 0) + policy.bayesM)) * policy.globalRatingC;
 
-  for (const sid of supplierIds) {
-    const g = bySupplier.get(sid)!;
+    const inBand = safeNum(c.offerPrice, Infinity) <= bandMax;
+    const passesGate = bayes >= policy.minBayesRating;
 
-    const supplierAmount = round2(g.supplierAmount);
-    const customerSubtotal = round2(g.customerSubtotal);
-    const platformFee = round2(Math.max(0, customerSubtotal - supplierAmount));
-
-    const po = await tx.purchaseOrder.upsert({
-      where: { orderId_supplierId: { orderId, supplierId: sid } },
-      create: {
-        orderId,
-        supplierId: sid,
-        subtotal: customerSubtotal,
-        platformFee,
-        supplierAmount,
-        status: "CREATED",
-      },
-      update: {
-        subtotal: customerSubtotal,
-        platformFee,
-        supplierAmount,
-      },
-      select: { id: true, supplierId: true },
-    });
-
-    await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: po.id } });
-
-    for (const orderItemId of g.itemIds) {
-      await tx.purchaseOrderItem.create({
-        data: {
-          purchaseOrderId: po.id,
-          orderItemId,
-        },
-      });
-    }
-
-    createdPOs.push({
-      id: po.id,
-      supplierId: sid,
-      supplierName: supplierNameById.get(sid) ?? null,
-    });
-  }
-
-  return createdPOs;
-}
-
-/**
- * Align to settings.ts checkout/service-fee:
- * - serviceFeeComms = unitFee * totalUnits
- * - grossBeforeGateway = itemsSubtotal + vatAddOn + base + comms
- * - gateway estimated on grossBeforeGateway
- */
-async function computeServiceFeeForOrderTx(tx: any, orderId: string, itemsSubtotal: number) {
-  const base = await getBaseServiceFeeNGNTx(tx);
-  const unitFee = await getCommsUnitCostNGNTx(tx);
-
-  const rows = await tx.orderItem.findMany({
-    where: { orderId },
-    select: { quantity: true },
-  });
-
-  const totalUnits = rows.reduce(
-    (s: number, r: any) => s + Math.max(0, Number(r.quantity ?? 0)),
-    0
-  );
-
-  const taxMode = await getTaxModeTx(tx);
-  const taxRatePct = await getTaxRatePctTx(tx);
-
-  const vatAddOn =
-    taxMode === "ADDED" && taxRatePct > 0
-      ? (itemsSubtotal * taxRatePct) / 100
-      : 0;
-
-  const serviceFeeBase = round2(Math.max(0, base));
-  const serviceFeeComms = round2(Math.max(0, unitFee * totalUnits));
-
-  const grossBeforeGateway = itemsSubtotal + vatAddOn + serviceFeeBase + serviceFeeComms;
-  const serviceFeeGateway = round2(estimateGatewayFee(grossBeforeGateway));
-  const serviceFeeTotal = round2(serviceFeeBase + serviceFeeComms + serviceFeeGateway);
-
-  return {
-    serviceFeeBase,
-    serviceFeeComms,
-    serviceFeeGateway,
-    serviceFeeTotal,
-    serviceFee: serviceFeeTotal,
-    meta: { totalUnits, unitFee, taxMode, taxRatePct, vatAddOn, grossBeforeGateway },
+    return { bayes: fmt2(bayes), inBand, passesGate };
   };
-}
 
-/* ---------------- Sellability checks ---------------- */
+  const beforeScored = before
+    .map((c) => {
+      const s = score(c);
+      return {
+        supplierId: c.supplierId,
+        offerId: c.id,
+        model: c.model,
+        price: fmt2(c.offerPrice),
+        qty: safeNum(c.availableQty, 0),
+        leadDays: c.leadDays ?? null,
+        ratingAvg: c.supplierRatingAvg ?? null,
+        ratingCount: c.supplierRatingCount ?? null,
+        bayes: s.bayes,
+        inBand: s.inBand,
+        passesGate: s.passesGate,
+      };
+    })
+    .sort((a, b) => a.price - b.price);
 
-async function assertProductSellableTx(tx: any, productId: string) {
-  const p = await tx.product.findUnique({
-    where: { id: productId },
-    select: {
-      id: true,
-      title: true,
-      status: true,
-      deletedAt: true,
-      ownerId: true,
-      supplierId: true,
+  const gatedCount = beforeScored.filter((x) => x.passesGate).length;
+  const fallbackUsed = gatedCount === 0;
+
+  const topAfter = (after || []).slice(0, 5).map((c) => {
+    const s = score(c);
+    return {
+      supplierId: c.supplierId,
+      offerId: c.id,
+      model: c.model,
+      price: fmt2(c.offerPrice),
+      qty: safeNum(c.availableQty, 0),
+      leadDays: c.leadDays ?? null,
+      bayes: s.bayes,
+      inBand: s.inBand,
+      passesGate: s.passesGate,
+    };
+  });
+
+  console.debug("[supplier-select]", {
+    productId,
+    variantId,
+    qtyNeeded,
+    policy: {
+      bandPercent: policy.bandPercent,
+      minBayesRating: policy.minBayesRating,
+      bayesM: policy.bayesM,
+      globalRatingC: policy.globalRatingC,
     },
+    cheapest: fmt2(cheapest),
+    bandMax: fmt2(bandMax),
+    candidatesCheapestFirst: beforeScored.slice(0, 12),
+    fallbackUsed,
+    orderedTop5: topAfter,
   });
-
-
-  if (!p || p.deletedAt) throw new Error("Product not found.");
-  if (String(p.status).toUpperCase() !== "LIVE") {
-    throw new Error(`Product "${p.title}" is not available for purchase.`);
-  }
-
-  // ✅ IMPORTANT: Do NOT require ownerId or supplierId here.
-  // Offers will determine which supplier fulfills the order.
-  return { title: hookingTitle(p.title) };
 }
-
-// keep exact title formatting as-is (no schema change)
-function hookingTitle(t: any) {
-  return String(t ?? "");
-}
-
-async function assertVariantSellableTx(tx: any, productId: string, variantId: string) {
-  const v = await tx.productVariant.findUnique({
-    where: { id: variantId },
-    select: { id: true, productId: true, isActive: true, archivedAt: true },
-  });
-
-  if (!v || String(v.productId) !== String(productId)) {
-    throw new Error(`Variant ${variantId} does not belong to product ${productId}.`);
-  }
-  if (v.isActive !== true || v.archivedAt != null) {
-    throw new Error(`Variant ${variantId} is not active.`);
-  }
-}
-
-/* ---------------- Offers helpers (base offer + variant offer + legacy) ---------------- */
-
-type CandidateOffer = {
-  id: string;
-  supplierId: string; // ✅ force non-null
-  availableQty: number;
-
-  // supplier cost for allocation (NOT customer retail)
-  offerPrice: number;
-
-  model: "BASE_OFFER" | "VARIANT_OFFER" | "LEGACY_OFFER";
-
-  supplierProductOfferId: string | null;
-  supplierVariantOfferId: string | null;
-
-  // ✅ new fields for gate+band selection
-  leadDays?: number | null;
-  supplierRatingAvg?: number | null;
-  supplierRatingCount?: number | null;
-};
-
 
 function sortOffersCheapestFirst(list: CandidateOffer[]) {
   list.sort((a, b) =>
-    a.offerPrice !== b.offerPrice
-      ? a.offerPrice - b.offerPrice
-      : b.availableQty - a.availableQty
+    a.offerPrice !== b.offerPrice ? a.offerPrice - b.offerPrice : b.availableQty - a.availableQty
   );
   return list;
 }
 
-async function fetchActiveBaseOffersTx(
-  tx: any,
-  where: { productId: string }
-): Promise<CandidateOffer[]> {
-  // ✅ CHANGE: do NOT require payout-ready/bank verified for checkout.
-  // only require supplier ACTIVE (via relation), and keep offer-level "isActive/basePrice/stock" checks.
+/* ---------------- Offers helpers (base offer + variant offer + legacy) ---------------- */
+
+async function fetchActiveBaseOffersTx(tx: any, where: { productId: string }): Promise<CandidateOffer[]> {
   const rows = await tx.supplierProductOffer.findMany({
     where: {
       productId: where.productId,
@@ -718,19 +477,10 @@ async function fetchActiveBaseOffersTx(
     },
   });
 
-  // ✅ pick CHEAPEST base per supplier (not “last one wins”)
   const bestBaseBySupplier = new Map<
     string,
-    {
-      id: string;
-      basePrice: number;
-      availableQty: number;
-      leadDays: number | null;
-      ratingAvg: number | null;
-      ratingCount: number | null;
-    }
+    { id: string; basePrice: number; availableQty: number; leadDays: number | null; ratingAvg: number | null; ratingCount: number | null }
   >();
-
 
   for (const r of rows || []) {
     const sid = String(r.supplierId ?? "");
@@ -750,7 +500,6 @@ async function fetchActiveBaseOffersTx(
         ratingAvg: r.supplier?.ratingAvg != null ? Number(r.supplier.ratingAvg) : null,
         ratingCount: r.supplier?.ratingCount != null ? Number(r.supplier.ratingCount) : null,
       });
-
     }
   }
 
@@ -762,16 +511,13 @@ async function fetchActiveBaseOffersTx(
     model: "BASE_OFFER" as const,
     supplierProductOfferId: b.id,
     supplierVariantOfferId: null,
-
     leadDays: b.leadDays,
     supplierRatingAvg: b.ratingAvg,
     supplierRatingCount: b.ratingCount,
   }));
 
-
   if (usable.length) return usable;
 
-  // legacy fallback (kept)
   const legacyList =
     (await (tx.supplierOffer?.findMany?.({
       where: {
@@ -782,12 +528,7 @@ async function fetchActiveBaseOffersTx(
         availableQty: { gt: 0 },
         offerPrice: { gt: 0 },
       },
-      select: {
-        id: true,
-        supplierId: true,
-        availableQty: true,
-        offerPrice: true,
-      },
+      select: { id: true, supplierId: true, availableQty: true, offerPrice: true },
     }) ?? [])) ?? [];
 
   const legacy: CandidateOffer[] = (legacyList || [])
@@ -814,25 +555,18 @@ export async function fetchOneOfferByIdTx(
   tx: any,
   offerId: string
 ): Promise<(CandidateOffer & { productId: string; variantId: string | null }) | null> {
-  // 1) Try variant offer id
   try {
     const vo = await tx.supplierVariantOffer.findUnique({
       where: { id: offerId },
       select: {
         id: true,
         supplierId: true,
-
-        // NOTE: still stored, but we don't rely on it as truth for filtering elsewhere
         productId: true,
         variantId: true,
-
         availableQty: true,
         isActive: true,
         inStock: true,
-
-        // ✅ unitPrice is full supplier unit price
         unitPrice: true,
-
         supplierProductOfferId: true,
         variant: { select: { productId: true } },
       } as any,
@@ -842,9 +576,7 @@ export async function fetchOneOfferByIdTx(
       const sid = String(vo.supplierId ?? "");
       if (!sid) return null;
 
-      if (vo.isActive !== true || vo.inStock !== true || asNumber(vo.availableQty, 0) <= 0) {
-        return null;
-      }
+      if (vo.isActive !== true || vo.inStock !== true || asNumber(vo.availableQty, 0) <= 0) return null;
 
       const supplierUnit = asNumber(vo.unitPrice, 0);
       if (!(supplierUnit > 0)) return null;
@@ -867,7 +599,6 @@ export async function fetchOneOfferByIdTx(
     // ignore
   }
 
-  // 2) Try base offer id
   try {
     const bo = await tx.supplierProductOffer.findUnique({
       where: { id: offerId },
@@ -909,7 +640,6 @@ export async function fetchOneOfferByIdTx(
     // ignore
   }
 
-  // 3) legacy SupplierOffer fallback (kept)
   const so =
     (await (tx.supplierOffer?.findFirst?.({
       where: { id: offerId, isActive: true },
@@ -948,7 +678,6 @@ async function fetchActiveOffersTx(
   tx: any,
   where: { productId: string; variantId: string }
 ): Promise<CandidateOffer[]> {
-  // ✅ Variant offer pricing is direct unitPrice (no base + bump)
   const vos = await tx.supplierVariantOffer.findMany({
     where: {
       variantId: where.variantId,
@@ -967,10 +696,8 @@ async function fetchActiveOffersTx(
       leadDays: true,
       supplier: { select: { ratingAvg: true, ratingCount: true } },
     } as any,
-
   });
 
-  // legacy fallback if you still support it
   if (!vos.length) {
     const legacy =
       (await (tx.supplierOffer?.findMany?.({
@@ -982,12 +709,7 @@ async function fetchActiveOffersTx(
           availableQty: { gt: 0 },
           offerPrice: { gt: 0 },
         },
-        select: {
-          id: true,
-          supplierId: true,
-          availableQty: true,
-          offerPrice: true,
-        },
+        select: { id: true, supplierId: true, availableQty: true, offerPrice: true },
       }) ?? [])) ?? [];
 
     const legacyOut: CandidateOffer[] = (legacy || [])
@@ -1010,18 +732,9 @@ async function fetchActiveOffersTx(
     return sortOffersCheapestFirst(legacyOut);
   }
 
-  // ✅ CHEAPEST unitPrice per supplier for THIS variant
   const bestVarBySupplier = new Map<
     string,
-    {
-      id: string;
-      unitPrice: number;
-      qty: number;
-      baseId: string | null;
-      leadDays: number | null;
-      ratingAvg: number | null;
-      ratingCount: number | null;
-    }
+    { id: string; unitPrice: number; qty: number; baseId: string | null; leadDays: number | null; ratingAvg: number | null; ratingCount: number | null }
   >();
 
   for (const vo of vos) {
@@ -1043,7 +756,6 @@ async function fetchActiveOffersTx(
         ratingAvg: (vo as any).supplier?.ratingAvg != null ? Number((vo as any).supplier?.ratingAvg) : null,
         ratingCount: (vo as any).supplier?.ratingCount != null ? Number((vo as any).supplier?.ratingCount) : null,
       });
-
     }
   }
 
@@ -1057,63 +769,16 @@ async function fetchActiveOffersTx(
       model: "VARIANT_OFFER",
       supplierProductOfferId: v.baseId,
       supplierVariantOfferId: v.id,
-
       leadDays: v.leadDays,
       supplierRatingAvg: v.ratingAvg,
       supplierRatingCount: v.ratingCount,
     });
-
   }
 
   return sortOffersCheapestFirst(out);
 }
 
 /* ---------------- Stock decrement (atomic) ---------------- */
-
-async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, orderId: string) {
-  const pos = await tx.purchaseOrder.findMany({
-    where: { orderId },
-    include: { supplier: { select: { id: true, name: true } } },
-  });
-
-  if (!pos.length) return [];
-
-  await tx.supplierPaymentAllocation.deleteMany({ where: { paymentId } });
-
-  const rows = [];
-  for (const po of pos) {
-    rows.push(
-      await tx.supplierPaymentAllocation.create({
-        data: {
-          paymentId,
-          orderId,
-          supplierId: po.supplierId,
-          purchaseOrderId: po.id,
-          amount: po.supplierAmount,
-          status: supplierAllocHoldStatus(),
-          supplierNameSnapshot: po.supplier?.name ?? null,
-          meta: { purchaseOrderStatus: po.status },
-        },
-      })
-    );
-
-    // ❌ DO NOT update PO status to FUNDED here anymore
-  }
-
-  await tx.payment.update({
-    where: { id: paymentId },
-    data: {
-      supplierBreakdownJson: pos.map((po: any) => ({
-        supplierId: po.supplierId,
-        supplierName: po.supplier?.name ?? null,
-        purchaseOrderId: po.id,
-        supplierAmount: Number(po.supplierAmount ?? 0),
-      })),
-    },
-  });
-
-  return rows;
-}
 
 async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number) {
   if (take <= 0) return;
@@ -1130,17 +795,11 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
       select: { availableQty: true, productId: true },
     });
 
-    if (after?.productId) {
-      await recomputeProductStockTx(tx, String(after.productId));
-    }
+    if (after?.productId) await recomputeProductStockTx(tx, String(after.productId));
 
     if (asNumber(after?.availableQty, 0) <= 0) {
-      await tx.supplierProductOffer.update({
-        where: { id: offer.id },
-        data: { inStock: false },
-      });
+      await tx.supplierProductOffer.update({ where: { id: offer.id }, data: { inStock: false } });
     }
-
     return;
   }
 
@@ -1157,21 +816,14 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
     } as any);
 
     const pid = String((afterVar as any)?.variant?.productId ?? afterVar?.productId ?? "");
-    if (pid) {
-      await recomputeProductStockTx(tx, pid);
-    }
+    if (pid) await recomputeProductStockTx(tx, pid);
 
     if (asNumber(afterVar?.availableQty, 0) <= 0) {
-      await tx.supplierVariantOffer.update({
-        where: { id: offer.id },
-        data: { inStock: false },
-      });
+      await tx.supplierVariantOffer.update({ where: { id: offer.id }, data: { inStock: false } });
     }
-
     return;
   }
 
-  // LEGACY_OFFER
   const r = await tx.supplierOffer.updateMany({
     where: { id: offer.id, availableQty: { gte: take } },
     data: { availableQty: { decrement: take } },
@@ -1183,15 +835,10 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
     select: { availableQty: true, productId: true },
   });
 
-  if (after?.productId) {
-    await recomputeProductStockTx(tx, String(after.productId));
-  }
+  if (after?.productId) await recomputeProductStockTx(tx, String(after.productId));
 
   if (asNumber(after?.availableQty, 0) <= 0) {
-    await tx.supplierOffer.update({
-      where: { id: offer.id },
-      data: { inStock: false },
-    });
+    await tx.supplierOffer.update({ where: { id: offer.id }, data: { inStock: false } });
   }
 }
 
@@ -1199,11 +846,7 @@ async function decrementOfferQtyTx(tx: any, offer: CandidateOffer, take: number)
 
 const norm = (s: any) => String(s ?? "").trim().toLowerCase();
 
-async function resolveVariantIdFromSelectedOptionsTx(
-  tx: any,
-  productId: string,
-  selectedOptions: any
-): Promise<string | null> {
+async function resolveVariantIdFromSelectedOptionsTx(tx: any, productId: string, selectedOptions: any): Promise<string | null> {
   const arr = Array.isArray(selectedOptions) ? selectedOptions : [];
 
   const wantedIdPairs = new Set<string>();
@@ -1273,10 +916,8 @@ async function resolveVariantIdFromSelectedOptionsTx(
     const sets = buildVariantSets(v);
 
     if (wantedIdPairs.size && setEquals(sets.idSet, wantedIdPairs)) return String(v.id);
-    if (!wantedIdPairs.size && wantedAttrIdNamePairs.size && setEquals(sets.attrIdNameSet, wantedAttrIdNamePairs))
-      return String(v.id);
-    if (!wantedIdPairs.size && !wantedAttrIdNamePairs.size && wantedNamePairs.size && setEquals(sets.nameSet, wantedNamePairs))
-      return String(v.id);
+    if (!wantedIdPairs.size && wantedAttrIdNamePairs.size && setEquals(sets.attrIdNameSet, wantedAttrIdNamePairs)) return String(v.id);
+    if (!wantedIdPairs.size && !wantedAttrIdNamePairs.size && wantedNamePairs.size && setEquals(sets.nameSet, wantedNamePairs)) return String(v.id);
   }
 
   let best: { id: string; extra: number } | null = null;
@@ -1298,65 +939,7 @@ async function resolveVariantIdFromSelectedOptionsTx(
   return best ? best.id : null;
 }
 
-/**
- * ✅ Retail customer unit price (schema-conformant)
- * - Product.retailPrice is the required base retail
- * - If variant.retailPrice is set (>0), treat it as the FINAL variant retail unit price
- * - Else, use ProductVariantOption.unitPrice as "option bump" (take max bump on the variant) and add to Product.retailPrice
- *
- * NOTE: This removes all usage of the removed/legacy field "priceBump".
- */
-async function resolveRetailCustomerUnitTx(
-  tx: any,
-  productId: string,
-  variantId: string | null
-): Promise<number> {
-  const prod = await tx.product.findUnique({
-    where: { id: productId },
-    select: { retailPrice: true },
-  });
-
-  const productRetail = asNumber(prod?.retailPrice, 0);
-  if (!(productRetail > 0)) {
-    throw new Error(`Missing retail base price (Product.retailPrice) for product ${productId}.`);
-  }
-
-  if (!variantId) return round2(productRetail);
-
-  const v = await tx.productVariant.findUnique({
-    where: { id: variantId },
-    select: {
-      id: true,
-      productId: true,
-      retailPrice: true,
-      options: { select: { unitPrice: true } }, // ✅ schema field (replaces old priceBump)
-    } as any,
-  });
-
-  if (!v || String((v as any).productId) !== String(productId)) {
-    throw new Error(`Variant ${variantId} does not belong to product ${productId}.`);
-  }
-
-  // ✅ If variant retailPrice is set, treat it as the FINAL retail unit price (not a bump)
-  const variantRetail = Math.max(0, asNumber((v as any).retailPrice, 0));
-  if (variantRetail > 0) {
-    return round2(variantRetail);
-  }
-
-  // ✅ Otherwise compute from option "unitPrice" bumps (max bump)
-  const bumps = ((v as any).options || [])
-    .map((o: any) => Math.max(0, asNumber(o?.unitPrice, 0)))
-    .filter((n: number) => n > 0);
-
-  const maxBump = bumps.length ? Math.max(...bumps) : 0;
-  return round2(productRetail + maxBump);
-}
-
-function assertClientUnitPriceMatches(
-  serverUnit: number,
-  clientUnit: any,
-  ctx: { productId: string; variantId: string | null }
-) {
+function assertClientUnitPriceMatches(serverUnit: number, clientUnit: any, ctx: { productId: string; variantId: string | null }) {
   if (clientUnit == null) return;
 
   const n = Number(clientUnit);
@@ -1366,7 +949,7 @@ function assertClientUnitPriceMatches(
   if (Math.abs(serverUnit - n) > tolerance) {
     throw new Error(
       `Unit price mismatch for product ${ctx.productId}${ctx.variantId ? ` (variant ${ctx.variantId})` : ""}. ` +
-      `Client sent ${n}, server computed ${serverUnit}.`
+        `Client sent ${n}, server computed ${serverUnit}.`
     );
   }
 }
@@ -1388,16 +971,227 @@ function formatSelectedOptionsForMsg(selectedOptions: any): string {
 
 function supplierAllocHoldStatus(): any {
   const E = (Prisma as any).SupplierPaymentStatus;
-  if (!E) return "PENDING"; // fallback
+  if (!E) return "PENDING";
+  return E.HELD ?? E.ON_HOLD ?? E.HOLD ?? E.PENDING ?? E.CREATED ?? Object.values(E)[0];
+}
 
-  return (
-    E.HELD ??
-    E.ON_HOLD ??
-    E.HOLD ??
-    E.PENDING ??
-    E.CREATED ??
-    Object.values(E)[0]
-  );
+/* ---------------- Purchase Orders ---------------- */
+
+async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
+  const items = await tx.orderItem.findMany({
+    where: { orderId },
+    select: {
+      id: true,
+      quantity: true,
+      lineTotal: true,
+      unitPrice: true,
+      chosenSupplierId: true,
+      chosenSupplierUnitPrice: true,
+    },
+  });
+
+  const bySupplier = new Map<
+    string,
+    { supplierId: string; supplierAmount: number; customerSubtotal: number; itemIds: string[] }
+  >();
+
+  for (const it of items) {
+    const sid = it.chosenSupplierId ? String(it.chosenSupplierId) : "";
+    if (!sid) continue;
+
+    const qty = Math.max(0, Number(it.quantity ?? 0));
+    const supplierUnit = money(it.chosenSupplierUnitPrice);
+    const supplierLine = supplierUnit * qty;
+
+    const customerUnit = money(it.unitPrice);
+    const customerLine = it.lineTotal != null ? money(it.lineTotal) : customerUnit * qty;
+
+    const cur = bySupplier.get(sid) ?? { supplierId: sid, supplierAmount: 0, customerSubtotal: 0, itemIds: [] };
+    cur.supplierAmount += supplierLine;
+    cur.customerSubtotal += customerLine;
+    cur.itemIds.push(String(it.id));
+    bySupplier.set(sid, cur);
+  }
+
+  const supplierIds = Array.from(bySupplier.keys());
+  const suppliers = await tx.supplier.findMany({
+    where: { id: { in: supplierIds } },
+    select: { id: true, name: true },
+  });
+  const supplierNameById = new Map(suppliers.map((s: any) => [String(s.id), String(s.name)]));
+
+  const createdPOs: any[] = [];
+
+  for (const sid of supplierIds) {
+    const g = bySupplier.get(sid)!;
+
+    const supplierAmount = round2(g.supplierAmount);
+    const customerSubtotal = round2(g.customerSubtotal);
+    const platformFee = round2(Math.max(0, customerSubtotal - supplierAmount));
+
+    const po = await tx.purchaseOrder.upsert({
+      where: { orderId_supplierId: { orderId, supplierId: sid } },
+      create: {
+        orderId,
+        supplierId: sid,
+        subtotal: customerSubtotal,
+        platformFee,
+        supplierAmount,
+        status: "CREATED",
+      },
+      update: {
+        subtotal: customerSubtotal,
+        platformFee,
+        supplierAmount,
+      },
+      select: { id: true, supplierId: true },
+    });
+
+    await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: po.id } });
+    for (const orderItemId of g.itemIds) {
+      await tx.purchaseOrderItem.create({ data: { purchaseOrderId: po.id, orderItemId } });
+    }
+
+    createdPOs.push({
+      id: po.id,
+      supplierId: sid,
+      supplierName: supplierNameById.get(sid) ?? null,
+    });
+  }
+
+  return createdPOs;
+}
+
+/**
+ * Align to settings.ts checkout/service-fee:
+ * - serviceFeeComms = unitFee * totalUnits
+ * - grossBeforeGateway = itemsSubtotal + vatAddOn + base + comms
+ * - gateway estimated on grossBeforeGateway
+ */
+async function computeServiceFeeForOrderTx(tx: any, orderId: string, itemsSubtotal: number) {
+  const base = await getBaseServiceFeeNGNTx(tx);
+  const unitFee = await getCommsUnitCostNGNTx(tx);
+
+  const rows = await tx.orderItem.findMany({ where: { orderId }, select: { quantity: true } });
+
+  const totalUnits = rows.reduce((s: number, r: any) => s + Math.max(0, Number(r.quantity ?? 0)), 0);
+
+  const taxMode = await getTaxModeTx(tx);
+  const taxRatePct = await getTaxRatePctTx(tx);
+
+  const vatAddOn = taxMode === "ADDED" && taxRatePct > 0 ? (itemsSubtotal * taxRatePct) / 100 : 0;
+
+  const serviceFeeBase = round2(Math.max(0, base));
+  const serviceFeeComms = round2(Math.max(0, unitFee * totalUnits));
+
+  const grossBeforeGateway = itemsSubtotal + vatAddOn + serviceFeeBase + serviceFeeComms;
+  const serviceFeeGateway = round2(estimateGatewayFee(grossBeforeGateway));
+  const serviceFeeTotal = round2(serviceFeeBase + serviceFeeComms + serviceFeeGateway);
+
+  return {
+    serviceFeeBase,
+    serviceFeeComms,
+    serviceFeeGateway,
+    serviceFeeTotal,
+    serviceFee: serviceFeeTotal,
+    meta: { totalUnits, unitFee, taxMode, taxRatePct, vatAddOn, grossBeforeGateway },
+  };
+}
+
+/* ---------------- Sellability checks ---------------- */
+
+async function assertProductSellableTx(tx: any, productId: string) {
+  const p = await tx.product.findUnique({
+    where: { id: productId },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      deletedAt: true,
+      ownerId: true,
+      supplierId: true,
+    },
+  });
+
+  if (!p || p.deletedAt) throw new Error("Product not found.");
+  if (String(p.status).toUpperCase() !== "LIVE") {
+    throw new Error(`Product "${p.title}" is not available for purchase.`);
+  }
+
+  return { title: String(p.title ?? "") };
+}
+
+async function assertVariantSellableTx(tx: any, productId: string, variantId: string) {
+  const v = await tx.productVariant.findUnique({
+    where: { id: variantId },
+    select: { id: true, productId: true, isActive: true, archivedAt: true },
+  });
+
+  if (!v || String(v.productId) !== String(productId)) {
+    throw new Error(`Variant ${variantId} does not belong to product ${productId}.`);
+  }
+  if (v.isActive !== true || v.archivedAt != null) {
+    throw new Error(`Variant ${variantId} is not active.`);
+  }
+}
+
+/* ---------------- Supplier notifications helpers (THE REQUEST) ---------------- */
+
+async function notifySuppliersForOrderTx(
+  tx: any,
+  orderId: string,
+  payload: { type: string; title: string; body: string; data?: any }
+) {
+  const pos = await tx.purchaseOrder.findMany({
+    where: { orderId },
+    select: { id: true, supplierId: true },
+  });
+
+  for (const po of pos) {
+    try {
+      await notifySupplierBySupplierId(
+        String(po.supplierId),
+        {
+          ...payload,
+          data: { ...(payload.data ?? {}), orderId, purchaseOrderId: po.id },
+        },
+        tx
+      );
+    } catch (err: any) {
+      console.error("[notifySupplier] failed", {
+        supplierId: po.supplierId,
+        purchaseOrderId: po.id,
+        orderId,
+        message: err?.message,
+        code: err?.code,
+      });
+    }
+  }
+}
+
+async function notifyOneSupplierForPoTx(
+  tx: any,
+  args: { orderId: string; purchaseOrderId: string; supplierId: string },
+  payload: { type: string; title: string; body: string; data?: any }
+) {
+  try {
+    await notifySupplierBySupplierId(
+      String(args.supplierId),
+      {
+        ...payload,
+        data: { ...(payload.data ?? {}), orderId: args.orderId, purchaseOrderId: args.purchaseOrderId },
+      },
+      tx
+    );
+  } catch (err: any) {
+    console.error("[notifySupplier] failed", {
+      supplierId: args.supplierId,
+      purchaseOrderId: args.purchaseOrderId,
+      orderId: args.orderId,
+      message: err?.message,
+      code: err?.code,
+    });
+  }
 }
 
 /* =========================================================
@@ -1416,18 +1210,16 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   const userId = getUserId(req);
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-  // local helpers (same behavior as settings.ts)
-  const toNumber = (v: any, def = 0) => {
+  const toNumberLocal = (v: any, def = 0) => {
     const n = Number(v);
     return Number.isFinite(n) ? n : def;
   };
-  const round2 = (n: number) => Math.round(n * 100) / 100;
 
   try {
     const created = await prisma.$transaction(
       async (tx: any) => {
         // -----------------------------
-        // ✅ Load latest public settings margin (same keys as /api/settings/public)
+        // Load margin
         // -----------------------------
         async function readSettingTx(key: string): Promise<string | null> {
           try {
@@ -1449,7 +1241,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           (await readSettingTx("markupPercent")) ??
           (await readSettingTx("platformMarginPercent"));
 
-        const marginPercent = Math.max(0, toNumber(marginRaw, 0));
+        const marginPercent = Math.max(0, toNumberLocal(marginRaw, 0));
         const marginMul = 1 + marginPercent / 100;
 
         // -----------------------------
@@ -1507,7 +1299,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         let runningSubtotal = 0;
 
         // -----------------------------
-        // Create items (split across suppliers) with correct supplier price + margin
+        // Create items (split across suppliers)
         // -----------------------------
         for (const line of items) {
           const productId = String((line as any).productId ?? "").trim();
@@ -1533,19 +1325,12 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           let variantId: string | null = null;
           let candidates: CandidateOffer[] = [];
 
-          const variantFromOptions = await resolveVariantIdFromSelectedOptionsTx(
-            tx,
-            productId,
-            selectedOptions
-          );
+          const variantFromOptions = await resolveVariantIdFromSelectedOptionsTx(tx, productId, selectedOptions);
 
-          // ✅ offerId only identifies variant combo, not supplier lock
           if (explicitOfferId) {
             const one = await fetchOneOfferByIdTx(tx, String(explicitOfferId));
             if (!one) throw new Error(`Offer not found/disabled for product ${productId}.`);
-            if (String(one.productId) !== productId) {
-              throw new Error(`Offer mismatch: wrong product for offer ${explicitOfferId}.`);
-            }
+            if (String(one.productId) !== productId) throw new Error(`Offer mismatch: wrong product for offer ${explicitOfferId}.`);
 
             variantId = one.variantId ? String(one.variantId) : null;
             if (!variantId && variantFromOptions) variantId = String(variantFromOptions);
@@ -1572,7 +1357,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           }
 
           const candidatesBefore = candidates.slice();
-
           const policy = await getSupplierSelectionPolicyTx(tx);
           candidates = await orderCandidatesGateBandTx(tx, candidates);
 
@@ -1585,18 +1369,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             after: candidates,
           });
 
-          if (!candidates.length) {
-            throw new Error(`No active supplier offers for: ${productTitle}${optionsLabel}.`);
-          }
+          if (!candidates.length) throw new Error(`No active supplier offers for: ${productTitle}${optionsLabel}.`);
 
-          const totalAvailable = candidates.reduce(
-            (s, o) => s + Math.max(0, Number(o.availableQty || 0)),
-            0
-          );
+          const totalAvailable = candidates.reduce((s, o) => s + Math.max(0, Number(o.availableQty || 0)), 0);
           if (totalAvailable < qtyNeeded) {
-            throw new Error(
-              `Insufficient stock for ${productTitle}${optionsLabel}. Need ${qtyNeeded}, available ${totalAvailable}.`
-            );
+            throw new Error(`Insufficient stock for ${productTitle}${optionsLabel}. Need ${qtyNeeded}, available ${totalAvailable}.`);
           }
 
           let need = qtyNeeded;
@@ -1604,7 +1381,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           const allocations: Array<{
             supplierId: string;
             qty: number;
-            supplierUnitCost: number; // this is the supplier offer price
+            supplierUnitCost: number;
             model: CandidateOffer["model"];
             supplierProductOfferId: string | null;
             supplierVariantOfferId: string | null;
@@ -1614,9 +1391,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             if (need <= 0) break;
             if (o.availableQty <= 0) continue;
 
-            if (!o.supplierId) {
-              throw new Error(`Bad offer data: missing supplierId for offer ${o.id}`);
-            }
+            if (!o.supplierId) throw new Error(`Bad offer data: missing supplierId for offer ${o.id}`);
 
             await assertSupplierPurchasableTx(tx, o.supplierId);
 
@@ -1626,7 +1401,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             allocations.push({
               supplierId: o.supplierId,
               qty: take,
-              supplierUnitCost: Number(o.offerPrice), // ✅ supplier’s chosen offer price
+              supplierUnitCost: Number(o.offerPrice),
               model: o.model,
               supplierProductOfferId:
                 o.model === "BASE_OFFER"
@@ -1640,11 +1415,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             need -= take;
           }
 
-          // Optional: anti-tamper check.
-          // If the line is NOT split across different prices, enforce client unitPrice match.
-          // If split has different supplier prices, checkout will price per-supplier allocation,
-          // so we do not enforce a single client unitPrice here.
-          const clientUnit = toNumber((line as any).unitPrice, NaN);
+          const clientUnit = toNumberLocal((line as any).unitPrice, NaN);
           const expectedUnits: number[] = [];
 
           for (const alloc of allocations) {
@@ -1653,7 +1424,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
               throw new Error(`Bad supplier price for ${productTitle}${optionsLabel}.`);
             }
 
-            // ✅ Retail/customer unit price = supplier offer price + margin
             const customerUnit = round2(supplierUnit * marginMul);
             expectedUnits.push(customerUnit);
 
@@ -1667,12 +1437,10 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 chosenSupplierVariantOfferId: alloc.supplierVariantOfferId,
                 chosenSupplierId: alloc.supplierId,
 
-                // ✅ supplier unit price (what supplier sells at)
                 chosenSupplierUnitPrice: supplierUnit,
 
                 title: productTitle,
 
-                // ✅ customer unit price WITH margin (per allocation)
                 unitPrice: customerUnit,
                 quantity: alloc.qty,
                 lineTotal: round2(customerUnit * alloc.qty),
@@ -1698,7 +1466,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
         const taxMode = await getTaxModeTx(tx);
         const taxRatePct = await getTaxRatePctTx(tx);
-
         const rate = Math.max(0, taxRatePct) / 100;
 
         const vatIncluded = taxMode === "INCLUDED" && rate > 0 ? subtotal - subtotal / (1 + rate) : 0;
@@ -1736,6 +1503,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         });
 
         // ✅ Notifications: shopper, suppliers, admins
+        // NOTE: we keep these DB writes inside tx; real-time delivery (websocket/push) should happen after commit.
         try {
           await notifyUser(
             userId,
@@ -1748,18 +1516,13 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             tx
           );
 
-          for (const po of purchaseOrders) {
-            await notifySupplierBySupplierId(
-              String(po.supplierId),
-              {
-                type: "PURCHASE_ORDER_CREATED",
-                title: "New order received",
-                body: `You have a new purchase order ${po.id} from order ${updatedOrder.id}.`,
-                data: { orderId: updatedOrder.id, purchaseOrderId: po.id },
-              },
-              tx
-            );
-          }
+          // ✅ the requested change: centralized helper using notifySupplierBySupplierId
+          await notifySuppliersForOrderTx(tx, updatedOrder.id, {
+            type: "PURCHASE_ORDER_CREATED",
+            title: "New order received",
+            body: `You have received a new purchase order for order ${updatedOrder.id}.`,
+            data: { total: updatedOrder.total },
+          });
 
           await notifyAdmins(
             {
@@ -1783,10 +1546,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             vatAddOn: round2(vatAddOn),
             serviceFeeMeta: svc.meta,
             purchaseOrders,
-            pricing: {
-              marginPercent,
-              marginMul,
-            },
+            pricing: { marginPercent, marginMul },
           },
         };
       },
@@ -1800,25 +1560,16 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
-
 /* ---------------- Availability helpers (used by GET routes) ---------------- */
 
 type Pair = { productId: string; variantId: string | null };
-type AvailabilityRow = {
-  productId: string;
-  variantId: string | null;
-  totalAvailable: number;
-};
+type AvailabilityRow = { productId: string; variantId: string | null; totalAvailable: number };
 
 function availKey(productId: string, variantId: string | null) {
   return `${String(productId)}::${variantId ?? "null"}`;
 }
 
-export async function computeAvailabilityForPairsTx(
-  tx: any,
-  pairs: Pair[],
-  opts?: { includeBase?: boolean }
-): Promise<AvailabilityRow[]> {
+export async function computeAvailabilityForPairsTx(tx: any, pairs: Pair[], opts?: { includeBase?: boolean }): Promise<AvailabilityRow[]> {
   const includeBase = opts?.includeBase ?? true;
 
   const basePairs = pairs.filter((p) => !p.variantId);
@@ -1827,16 +1578,16 @@ export async function computeAvailabilityForPairsTx(
   const baseAgg =
     includeBase && basePairs.length
       ? await tx.supplierProductOffer.groupBy({
-        by: ["productId"],
-        _sum: { availableQty: true },
-        where: {
-          productId: { in: basePairs.map((p) => p.productId) },
-          basePrice: { gt: 0 },
-          isActive: true,
-          inStock: true,
-          supplier: supplierCheckoutReadyRelationFilter(),
-        },
-      })
+          by: ["productId"],
+          _sum: { availableQty: true },
+          where: {
+            productId: { in: basePairs.map((p) => p.productId) },
+            basePrice: { gt: 0 },
+            isActive: true,
+            inStock: true,
+            supplier: supplierCheckoutReadyRelationFilter(),
+          },
+        })
       : [];
 
   const baseMap = new Map<string, number>();
@@ -1846,18 +1597,15 @@ export async function computeAvailabilityForPairsTx(
 
   const variantAgg = variantPairs.length
     ? await tx.supplierVariantOffer.groupBy({
-      by: ["productId", "variantId"],
-      _sum: { availableQty: true },
-      where: {
-        OR: variantPairs.map((p) => ({
-          productId: p.productId,
-          variantId: p.variantId!,
-        })),
-        isActive: true,
-        inStock: true,
-        supplier: supplierCheckoutReadyRelationFilter(),
-      },
-    })
+        by: ["productId", "variantId"],
+        _sum: { availableQty: true },
+        where: {
+          OR: variantPairs.map((p) => ({ productId: p.productId, variantId: p.variantId! })),
+          isActive: true,
+          inStock: true,
+          supplier: supplierCheckoutReadyRelationFilter(),
+        },
+      })
     : [];
 
   const variantMap = new Map<string, number>();
@@ -1868,25 +1616,18 @@ export async function computeAvailabilityForPairsTx(
   return pairs.map((p) => {
     const pid = String(p.productId);
     const vid = p.variantId ? String(p.variantId) : null;
-
     const totalAvailable = vid == null ? baseMap.get(pid) ?? 0 : variantMap.get(`${pid}::${vid}`) ?? 0;
-
     return { productId: pid, variantId: vid, totalAvailable };
   });
 }
 
 async function buildAvailabilityGetter(pairs: Pair[]) {
-  const rows = await computeAvailabilityForPairsTx(prisma as any, pairs, {
-    includeBase: true,
-  });
+  const rows = await computeAvailabilityForPairsTx(prisma as any, pairs, { includeBase: true });
 
   const map: Record<string, { availableQty: number; inStock: boolean }> = {};
   for (const r of rows) {
     const qty = Math.max(0, Number((r as any).totalAvailable || 0));
-    map[availKey((r as any).productId, (r as any).variantId)] = {
-      availableQty: qty,
-      inStock: qty > 0,
-    };
+    map[availKey((r as any).productId, (r as any).variantId)] = { availableQty: qty, inStock: qty > 0 };
   }
 
   for (const p of pairs) {
@@ -1894,8 +1635,7 @@ async function buildAvailabilityGetter(pairs: Pair[]) {
     if (!map[k]) map[k] = { availableQty: 0, inStock: false };
   }
 
-  return (productId: string, variantId: string | null) =>
-    map[availKey(productId, variantId)] ?? { availableQty: 0, inStock: false };
+  return (productId: string, variantId: string | null) => map[availKey(productId, variantId)] ?? { availableQty: 0, inStock: false };
 }
 
 /* =========================================================
@@ -1904,9 +1644,7 @@ async function buildAvailabilityGetter(pairs: Pair[]) {
 
 router.get("/", requireAuth, async (req, res) => {
   try {
-    if (!isAdmin((req as any).user?.role)) {
-      return res.status(403).json({ error: "Admins only" });
-    }
+    if (!isAdmin((req as any).user?.role)) return res.status(403).json({ error: "Admins only" });
 
     const limitRaw = Number(req.query.limit);
     const take = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 50;
@@ -1914,15 +1652,8 @@ router.get("/", requireAuth, async (req, res) => {
     const q = String(req.query.q ?? "").trim();
     const where: any = q
       ? {
-        OR: [
-          { id: { contains: q } },
-          {
-            user: {
-              email: { contains: q, mode: "insensitive" as const },
-            },
-          },
-        ],
-      }
+          OR: [{ id: { contains: q } }, { user: { email: { contains: q, mode: "insensitive" as const } } }],
+        }
       : {};
 
     const asNumLocal = (v: any, d = 0) => {
@@ -1945,11 +1676,7 @@ router.get("/", requireAuth, async (req, res) => {
         serviceFeeComms: true,
         serviceFeeGateway: true,
         serviceFeeTotal: true,
-
-        user: {
-          select: { email: true },
-        },
-
+        user: { select: { email: true } },
         purchaseOrders: {
           select: {
             id: true,
@@ -1982,15 +1709,7 @@ router.get("/", requireAuth, async (req, res) => {
       const payRows = await prisma.payment.findMany({
         where: { orderId: { in: orderIds } },
         orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          orderId: true,
-          status: true,
-          provider: true,
-          reference: true,
-          amount: true,
-          createdAt: true,
-        },
+        select: { id: true, orderId: true, status: true, provider: true, reference: true, amount: true, createdAt: true },
       });
 
       for (const p of payRows as any[]) {
@@ -2018,7 +1737,7 @@ router.get("/", requireAuth, async (req, res) => {
         const id = String(p.orderId);
         paidAmountByOrder[id] = (paidAmountByOrder[id] || 0) + asNumLocal(p.amount, 0);
       }
-    } catch { }
+    } catch {}
 
     const itemsByOrder: Record<string, any[]> = {};
     let allItems: any[] = [];
@@ -2034,7 +1753,6 @@ router.get("/", requireAuth, async (req, res) => {
           unitPrice: true,
           quantity: true,
           lineTotal: true,
-
           chosenSupplierProductOfferId: true,
           chosenSupplierVariantOfferId: true,
           chosenSupplierId: true,
@@ -2078,14 +1796,11 @@ router.get("/", requireAuth, async (req, res) => {
           unitPrice,
           quantity,
           lineTotal,
-
           status: itemStatus,
-
           chosenSupplierProductOfferId: it.chosenSupplierProductOfferId ?? null,
           chosenSupplierVariantOfferId: it.chosenSupplierVariantOfferId ?? null,
           chosenSupplierId: it.chosenSupplierId ?? null,
           chosenSupplierUnitPrice: it.chosenSupplierUnitPrice != null ? asNumLocal(it.chosenSupplierUnitPrice, 0) : null,
-
           selectedOptions: it.selectedOptions ?? null,
           currentAvailableQty: availableQty,
           currentInStock: inStock,
@@ -2096,19 +1811,16 @@ router.get("/", requireAuth, async (req, res) => {
     }
 
     return res.json({
-
       data: orders.map((o: any) => {
-        const oid = String(o.id); 
+        const oid = String(o.id);
         return {
           ...o,
-          // ✅ NOW actually returned
           items: itemsByOrder[oid] || [],
           payments: paymentsByOrder[oid] || [],
           paidAmount: paidAmountByOrder[oid] || 0,
           deliveryOtpVerifiedAt: (o as any).purchaseOrder?.deliveryOtpVerifiedAt ?? null,
           purchaseOrder: undefined,
-
-        }
+        };
       }),
     });
   } catch (e: any) {
@@ -2121,7 +1833,6 @@ router.get("/", requireAuth, async (req, res) => {
    GET /api/orders/mine — end user
 ========================================================= */
 
-// (unchanged from your pasted version)
 router.get("/mine", requireAuth, async (req, res) => {
   try {
     const limitRaw = Number(req.query.limit);
@@ -2182,7 +1893,6 @@ router.get("/mine", requireAuth, async (req, res) => {
         unitPrice: true,
         quantity: true,
         lineTotal: true,
-
         chosenSupplierProductOfferId: true,
         chosenSupplierVariantOfferId: true,
         chosenSupplierId: true,
@@ -2228,15 +1938,12 @@ router.get("/mine", requireAuth, async (req, res) => {
         unitPrice,
         quantity: qty,
         lineTotal,
-
         status: toShopperStatus(rawPoStatus),
         supplierStatusRaw: String(rawPoStatus || "PENDING"),
-
         chosenSupplierProductOfferId: it.chosenSupplierProductOfferId ?? null,
         chosenSupplierVariantOfferId: it.chosenSupplierVariantOfferId ?? null,
         chosenSupplierId: it.chosenSupplierId ?? null,
         chosenSupplierUnitPrice: it.chosenSupplierUnitPrice != null ? asNumLocal(it.chosenSupplierUnitPrice, 0) : null,
-
         currentAvailableQty: availableQty,
         currentInStock: inStock,
         selectedOptions: it.selectedOptions ?? null,
@@ -2251,7 +1958,6 @@ router.get("/mine", requireAuth, async (req, res) => {
       total: asNumLocal(o.total, 0),
       createdAt: o.createdAt?.toISOString?.() ?? o.createdAt,
       items: itemsByOrder[o.id] || [],
-
       serviceFeeBase: asNumLocal(o.serviceFeeBase, 0),
       serviceFeeComms: asNumLocal(o.serviceFeeComms, 0),
       serviceFeeGateway: asNumLocal(o.serviceFeeGateway, 0),
@@ -2307,7 +2013,6 @@ router.get("/summary", requireAuth, async (req, res) => {
    GET /api/orders/:id — single order
 ========================================================= */
 
-// (unchanged from your pasted version)
 router.get("/:id", requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -2397,25 +2102,6 @@ router.get("/:id", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    if (adminUser) {
-      const hasPOs = (order as any).purchaseOrders?.length > 0;
-      const latestPaidPayment = ((order as any).payments || []).find(
-        (p: any) => String(p.status) === "PAID"
-      );
-      const hasAlloc = latestPaidPayment?.allocations?.length > 0;
-
-      if (!hasPOs || (latestPaidPayment && !hasAlloc)) {
-        await prisma.$transaction(async (tx: any) => {
-          if (!hasPOs) {
-            await ensurePurchaseOrdersForOrderTx(tx, id);
-          }
-          if (latestPaidPayment && !hasAlloc) {
-            await recordSupplierAllocationsOnPaidTx(tx, String(latestPaidPayment.id), id);
-          }
-        });
-      }
-    }
-
     const asNumLocal = (v: any, d = 0) => {
       const n = Number(v);
       return Number.isFinite(n) ? n : d;
@@ -2475,13 +2161,11 @@ router.get("/:id", requireAuth, async (req, res) => {
           unitPrice: asNumLocal(it.unitPrice, 0),
           quantity: asNumLocal(it.quantity, 1),
           lineTotal: asNumLocal(it.lineTotal, asNumLocal(it.unitPrice, 0) * asNumLocal(it.quantity, 1)),
-
           status: adminUser ? String(rawPoStatus) : toShopperStatus(rawPoStatus),
           supplierStatusRaw: String(rawPoStatus),
 
           chosenSupplierProductOfferId: it.chosenSupplierProductOfferId ?? null,
           chosenSupplierVariantOfferId: it.chosenSupplierVariantOfferId ?? null,
-
           chosenSupplierId: it.chosenSupplierId ?? null,
           chosenSupplierUnitPrice: it.chosenSupplierUnitPrice != null ? asNumLocal(it.chosenSupplierUnitPrice, 0) : null,
 
@@ -2505,22 +2189,14 @@ router.get("/:id", requireAuth, async (req, res) => {
    GET /api/orders/:orderId/profit (super admin)
 ========================================================= */
 
-// (unchanged from your pasted version)
 router.get("/:orderId/profit", requireSuperAdmin, async (req, res) => {
   try {
     const { orderId } = req.params;
 
     const order = await prisma.order.findUnique({
       where: { id: orderId },
-      select: {
-        id: true,
-        total: true,
-        serviceFeeTotal: true,
-        status: true,
-        createdAt: true,
-      },
+      select: { id: true, total: true, serviceFeeTotal: true, status: true, createdAt: true },
     });
-
     if (!order) return res.status(404).json({ error: "Order not found" });
 
     const payments = await prisma.payment.findMany({
@@ -2578,10 +2254,11 @@ router.get("/:orderId/profit", requireSuperAdmin, async (req, res) => {
 });
 
 /* ===========================
-   OTP endpoints (unchanged)
+   OTP endpoints
 =========================== */
 
 const OrderOtpPurpose = z.enum(["PAY_ORDER", "CANCEL_ORDER"]);
+
 router.post("/:id/otp/request", requireAuth, async (req, res) => {
   const orderId = String(req.params.id);
   const actorId = getUserId(req);
@@ -2593,28 +2270,18 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
 
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    select: {
-      id: true,
-      userId: true,
-      user: { select: { email: true, phone: true } },
-      status: true,
-      createdAt: true,
-    },
+    select: { id: true, userId: true, user: { select: { email: true, phone: true } }, status: true, createdAt: true },
   });
   if (!order) return res.status(404).json({ error: "Order not found" });
 
   if (purpose === "PAY_ORDER") {
-    if (String(order.userId) !== String(actorId)) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
+    if (String(order.userId) !== String(actorId)) return res.status(403).json({ error: "Forbidden" });
   }
 
   if (purpose === "CANCEL_ORDER") {
     const adminOk = isAdmin((req as any).user?.role);
     const ownerOk = String(order.userId) === String(actorId);
-    if (!adminOk && !ownerOk) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
+    if (!adminOk && !ownerOk) return res.status(403).json({ error: "Forbidden" });
   }
 
   const t = now();
@@ -2627,10 +2294,7 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
   if (last?.createdAt) {
     const nextAllowed = addSeconds(last.createdAt, OTP_RESEND_COOLDOWN_SECS);
     if (nextAllowed > t) {
-      return res.status(429).json({
-        error: "Please wait before requesting another OTP",
-        retryAt: nextAllowed,
-      });
+      return res.status(429).json({ error: "Please wait before requesting another OTP", retryAt: nextAllowed });
     }
   }
 
@@ -2642,8 +2306,7 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
   const expiresAt = addSeconds(t, expiresInSec);
 
   const bindUserId = purpose === "PAY_ORDER" ? String(order.userId) : String(actorId);
-  const targetEmail =
-    purpose === "PAY_ORDER" ? order.user?.email ?? null : (req as any).user?.email ?? null;
+  const targetEmail = purpose === "PAY_ORDER" ? order.user?.email ?? null : (req as any).user?.email ?? null;
   const targetPhoneE164 =
     purpose === "PAY_ORDER"
       ? normalizeE164(order.user?.phone ?? null)
@@ -2686,55 +2349,88 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
         ? `email to ${String(targetEmail).replace(/(^.).+(@.*$)/, "$1***$2")}`
         : null;
 
-  return res.json({
-    requestId: reqRow.id,
-    expiresInSec,
-    channelHint,
-  });
+  return res.json({ requestId: reqRow.id, expiresInSec, channelHint });
+});
+
+router.post("/:id/otp/verify", requireAuth, async (req, res) => {
+  try {
+    const orderId = String(req.params.id);
+    const actorId = getUserId(req);
+    if (!actorId) return res.status(401).json({ error: "Unauthorized" });
+
+    const parsed = OrderOtpPurpose.safeParse(req.body?.purpose);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid purpose" });
+    const purpose = parsed.data;
+
+    const raw = req.body?.otp ?? req.body?.code ?? "";
+    const code = String(raw).trim();
+    if (!/^\d{6}$/.test(code)) return res.status(400).json({ error: "OTP must be 6 digits" });
+
+    const out = await prisma.$transaction(async (tx: any) => {
+      // find latest unconsumed request for this user/order/purpose
+      const row = await tx.orderOtpRequest.findFirst({
+        where: {
+          orderId,
+          purpose,
+          userId: String(actorId),
+          consumedAt: null,
+        },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, salt: true, codeHash: true, expiresAt: true, attempts: true, lockedUntil: true, verifiedAt: true },
+      });
+
+      if (!row) throw new Error("OTP request not found");
+      if (row.lockedUntil && row.lockedUntil > now()) throw new Error("OTP temporarily locked. Try again later.");
+      if (row.expiresAt && row.expiresAt <= now()) throw new Error("OTP expired");
+
+      const attempts = Number(row.attempts ?? 0);
+      if (attempts >= OTP_MAX_ATTEMPTS) {
+        const lockedUntil = addMinutes(now(), OTP_LOCK_MINS);
+        await tx.orderOtpRequest.update({ where: { id: row.id }, data: { lockedUntil } });
+        throw new Error("Too many attempts. OTP locked temporarily.");
+      }
+
+      const expected = String(row.codeHash);
+      const actual = hashOtp(code, String(row.salt));
+      if (expected !== actual) {
+        await tx.orderOtpRequest.update({ where: { id: row.id }, data: { attempts: { increment: 1 } } });
+        throw new Error("Invalid OTP");
+      }
+
+      await tx.orderOtpRequest.update({ where: { id: row.id }, data: { verifiedAt: now() } });
+      return { otpToken: String(row.id) };
+    });
+
+    return res.json({ ok: true, otpToken: out.otpToken });
+  } catch (e: any) {
+    return res.status(400).json({ ok: false, error: e?.message || "OTP verification failed" });
+  }
 });
 
 async function assertValidOtpTokenTx(
   tx: any,
-  args: {
-    orderId: string;
-    purpose: "PAY_ORDER" | "CANCEL_ORDER";
-    otpToken: string;
-    actorId: string;
-    actorRole: string;
-  }
+  args: { orderId: string; purpose: "PAY_ORDER" | "CANCEL_ORDER"; otpToken: string; actorId: string; actorRole: string }
 ) {
   const { orderId, purpose, otpToken, actorId } = args;
 
   const row = await tx.orderOtpRequest.findFirst({
-    where: {
-      id: otpToken,
-      orderId,
-      purpose,
-      verifiedAt: { not: null },
-    },
+    where: { id: otpToken, orderId, purpose, verifiedAt: { not: null } },
     select: { id: true, userId: true, expiresAt: true, consumedAt: true },
   });
 
   if (!row) throw new Error("OTP token invalid");
   if (row.consumedAt) throw new Error("OTP token already used");
   if (row.expiresAt && row.expiresAt <= now()) throw new Error("OTP token expired");
+  if (String(row.userId) !== String(actorId)) throw new Error("OTP token not valid for this user");
 
-  if (String(row.userId) !== String(actorId)) {
-    throw new Error("OTP token not valid for this user");
-  }
-
-  await tx.orderOtpRequest.update({
-    where: { id: row.id },
-    data: { consumedAt: now() },
-  });
-
+  await tx.orderOtpRequest.update({ where: { id: row.id }, data: { consumedAt: now() } });
   return true;
 }
 
 function requireOtp(purpose: "PAY_ORDER" | "CANCEL_ORDER") {
   return async (req: any, res: any, next: any) => {
     try {
-      const orderId = String(req.params.id);
+      const orderId = String(req.params.orderId ?? req.params.id);
       const otpToken = String(req.header("x-otp-token") ?? "").trim();
       if (!otpToken) return res.status(401).json({ error: "Missing x-otp-token" });
 
@@ -2758,16 +2454,168 @@ function requireOtp(purpose: "PAY_ORDER" | "CANCEL_ORDER") {
   };
 }
 
-router.post("/:id/otp/verify", requireAuth, async (req, res) => {
-  // unchanged (your pasted code continues)
-  // ...
-  return res.status(501).json({ error: "Paste remainder if you want me to reflow it exactly." });
-});
+/* =========================================================
+   POST /api/orders/:orderId/cancel
+   - Shopper/admin cancel their order (OTP guarded via x-otp-token)
+   - Supplier cancel their own PO (OTP guarded via x-otp-token via cancel-otp endpoints)
+========================================================= */
 
-// /api/orders
-router.post("/:orderId/cancel", requireAuth, async (req, res) => {
-  // unchanged (your pasted code continues)
-  return res.status(501).json({ error: "Paste remainder if you want me to reflow it exactly." });
+router.post("/:orderId/cancel", requireAuth, requireOtp("CANCEL_ORDER"), async (req: any, res) => {
+  try {
+    const userId = String(req.user?.id ?? "");
+    const role = String(req.user?.role ?? "");
+    const orderId = String(req.params.orderId);
+
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const adminOk = isAdmin(role);
+    const supplierOk = isSupplier(role);
+
+    const out = await prisma.$transaction(async (tx: any) => {
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        select: { id: true, userId: true, status: true, total: true, user: { select: { id: true, email: true } } },
+      });
+      if (!order) throw new Error("Order not found");
+
+      // permission:
+      if (!adminOk && !supplierOk && String(order.userId) !== String(userId)) {
+        throw new Error("Forbidden");
+      }
+
+      // get POs
+      const pos = await tx.purchaseOrder.findMany({
+        where: { orderId },
+        select: { id: true, supplierId: true, status: true },
+      });
+
+      if (!pos.length) {
+        // if no POs exist, cancel order only
+        await tx.order.update({ where: { id: orderId }, data: { status: "CANCELLED" } });
+        await logOrderActivityTx(tx, orderId, ACT.STATUS_CHANGE as any, "Order cancelled");
+        return { mode: "ORDER_ONLY", orderId, cancelled: true, purchaseOrdersCancelled: 0 };
+      }
+
+      if (supplierOk && !adminOk) {
+        // supplier cancels only their own PO(s)
+        const supplier = await tx.supplier.findFirst({ where: { userId }, select: { id: true, name: true } });
+        if (!supplier?.id) throw new Error("Supplier access required");
+
+        const myPos = pos.filter((po: any) => String(po.supplierId) === String(supplier.id));
+        if (!myPos.length) throw new Error("No purchase order for this supplier");
+
+        for (const po of myPos) {
+          await tx.purchaseOrder.update({
+            where: { id: po.id },
+            data: { status: "CANCELLED" as any },
+          });
+
+          await logOrderActivityTx(
+            tx,
+            orderId,
+            ACT.STATUS_CHANGE as any,
+            `Purchase order ${po.id} cancelled by supplier`
+          );
+
+          // ✅ notify this supplier (in case multiple supplier users / staff view notifications)
+          await notifyOneSupplierForPoTx(
+            tx,
+            { orderId, purchaseOrderId: po.id, supplierId: supplier.id },
+            {
+              type: "PURCHASE_ORDER_CANCELLED",
+              title: "Purchase order cancelled",
+              body: `Purchase order ${po.id} for order ${orderId} was cancelled.`,
+            }
+          );
+        }
+
+        // if ALL POs are now cancelled, cancel the whole order
+        const refreshed = await tx.purchaseOrder.findMany({
+          where: { orderId },
+          select: { status: true },
+        });
+        const allCancelled = refreshed.every((x: any) => String(x.status).toUpperCase() === "CANCELLED");
+        if (allCancelled) {
+          await tx.order.update({ where: { id: orderId }, data: { status: "CANCELLED" as any } });
+          await logOrderActivityTx(tx, orderId, ACT.STATUS_CHANGE as any, "Order cancelled (all POs cancelled)");
+        }
+
+        // notify shopper + admins about supplier cancellation
+        try {
+          await notifyUser(
+            String(order.userId),
+            {
+              type: "PURCHASE_ORDER_STATUS_UPDATE",
+              title: "Order update",
+              body: `A supplier cancelled part of your order ${orderId}.`,
+              data: { orderId },
+            },
+            tx
+          );
+
+          await notifyAdmins(
+            {
+              type: "PURCHASE_ORDER_STATUS_UPDATE",
+              title: "Supplier cancelled PO",
+              body: `A supplier cancelled a purchase order for order ${orderId}.`,
+              data: { orderId },
+            },
+            tx
+          );
+        } catch (e) {
+          console.error("cancel notify (supplier) failed:", e);
+        }
+
+        return { mode: "SUPPLIER_PO", orderId, cancelled: true, purchaseOrdersCancelled: myPos.length };
+      }
+
+      // admin or shopper: cancel entire order + all POs
+      await tx.order.update({ where: { id: orderId }, data: { status: "CANCELLED" as any } });
+      await tx.purchaseOrder.updateMany({ where: { orderId }, data: { status: "CANCELLED" as any } });
+
+      await logOrderActivityTx(tx, orderId, ACT.STATUS_CHANGE as any, "Order cancelled");
+
+      // ✅ notify ALL suppliers on this order
+      await notifySuppliersForOrderTx(tx, orderId, {
+        type: "PURCHASE_ORDER_CANCELLED",
+        title: "Order cancelled",
+        body: `Order ${orderId} was cancelled.`,
+      });
+
+      // notify shopper + admins
+      try {
+        await notifyUser(
+          String(order.userId),
+          {
+            type: "ORDER_CANCELED",
+            title: "Order cancelled",
+            body: `Your order ${orderId} has been cancelled.`,
+            data: { orderId },
+          },
+          tx
+        );
+
+        await notifyAdmins(
+          {
+            type: "ORDER_CANCELED",
+            title: "Order cancelled",
+            body: `Order ${orderId} was cancelled.`,
+            data: { orderId },
+          },
+          tx
+        );
+      } catch (e) {
+        console.error("cancel notify failed:", e);
+      }
+
+      return { mode: "ORDER_ALL", orderId, cancelled: true, purchaseOrdersCancelled: pos.length };
+    });
+
+    return res.json({ ok: true, ...out });
+  } catch (e: any) {
+    console.error("cancel order failed:", e);
+    return res.status(400).json({ ok: false, error: e?.message || "Failed to cancel order" });
+  }
 });
 
 /**
@@ -2781,10 +2629,7 @@ router.post("/:orderId/cancel-otp/request", requireAuth, async (req: any, res) =
     const { orderId } = req.params;
 
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    if (!isSupplier(role) && !isAdmin(role))
-      return res.status(403).json({ error: "Forbidden" });
-
-    // ... your supplierId + PO checks ...
+    if (!isSupplier(role) && !isAdmin(role)) return res.status(403).json({ error: "Forbidden" });
 
     const out = await prisma.$transaction(async (tx: any) => {
       return requestOrderOtpForPurposeTx(tx as any, {
@@ -2801,20 +2646,11 @@ router.post("/:orderId/cancel-otp/request", requireAuth, async (req: any, res) =
     const status = Number(e?.status) || 500;
 
     if (status === 429) {
-      console.warn("Cancel OTP cooldown:", e?.message, {
-        retryAt: e?.retryAt,
-        orderId: req.params.orderId,
-      });
+      console.warn("Cancel OTP cooldown:", e?.message, { retryAt: e?.retryAt, orderId: req.params.orderId });
     } else if (status >= 400 && status < 500) {
-      console.warn("Cancel OTP client error:", e?.message, {
-        status,
-        orderId: req.params.orderId,
-      });
+      console.warn("Cancel OTP client error:", e?.message, { status, orderId: req.params.orderId });
     } else {
-      console.error(
-        "POST /api/orders/:orderId/cancel-otp/request failed:",
-        e
-      );
+      console.error("POST /api/orders/:orderId/cancel-otp/request failed:", e);
     }
 
     return res.status(status).json({
@@ -2836,29 +2672,15 @@ router.post("/:orderId/cancel-otp/verify", requireAuth, async (req: any, res) =>
   const role = req.user?.role;
   const { orderId } = req.params;
 
-  if (!userId)
-    return res
-      .status(200)
-      .json({ ok: false, code: "UNAUTHORIZED", message: "Unauthorized" });
-  if (!isSupplier(role) && !isAdmin(role)) {
-    return res
-      .status(200)
-      .json({ ok: false, code: "FORBIDDEN", message: "Forbidden" });
-  }
+  if (!userId) return res.status(200).json({ ok: false, code: "UNAUTHORIZED", message: "Unauthorized" });
+  if (!isSupplier(role) && !isAdmin(role)) return res.status(200).json({ ok: false, code: "FORBIDDEN", message: "Forbidden" });
 
   const raw = req.body?.otp ?? req.body?.code ?? "";
   const otp = String(raw).trim();
-
-  const requestId = req.body?.requestId
-    ? String(req.body.requestId).trim()
-    : undefined;
+  const requestId = req.body?.requestId ? String(req.body.requestId).trim() : undefined;
 
   if (!/^\d{6}$/.test(otp)) {
-    return res.status(200).json({
-      ok: false,
-      code: "OTP_FORMAT",
-      message: "OTP must be 6 digits",
-    });
+    return res.status(200).json({ ok: false, code: "OTP_FORMAT", message: "OTP must be 6 digits" });
   }
 
   try {
@@ -2872,16 +2694,11 @@ router.post("/:orderId/cancel-otp/verify", requireAuth, async (req: any, res) =>
       });
     });
 
-    return res.json({
-      ok: true,
-      otpToken: out.otpToken,
-      requestId: out.requestId,
-    });
+    return res.json({ ok: true, otpToken: out.otpToken, requestId: out.requestId });
   } catch (e: any) {
     const isOtpFailure =
       !!e?.code &&
-      (String(e.code).startsWith("OTP_") ||
-        ["UNAUTHORIZED", "FORBIDDEN"].includes(String(e.code)));
+      (String(e.code).startsWith("OTP_") || ["UNAUTHORIZED", "FORBIDDEN"].includes(String(e.code)));
 
     if (isOtpFailure) {
       return res.status(200).json({
@@ -2891,19 +2708,13 @@ router.post("/:orderId/cancel-otp/verify", requireAuth, async (req: any, res) =>
         ...(e?.requestId ? { requestId: e.requestId } : {}),
         ...(e?.expiresAt ? { expiresAt: e.expiresAt } : {}),
         ...(e?.attempts != null ? { attempts: e.attempts } : {}),
-        ...(e?.remainingAttempts != null
-          ? { remainingAttempts: e.remainingAttempts }
-          : {}),
+        ...(e?.remainingAttempts != null ? { remainingAttempts: e.remainingAttempts } : {}),
         ...(e?.lockedUntil ? { lockedUntil: e.lockedUntil } : {}),
       });
     }
 
     const status = Number(e?.status) || 500;
-    return res.status(status).json({
-      ok: false,
-      code: e?.code || "OTP_FAILED",
-      message: e?.message || "OTP verification failed",
-    });
+    return res.status(status).json({ ok: false, code: e?.code || "OTP_FAILED", message: e?.message || "OTP verification failed" });
   }
 });
 

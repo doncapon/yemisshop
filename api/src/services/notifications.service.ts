@@ -77,23 +77,49 @@ export async function notifyAdmins(payload: NotificationPayload, tx?: Tx) {
   );
 }
 
-/** Convenience: notify the user account linked to a supplier. */
+// services/notifications.service.ts
+type Db = typeof prisma; // or PrismaClient
+// allow tx or prisma
+function dbClient(tx?: any) {
+  return tx ?? prisma;
+}
+
 export async function notifySupplierBySupplierId(
   supplierId: string,
-  payload: NotificationPayload,
-  tx?: Tx
+  payload: { type: string; title: string; body: string; data?: any },
+  tx?: any
 ) {
-  const db = tx ?? prisma;
+  const db = dbClient(tx);
 
+  // IMPORTANT: supplier must have userId (or your supplier notification routing must map differently)
   const supplier = await db.supplier.findUnique({
     where: { id: supplierId },
-    select: { userId: true },
+    select: { id: true, userId: true, name: true },
   });
 
-  if (!supplier?.userId) return;
+  if (!supplier?.userId) {
+    // Don't silently succeed
+    throw Object.assign(new Error(`Supplier ${supplierId} has no userId to notify.`), {
+      code: "SUPPLIER_NO_USER",
+      supplierId,
+    });
+  }
 
-  await notifyUser(supplier.userId, payload, db);
+  // create in-app notification
+  await db.notification.create({
+    data: {
+      userId: supplier.userId,
+      type: payload.type,
+      title: payload.title,
+      body: payload.body,
+      data: payload.data ?? {},
+      readAt: null,
+    } as any,
+  });
+
+  return { ok: true };
 }
+
 
 /* ------------------------------ Small helpers ----------------------------- */
 
