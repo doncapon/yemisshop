@@ -1,8 +1,9 @@
+// api/src/routes/productVariants.ts
 import { Router } from "express";
-import { prisma } from '../lib/prisma.js'
-
+import { prisma } from "../lib/prisma.js";
 
 function toNumOrNull(n: any): number | null {
+  if (n === "" || n == null) return null;
   const v = Number(n);
   return Number.isFinite(v) ? v : null;
 }
@@ -10,13 +11,16 @@ function toNumOrNull(n: any): number | null {
 type VariantOptionIn = {
   attributeId: string;
   valueId: string;
-  priceBump?: number | null; // may be undefined / null / number
+  // ✅ priceBump removed completely
 };
 
 type VariantIn = {
   id?: string | null;
   sku?: string | null;
+
+  // ✅ Full variant price only (no bump math)
   price?: number | null;
+
   inStock?: boolean | null;
   imagesJson?: string[] | null;
   options?: VariantOptionIn[];
@@ -31,26 +35,39 @@ router.patch("/:variantId", async (req, res) => {
   try {
     const data: any = {
       ...(sku !== undefined ? { sku } : {}),
-      ...(price !== undefined ? { price: toNumOrNull(price) } : {}),
+      // ✅ Prisma field is retailPrice (mapped to DB column "price")
+      ...(price !== undefined ? { retailPrice: toNumOrNull(price) } : {}),
       ...(inStock !== undefined ? { inStock } : {}),
       ...(imagesJson !== undefined ? { imagesJson } : {}),
     };
 
-    const result = await prisma.$transaction(async (tx: { productVariant: { update: (arg0: { where: { id: string; }; data: any; }) => any; findUnique: (arg0: { where: { id: string; }; include: { options: { include: { attribute: boolean; value: { select: { id: boolean; name: boolean; code: boolean; }; }; }; }; }; }) => any; }; productVariantOption: { findMany: (arg0: { where: { variantId: string; }; select: { id: boolean; attributeId: boolean; valueId: boolean; }; }) => any; deleteMany: (arg0: { where: { id: { in: any; }; }; }) => any; upsert: (arg0: { where: any; create: { variantId: string; attributeId: string; valueId: string; priceBump: number | null; }; update: { priceBump: number | null; }; }) => any; }; }) => {
+    const result = await prisma.$transaction(async (tx: any) => {
       await tx.productVariant.update({ where: { id: variantId }, data });
 
       if (Array.isArray(options)) {
-        const keep = new Set(options.map((o) => `${o.attributeId}:${o.valueId}`));
+        // keep only valid option pairs
+        const keep = new Set(
+          options
+            .filter((o) => o?.attributeId && o?.valueId)
+            .map((o) => `${String(o.attributeId)}:${String(o.valueId)}`)
+        );
 
         const stale = await tx.productVariantOption.findMany({
           where: { variantId },
           select: { id: true, attributeId: true, valueId: true },
         });
 
-        const toDelete = stale.filter((o: { attributeId: any; valueId: any; }) => !keep.has(`${o.attributeId}:${o.valueId}`)).map((o: { id: any; }) => o.id);
-        if (toDelete.length) await tx.productVariantOption.deleteMany({ where: { id: { in: toDelete } } });
+        const toDelete = stale
+          .filter((o: any) => !keep.has(`${String(o.attributeId)}:${String(o.valueId)}`))
+          .map((o: any) => o.id);
+
+        if (toDelete.length) {
+          await tx.productVariantOption.deleteMany({ where: { id: { in: toDelete } } });
+        }
 
         for (const o of options) {
+          if (!o?.attributeId || !o?.valueId) continue;
+
           await tx.productVariantOption.upsert({
             where: {
               variantId_attributeId_valueId: {
@@ -63,9 +80,11 @@ router.patch("/:variantId", async (req, res) => {
               variantId,
               attributeId: o.attributeId,
               valueId: o.valueId,
-              priceBump: toNumOrNull(o.priceBump),
+              // ✅ no priceBump / no bump fields written
             },
-            update: { priceBump: toNumOrNull(o.priceBump) },
+            update: {
+              // ✅ nothing to update (still valid upsert)
+            },
           });
         }
       }
@@ -83,11 +102,10 @@ router.patch("/:variantId", async (req, res) => {
       });
     });
 
-    res.json({ data: result });
+    return res.json({ data: result });
   } catch (e: any) {
-    res.status(500).json({ error: "Failed to update variant", detail: e?.message });
+    return res.status(500).json({ error: "Failed to update variant", detail: e?.message });
   }
 });
-
 
 export default router;

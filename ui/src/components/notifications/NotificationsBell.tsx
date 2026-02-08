@@ -36,6 +36,8 @@ type Props = {
 
 export default function NotificationsBell({ placement = "navbar", className = "" }: Props) {
   const user = useAuthStore((s: any) => s.user);
+  const userId = user?.id as string | undefined;
+
   const qc = useQueryClient();
 
   const [open, setOpen] = React.useState(false);
@@ -46,18 +48,6 @@ export default function NotificationsBell({ placement = "navbar", className = ""
 
   // Wrapper ref for click-outside detection
   const popoverRef = React.useRef<HTMLDivElement | null>(null);
-
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["notifications"],
-    enabled: !!user?.id,
-    staleTime: 15_000,
-    refetchInterval: 30_000,
-    queryFn: async () => {
-      const { data } = await api.get("/api/notifications", { params: { limit: 20 } });
-      const payload = (data as any)?.data ?? data ?? {};
-      return payload as NotificationsResponse;
-    },
-  });
 
   /* -------- toast timer helpers (5s, pause on hover) -------- */
 
@@ -70,29 +60,94 @@ export default function NotificationsBell({ placement = "navbar", className = ""
 
   const scheduleToastHide = React.useCallback(() => {
     clearToastTimer();
-    // only schedule if there is a toast currently visible
     toastTimeoutRef.current = window.setTimeout(() => {
       setInlineToast(null);
       toastTimeoutRef.current = null;
     }, 5000);
   }, [clearToastTimer]);
 
-  // Show toast when a NEW unread notification appears
+  /* -------- query -------- */
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["notifications", userId], // ✅ per-user cache
+    enabled: !!userId,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+    queryFn: async () => {
+      const { data } = await api.get("/api/notifications", { params: { limit: 20 } });
+      const payload = (data as any)?.data ?? data ?? {};
+      return payload as NotificationsResponse;
+    },
+  });
+
+  /* -------- "do not toast on refresh" logic --------
+     - We treat the first successful fetch as a baseline.
+     - Optionally show ONE toast only on a fresh login session (not refresh).
+  */
+
   const prevIdsRef = React.useRef<Set<string>>(new Set());
+  const didInitRef = React.useRef(false);
+
+  // Session flag: allow a single "login toast" per session, but NOT on refresh
+  const loginSessionKey = React.useMemo(() => {
+    if (!userId) return null;
+    return `notif_login_toast_shown:${userId}`;
+  }, [userId]);
+
   React.useEffect(() => {
-    if (!data?.items) return;
+    // When user changes, reset baseline + close dropdown/toast
+    didInitRef.current = false;
+    prevIdsRef.current = new Set();
+    setOpen(false);
+    setInlineToast(null);
+    clearToastTimer();
+  }, [userId, clearToastTimer]);
 
-    const currentIds = new Set(data.items.map((n) => n.id));
+  React.useEffect(() => {
+    if (!data?.items || !userId) return;
+
+    const items = data.items;
+    const currentIds = new Set(items.map((n) => n.id));
+
+    // Determine whether we should show the "login toast" once per session.
+    const canShowLoginToast =
+      !!loginSessionKey && sessionStorage.getItem(loginSessionKey) !== "1";
+
+    // 1) First load: set baseline so refresh doesn't trigger "new" toast
+    if (!didInitRef.current) {
+      prevIdsRef.current = currentIds;
+      didInitRef.current = true;
+
+      // Optional: show ONE toast only right after a *fresh login session*
+      // (won't happen on refresh because sessionStorage persists through refresh)
+      if (canShowLoginToast) {
+        // pick the newest unread notification (if any)
+        const newestUnread = [...items]
+          .filter((n) => !n.readAt)
+          .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0];
+
+        if (newestUnread) {
+          setInlineToast(newestUnread);
+          scheduleToastHide();
+        }
+
+        sessionStorage.setItem(loginSessionKey!, "1");
+      }
+
+      return;
+    }
+
+    // 2) Subsequent refetches: toast only for genuinely new unread notifications
     const prevIds = prevIdsRef.current;
+    const newUnread = items.find((n) => !prevIds.has(n.id) && !n.readAt);
 
-    const newUnread = data.items.find((n) => !prevIds.has(n.id) && !n.readAt);
     if (newUnread) {
       setInlineToast(newUnread);
-      scheduleToastHide(); // 🔁 start 5s timer whenever a new toast appears
+      scheduleToastHide();
     }
 
     prevIdsRef.current = currentIds;
-  }, [data?.items, scheduleToastHide]);
+  }, [data?.items, userId, loginSessionKey, scheduleToastHide]);
 
   // Cleanup on unmount
   React.useEffect(() => {
@@ -133,13 +188,14 @@ export default function NotificationsBell({ placement = "navbar", className = ""
       else if (ids.length) await api.post("/api/notifications/read", { ids });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["notifications"] });
+      qc.invalidateQueries({ queryKey: ["notifications", userId] });
     },
   });
 
-  if (!user?.id) return null;
+  if (!userId) return null;
 
-  const unreadCount = data?.unreadCount ?? data?.items?.filter((n) => !n.readAt).length ?? 0;
+  const unreadCount =
+    data?.unreadCount ?? data?.items?.filter((n) => !n.readAt).length ?? 0;
   const items = data?.items ?? [];
 
   const handleMarkAllRead = () => {
@@ -212,14 +268,16 @@ export default function NotificationsBell({ placement = "navbar", className = ""
                     return (
                       <li
                         key={n.id}
-                        className={`px-3 py-2.5 text-xs cursor-pointer hover:bg-zinc-50 ${unread ? "bg-fuchsia-50/60" : "bg-white"
-                          }`}
+                        className={`px-3 py-2.5 text-xs cursor-pointer hover:bg-zinc-50 ${
+                          unread ? "bg-fuchsia-50/60" : "bg-white"
+                        }`}
                         onClick={() => handleItemClick(n)}
                       >
                         <div className="flex items-start gap-2">
                           <div
-                            className={`mt-[3px] h-2 w-2 rounded-full ${unread ? "bg-fuchsia-500" : "bg-zinc-300"
-                              }`}
+                            className={`mt-[3px] h-2 w-2 rounded-full ${
+                              unread ? "bg-fuchsia-500" : "bg-zinc-300"
+                            }`}
                           />
                           <div className="min-w-0 flex-1">
                             <div className="font-semibold text-zinc-800 truncate">{n.title}</div>
@@ -241,41 +299,39 @@ export default function NotificationsBell({ placement = "navbar", className = ""
         )}
       </div>
 
-      {/* Inline toast for newest notification (slightly bigger & clearer) */}
-    {inlineToast && (
-  <div
-    // moved from bottom-right to a bit down from the top-right
-    className="fixed top-24 right-6 z-50 max-w-sm md:max-w-md"
-    onMouseEnter={clearToastTimer}   // pause auto-hide on hover
-    onMouseLeave={scheduleToastHide} // resume 5s timer on leave
-  >
-    <div className="rounded-2xl border border-zinc-200 bg-white/95 shadow-xl px-4 py-3.5 md:px-5 md:py-4">
-      <div className="flex items-start gap-3">
-        <div className="mt-[4px] h-2.5 w-2.5 rounded-full bg-fuchsia-500 flex-shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-zinc-900 truncate">
-            {inlineToast.title}
-          </div>
-          <div className="mt-1 text-[13px] leading-snug text-zinc-800 line-clamp-4">
-            {inlineToast.body}
+      {/* Inline toast for newest notification */}
+      {inlineToast && (
+        <div
+          className="fixed top-24 right-6 z-50 max-w-sm md:max-w-md"
+          onMouseEnter={clearToastTimer}
+          onMouseLeave={scheduleToastHide}
+        >
+          <div className="rounded-2xl border border-zinc-200 bg-white/95 shadow-xl px-4 py-3.5 md:px-5 md:py-4">
+            <div className="flex items-start gap-3">
+              <div className="mt-[4px] h-2.5 w-2.5 rounded-full bg-fuchsia-500 flex-shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-zinc-900 truncate">
+                  {inlineToast.title}
+                </div>
+                <div className="mt-1 text-[13px] leading-snug text-zinc-800 line-clamp-4">
+                  {inlineToast.body}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  clearToastTimer();
+                  setInlineToast(null);
+                }}
+                className="ml-2 text-xs text-zinc-400 hover:text-zinc-600"
+                aria-label="Close notification preview"
+              >
+                ×
+              </button>
+            </div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            clearToastTimer();
-            setInlineToast(null);
-          }}
-          className="ml-2 text-xs text-zinc-400 hover:text-zinc-600"
-          aria-label="Close notification preview"
-        >
-          ×
-        </button>
-      </div>
-    </div>
-  </div>
-)}
-
+      )}
     </>
   );
 }

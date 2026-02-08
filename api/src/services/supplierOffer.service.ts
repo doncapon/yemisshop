@@ -1,17 +1,26 @@
 // src/modules/supplierOffer/supplierOffer.service.ts
-import { prisma } from '../lib/prisma.js';
-import { syncProductInStockCacheTx } from './inventory.service.js';
+import { prisma } from "../lib/prisma.js";
+import { syncProductInStockCacheTx } from "./inventory.service.js";
 
 type UpdateOfferInput = {
-  price?: number;               // legacy SupplierOffer.offerPrice
+  /**
+   * Back-compat: some callers still send `price`.
+   * - BASE: mapped to SupplierProductOffer.basePrice
+   * - VARIANT: mapped to SupplierVariantOffer.unitPrice
+   * - LEGACY (if your old table still exists): mapped to supplierOffer.offerPrice
+   */
+  price?: number;
+
   currency?: string;
   isActive?: boolean;
   availableQty?: number;
   leadDays?: number | null;
 
-  // optional: allow bump updates directly if caller is variant-aware
-  priceBump?: number;           // supplierVariantOffer.priceBump
-  basePrice?: number;           // supplierProductOffer.basePrice
+  // explicit base price (preferred for base offers)
+  basePrice?: number;
+
+  // explicit variant price (preferred for variant offers)
+  variantPrice?: number;
 };
 
 type ParsedOfferId =
@@ -42,9 +51,9 @@ function computeInStockFromQty(qty: any): boolean | undefined {
 /**
  * Updates an offer row by id.
  * Supports:
- * - id="base:xxx"   -> supplierProductOffer (basePrice)
- * - id="variant:yy" -> supplierVariantOffer (priceBump)
- * - id="zz"         -> legacy supplierOffer (offerPrice)
+ * - id="base:xxx"   -> SupplierProductOffer (basePrice)
+ * - id="variant:yy" -> SupplierVariantOffer (unitPrice)
+ * - id="zz"         -> legacy supplierOffer (offerPrice) if you still have it
  *
  * Always syncs product in-stock cache after changes.
  */
@@ -52,7 +61,7 @@ export async function updateSupplierOffer(id: string, data: UpdateOfferInput) {
   const parsed = parseOfferId(id);
 
   return prisma.$transaction(async (tx: any) => {
-    // ---- BASE OFFER (supplierProductOffer) ----
+    // ---- BASE OFFER (SupplierProductOffer) ----
     if (parsed.model === "BASE") {
       const current = await tx.supplierProductOffer.findUnique({
         where: { id: parsed.id },
@@ -61,16 +70,19 @@ export async function updateSupplierOffer(id: string, data: UpdateOfferInput) {
       if (!current) throw new Error("Offer not found");
 
       const nextQty =
-        data.availableQty != null ? Math.trunc(asFiniteNumber(data.availableQty, current.availableQty)!) : undefined;
+        data.availableQty != null
+          ? Math.trunc(asFiniteNumber(data.availableQty, current.availableQty)!)
+          : undefined;
+
+      const incomingBasePrice =
+        data.basePrice != null ? data.basePrice : data.price != null ? data.price : undefined;
 
       const updated = await tx.supplierProductOffer.update({
         where: { id: parsed.id },
         data: {
-          ...(data.basePrice != null
-            ? { basePrice: asFiniteNumber(data.basePrice, 0) ?? 0 }
-            : data.price != null
-              ? { basePrice: asFiniteNumber(data.price, 0) ?? 0 } // allow old callers that send `price`
-              : {}),
+          ...(incomingBasePrice != null
+            ? { basePrice: asFiniteNumber(incomingBasePrice, 0) ?? 0 }
+            : {}),
 
           ...(data.currency != null ? { currency: data.currency } : {}),
           ...(data.isActive != null ? { isActive: !!data.isActive } : {}),
@@ -84,12 +96,10 @@ export async function updateSupplierOffer(id: string, data: UpdateOfferInput) {
       });
 
       await syncProductInStockCacheTx(tx, updated.productId);
-
-      // keep your external API stable: return original id format
       return { ...updated, id: `base:${updated.id}` };
     }
 
-    // ---- VARIANT OFFER (supplierVariantOffer) ----
+    // ---- VARIANT OFFER (SupplierVariantOffer) ----
     if (parsed.model === "VARIANT") {
       const current = await tx.supplierVariantOffer.findUnique({
         where: { id: parsed.id },
@@ -98,16 +108,19 @@ export async function updateSupplierOffer(id: string, data: UpdateOfferInput) {
       if (!current) throw new Error("Offer not found");
 
       const nextQty =
-        data.availableQty != null ? Math.trunc(asFiniteNumber(data.availableQty, current.availableQty)!) : undefined;
+        data.availableQty != null
+          ? Math.trunc(asFiniteNumber(data.availableQty, current.availableQty)!)
+          : undefined;
+
+      const incomingVariantPrice =
+        data.variantPrice != null ? data.variantPrice : data.price != null ? data.price : undefined;
 
       const updated = await tx.supplierVariantOffer.update({
         where: { id: parsed.id },
         data: {
-          ...(data.priceBump != null
-            ? { priceBump: asFiniteNumber(data.priceBump, 0) ?? 0 }
-            : data.price != null
-              ? { priceBump: asFiniteNumber(data.price, 0) ?? 0 } // allow old callers that send `price`
-              : {}),
+          ...(incomingVariantPrice != null
+            ? { unitPrice: asFiniteNumber(incomingVariantPrice, 0) ?? 0 }
+            : {}),
 
           ...(data.currency != null ? { currency: data.currency } : {}),
           ...(data.isActive != null ? { isActive: !!data.isActive } : {}),
@@ -117,16 +130,22 @@ export async function updateSupplierOffer(id: string, data: UpdateOfferInput) {
           // keep inStock consistent with qty when qty is explicitly updated
           ...(nextQty != null ? { inStock: nextQty > 0 } : {}),
         },
-        select: { id: true, productId: true, availableQty: true, inStock: true, isActive: true, variantId: true },
+        select: {
+          id: true,
+          productId: true,
+          availableQty: true,
+          inStock: true,
+          isActive: true,
+          variantId: true,
+        },
       });
 
       await syncProductInStockCacheTx(tx, updated.productId);
-
       return { ...updated, id: `variant:${updated.id}` };
     }
 
     // ---- LEGACY OFFER (supplierOffer) ----
-    // Keep this for backwards compatibility while you migrate.
+    // Keep this only if you still have the legacy table in your DB.
     const current = await tx.supplierOffer.findUnique({
       where: { id: parsed.id },
       select: { id: true, productId: true, availableQty: true },
@@ -134,7 +153,9 @@ export async function updateSupplierOffer(id: string, data: UpdateOfferInput) {
     if (!current) throw new Error("Offer not found");
 
     const nextQty =
-      data.availableQty != null ? Math.trunc(asFiniteNumber(data.availableQty, current.availableQty)!) : undefined;
+      data.availableQty != null
+        ? Math.trunc(asFiniteNumber(data.availableQty, current.availableQty)!)
+        : undefined;
 
     const nextInStock = computeInStockFromQty(nextQty);
 

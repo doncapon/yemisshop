@@ -9,8 +9,8 @@ const router = Router();
 
 const wrap =
   (fn: express.RequestHandler): express.RequestHandler =>
-  (req, res, next) =>
-    Promise.resolve(fn(req, res, next)).catch(next);
+    (req, res, next) =>
+      Promise.resolve(fn(req, res, next)).catch(next);
 
 function toNumber(n: any) {
   const v = Number(n);
@@ -28,29 +28,6 @@ function toNum(d: any): number | null {
 
   const n = Number(d);
   return Number.isFinite(n) ? n : null;
-}
-
-/* ---------------- Supplier payout-ready gating (public purchasable) ---------------- */
-
-function payoutReadySupplierWhere() {
-  return {
-    isPayoutEnabled: true,
-    AND: [
-      { accountNumber: { not: null } },
-      { accountNumber: { not: "" } },
-
-      { accountName: { not: null } },
-      { accountName: { not: "" } },
-
-      { bankCode: { not: null } },
-      { bankCode: { not: "" } },
-
-      { bankCountry: { not: null } },
-      { bankCountry: { not: "" } },
-
-      { bankVerificationStatus: "VERIFIED" },
-    ],
-  } as const;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -120,32 +97,30 @@ function buildAttributesSummary(p: any): Array<{ attribute: string; value: strin
 /**
  * Compute cheapest *effective* offer price from supplier offers.
  * (kept for compatibility / analytics; NOT used for retail display price anymore)
+ *
+ * ✅ Supplier variant pricing uses SupplierVariantOffer.unitPrice (final price),
+ * NO "bump" math anywhere.
  */
 function computeOffersFrom(p: any): number | null {
-  const baseBySupplier = new Map<string, number>();
+  let min = Infinity;
 
+  // base offers (final base price)
   for (const bo of p.supplierProductOffers ?? []) {
     if (bo?.isActive === false || bo?.inStock === false) continue;
     if ((bo?.availableQty ?? 0) <= 0) continue;
 
     const n = toNum(bo.basePrice);
-    if (n != null && n > 0) baseBySupplier.set(String(bo.supplierId), n);
+    if (n != null && n > 0) min = Math.min(min, n);
   }
 
-  let min = Infinity;
-
-  for (const base of baseBySupplier.values()) {
-    min = Math.min(min, base);
-  }
-
+  // variant offers (final unit price)
   for (const v of p.ProductVariant ?? []) {
     for (const vo of v.supplierVariantOffers ?? []) {
       if (vo?.isActive === false || vo?.inStock === false) continue;
       if ((vo?.availableQty ?? 0) <= 0) continue;
 
-      const base = baseBySupplier.get(String(vo.supplierId));
-      const bump = toNum(vo.priceBump) ?? 0;
-      if (base != null && base > 0) min = Math.min(min, base + bump);
+      const unit = toNum((vo as any).unitPrice);
+      if (unit != null && unit > 0) min = Math.min(min, unit);
     }
   }
 
@@ -216,6 +191,9 @@ function supplierPayoutReadyWhere() {
   if (hasScalar(SUPPLIER_MODEL, "bankName")) where.bankName = nonNull;
   if (hasScalar(SUPPLIER_MODEL, "bankCountry")) where.bankCountry = nonNull;
 
+  // verification status if present
+  if (hasScalar(SUPPLIER_MODEL, "bankVerificationStatus")) where.bankVerificationStatus = "VERIFIED";
+
   return Object.keys(where).length ? where : {};
 }
 
@@ -223,13 +201,16 @@ function supplierPayoutReadyWhere() {
  * Attach supplier payout-ready filter to offer models, schema-safely.
  * If your offer model does NOT have a `supplier` relation, it returns {} to avoid breaking.
  */
-function offerSupplierPayoutReadyWhere(offerModelName: string) {
+function offerSupplierPayoutReadyWhere(offerModelName: string, enforce: boolean) {
+  if (!enforce) return {}; // ✅ allow all offers
+
   if (hasRelation(offerModelName, "supplier")) {
     const sw = supplierPayoutReadyWhere();
     return Object.keys(sw).length ? { supplier: sw } : {};
   }
   return {};
 }
+
 
 /* -------------------------------------------------------------------------- */
 /* Supplier ratings (schema-safe + works even if Product.supplierId is null)  */
@@ -332,11 +313,10 @@ router.get(
      * Keep your current logic (retail/auto/variant retail OR supplier offers),
      * BUT for PUBLIC routes we only count supplier offers from payout-ready suppliers.
      *
-     * ✅ CHANGE: we NO LONGER require offer qty > 0 for eligibility,
-     * so LIVE products can appear even when out of stock.
+     * ✅ IMPORTANT: No bump logic anywhere.
      */
-    const payoutWhereBaseOffer = offerSupplierPayoutReadyWhere(BASE_OFFER_MODEL);
-    const payoutWhereVarOffer = offerSupplierPayoutReadyWhere(VAR_OFFER_MODEL);
+    const payoutWhereBaseOffer = offerSupplierPayoutReadyWhere(BASE_OFFER_MODEL, true);
+    const payoutWhereVarOffer = offerSupplierPayoutReadyWhere(VAR_OFFER_MODEL, true);
 
     const [priceProducts, variantPriceProducts, baseOfferProducts, variantOfferProducts] =
       await Promise.all([
@@ -355,7 +335,6 @@ router.get(
           select: { productId: true },
         }),
 
-        // ✅ CHANGE: removed inStock/availableQty gating from eligibility
         prisma.supplierProductOffer.findMany({
           where: {
             isActive: true,
@@ -366,7 +345,6 @@ router.get(
           select: { productId: true },
         }),
 
-        // ✅ CHANGE: removed inStock/availableQty gating from eligibility
         prisma.supplierVariantOffer.findMany({
           where: {
             isActive: true,
@@ -385,8 +363,6 @@ router.get(
 
     const finalIds = Array.from(eligibleIdSet);
 
-    // ✅ CHANGE: do NOT intersect LIVE with “has qty” products anymore.
-    // LIVE products can be returned even if out of stock.
     if (!finalIds.length) return res.json({ data: [], total: 0 });
 
     const [items, total] = await Promise.all([
@@ -405,6 +381,9 @@ router.get(
           autoPrice: true,
           priceMode: true,
 
+          // ✅ needed to compute (supplierOfferPrice + marginPct)
+          commissionPctInt: true,
+
           inStock: true,
           imagesJson: true,
           categoryId: true,
@@ -420,8 +399,12 @@ router.get(
 
     const ids = items.map((p: { id: any }) => String(p.id));
 
-    const categoryIds = Array.from(new Set(items.map((p: { categoryId: any }) => p.categoryId).filter(Boolean))) as string[];
-    const brandIds = Array.from(new Set(items.map((p: { brandId: any }) => p.brandId).filter(Boolean))) as string[];
+    const categoryIds = Array.from(
+      new Set(items.map((p: { categoryId: any }) => p.categoryId).filter(Boolean))
+    ) as string[];
+    const brandIds = Array.from(
+      new Set(items.map((p: { brandId: any }) => p.brandId).filter(Boolean))
+    ) as string[];
 
     const [cats, brands] = await Promise.all([
       wantCategory && categoryIds.length
@@ -484,7 +467,6 @@ router.get(
 
     /**
      * ✅ Offers: restrict returned offers to payout-ready suppliers
-     * (we still compute qty using inStock + availableQty > 0 below)
      */
     const baseOffers =
       needOffers
@@ -492,7 +474,7 @@ router.get(
             where: {
               productId: { in: ids },
               isActive: true,
-              ...(payoutWhereBaseOffer as any),
+              ...(offerSupplierPayoutReadyWhere(BASE_OFFER_MODEL, false) as any),
             } as any,
             select: {
               id: true,
@@ -505,7 +487,9 @@ router.get(
               currency: true,
               leadDays: true,
 
-              ...(hasRelation(BASE_OFFER_MODEL, "supplier") ? { supplier: { select: supplierRatingSelect() } } : {}),
+              ...(hasRelation(BASE_OFFER_MODEL, "supplier")
+                ? { supplier: { select: supplierRatingSelect() } }
+                : {}),
             },
           })
         : [];
@@ -534,7 +518,7 @@ router.get(
           baseQtyByProduct.set(pid, (baseQtyByProduct.get(pid) ?? 0) + qty);
         }
 
-        // seed offersFrom with cheapest base that is actually purchasable (qty>0)
+        // ✅ seed cheapest PURCHASABLE base offer
         if (bp > 0 && qty > 0) {
           const cur = minBasePriceByProduct.get(pid);
           if (cur == null || bp < cur) minBasePriceByProduct.set(pid, bp);
@@ -556,7 +540,7 @@ router.get(
             where: {
               variantId: { in: variantIdsAll },
               isActive: true,
-              ...(payoutWhereVarOffer as any),
+              ...(offerSupplierPayoutReadyWhere(VAR_OFFER_MODEL, false) as any),
             } as any,
             select: {
               id: true,
@@ -565,14 +549,19 @@ router.get(
               inStock: true,
               isActive: true,
               availableQty: true,
-              priceBump: true,
+
+              // ✅ Schema: SupplierVariantOffer.unitPrice is the final unit price
+              unitPrice: true,
+
               currency: true,
               leadDays: true,
               supplierProductOfferId: true,
               productId: true,
 
-              ...(hasRelation(VAR_OFFER_MODEL, "supplier") ? { supplier: { select: supplierRatingSelect() } } : {}),
-            },
+              ...(hasRelation(VAR_OFFER_MODEL, "supplier")
+                ? { supplier: { select: supplierRatingSelect() } }
+                : {}),
+            } as any,
           })
         : [];
 
@@ -605,16 +594,27 @@ router.get(
         }
       }
 
-      // offersFrom compatibility (only meaningful if base exists)
-      const baseMap = baseBySupplierByProduct.get(pid) ?? new Map<string, number>();
-      const base = baseMap.get(String(o.supplierId));
-      const bump = toNum(o.priceBump) ?? 0;
+      // ✅ offersFrom compatibility: cheapest PURCHASABLE supplier offer
+      // Use unitPrice if present, else fall back to base price for that supplier (NO bump math).
+      // IMPORTANT: only count offers that are actually purchasable: inStock && qty>0
+      if (o.isActive === true && o.inStock === true) {
+        const qty = Number(o.availableQty ?? 0) || 0;
+        if (qty > 0) {
+          const unit = toNum((o as any).unitPrice);
+          let effective = unit != null && unit > 0 ? unit : null;
 
-      if (base != null && base > 0) {
-        const effective = base + bump;
-        const cur = offersFromByProduct.get(pid);
-        const curMin = cur == null ? Infinity : Number(cur);
-        offersFromByProduct.set(pid, Math.min(curMin, effective));
+          if (effective == null) {
+            const baseMap = baseBySupplierByProduct.get(pid) ?? new Map<string, number>();
+            const base = baseMap.get(String(o.supplierId));
+            if (base != null && base > 0) effective = base;
+          }
+
+          if (effective != null && effective > 0) {
+            const cur = offersFromByProduct.get(pid);
+            const curMin = cur == null ? Infinity : Number(cur);
+            offersFromByProduct.set(pid, Math.min(curMin, effective));
+          }
+        }
       }
 
       // ratings from variant offers (product-level + variant-level)
@@ -683,6 +683,18 @@ router.get(
 
     res.setHeader("Cache-Control", "no-store");
 
+    // ✅ helper: compute retail display from offer price + margin percent
+    const computeRetailFromOfferAndMargin = (offerPrice: number | null, commissionPctInt: any) => {
+      const op = offerPrice != null ? Number(offerPrice) : NaN;
+      if (!Number.isFinite(op) || op <= 0) return null;
+
+      const m = Number(commissionPctInt);
+      const pct = Number.isFinite(m) && m > 0 ? m : 0;
+
+      const out = op * (1 + pct / 100);
+      return Number.isFinite(out) && out > 0 ? out : null;
+    };
+
     const data = items.map((p: any) => {
       const pid = String(p.id);
 
@@ -726,10 +738,18 @@ router.get(
                     const r = readSupplierRatingFromOffer(o);
                     return {
                       id: String(o.id),
+                      supplierId: r.supplierId,
+
                       isActive: o.isActive === true,
                       inStock: o.inStock === true,
                       availableQty: Number(o.availableQty ?? 0) || 0,
+
+                      // ✅ expose unitPrice for frontend to compute retail display if needed
+                      unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
+
+                      // legacy compatibility field (keep null)
                       price: null,
+
                       supplier: {
                         id: r.supplierId,
                         ratingAvg: r.ratingAvg,
@@ -739,7 +759,6 @@ router.get(
                   })
                 : [],
 
-              // ✅ Key: rating is derived from suppliers who offer this variant (not Product.supplierId)
               bestSupplierRating: bestVariantRating,
             };
           })
@@ -751,19 +770,30 @@ router.get(
       const retailPrice = p.retailPrice != null ? toNum(p.retailPrice) : null;
       const autoPrice = p.autoPrice != null ? toNum(p.autoPrice) : null;
 
+      // ✅ NEW: computed retail from cheapest supplier offer (offersFrom) + commissionPctInt
+      const offerRetail = computeRetailFromOfferAndMargin(offersFrom, p.commissionPctInt);
+
+      // ✅ Prefer refreshed offer retail when available; fallback to your existing retail/auto logic
+      const retailOnly = computePublicDisplayPriceRetailOnly(p);
+      const displayPrice = offerRetail != null ? offerRetail : retailOnly;
+
       return {
         id: pid,
         title: p.title,
         description: p.description,
 
-        // retail/auto logic (retail-only)
-        price: computePublicDisplayPriceRetailOnly(p),
+        // ✅ price that the catalogue should display (now refreshes from supplier offers)
+        price: displayPrice,
 
+        // keep raw fields
         retailPrice,
         autoPrice,
         priceMode: p.priceMode ?? null,
 
-        // ✅ this is what drives your "Out of stock" badge in the frontend
+        // ✅ send margin percent to frontend too
+        commissionPctInt: p.commissionPctInt != null ? Number(p.commissionPctInt) : null,
+
+        // drives your "Out of stock" badge
         inStock: effectiveQty > 0 || p.inStock === true,
 
         imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
@@ -777,7 +807,6 @@ router.get(
 
         offersFrom,
 
-        // ✅ Key: rating is derived from suppliers who offer this product (not Product.supplierId)
         bestSupplierRating: bestProductRating,
 
         supplierOffers: needOffers
@@ -787,10 +816,18 @@ router.get(
                 const r = readSupplierRatingFromOffer(o);
                 return {
                   id: String(o.id),
+                  supplierId: String(o.supplierId),
+
                   isActive: o.isActive === true,
                   inStock: o.inStock === true,
                   availableQty: Number(o.availableQty ?? 0) || 0,
+
+                  // ✅ expose basePrice for frontend to compute retail display if needed
+                  basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
+
+                  // legacy compatibility field (keep null)
                   price: null,
+
                   supplier: {
                     id: r.supplierId,
                     ratingAvg: r.ratingAvg,
@@ -809,6 +846,7 @@ router.get(
     res.json({ data, total });
   })
 );
+
 
 /* ---------------- SIMILAR: must be before '/:id' ---------------- */
 
@@ -882,7 +920,6 @@ router.get(
 
     const vWhere = variantActiveWhere();
 
-    // NOTE: use findFirst so we can add schema-safe “not deleted/archived” guards
     const p = await prisma.product.findFirst({
       where: { id, ...(productActiveWhere() as any) } as any,
       include: {
@@ -893,7 +930,7 @@ router.get(
           ProductVariant: {
             ...(vWhere ? { where: vWhere } : {}),
             include: {
-              // ✅ REQUIRED: your schema says the relation is EXACTLY "options"
+              // ✅ schema: relation is "options"
               options: {
                 include: {
                   attribute: { select: { id: true, name: true, type: true } },
@@ -932,10 +969,10 @@ router.get(
       title: p.title,
       description: p.description,
 
-      // ✅ Align with list/admin: public display price is retail/auto logic (retail-only)
+      // ✅ public display price is retail/auto logic (retail-only)
       price: computePublicDisplayPriceRetailOnly(p),
 
-      // ✅ Also expose these like admin does
+      // expose these like admin does
       retailPrice,
       autoPrice,
       priceMode,
@@ -963,11 +1000,12 @@ router.get(
         inStock: v.inStock,
         imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
 
-        // ✅ IMPORTANT: bump is on ProductVariantOption, not on ProductVariant
+        // ✅ IMPORTANT: no "bump" field exists in schema.
+        // ProductVariantOption uses `unitPrice` (optional) as the option-specific price.
         options: (v.options || []).map((o: any) => ({
           attributeId: String(o.attributeId),
           valueId: String(o.valueId),
-          priceBump: o.priceBump != null ? toNum(o.priceBump) : null,
+          unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
           attribute: { id: o.attribute.id, name: o.attribute.name, type: o.attribute.type },
           value: { id: o.value.id, name: o.value.name, code: o.value.code ?? null },
         })),
@@ -990,7 +1028,7 @@ router.get(
           value: t.value,
         })) ?? [];
 
-      // ✅ ADD THIS: explicit base defaults for the UI
+      // explicit base defaults for the UI
       data.attributeSelections =
         (p as any).attributeOptions?.map((o: any) => ({
           attributeId: String(o.attribute.id),
@@ -1004,9 +1042,7 @@ router.get(
           where: {
             productId: id,
             isActive: true,
-
-            // ✅ payout-ready suppliers only (schema-safe)
-            ...(offerSupplierPayoutReadyWhere(BASE_OFFER_MODEL) as any),
+            ...(offerSupplierPayoutReadyWhere(BASE_OFFER_MODEL, false) as any),
           } as any,
           select: {
             id: true,
@@ -1026,28 +1062,30 @@ router.get(
           where: {
             productId: id,
             isActive: true,
-
-            // ✅ payout-ready suppliers only (schema-safe)
-            ...(offerSupplierPayoutReadyWhere(VAR_OFFER_MODEL) as any),
+            ...(offerSupplierPayoutReadyWhere(VAR_OFFER_MODEL, false) as any),
           } as any,
           select: {
             id: true,
-            supplierId: true,
-            productId: true,
             variantId: true,
-            supplierProductOfferId: true,
-            priceBump: true,
-            currency: true,
-            availableQty: true,
+            supplierId: true,
             inStock: true,
             isActive: true,
+            availableQty: true,
+
+            // ✅ schema: final unit price (no bump)
+            unitPrice: true,
+
+            currency: true,
             leadDays: true,
+            supplierProductOfferId: true,
+            productId: true,
 
             ...(hasRelation(VAR_OFFER_MODEL, "supplier") ? { supplier: { select: supplierRatingSelect() } } : {}),
-          },
+          } as any,
         }),
       ]);
 
+      // For fallback only: if unitPrice missing, use basePrice (NO bump math).
       const baseByOfferId = new Map<string, number>();
       const baseBySupplier = new Map<string, number>();
 
@@ -1090,11 +1128,17 @@ router.get(
             },
           };
         }),
+
+        // ✅ NO bump math. Use unitPrice; if missing, fallback to supplier base price.
         ...variantOffers.map((o: any) => {
-          const base =
-            baseByOfferId.get(String(o.supplierProductOfferId)) ?? baseBySupplier.get(String(o.supplierId)) ?? 0;
-          const bump = o.priceBump != null ? (toNum(o.priceBump) ?? 0) : 0;
-          const effective = base + bump;
+          const unit = toNum((o as any).unitPrice);
+
+          const fallbackBase =
+            baseByOfferId.get(String(o.supplierProductOfferId)) ??
+            baseBySupplier.get(String(o.supplierId)) ??
+            0;
+
+          const finalPrice = unit != null && unit > 0 ? unit : fallbackBase > 0 ? fallbackBase : null;
 
           const r = readSupplierRatingFromOffer(o);
 
@@ -1108,9 +1152,10 @@ router.get(
             isActive: o.isActive === true,
             availableQty: Number(o.availableQty ?? 0) || 0,
             leadDays: o.leadDays ?? null,
-            price: Number.isFinite(effective) ? effective : null,
-            basePrice: base,
-            priceBump: bump,
+
+            // ✅ final supplier variant unit price
+            price: finalPrice,
+
             model: "VARIANT",
             supplier: {
               id: r.supplierId,

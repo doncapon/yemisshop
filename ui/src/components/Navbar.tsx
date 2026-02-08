@@ -221,6 +221,15 @@ export default function Navbar() {
                   Admin
                 </NavLink>
               )}
+
+              {isAdmin && (
+                <NavLink
+                  to="/admin/offer-changes"
+                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
+                >
+                  Offer approvals
+                </NavLink>
+              )}
             </>
           )}
         </nav>
@@ -242,10 +251,9 @@ export default function Navbar() {
               <NavLink
                 to="/login"
                 className={({ isActive }) =>
-                  `${linkBase} ${
-                    isActive
-                      ? "bg-white text-primary-900"
-                      : "border border-white/25 text-white hover:bg-white/10"
+                  `${linkBase} ${isActive
+                    ? "bg-white text-primary-900"
+                    : "border border-white/25 text-white hover:bg-white/10"
                   }`
                 }
               >
@@ -408,8 +416,7 @@ export default function Navbar() {
                   to="/supplier/orders"
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `${linkBase} ${
-                      isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                    `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
                     }`
                   }
                 >
@@ -434,8 +441,7 @@ export default function Navbar() {
                   end
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `${linkBase} ${
-                      isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                    `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
                     }`
                   }
                 >
@@ -448,8 +454,7 @@ export default function Navbar() {
                     end
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${
-                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
                       }`
                     }
                   >
@@ -463,8 +468,7 @@ export default function Navbar() {
                     end
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${
-                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
                       }`
                     }
                   >
@@ -478,8 +482,7 @@ export default function Navbar() {
                     end
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${
-                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
                       }`
                     }
                   >
@@ -492,8 +495,7 @@ export default function Navbar() {
                     to="/cart"
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${
-                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
                       }`
                     }
                   >
@@ -506,8 +508,7 @@ export default function Navbar() {
                     to="/wishlist"
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${
-                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
                       }`
                     }
                   >
@@ -520,8 +521,7 @@ export default function Navbar() {
                     to="/orders"
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${
-                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
                       }`
                     }
                   >
@@ -534,12 +534,24 @@ export default function Navbar() {
                     to="/admin"
                     onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${
-                        isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
                       }`
                     }
                   >
                     Admin
+                  </NavLink>
+                )}
+
+                {isAdmin && (
+                  <NavLink
+                    to="/admin/offer-changes"
+                    onClick={() => setMobileOpen(false)}
+                    className={({ isActive }) =>
+                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      }`
+                    }
+                  >
+                    Offer approvals
                   </NavLink>
                 )}
 
@@ -559,10 +571,9 @@ export default function Navbar() {
                       to="/login"
                       onClick={() => setMobileOpen(false)}
                       className={({ isActive }) =>
-                        `flex-1 text-center ${linkBase} ${
-                          isActive
-                            ? "bg-white text-primary-900"
-                            : "border border-white/25 text-white hover:bg-white/10"
+                        `flex-1 text-center ${linkBase} ${isActive
+                          ? "bg-white text-primary-900"
+                          : "border border-white/25 text-white hover:bg-white/10"
                         }`
                       }
                     >

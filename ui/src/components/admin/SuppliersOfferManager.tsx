@@ -4,16 +4,36 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  * SuppliersOfferManager.tsx
  *
  * ✅ Uses ONLY these endpoints (no fallbacks):
- *   GET    /api/admin/products/:productId/supplier-offers
- *   POST   /api/admin/products/:productId/supplier-offers
- *   PATCH  /api/admin/supplier-offers/:id         (id is base:<id> | variant:<id>)
- *   DELETE /api/admin/supplier-offers/:id         (id is base:<id> | variant:<id>)
+ * - GET  /api/admin/products/:productId/supplier-offers
+ * - POST /api/admin/products/:productId/supplier-offers
+ * - PATCH /api/admin/supplier-offers/:id
+ * - DELETE /api/admin/supplier-offers/:id   (manual row delete only; NOT used by saveAll)
  *
- * ✅ Uses ONLY fields that exist in your schema/routes unified DTO:
- *   id, kind, productId, supplierId, supplierName,
- *   variantId, variantSku,
- *   basePrice, priceBump, offerPrice,
- *   currency, availableQty, leadDays, isActive, inStock
+ * ✅ One price field in API payloads ONLY: `price`
+ *   - BASE row:     price -> SupplierProductOffer.basePrice
+ *   - VARIANT row:  price -> SupplierVariantOffer.unitPrice (FULL unit price)
+ *
+ * ✅ Variant price can be lower than base price
+ *
+ * ✅ UX changes:
+ * - Do NOT auto-fill price when supplier is selected (keep blank until typed)
+ * - "Add row" inserts the new row at the TOP of the list
+ * - Variant offer can exist without any base offer (frontend supports this)
+ *
+ * ✅ FIX:
+ * - Changing variant/supplier to a NEW combo should NOT wipe current row values.
+ * - Only hydrate when destination combo already exists in backend.
+ *
+ * ✅ NEW SAVE STRATEGY (FIXED FOR YOUR 409 ISSUE):
+ * - saveAll now uses TRUE PATCH whenever offerId exists (qty/price/active/leadDays etc)
+ * - saveAll DOES NOT delete anything.
+ * - saveAll only POSTs for brand-new rows (offerId === null).
+ * - If a row is marked "replace" (deleteOfferId set) we DO NOT auto-delete (deletes are blocked after orders).
+ *   We show an error telling user to undo the combo change or delete manually (if allowed).
+ *
+ * Why this fixes your issue:
+ * - Your 409 was thrown by assertProductOffersDeletable() during DELETE.
+ * - Now saveAll doesn't delete for normal edits (like increasing qty), so no 409.
  */
 
 type Supplier = {
@@ -28,25 +48,11 @@ type Variant = {
   label?: string;
 };
 
-
-type ProductResp = {
-  data: {
-    id: string;
-    title?: string;
-    sku?: string;
-    retailPrice?: number | null; // backend may return retailPrice
-    price?: number | null; // some product endpoints still return price alias; we don't rely on it
-    variants?: Array<{ id: string; sku: string; label?: string }>;
-    ProductVariant?: Array<{ id: string; sku: string; label?: string }>;
-    productVariants?: Array<{ id: string; sku: string; label?: string }>;
-  };
-};
-
 type OfferKind = "BASE" | "VARIANT";
 
 type OfferApi = {
   id: string; // "base:..." or "variant:..."
-  kind: OfferKind;
+  kind?: OfferKind;
 
   productId: string;
 
@@ -56,36 +62,48 @@ type OfferApi = {
   variantId: string | null;
   variantSku?: string | null;
 
-  basePrice: number; // BASE: basePrice, VARIANT: basePrice for supplier (provided by API)
-  priceBump: number; // VARIANT only (0 for BASE)
-
-  offerPrice: number; // computed by backend (basePrice + priceBump)
+  basePrice?: number | null;
+  unitPrice?: number | null;
 
   currency?: string;
-  availableQty: number;
-  leadDays: number | null;
-  isActive: boolean;
-  inStock: boolean;
+  availableQty?: number;
+  leadDays?: number | null;
+  isActive?: boolean;
+  inStock?: boolean;
 };
 
-type OffersResp = { data: OfferApi[] };
-type SuppliersResp = { data: Supplier[] };
-
 type Row = {
-  rowKey: string; // stable UI key
-  offerId: string | null; // API id "base:..." | "variant:..." or null for new
+  rowKey: string;
+
+  /** Current backend offer id for this row (null if new / not saved yet) */
+  offerId: string | null;
+
+  /**
+   * If user changes combo to a NEW combo, we remember old offerId here.
+   * ✅ We DO NOT auto delete on Save (deletes may be blocked after orders).
+   */
+  deleteOfferId: string | null;
 
   supplierId: string;
   variantId: string | null;
 
   kind: OfferKind;
 
-  basePrice: number;
-  priceBump: number;
+  /**
+   * One editable price in UI:
+   *  - BASE row: basePrice
+   *  - VARIANT row: unitPrice (full)
+   *
+   * NOTE: internal number value (0 means blank in UI)
+   */
+  price: number;
 
   availableQty: number;
   isActive: boolean;
+
+  // display-only / derived
   inStock: boolean;
+
   leadDays: number | "" | null;
 };
 
@@ -98,9 +116,11 @@ type Props = {
   readOnly?: boolean;
 
   fixedSupplierId?: string | null;
-  defaultUnitCost?: number;
+  defaultUnitCost?: number; // kept for compatibility; not used to auto-fill
   onSaved?: () => void;
 };
+
+/* ------------------------------ UI Combobox ------------------------------ */
 
 type VariantItem =
   | { kind: "BASE"; label: string }
@@ -158,16 +178,15 @@ function VariantComboBox({
     <div className="relative w-full min-w-[720px]">
       <button
         type="button"
-        className={`w-full rounded-xl border px-3 py-2 text-left ${disabled ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-white border-slate-300"
-          }`}
+        className={`w-full rounded-xl border px-3 py-2 text-left ${
+          disabled ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-white border-slate-300"
+        }`}
         onClick={() => !disabled && setOpen((v) => !v)}
         disabled={disabled}
         title={disabled ? "Select supplier first" : selectedLabel}
       >
         <div className="flex items-start justify-between gap-2">
-          <span className="whitespace-normal break-words leading-snug">
-            {selectedLabel || "— Select —"}
-          </span>
+          <span className="whitespace-normal break-words leading-snug">{selectedLabel || "— Select —"}</span>
           <span className="text-slate-400">▾</span>
         </div>
       </button>
@@ -214,8 +233,9 @@ function VariantComboBox({
                 <button
                   key={item.kind === "BASE" ? "BASE" : item.v.id}
                   type="button"
-                  className={`w-full px-3 py-2 text-left text-sm hover:bg-slate-50 ${idx === active ? "bg-slate-50" : ""
-                    }`}
+                  className={`w-full px-3 py-2 text-left text-sm hover:bg-slate-50 ${
+                    idx === active ? "bg-slate-50" : ""
+                  }`}
                   onMouseEnter={() => setActive(idx)}
                   onClick={() => choose(item)}
                 >
@@ -229,6 +249,8 @@ function VariantComboBox({
     </div>
   );
 }
+
+/* ------------------------------ Token helpers ------------------------------ */
 
 function isLikelyJwt(s: string) {
   return /^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/.test(s);
@@ -254,7 +276,7 @@ function tryExtractTokenFromJsonString(raw: string): string | null {
       const s = String(c).trim();
       if (s && isLikelyJwt(s)) return s;
     }
-  } catch { }
+  } catch {}
   return null;
 }
 
@@ -296,12 +318,14 @@ async function apiFetchJson<T>(
   opts: RequestInit & { signal?: AbortSignal } = {},
   token?: string | null
 ): Promise<T> {
-  const t = token ?? getAuthTokenFromStorage();
-
   const headers = new Headers(opts.headers || {});
   headers.set("Accept", "application/json");
   if (!headers.has("Content-Type") && opts.body) headers.set("Content-Type", "application/json");
-  if (t) headers.set("Authorization", `Bearer ${t}`);
+
+  // Only attach Authorization when token is explicitly passed in props.
+  if (token && isLikelyJwt(String(token).trim())) {
+    headers.set("Authorization", `Bearer ${String(token).trim()}`);
+  }
 
   const res = await fetch(path, { ...opts, headers, credentials: "include" });
 
@@ -318,6 +342,18 @@ async function apiFetchJson<T>(
   }
 
   return body as T;
+}
+
+/* ------------------------------ Data helpers ------------------------------ */
+
+function unwrap<T = any>(payload: any): T {
+  const a = payload?.data;
+  if (a == null) return payload as T;
+  const b = a?.data;
+  if (b == null) return a as T;
+  const c = b?.data;
+  if (c == null) return b as T;
+  return c as T;
 }
 
 function formatNgn(n: number | null | undefined) {
@@ -338,38 +374,61 @@ function safeNum(v: any, def = 0) {
   return Number.isFinite(n) ? n : def;
 }
 
+function normalizeId(x: any): string | null {
+  if (x == null) return null;
+  const s = String(x).trim();
+  return s ? s : null;
+}
+
 function extractVariantsFromProduct(p: any): Variant[] {
-  const list =
-    (Array.isArray(p?.variants) && p.variants) ||
-    (Array.isArray(p?.ProductVariant) && p.ProductVariant) ||
-    (Array.isArray(p?.productVariants) && p.productVariants) ||
+  const root = unwrap<any>(p);
+
+  const candidates: any[] =
+    (Array.isArray(root?.variants) && root.variants) ||
+    (Array.isArray(root?.ProductVariant) && root.ProductVariant) ||
+    (Array.isArray(root?.productVariants) && root.productVariants) ||
+    (Array.isArray(root?.productVariant) && root.productVariant) ||
+    (Array.isArray(root?.ProductVariants) && root.ProductVariants) ||
+    (Array.isArray(root?.variants?.data) && root.variants.data) ||
+    (Array.isArray(root?.ProductVariant?.data) && root.ProductVariant.data) ||
+    (Array.isArray(root?.productVariants?.data) && root.productVariants.data) ||
     [];
 
-  return list
+  return candidates
     .map((v: any) => ({
       id: String(v.id),
       sku: v.sku != null ? String(v.sku) : null,
       label: v.label != null ? String(v.label) : undefined,
     }))
-    .filter((v: Variant) => !!v.id); // ✅ sku is optional in schema
+    .filter((v: Variant) => !!v.id);
 }
-
 
 function variantDisplay(productSku: string, v: Variant) {
   const prefix = productSku ? `${productSku}-` : "";
-  const skuOrFallback = (v.sku && v.sku.trim()) ? v.sku.trim() : v.id.slice(-6); // ✅ fallback
+  const skuOrFallback = v.sku && v.sku.trim() ? v.sku.trim() : v.id.slice(-6);
   const skuPart = `${prefix}${skuOrFallback}`;
   return v.label ? `${skuPart} — ${v.label}` : skuPart;
 }
 
+function deriveKindFromOffer(o: OfferApi): OfferKind {
+  if (o.kind === "BASE" || o.kind === "VARIANT") return o.kind;
+  const vid = normalizeId(o.variantId);
+  if (vid) return "VARIANT";
+  const id = String(o.id || "");
+  if (id.startsWith("variant:")) return "VARIANT";
+  return "BASE";
+}
 
 function makeBaseOfferMap(offers: OfferApi[]) {
   const m = new Map<string, OfferApi>();
   for (const o of offers) {
-    if (o.kind === "BASE") m.set(o.supplierId, o);
+    const k = deriveKindFromOffer(o);
+    if (k === "BASE") m.set(o.supplierId, { ...o, kind: "BASE" });
   }
   return m;
 }
+
+/* -------------------------------- Component -------------------------------- */
 
 export default function SuppliersOfferManager({
   productId,
@@ -378,7 +437,7 @@ export default function SuppliersOfferManager({
   token,
   readOnly,
   fixedSupplierId,
-  defaultUnitCost,
+  defaultUnitCost, // kept for compatibility, but NOT used to auto-fill price anymore
   onSaved,
 }: Props) {
   const [loading, setLoading] = useState(false);
@@ -403,10 +462,7 @@ export default function SuppliersOfferManager({
 
   const canEdit = !readOnly && isEditingOffers;
 
-  // ✅ Allowed variants for THIS product only
-  const allowedVariantIds = useMemo(() => {
-    return new Set((variants ?? []).map((v) => String(v.id)));
-  }, [variants]);
+  const allowedVariantIds = useMemo(() => new Set((variants ?? []).map((v) => String(v.id))), [variants]);
 
   const variantsById = useMemo(() => {
     const m = new Map<string, Variant>();
@@ -422,36 +478,17 @@ export default function SuppliersOfferManager({
 
   const offersByCombo = useMemo(() => {
     const m = new Map<string, OfferApi>();
-    for (const o of offersLoaded) {
-      if (!o.supplierId) continue;
+    for (const raw of offersLoaded) {
+      if (!raw?.supplierId) continue;
+      const o: OfferApi = { ...raw, kind: deriveKindFromOffer(raw) };
       const vid = (o.variantId ?? null) as string | null;
       m.set(comboKey(o.supplierId, vid), o);
     }
     return m;
   }, [offersLoaded]);
 
+  // kept (not used for save logic, but harmless if referenced elsewhere)
   const baseOfferBySupplier = useMemo(() => makeBaseOfferMap(offersLoaded), [offersLoaded]);
-
-  const basePriceBySupplierFromRows = useMemo(() => {
-    const m = new Map<string, number>();
-    // 1) BASE rows
-    for (const r of rows) {
-      const sid = fixedSupplierId ?? r.supplierId;
-      if (!sid) continue;
-      if (r.variantId != null) continue;
-      const bp = safeNum(r.basePrice, 0);
-      if (bp > 0) m.set(sid, bp);
-    }
-    // 2) fallback: any row
-    for (const r of rows) {
-      const sid = fixedSupplierId ?? r.supplierId;
-      if (!sid) continue;
-      if (m.has(sid)) continue;
-      const bp = safeNum(r.basePrice, 0);
-      if (bp > 0) m.set(sid, bp);
-    }
-    return m;
-  }, [rows, fixedSupplierId]);
 
   const baseRowCountBySupplier = useMemo(() => {
     const m = new Map<string, number>();
@@ -486,18 +523,6 @@ export default function SuppliersOfferManager({
     return m;
   }, [rows, fixedSupplierId]);
 
-  const baseQtyBySupplierFromRows = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const r of rows) {
-      const sid = fixedSupplierId ?? r.supplierId;
-      if (!sid) continue;
-      if (r.variantId != null) continue; // base only
-      m.set(sid, Math.max(0, Math.trunc(Number(r.availableQty) || 0)));
-    }
-    return m;
-  }, [rows, fixedSupplierId]);
-
-
   function isVariantUsedElsewhere(sid: string, variantId: string, rowKey: string) {
     if (!sid || !variantId) return false;
     return rows.some((r) => {
@@ -506,80 +531,52 @@ export default function SuppliersOfferManager({
     });
   }
 
-  const normalizeId = (x: any): string | null => {
-    if (x == null) return null;
-    const s = String(x).trim();
-    return s ? s : null;
-  };
-
   const sanitizeVariantId = (raw: any): string | null => {
     const vid = normalizeId(raw);
-    if (!vid) return null; // base offer
-    // if variants not loaded yet, be permissive
+    if (!vid) return null;
     if (allowedVariantIds.size === 0) return vid;
     return allowedVariantIds.has(vid) ? vid : null;
   };
 
-  function defaultBasePriceForSupplier(supplierId: string) {
-    const base = baseOfferBySupplier.get(supplierId);
-    const bp = base?.basePrice != null ? safeNum(base.basePrice, 0) : 0;
-    if (bp > 0) return bp;
-
-    const du = defaultUnitCost != null ? safeNum(defaultUnitCost, 0) : 0;
-    if (du > 0) return du;
-
-    return 0;
+  function deriveInStock(isActive: boolean, availableQty: number) {
+    return !!isActive && Math.max(0, Math.trunc(Number(availableQty) || 0)) > 0;
   }
 
-  function effectiveBasePriceForRow(r: Row) {
-    const supplierId = fixedSupplierId ?? r.supplierId;
-    if (!supplierId) return 0;
-
-    const liveBase = basePriceBySupplierFromRows.get(supplierId);
-    if (liveBase != null && liveBase > 0) return liveBase;
-
-    if (r.kind === "BASE") {
-      const self = safeNum(r.basePrice, 0);
-      return self > 0 ? self : defaultBasePriceForSupplier(supplierId);
-    }
-
-    return defaultBasePriceForSupplier(supplierId);
-  }
-
-  function offerToRow(o: OfferApi, baseMap: Map<string, OfferApi>): Row {
-    const rawVid = normalizeId(o.variantId); // keep raw offer variantId
+  function offerToRow(raw: OfferApi): Row {
+    const o: OfferApi = { ...raw, kind: deriveKindFromOffer(raw) };
+    const rawVid = normalizeId(o.variantId);
     const isVariant = o.kind === "VARIANT" && !!rawVid;
 
-    let basePrice = safeNum(o.basePrice, 0);
-    let priceBump = isVariant ? safeNum(o.priceBump, 0) : 0;
-
-    // If variant row somehow missed basePrice, take supplier base row (still schema-derived)
-    if (isVariant && basePrice <= 0) {
-      const base = baseMap.get(o.supplierId);
-      basePrice = base?.basePrice != null ? safeNum(base.basePrice, 0) : 0;
-    }
+    const price = isVariant ? safeNum(o.unitPrice, 0) : safeNum(o.basePrice, 0);
+    const qty = Math.max(0, Math.trunc(Number(o.availableQty ?? 0) || 0));
+    const isActive = !!o.isActive;
 
     return {
-      rowKey: o.id,
+      rowKey: o.id, // stable enough for loaded rows
       offerId: o.id,
+      deleteOfferId: null,
       supplierId: o.supplierId,
       variantId: isVariant ? rawVid : null,
       kind: isVariant ? "VARIANT" : "BASE",
-      basePrice,
-      priceBump: isVariant ? priceBump : 0,
-      availableQty: safeNum(o.availableQty, 0),
-      isActive: !!o.isActive,
-      inStock: !!o.inStock,
+      price: Math.max(0, safeNum(price, 0)),
+      availableQty: qty,
+      isActive,
+      inStock: deriveInStock(isActive, qty),
       leadDays: o.leadDays ?? "",
     };
   }
 
-
+  /**
+   * - If target combo exists -> hydrate row from backend.
+   * - If target combo does NOT exist -> keep current values (NO wipe),
+   *   update supplierId/variantId/kind, and mark deleteOfferId (replacement intent).
+   *
+   * IMPORTANT: saveAll will NOT auto-delete deleteOfferId (because deletes can be blocked post-orders).
+   */
   function snapRowToCombo(rowKey: string, supplierId: string, variantId: string | null) {
-    // ✅ Prevent selecting a variant that isn't this product's
     if (variantId && allowedVariantIds.size > 0 && !allowedVariantIds.has(String(variantId))) {
       setError("Selected variant does not belong to this product.");
-      variantId = null; // force base
+      variantId = null;
     }
 
     const existing = supplierId ? offersByCombo.get(comboKey(supplierId, variantId)) : undefined;
@@ -588,26 +585,42 @@ export default function SuppliersOfferManager({
       prev.map((r) => {
         if (r.rowKey !== rowKey) return r;
 
+        const currentSupplier = fixedSupplierId ?? r.supplierId;
+        const sameSupplier = String(currentSupplier || "") === String(supplierId || "");
+        const sameVariant = (r.variantId ?? null) === (variantId ?? null);
+        if (sameSupplier && sameVariant) return r;
+
         if (existing) {
-          const hydrated = offerToRow(existing, baseOfferBySupplier);
-          return { ...r, ...hydrated, rowKey: r.rowKey }; // keep stable key
+          const hydrated = offerToRow(existing);
+          return {
+            ...r,
+            ...hydrated,
+            rowKey: r.rowKey,
+            deleteOfferId: r.deleteOfferId ?? null,
+          };
         }
 
-        const kind: OfferKind = variantId ? "VARIANT" : "BASE";
-        const basePrice = supplierId ? defaultBasePriceForSupplier(supplierId) : 0;
+        const nextKind: OfferKind = variantId ? "VARIANT" : "BASE";
+
+        const keptQty = Math.max(0, Math.trunc(Number(r.availableQty ?? 0) || 0));
+        const keptIsActive = !!r.isActive;
+        const keptPrice = Math.max(0, safeNum(r.price, 0));
+        const keptLead = r.leadDays ?? "";
+
+        const idToDelete = r.offerId ? r.offerId : null;
 
         return {
           ...r,
-          offerId: null,
+          deleteOfferId: idToDelete ?? r.deleteOfferId ?? null,
+          offerId: null, // new combo to create
           supplierId,
           variantId,
-          kind,
-          basePrice,
-          priceBump: kind === "VARIANT" ? 0 : 0,
-          availableQty: 0,
-          isActive: true,
-          inStock: true,
-          leadDays: "",
+          kind: nextKind,
+          price: keptPrice,
+          availableQty: keptQty,
+          isActive: keptIsActive,
+          inStock: deriveInStock(keptIsActive, keptQty),
+          leadDays: keptLead,
         };
       })
     );
@@ -624,48 +637,46 @@ export default function SuppliersOfferManager({
     setError("");
 
     try {
-      // product (variants + sku for labels)
-      const productPromise =
-        !productSku || !variantsProp || variantsProp.length === 0
-          ? apiFetchJson<ProductResp>(
-            `/api/admin/products/${productId}?include=variants`,
-            { signal: ac.signal },
-            token
-          )
-          : Promise.resolve(null as any);
-
-      // suppliers (optional)
-      const suppliersPromise =
-        !suppliersProp || suppliersProp.length === 0
-          ? apiFetchJson<SuppliersResp>(`/api/admin/suppliers`, { signal: ac.signal }, token)
-          : Promise.resolve({ data: suppliersProp ?? [] } as SuppliersResp);
-
-      // ✅ ONLY endpoint for offers list
-      const offersPromise = apiFetchJson<OffersResp>(
-        `/api/admin/products/${productId}/supplier-offers`,
+      const productPromise = apiFetchJson<any>(
+        `/api/admin/products/${encodeURIComponent(productId)}?include=variants,ProductVariant,productVariants`,
         { signal: ac.signal },
         token
       );
 
-      const [p, s, o] = await Promise.all([productPromise, suppliersPromise, offersPromise]);
+      const suppliersPromise =
+        !suppliersProp || suppliersProp.length === 0
+          ? apiFetchJson<any>(`/api/admin/suppliers`, { signal: ac.signal }, token)
+          : Promise.resolve({ data: suppliersProp ?? [] } as any);
 
-      if (p?.data) {
-        setProductTitle(p.data.title || "");
-        setProductSku(p.data.sku || "");
-        setVariants(extractVariantsFromProduct(p.data));
+      const offersPromise = apiFetchJson<any>(
+        `/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`,
+        { signal: ac.signal },
+        token
+      );
+
+      const [pRaw, sRaw, oRaw] = await Promise.all([productPromise, suppliersPromise, offersPromise]);
+
+      const p = pRaw ? unwrap<any>(pRaw) : null;
+      const s = unwrap<any>(sRaw);
+      const o = unwrap<any>(oRaw);
+
+      if (p) {
+        setProductTitle(p?.title || "");
+        setProductSku(p?.sku || "");
+        setVariants(extractVariantsFromProduct(p));
       }
 
-      if (s?.data) setSuppliers(Array.isArray(s.data) ? s.data : []);
+      const suppliersArr: Supplier[] = Array.isArray(s) ? s : Array.isArray(s?.data) ? s.data : [];
+      if (suppliersArr) setSuppliers(suppliersArr);
 
-      const offersRaw = Array.isArray(o?.data) ? o.data : [];
+      const offersArr: OfferApi[] = Array.isArray(o) ? o : Array.isArray(o?.data) ? o.data : [];
+      const filteredOffers = (offersArr || [])
+        .filter((of) => String(of?.productId) === String(productId))
+        .map((of) => ({ ...of, kind: deriveKindFromOffer(of) }));
 
-      // keep only this product
-      const filteredOffers = offersRaw.filter((of) => String(of.productId) === String(productId));
-
-      // ✅ seed variants from PRODUCT + OFFERS (critical)
-      const productVariants = p?.data ? extractVariantsFromProduct(p.data) : [];
+      const productVariants = p ? extractVariantsFromProduct(p) : [];
       const seededFromOffers: Variant[] = filteredOffers
-        .filter((x) => x.kind === "VARIANT" && x.variantId)
+        .filter((x) => deriveKindFromOffer(x) === "VARIANT" && x.variantId)
         .map((x) => ({
           id: String(x.variantId),
           sku: x.variantSku != null ? String(x.variantSku) : null,
@@ -674,23 +685,67 @@ export default function SuppliersOfferManager({
       const mergedVariants = (() => {
         const m = new Map<string, Variant>();
         for (const v of productVariants) m.set(v.id, v);
-        for (const v of seededFromOffers) {
-          if (!m.has(v.id)) m.set(v.id, v);
-        }
+        for (const v of seededFromOffers) if (!m.has(v.id)) m.set(v.id, v);
         return Array.from(m.values());
       })();
 
-      setVariants(mergedVariants);
+      if (mergedVariants.length > 0) setVariants(mergedVariants);
 
       setOffersLoaded(filteredOffers);
 
-      const baseMap = makeBaseOfferMap(filteredOffers);
-      const nextRows = filteredOffers
+      const backendRows = filteredOffers
         .filter((x) => x?.id && x?.supplierId)
-        .map((x) => offerToRow(x, baseMap));
+        .map((x) => offerToRow(x));
 
-      setRows(nextRows);
+      // Preserve current UI order
+      setRows((prev) => {
+        const byId = new Map<string, Row>();
+        const byCombo = new Map<string, Row>();
 
+        for (const br of backendRows) {
+          if (br.offerId) byId.set(br.offerId, br);
+          const k = comboKey(br.supplierId, br.variantId);
+          byCombo.set(k, br);
+        }
+
+        const usedIds = new Set<string>();
+        const usedCombos = new Set<string>();
+
+        const merged: Row[] = prev.map((r) => {
+          const matchById = r.offerId ? byId.get(r.offerId) : undefined;
+          const matchByCombo = !matchById ? byCombo.get(comboKey(r.supplierId, r.variantId)) : undefined;
+          const match = matchById ?? matchByCombo;
+
+          if (!match) return r;
+
+          if (match.offerId) usedIds.add(match.offerId);
+          usedCombos.add(comboKey(match.supplierId, match.variantId));
+
+          return {
+            ...r,
+            offerId: match.offerId,
+            supplierId: match.supplierId,
+            variantId: match.variantId,
+            kind: match.kind,
+            price: match.price,
+            availableQty: match.availableQty,
+            isActive: match.isActive,
+            inStock: match.inStock,
+            leadDays: match.leadDays,
+            deleteOfferId: r.deleteOfferId ?? null,
+            rowKey: r.rowKey,
+          };
+        });
+
+        const tail: Row[] = [];
+        for (const br of backendRows) {
+          const idOk = br.offerId ? !usedIds.has(br.offerId) : true;
+          const comboOk = !usedCombos.has(comboKey(br.supplierId, br.variantId));
+          if (idOk && comboOk) tail.push(br);
+        }
+
+        return [...merged, ...tail];
+      });
     } catch (e: any) {
       if (e?.name === "AbortError" || String(e?.message || "").toLowerCase().includes("aborted")) return;
       setError(e?.message || "Failed to load supplier offers.");
@@ -713,22 +768,24 @@ export default function SuppliersOfferManager({
     const rowKey = `new-${Math.random().toString(16).slice(2)}`;
     const startSupplierId = fixedSupplierId ?? "";
 
-    setRows((prev) => [
-      ...prev,
-      {
-        rowKey,
-        offerId: null,
-        supplierId: startSupplierId,
-        variantId: null,
-        kind: "BASE",
-        basePrice: startSupplierId ? defaultBasePriceForSupplier(startSupplierId) : 0,
-        priceBump: 0,
-        availableQty: 0,
-        isActive: true,
-        inStock: true,
-        leadDays: "",
-      },
-    ]);
+    const startQty = 0;
+    const startIsActive = true;
+
+    const newRow: Row = {
+      rowKey,
+      offerId: null,
+      deleteOfferId: null,
+      supplierId: startSupplierId,
+      variantId: null,
+      kind: "BASE",
+      price: 0,
+      availableQty: startQty,
+      isActive: startIsActive,
+      inStock: deriveInStock(startIsActive, startQty),
+      leadDays: "",
+    };
+
+    setRows((prev) => [newRow, ...prev]);
   }
 
   async function deleteRow(row: Row) {
@@ -751,7 +808,7 @@ export default function SuppliersOfferManager({
     setError("");
 
     try {
-      await apiFetchJson(`/api/admin/supplier-offers/${row.offerId}`, { method: "DELETE" }, token);
+      await apiFetchJson(`/api/admin/supplier-offers/${encodeURIComponent(row.offerId)}`, { method: "DELETE" }, token);
       await load();
       onSaved?.();
     } catch (e: any) {
@@ -761,6 +818,13 @@ export default function SuppliersOfferManager({
     }
   }
 
+  /**
+   * ✅ FIXED saveAll:
+   * - If offerId exists: PATCH (true update) -> no deletes -> no 409
+   * - If offerId is null: POST (new row)
+   * - If deleteOfferId exists (replacement intent): we block save with clear message,
+   *   because deletes are blocked post-orders and we must not create duplicates silently.
+   */
   async function saveAll() {
     if (!canEdit) return;
 
@@ -768,127 +832,134 @@ export default function SuppliersOfferManager({
     setError("");
 
     try {
-      const supplierName = (sid: string) => suppliersById.get(sid)?.name ?? sid;
+      // If any row is marked as replacement, block save and tell user what to do.
+      const replacing = rows.find((r) => !!r.deleteOfferId);
+      if (replacing) {
+        throw new Error(
+          "This product has order history, so offers cannot be deleted/replaced. " +
+            "Undo the supplier/variant combo change (select the original combo), " +
+            "or create a new row and leave the old one unchanged (or delete manually if allowed)."
+        );
+      }
 
-      const baseRows = rows.filter((r) => r.variantId == null);
-      const variantRows = rows.filter((r) => r.variantId != null);
-
-      const getExistingId = (sid: string, variantId: string | null) => {
-        const existing = offersByCombo.get(comboKey(sid, variantId));
-        return existing?.id ?? null;
-      };
-
-      const upsertOffer = async (existingId: string | null, payload: any) => {
-        if (!existingId) {
-          await apiFetchJson(
-            `/api/admin/products/${productId}/supplier-offers`,
-            { method: "POST", body: JSON.stringify(payload) },
-            token
-          );
-          return;
-        }
-
-        await apiFetchJson(
-          `/api/admin/supplier-offers/${existingId}`,
+      const patchOffer = async (offerId: string, payload: any) => {
+        return apiFetchJson<any>(
+          `/api/admin/supplier-offers/${encodeURIComponent(offerId)}`,
           { method: "PATCH", body: JSON.stringify(payload) },
           token
         );
       };
 
-      // Build basePriceBySupplier from current UI rows
-      const basePriceBySupplier = new Map<string, number>();
+      const postOffer = async (payload: any) => {
+        return apiFetchJson<any>(
+          `/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`,
+          { method: "POST", body: JSON.stringify(payload) },
+          token
+        );
+      };
 
-      for (const br of baseRows) {
-        const sid = fixedSupplierId ?? br.supplierId;
-        if (!sid) continue;
-        const bp = safeNum(br.basePrice, 0);
-        if (bp > 0) basePriceBySupplier.set(sid, bp);
-      }
+      const setOfferId = (rowKey: string, newOfferId: string | null) => {
+        setRows((prev) =>
+          prev.map((r) =>
+            r.rowKey === rowKey
+              ? {
+                  ...r,
+                  offerId: newOfferId,
+                  deleteOfferId: null,
+                }
+              : r
+          )
+        );
+      };
 
       for (const r of rows) {
         const sid = fixedSupplierId ?? r.supplierId;
-        if (!sid) continue;
-        if (basePriceBySupplier.has(sid)) continue;
-        const bp = safeNum(r.basePrice, 0);
-        if (bp > 0) basePriceBySupplier.set(sid, bp);
-      }
-
-      // Validate variant rows
-      for (const vr of variantRows) {
-        const sid = fixedSupplierId ?? vr.supplierId;
-
         if (!sid) throw new Error("Each row must have a supplier selected.");
-        if (!vr.variantId) throw new Error("Each VARIANT row must have a variant selected.");
-
-        if (vr.variantId && allowedVariantIds.size > 0 && !allowedVariantIds.has(String(vr.variantId))) {
-          throw new Error("One or more rows have a variant that does not belong to this product.");
-        }
-
-        const bp = basePriceBySupplier.get(sid) ?? 0;
-        const hasLoadedBase = baseOfferBySupplier.get(sid)?.basePrice != null;
-
-        if (bp <= 0 && !hasLoadedBase) {
-          throw new Error(`Supplier "${supplierName(sid)}" needs a BASE price before adding variant offers.`);
-        }
-      }
-
-      // Ensure base exists for each supplier referenced
-      const suppliersNeedingBase = new Set<string>();
-      for (const r of rows) {
-        const sid = fixedSupplierId ?? r.supplierId;
-        if (sid) suppliersNeedingBase.add(sid);
-      }
-
-      // 1) Upsert base per supplier
-      for (const sid of suppliersNeedingBase) {
-        const bp = basePriceBySupplier.get(sid) ?? safeNum(baseOfferBySupplier.get(sid)?.basePrice, 0);
-        if (bp <= 0) continue;
-
-        const uiBase = baseRows.find((b) => (fixedSupplierId ?? b.supplierId) === sid) ?? null;
-
-        const qty = uiBase ? Math.max(0, Math.trunc(Number(uiBase.availableQty) || 0)) : 0;
-        const isActive = uiBase ? !!uiBase.isActive : true;
-        const inStock = isActive && qty > 0;
-
-        const payload = {
-          supplierId: sid,
-          variantId: null,
-          basePrice: Math.max(0, safeNum(bp, 0)),
-          availableQty: qty,
-          isActive,
-          inStock,
-          leadDays: uiBase?.leadDays === "" || uiBase?.leadDays == null ? null : Math.max(0, Math.trunc(Number(uiBase.leadDays) || 0)),
-        };
-
-        const existingId = uiBase?.offerId ?? getExistingId(sid, null);
-        await upsertOffer(existingId, payload);
-      }
-
-      // 2) Upsert variants
-      for (const r of variantRows) {
-        const sid = fixedSupplierId ?? r.supplierId;
-        if (!sid) throw new Error("Each row must have a supplier selected.");
-        if (!r.variantId) throw new Error("Each VARIANT row must have a variant selected.");
 
         const qty = Math.max(0, Math.trunc(Number(r.availableQty) || 0));
         const isActive = !!r.isActive;
-        const inStock = isActive && qty > 0;
 
-        const bump = Math.max(0, safeNum(r.priceBump, 0));
-        if (bump < 0) throw new Error("Variant price bump cannot be negative.");
+        const price = Math.max(0, safeNum(r.price, 0));
+        if (price <= 0) throw new Error("Price must be greater than 0.");
 
-        const payload = {
-          supplierId: sid,
-          variantId: r.variantId,
-          priceBump: bump,
-          availableQty: qty,
-          isActive,
-          inStock,
-          leadDays: r.leadDays === "" || r.leadDays == null ? null : Math.max(0, Math.trunc(Number(r.leadDays) || 0)),
-        };
+        const leadDays =
+          r.leadDays === "" || r.leadDays == null ? null : Math.max(0, Math.trunc(Number(r.leadDays) || 0));
 
-        const existingId = r.offerId ?? getExistingId(sid, r.variantId);
-        await upsertOffer(existingId, payload);
+        if (r.variantId == null) {
+          // BASE
+          if (r.offerId) {
+            // ✅ PATCH existing base offer
+            const payload = {
+              supplierId: sid,
+              price,
+              currency: "NGN",
+              availableQty: qty,
+              isActive,
+              leadDays,
+            };
+
+            await patchOffer(r.offerId, payload);
+            setOfferId(r.rowKey, r.offerId);
+          } else {
+            // ✅ POST new base offer
+            const payload = {
+              kind: "BASE" as const,
+              supplierId: sid,
+              variantId: null,
+              price,
+              currency: "NGN",
+              availableQty: qty,
+              isActive,
+              leadDays,
+            };
+
+            const out = await postOffer(payload);
+            const dto = unwrap<any>(out);
+            const createdId: string | null =
+              (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
+
+            setOfferId(r.rowKey, createdId);
+          }
+        } else {
+          // VARIANT
+          const vid = sanitizeVariantId(r.variantId);
+          if (!vid) throw new Error("Each VARIANT row must have a valid variant selected.");
+
+          if (r.offerId) {
+            // ✅ PATCH existing variant offer
+            const payload = {
+              supplierId: sid,
+              variantId: vid,
+              price,
+              currency: "NGN",
+              availableQty: qty,
+              isActive,
+              leadDays,
+            };
+
+            await patchOffer(r.offerId, payload);
+            setOfferId(r.rowKey, r.offerId);
+          } else {
+            // ✅ POST new variant offer
+            const payload = {
+              kind: "VARIANT" as const,
+              supplierId: sid,
+              variantId: vid,
+              price,
+              currency: "NGN",
+              availableQty: qty,
+              isActive,
+              leadDays,
+            };
+
+            const out = await postOffer(payload);
+            const dto = unwrap<any>(out);
+            const createdId: string | null =
+              (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
+
+            setOfferId(r.rowKey, createdId);
+          }
+        }
       }
 
       await load();
@@ -899,6 +970,42 @@ export default function SuppliersOfferManager({
       setSaving(false);
     }
   }
+
+  const saveDisabledReason = useMemo(() => {
+    if (!canEdit) return "Not in edit mode";
+    if (saving || loading) return "Busy";
+    if (rows.length === 0) return "No rows";
+
+    for (const r of rows) {
+      const sid = fixedSupplierId ?? r.supplierId;
+      if (!sid) return "Supplier is required";
+
+      if (r.variantId != null) {
+        const vid = sanitizeVariantId(r.variantId);
+        if (!vid) return "Variant is required";
+      }
+
+      const p = safeNum(r.price, 0);
+      if (p <= 0) return "Price must be greater than 0";
+    }
+
+    return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, canEdit, saving, loading, fixedSupplierId]);
+
+  const saveButtonDisabled = !!saveDisabledReason;
+
+  useEffect(() => {
+    setRows((prev) =>
+      prev.map((r) => {
+        const qty = Math.max(0, Math.trunc(Number(r.availableQty) || 0));
+        const nextInStock = deriveInStock(!!r.isActive, qty);
+        if (r.inStock === nextInStock && r.availableQty === qty) return r;
+        return { ...r, availableQty: qty, inStock: nextInStock };
+      })
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows.map((r) => `${r.rowKey}:${r.availableQty}:${r.isActive}`).join("|")]);
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -916,10 +1023,11 @@ export default function SuppliersOfferManager({
             <button
               type="button"
               onClick={() => setIsEditingOffers((v) => !v)}
-              className={`rounded-xl px-3 py-2 text-sm border ${isEditingOffers
-                ? "bg-amber-600 text-white border-amber-600 hover:bg-amber-700"
-                : "bg-white border-slate-300 hover:bg-slate-50"
-                }`}
+              className={`rounded-xl px-3 py-2 text-sm border ${
+                isEditingOffers
+                  ? "bg-amber-600 text-white border-amber-600 hover:bg-amber-700"
+                  : "bg-white border-slate-300 hover:bg-slate-50"
+              }`}
               disabled={loading || saving}
             >
               {isEditingOffers ? "Lock offers" : "Edit offers"}
@@ -938,9 +1046,7 @@ export default function SuppliersOfferManager({
       </div>
 
       {error ? (
-        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {error}
-        </div>
+        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
       ) : null}
 
       <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
@@ -949,9 +1055,7 @@ export default function SuppliersOfferManager({
             <tr>
               <th className="px-3 py-2 text-left font-semibold w-[260px]">Supplier</th>
               <th className="px-3 py-2 text-left font-semibold w-[900px]">Variant</th>
-              <th className="px-3 py-2 text-left font-semibold">Base price</th>
-              <th className="px-3 py-2 text-left font-semibold">Bump</th>
-              <th className="px-3 py-2 text-left font-semibold">Total cost</th>
+              <th className="px-3 py-2 text-left font-semibold">Price</th>
               <th className="px-3 py-2 text-left font-semibold">Available</th>
               <th className="px-3 py-2 text-left font-semibold">Active</th>
               <th className="px-3 py-2 text-left font-semibold">Lead (days)</th>
@@ -962,7 +1066,7 @@ export default function SuppliersOfferManager({
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td className="px-3 py-6 text-slate-500" colSpan={9}>
+                <td className="px-3 py-6 text-slate-500" colSpan={7}>
                   {loading ? "Loading..." : "No supplier offers yet. Click Add row to create one."}
                 </td>
               </tr>
@@ -971,21 +1075,11 @@ export default function SuppliersOfferManager({
                 const supplierIdShown = fixedSupplierId ?? r.supplierId;
                 const supplierOk = !!supplierIdShown;
 
-                const baseEff = r.variantId == null ? safeNum(r.basePrice, 0) : effectiveBasePriceForRow(r);
-                const bump = r.variantId != null ? safeNum(r.priceBump, 0) : 0;
-                const totalCost = r.variantId != null ? baseEff + bump : baseEff;
-
-                const disableBump = saving || !canEdit || r.variantId == null || !supplierOk || baseEff <= 0;
-
                 const baseDisabled = !!supplierIdShown && hasOtherBaseRow(supplierIdShown, r.rowKey);
 
                 const usedSet = supplierIdShown ? usedVariantIdsBySupplier.get(supplierIdShown) : undefined;
                 const usedOther = new Set<string>();
-                if (usedSet) {
-                  for (const id of usedSet) {
-                    if (id !== r.variantId) usedOther.add(id);
-                  }
-                }
+                if (usedSet) for (const id of usedSet) if (id !== r.variantId) usedOther.add(id);
 
                 const variantChoices = variants.filter((v) => {
                   if (!supplierIdShown) return true;
@@ -1001,6 +1095,9 @@ export default function SuppliersOfferManager({
                     label: variantDisplay(productSku, v),
                   })),
                 ];
+
+                const priceNum = safeNum(r.price, 0);
+                const priceInputValue: string = priceNum <= 0 ? "" : String(priceNum);
 
                 return (
                   <tr key={r.rowKey} className="border-t border-slate-200">
@@ -1027,6 +1124,12 @@ export default function SuppliersOfferManager({
                           </option>
                         ))}
                       </select>
+
+                      {canEdit && r.deleteOfferId ? (
+                        <div className="mt-1 text-[11px] text-amber-600">
+                          Replacement pending (cannot auto-delete after orders)
+                        </div>
+                      ) : null}
                     </td>
 
                     {/* Variant */}
@@ -1039,6 +1142,8 @@ export default function SuppliersOfferManager({
                           const sid = fixedSupplierId ?? r.supplierId;
                           if (!sid) return;
 
+                          if (r.variantId == null) return;
+
                           if (hasOtherBaseRow(sid, r.rowKey)) {
                             setError("This supplier already has a BASE offer row. You can’t add another base row.");
                             return;
@@ -1049,6 +1154,8 @@ export default function SuppliersOfferManager({
                           const sid = fixedSupplierId ?? r.supplierId;
                           if (!sid) return;
 
+                          if (r.variantId === vid) return;
+
                           if (isVariantUsedElsewhere(sid, vid, r.rowKey)) {
                             setError("This variant combo is already used for this supplier.");
                             return;
@@ -1058,75 +1165,41 @@ export default function SuppliersOfferManager({
                         }}
                       />
 
-                      {!supplierIdShown ? (
-                        <div className="mt-1 text-xs text-amber-600">Select supplier first</div>
-                      ) : null}
+                      {!supplierIdShown ? <div className="mt-1 text-xs text-amber-600">Select supplier first</div> : null}
 
                       {baseDisabled ? (
                         <div className="mt-1 text-[11px] text-slate-400">Base offer already exists for this supplier.</div>
                       ) : null}
                     </td>
 
-                    {/* Base price */}
+                    {/* Price */}
                     <td className="px-3 py-2">
                       <input
                         type="number"
-                        className="w-[150px] rounded-xl border border-slate-300 bg-white px-3 py-2 text-right"
-                        value={baseEff}
+                        className="w-[180px] rounded-xl border border-slate-300 bg-white px-3 py-2 text-right"
+                        value={priceInputValue}
+                        placeholder="—"
                         onChange={(e) => {
-                          const sid = fixedSupplierId ?? r.supplierId;
-                          if (!sid) return;
-
-                          const next = e.target.value === "" ? 0 : safeNum(e.target.value, 0);
+                          const raw = e.target.value;
+                          const next = raw === "" ? 0 : safeNum(raw, 0);
 
                           setRows((prev) =>
-                            prev.map((x) => {
-                              const xsid = fixedSupplierId ?? x.supplierId;
-                              if (xsid !== sid) return x;
-                              return { ...x, basePrice: Math.max(0, next) };
-                            })
+                            prev.map((x) => (x.rowKey === r.rowKey ? { ...x, price: Math.max(0, next) } : x))
                           );
+                        }}
+                        onBlur={() => {
+                          if (safeNum(r.price, 0) < 0) {
+                            setRows((prev) => prev.map((x) => (x.rowKey === r.rowKey ? { ...x, price: 0 } : x)));
+                          }
                         }}
                         disabled={saving || !canEdit || !supplierOk}
                       />
-                      <div className="mt-1 text-xs text-slate-500">{formatNgn(baseEff)}</div>
-                    </td>
 
-                    {/* Bump */}
-                    <td className="px-3 py-2">
-                      {r.variantId != null ? (
-                        <>
-                          <input
-                            type="number"
-                            className="w-[120px] rounded-xl border border-slate-300 px-3 py-2 text-right"
-                            value={bump}
-                            onChange={(e) => {
-                              const next = e.target.value === "" ? 0 : safeNum(e.target.value, 0);
-
-                              setRows((prev) =>
-                                prev.map((x) =>
-                                  x.rowKey === r.rowKey ? { ...x, priceBump: Math.max(0, next) } : x
-                                )
-                              );
-                            }}
-                            disabled={disableBump}
-                          />
-                          <div className="mt-1 text-xs text-slate-500">{formatNgn(bump)}</div>
-                        </>
+                      {priceNum > 0 ? (
+                        <div className="mt-1 text-xs text-slate-500">{formatNgn(priceNum)}</div>
                       ) : (
-                        <span className="text-slate-400">—</span>
+                        <div className="mt-1 text-xs text-slate-400">Enter price</div>
                       )}
-                    </td>
-
-                    {/* Total */}
-                    <td className="px-3 py-2">
-                      <input
-                        type="number"
-                        className="w-[150px] rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-right text-slate-700"
-                        value={totalCost}
-                        disabled
-                      />
-                      <div className="mt-1 text-xs text-slate-500">{formatNgn(totalCost)}</div>
                     </td>
 
                     {/* Qty */}
@@ -1142,16 +1215,11 @@ export default function SuppliersOfferManager({
                           const raw = e.target.value;
                           const n = raw === "" ? 0 : safeNum(raw, 0);
                           const v = Math.max(0, Math.trunc(Number(n) || 0));
+                          const nextInStock = deriveInStock(!!r.isActive, v);
 
-                          setRows((prev) => prev.map((x) => (x.rowKey === r.rowKey ? { ...x, availableQty: v } : x)));
-                        }}
-                        onBlur={() => {
-                          const v = Math.max(0, Math.trunc(Number(r.availableQty) || 0));
-                          if (v !== r.availableQty) {
-                            setRows((prev) =>
-                              prev.map((x) => (x.rowKey === r.rowKey ? { ...x, availableQty: v } : x))
-                            );
-                          }
+                          setRows((prev) =>
+                            prev.map((x) => (x.rowKey === r.rowKey ? { ...x, availableQty: v, inStock: nextInStock } : x))
+                          );
                         }}
                         disabled={saving || !canEdit}
                       />
@@ -1162,11 +1230,14 @@ export default function SuppliersOfferManager({
                       <input
                         type="checkbox"
                         checked={r.isActive}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          const nextInStock = deriveInStock(checked, r.availableQty);
+
                           setRows((prev) =>
-                            prev.map((x) => (x.rowKey === r.rowKey ? { ...x, isActive: e.target.checked } : x))
-                          )
-                        }
+                            prev.map((x) => (x.rowKey === r.rowKey ? { ...x, isActive: checked, inStock: nextInStock } : x))
+                          );
+                        }}
                         disabled={saving || !canEdit}
                       />
                     </td>
@@ -1205,9 +1276,9 @@ export default function SuppliersOfferManager({
           </tbody>
         </table>
       </div>
- {canEdit && (
-      <div className="mt-4 flex items-center justify-between gap-3">
-       
+
+      {canEdit && (
+        <div className="mt-4 flex items-center justify-between gap-3">
           <button
             type="button"
             onClick={addRow}
@@ -1216,17 +1287,22 @@ export default function SuppliersOfferManager({
           >
             Add row
           </button>
-        <button
-          type="button"
-          onClick={saveAll}
-          className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
-          disabled={loading || saving || rows.length === 0 || !canEdit}
-        >
-          {saving ? "Saving..." : "Save all changes"}
-        </button>
-      </div>
-        )}
 
+          <div className="flex items-center gap-3">
+            {saveDisabledReason ? <div className="text-xs text-slate-500">{saveDisabledReason}</div> : null}
+
+            <button
+              type="button"
+              onClick={saveAll}
+              className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+              disabled={saveButtonDisabled}
+              title={saveDisabledReason ?? ""}
+            >
+              {saving ? "Saving..." : "Save all changes"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

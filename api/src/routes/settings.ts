@@ -44,7 +44,7 @@ function estimateGatewayFee(amountNaira: number): number {
 
 /**
  * GET /api/settings/public (no auth)
- * Returns a compact bundle used by checkout.
+ * Returns a compact bundle used by checkout + pricing UI.
  */
 router.get("/public", async (_req, res) => {
   try {
@@ -62,17 +62,36 @@ router.get("/public", async (_req, res) => {
     const modeRaw = await readSetting("taxMode");
     const rateRaw = await readSetting("taxRatePct");
 
+    // ✅ NEW: pricing markup/margin for retail calculation
+    const marginRaw =
+      (await readSetting("marginPercent")) ??
+      (await readSetting("pricingMarkupPercent")) ??
+      (await readSetting("markupPercent")) ??
+      (await readSetting("platformMarginPercent"));
+
     const baseServiceFeeNGN = toNumber(baseRaw, 0);
     const commsUnitCostNGN = toNumber(unitRaw, 0);
     const taxMode = toTaxMode(modeRaw);
     const taxRatePct = toNumber(rateRaw, 0);
 
-    res.json({ baseServiceFeeNGN, commsUnitCostNGN, taxMode, taxRatePct });
+    const marginPercent = Math.max(0, toNumber(marginRaw, 0));
+
+    res.json({
+      baseServiceFeeNGN,
+      commsUnitCostNGN,
+      taxMode,
+      taxRatePct,
+
+      // ✅ include BOTH names for compatibility
+      marginPercent,
+      pricingMarkupPercent: marginPercent,
+    });
   } catch (e) {
     console.error("GET /api/settings/public failed:", e);
     res.status(500).json({ error: "Failed to load public settings" });
   }
 });
+
 
 /**
  * GET /api/settings/checkout/service-fee

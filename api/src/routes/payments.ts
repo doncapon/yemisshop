@@ -687,37 +687,52 @@ export async function createPurchaseOrdersForOrder(orderId: string) {
 
 /* ----------------------------- Profit recompute ----------------------------- */
 
-async function getCheapestUnitCost(productId: string, variantId?: string | null) {
+async function getCheapestUnitCost(
+  productId: string,
+  variantId?: string | null,
+  supplierId?: string | null,
+) {
+  const sid = supplierId ? String(supplierId) : null;
+
+  // If variant is being bought, cheapest could be:
+  // - supplierVariantOffer.unitPrice (final supplier unit price)  ✅ NEW RULE
+  // - OR supplierProductOffer.basePrice (fallback if no variant offers)
   if (variantId) {
     const offers = await prisma.supplierVariantOffer.findMany({
       where: {
-        productId,
         variantId,
+        // IMPORTANT: productId column might exist, but safest is via relation:
+        variant: { productId },
         isActive: true,
         inStock: true,
         availableQty: { gt: 0 },
-      },
+        ...(sid ? { supplierId: sid } : {}),
+      } as any,
       select: {
-        priceBump: true,
-        supplierProductOffer: { select: { basePrice: true } },
-      },
+        unitPrice: true, // ✅ final supplier unit price
+      } as any,
     });
 
     let best = Infinity;
     for (const o of offers) {
-      const base = Number(o.supplierProductOffer?.basePrice ?? 0);
-      const bump = Number(o.priceBump ?? 0);
-      best = Math.min(best, base + bump);
+      const unit = Number((o as any).unitPrice ?? 0);
+      if (unit > 0) best = Math.min(best, unit);
     }
-    if (Number.isFinite(best)) return best;
+
+    // If we found a valid variant unit price, return it.
+    if (Number.isFinite(best) && best !== Infinity) return best;
+
+    // else fall through to base offers (same supplier if supplied)
   }
 
+  // Base offers (product-level)
   const base = await prisma.supplierProductOffer.findFirst({
     where: {
       productId,
       isActive: true,
       inStock: true,
       availableQty: { gt: 0 },
+      ...(sid ? { supplierId: sid } : {}),
     },
     orderBy: { basePrice: "asc" },
     select: { basePrice: true },
@@ -725,6 +740,7 @@ async function getCheapestUnitCost(productId: string, variantId?: string | null)
 
   return Number(base?.basePrice ?? 0);
 }
+
 
 async function recomputeProfitForPayment(paymentId: string) {
   const p = await prisma.payment.findUnique({
@@ -749,6 +765,7 @@ async function recomputeProfitForPayment(paymentId: string) {
           id: true,
           productId: true,
           variantId: true,
+            chosenSupplierId: true,  
           chosenSupplierUnitPrice: true,
           quantity: true,
           unitPrice: true,
@@ -767,15 +784,23 @@ async function recomputeProfitForPayment(paymentId: string) {
     let unitCost = Number(it.chosenSupplierUnitPrice ?? 0);
 
     if (!(unitCost > 0)) {
-      const key = `${it.productId}|${it.variantId ?? "NULL"}`;
+      const supplierId = (it as any).chosenSupplierId
+        ? String((it as any).chosenSupplierId)
+        : null;
+
+      // Cache should include supplier dimension if present (so "cheapest from supplier" is stable)
+      const key = `${it.productId}|${it.variantId ?? "NULL"}|${supplierId ?? "ANY_SUPPLIER"}`;
+
       if (!offerCache.has(key)) {
         const cheapest = await getCheapestUnitCost(
           String(it.productId),
           it.variantId ?? null,
+          supplierId, // ✅ choose cheapest within the supplier first
         );
         offerCache.set(key, Number(cheapest ?? 0));
       }
       unitCost = offerCache.get(key)!;
+
     }
 
     cogs += unitCost * qty;
@@ -792,8 +817,8 @@ async function recomputeProfitForPayment(paymentId: string) {
   const baseServiceFee =
     Number(
       (await readSetting("serviceFeeBaseNGN")) ??
-        (await readSetting("platformBaseFeeNGN")) ??
-        0,
+      (await readSetting("platformBaseFeeNGN")) ??
+      0,
     ) || 0;
 
   const amountPaid = Number(p.amount || 0);
@@ -1406,9 +1431,9 @@ router.get("/:paymentKey/receipt", requireAuth, async (req, res) => {
     let serviceFee =
       Number(
         r.order?.serviceFeeTotal ??
-          r.order?.commsTotal ??
-          r.order?.comms ??
-          0,
+        r.order?.commsTotal ??
+        r.order?.comms ??
+        0,
       ) || 0;
 
     if (!serviceFee && row.orderId) {
@@ -1459,9 +1484,9 @@ router.get("/:paymentKey/receipt.pdf", requireAuth, async (req, res) => {
     let serviceFee =
       Number(
         r.order?.serviceFeeTotal ??
-          r.order?.commsTotal ??
-          r.order?.comms ??
-          0,
+        r.order?.commsTotal ??
+        r.order?.comms ??
+        0,
       ) || 0;
 
     if (!serviceFee && row.orderId) {
@@ -1807,14 +1832,14 @@ router.get("/admin/compat-alias", requireAuth, async (req, res, next) => {
             user: { select: { email: true } },
             items: includeItems
               ? {
-                  select: {
-                    id: true,
-                    title: true,
-                    unitPrice: true,
-                    quantity: true,
-                    status: true,
-                  },
-                }
+                select: {
+                  id: true,
+                  title: true,
+                  unitPrice: true,
+                  quantity: true,
+                  status: true,
+                },
+              }
               : false,
           },
         },
@@ -1834,13 +1859,13 @@ router.get("/admin/compat-alias", requireAuth, async (req, res, next) => {
       orderStatus: p.order?.status,
       items: Array.isArray((p.order as any)?.items)
         ? (p.order as any).items.map((it: any) => ({
-            id: it.id,
-            title: it.title,
-            unitPrice: Number(it.unitPrice),
-            quantity: Number(it.quantity || 0),
-            lineTotal: Number(it.unitPrice) * Number(it.quantity || 0),
-            status: it.status,
-          }))
+          id: it.id,
+          title: it.title,
+          unitPrice: Number(it.unitPrice),
+          quantity: Number(it.quantity || 0),
+          lineTotal: Number(it.unitPrice) * Number(it.quantity || 0),
+          status: it.status,
+        }))
         : undefined,
     }));
 
