@@ -33,8 +33,9 @@ type VerifyResp =
   | { status: 'MISMATCH' }
   | { status: 'NOT_FOUND'; retryAt?: string }
   | { status: 'COOLDOWN'; retryAt: string }
-  | { status: 'COOLDOWN'; retryAt: string }
-| { status: 'PROVIDER_ERROR'; message?: string };
+  | { status: 'PROVIDER_ERROR'; message?: string }
+  // ✅ New: backend can signal that a supplier already exists for this CAC
+  | { status: 'SUPPLIER_EXISTS'; message?: string; entity?: CacEntity; supplierId?: string };
 
 type RegisterSupplierResponse = {
   message: string;
@@ -71,6 +72,9 @@ export default function SupplierRegister() {
 
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // ✅ Track if this CAC record already has a supplier in DB
+  const [supplierAlreadyRegistered, setSupplierAlreadyRegistered] = useState(false);
 
   const scrollTopOnError = () => {
     try {
@@ -136,29 +140,44 @@ export default function SupplierRegister() {
   }
 
   const canProceed = useMemo(() => {
-    return !!kycEntity && !!verificationTicket && matchesAllFour(kycEntity, form);
-  }, [kycEntity, verificationTicket, form]);
+    // ✅ Only proceed if:
+    // - CAC entity is present
+    // - verificationTicket is set (from VERIFIED response)
+    // - and all four fields match
+    // - AND supplier is not already registered
+    return (
+      !!kycEntity &&
+      !!verificationTicket &&
+      matchesAllFour(kycEntity, form) &&
+      !supplierAlreadyRegistered
+    );
+  }, [kycEntity, verificationTicket, form, supplierAlreadyRegistered]);
 
   const onChange =
     (key: keyof typeof form) =>
-      (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-        const val = e.target.value;
-        setForm((f) => ({ ...f, [key]: val }));
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+      const val = e.target.value;
+      setForm((f) => ({ ...f, [key]: val }));
 
-        // Any change to these fields invalidates the current verification
-        if (key === 'rcNumber' || key === 'companyType' || key === 'companyName' || key === 'regDate') {
-          setKycErr(null);
-          setErr(null);
-          setKycEntity(null);
-          setVerificationTicket(null);
-        }
-      };
+      // Any change to these fields invalidates the current verification
+      if (key === 'rcNumber' || key === 'companyType' || key === 'companyName' || key === 'regDate') {
+        setKycErr(null);
+        setErr(null);
+        setKycEntity(null);
+        setVerificationTicket(null);
+        setSupplierAlreadyRegistered(false);
+      }
+    };
 
   const validate = () => {
     if (!form.rcNumber.trim()) return 'Please enter your RC number';
     if (!form.companyType) return 'Please select your company type';
     if (!form.companyName.trim()) return 'Please enter the company name';
     if (!form.regDate.trim()) return 'Please enter the registration date';
+
+    if (supplierAlreadyRegistered) {
+      return 'A supplier is already registered with these CAC details. Please sign in instead.';
+    }
 
     if (!canProceed) return 'Please verify your business with CAC before completing registration.';
 
@@ -184,61 +203,83 @@ export default function SupplierRegister() {
     return null;
   };
 
-const lookupCac = async () => {
-  setKycErr(null);
-  setErr(null);
+  const lookupCac = async () => {
+    setKycErr(null);
+    setErr(null);
+    setSupplierAlreadyRegistered(false);
 
-  if (!form.rcNumber.trim()) return setKycErr('Please enter your RC number before lookup.');
-  if (!form.companyType) return setKycErr('Please select your company type before lookup.');
-  if (!form.companyName.trim() || !form.regDate.trim()) {
-    return setKycErr('Please enter company name and registration date, then verify.');
-  }
-
-  try {
-    setKycLoading(true);
-
-    const { data } = await api.post<VerifyResp>('/api/suppliers/cac-verify', {
-      rc_number: form.rcNumber.trim(),
-      company_type: form.companyType,
-      assertedCompanyName: form.companyName.trim(),
-      assertedRegistrationDate: form.regDate.trim(),
-    });
-
-    if (data.status === 'VERIFIED') {
-      setKycEntity(data.entity);
-      setVerificationTicket(data.verificationTicket);
-      return;
+    if (!form.rcNumber.trim()) return setKycErr('Please enter your RC number before lookup.');
+    if (!form.companyType) return setKycErr('Please select your company type before lookup.');
+    if (!form.companyName.trim() || !form.regDate.trim()) {
+      return setKycErr('Please enter company name and registration date, then verify.');
     }
 
-    setKycEntity(null);
-    setVerificationTicket(null);
+    try {
+      setKycLoading(true);
 
-    if (data.status === 'COOLDOWN') {
-      setKycErr('Too many attempts. Please wait a bit and try or check your details or check your details');
-      return;
+      const { data } = await api.post<VerifyResp>('/api/suppliers/cac-verify', {
+        rc_number: form.rcNumber.trim(),
+        company_type: form.companyType,
+        assertedCompanyName: form.companyName.trim(),
+        assertedRegistrationDate: form.regDate.trim(),
+      });
+
+      if (data.status === 'VERIFIED') {
+        // ✅ Fresh verification, new supplier registration allowed
+        setKycEntity(data.entity);
+        setVerificationTicket(data.verificationTicket);
+        setSupplierAlreadyRegistered(false);
+        return;
+      }
+
+      if (data.status === 'SUPPLIER_EXISTS') {
+        // ✅ CAC matches but we already have a supplier in DB
+        setKycEntity(data.entity ?? null);
+        setVerificationTicket(null);
+        setSupplierAlreadyRegistered(true);
+        setKycErr(
+          data.message ||
+            'A supplier with this RC number is already registered on DaySpring. Please sign in instead or contact support.'
+        );
+        return;
+      }
+
+      // Other non-VERIFIED statuses
+      setKycEntity(null);
+      setVerificationTicket(null);
+      setSupplierAlreadyRegistered(false);
+
+      if (data.status === 'COOLDOWN') {
+        setKycErr('Too many attempts. Please wait a bit and check your details before trying again.');
+        return;
+      }
+      if (data.status === 'MISMATCH') {
+        setKycErr(
+          'CAC record found, but your details do not match. Please re-check RC, type, name and date.'
+        );
+        return;
+      }
+      if (data.status === 'NOT_FOUND') {
+        setKycErr('No CAC record found. Please double-check RC number and company type.');
+        return;
+      }
+      if (data.status === 'PROVIDER_ERROR') {
+        setKycErr(data.message || 'CAC provider is currently unavailable. Please try again later.');
+        return;
+      }
+
+      setKycErr('Could not verify at this time. Please try again.');
+    } catch {
+      // Only truly unexpected failures land here (network down, server crash, etc.)
+      setKycEntity(null);
+      setVerificationTicket(null);
+      setSupplierAlreadyRegistered(false);
+      setKycErr('Could not verify at this time. Please try again.');
+      scrollTopOnError();
+    } finally {
+      setKycLoading(false);
     }
-    if (data.status === 'MISMATCH') {
-      setKycErr('CAC record found, but your details do not match. Please re-check RC, type, name and date.');
-      return;
-    }
-    if (data.status === 'NOT_FOUND') {
-      setKycErr('No CAC record found. Please double-check RC number and company type.');
-      return;
-    }
-
-    setKycErr('Could not verify at this time. Please try again.');
-  } catch {
-    // Only truly unexpected failures land here (network down, server crash, etc.)
-    setKycEntity(null);
-    setVerificationTicket(null);
-    setKycErr('Could not verify at this time. Please try again.');
-    scrollTopOnError();
-  } finally {
-    setKycLoading(false);
-  }
-};
-
-
+  };
 
   // ---------- Submit ----------
   const submit = async (e: React.FormEvent) => {
@@ -281,14 +322,12 @@ const lookupCac = async () => {
       }
 
       // ✅ go to verify page (not login)
-      // Your backend verify-email route redirects to `${APP_URL}/verify?...`
-      // If your frontend route is /verify, use this:
       nav(`/verify?e=${encodeURIComponent(payload.contactEmail)}&supplier=1`, { replace: true });
-
-      // If your frontend route is actually /verify-email, use this instead and delete the line above:
-      // nav(`/verify-email?e=${encodeURIComponent(payload.contactEmail)}&supplier=1`, { replace: true });
     } catch (e: any) {
-      const msg = e?.response?.data?.error || e?.response?.data?.message || 'Supplier registration failed';
+      const msg =
+        e?.response?.data?.error ||
+        e?.response?.data?.message ||
+        'Supplier registration failed';
       setErr(msg);
       scrollTopOnError();
     } finally {
@@ -307,7 +346,13 @@ const lookupCac = async () => {
     return Math.min(s, 4);
   })();
 
-  const statusText = !kycEntity ? '' : canProceed ? 'Verified & approved' : 'CAC record found (confirm details)';
+  const statusText = !kycEntity
+    ? ''
+    : supplierAlreadyRegistered
+    ? 'A supplier is already registered with these CAC details'
+    : canProceed
+    ? 'Verified & approved'
+    : 'CAC record found (confirm details)';
 
   return (
     <SiteLayout>
@@ -381,12 +426,16 @@ const lookupCac = async () => {
                       <option value="COMPANY">Company</option>
                       <option value="INCORPORATED_TRUSTEES">Incorporated Trustees</option>
                       <option value="LIMITED_PARTNERSHIP">Limited Partnership</option>
-                      <option value="LIMITED_LIABILITY_PARTNERSHIP">Limited Liability Partnership</option>
+                      <option value="LIMITED_LIABILITY_PARTNERSHIP">
+                        Limited Liability Partnership
+                      </option>
                     </select>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">Company name (exact)</label>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      Company name (exact)
+                    </label>
                     <input
                       value={form.companyName}
                       onChange={onChange('companyName')}
@@ -400,7 +449,9 @@ const lookupCac = async () => {
 
                 <div className="grid grid-cols-1 md:grid-cols-[1fr,auto] gap-3 items-end">
                   <div>
-                    <label className="block text-xs font-medium text-slate-700 mb-1">Registration date</label>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      Registration date
+                    </label>
                     <input
                       type="date"
                       value={form.regDate}
@@ -435,10 +486,13 @@ const lookupCac = async () => {
 
                 {(kycEntity || statusText) && (
                   <div
-                    className={`mt-2 rounded-xl px-3 py-3 text-xs ${canProceed
+                    className={`mt-2 rounded-xl px-3 py-3 text-xs ${
+                      supplierAlreadyRegistered
+                        ? 'border border-rose-200 bg-rose-50/90 text-slate-800'
+                        : canProceed
                         ? 'border border-emerald-200 bg-emerald-50/80 text-slate-800'
                         : 'border border-amber-200 bg-amber-50/80 text-slate-800'
-                      }`}
+                    }`}
                   >
                     {statusText && (
                       <p className="mb-1.5 text-[11px] text-slate-600">
@@ -450,55 +504,82 @@ const lookupCac = async () => {
                       <>
                         <div className="flex items-center gap-2">
                           <span
-                            className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-white text-[11px] ${canProceed ? 'bg-emerald-500' : 'bg-amber-500'
-                              }`}
+                            className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-white text-[11px] ${
+                              supplierAlreadyRegistered
+                                ? 'bg-rose-500'
+                                : canProceed
+                                ? 'bg-emerald-500'
+                                : 'bg-amber-500'
+                            }`}
                           >
-                            {canProceed ? '✓' : '!'}
+                            {supplierAlreadyRegistered ? '!' : canProceed ? '✓' : '!'}
                           </span>
                           <div>
                             <p className="font-semibold text-slate-900">
                               {kycEntity.company_name}{' '}
-                              <span className="font-mono text-[11px] text-slate-600">(RC {kycEntity.rc_number})</span>
+                              <span className="font-mono text-[11px] text-slate-600">
+                                (RC {kycEntity.rc_number})
+                              </span>
                             </p>
                             <p className="text-[11px] text-slate-600">
                               {kycEntity.type_of_company} • Registered{' '}
-                              {kycEntity.date_of_registration ? normalizeDateToYMD(kycEntity.date_of_registration) ?? '—' : '—'}
+                              {kycEntity.date_of_registration
+                                ? normalizeDateToYMD(kycEntity.date_of_registration) ?? '—'
+                                : '—'}
                             </p>
                           </div>
                         </div>
 
-                        <div className="mt-2 text-[11px]">
-                          {canProceed ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 px-2 py-1 border border-emerald-200">
-                              ✓ RC number, company type, name & registration date match
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 text-rose-700 px-2 py-1 border border-rose-200">
-                              ✗ Please correct RC number, company type, registered name and date to match
-                            </span>
-                          )}
-                        </div>
+                        {!supplierAlreadyRegistered && (
+                          <div className="mt-2 text-[11px]">
+                            {canProceed ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 px-2 py-1 border border-emerald-200">
+                                ✓ RC number, company type, name & registration date match
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 text-rose-700 px-2 py-1 border border-rose-200">
+                                ✗ Please correct RC number, company type, registered name and date to match
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </>
                     )}
                   </div>
                 )}
               </div>
 
-              {!canProceed && (
+              {/* Info strip: either "complete CAC" or "already registered" */}
+              {!canProceed && !supplierAlreadyRegistered && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-700">
-                  Complete the CAC confirmation above. The contact & login form appears only after your RC number,
-                  company type, registered name and registration date match.
+                  Complete the CAC confirmation above. The contact & login form appears only after your RC
+                  number, company type, registered name and registration date match.
                 </div>
               )}
 
+              {supplierAlreadyRegistered && (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-3 text-xs text-amber-800">
+                  A supplier account is already registered with these CAC details. Please{' '}
+                  <a href="/login?supplier=1" className="font-semibold underline">
+                    sign in
+                  </a>{' '}
+                  instead or contact support if you believe this is an error.
+                </div>
+              )}
+
+              {/* Contact & login form only if CAC is verified and this is NOT an existing supplier */}
               {canProceed && (
                 <>
                   <div className="space-y-3">
-                    <h2 className="text-sm font-semibold text-slate-900">Primary contact & login details</h2>
+                    <h2 className="text-sm font-semibold text-slate-900">
+                      Primary contact & login details
+                    </h2>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-xs font-medium text-slate-800 mb-1">Contact first name</label>
+                        <label className="block text-xs font-medium text-slate-800 mb-1">
+                          Contact first name
+                        </label>
                         <input
                           value={form.contactFirstName}
                           onChange={onChange('contactFirstName')}
@@ -510,7 +591,9 @@ const lookupCac = async () => {
                       </div>
 
                       <div>
-                        <label className="block text-xs font-medium text-slate-800 mb-1">Contact last name</label>
+                        <label className="block text-xs font-medium text-slate-800 mb-1">
+                          Contact last name
+                        </label>
                         <input
                           value={form.contactLastName}
                           onChange={onChange('contactLastName')}
@@ -524,7 +607,9 @@ const lookupCac = async () => {
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-xs font-medium text-slate-800 mb-1">Contact email (login)</label>
+                        <label className="block text-xs font-medium text-slate-800 mb-1">
+                          Contact email (login)
+                        </label>
                         <input
                           type="email"
                           value={form.contactEmail}
@@ -537,7 +622,9 @@ const lookupCac = async () => {
                       </div>
 
                       <div>
-                        <label className="block text-xs font-medium text-slate-800 mb-1">Contact WhatsApp number</label>
+                        <label className="block text-xs font-medium text-slate-800 mb-1">
+                          Contact WhatsApp number
+                        </label>
                         <input
                           value={form.contactPhone}
                           onChange={onChange('contactPhone')}
@@ -566,21 +653,26 @@ const lookupCac = async () => {
                       />
                       <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
                         <div
-                          className={`h-full transition-all ${pwdStrength <= 1
+                          className={`h-full transition-all ${
+                            pwdStrength <= 1
                               ? 'w-1/4 bg-rose-400'
                               : pwdStrength === 2
-                                ? 'w-2/4 bg-amber-400'
-                                : pwdStrength === 3
-                                  ? 'w-3/4 bg-lime-400'
-                                  : 'w-full bg-emerald-400'
-                            }`}
+                              ? 'w-2/4 bg-amber-400'
+                              : pwdStrength === 3
+                              ? 'w-3/4 bg-lime-400'
+                              : 'w-full bg-emerald-400'
+                          }`}
                         />
                       </div>
-                      <p className="mt-1 text-[11px] text-slate-500">Include a letter, number, and special character.</p>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        Include a letter, number, and special character.
+                      </p>
                     </div>
 
                     <div>
-                      <label className="block text-xs font-medium text-slate-800 mb-1">Confirm password</label>
+                      <label className="block text-xs font-medium text-slate-800 mb-1">
+                        Confirm password
+                      </label>
                       <input
                         type="password"
                         value={form.confirmPassword}

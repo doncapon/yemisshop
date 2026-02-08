@@ -531,6 +531,25 @@ router.post("/cac-verify", async (req, res, next) => {
         });
       }
 
+      // ✅ CAC matches – check if a supplier already exists for this RC/companyType
+      const existingSupplier = await prisma.supplier.findFirst({
+        where: {
+          rcNumber,
+          companyType, // assumes supplier.companyType uses same enum
+        },
+        select: { id: true, status: true },
+      });
+
+      if (existingSupplier) {
+        return res.json({
+          status: "SUPPLIER_EXISTS" as const,
+          supplierId: existingSupplier.id,
+          entity,
+          message:
+            "A supplier with this RC number is already registered on DaySpring. Please sign in instead.",
+        });
+      }
+
       const ticket = signTicket({
         rcNumber,
         companyType,
@@ -623,6 +642,25 @@ router.post("/cac-verify", async (req, res, next) => {
         });
       }
 
+      // ✅ CAC matches – check if supplier already exists
+      const existingSupplier = await prisma.supplier.findFirst({
+        where: {
+          rcNumber,
+          companyType,
+        },
+        select: { id: true, status: true },
+      });
+
+      if (existingSupplier) {
+        return res.json({
+          status: "SUPPLIER_EXISTS" as const,
+          supplierId: existingSupplier.id,
+          entity,
+          message:
+            "A supplier with this RC number is already registered on DaySpring. Please sign in instead.",
+        });
+      }
+
       const ticket = signTicket({
         rcNumber,
         companyType,
@@ -676,6 +714,7 @@ router.post("/cac-verify", async (req, res, next) => {
     next(e);
   }
 });
+
 
 /* --------------------------- POST /cac-cache --------------------------- */
 /**

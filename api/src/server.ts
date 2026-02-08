@@ -71,8 +71,10 @@ import disputesRouter from "./routes/disputes.js";
 import notificationsRouter from "./routes/notifications.js";
 import ridersRouter from "./routes/riders.js";
 import privacyRouter from "./routes/privacy.js";
+import supplierCatalogOffers from "./routes/supplierCatalogOffers.js";
 
 import 'dotenv/config';
+import adminOfferChangeRequests from "./routes/adminOfferChangeRequests.js";
 
 const app = express();
 
@@ -195,7 +197,8 @@ app.use("/api/disputes", disputesRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/riders", ridersRouter);
 app.use("/api/privacy", privacyRouter);
-
+app.use("/api/supplier/catalog", supplierCatalogOffers);
+app.use("/api/admin/offer-change-requests", adminOfferChangeRequests);
 
 
 

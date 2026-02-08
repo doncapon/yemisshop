@@ -1,7 +1,7 @@
 // src/pages/ProductDetail.tsx
 import * as React from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useQueries } from "@tanstack/react-query";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
 import { createPortal } from "react-dom";
@@ -19,17 +19,30 @@ import { showMiniCartToast } from "../components/cart/MiniCartToast";
 /* ---------------- Types ---------------- */
 type Brand = { id: string; name: string } | null;
 
+/**
+ * ✅ Conform to Prisma:
+ * - ProductVariantOption has unitPrice (optional), NOT priceBump
+ */
 type VariantOptionWire = {
   attributeId: string;
   valueId: string;
-  priceBump?: number | null;
+  unitPrice?: number | null;
   attribute?: { id: string; name: string; type?: string };
   value?: { id: string; name: string; code?: string | null };
 };
 
+/**
+ * Offers wire: normalize from any backend shape.
+ * We’ll use:
+ * - model BASE|VARIANT
+ * - variantId nullable
+ * - availableQty
+ * - price (supplier price) from basePrice/unitPrice/price/etc
+ */
 type OfferWire = {
   id: string;
   supplierId: string;
+  supplierName?: string | null;
   productId: string;
   variantId: string | null;
   currency?: string;
@@ -37,21 +50,46 @@ type OfferWire = {
   isActive: boolean;
   availableQty: number;
   leadDays?: number | null;
-  price: number | null; // supplier effective price (base+bumps) - NOT used for display
+
+  // supplier price (normalized)
+  price?: number | null;
+
   model: "BASE" | "VARIANT";
+};
+
+type VariantWire = {
+  id: string;
+  sku?: string | null;
+
+  /**
+   * ✅ ProductVariant.retailPrice (public retail) — may exist, but we do NOT rely on it
+   * for live retail if marginPercent is used to compute retail.
+   */
+  retailPrice?: number | null;
+
+  inStock?: boolean;
+  imagesJson?: string[];
+  options?: VariantOptionWire[];
 };
 
 type ProductWire = {
   id: string;
   title: string;
   description?: string;
-  price: number | null; // base retail price (public display)
+
+  /**
+   * ✅ Product.retailPrice (public display base) — may exist, but we do NOT rely on it
+   * for live retail if marginPercent is used to compute retail.
+   */
+  retailPrice: number | null;
+
   inStock?: boolean;
   imagesJson?: string[];
   brand?: Brand;
   variants?: VariantWire[];
   offers?: OfferWire[];
-  attributes?: {
+  attributes?:
+  | {
     options?: Array<{
       attributeId: string;
       valueId: string;
@@ -66,7 +104,8 @@ type ProductWire = {
       attribute?: { id: string; name: string };
       attributeName?: string;
     }>;
-  } | null;
+  }
+  | null;
 };
 
 type ValueState = {
@@ -76,20 +115,10 @@ type ValueState = {
   reason?: string; // "Not available" | "Out of stock"
 };
 
-type VariantWire = {
-  id: string;
-  sku?: string | null;
-  price?: number | null;
-  priceBump?: number | null;
-  inStock?: boolean;
-  imagesJson?: string[];
-  options?: VariantOptionWire[];
-};
-
 type SimilarProductWire = {
   id: string;
   title: string;
-  price: number | null;
+  retailPrice: number | null; // from endpoint fallback
   imagesJson?: string[];
   inStock?: boolean;
 };
@@ -112,50 +141,49 @@ const toNum = (n: any, d = 0) => {
   return Number.isFinite(v) ? v : d;
 };
 
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+const toBool = (v: any, fallback = false) => {
+  if (v === true) return true;
+  if (v === false) return false;
+
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (["true", "1", "yes", "y", "on"].includes(s)) return true;
+    if (["false", "0", "no", "n", "off", ""].includes(s)) return false;
+  }
+  return fallback;
+};
+
 function idOfOption(o: VariantOptionWire) {
   const a = o.attributeId ?? o.attribute?.id ?? "";
   const v = o.valueId ?? o.value?.id ?? "";
   return { a: String(a), v: String(v) };
 }
 
-function variantBump(v?: VariantWire | null) {
-  if (!v) return 0;
-
-  if (v.priceBump !== null && v.priceBump !== undefined) {
-    return toNum(v.priceBump, 0);
-  }
-
-  const opts = Array.isArray(v.options) ? v.options : [];
-  const bumps = opts
-    .map((o) => toNum(o?.priceBump, 0))
-    .filter((n) => Number.isFinite(n) && n > 0);
-
-  if (!bumps.length) return 0;
-
-  const allSame = bumps.every((b) => b === bumps[0]);
-  if (allSame) return bumps[0];
-
-  return bumps.reduce((acc, n) => acc + n, 0);
-}
-
+/**
+ * ✅ Normalize variants using schema-friendly names:
+ * - v.retailPrice (primary)
+ * - fallback to v.price if backend still returns it temporarily
+ */
 function normalizeVariants(p: any): VariantWire[] {
   const src: any[] = Array.isArray(p?.variants) ? p.variants : [];
 
-  const readBump = (x: any) => {
-    const raw =
-      x?.priceBump ??
-      x?.retailPriceBump ??
-      x?.retailBump ??
-      x?.bump ??
-      null;
-    return raw != null ? Number(raw) : null;
+  const readVariantRetail = (x: any) => {
+    const raw = x?.retailPrice ?? x?.price ?? null;
+    return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
+  };
+
+  const readOptionUnit = (x: any) => {
+    const raw = x?.unitPrice ?? null;
+    return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
   };
 
   return src.map((v: any) => ({
     id: String(v.id),
     sku: v.sku ?? null,
-    price: v.price != null ? Number(v.price) : null,
-    priceBump: readBump(v),
+    retailPrice: readVariantRetail(v),
     inStock: v.inStock !== false,
     imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
     options: Array.isArray(v.options)
@@ -163,7 +191,7 @@ function normalizeVariants(p: any): VariantWire[] {
         .map((o: any) => ({
           attributeId: String(o.attributeId ?? o.attribute?.id ?? ""),
           valueId: String(o.valueId ?? o.value?.id ?? ""),
-          priceBump: readBump(o),
+          unitPrice: readOptionUnit(o),
           attribute: o.attribute
             ? {
               id: String(o.attribute.id),
@@ -185,20 +213,75 @@ function normalizeVariants(p: any): VariantWire[] {
 }
 
 function normalizeOffers(p: any): OfferWire[] {
-  const src: any[] = Array.isArray(p?.offers) ? p.offers : [];
-  return src.map((o: any) => ({
-    id: String(o.id),
-    supplierId: String(o.supplierId),
-    productId: String(o.productId),
-    variantId: o.variantId ? String(o.variantId) : null,
-    currency: o.currency ?? "NGN",
-    inStock: o.inStock === true,
-    isActive: o.isActive === true,
-    availableQty: Number(o.availableQty ?? 0) || 0,
-    leadDays: o.leadDays ?? null,
-    price: o.price != null ? Number(o.price) : null,
-    model: (o.model === "VARIANT" ? "VARIANT" : "BASE") as "BASE" | "VARIANT",
-  }));
+  const src: any[] =
+    (Array.isArray(p?.offers) && p.offers) ||
+    (Array.isArray(p?.supplierOffers) && p.supplierOffers) ||
+    (Array.isArray(p?.supplier_offers) && p.supplier_offers) ||
+    (Array.isArray(p?.supplieroffers) && p.supplieroffers) ||
+    [];
+
+  const readOfferPrice = (o: any) => {
+    // accept multiple fields (basePrice/unitPrice/price/unitCost/cost/etc)
+    const raw =
+      o?.unitPrice ??
+      o?.basePrice ??
+      o?.supplierPrice ??
+      o?.unitCost ??
+      o?.cost ??
+      o?.price ??
+      null;
+    return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
+  };
+
+  const readQty = (o: any) =>
+    toNum(
+      o?.availableQty ??
+      o?.available ??
+      o?.qty ??
+      o?.stock ??
+      o?.available_quantity ??
+      0,
+      0
+    );
+
+  const readSupplierName = (o: any) => {
+    const raw = o?.supplierName ?? o?.supplier?.name ?? o?.supplier?.businessName ?? null;
+    return raw != null ? String(raw) : null;
+  };
+
+  return src.map((o: any) => {
+    const hasActiveKey = "isActive" in o || "active" in o || "enabled" in o;
+    const hasStockKey = "inStock" in o || "available" in o || "in_stock" in o;
+
+    const isActive = hasActiveKey
+      ? toBool(o?.isActive ?? o?.active ?? o?.enabled, false)
+      : true;
+    const inStock = hasStockKey
+      ? toBool(o?.inStock ?? o?.in_stock ?? o?.available, false)
+      : true;
+
+    const variantId = o?.variantId ? String(o.variantId) : null;
+
+    const model =
+      String(o?.model ?? "").toUpperCase() === "VARIANT" || variantId
+        ? "VARIANT"
+        : "BASE";
+
+    return {
+      id: String(o.id),
+      supplierId: String(o.supplierId),
+      supplierName: readSupplierName(o),
+      productId: String(o.productId),
+      variantId,
+      currency: o.currency ?? "NGN",
+      inStock,
+      isActive,
+      availableQty: readQty(o),
+      leadDays: o.leadDays ?? o?.lead_time_days ?? null,
+      price: readOfferPrice(o),
+      model: model as "BASE" | "VARIANT",
+    };
+  });
 }
 
 function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
@@ -219,7 +302,9 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
           return {
             attributeId,
             valueId,
-            attribute: attributeName ? { id: attributeId, name: String(attributeName) } : undefined,
+            attribute: attributeName
+              ? { id: attributeId, name: String(attributeName) }
+              : undefined,
             value: valueName ? { id: valueId, name: String(valueName) } : undefined,
             attributeName: attributeName ? String(attributeName) : undefined,
             valueName: valueName ? String(valueName) : undefined,
@@ -237,7 +322,9 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
           return {
             attributeId,
             value,
-            attribute: attributeName ? { id: attributeId, name: String(attributeName) } : undefined,
+            attribute: attributeName
+              ? { id: attributeId, name: String(attributeName) }
+              : undefined,
             attributeName: attributeName ? String(attributeName) : undefined,
           };
         })
@@ -329,11 +416,10 @@ type CartRowLS = {
   unitPrice?: number;
   totalPrice?: number;
 
-  // legacy fields
+  // legacy
   price?: number;
   image?: string | null;
 
-  // optional
   selectedOptions?: any[];
 };
 
@@ -374,21 +460,28 @@ function upsertCartLineLS(input: {
     (x: any) => String(x?.productId ?? "") === pid && (x?.variantId ?? null) === vid
   );
 
-  if (idx >= 0) {
-    const prevQty = Math.max(0, Number(cart[idx]?.qty) || 0);
+  const safeIdx =
+    idx >= 0
+      ? idx
+      : cart.findIndex(
+        (x: any) => String(x?.productId ?? "") === pid && (x?.variantId ?? null) === vid
+      );
+
+  if (safeIdx >= 0) {
+    const prevQty = Math.max(0, Number(cart[safeIdx]?.qty) || 0);
     const nextQty = Math.max(1, prevQty + 1);
 
-    cart[idx] = {
-      ...cart[idx],
+    cart[safeIdx] = {
+      ...cart[safeIdx],
       productId: pid,
       variantId: vid,
       title: input.title,
       qty: nextQty,
       unitPrice: input.unitPrice,
       totalPrice: input.unitPrice * nextQty,
-      price: input.unitPrice, // legacy compatibility
-      image: input.image ?? cart[idx]?.image ?? null,
-      selectedOptions: input.selectedOptions ?? cart[idx]?.selectedOptions ?? [],
+      price: input.unitPrice,
+      image: input.image ?? cart[safeIdx]?.image ?? null,
+      selectedOptions: input.selectedOptions ?? cart[safeIdx]?.selectedOptions ?? [],
     };
   } else {
     cart.push({
@@ -398,7 +491,7 @@ function upsertCartLineLS(input: {
       qty: 1,
       unitPrice: input.unitPrice,
       totalPrice: input.unitPrice,
-      price: input.unitPrice, // legacy compatibility
+      price: input.unitPrice,
       image: input.image ?? null,
       selectedOptions: input.selectedOptions ?? [],
     });
@@ -430,9 +523,6 @@ const buildLabelMaps = (
 
 function shallowEqualSelected(a: Record<string, string>, b: Record<string, string>, keys: string[]) {
   for (const k of keys) {
-    if (String(a?.[k] ?? "") !== String(b?.[k] ?? "") !== false) {
-      // keep behaviour: strict compare
-    }
     if (String(a?.[k] ?? "") !== String(b?.[k] ?? "")) return false;
   }
   return true;
@@ -444,11 +534,157 @@ function buildEmptySelection(axes: Array<{ id: string }>) {
   return out;
 }
 
+function buildSelectionFromVariant(
+  axes: Array<{ id: string }>,
+  v: VariantWire | null
+): Record<string, string> | null {
+  if (!axes.length || !v) return null;
+
+  const out: Record<string, string> = {};
+  for (const ax of axes) out[ax.id] = "";
+
+  for (const o of v.options || []) {
+    const aId = String(o.attributeId ?? "").trim();
+    const vId = String(o.valueId ?? "").trim();
+    if (!aId || !vId) continue;
+    if (!(aId in out)) continue;
+    out[aId] = vId;
+  }
+
+  const anyPicked = Object.values(out).some((x) => !!String(x || "").trim());
+  return anyPicked ? out : null;
+}
+
+type ProductAvailabilityMode = "NONE" | "BASE_ONLY" | "VARIANT_ONLY" | "BASE_AND_VARIANT";
+
+/**
+ * ✅ Best + Cheapest offer picker
+ * Ranking:
+ * 1) lowest price
+ * 2) lowest leadDays (null treated as large)
+ * 3) highest availableQty
+ */
+type BestOfferPick = {
+  offerId: string;
+  supplierId: string;
+  supplierName?: string | null;
+  model: "BASE" | "VARIANT";
+  variantId: string | null;
+  price: number;
+  leadDays: number | null;
+  availableQty: number;
+};
+
+function pickBestOffer(params: {
+  offers: OfferWire[];
+  kind: "BASE" | "VARIANT" | "ANY";
+  variantId?: string | null;
+  sellableVariantIds?: Set<string>;
+}) {
+  const { offers, kind, variantId, sellableVariantIds } = params;
+
+  let best: BestOfferPick | null = null;
+
+  const leadScore = (n: number | null | undefined) => {
+    const v = n == null ? Number.POSITIVE_INFINITY : Number(n);
+    return Number.isFinite(v) ? v : Number.POSITIVE_INFINITY;
+  };
+
+  const betterThan = (a: BestOfferPick, b: BestOfferPick) => {
+    if (a.price !== b.price) return a.price < b.price;
+    const la = leadScore(a.leadDays);
+    const lb = leadScore(b.leadDays);
+    if (la !== lb) return la < lb;
+    if (a.availableQty !== b.availableQty) return a.availableQty > b.availableQty;
+    return a.offerId < b.offerId; // deterministic tie-break
+  };
+
+  for (const o of offers || []) {
+    if (!o) continue;
+    if (!o.isActive || !o.inStock) continue;
+
+    const qty = Number(o.availableQty ?? 0) || 0;
+    if (qty <= 0) continue;
+
+    const price = o.price != null && Number.isFinite(Number(o.price)) ? Number(o.price) : null;
+    if (price == null || price <= 0) continue;
+
+    const isVariant = o.model === "VARIANT" || !!o.variantId;
+    const isBase = !isVariant;
+
+    if (kind === "BASE" && !isBase) continue;
+    if (kind === "VARIANT" && !isVariant) continue;
+
+    if (kind === "VARIANT") {
+      if (!variantId) continue;
+      if (String(o.variantId ?? "") !== String(variantId)) continue;
+      if (sellableVariantIds && !sellableVariantIds.has(String(variantId))) continue;
+    }
+
+    if (kind === "ANY" && isVariant) {
+      if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId))) {
+        continue;
+      }
+    }
+
+    const candidate: BestOfferPick = {
+      offerId: String(o.id),
+      supplierId: String(o.supplierId),
+      supplierName: o.supplierName ?? null,
+      model: isVariant ? "VARIANT" : "BASE",
+      variantId: o.variantId ? String(o.variantId) : null,
+      price: Number(price),
+      leadDays: o.leadDays ?? null,
+      availableQty: qty,
+    };
+
+    if (best == null || betterThan(candidate, best)) best = candidate;
+  }
+
+  return best;
+}
+
+function applyMargin(supplierPrice: number, marginPercent: number) {
+  const m = Math.max(0, Number(marginPercent) || 0);
+  return round2(supplierPrice * (1 + m / 100));
+}
+
+function shortId(id: string) {
+  if (!id) return "";
+  if (id.length <= 10) return id;
+  return `${id.slice(0, 6)}…${id.slice(-4)}`;
+}
+
 /* ---------------- Component ---------------- */
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+
+  /**
+   * ✅ Load marginPercent from settings/public
+   * (backend returns BOTH: marginPercent + pricingMarkupPercent for compatibility)
+   */
+  const settingsQ = useQuery({
+    queryKey: ["public-settings"],
+    queryFn: async () => {
+      const { data } = await api.get("/api/settings/public");
+      const s = (data as any) ?? {};
+      const margin =
+        toNum(s?.marginPercent, NaN) ||
+        toNum(s?.pricingMarkupPercent, NaN) ||
+        toNum(s?.markupPercent, NaN) ||
+        0;
+
+      return {
+        marginPercent: Math.max(0, margin),
+      };
+    },
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+  });
+
+  const marginPercent = settingsQ.data?.marginPercent ?? 0;
 
   const productQ = useQuery({
     queryKey: ["product", id],
@@ -463,9 +699,10 @@ export default function ProductDetail() {
       const variants = normalizeVariants(p);
       const offers = normalizeOffers(p);
 
-      const baseOffers = offers.filter((o) => o.model === "BASE");
+      // ---------------- Stock computation (your existing logic) ----------------
+      const baseOffers = offers.filter((o) => o.model === "BASE" && !o.variantId);
       const baseStockQty = baseOffers
-        .filter((o) => o.isActive && o.inStock && o.availableQty > 0)
+        .filter((o) => o.isActive && o.inStock && (o.availableQty ?? 0) > 0)
         .reduce((acc, o) => acc + (o.availableQty ?? 0), 0);
 
       const baseQtyBySupplier: Record<string, number> = {};
@@ -490,13 +727,11 @@ export default function ProductDetail() {
         const vQtyRaw = Number(o.availableQty ?? 0) || 0;
 
         let effective = 0;
-
         if (vQtyRaw > 0 && baseQty > 0) effective = Math.min(baseQty, vQtyRaw);
         else if (vQtyRaw > 0) effective = vQtyRaw;
         else if (baseQty > 0) effective = baseQty;
 
         if (effective <= 0) continue;
-
         stockByVariantId[o.variantId] = (stockByVariantId[o.variantId] ?? 0) + effective;
       }
 
@@ -505,18 +740,16 @@ export default function ProductDetail() {
 
       const sellableVariantIds = new Set(Object.keys(stockByVariantId));
 
+      const readProductRetail = (x: any) => {
+        const raw = x?.retailPrice ?? x?.price ?? x?.retailBasePrice ?? x?.retailBase ?? null;
+        return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
+      };
+
       const product: ProductWire = {
         id: String(p.id),
         title: String(p.title ?? ""),
         description: p.description ?? "",
-        price:
-          Number.isFinite(Number((p as any).retailPrice))
-            ? Number((p as any).retailPrice)
-            : Number.isFinite(Number((p as any).retailBasePrice))
-              ? Number((p as any).retailBasePrice)
-              : p.price != null && Number.isFinite(Number(p.price))
-                ? Number(p.price)
-                : null,
+        retailPrice: readProductRetail(p),
         inStock: p.inStock !== false,
         imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
         brand: p.brand ? { id: String(p.brand.id), name: String(p.brand.name) } : null,
@@ -524,6 +757,14 @@ export default function ProductDetail() {
         offers,
         attributes: normalizeAttributesIntoProductWire(p),
       };
+
+      // ✅ Best + Cheapest offers
+      const cheapestBaseOffer = pickBestOffer({ offers, kind: "BASE" });
+      const cheapestOverallOffer = pickBestOffer({
+        offers,
+        kind: "ANY",
+        sellableVariantIds,
+      });
 
       const baseDefaultsFromAttributes = normalizeBaseDefaultsFromAttributes(p);
 
@@ -536,6 +777,9 @@ export default function ProductDetail() {
         hasBaseOffer: baseStockQty > 0,
         sellableVariantIds,
         baseDefaultsFromAttributes,
+
+        cheapestBaseOffer,
+        cheapestOverallOffer,
       };
     },
     enabled: !!id,
@@ -551,7 +795,12 @@ export default function ProductDetail() {
       return list.map((x) => ({
         id: String(x?.id ?? ""),
         title: String(x?.title ?? ""),
-        price: x?.price != null && Number.isFinite(Number(x.price)) ? Number(x.price) : null,
+        retailPrice:
+          x?.retailPrice != null && Number.isFinite(Number(x.retailPrice))
+            ? Number(x.retailPrice)
+            : x?.price != null && Number.isFinite(Number(x.price))
+              ? Number(x.price)
+              : null,
         imagesJson: Array.isArray(x?.imagesJson) ? x.imagesJson : [],
         inStock: x?.inStock !== false,
       })) as SimilarProductWire[];
@@ -565,11 +814,26 @@ export default function ProductDetail() {
   const totalStockQty = productQ.data?.totalStockQty ?? 0;
 
   const baseStockQty = productQ.data?.baseStockQty ?? 0;
+  const variantStockQty = productQ.data?.variantStockQty ?? 0;
+
   const hasBaseOffer = productQ.data?.hasBaseOffer ?? false;
   const sellableVariantIds = productQ.data?.sellableVariantIds ?? new Set<string>();
   const baseDefaultsFromAttributes = productQ.data?.baseDefaultsFromAttributes ?? {};
 
+  const cheapestBaseOffer = productQ.data?.cheapestBaseOffer ?? null;
+  const cheapestOverallOffer = productQ.data?.cheapestOverallOffer ?? null;
+
   const canBuyBase = hasBaseOffer && baseStockQty > 0;
+
+  const productAvailabilityMode: ProductAvailabilityMode = React.useMemo(() => {
+    const hasBase = baseStockQty > 0;
+    const hasVariant = variantStockQty > 0;
+
+    if (hasBase && hasVariant) return "BASE_AND_VARIANT";
+    if (hasVariant) return "VARIANT_ONLY";
+    if (hasBase) return "BASE_ONLY";
+    return "NONE";
+  }, [baseStockQty, variantStockQty]);
 
   const allVariants = product?.variants ?? [];
 
@@ -580,6 +844,7 @@ export default function ProductDetail() {
 
   const variantsForOptions = allVariants;
 
+  // ✅ axes are derived ONLY from product/variants
   const axes = React.useMemo(() => {
     if (!product) return [];
 
@@ -648,6 +913,7 @@ export default function ProductDetail() {
     return arr;
   }, [variantsForOptions, axisIdSet]);
 
+  // base defaults from attributes (same as your intent)
   const bestVariantForDefault = React.useMemo(() => {
     if (!variantPairSetsScoped.length) return null;
 
@@ -698,19 +964,99 @@ export default function ProductDetail() {
     [axisIds, baseDefaults]
   );
 
+  /**
+   * ✅ Determine cheapest overall VARIANT selection (only if cheapest overall offer is VARIANT)
+   */
+  const cheapestOverallVariant = React.useMemo(() => {
+    if (!cheapestOverallOffer?.price) return null;
+    if (cheapestOverallOffer.model !== "VARIANT") return null;
+    const vid = cheapestOverallOffer.variantId;
+    if (!vid) return null;
+    const v = (product?.variants || []).find((x) => x.id === vid) ?? null;
+    return v;
+  }, [cheapestOverallOffer, product?.variants]);
+
+  const cheapestOverallVariantSelection = React.useMemo(() => {
+    return buildSelectionFromVariant(axes, cheapestOverallVariant);
+  }, [axes, cheapestOverallVariant]);
+
   const [selected, setSelected] = React.useState<Record<string, string>>({});
 
+
+  /**
+ * Find cheapest offer price with standard “sellable” checks.
+ * NOTE:
+ * - `sellableVariantIds` helps prevent choosing variant offers that can’t actually be sold.
+ */
+function cheapestOfferPrice(params: {
+  offers: OfferWire[];
+  kind: "BASE" | "VARIANT" | "ANY";
+  variantId?: string | null;
+  sellableVariantIds?: Set<string>;
+}) {
+  const { offers, kind, variantId, sellableVariantIds } = params;
+
+  let best: number | null = null;
+
+  for (const o of offers || []) {
+    if (!o) continue;
+    if (!o.isActive || !o.inStock) continue;
+
+    const qty = Number(o.availableQty ?? 0) || 0;
+    if (qty <= 0) continue;
+
+    const price = o.price != null && Number.isFinite(Number(o.price)) ? Number(o.price) : null;
+    if (price == null || price <= 0) continue;
+
+    const isVariant = o.model === "VARIANT" || !!o.variantId;
+    const isBase = !isVariant;
+
+    if (kind === "BASE" && !isBase) continue;
+    if (kind === "VARIANT" && !isVariant) continue;
+
+    if (kind === "VARIANT") {
+      if (!variantId) continue;
+      if (String(o.variantId ?? "") !== String(variantId)) continue;
+      if (sellableVariantIds && !sellableVariantIds.has(String(variantId))) continue;
+    }
+
+    if (kind === "ANY" && isVariant) {
+      if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId))) {
+        continue;
+      }
+    }
+
+    if (best == null || price < best) best = price;
+  }
+
+  return best;
+}
+
+function pickCheapestPositive(a: number | null, b: number | null) {
+  const av = a != null && a > 0 ? a : null;
+  const bv = b != null && b > 0 ? b : null;
+  if (av == null) return bv;
+  if (bv == null) return av;
+  return Math.min(av, bv);
+}
+
+
+  /**
+   * ✅ Default to BEST + CHEAPEST on load:
+   * - if cheapest overall is a VARIANT => select that variant
+   * - else => base defaults
+   */
   React.useEffect(() => {
     if (!product || !axes.length) {
       setSelected({});
       return;
     }
+
     setSelected(() => {
-      const next: Record<string, string> = {};
-      for (const ax of axes) next[ax.id] = baseDefaults[ax.id] ?? "";
-      return next;
+      if (cheapestOverallVariantSelection) return { ...cheapestOverallVariantSelection };
+      return { ...baseDefaults };
     });
-  }, [product?.id, axes, baseDefaults]);
+  }, [product?.id, axes, baseDefaults, cheapestOverallVariantSelection]);
 
   const isSelectionCompatible = React.useCallback(
     (draft: Record<string, string>) => {
@@ -811,32 +1157,94 @@ export default function ProductDetail() {
     return { picked, exact, supers, totalStockExact, missingAxisIds };
   }, [product, selected, variantPairSetsScoped, stockByVariantId]);
 
+  /**
+   * ✅ Pricing (BEST + CHEAPEST + LOCKABLE):
+   * - We return chosenOffer (offerId + supplierId) so you can lock the supplier/offer in cart/checkout.
+   */
   const computed = React.useMemo(() => {
-    const baseRetail = toNum(product?.price, 0);
+    const offers = product?.offers ?? [];
 
+    const retailFallbackProduct = toNum(product?.retailPrice, 0);
+
+    // BASE mode if selection is base defaults
     if (axes.length > 0 && isAtBaseDefaults(selected)) {
+      const baseSupplier = cheapestOfferPrice({ offers, kind: "BASE" });
+
+      // ✅ Option A:
+      // - If base is buyable, show BASE offer only (avoid showing variant price while in BASE mode).
+      // - If base is NOT buyable, allow ANY (variant) to show "best+cheapest" retail.
+      let chosenSupplier: number | null = null;
+      let source:
+        | "BASE_OFFER"
+        | "CHEAPEST_OFFER"
+        | "PRODUCT_RETAIL" = "PRODUCT_RETAIL";
+
+      if (baseStockQty > 0) {
+        // base-buyable => strict base pricing
+        chosenSupplier = baseSupplier;
+        source = baseSupplier != null ? "BASE_OFFER" : "PRODUCT_RETAIL";
+      } else {
+        // base not buyable => allow variant offers as the "cheapest"
+        const anySupplier = cheapestOfferPrice({
+          offers,
+          kind: "ANY",
+          sellableVariantIds,
+        });
+
+        chosenSupplier = pickCheapestPositive(baseSupplier, anySupplier);
+
+        source =
+          chosenSupplier != null
+            ? baseSupplier != null && chosenSupplier === baseSupplier
+              ? "BASE_OFFER"
+              : "CHEAPEST_OFFER"
+            : "PRODUCT_RETAIL";
+      }
+
+      const retailFromSupplier =
+        chosenSupplier != null ? applyMargin(chosenSupplier, marginPercent) : null;
+
+      const fallbackRetail = toNum(product?.retailPrice, 0);
+
       return {
-        base: baseRetail,
-        final: baseRetail,
+        mode: "BASE" as const,
+        supplierPrice: chosenSupplier,
+        final:
+          retailFromSupplier != null && retailFromSupplier > 0
+            ? retailFromSupplier
+            : fallbackRetail,
         matchedVariant: null as VariantWire | null,
         exactMatch: false,
         exactSellable: false,
-        mode: "BASE" as const,
+        source,
       };
     }
+
 
     const pickedPairs = selectionPairsOf(selected);
     if (!pickedPairs.length) {
+      const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
+      const retailFromSupplier =
+        bestAny?.price != null ? applyMargin(bestAny.price, marginPercent) : null;
+
       return {
-        base: baseRetail,
-        final: baseRetail,
+        mode: "VARIANT" as const,
+        supplierPrice: bestAny?.price ?? null,
+        supplierId: bestAny?.supplierId ?? null,
+        supplierName: bestAny?.supplierName ?? null,
+        offerId: bestAny?.offerId ?? null,
+        final:
+          retailFromSupplier != null && retailFromSupplier > 0
+            ? retailFromSupplier
+            : retailFallbackProduct,
         matchedVariant: null as VariantWire | null,
         exactMatch: false,
         exactSellable: false,
-        mode: "VARIANT" as const,
+        source: bestAny != null ? "CHEAPEST_OFFER" : "PRODUCT_RETAIL",
       };
     }
 
+    // Find exact variant match
     let matched: VariantWire | null = null;
     const selPairs = new Set(pickedPairs);
 
@@ -855,29 +1263,79 @@ export default function ProductDetail() {
     }
 
     if (!matched) {
+      const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
+      const retailFromSupplier =
+        bestAny?.price != null ? applyMargin(bestAny.price, marginPercent) : null;
+
       return {
-        base: baseRetail,
-        final: baseRetail,
+        mode: "VARIANT" as const,
+        supplierPrice: bestAny?.price ?? null,
+        supplierId: bestAny?.supplierId ?? null,
+        supplierName: bestAny?.supplierName ?? null,
+        offerId: bestAny?.offerId ?? null,
+        final:
+          retailFromSupplier != null && retailFromSupplier > 0
+            ? retailFromSupplier
+            : retailFallbackProduct,
         matchedVariant: null as VariantWire | null,
         exactMatch: false,
         exactSellable: false,
-        mode: "VARIANT" as const,
+        source: bestAny != null ? "CHEAPEST_OFFER" : "PRODUCT_RETAIL",
       };
     }
 
-    const bump = variantBump(matched);
-    const final = baseRetail + bump;
     const sellable = (stockByVariantId[matched.id] ?? 0) > 0;
 
+    // Best offer for this specific variant
+    const bestVariant = pickBestOffer({
+      offers,
+      kind: "VARIANT",
+      variantId: matched.id,
+      sellableVariantIds,
+    });
+
+    // fallback: base offer if variant offer missing
+    const bestBase = pickBestOffer({ offers, kind: "BASE" });
+
+    const chosen = bestVariant ?? bestBase;
+    const retailFromSupplier =
+      chosen?.price != null ? applyMargin(chosen.price, marginPercent) : null;
+
+    const fallbackVariantRetail = toNum(matched.retailPrice, 0);
+    const fallbackRetail =
+      fallbackVariantRetail > 0 ? fallbackVariantRetail : retailFallbackProduct;
+
     return {
-      base: baseRetail,
-      final,
+      mode: "VARIANT" as const,
+      supplierPrice: chosen?.price ?? null,
+      supplierId: chosen?.supplierId ?? null,
+      supplierName: chosen?.supplierName ?? null,
+      offerId: chosen?.offerId ?? null,
+      final:
+        retailFromSupplier != null && retailFromSupplier > 0
+          ? retailFromSupplier
+          : fallbackRetail,
       matchedVariant: matched,
       exactMatch: true,
       exactSellable: sellable,
-      mode: "VARIANT" as const,
+      source:
+        bestVariant != null
+          ? "VARIANT_OFFER"
+          : bestBase != null
+            ? "BASE_OFFER_FALLBACK"
+            : "RETAIL_FALLBACK",
     };
-  }, [product?.price, axes, selected, isAtBaseDefaults, variantPairSetsScoped, stockByVariantId]);
+  }, [
+    product?.offers,
+    product?.retailPrice,
+    axes.length,
+    selected,
+    isAtBaseDefaults,
+    variantPairSetsScoped,
+    stockByVariantId,
+    sellableVariantIds,
+    marginPercent,
+  ]);
 
   const purchaseMeta = React.useMemo(() => {
     const hasVariantAxes = axes.length > 0;
@@ -917,10 +1375,20 @@ export default function ProductDetail() {
           variantId: null as string | null,
         };
       }
+
+      if (variantStockQty > 0) {
+        return {
+          disableAddToCart: true,
+          helperNote:
+            "Base offer is not available. This product is available as variants only — please select options.",
+          mode: "BASE" as const,
+          variantId: null as string | null,
+        };
+      }
+
       return {
         disableAddToCart: true,
-        helperNote:
-          "Base offer is not available. Please select a variant combo that has an active supplier offer.",
+        helperNote: "Out of stock.",
         mode: "BASE" as const,
         variantId: null as string | null,
       };
@@ -978,6 +1446,7 @@ export default function ProductDetail() {
     selectionInfo,
     computed.matchedVariant?.id,
     sellableVariants.length,
+    variantStockQty,
   ]);
 
   /* ---------------- Images / Zoom ---------------- */
@@ -1003,7 +1472,7 @@ export default function ProductDetail() {
       };
     }
 
-    if (purchaseMeta.mode === "BASE" && !canBuyBase) {
+    if (productAvailabilityMode === "NONE") {
       return {
         text: "Out of stock",
         cls: "bg-rose-600/10 text-rose-700 border-rose-600/20",
@@ -1012,8 +1481,29 @@ export default function ProductDetail() {
 
     if (purchaseMeta.mode === "VARIANT" && selectionInfo.exact.length > 0) {
       return {
-        text: "Out of stock",
+        text: "Out of stock (selection)",
         cls: "bg-rose-600/10 text-rose-700 border-rose-600/20",
+      };
+    }
+
+    if (isAtBaseDefaults(selected) && productAvailabilityMode === "VARIANT_ONLY") {
+      return {
+        text: "Variant only",
+        cls: "bg-indigo-600/10 text-indigo-700 border-indigo-600/20",
+      };
+    }
+
+    if (!isAtBaseDefaults(selected) && productAvailabilityMode === "BASE_ONLY") {
+      return {
+        text: "Base only",
+        cls: "bg-indigo-600/10 text-indigo-700 border-indigo-600/20",
+      };
+    }
+
+    if (productAvailabilityMode === "VARIANT_ONLY") {
+      return {
+        text: "Select variant options",
+        cls: "bg-amber-600/10 text-amber-700 border-amber-600/20",
       };
     }
 
@@ -1025,8 +1515,10 @@ export default function ProductDetail() {
     currentSelectionQty,
     purchaseMeta.disableAddToCart,
     purchaseMeta.mode,
-    canBuyBase,
     selectionInfo.exact.length,
+    productAvailabilityMode,
+    selected,
+    isAtBaseDefaults,
   ]);
 
   const availabilityByAxis = React.useMemo(() => {
@@ -1178,22 +1670,15 @@ export default function ProductDetail() {
     const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
     setHoverPx({ x, y });
   }
+
   const hasBox = imgBox.w > 0 && imgBox.h > 0;
 
-  // Keep at least some zoom; you can tweak ZOOM_REQUEST above if you want stronger/weaker zoom
   const EFFECTIVE_ZOOM = hasBox ? ZOOM_REQUEST : 1;
-
-  // Where is the cursor relative to the displayed image?
   const relX = hasBox ? hoverPx.x / imgBox.w : 0.5;
   const relY = hasBox ? hoverPx.y / imgBox.h : 0.5;
-
-  // Convert that into background-position percentages
   const bgPosX = `${relX * 100}%`;
   const bgPosY = `${relY * 100}%`;
-
-  // How "zoomed" the background should be. 2.5 => 250% size
   const bgSize = `${EFFECTIVE_ZOOM * 100}%`;
-
 
   /* ---------------- Add to cart ---------------- */
   const handleAddToCart = React.useCallback(async () => {
@@ -1206,14 +1691,13 @@ export default function ProductDetail() {
       .filter(([, v]) => !!String(v || "").trim())
       .map(([attributeId, valueId]) => ({ attributeId, valueId }));
 
-    const unitPriceClient = purchaseMeta.mode === "VARIANT" ? computed.final : computed.base;
+    // ✅ unit price sent to client/cart is the computed retail (supplier + margin)
+    const unitPriceClient = toNum(computed.final, 0);
     const unit = Number(unitPriceClient) || 0;
 
     const variantImg =
       variantId
-        ? (product.variants || [])
-          .find((v) => v.id === variantId)
-          ?.imagesJson?.[0]
+        ? (product.variants || []).find((v) => v.id === variantId)?.imagesJson?.[0]
         : undefined;
 
     const primaryImg = variantImg || (product.imagesJson || [])[0] || null;
@@ -1225,6 +1709,10 @@ export default function ProductDetail() {
         quantity: 1,
         selectedOptions: selectedOptionsWire,
         unitPriceClient,
+
+        // ✅ NEW (backend can ignore if not implemented yet)
+        supplierId: computed.supplierId,
+        supplierOfferId: computed.offerId,
       });
     } catch {
       // ignore
@@ -1254,7 +1742,7 @@ export default function ProductDetail() {
       { productId: product.id, variantId },
       { title: "Added to cart", duration: 3500, maxItems: 4 }
     );
-  }, [product, purchaseMeta, selected, computed.final, computed.base, axes, queryClient]);
+  }, [product, purchaseMeta, selected, computed.final, computed.supplierId, computed.offerId, axes, queryClient]);
 
   React.useEffect(() => {
     if (!showZoom) return;
@@ -1277,6 +1765,49 @@ export default function ProductDetail() {
     const step = Math.max(260, Math.floor(el.clientWidth * 0.85));
     el.scrollBy({ left: dir * step, behavior: "smooth" });
   }, []);
+
+  /**
+   * ✅ Fetch offers for each similar product (so we can compute supplier+margin retail, same as detail page).
+   */
+  const similarOfferQs = useQueries({
+    queries: (similarQ.data || [])
+      .filter((sp) => !!sp.id)
+      .map((sp) => ({
+        queryKey: ["product-offers-min", sp.id],
+        enabled: !!sp.id,
+        staleTime: 60_000,
+        queryFn: async () => {
+          const { data } = await api.get(`/api/products/${sp.id}`, {
+            params: { include: "offers" },
+          });
+          const payload = (data as any)?.data ?? data ?? {};
+          const p = (payload as any)?.data ?? payload;
+
+          const offers = normalizeOffers(p);
+
+          // best-effort sellableVariantIds from VARIANT offers
+          const sellableVariantIds = new Set<string>();
+          for (const o of offers) {
+            if ((o.model === "VARIANT" || o.variantId) && o.variantId) {
+              if (!o.isActive || !o.inStock) continue;
+              const qty = Number(o.availableQty ?? 0) || 0;
+              if (qty <= 0) continue;
+              sellableVariantIds.add(String(o.variantId));
+            }
+          }
+
+          const bestAny = pickBestOffer({
+            offers,
+            kind: "ANY",
+            sellableVariantIds,
+          });
+
+          return {
+            supplierPrice: bestAny?.price ?? null,
+          };
+        },
+      })),
+  });
 
   /* ---------------- Render ---------------- */
   if (productQ.isLoading) {
@@ -1304,7 +1835,8 @@ export default function ProductDetail() {
     );
   }
 
-  const priceLabel = NGN.format(computed.final);
+  const displayPrice = toNum(computed.final, 0);
+  const priceLabel = NGN.format(displayPrice > 0 ? displayPrice : 0);
   const CHIP_THRESHOLD = 8;
 
   function VariantAxisPicker({
@@ -1375,7 +1907,8 @@ export default function ProductDetail() {
           <SelectItem value="__NONE__">{`No ${axis.name.toLowerCase()}`}</SelectItem>
           {filtered.map((opt) => {
             const st = states[opt.id] ?? { exists: true, stock: 0, disabled: false };
-            const label =
+
+            const labelText =
               st.disabled && st.reason
                 ? `${opt.name} — ${st.reason}`
                 : st.stock > 0
@@ -1383,8 +1916,8 @@ export default function ProductDetail() {
                   : opt.name;
 
             return (
-              <SelectItem key={opt.id} value={opt.id} disabled={st.disabled} textValue={label}>
-                {label}
+              <SelectItem key={opt.id} value={opt.id} disabled={st.disabled}>
+                {labelText}
               </SelectItem>
             );
           })}
@@ -1395,7 +1928,6 @@ export default function ProductDetail() {
 
   return (
     <SiteLayout>
-      {/* nicer page chrome */}
       <div className="bg-gradient-to-b from-zinc-50 to-white">
         <div className="max-w-6xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
           <div className="flex items-center justify-between gap-3">
@@ -1420,7 +1952,6 @@ export default function ProductDetail() {
         </div>
 
         <div className="max-w-6xl mx-auto p-4 md:p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
-          {/* Images + description (desktop) */}
           <div className="space-y-3 md:space-y-5">
             <div className="relative mx-auto" style={{ maxWidth: "92%" }}>
               <div
@@ -1447,7 +1978,6 @@ export default function ProductDetail() {
                 />
               </div>
 
-              {/* Availability badge on image */}
               <span
                 className={`absolute left-3 top-3 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls}`}
               >
@@ -1482,7 +2012,6 @@ export default function ProductDetail() {
                   document.body
                 )}
 
-
               {images.length > 1 && (
                 <>
                   <button
@@ -1515,7 +2044,6 @@ export default function ProductDetail() {
               )}
             </div>
 
-            {/* Thumbnails */}
             <div
               className="flex items-center justify-center gap-2"
               onMouseEnter={() => setPaused(true)}
@@ -1541,8 +2069,8 @@ export default function ProductDetail() {
                       alt={`thumb-${absoluteIndex}`}
                       onClick={() => setMainIndex(absoluteIndex)}
                       className={`w-24 h-20 rounded-xl border object-cover select-none cursor-pointer ${isActive
-                        ? "ring-2 ring-fuchsia-500 border-fuchsia-500"
-                        : "hover:opacity-90 bg-white"
+                          ? "ring-2 ring-fuchsia-500 border-fuchsia-500"
+                          : "hover:opacity-90 bg-white"
                         }`}
                       onError={(e) => (e.currentTarget.style.opacity = "0.25")}
                     />
@@ -1560,22 +2088,14 @@ export default function ProductDetail() {
               </button>
             </div>
 
-            {/* Description – desktop / larger screens */}
             <div className="hidden md:block rounded-2xl border bg-white shadow-sm p-4 md:p-5">
               <h2 className="text-base font-semibold mb-1">Description</h2>
               <p className="text-sm text-zinc-700 whitespace-pre-line">
                 {product.description || "No description yet."}
               </p>
-
-              {import.meta.env.DEV && (
-                <div className="text-[10px] text-zinc-500 mt-3">
-                  totalStockQty: {totalStockQty}
-                </div>
-              )}
             </div>
           </div>
 
-          {/* Details + variants + description (mobile) */}
           <div className="space-y-5">
             <div className="rounded-2xl border bg-white shadow-sm p-4 md:p-5">
               <h1 className="text-2xl font-semibold leading-tight">{product.title}</h1>
@@ -1597,15 +2117,17 @@ export default function ProductDetail() {
                   </span>
                 </div>
 
-                <div className="text-xs text-zinc-500 mt-1">
-                  Base: {NGN.format(toNum(product.price, 0))}
-                  {purchaseMeta.mode === "VARIANT" && purchaseMeta.variantId && (
-                    <> • Variant price = base + option bumps</>
-                  )}
+                <div className="text-[11px] text-zinc-600 mt-1">
+                  {computed.source === "BASE_OFFER"
+                    ? "Using best base offer."
+                    : computed.source === "VARIANT_OFFER"
+                      ? "Using best variant offer for your selection."
+                      : computed.source === "CHEAPEST_OFFER"
+                        ? "Using best + cheapest available offer."
+                        : "Using stored retail fallback."}
                 </div>
               </div>
 
-              {/* Variant selects */}
               {axes.length > 0 && (
                 <div className="space-y-3 mt-5">
                   <div className="flex items-center justify-between gap-2">
@@ -1614,11 +2136,28 @@ export default function ProductDetail() {
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => setSelected({ ...baseDefaults })}
+                        onClick={() => {
+                          setSelected({ ...baseDefaults });
+                        }}
                         className="px-2 py-1 text-[10px] rounded-lg border bg-white hover:bg-zinc-50"
                         title="Select the base product default options"
                       >
                         Choose base option
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (cheapestOverallVariantSelection) {
+                            setSelected({ ...cheapestOverallVariantSelection });
+                            return;
+                          }
+                          setSelected({ ...baseDefaults });
+                        }}
+                        className="px-2 py-1 text-[10px] rounded-lg border bg-white hover:bg-zinc-50"
+                        title="Choose best+cheapest sellable offer (base or variant)"
+                      >
+                        Choose cheapest
                       </button>
 
                       <button
@@ -1670,7 +2209,6 @@ export default function ProductDetail() {
                 </div>
               )}
 
-              {/* CTAs */}
               <div className="pt-4 flex items-center gap-3 flex-wrap">
                 <button
                   type="button"
@@ -1683,7 +2221,7 @@ export default function ProductDetail() {
                     }`}
                 >
                   <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
-                  Add to cart — {NGN.format(computed.final)}
+                  Add to cart — {NGN.format(toNum(computed.final, 0))}
                 </button>
 
                 <button
@@ -1696,23 +2234,15 @@ export default function ProductDetail() {
               </div>
             </div>
 
-            {/* Description – mobile / small screens */}
             <div className="block md:hidden rounded-2xl border bg-white shadow-sm p-4 md:p-5">
               <h2 className="text-base font-semibold mb-1">Description</h2>
               <p className="text-sm text-zinc-700 whitespace-pre-line">
                 {product.description || "No description yet."}
               </p>
-
-              {import.meta.env.DEV && (
-                <div className="text-[10px] text-zinc-500 mt-3">
-                  totalStockQty: {totalStockQty}
-                </div>
-              )}
             </div>
           </div>
         </div>
 
-        {/* Similar products section – stays at the very bottom */}
         <div className="max-w-6xl mx-auto px-4 md:px-6 pb-10">
           <div className="rounded-2xl border bg-white shadow-sm p-4 md:p-5">
             <div className="flex items-center justify-between gap-3">
@@ -1763,9 +2293,19 @@ export default function ProductDetail() {
                   className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1 scroll-smooth"
                   style={{ scrollSnapType: "x mandatory" as any }}
                 >
-                  {(similarQ.data || []).map((sp) => {
+                  {(similarQ.data || []).map((sp, idx) => {
                     const img = (sp.imagesJson || [])[0] || "/placeholder.svg";
-                    const price = sp.price != null ? NGN.format(sp.price) : "—";
+
+                    const supplierMin = similarOfferQs[idx]?.data?.supplierPrice ?? null;
+                    const computedRetail =
+                      supplierMin != null && supplierMin > 0
+                        ? applyMargin(supplierMin, marginPercent)
+                        : sp.retailPrice != null
+                          ? sp.retailPrice
+                          : null;
+
+                    const price = computedRetail != null ? NGN.format(computedRetail) : "—";
+
                     return (
                       <Link
                         key={sp.id}
@@ -1783,8 +2323,8 @@ export default function ProductDetail() {
                           />
                           <span
                             className={`absolute left-2 top-2 inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium border ${sp.inStock !== false
-                              ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
-                              : "bg-rose-600/10 text-rose-700 border-rose-600/20"
+                                ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
+                                : "bg-rose-600/10 text-rose-700 border-rose-600/20"
                               }`}
                           >
                             {sp.inStock !== false ? "In stock" : "Out of stock"}
@@ -1794,6 +2334,7 @@ export default function ProductDetail() {
                         <div className="p-3">
                           <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
                           <div className="mt-1 text-sm text-zinc-800">{price}</div>
+
                           <div className="mt-2 text-xs text-fuchsia-700">View product →</div>
                         </div>
                       </Link>
@@ -1803,9 +2344,7 @@ export default function ProductDetail() {
               )}
 
               {!similarQ.isLoading && (similarQ.data?.length ?? 0) > 0 ? (
-                <div className="mt-2 text-[11px] text-zinc-500">
-                  Tip: swipe to scroll the list.
-                </div>
+                <div className="mt-2 text-[11px] text-zinc-500">Tip: swipe to scroll the list.</div>
               ) : null}
             </div>
           </div>

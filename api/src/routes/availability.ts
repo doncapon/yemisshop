@@ -1,13 +1,13 @@
 // api/src/routes/availability.ts
-import { Router, type Request, type Response } from 'express';
-import { prisma } from '../lib/prisma.js';
+import { Router, type Request, type Response } from "express";
+import { prisma } from "../lib/prisma.js";
 
 type Pair = { productId: string; variantId: string | null };
 
 function parseItemsParam(itemsParam: unknown): Pair[] {
   let rawParts: string[] = [];
 
-  if (typeof itemsParam === 'string') {
+  if (typeof itemsParam === "string") {
     rawParts = [itemsParam];
   } else if (Array.isArray(itemsParam)) {
     rawParts = (itemsParam as unknown[]).map((v) => String(v));
@@ -16,7 +16,7 @@ function parseItemsParam(itemsParam: unknown): Pair[] {
   }
 
   const tokens = rawParts
-    .flatMap((s) => String(s).split(','))
+    .flatMap((s) => String(s).split(","))
     .map((s) => s.trim())
     .filter(Boolean);
 
@@ -24,13 +24,13 @@ function parseItemsParam(itemsParam: unknown): Pair[] {
   const seen = new Set<string>();
 
   for (const token of tokens) {
-    const [pidRaw, vidRaw] = token.split(':', 2);
-    const productId = (pidRaw ?? '').trim();
+    const [pidRaw, vidRaw] = token.split(":", 2);
+    const productId = (pidRaw ?? "").trim();
     if (!productId) continue;
 
-    const variantId = vidRaw == null || vidRaw.trim() === '' ? null : vidRaw.trim();
+    const variantId = vidRaw == null || vidRaw.trim() === "" ? null : vidRaw.trim();
 
-    const key = `${productId}::${variantId ?? 'null'}`;
+    const key = `${productId}::${variantId ?? "null"}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
@@ -80,65 +80,58 @@ async function availabilityHandler(req: Request, res: Response) {
   });
 
   // 2) Variant offers (SupplierVariantOffer)
+  // ✅ IMPORTANT: source-of-truth should be variant.productId (not supplierVariantOffer.productId)
   const variantOffers = await prisma.supplierVariantOffer.findMany({
     where: {
-      productId: { in: productIds },
+      variant: { productId: { in: productIds } },
       isActive: true,
       inStock: true,
-    },
+    } as any,
     select: {
-      productId: true,
+      // we can still return productId from request mapping, but filter uses variant.productId
       variantId: true,
       availableQty: true,
-      priceBump: true,
-      supplierProductOffer: {
-        select: {
-          basePrice: true,
-        },
-      },
-    },
+
+      // ✅ NEW: full unit price for that variant offer (no bump math)
+      unitPrice: true,
+
+      // include variant to recover productId safely if needed
+      variant: { select: { productId: true } },
+    } as any,
   });
 
   // Buckets
-  const baseByProduct = new Map<
-    string,
-    Array<{ availableQty: number; basePrice: number | null }>
-  >();
+  const baseByProduct = new Map<string, Array<{ availableQty: number; basePrice: number | null }>>();
 
   const variantByProduct = new Map<
     string,
     Array<{
       variantId: string;
       availableQty: number;
-      unitPrice: number | null; // basePrice + priceBump
+      unitPrice: number | null; // ✅ direct unitPrice
     }>
   >();
 
-  for (const o of baseOffers) {
-    const arr = baseByProduct.get(o.productId) ?? [];
+  for (const o of baseOffers as any[]) {
+    const arr = baseByProduct.get(String(o.productId)) ?? [];
     arr.push({
       availableQty: Math.max(0, Number(o.availableQty ?? 0) || 0),
       basePrice: o.basePrice != null ? Number(o.basePrice) : null,
     });
-    baseByProduct.set(o.productId, arr);
+    baseByProduct.set(String(o.productId), arr);
   }
 
-  for (const o of variantOffers) {
-    const pid = o.productId;
+  for (const o of variantOffers as any[]) {
+    const pid = String(o?.variant?.productId ?? "");
     const vid = String(o.variantId);
 
-    const basePrice =
-      o.supplierProductOffer?.basePrice != null ? Number(o.supplierProductOffer.basePrice) : null;
-    const bump = o.priceBump != null ? Number(o.priceBump) : 0;
-
-    const unitPrice =
-      basePrice != null && Number.isFinite(basePrice) ? basePrice + bump : null;
+    const unitPriceNum = o.unitPrice != null ? Number(o.unitPrice) : null;
 
     const arr = variantByProduct.get(pid) ?? [];
     arr.push({
       variantId: vid,
       availableQty: Math.max(0, Number(o.availableQty ?? 0) || 0),
-      unitPrice: unitPrice != null && Number.isFinite(unitPrice) ? unitPrice : null,
+      unitPrice: unitPriceNum != null && Number.isFinite(unitPriceNum) ? unitPriceNum : null,
     });
     variantByProduct.set(pid, arr);
   }
@@ -166,7 +159,7 @@ async function availabilityHandler(req: Request, res: Response) {
       };
     }
 
-    // VARIANT line: only SupplierVariantOffer for that variantId (no borrowing from base)
+    // VARIANT line: only SupplierVariantOffer for that variantId
     const list = variantByProduct.get(productId) ?? [];
     let totalAvailable = 0;
     let cheapest: number | null = null;
@@ -187,12 +180,12 @@ async function availabilityHandler(req: Request, res: Response) {
     };
   });
 
-  res.json({ data });
+  return res.json({ data });
 }
 
 // Mount the same handler under all three paths your frontend probes
 router.get(
-  ['/catalog/availability', '/products/availability', '/supplier-offers/availability'],
+  ["/catalog/availability", "/products/availability", "/supplier-offers/availability"],
   availabilityHandler
 );
 

@@ -2,55 +2,86 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { requireAuth, requireSuperAdmin } from '../middleware/auth.js';
+import { DateTime } from "luxon";
+import { computeProfitForWindow } from '../services/admin.service.js';
+
 
 const router = Router();
 
-/**
- * GET /api/admin/metrics/profit-summary?from=YYYY-MM-DD&to=YYYY-MM-DD
- * - Returns profitSum (range), profitToday, and count of events.
- * - Uses PaymentEvent(type='PROFIT_COMPUTED') data.profit
- */
-router.get('/profit-summary', requireAuth, requireSuperAdmin, async (req, res) => {
-  const tzNow = new Date(); // server local; if you want Lagos, adjust with luxon/dayjs
-  const yyyy = tzNow.getFullYear();
-  const mm = String(tzNow.getMonth() + 1).padStart(2, '0');
-  const dd = String(tzNow.getDate()).padStart(2, '0');
 
-  const qFrom = String(req.query.from || `${yyyy}-${mm}-${dd}`);
-  const qTo   = String(req.query.to   || `${yyyy}-${mm}-${dd}`);
+router.get("/profit-summary", requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    const TZ = "Africa/Lagos";
 
-  const fromStart = new Date(`${qFrom}T00:00:00.000Z`);
-  const toEnd     = new Date(`${qTo}T23:59:59.999Z`);
+    const nowLagos = DateTime.now().setZone(TZ);
+    const defaultYMD = nowLagos.toFormat("yyyy-LL-dd");
 
-  // fetch only the events we need and sum in app (JSON column)
-  const events = await prisma.paymentEvent.findMany({
-    where: {
-      type: 'PROFIT_COMPUTED',
-      createdAt: { gte: fromStart, lte: toEnd },
-    },
-    select: { data: true, createdAt: true },
-    orderBy: { createdAt: 'desc' },
-    take: 5000, // safety cap; increase if needed
-  });
+    const qFrom = String(req.query.from ?? defaultYMD);
+    const qTo = String(req.query.to ?? defaultYMD);
 
-  const n = (v: any) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const fromLagos = DateTime.fromFormat(qFrom, "yyyy-LL-dd", { zone: TZ });
+    const toLagos = DateTime.fromFormat(qTo, "yyyy-LL-dd", { zone: TZ });
 
-  // sum in range
-  const profitSum = events.reduce((s: number, ev: { data: any; }) => s + n((ev.data as any)?.profit), 0);
+    if (!fromLagos.isValid || !toLagos.isValid) {
+      return res.status(400).json({ error: "Invalid date. Use YYYY-MM-DD for from/to." });
+    }
 
-  // sum today only (guard in case from/to are larger)
-  const todayStart = new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`);
-  const todayEnd   = new Date(`${yyyy}-${mm}-${dd}T23:59:59.999Z`);
-  const profitToday = events
-    .filter((ev: { createdAt: Date; }) => ev.createdAt >= todayStart && ev.createdAt <= todayEnd)
-    .reduce((s: number, ev: { data: any; }) => s + n((ev.data as any)?.profit), 0);
+    const fromStartUtc = fromLagos.startOf("day").toUTC();
+    const toEndUtc = toLagos.endOf("day").toUTC();
 
-  res.json({
-    range: { from: qFrom, to: qTo },
-    eventsCount: events.length,
-    profitSum,
-    profitToday,
-  });
+    if (fromStartUtc.toMillis() > toEndUtc.toMillis()) {
+      return res.status(400).json({ error: "`from` must be <= `to`" });
+    }
+
+    // ✅ Real computation (not paymentEvent JSON)
+    const breakdown = await computeProfitForWindow(
+      prisma,
+      fromStartUtc.toJSDate(),
+      toEndUtc.toJSDate()
+    );
+
+    // Also compute "today" in Lagos (separately)
+    const todayStartUtc = nowLagos.startOf("day").toUTC();
+    const todayEndUtc = nowLagos.endOf("day").toUTC();
+
+    const todayBreakdown = await computeProfitForWindow(
+      prisma,
+      todayStartUtc.toJSDate(),
+      todayEndUtc.toJSDate()
+    );
+
+    return res.json({
+      timezone: TZ,
+      range: { from: qFrom, to: qTo },
+
+      // Useful boundaries for debugging
+      boundaries: {
+        lagos: {
+          fromStart: fromLagos.startOf("day").toISO(),
+          toEnd: toLagos.endOf("day").toISO(),
+        },
+        utc: {
+          fromStart: fromStartUtc.toISO(),
+          toEnd: toEndUtc.toISO(),
+        },
+      },
+
+      ...breakdown,
+
+      // optional: dashboard-safe value if you never want negative tiles
+      grossProfitSafe: Math.max(0, breakdown.grossProfit),
+
+      today: {
+        ...todayBreakdown,
+        grossProfitSafe: Math.max(0, todayBreakdown.grossProfit),
+      },
+    });
+  } catch (e: any) {
+    console.error("profit-summary failed:", e);
+    return res.status(500).json({ error: "Failed to compute profit summary" });
+  }
 });
+
+
 
 export default router;

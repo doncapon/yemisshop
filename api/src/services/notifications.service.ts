@@ -5,16 +5,20 @@ import { Prisma, NotificationType } from "@prisma/client";
 import { sendWhatsApp } from "../lib/sms.js";
 
 type NotificationPayload = {
-  type: NotificationType;   // 👈 strongly typed
+  type: NotificationType; // strongly typed
   title: string;
   body: string;
   data?: any;
 };
 
+type Tx = Prisma.TransactionClient;
+
+/* ----------------------------- Core notifiers ----------------------------- */
+
 export async function notifyUser(
   userId: string | null | undefined,
   payload: NotificationPayload,
-  tx?: Prisma.TransactionClient       // 👈 optional, but very handy
+  tx?: Tx
 ) {
   const db = tx ?? prisma;
   const uid = userId ? String(userId) : "";
@@ -34,17 +38,14 @@ export async function notifyUser(
 export async function notifyMany(
   userIds: Array<string | null | undefined>,
   payload: NotificationPayload,
-  tx?: Prisma.TransactionClient
+  tx?: Tx
 ) {
   const db = tx ?? prisma;
 
   const ids = Array.from(
-    new Set(
-      (userIds || [])
-        .map((id) => (id ? String(id) : ""))
-        .filter(Boolean)
-    )
+    new Set((userIds || []).map((id) => (id ? String(id) : "")).filter(Boolean))
   );
+
   if (!ids.length) return;
 
   await db.notification.createMany({
@@ -58,14 +59,8 @@ export async function notifyMany(
   });
 }
 
-
-/**
- * Convenience: notify all admins + super admins.
- */
-export async function notifyAdmins(
-  payload: NotificationPayload,
-  tx?: Prisma.TransactionClient
-) {
+/** Convenience: notify all admins + super admins. */
+export async function notifyAdmins(payload: NotificationPayload, tx?: Tx) {
   const db = tx ?? prisma;
 
   const admins = await db.user.findMany({
@@ -82,13 +77,11 @@ export async function notifyAdmins(
   );
 }
 
-/**
- * Convenience: notify the user account linked to a supplier.
- */
+/** Convenience: notify the user account linked to a supplier. */
 export async function notifySupplierBySupplierId(
   supplierId: string,
   payload: NotificationPayload,
-  tx?: Prisma.TransactionClient
+  tx?: Tx
 ) {
   const db = tx ?? prisma;
 
@@ -102,24 +95,68 @@ export async function notifySupplierBySupplierId(
   await notifyUser(supplier.userId, payload, db);
 }
 
+/* ------------------------------ Small helpers ----------------------------- */
 
-/**
- * Helper: format a short human-friendly order ref
- */
-function formatOrderLabel(order: any, payment?: any) {
-  // If you store a nice ref somewhere, use that instead
+function escapeHtml(input: unknown) {
+  const s = String(input ?? "");
+  return s
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function toNaira(amount: unknown) {
+  const n = Number(amount ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return null;
+
+  // Keep your current style but make it stable
+  return `₦${n.toLocaleString("en-NG", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function formatWhen(dt?: Date | string | null) {
+  if (!dt) return null;
+  const d = typeof dt === "string" ? new Date(dt) : dt;
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString(); // server locale; if you want NG/London consistently, set locale here.
+}
+
+/** Helper: format a short human-friendly order ref */
+function formatOrderLabel(order: { id: string }, payment?: { reference?: string | null }) {
   if (payment?.reference) return `Payment ref ${payment.reference}`;
   return `Order ${order.id}`;
 }
+
+function linesToEmailHtml(lines: string[]) {
+  // Turn lines into <p> blocks; blank lines become spacing via <div style="height:12px"></div>
+  return lines
+    .map((line) => {
+      if (!line.trim()) return `<div style="height:12px"></div>`;
+      return `<p style="margin:0 0 8px 0">${escapeHtml(line)}</p>`;
+    })
+    .join("");
+}
+
+/* ------------------------- Customer comms: refund ------------------------- */
 
 /**
  * Notify the customer that their order has been fully refunded.
  * Called from adminOrders refund endpoint after DB state is already updated.
  */
-export async function notifyCustomerOrderRefunded(orderId:any, paymentId:any) {
+export async function notifyCustomerOrderRefunded(
+  orderId: string,
+  paymentId?: string | null,
+  tx?: Tx
+) {
+  const db = tx ?? prisma;
+
   try {
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
+    const order = await db.order.findUnique({
+      where: { id: String(orderId) },
       include: {
         user: { select: { id: true, email: true, firstName: true, lastName: true, phone: true } },
         payments: {
@@ -135,34 +172,37 @@ export async function notifyCustomerOrderRefunded(orderId:any, paymentId:any) {
       },
     });
 
-    if (!order || !order.user?.email) {
+    if (!order?.user?.email) {
       console.warn("[notifyCustomerOrderRefunded] no order/user email", { orderId });
       return;
     }
 
     const payment =
-      paymentId &&
-      order.payments?.find((p:any) => String(p.id) === String(paymentId)) ||
-      order.payments?.[0] ||
+      (paymentId
+        ? order.payments?.find((p: any) => String(p.id) === String(paymentId))
+        : null) ??
+      order.payments?.[0] ??
       null;
 
-    const label = formatOrderLabel(order, payment);
-    const amount = Number(payment?.amount ?? order.total ?? 0);
+    const label = formatOrderLabel(order, payment ?? undefined);
+    const amountText = toNaira(payment?.amount ?? (order as any).total ?? 0);
+    const paidAtText = formatWhen(payment?.paidAt ?? null);
 
     const fullName =
-      (order.user.firstName || order.user.lastName)
+      order.user.firstName || order.user.lastName
         ? `${order.user.firstName || ""} ${order.user.lastName || ""}`.trim()
         : null;
 
     const subject = `Your ${label} has been refunded`;
-    const plainText = [
+
+    const lines: string[] = [
       fullName ? `Hi ${fullName},` : "Hi,",
       "",
       "Your refund has been processed successfully.",
       "",
-      label ? `• ${label}` : null,
-      amount ? `• Amount: ₦${amount.toLocaleString("en-NG", { maximumFractionDigits: 2 })}` : null,
-      payment?.paidAt ? `• Original payment date: ${new Date(payment.paidAt).toLocaleString()}` : null,
+      `• ${label}`,
+      amountText ? `• Amount: ${amountText}` : "",
+      paidAtText ? `• Original payment date: ${paidAtText}` : "",
       "",
       "Depending on your bank, it may take a few working days for the refund to appear in your account.",
       "",
@@ -170,41 +210,51 @@ export async function notifyCustomerOrderRefunded(orderId:any, paymentId:any) {
       "",
       "Best regards,",
       "Customer Support",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    const html = plainText
-      .split("\n")
-      .map((line) => (line === "" ? "<br/>" : `<p>${line}</p>`))
-      .join("");
+    ].filter((x) => x !== "");
 
     await safeSend({
       to: order.user.email,
       subject,
-      text: plainText,
-      html,
+      text: lines.join("\n"),
+      html: linesToEmailHtml(lines),
     });
 
-    // Optional: WhatsApp notification if you store phone numbers and have integration wired
+    // Optional: WhatsApp notification
     if (order.user.phone) {
       try {
-        await sendWhatsApp(order.user.phone, 
-          `Your ${label} has been refunded. Amount: ₦${amount.toLocaleString("en-NG", {
-            maximumFractionDigits: 2,
-          })}.`
+        await sendWhatsApp(
+          order.user.phone,
+          `Your ${label} has been refunded.${amountText ? ` Amount: ${amountText}.` : ""
+          }`
         );
       } catch (e) {
         console.error("[notifyCustomerOrderRefunded] WhatsApp failed", e);
       }
     }
 
-    // Optional: log an activity item (if you want)
+    // Optional: In-app notification record (since you already have notifications table)
     try {
-      await prisma.orderActivity.create({
+      await notifyUser(
+        order.user.id,
+        {
+          type: NotificationType.REFUND_STATUS_CHANGED,
+          title: "Refund processed",
+          body: `${label} has been refunded${amountText ? ` (${amountText})` : ""}.`,
+          data: { orderId: order.id, paymentId: payment?.id ?? null },
+        },
+        db
+      );
+    } catch (e) {
+      console.error("[notifyCustomerOrderRefunded] in-app notify failed", e);
+    }
+
+
+    // Optional: log activity item (if your schema supports it)
+    try {
+      await (db as any).orderActivity.create({
         data: {
-          orderId,
-          type: "CUSTOMER_NOTIFIED" as any,
+          orderId: order.id,
+          type: "CUSTOMER_NOTIFIED",
           message: "Customer notified about refund",
           meta: {
             channel: ["email", order.user.phone ? "whatsapp" : null].filter(Boolean),
@@ -220,30 +270,33 @@ export async function notifyCustomerOrderRefunded(orderId:any, paymentId:any) {
   }
 }
 
-/**
- * Notify the customer that their order has been cancelled by admin
- */
-export async function notifyCustomerOrderCancelled(orderId: any) {
+/* ------------------------ Customer comms: cancel -------------------------- */
+
+/** Notify the customer that their order has been cancelled by admin */
+export async function notifyCustomerOrderCancelled(orderId: string, tx?: Tx) {
+  const db = tx ?? prisma;
+
   try {
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
+    const order = await db.order.findUnique({
+      where: { id: String(orderId) },
       include: {
         user: { select: { id: true, email: true, firstName: true, lastName: true, phone: true } },
       },
     });
 
-    if (!order || !order.user?.email) {
+    if (!order?.user?.email) {
       console.warn("[notifyCustomerOrderCancelled] no order/user email", { orderId });
       return;
     }
 
     const fullName =
-      (order.user.firstName || order.user.lastName)
+      order.user.firstName || order.user.lastName
         ? `${order.user.firstName || ""} ${order.user.lastName || ""}`.trim()
         : null;
 
     const subject = `Your order ${order.id} has been cancelled`;
-    const plainText = [
+
+    const lines: string[] = [
       fullName ? `Hi ${fullName},` : "Hi,",
       "",
       "We wanted to let you know that your order has been cancelled by our team.",
@@ -254,18 +307,13 @@ export async function notifyCustomerOrderCancelled(orderId: any) {
       "",
       "Best regards,",
       "Customer Support",
-    ].join("\n");
-
-    const html = plainText
-      .split("\n")
-      .map((line) => (line === "" ? "<br/>" : `<p>${line}</p>`))
-      .join("");
+    ];
 
     await safeSend({
       to: order.user.email,
       subject,
-      text: plainText,
-      html,
+      text: lines.join("\n"),
+      html: linesToEmailHtml(lines),
     });
 
     if (order.user.phone) {
@@ -279,11 +327,28 @@ export async function notifyCustomerOrderCancelled(orderId: any) {
       }
     }
 
+    // Optional: In-app notification
     try {
-      await prisma.orderActivity.create({
+      await notifyUser(
+        order.user.id,
+        {
+          type: NotificationType.ORDER_CANCELED, // adjust if your enum differs
+          title: "Order cancelled",
+          body: `Order ${order.id} was cancelled by our team.`,
+          data: { orderId: order.id },
+        },
+        db
+      );
+    } catch (e) {
+      console.error("[notifyCustomerOrderCancelled] in-app notify failed", e);
+    }
+
+    // Optional: log activity item (if your schema supports it)
+    try {
+      await (db as any).orderActivity.create({
         data: {
-          orderId,
-          type: "CUSTOMER_NOTIFIED" as any,
+          orderId: order.id,
+          type: "CUSTOMER_NOTIFIED",
           message: "Customer notified about cancellation",
           meta: {
             channel: ["email", order.user.phone ? "whatsapp" : null].filter(Boolean),

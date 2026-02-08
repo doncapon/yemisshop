@@ -63,6 +63,7 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
 
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-slate-100">
+      <NotificationsBell />
       {/* ✅ centered container */}
       <div className="mx-auto w-full max-w-6xl px-3 sm:px-4 md:px-8">
         {/* Sub-nav (HIDE/REDUCE for riders) */}

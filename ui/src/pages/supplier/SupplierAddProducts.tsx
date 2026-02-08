@@ -24,7 +24,6 @@ type SupplierMe = {
 type VariantRow = {
   id: string;
   selections: Record<string, string>; // attributeId -> valueId | ""
-  priceBump: string; // bump for this row
   availableQty: string; // qty for this variant row
 };
 
@@ -37,12 +36,11 @@ function slugifySku(input: string) {
     .trim()
     .toUpperCase()
     .replace(/&/g, " AND ")
-    .replace(/[^A-Z0-9]+/g, "-")   // non-alnum => dash
-    .replace(/-+/g, "-")          // collapse dashes
-    .replace(/^-|-$/g, "")        // trim dashes
-    .slice(0, 32);                // optional length cap
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 32);
 }
-
 
 function isUrlish(s?: string) {
   return !!s && /^(https?:\/\/|data:image\/|\/)/i.test(s);
@@ -94,13 +92,16 @@ export default function SupplierAddProduct() {
 
   // basic form fields
   const [title, setTitle] = useState("");
-  const [price, setPrice] = useState(""); // base offer price
+  const [retailPrice, setRetailPrice] = useState(""); // Product.retailPrice (mapped to "price" in DB)
   const [sku, setSku] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [brandId, setBrandId] = useState("");
   const [description, setDescription] = useState("");
 
-  // ✅ baseQuantity (stock for base product, independent of variants)
+  // stock
+  // NOTE: Prisma schema has Product.availableQty + ProductVariant.availableQty.
+  // We keep "baseQuantity" in UI, but we persist ONLY Product.availableQty as total,
+  // and ProductVariant.availableQty for variant rows.
   const [baseQuantity, setBaseQuantity] = useState<string>("0");
 
   // images
@@ -110,10 +111,11 @@ export default function SupplierAddProduct() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // attributes & variants
+  // variants
   const [selectedAttrs, setSelectedAttrs] = useState<Record<string, string | string[]>>({});
   const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
   const skuTouchedRef = useRef(false);
+
   const ngn = useMemo(
     () =>
       new Intl.NumberFormat("en-NG", {
@@ -236,7 +238,7 @@ export default function SupplierAddProduct() {
   function addVariantRow() {
     const selections: Record<string, string> = {};
     selectableAttrs.forEach((a) => (selections[a.id] = ""));
-    setVariantRows((prev) => [...prev, { id: uid("vr"), selections, priceBump: "", availableQty: "" }]);
+    setVariantRows((prev) => [...prev, { id: uid("vr"), selections, availableQty: "" }]);
   }
 
   function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
@@ -250,7 +252,7 @@ export default function SupplierAddProduct() {
       const changed = next.find((r) => r.id === rowId);
       if (!changed) return rows;
 
-      // ✅ ignore duplicate checks until row has at least 1 selection
+      // ignore duplicate checks until row has at least 1 selection
       if (!rowHasAnySelection(changed.selections)) return next;
 
       const changedKey = comboKeyFromSelections(changed.selections, attrOrder);
@@ -270,10 +272,6 @@ export default function SupplierAddProduct() {
     });
   }
 
-  function updateVariantPriceBump(rowId: string, v: string) {
-    setVariantRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, priceBump: v } : r)));
-  }
-
   function updateVariantQty(rowId: string, v: string) {
     setVariantRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, availableQty: v } : r)));
   }
@@ -283,8 +281,11 @@ export default function SupplierAddProduct() {
   }
 
   /* =========================
-     ✅ Stock model
+     Stock model
      total = baseQuantity + sum(variant quantities)
+     Persisted:
+       - Product.availableQty = total
+       - Variant.availableQty = each row qty
   ========================= */
 
   const baseQtyPreview = useMemo(() => toIntNonNeg(baseQuantity), [baseQuantity]);
@@ -296,11 +297,11 @@ export default function SupplierAddProduct() {
   }, [variantRows]);
 
   const totalQty = useMemo(() => baseQtyPreview + variantQtyTotal, [baseQtyPreview, variantQtyTotal]);
-
   const inStockPreview = totalQty > 0;
+
   const variantsEnabled = useMemo(() => variantRows.some(isRealVariantRow), [variantRows]);
 
-  // ✅ Detect duplicates (ignore empty rows)
+  // Detect duplicates (ignore empty rows)
   const duplicateRowIds = useMemo(() => {
     const seen = new Map<string, string>();
     const dups = new Set<string>();
@@ -321,17 +322,19 @@ export default function SupplierAddProduct() {
   }, [variantRows, attrOrder]);
 
   /* =========================
-     Build payload
-     ✅ Make baseQuantity persist by also sending
-       common legacy aliases many APIs use
+     Build payload (schema-conformant)
+     Product:
+       - retailPrice, availableQty, inStock, imagesJson, sku, etc.
+     Variants:
+       - availableQty, inStock, options
+       - retailPrice optional (we set it to product retailPrice for simplicity)
+     Variant options:
+       - attributeId, valueId (unitPrice remains null unless you later support it)
   ========================= */
 
   function buildPayload(imagesJson: string[]) {
     const baseSku = sku.trim();
-    const basePrice = toMoneyNumber(price);
-
-    const baseQty = baseQtyPreview;
-    const total = totalQty;
+    const basePriceNum = toMoneyNumber(retailPrice);
 
     const attributeSelections: Array<{
       attributeId: string;
@@ -368,21 +371,19 @@ export default function SupplierAddProduct() {
 
     const variants: Array<{
       sku?: string | null;
-      priceBump?: number | null;
-      availableQty?: number | null;
-      inStock?: boolean;
+      retailPrice?: number | null;
+      availableQty: number;
+      inStock: boolean;
       imagesJson?: string[];
-      options?: Array<{ attributeId: string; valueId: string }>;
+      options: Array<{ attributeId: string; valueId: string }>;
     }> = [];
 
     if (variantRows.length && selectableAttrs.length) {
       for (const row of variantRows) {
         const picks = Object.entries(row.selections || {}).filter(([, valueId]) => !!String(valueId || "").trim());
-        if (!picks.length) continue; // ignore empty rows
+        if (!picks.length) continue;
 
-        const bumpNum = row.priceBump === "" || row.priceBump == null ? 0 : toMoneyNumber(row.priceBump);
         const rowQty = toIntNonNeg(row.availableQty);
-
         const options = picks.map(([attributeId, valueId]) => ({ attributeId, valueId }));
 
         // SKU suffix from selected values (optional)
@@ -401,7 +402,7 @@ export default function SupplierAddProduct() {
 
         variants.push({
           sku: variantSku,
-          priceBump: bumpNum,
+          retailPrice: basePriceNum || null, // optional field in schema
           availableQty: rowQty,
           inStock: rowQty > 0,
           imagesJson: [],
@@ -410,38 +411,13 @@ export default function SupplierAddProduct() {
       }
     }
 
-    // ✅ NOTE: we keep existing fields unchanged, but ADD aliases so backend persists base qty
     return {
       title: title.trim(),
       description: description?.trim() || "",
-      price: basePrice,
-      ...(baseSku ? { sku: baseSku } : {}),
-
-      // ✅ base qty (new + aliases)
-      baseQuantity: baseQty,
-      baseQty: baseQty,
-      // some backends persist this as the offer qty
-      availableQty: baseQty,
-      // some backends use this naming
-      offerAvailableQty: baseQty,
-
-      // ✅ base price alias (some schemas use offerPrice)
-      offerPrice: basePrice,
-
-      // keep existing nested object (your UI already uses this)
-      offer: {
-        basePrice: basePrice,
-        currency: "NGN",
-        availableQty: baseQty,
-        inStock: total > 0,
-        isActive: true,
-      },
-
-      // cached totals (unchanged)
-      availableQtyTotal: total,
-      productAvailableQty: total,
-      totalQty: total,
-      inStock: total > 0,
+      sku: baseSku || slugifySku(title), // Product.sku is required in schema
+      retailPrice: basePriceNum, // Product.retailPrice (@map("price"))
+      availableQty: totalQty, // Product.availableQty
+      inStock: totalQty > 0, // Product.inStock
 
       categoryId: categoryId || undefined,
       brandId: brandId || undefined,
@@ -464,7 +440,7 @@ export default function SupplierAddProduct() {
       if (!token) throw new Error("Not authenticated");
       if (!title.trim()) throw new Error("Title is required");
 
-      const p = toMoneyNumber(price);
+      const p = toMoneyNumber(retailPrice);
       if (!Number.isFinite(p) || p <= 0) throw new Error("Price must be greater than 0");
 
       if (duplicateRowIds.size > 0) {
@@ -502,7 +478,6 @@ export default function SupplierAddProduct() {
   ========================= */
 
   const urlPreviews = useMemo(() => parseUrlList(imageUrls).filter(isUrlish), [imageUrls]);
-
   const filePreviews = useMemo(() => files.map((f) => ({ file: f, url: URL.createObjectURL(f) })), [files]);
 
   useEffect(() => {
@@ -511,17 +486,11 @@ export default function SupplierAddProduct() {
     };
   }, [filePreviews]);
 
-
   useEffect(() => {
     // Only auto-generate if user hasn't manually touched the SKU field
     if (skuTouchedRef.current) return;
-
-    const next = slugifySku(title);
-
-    // if title becomes empty, clear sku too (only if untouched)
-    setSku(next);
+    setSku(slugifySku(title));
   }, [title]);
-
 
   const allUrlPreviews = useMemo(() => {
     const uniq = new Set<string>();
@@ -618,7 +587,7 @@ export default function SupplierAddProduct() {
                     </div>
                     <div>
                       <label className="block text-xs font-semibold text-zinc-700 mb-1">
-                        SKU <span className="text-zinc-400 font-normal">(optional)</span>
+                        SKU <span className="text-zinc-400 font-normal">(required by schema)</span>
                       </label>
                       <input
                         value={sku}
@@ -641,34 +610,31 @@ export default function SupplierAddProduct() {
                       </button>
 
                       <div className="text-[11px] text-zinc-500 mt-1">
-                        If left blank, the backend may auto-generate a unique SKU.
+                        We auto-generate from title if you don’t type it.
                       </div>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">
-                        Base offer price (NGN) *
-                      </label>
+                      <label className="block text-xs font-semibold text-zinc-700 mb-1">Retail price (NGN) *</label>
                       <input
-                        value={price}
-                        onChange={(e) => setPrice(e.target.value)}
+                        value={retailPrice}
+                        onChange={(e) => setRetailPrice(e.target.value)}
                         inputMode="decimal"
                         className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
                         placeholder="e.g. 25000"
                       />
-                      {!!price && (
+                      {!!retailPrice && (
                         <div className="text-[11px] text-zinc-500 mt-1">
-                          Preview: <b>{ngn.format(toMoneyNumber(price))}</b>
+                          Preview: <b>{ngn.format(toMoneyNumber(retailPrice))}</b>
                         </div>
                       )}
                       <div className="text-[11px] text-zinc-500 mt-1">
-                        Saved as <code>offer.basePrice</code> (and also <code>price</code> for compatibility).
+                        Saved as <code>Product.retailPrice</code> (mapped to DB column <code>price</code>).
                       </div>
                     </div>
 
-                    {/* ✅ BaseQuantity */}
                     <div>
                       <label className="block text-xs font-semibold text-zinc-700 mb-1">Base quantity</label>
                       <input
@@ -687,6 +653,9 @@ export default function SupplierAddProduct() {
                         <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
                           {inStockPreview ? "YES" : "NO"}
                         </b>
+                      </div>
+                      <div className="text-[11px] text-zinc-500 mt-1">
+                        Persisted as <code>Product.availableQty</code> (total).
                       </div>
                     </div>
 
@@ -760,9 +729,7 @@ export default function SupplierAddProduct() {
 
                 <div className="p-5 space-y-3">
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-700 mb-1">
-                      Image URLs (one per line)
-                    </label>
+                    <label className="block text-xs font-semibold text-zinc-700 mb-1">Image URLs (one per line)</label>
                     <textarea
                       value={imageUrls}
                       onChange={(e) => setImageUrls(e.target.value)}
@@ -914,8 +881,9 @@ export default function SupplierAddProduct() {
                             return (
                               <label
                                 key={x.id}
-                                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-                                  }`}
+                                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
+                                  checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                }`}
                               >
                                 <input
                                   type="checkbox"
@@ -946,11 +914,9 @@ export default function SupplierAddProduct() {
                   <div>
                     <div className="text-sm font-semibold text-zinc-900">Variant combinations</div>
                     <div className="text-xs text-zinc-500">
-                      Add combinations of <b>SELECT</b> attributes (e.g. Color/Size) with a price bump and qty.
+                      Add combinations of <b>SELECT</b> attributes (e.g. Color/Size) with qty.
                       <br />
-                      <span className="text-zinc-500">
-                        Total product stock = base quantity + sum of variant quantities.
-                      </span>
+                      <span className="text-zinc-500">Total product stock = base quantity + sum of variant quantities.</span>
                     </div>
                   </div>
 
@@ -985,8 +951,9 @@ export default function SupplierAddProduct() {
                     return (
                       <div
                         key={row.id}
-                        className={`rounded-2xl border bg-white p-3 space-y-2 ${isDup ? "border-rose-300 ring-2 ring-rose-100" : ""
-                          }`}
+                        className={`rounded-2xl border bg-white p-3 space-y-2 ${
+                          isDup ? "border-rose-300 ring-2 ring-rose-100" : ""
+                        }`}
                       >
                         <div className="flex flex-wrap gap-2 items-center">
                           {selectableAttrs.map((attr) => {
@@ -1017,24 +984,16 @@ export default function SupplierAddProduct() {
                               value={row.availableQty}
                               onChange={(e) => updateVariantQty(row.id, e.target.value)}
                               inputMode="numeric"
-                              className="w-20 rounded-xl border px-3 py-2 text-xs bg-white"
+                              className="w-24 rounded-xl border px-3 py-2 text-xs bg-white"
                               placeholder="e.g. 5"
                             />
 
-                            <span className="text-xs text-zinc-500">Bump</span>
-                            <input
-                              value={row.priceBump}
-                              onChange={(e) => updateVariantPriceBump(row.id, e.target.value)}
-                              inputMode="decimal"
-                              className="w-24 rounded-xl border px-3 py-2 text-xs bg-white"
-                              placeholder="e.g. 1500"
-                            />
-
                             <span
-                              className={`text-[11px] font-semibold px-2 py-1 rounded-full border ${rowInStock
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                : "bg-rose-50 text-rose-700 border-rose-200"
-                                }`}
+                              className={`text-[11px] font-semibold px-2 py-1 rounded-full border ${
+                                rowInStock
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                  : "bg-rose-50 text-rose-700 border-rose-200"
+                              }`}
                               title="This is based on the variant qty"
                             >
                               {rowInStock ? "In stock" : "Out of stock"}
@@ -1052,11 +1011,11 @@ export default function SupplierAddProduct() {
 
                         <div className="text-[11px] text-zinc-500 flex flex-wrap gap-3">
                           <span>
-                            Variant price:{" "}
-                            <b>{ngn.format(toMoneyNumber(price) + toMoneyNumber(row.priceBump || 0))}</b> (base + bump)
+                            Variant qty: <b>{rowQty}</b>
                           </span>
                           <span>
-                            Variant qty: <b>{rowQty}</b>
+                            Variant price: <b>{ngn.format(toMoneyNumber(retailPrice))}</b>{" "}
+                            <span className="text-zinc-400">(same as retail price)</span>
                           </span>
                         </div>
                       </div>
@@ -1086,8 +1045,8 @@ export default function SupplierAddProduct() {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <span className="text-zinc-500">Base price</span>
-                    <b className="text-zinc-900">{price ? ngn.format(toMoneyNumber(price)) : "—"}</b>
+                    <span className="text-zinc-500">Retail price</span>
+                    <b className="text-zinc-900">{retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}</b>
                   </div>
 
                   <div className="flex items-center justify-between">

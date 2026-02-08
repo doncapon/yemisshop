@@ -72,6 +72,18 @@ const num = (v: any, d = 0) => {
   return Number.isFinite(n) ? n : d;
 };
 
+const asInt = (v: any, d = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : d;
+};
+
+const asMoney = (v: any, d = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+
+const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+
 function toArray<T = any>(x: any): T[] {
   if (!x) return [];
   return Array.isArray(x) ? x : [x];
@@ -206,6 +218,274 @@ function computeLineTotal(line: CartLine): number {
   return unit * qty;
 }
 
+/* ---------------- Supplier-split pricing quote (authoritative) ---------------- */
+
+type QuoteAllocation = {
+  supplierId: string;
+  supplierName?: string | null;
+  qty: number;
+  unitPrice: number; // supplier unit (cost)
+  offerId?: string | null;
+  lineTotal?: number;
+};
+
+type QuoteLine = {
+  key: string;
+  productId: string;
+  variantId?: string | null;
+  kind: 'BASE' | 'VARIANT';
+  qtyRequested: number;
+  qtyPriced: number;
+  allocations: QuoteAllocation[];
+  lineTotal: number; // supplier total
+  minUnit: number;
+  maxUnit: number;
+  averageUnit: number;
+  currency?: string | null;
+  warnings?: string[];
+};
+
+type QuotePayload = {
+  currency?: string | null;
+  subtotal: number; // supplier subtotal
+  lines: Record<string, QuoteLine>;
+  raw?: any;
+};
+
+function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null {
+  const root = raw?.data?.data ?? raw?.data ?? raw ?? null;
+  if (!root) return null;
+
+  const currency = root.currency ?? root?.quote?.currency ?? null;
+  const maybe = root.quote ?? root;
+
+  const subtotal = asMoney(maybe.subtotal ?? maybe.itemsSubtotal ?? maybe.totalItems ?? maybe.total ?? 0, 0);
+
+  const outLines: Record<string, QuoteLine> = {};
+
+  const ensureKey = (x: any) => {
+    const k = String(x?.key ?? '');
+    if (k) return k;
+
+    const pid = String(x?.productId ?? '');
+    const vid = x?.variantId == null ? null : String(x.variantId);
+    const kind: 'BASE' | 'VARIANT' =
+      x?.kind === 'VARIANT' || (!!vid && x?.kind !== 'BASE') ? 'VARIANT' : 'BASE';
+
+    if (!pid) return '';
+    if (kind === 'VARIANT') return vid ? `${pid}::v:${vid}` : `${pid}::v:unknown`;
+    return `${pid}::base`;
+  };
+
+  const normalizeAlloc = (a: any): QuoteAllocation => {
+    const qty = Math.max(0, asInt(a?.qty ?? a?.quantity ?? 0, 0));
+    const unitPrice = asMoney(a?.unitPrice ?? a?.price ?? a?.supplierPrice ?? 0, 0);
+    const lineTotal = asMoney(a?.lineTotal ?? qty * unitPrice, qty * unitPrice);
+
+    return {
+      supplierId: String(a?.supplierId ?? a?.supplier_id ?? ''),
+      supplierName: a?.supplierName ?? a?.supplier?.name ?? null,
+      qty,
+      unitPrice,
+      offerId: a?.offerId ?? a?.supplierOfferId ?? null,
+      lineTotal,
+    };
+  };
+
+  const normalizeLine = (x: any): QuoteLine | null => {
+    const key = ensureKey(x);
+    if (!key) return null;
+
+    const productId = String(x?.productId ?? '');
+    const variantId = x?.variantId == null ? null : String(x.variantId);
+    const kind: 'BASE' | 'VARIANT' =
+      x?.kind === 'BASE' || x?.kind === 'VARIANT'
+        ? x.kind
+        : variantId
+          ? 'VARIANT'
+          : 'BASE';
+
+    const qtyRequested = Math.max(1, asInt(x?.qtyRequested ?? x?.qty ?? x?.requestedQty ?? 1, 1));
+
+    const allocsRaw = toArray<any>(x?.allocations ?? x?.splits ?? x?.items ?? x?.parts);
+    const allocations = allocsRaw.map(normalizeAlloc).filter((a) => a.qty > 0 && a.unitPrice >= 0);
+
+    const lineTotal = asMoney(
+      x?.lineTotal ?? x?.total ?? allocations.reduce((s, a) => s + asMoney(a.lineTotal, 0), 0),
+      0
+    );
+
+    const qtyPriced = Math.max(
+      0,
+      asInt(x?.qtyPriced ?? allocations.reduce((s, a) => s + asInt(a.qty, 0), 0), 0)
+    );
+
+    const units = allocations.map((a) => asMoney(a.unitPrice, NaN)).filter((n) => Number.isFinite(n));
+    const minUnit = units.length ? Math.min(...(units as number[])) : 0;
+    const maxUnit = units.length ? Math.max(...(units as number[])) : 0;
+    const averageUnit = qtyRequested > 0 ? lineTotal / qtyRequested : 0;
+
+    const warnings: string[] = [];
+    if (qtyPriced < qtyRequested) warnings.push('Some units could not be priced/allocated.');
+
+    return {
+      key,
+      productId,
+      variantId,
+      kind,
+      qtyRequested,
+      qtyPriced,
+      allocations,
+      lineTotal,
+      minUnit,
+      maxUnit,
+      averageUnit,
+      currency,
+      warnings: warnings.length ? warnings : undefined,
+    };
+  };
+
+  if (Array.isArray(maybe?.lines)) {
+    for (const x of maybe.lines) {
+      const ln = normalizeLine(x);
+      if (ln) outLines[ln.key] = ln;
+    }
+  }
+
+  if (!Object.keys(outLines).length && maybe?.lines && typeof maybe.lines === 'object') {
+    for (const [k, v] of Object.entries(maybe.lines)) {
+      const ln = normalizeLine({ ...(v as any), key: k });
+      if (ln) outLines[ln.key] = ln;
+    }
+  }
+
+  const hasAny = Object.keys(outLines).length > 0;
+  if (!hasAny && !(subtotal > 0)) return null;
+
+  // backfill missing keys so UI never crashes
+  for (const it of cart) {
+    const k = lineKeyFor(it);
+    if (!outLines[k]) {
+      outLines[k] = {
+        key: k,
+        productId: it.productId,
+        variantId: it.variantId ?? null,
+        kind: it.kind === 'VARIANT' || it.variantId ? 'VARIANT' : 'BASE',
+        qtyRequested: Math.max(1, asInt(it.qty, 1)),
+        qtyPriced: 0,
+        allocations: [],
+        lineTotal: 0,
+        minUnit: 0,
+        maxUnit: 0,
+        averageUnit: 0,
+        currency,
+        warnings: ['No quote returned for this line.'],
+      };
+    }
+  }
+
+  return { currency, subtotal, lines: outLines, raw };
+}
+
+async function fetchPricingQuoteForCart(cart: CartLine[]): Promise<QuotePayload | null> {
+  if (!cart.length) return null;
+
+  const items = cart.map((it) => ({
+    key: lineKeyFor(it),
+    kind: it.kind === 'VARIANT' || it.variantId ? 'VARIANT' : 'BASE',
+    productId: it.productId,
+    variantId: it.variantId ?? null,
+    qty: Math.max(1, asInt(it.qty, 1)),
+    selectedOptions: Array.isArray(it.selectedOptions) ? normalizeSelectedOptions(it.selectedOptions) : undefined,
+
+    // optional passthrough — harmless if backend ignores
+    offerId: it.offerId || undefined,
+    supplierId: it.supplierId || undefined,
+    unitPriceCache: asMoney(it.unitPrice, asMoney(it.price, 0)),
+  }));
+
+  const attempts: Array<{ method: 'post' | 'get'; url: string; body?: any }> = [
+    { method: 'post', url: '/api/catalog/quote', body: { items } },
+    { method: 'post', url: '/api/cart/quote', body: { items } },
+    { method: 'post', url: '/api/checkout/quote', body: { items } },
+    { method: 'post', url: '/api/orders/quote', body: { items } },
+
+    { method: 'post', url: '/api/catalog/pricing', body: { items } },
+    { method: 'post', url: '/api/cart/pricing', body: { items } },
+    { method: 'post', url: '/api/checkout/pricing', body: { items } },
+  ];
+
+  for (const a of attempts) {
+    try {
+      const res =
+        a.method === 'post'
+          ? await api.post(a.url, a.body)
+          : await api.get(a.url, { params: { items: JSON.stringify(items) } });
+
+      const normalized = normalizeQuoteResponse(res, cart);
+      if (normalized) return normalized;
+    } catch {
+      /* try next */
+    }
+  }
+
+  return null;
+}
+
+/* ---------------- Public settings (marginPercent) ---------------- */
+
+type PublicSettings = {
+  marginPercent?: number | string | null;
+  commerce?: { marginPercent?: number | string | null } | null;
+  pricing?: { marginPercent?: number | string | null } | null;
+};
+
+async function fetchPublicSettings(): Promise<PublicSettings | null> {
+  const attempts = [
+    '/api/settings/public',
+    '/api/settings/public?include=pricing',
+    '/api/settings/public?scope=commerce',
+  ];
+
+  for (const url of attempts) {
+    try {
+      const { data } = await api.get(url);
+      const root = data?.data ?? data ?? null;
+      if (root) return root as PublicSettings;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
+}
+
+const clampPct = (p: number) => {
+  if (!Number.isFinite(p)) return 0;
+  if (p < 0) return 0;
+  if (p > 1000) return 1000;
+  return p;
+};
+
+function extractMarginPercent(s: PublicSettings | null | undefined): number {
+  if (!s) return 0;
+
+  const direct = asMoney(s.marginPercent, NaN);
+  if (Number.isFinite(direct)) return clampPct(direct);
+
+  const commerce = asMoney(s.commerce?.marginPercent, NaN);
+  if (Number.isFinite(commerce)) return clampPct(commerce);
+
+  const pricing = asMoney(s.pricing?.marginPercent, NaN);
+  if (Number.isFinite(pricing)) return clampPct(pricing);
+
+  return 0;
+}
+
+const applyMargin = (supplierUnit: number, marginPercent: number) => {
+  const p = clampPct(marginPercent);
+  return supplierUnit * (1 + p / 100);
+};
+
 /* -------- Verification helpers -------- */
 type ProfileMe = {
   emailVerifiedAt?: unknown;
@@ -227,17 +507,6 @@ function computeVerificationFlags(p?: ProfileMe) {
   const phoneOk = normalizeStampPresent(p?.phoneVerifiedAt);
   return { emailOk, phoneOk };
 }
-
-/* ---------------- Supplier offers helpers (for price fallback) --------------- */
-
-const asInt = (v: any, d = 0) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.trunc(n) : d;
-};
-const asMoney = (v: any, d = 0) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-};
 
 /* ----------------------------- Small UI bits ----------------------------- */
 const IconCart = (props: any) => (
@@ -347,8 +616,9 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 ${props.className || ''
-        }`}
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 ${
+        props.className || ''
+      }`}
     />
   );
 }
@@ -392,106 +662,115 @@ export default function Checkout() {
     writeCart(cart);
   }, [cart]);
 
-  // This prevents “client sent X, server computed Y” mismatches.
-  useEffect(() => {
-    let mounted = true;
-
-    (async () => {
-      try {
-        // cache product fetches so we only hit API once per productId
-        const productCache = new Map<string, any>();
-
-        const getProduct = async (productId: string) => {
-          const pid = String(productId);
-          if (productCache.has(pid)) return productCache.get(pid);
-
-          const resp = await api.get(`/api/products/${pid}`, {
-            params: { include: "variants" }, // keep light; add "variants.options" only if your API supports it
-          });
-          const productData = resp.data?.data ?? resp.data ?? null;
-          productCache.set(pid, productData);
-          return productData;
-        };
-
-        const computeRetailUnit = (productData: any, line: CartLine): number => {
-          const baseRetail = num(productData?.retailPrice, 0);
-          if (!(baseRetail > 0)) return 0;
-
-          const isVariant = line.kind === "VARIANT" || !!line.variantId;
-          if (!isVariant) return baseRetail;
-
-          const vid = line.variantId ? String(line.variantId) : null;
-
-          // Prefer explicit variant bump if present
-          if (vid && Array.isArray(productData?.variants)) {
-            const v = productData.variants.find((vv: any) => String(vv.id) === vid);
-            if (v) {
-              // In your backend: Variant.retailPrice is treated as a bump
-              const bump1 = Math.max(0, num(v?.retailPrice, 0));
-              if (bump1 > 0) return baseRetail + bump1;
-
-              // Optional fallback: if your product endpoint includes options with priceBump
-              const optionBumps: number[] = Array.isArray(v?.options)
-                ? v.options.map((o: any) => Math.max(0, num(o?.priceBump, 0))).filter((x: number) => x > 0)
-                : [];
-
-              const bump2 = optionBumps.length ? Math.max(...optionBumps) : 0;
-              return baseRetail + bump2;
-            }
-          }
-
-          // If we cannot resolve the variant record, still price as base retail (safer than offers)
-          return baseRetail;
-        };
-
-        const updated = await Promise.all(
-          cart.map(async (line) => {
-            const productData = await getProduct(line.productId);
-
-            const retailUnit = computeRetailUnit(productData, line);
-
-            // If we cannot compute retail, keep existing value (but createOrder will block if 0)
-            const finalUnit = retailUnit > 0 ? retailUnit : num(line.unitPrice, num(line.price, 0));
-
-            const qty = Math.max(1, num(line.qty, 1));
-
-            // Image refresh (optional)
-            let img: string | null = line.image ?? null;
-            if (!img && productData) {
-              if (line.variantId && Array.isArray(productData?.variants)) {
-                const v = productData.variants.find((vv: any) => String(vv.id) === String(line.variantId));
-                if (!img && Array.isArray(v?.imagesJson) && v.imagesJson[0]) img = v.imagesJson[0];
-              }
-              if (!img && Array.isArray(productData?.imagesJson) && productData.imagesJson[0]) img = productData.imagesJson[0];
-            }
-
-            return {
-              ...line,
-              unitPrice: finalUnit,
-              price: finalUnit, // keep legacy mirror in sync
-              totalPrice: finalUnit * qty,
-              image: img,
-            };
-          })
-        );
-
-        if (!mounted) return;
-
-        setCart(updated);
-        writeCart(updated);
-      } catch {
-        // ignore; we still have original cart
-      }
-    })();
-
-    return () => {
-      mounted = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-
   const authHeader = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+  // ✅ Public settings (marginPercent)
+  const publicSettingsQ = useQuery({
+    queryKey: ['settings', 'public:v1'],
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    queryFn: fetchPublicSettings,
+  });
+
+  const marginPercent = useMemo(
+    () => extractMarginPercent(publicSettingsQ.data),
+    [publicSettingsQ.data]
+  );
+
+  // ✅ Supplier-split quote (supplier-cost)
+  const pricingQ = useQuery({
+    queryKey: [
+      'checkout',
+      'pricing-quote:v1',
+      cart
+        .map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`)
+        .sort()
+        .join(','),
+    ],
+    enabled: cart.length > 0,
+    refetchOnWindowFocus: false,
+    staleTime: 10_000,
+    queryFn: () => fetchPricingQuoteForCart(cart),
+  });
+
+  const quoteLines = (pricingQ.data as QuotePayload | null)?.lines ?? {};
+  const quoteSubtotalSupplier = (pricingQ.data as QuotePayload | null)?.subtotal ?? 0;
+
+  /**
+   * ✅ Compute RETAIL totals from supplier quote + marginPercent
+   */
+  const quoteRetail = useMemo(() => {
+    const q = pricingQ.data as QuotePayload | null;
+    if (!q) return null;
+
+    const linesRetail: Record<
+      string,
+      {
+        retailLineTotal: number;
+        retailMinUnit: number;
+        retailMaxUnit: number;
+        retailAverageUnit: number;
+        allocationsRetail: Array<
+          QuoteAllocation & { retailUnitPrice: number; retailLineTotal: number }
+        >;
+      }
+    > = {};
+
+    let subtotalRetail = 0;
+
+    for (const [k, ln] of Object.entries(q.lines || {})) {
+      const allocs = (ln.allocations || []).filter((a) => a.qty > 0);
+
+      const allocationsRetail = allocs.map((a) => {
+        const retailUnitPrice = applyMargin(asMoney(a.unitPrice, 0), marginPercent);
+        const retailLineTotal = retailUnitPrice * Math.max(0, asInt(a.qty, 0));
+        return {
+          ...a,
+          retailUnitPrice,
+          retailLineTotal,
+        };
+      });
+
+      const retailLineTotal = allocationsRetail.reduce((s, a) => s + asMoney(a.retailLineTotal, 0), 0);
+
+      const units = allocationsRetail
+        .map((a) => asMoney(a.retailUnitPrice, NaN))
+        .filter((n) => Number.isFinite(n));
+
+      const retailMinUnit = units.length ? Math.min(...(units as number[])) : 0;
+      const retailMaxUnit = units.length ? Math.max(...(units as number[])) : 0;
+
+      const qtyReq = Math.max(1, asInt(ln.qtyRequested, 1));
+      const retailAverageUnit = qtyReq > 0 ? retailLineTotal / qtyReq : 0;
+
+      linesRetail[k] = {
+        retailLineTotal,
+        retailMinUnit,
+        retailMaxUnit,
+        retailAverageUnit,
+        allocationsRetail,
+      };
+
+      subtotalRetail += retailLineTotal;
+    }
+
+    return {
+      subtotalRetail: round2(subtotalRetail),
+      linesRetail,
+      currency: q.currency ?? null,
+    };
+  }, [pricingQ.data, marginPercent]);
+
+  // totals needed for fee query (fallback uses cart cache)
+  const cartSubtotalFallback = useMemo(() => cart.reduce((s, it) => s + computeLineTotal(it), 0), [cart]);
+
+  // ✅ Retail items subtotal should drive fees + payable total
+  const itemsSubtotal = useMemo(() => {
+    if (quoteRetail && quoteRetail.subtotalRetail > 0) return quoteRetail.subtotalRetail;
+    return cartSubtotalFallback;
+  }, [quoteRetail, cartSubtotalFallback]);
+
+  const units = useMemo(() => cart.reduce((s, it) => s + Math.max(1, num(it.qty, 1)), 0), [cart]);
 
   // Distinct ids (used mainly for display + passing through to backend)
   const productIds = useMemo(() => Array.from(new Set(cart.map((l) => l.productId))), [cart]);
@@ -500,11 +779,18 @@ export default function Checkout() {
     [cart]
   );
 
-  // totals needed for fee query
-  const itemsSubtotal = useMemo(() => cart.reduce((s, it) => s + computeLineTotal(it), 0), [cart]);
-  const units = useMemo(() => cart.reduce((s, it) => s + Math.max(1, num(it.qty, 1)), 0), [cart]);
+  // ✅ pricing warning: quote exists but some lines not fully priced
+  const pricingWarning = useMemo(() => {
+    const q = pricingQ.data as QuotePayload | null;
+    if (!q) return null;
 
-  // ✅ Authoritative fees from backend (MATCHES orders.ts)
+    const unpriced = Object.values(q.lines || {}).filter((l) => l.qtyPriced < l.qtyRequested);
+    if (!unpriced.length) return null;
+
+    return 'Some items could not be fully allocated across suppliers. Reduce quantities or try again.';
+  }, [pricingQ.data]);
+
+  // ✅ Authoritative fees from backend — keyed by RETAIL itemsSubtotal
   const serviceFeeQ = useQuery({
     queryKey: ['checkout', 'service-fee', { itemsSubtotal, units, productIds, supplierIds }],
     enabled: cart.length > 0,
@@ -543,12 +829,11 @@ export default function Checkout() {
   const vatAddOn = fee?.vatAddOn ?? 0;
 
   const taxRate = useMemo(() => (Number.isFinite(taxRatePct) ? taxRatePct / 100 : 0), [taxRatePct]);
-  const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
   // Display-only: VAT "included" estimate (when mode is INCLUDED)
   const estimatedVATIncluded = useMemo(() => {
     if (taxMode !== 'INCLUDED' || taxRate <= 0) return 0;
-    const gross = itemsSubtotal; // includes VAT
+    const gross = itemsSubtotal; // includes VAT (per mode)
     const vat = gross - gross / (1 + taxRate);
     return round2(vat);
   }, [itemsSubtotal, taxMode, taxRate]);
@@ -557,6 +842,9 @@ export default function Checkout() {
 
   // ✅ Matches backend: subtotal + vatAddOn (if ADDED) + serviceFeeTotal
   const payableTotal = itemsSubtotal + (taxMode === 'ADDED' ? vatAddOn : 0) + serviceFeeTotal;
+
+  // UI: per-line supplier breakdown toggle
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   // ADDRESSES
   const [loadingProfile, setLoadingProfile] = useState(true);
@@ -628,13 +916,13 @@ export default function Checkout() {
 
   const onChangeHome =
     (k: keyof Address) =>
-      (e: React.ChangeEvent<HTMLInputElement>) =>
-        setHomeAddr((a) => ({ ...a, [k]: e.target.value }));
+    (e: React.ChangeEvent<HTMLInputElement>) =>
+      setHomeAddr((a) => ({ ...a, [k]: e.target.value }));
 
   const onChangeShip =
     (k: keyof Address) =>
-      (e: React.ChangeEvent<HTMLInputElement>) =>
-        setShipAddr((a) => ({ ...a, [k]: e.target.value }));
+    (e: React.ChangeEvent<HTMLInputElement>) =>
+      setShipAddr((a) => ({ ...a, [k]: e.target.value }));
 
   function validateAddress(a: Address, isShipping = false): string | null {
     const label = isShipping ? 'Shipping' : 'Home';
@@ -696,13 +984,20 @@ export default function Checkout() {
     mutationFn: async () => {
       if (checkingVerification) throw new Error('Checking your account verification…');
       if (!emailOk /* || !phoneOk */) throw new Error('Your email is not verified.');
-
       if (cart.length === 0) throw new Error('Your cart is empty');
 
-      // Ensure fees are computed before creating order (prevents mismatch)
+      // ✅ Ensure quote + fees are computed before creating order (prevents mismatch)
+      if (pricingQ.isLoading) throw new Error('Calculating best supplier prices… Please try again in a moment.');
+      if (pricingWarning) throw new Error(pricingWarning);
       if (serviceFeeQ.isLoading || !fee) throw new Error('Calculating fees… Please try again in a moment.');
 
-      const bad = cart.find((l) => num(l.unitPrice, num(l.price, 0)) <= 0);
+      // ✅ Don’t block order if cart cache is 0 but quote retail exists
+      const bad = cart.find((l) => {
+        const key = lineKeyFor(l);
+        const hasRetail = !!quoteRetail?.linesRetail?.[key] && (quoteRetail?.linesRetail?.[key].retailLineTotal ?? 0) > 0;
+        const cachedUnit = num(l.unitPrice, num(l.price, 0));
+        return cachedUnit <= 0 && !hasRetail;
+      });
       if (bad) throw new Error('One or more items have no price. Please remove and re-add them to cart.');
 
       const vaHome = validateAddress(homeAddr);
@@ -715,6 +1010,7 @@ export default function Checkout() {
       }
 
       const items = cart.map((it) => ({
+        key: lineKeyFor(it),
         productId: it.productId,
         variantId: it.variantId || undefined,
         qty: Math.max(1, num(it.qty, 1)),
@@ -726,7 +1022,14 @@ export default function Checkout() {
 
         // ✅ optional pass-through (harmless if backend ignores)
         kind: it.kind,
+
+        // helpful hints (harmless if backend ignores)
+        supplierId: it.supplierId || undefined,
+
+        // cache (harmless if backend ignores)
+        unitPriceCache: asMoney(it.unitPrice, asMoney(it.price, 0)),
       }));
+
       const at = getAttribution();
       const payload = {
         items,
@@ -740,12 +1043,19 @@ export default function Checkout() {
         serviceFeeTotal: fee.serviceFeeTotal ?? 0,
         serviceFee: fee.serviceFeeTotal ?? 0,
 
-        // snapshot (optional but useful)
+        // ✅ snapshot (retail)
         itemsSubtotal,
         taxMode: fee.taxMode,
         taxRatePct: fee.taxRatePct,
         vatAddOn: fee.vatAddOn,
         total: payableTotal,
+
+        // ✅ margin snapshot (optional)
+        marginPercent,
+
+        // quote snapshot (supplier cost) — optional
+        quoteSubtotalSupplier: asMoney(quoteSubtotalSupplier, 0),
+        quoteCurrency: (pricingQ.data as QuotePayload | null)?.currency ?? null,
       };
 
       let res;
@@ -864,12 +1174,7 @@ export default function Checkout() {
             >
               Back to cart
             </button>
-            <button
-              className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
-              onClick={() => { }}
-              disabled
-              title="Complete the steps above"
-            >
+            <button className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm" onClick={() => {}} disabled title="Complete the steps above">
               Continue
             </button>
           </div>
@@ -877,6 +1182,8 @@ export default function Checkout() {
       </div>
     );
   };
+
+  const showMarginInfo = publicSettingsQ.isLoading || publicSettingsQ.isError || marginPercent > 0;
 
   return (
     <SiteLayout>
@@ -893,10 +1200,27 @@ export default function Checkout() {
               <span className="text-ink-soft">Payment</span>
             </nav>
             <h1 className="mt-2 text-2xl font-semibold text-ink">Checkout</h1>
+
+            {showMarginInfo && (
+              <p className="mt-1 text-xs text-ink-soft">
+                {publicSettingsQ.isLoading
+                  ? 'Loading pricing settings…'
+                  : publicSettingsQ.isError
+                    ? 'Could not load margin settings — showing best-effort retail pricing.'
+                    : `Margin applied: ${marginPercent}%`}
+              </p>
+            )}
+
             {profileErr && (
               <p className="mt-2 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
                 {profileErr}
               </p>
+            )}
+
+            {(pricingQ.isLoading || pricingWarning) && (
+              <div className="mt-3 text-sm rounded-xl border bg-white/80 p-3 text-ink">
+                {pricingQ.isLoading ? 'Calculating best supplier prices…' : pricingWarning}
+              </div>
             )}
           </div>
 
@@ -907,20 +1231,46 @@ export default function Checkout() {
                 <CardHeader
                   tone="primary"
                   title="Items in your order"
-                  subtitle="Review quantities and pricing before adding addresses."
+                  subtitle="Pricing shown is retail. Items may split across suppliers."
                   icon={<IconCart />}
                 />
                 <ul className="divide-y">
                   {cart.map((it) => {
-                    const unit = num(it.unitPrice, num(it.price, 0));
-                    const lineTotal = computeLineTotal(it);
+                    const key = lineKeyFor(it);
+                    const ql = quoteLines[key];
+                    const rl = quoteRetail?.linesRetail?.[key];
+
+                    const qty = Math.max(1, num(it.qty, 1));
+                    const cachedUnit = num(it.unitPrice, num(it.price, 0));
+                    const cachedLineTotal = computeLineTotal(it);
+
+                    const hasRetailQuote = !!rl && (rl.retailLineTotal > 0 || (rl.allocationsRetail?.length ?? 0) > 0);
+                    const quoteLineTotalRetail = hasRetailQuote ? asMoney(rl.retailLineTotal, 0) : cachedLineTotal;
+
+                    const unitText = (() => {
+                      if (!hasRetailQuote) return cachedUnit > 0 ? ngn.format(cachedUnit) : 'Pending';
+                      if (rl.retailMinUnit === rl.retailMaxUnit) return ngn.format(rl.retailMinUnit);
+                      if (rl.retailMinUnit > 0 && rl.retailMaxUnit > 0)
+                        return `${ngn.format(rl.retailMinUnit)} – ${ngn.format(rl.retailMaxUnit)}`;
+                      return rl.retailAverageUnit > 0 ? ngn.format(rl.retailAverageUnit) : 'Pending';
+                    })();
+
                     const hasOptions = Array.isArray(it.selectedOptions) && it.selectedOptions!.length > 0;
                     const optionsText = hasOptions
                       ? normalizeSelectedOptions(it.selectedOptions).map((o) => `${o.attribute}: ${o.value}`).join(' • ')
                       : null;
 
+                    const delta = hasRetailQuote ? round2(quoteLineTotalRetail - cachedLineTotal) : 0;
+                    const showDelta = hasRetailQuote && Number.isFinite(delta) && Math.abs(delta) >= 0.01;
+
+                    const splitCount = hasRetailQuote ? (rl.allocationsRetail || []).filter((a) => a.qty > 0).length : 0;
+                    const splitBadge =
+                      splitCount > 1 ? 'Split across suppliers' : splitCount === 1 ? 'Single supplier' : '';
+
+                    const isExpanded = !!expanded[key];
+
                     return (
-                      <li key={lineKeyFor(it)} className="p-4">
+                      <li key={key} className="p-4">
                         <div className="flex items-center gap-4">
                           {it.image ? (
                             <img src={it.image} alt={it.title} className="w-14 h-14 rounded-md object-cover border" />
@@ -937,13 +1287,70 @@ export default function Checkout() {
                                   {it.title}
                                   {it.kind === 'VARIANT' || it.variantId ? ' (Variant)' : ''}
                                 </div>
+
                                 <div className="text-xs text-ink-soft">
-                                  Qty: {it.qty} • Unit: {ngn.format(unit)}
+                                  Qty: {qty} • Unit: {unitText}
+                                  {!!splitBadge && <span className="ml-2">• {splitBadge}</span>}
                                 </div>
+
                                 {optionsText && <div className="mt-1 text-xs text-ink-soft">{optionsText}</div>}
+
+                                {showDelta && (
+                                  <div
+                                    className={`mt-1 text-[11px] ${
+                                      delta > 0 ? 'text-rose-700' : 'text-emerald-700'
+                                    }`}
+                                  >
+                                    Live retail price changed {delta > 0 ? '↑' : '↓'} {ngn.format(Math.abs(delta))}
+                                  </div>
+                                )}
+
+                                {hasRetailQuote && (rl.allocationsRetail?.length ?? 0) > 0 && (
+                                  <button
+                                    className="mt-2 text-[11px] text-primary-700 hover:underline"
+                                    type="button"
+                                    onClick={() => setExpanded((p) => ({ ...p, [key]: !p[key] }))}
+                                  >
+                                    {isExpanded ? 'Hide supplier breakdown' : 'Show supplier breakdown'}
+                                  </button>
+                                )}
                               </div>
-                              <div className="text-ink font-semibold whitespace-nowrap">{ngn.format(lineTotal)}</div>
+
+                              <div className="text-ink font-semibold whitespace-nowrap">{ngn.format(quoteLineTotalRetail)}</div>
                             </div>
+
+                            {/* Retail breakdown */}
+                            {hasRetailQuote && isExpanded && (rl.allocationsRetail?.length ?? 0) > 0 && (
+                              <div className="mt-3 rounded-xl border bg-white/70 p-3 text-xs">
+                                <div className="flex items-center justify-between text-ink-soft">
+                                  <span>Supplier split (retail)</span>
+                                  <span className="font-medium text-ink">{ngn.format(asMoney(rl.retailLineTotal, 0))}</span>
+                                </div>
+
+                                <div className="mt-2 space-y-1">
+                                  {rl.allocationsRetail
+                                    .filter((a) => a.qty > 0)
+                                    .map((a, idx) => (
+                                      <div key={`${a.supplierId}-${idx}`} className="flex items-center justify-between gap-3">
+                                        <div className="min-w-0">
+                                          <div className="font-medium text-ink truncate">{a.supplierName || 'Supplier'}</div>
+                                          <div className="text-ink-soft">
+                                            {a.qty} × {ngn.format(asMoney(a.retailUnitPrice, 0))}
+                                          </div>
+                                        </div>
+                                        <div className="font-semibold text-ink whitespace-nowrap">{ngn.format(asMoney(a.retailLineTotal, 0))}</div>
+                                      </div>
+                                    ))}
+                                </div>
+
+                                {/* Keep allocation warning from supplier quote */}
+                                {ql && ql.qtyPriced < ql.qtyRequested && (
+                                  <div className="mt-2 text-[11px] text-rose-700">
+                                    Only {ql.qtyPriced} out of {ql.qtyRequested} could be allocated.
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </li>
@@ -951,6 +1358,8 @@ export default function Checkout() {
                   })}
                 </ul>
               </Card>
+
+              {/* (… the rest of your Address cards remain unchanged …) */}
 
               {/* Home Address */}
               <Card tone="emerald" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
@@ -1114,7 +1523,7 @@ export default function Checkout() {
 
                 <div className="mt-3 space-y-2 text-sm">
                   <div className="flex items-center justify-between">
-                    <span className="text-ink-soft">Items Subtotal</span>
+                    <span className="text-ink-soft">Items Subtotal (retail)</span>
                     <span className="font-medium">{ngn.format(itemsSubtotal)}</span>
                   </div>
 
@@ -1152,12 +1561,22 @@ export default function Checkout() {
                   <span className="text-xl font-semibold">{ngn.format(payableTotal)}</span>
                 </div>
 
+                {pricingWarning && (
+                  <p className="mt-3 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
+                    {pricingWarning}
+                  </p>
+                )}
+
                 <button
-                  disabled={createOrder.isPending || serviceFeeQ.isLoading}
+                  disabled={createOrder.isPending || serviceFeeQ.isLoading || pricingQ.isLoading || !!pricingWarning}
                   onClick={() => createOrder.mutate()}
                   className="mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50"
                 >
-                  {createOrder.isPending ? 'Processing…' : 'Place order & Proceed to payment'}
+                  {createOrder.isPending
+                    ? 'Processing…'
+                    : pricingQ.isLoading
+                      ? 'Calculating supplier prices…'
+                      : 'Place order & Proceed to payment'}
                 </button>
 
                 {createOrder.isError && (
@@ -1181,7 +1600,7 @@ export default function Checkout() {
                 </button>
 
                 <p className="mt-3 text-[11px] text-ink-soft text-center">
-                  Fees are estimates. Any gateway differences are reconciled on your receipt.
+                  Totals use live supplier offers + margin. If an offer changes or stock reallocates, your pricing may update.
                 </p>
               </Card>
             </aside>

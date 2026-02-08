@@ -1,210 +1,291 @@
 // src/components/cart/MiniCartToast.tsx
-import React from "react";
+import * as React from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
-import { getToastApi } from "../toastBus";
+import { ShoppingCart, X } from "lucide-react";
 
-type CartToastKey = { productId: string; variantId?: string | null };
 
-type MiniToastOpts = {
+type ToastMode = "add" | "remove";
+
+type ToastOpts = {
   title?: string;
-  duration?: number;
+  duration?: number; // ms
   maxItems?: number;
+  mode?: ToastMode; // ✅ NEW
 };
 
-type CartRow = {
+
+type MiniCartOption = { attribute?: string; value?: string };
+export type MiniCartRow = {
   productId: string;
   variantId?: string | null;
   title?: string;
   qty: number;
-
   unitPrice?: number;
   totalPrice?: number;
-
-  // legacy fields your cart might have
-  price?: number;
+  price?: number; // legacy
   image?: string | null;
+  selectedOptions?: MiniCartOption[];
 };
 
-const ngn = new Intl.NumberFormat("en-NG", {
+type ToastFocus = { productId: string; variantId?: string | null };
+
+type ToastPayload = {
+  cart?: MiniCartRow[];
+  // allow older/alternate shapes too (defensive)
+  items?: MiniCartRow[];
+  rows?: MiniCartRow[];
+
+  focus?: ToastFocus | null;
+  opts?: ToastOpts;
+};
+
+const EVENT = "mini-cart-toast:v1";
+
+export function showMiniCartToast(
+  cart: MiniCartRow[],
+  focus: ToastFocus,
+  opts?: ToastOpts
+) {
+  try {
+    window.dispatchEvent(
+      new CustomEvent<ToastPayload>(EVENT, { detail: { cart, focus, opts } })
+    );
+  } catch {
+    // never block add-to-cart
+  }
+}
+
+function clampCart(cart: MiniCartRow[], maxItems: number) {
+  const safe = Array.isArray(cart) ? cart : [];
+  // show most-recent-ish: last items first
+  const sliced = safe.slice(-Math.max(1, maxItems)).reverse();
+  return sliced;
+}
+
+const NGN = new Intl.NumberFormat("en-NG", {
   style: "currency",
   currency: "NGN",
   maximumFractionDigits: 2,
 });
 
-const nnum = (v: any): number => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : NaN;
-};
-
-function toUnitPrice(r: CartRow): number {
-  const up = nnum(r.unitPrice);
-  if (Number.isFinite(up) && up > 0) return up;
-
-  const legacy = nnum(r.price);
-  if (Number.isFinite(legacy) && legacy > 0) return legacy;
-
-  const tp = nnum(r.totalPrice);
-  const q = Math.max(0, Number(r.qty) || 0);
-  if (Number.isFinite(tp) && tp > 0 && q > 0) return tp / q;
-
-  return 0;
+function money(n: any) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : 0;
 }
 
-function toLineTotal(r: CartRow): number {
-  const tp = nnum(r.totalPrice);
-  if (Number.isFinite(tp) && tp >= 0) return tp;
+function normalizePayload(d: ToastPayload | null | undefined) {
+  const cart =
+    (Array.isArray(d?.cart) && d?.cart) ||
+    (Array.isArray(d?.items) && d?.items) ||
+    (Array.isArray(d?.rows) && d?.rows) ||
+    [];
 
-  const q = Math.max(0, Number(r.qty) || 0);
-  return toUnitPrice(r) * q;
+  // If focus is missing, derive from the most recent cart row (last item)
+  const last = cart.length ? cart[cart.length - 1] : null;
+  const focus: ToastFocus | null =
+    d?.focus && typeof d.focus === "object" && (d.focus as any).productId
+      ? { productId: String((d.focus as any).productId), variantId: (d.focus as any).variantId ?? null }
+      : last?.productId
+        ? { productId: String(last.productId), variantId: last.variantId ?? null }
+        : null;
+
+  return { cart, focus, opts: d?.opts };
 }
 
-function sameKey(a: CartToastKey | undefined, r: CartRow) {
-  if (!a) return false;
-  const av = a.variantId ?? null;
-  const rv = r.variantId ?? null;
-  return a.productId === r.productId && av === rv;
-}
+export default function MiniCartToastHost() {
+  const [open, setOpen] = React.useState(false);
+  const [payload, setPayload] = React.useState<{
+    cart: MiniCartRow[];
+    focus: ToastFocus | null;
+    opts?: ToastOpts;
+  } | null>(null);
 
-function normalizeCart(cartRaw: any[]): CartRow[] {
-  const cart: CartRow[] = Array.isArray(cartRaw)
-    ? cartRaw
-        .filter(Boolean)
-        .map((x: any) => ({
-          productId: String(x.productId ?? ""),
-          variantId: x.variantId ?? null,
-          title: x.title ?? x.name ?? "",
-          qty: Math.max(0, Math.floor(Number(x.qty) || 0)),
-          unitPrice: Number.isFinite(Number(x.unitPrice)) ? Number(x.unitPrice) : undefined,
-          totalPrice: Number.isFinite(Number(x.totalPrice)) ? Number(x.totalPrice) : undefined,
-          price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
-          image: x.image ?? null,
-        }))
-        .filter((x) => x.productId && x.qty > 0)
-    : [];
-  return cart;
-}
+  const timerRef = React.useRef<number | null>(null);
 
-/**
- * ✅ SINGLETON: only one active mini-cart toast at a time (globally)
- * This is scoped to this module only (cartToast), won’t affect other toasts.
- */
-let activeCartToastId: string | null = null;
+  const stopTimer = React.useCallback(() => {
+    if (timerRef.current) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
 
-function MiniCartBody({
-  cartRaw,
-  highlight,
-  maxItems,
-  onClose,
-}: {
-  cartRaw: any[];
-  highlight?: CartToastKey;
-  maxItems: number;
-  onClose: () => void;
-}) {
-  const cart = normalizeCart(cartRaw);
-  const subtotal = cart.reduce((s, r) => s + toLineTotal(r), 0);
+  const close = React.useCallback(() => {
+    setOpen(false);
+    stopTimer();
+  }, [stopTimer]);
 
-  return (
-    <div className="space-y-2">
-      <div className="space-y-2">
-        {cart.slice(0, maxItems).map((r) => {
-          const unit = toUnitPrice(r);
-          const line = toLineTotal(r);
-          const hi = sameKey(highlight, r);
+  React.useEffect(() => {
+    const onToast = (e: Event) => {
+      const ce = e as CustomEvent<any>;
+      const d = ce.detail as any;
 
-          return (
-            <div
-              key={`${r.productId}:${r.variantId ?? "base"}`}
-              className={`flex items-center gap-2 rounded-lg border p-2 ${
-                hi ? "border-zinc-900 bg-zinc-50" : "border-zinc-200 bg-white"
-              }`}
-            >
-              {r.image ? (
-                <img
-                  src={r.image}
-                  alt={r.title || "Item"}
-                  className="size-10 rounded-md object-cover border"
-                />
-              ) : (
-                <div className="size-10 rounded-md border bg-zinc-50 grid place-items-center text-zinc-400 text-xs">
-                  —
-                </div>
-              )}
+      // ✅ normalize incoming payload (prevents TS issues)
+      const cart: MiniCartRow[] = Array.isArray(d?.cart) ? (d.cart as MiniCartRow[]) : [];
+      const focus: ToastFocus | null =
+        d?.focus && typeof d.focus.productId === "string"
+          ? (d.focus as ToastFocus)
+          : null;
+      const opts: ToastOpts | undefined = d?.opts;
 
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-zinc-900 truncate">{r.title || "Item"}</div>
-                <div className="text-xs text-zinc-600">
-                  {r.qty} × {ngn.format(unit)}
-                </div>
-              </div>
+      // ✅ if cart is empty, close immediately (your requirement)
+      if (cart.length === 0) {
+        setOpen(false);
+        setPayload(null);
+        if (timerRef.current) {
+          window.clearTimeout(timerRef.current);
+          timerRef.current = null;
+        }
+        return;
+      }
 
-              <div className="text-right">
-                <div className="text-sm font-semibold text-zinc-900">{ngn.format(line)}</div>
-                <div className="text-[11px] text-zinc-500">line</div>
-              </div>
-            </div>
-          );
-        })}
+      setPayload({ cart, focus, opts });
+      setOpen(true);
 
-        {cart.length > maxItems && (
-          <div className="text-xs text-zinc-600">+{cart.length - maxItems} more item(s) in cart</div>
-        )}
-      </div>
+      if (timerRef.current) window.clearTimeout(timerRef.current);
 
-      <div className="pt-2 border-t flex items-center justify-between gap-2">
-        <div className="text-sm text-zinc-700">
-          Subtotal: <span className="font-semibold text-zinc-900">{ngn.format(subtotal)}</span>
-        </div>
+      // ✅ default auto-close after 5 seconds
+      const duration = Math.max(800, Number(opts?.duration ?? 5000));
+      timerRef.current = window.setTimeout(() => setOpen(false), duration);
+    };
 
-        <div className="flex items-center gap-2">
-          <Link
-            to="/cart"
-            onClick={onClose}
-            className="inline-flex items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium bg-white hover:bg-zinc-50"
-          >
-            View cart
-          </Link>
-          <Link
-            to="/checkout"
-            onClick={onClose}
-            className="inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-semibold bg-zinc-900 text-white hover:opacity-90"
-          >
-            Checkout
-          </Link>
-        </div>
-      </div>
-    </div>
+    window.addEventListener(EVENT, onToast as any);
+    return () => window.removeEventListener(EVENT, onToast as any);
+  }, []);
+
+
+
+
+  const node = React.useMemo(() => {
+    if (typeof document === "undefined") return null;
+    return document.body;
+  }, []);
+
+  if (!node || !payload) return null;
+
+  const mode = payload.opts?.mode ?? "add";
+  const title =
+    payload.opts?.title ??
+    (mode === "remove" ? "Removed from cart" : "Added to cart");
+
+  const maxItems = Math.max(1, Number(payload.opts?.maxItems ?? 4));
+  const items = clampCart(payload.cart, maxItems);
+
+  const totalQty = (payload.cart || []).reduce(
+    (s, x) => s + Math.max(0, Number(x?.qty) || 0),
+    0
   );
-}
 
-export function showMiniCartToast(cartRaw: any[], highlight?: CartToastKey, opts?: MiniToastOpts) {
-  const api = getToastApi();
-  if (!api) {
-    console.warn("ToastProvider not ready: showMiniCartToast ignored.");
-    return;
-  }
+  const focusPid = payload.focus?.productId ? String(payload.focus.productId) : null;
+  const focusVid =
+    payload.focus?.variantId !== undefined ? String(payload.focus.variantId ?? null) : null;
 
-  // ✅ Ensure only one mini-cart toast is visible at once
-  if (activeCartToastId) {
-    api.remove(activeCartToastId);
-    activeCartToastId = null;
-  }
+  return createPortal(
+    <div
+      className="fixed right-4 top-4 z-[99999] pointer-events-none"
+      aria-live="polite"
+      aria-atomic="true"
+    >
 
-  const maxItems = opts?.maxItems ?? 4;
+      <div
+        className={`pointer-events-auto w-[92vw] max-w-[420px] rounded-2xl border bg-white shadow-2xl overflow-hidden transition-all duration-200 ${open ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"
+          }`}
+      >
+        <div
+          className={`p-4 border-b text-white ${mode === "remove"
+            ? "bg-gradient-to-r from-zinc-800 to-zinc-700"
+            : "bg-gradient-to-r from-fuchsia-600 to-pink-600"
+            }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <ShoppingCart size={18} />
+                <div className="font-semibold">{title}</div>
+              </div>
+              <div className="text-xs text-white/90 mt-1">Cart items: {totalQty}</div>
+            </div>
 
-  // ✅ push ONCE (no push+remove+push), but still let body close itself
-  let myId = "";
-  const close = () => {
-    if (!api || !myId) return;
-    api.remove(myId);
-    if (activeCartToastId === myId) activeCartToastId = null;
-  };
+            <button
+              type="button"
+              onClick={close}
+              className="shrink-0 rounded-full bg-white/15 hover:bg-white/25 p-2"
+              aria-label="Close"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
 
-  myId = api.push({
-    title: opts?.title ?? "Added to cart",
-    duration: opts?.duration ?? 3500,
-    message: <MiniCartBody cartRaw={cartRaw} highlight={highlight} maxItems={maxItems} onClose={close} />,
-  });
+        <div className="p-4">
+          <div className="space-y-3">
+            {items.map((it, idx) => {
+              const img = it.image || "/placeholder.svg";
+              const unit = money(it.unitPrice ?? it.price);
+              const line = unit * Math.max(1, Number(it.qty) || 1);
 
-  activeCartToastId = myId;
+              const isFocus =
+                !!payload.focus &&
+                String(it.productId) === String(payload.focus.productId) &&
+                String(it.variantId ?? null) === String(payload.focus.variantId ?? null);
+
+
+              return (
+                <div
+                  key={`${it.productId}:${it.variantId ?? "base"}:${idx}`}
+                  className={`flex gap-3 rounded-xl border p-3 ${isFocus ? "border-fuchsia-400 bg-fuchsia-50/50" : "bg-white"
+                    }`}
+                >
+                  <img
+                    src={img}
+                    alt={it.title || "Cart item"}
+                    className="w-14 h-14 rounded-xl border object-cover"
+                    onError={(e) => ((e.currentTarget.style.opacity = "0.25"))}
+                  />
+
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold truncate">{it.title || "Item"}</div>
+
+                    {Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0 && (
+                      <div className="text-[11px] text-zinc-600 mt-0.5 line-clamp-1">
+                        {it.selectedOptions
+                          .filter(Boolean)
+                          .map((o) => `${o.attribute ?? ""}${o.value ? `: ${o.value}` : ""}`)
+                          .filter((s) => s.trim())
+                          .join(" • ")}
+                      </div>
+                    )}
+
+                    <div className="mt-1 flex items-center justify-between">
+                      <div className="text-[11px] text-zinc-600">Qty: {it.qty}</div>
+                      <div className="text-sm font-semibold">{NGN.format(line)}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={close}
+              className="text-sm px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50"
+            >
+              Continue shopping
+            </button>
+
+            <Link
+              to="/cart"
+              onClick={close}
+              className="text-sm px-3 py-2 rounded-xl border bg-zinc-900 text-white hover:opacity-90"
+            >
+              View cart →
+            </Link>
+          </div>
+        </div>
+      </div>
+    </div>,
+    node
+  );
 }

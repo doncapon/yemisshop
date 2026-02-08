@@ -43,14 +43,15 @@ import SupplierCatalogRequests from "./pages/supplier/SupplierCatalogRequests";
 import AccountSessions from "./pages/supplier/AccountSessions";
 import SupplierRefunds from "./pages/supplier/SupplierRefunds";
 import SupplierRiders from "./pages/supplier/SupplierRiders";
+import SupplierCatalogOffers from "./pages/supplier/SupplierCatalogOffers";
 
 import RiderAcceptInvite from "./pages/RiderAcceptInvite";
 
 import ModalProvider from "./components/ModalProvider";
-import { Toaster } from 'react-hot-toast';
+import { Toaster } from "react-hot-toast";
 import DataPrivacy from "./pages/DataPrivacy";
 import AuthBootstrap from "./components/AuthBootstrap";
-
+import AdminOfferChangeRequests from "./pages/admin/AdminOfferChangeRequests";
 
 function AdminLayout() {
   return <Outlet />;
@@ -58,6 +59,22 @@ function AdminLayout() {
 
 function SupplierLayoutShell() {
   return <Outlet />;
+}
+
+/** ✅ Role-aware landing page */
+function HomeRoute() {
+  const token = useAuthStore((s) => s.token);
+  const role = useAuthStore((s) => s.user?.role);
+
+  const r = String(role || "").toUpperCase();
+
+  // If logged-in supplier, land them on supplier catalog offers
+  if (token && r === "SUPPLIER") return <Navigate to="/supplier/catalog-offers" replace />;
+
+  // Keep riders off public catalog after login
+  if (token && r === "SUPPLIER_RIDER") return <Navigate to="/supplier/orders" replace />;
+
+  return <Catalog />;
 }
 
 export default function App() {
@@ -68,9 +85,8 @@ export default function App() {
   useEffect(() => {
     scheduleTokenExpiryLogout(token, () => {
       clear();
-      try {
-        localStorage.clear();
-        sessionStorage.clear?.();
+      try {        // or whatever you store
+        localStorage.removeItem("access_token");
       } catch {
         /* no-op */
       }
@@ -78,6 +94,7 @@ export default function App() {
     });
   }, [token, clear]);
 
+  // ✅ riders can ONLY access supplier orders routes inside /supplier
   const riderAllowPrefixes = useMemo(() => ["/supplier/orders"], []);
 
   const RoleDashboard = useMemo(() => {
@@ -93,16 +110,21 @@ export default function App() {
   return (
     <ModalProvider>
       <div className="min-h-screen flex flex-col">
-         <AuthBootstrap />
+        <AuthBootstrap />
         <main className="w-full px-4 md:px-8 flex-1 bg-primary-100">
           <div className="max-w-7xl mx-auto">
             <Toaster position="top-right" />
+
             <Routes>
               {/* ---------------- Public site ---------------- */}
-              <Route path="/" element={<Catalog />} />
+              <Route path="/" element={<HomeRoute />} />
               <Route path="/product/:id" element={<ProductDetail />} />
               <Route path="/cart" element={<Cart />} />
               <Route path="/verify" element={<Verify />} />
+              <Route path="/privacy" element={<DataPrivacy />} />
+              <Route path="/payment" element={<Payment />} />
+              <Route path="/payment-callback" element={<PaymentCallback />} />
+              <Route path="/receipt/:paymentId" element={<ReceiptPage />} />
 
               {/* Public rider invite accept (MUST be top-level) */}
               <Route path="/rider/accept" element={<RiderAcceptInvite />} />
@@ -121,7 +143,7 @@ export default function App() {
                 }
               />
 
-              {/* ---------------- Shopper protected ---------------- */}
+              {/* ---------------- Shared protected ---------------- */}
               <Route
                 path="/profile"
                 element={
@@ -157,13 +179,7 @@ export default function App() {
                   </ProtectedRoute>
                 }
               />
-              <Route path="/privacy" element={<DataPrivacy />} />
 
-              <Route path="/payment" element={<Payment />} />
-              <Route path="/payment-callback" element={<PaymentCallback />} />
-              <Route path="/receipt/:paymentId" element={<ReceiptPage />} />
-
-              {/* Sessions should be protected */}
               <Route
                 path="/account/sessions"
                 element={
@@ -207,6 +223,16 @@ export default function App() {
               >
                 <Route index element={<SupplierDashboard />} />
 
+                {/* ✅ Catalog Offers now lives inside supplier area */}
+                <Route
+                  path="catalog-offers"
+                  element={
+                    <ProtectedRoute roles={["SUPPLIER"]}>
+                      <SupplierCatalogOffers />
+                    </ProtectedRoute>
+                  }
+                />
+
                 <Route path="products" element={<Outlet />}>
                   <Route index element={<SupplierProductsPage />} />
                   <Route path="add" element={<SupplierAddProductsPage />} />
@@ -220,7 +246,6 @@ export default function App() {
                 <Route path="refunds" element={<SupplierRefunds />} />
                 <Route path="refund/:refundId" element={<SupplierRefunds />} />
 
-                {/* Riders management page */}
                 <Route
                   path="riders"
                   element={
@@ -246,13 +271,12 @@ export default function App() {
                   </ProtectedRoute>
                 }
               >
+                <Route path="offer-changes" element={<AdminOfferChangeRequests />} />
+
                 <Route index element={<AdminDashboard />} />
                 <Route path="dashboard" element={<Navigate to="/admin" replace />} />
                 <Route path="products" element={<Navigate to="/admin?tab=products&pTab=manage" replace />} />
-                <Route
-                  path="products/moderation"
-                  element={<Navigate to="/admin?tab=products&pTab=moderation" replace />}
-                />
+                <Route path="products/moderation" element={<Navigate to="/admin?tab=products&pTab=moderation" replace />} />
                 <Route path="orders" element={<Navigate to="/admin?tab=transactions" replace />} />
                 <Route
                   path="settings"

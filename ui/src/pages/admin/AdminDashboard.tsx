@@ -54,6 +54,8 @@ type Overview = {
     totalCustomers: number;
     totalAdmins: number;
     totalSuperAdmins: number;
+    totalSuppliers: number;
+    totalSupplierRiders: number;
   };
   products: {
     total: number;
@@ -1226,7 +1228,7 @@ export default function AdminDashboard() {
           <KpiCard
             title="Users"
             value={(overview.data?.users.totalUsers ?? 0).toLocaleString()}
-            hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${overview.data?.users.totalAdmins ?? 0} Admins • ${
+            hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${overview.data?.users.totalSuppliers ?? 0} Suppliers • ${overview.data?.users.totalSupplierRiders ?? 0} Customers • ${overview.data?.users.totalAdmins ?? 0} Admins • ${
               overview.data?.users.totalSuperAdmins ?? 0
             } Super Admins`}
             Icon={Users}

@@ -22,13 +22,19 @@ import SiteLayout from '../layouts/SiteLayout.js';
 import { showMiniCartToast } from '../components/cart/MiniCartToast';
 
 /* ---------------- Types ---------------- */
-
 type SupplierOfferLite = {
   id: string;
+
+  supplierId?: string | null;
+
   isActive?: boolean;
   inStock?: boolean;
   availableQty?: number | null;
-  price?: number | null; // not used for retail display (kept for compatibility)
+
+  // ✅ supplier-side price inputs
+  basePrice?: number | null; // SupplierProductOffer
+  unitPrice?: number | null; // SupplierVariantOffer
+  price?: number | null; // fallback if backend uses generic
 
   supplierRatingAvg?: number | null;
   supplierRatingCount?: number | null;
@@ -37,10 +43,14 @@ type SupplierOfferLite = {
 type Variant = {
   id: string;
   sku?: string | null;
-  price?: number | null; // ✅ retail price (variant retailPrice/retailBasePrice)
+
+  // retail fields (still supported)
+  price?: number | null;
+
   inStock?: boolean | null;
   imagesJson?: string[];
-  offers?: SupplierOfferLite[]; // availability only
+
+  offers?: SupplierOfferLite[]; // ✅ variant-level offers
 };
 
 type Product = {
@@ -48,8 +58,14 @@ type Product = {
   title: string;
   description?: string;
 
-  price?: number | null; // ✅ retail price (product retailPrice/retailBasePrice)
-  offersFrom?: number | null; // kept for compatibility, NOT shown in UI
+  // retail fields (still supported)
+  price?: number | null;
+
+  // ✅ product-local margin (optional legacy)
+  commissionPctInt?: number | null;
+
+  // backend computed cheapest supplier price (optional legacy)
+  offersFrom?: number | null;
 
   inStock?: boolean | null;
   imagesJson?: string[];
@@ -61,13 +77,26 @@ type Product = {
   brand?: { id: string; name: string } | null;
 
   variants?: Variant[];
-  supplierOffers?: SupplierOfferLite[]; // availability only
+
+  supplierOffers?: SupplierOfferLite[]; // ✅ product-level offers
 
   ratingAvg?: number | null;
   ratingCount?: number | null;
   attributesSummary?: { attribute: string; value: string }[];
 
-  status?: string; // 'LIVE' | ...
+  status?: string;
+};
+
+type PublicSettings = {
+  baseServiceFeeNGN?: number;
+  commsUnitCostNGN?: number;
+  taxMode?: 'INCLUDED' | 'ADDED' | 'NONE';
+  taxRatePct?: number;
+
+  // ✅ this is the one you use in your backend
+  marginPercent?: number;
+  // ✅ included for compatibility in settings.ts
+  pricingMarkupPercent?: number;
 };
 
 const ngn = new Intl.NumberFormat('en-NG', {
@@ -75,6 +104,15 @@ const ngn = new Intl.NumberFormat('en-NG', {
   currency: 'NGN',
   maximumFractionDigits: 2,
 });
+
+type CartLine = { productId: string; variantId?: string | null; qty: number };
+
+function qtyInCartFrom(cart: CartLine[], productId: string, variantId: string | null): number {
+  return (cart || [])
+    .filter((x) => x.productId === productId && (variantId ? x.variantId === variantId : !x.variantId))
+    .reduce((s, x) => s + Math.max(0, Number(x.qty) || 0), 0);
+}
+
 
 /* ---------------- Helpers: generic ---------------- */
 
@@ -92,9 +130,10 @@ const nnum = (v: any): number => {
   return Number.isFinite(n) ? n : NaN;
 };
 
-/** Any active + inStock offer */
-const hasActiveInStockOffer = (offers?: SupplierOfferLite[]) =>
-  Array.isArray(offers) && offers.some((o) => trueOnly(o.isActive) && trueOnly(o.inStock));
+function toNumber(v: any, def = NaN): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
 
 /* ---------------- Helpers: stock model ---------------- */
 
@@ -118,6 +157,10 @@ function collectAllOffers(p: Product): SupplierOfferLite[] {
   }
   return out;
 }
+
+/** Any active + inStock offer */
+const hasActiveInStockOffer = (offers?: SupplierOfferLite[]) =>
+  Array.isArray(offers) && offers.some((o) => trueOnly(o.isActive) && trueOnly(o.inStock));
 
 function computeAvailableNowFromOffers(
   directInStock: boolean,
@@ -172,58 +215,268 @@ function availableNow(p: Product): boolean {
   return computeAvailableNowFromOffers(p.inStock === true, p.supplierOffers, p.variants ?? []);
 }
 
-/* ---------------- Helpers: pricing model (retail only) ---------------- */
+/* ---------------- Helpers: pricing model ---------------- */
 
 /**
- * Display price is retail only:
- * - product.price (retail)
- * - variant.price (retail) if variant available
- * Offers do NOT drive display price.
+ * Extract supplier price from an offer (base or variant).
+ * IMPORTANT: unitPrice (variant) and basePrice (product) are both valid.
  */
-function getBasePrice(p: Product): number | null {
+function offerSupplierPrice(o?: SupplierOfferLite): number {
+  if (!o) return 0;
+  const v = nnum(o.unitPrice) || nnum(o.basePrice) || nnum(o.price) || 0;
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+function applyMargin(supplierPrice: number, marginPct: number): number {
+  if (!(supplierPrice > 0)) return 0;
+  const out = supplierPrice * (1 + marginPct / 100);
+  return out;
+}
+
+/**
+ * Effective margin:
+ * - primary: settings.marginPercent (from GET /api/settings/public)
+ * - fallback: product.commissionPctInt (legacy)
+ */
+function getEffectiveMarginPct(p: Product, settingsMarginPct: number): number {
+  if (Number.isFinite(settingsMarginPct) && settingsMarginPct >= 0) return settingsMarginPct;
+
+  const m = Number(p.commissionPctInt);
+  if (!Number.isFinite(m) || m < 0) return 0;
+  return m;
+}
+
+/**
+ * Decide if an offer is usable for "in-stock only" pricing:
+ * - must be active
+ * - must be inStock OR have positive qty
+ */
+function offerStockOk(o: SupplierOfferLite): boolean {
+  if (!o || o.isActive === false) return false;
+
+  const qty = o.availableQty;
+  const hasQty = qty != null && Number.isFinite(Number(qty));
+  const qtyOk = !hasQty ? true : Number(qty) > 0;
+
+  return o.inStock === true || qtyOk;
+}
+
+// --- Selection policy (match orders.ts approach) ---
+const SUPPLIER_BAND_PCT = 2;     // +2% band around cheapest
+const BAYES_M = 5;              // confidence strength
+const MIN_BAYES_RATING = 3.8;   // gate; fallback if it eliminates everyone
+const FALLBACK_GLOBAL_RATING_C = 4.2; // used if we can't infer a global C
+
+function bayesRating(avg: number, count: number, C: number, m: number) {
+  const n = Math.max(0, Number.isFinite(count) ? count : 0);
+  const a = Number.isFinite(avg) ? avg : 0;
+  const mm = Math.max(1, Number.isFinite(m) ? m : 5);
+  return (n / (n + mm)) * a + (mm / (n + mm)) * C;
+}
+
+type OfferPick = {
+  offer: SupplierOfferLite;
+  supplierPrice: number;
+  bayes: number;
+};
+
+function pickBestAndCheapestOffer(
+  p: Product,
+  opts: { inStockOnlyPricing: boolean }
+): {
+  cheapest?: OfferPick;
+  best?: OfferPick;
+  cheapestSupplierPrice: number | null;
+  bestSupplierPrice: number | null;
+} {
+  const offers = collectAllOffers(p);
+
+  // Build candidates: active + priced (+ stock ok if requested)
+  const candidates: OfferPick[] = [];
+  const ratingAvgs: number[] = [];
+
+  for (const o of offers) {
+    if (!o || o.isActive === false) continue;
+    if (opts.inStockOnlyPricing && !offerStockOk(o)) continue;
+
+    const sp = offerSupplierPrice(o);
+    if (!(sp > 0)) continue;
+
+    const avg = Number(o.supplierRatingAvg);
+    if (Number.isFinite(avg) && avg > 0) ratingAvgs.push(avg);
+
+    // bayes computed later once we know C
+    candidates.push({ offer: o, supplierPrice: sp, bayes: 0 });
+  }
+
+  if (!candidates.length) {
+    return { cheapestSupplierPrice: null, bestSupplierPrice: null };
+  }
+
+  // Cheapest
+  candidates.sort((a, b) => a.supplierPrice - b.supplierPrice);
+  const cheapest = candidates[0];
+  const bandMax = cheapest.supplierPrice * (1 + SUPPLIER_BAND_PCT / 100);
+
+  // Infer a "global" C (fallback if no ratings)
+  const C =
+    ratingAvgs.length > 0
+      ? ratingAvgs.reduce((s, x) => s + x, 0) / ratingAvgs.length
+      : FALLBACK_GLOBAL_RATING_C;
+
+  // Score candidates
+  for (const c of candidates) {
+    const avg = Number(c.offer.supplierRatingAvg);
+    const cnt = Number(c.offer.supplierRatingCount);
+    c.bayes = bayesRating(
+      Number.isFinite(avg) ? avg : 0,
+      Number.isFinite(cnt) ? cnt : 0,
+      C,
+      BAYES_M
+    );
+  }
+
+  // In-band set
+  const inBand = candidates.filter((c) => c.supplierPrice <= bandMax);
+
+  // Gate by min bayes; if empty, fallback to ungated in-band
+  const gated = inBand.filter((c) => c.bayes >= MIN_BAYES_RATING);
+  const pool = gated.length ? gated : inBand;
+
+  // Pick best: highest bayes, then cheaper, then higher qty
+  const best = pool
+    .slice()
+    .sort((a, b) => {
+      if (b.bayes !== a.bayes) return b.bayes - a.bayes;
+      if (a.supplierPrice !== b.supplierPrice) return a.supplierPrice - b.supplierPrice;
+
+      const aq = Number(a.offer.availableQty);
+      const bq = Number(b.offer.availableQty);
+      const aqv = Number.isFinite(aq) ? aq : 0;
+      const bqv = Number.isFinite(bq) ? bq : 0;
+      return bqv - aqv;
+    })[0];
+
+  return {
+    cheapest,
+    best,
+    cheapestSupplierPrice: cheapest?.supplierPrice ?? null,
+    bestSupplierPrice: best?.supplierPrice ?? null,
+  };
+}
+
+/**
+ * Main: display retail price
+ * ✅ Now follows orders.ts logic: choose "best" within +2% band (fallback to cheapest)
+ */
+function getDisplayRetailPrice(p: Product, settingsMarginPct: number): number {
+  const marginPct = getEffectiveMarginPct(p, settingsMarginPct);
+
+  const picked = pickBestAndCheapestOffer(p, { inStockOnlyPricing: true });
+  const selectedSupplier = picked.bestSupplierPrice ?? picked.cheapestSupplierPrice;
+
+  if (selectedSupplier != null) {
+    const retail = applyMargin(selectedSupplier, marginPct);
+    if (retail > 0) return retail;
+  }
+
+  const fallback = getFallbackRetailPrice(p);
+  if (fallback != null) return fallback;
+
+  const variantPrices: number[] = [];
+  if (Array.isArray(p.variants)) {
+    for (const v of p.variants) {
+      const vp = nnum(v.price);
+      if (Number.isFinite(vp) && vp > 0) variantPrices.push(vp);
+    }
+  }
+  return variantPrices.length ? Math.min(...variantPrices) : 0;
+}
+
+/** For bucketting/filtering when not inStockOnly */
+function getDisplayRetailPriceAny(p: Product, settingsMarginPct: number): number {
+  const marginPct = getEffectiveMarginPct(p, settingsMarginPct);
+
+  const picked = pickBestAndCheapestOffer(p, { inStockOnlyPricing: false });
+  const selectedSupplier = picked.bestSupplierPrice ?? picked.cheapestSupplierPrice;
+
+  if (selectedSupplier != null) {
+    const retail = applyMargin(selectedSupplier, marginPct);
+    if (retail > 0) return retail;
+  }
+
+  const fb = getFallbackRetailPrice(p);
+  if (fb != null) return fb;
+
+  const variantPrices: number[] = [];
+  if (Array.isArray(p.variants)) {
+    for (const v of p.variants) {
+      const vp = nnum(v.price);
+      if (Number.isFinite(vp) && vp > 0) variantPrices.push(vp);
+    }
+  }
+  return variantPrices.length ? Math.min(...variantPrices) : 0;
+}
+
+// ✅ helper for UI: return BOTH prices (best + cheapest) as retail
+function getRetailPricePair(
+  p: Product,
+  settingsMarginPct: number,
+  opts: { inStockOnlyPricing: boolean }
+): { bestRetail: number; cheapestRetail: number; marginPct: number } {
+  const marginPct = getEffectiveMarginPct(p, settingsMarginPct);
+
+  const picked = pickBestAndCheapestOffer(p, { inStockOnlyPricing: opts.inStockOnlyPricing });
+  const bestSupplier = picked.bestSupplierPrice ?? null;
+  const cheapestSupplier = picked.cheapestSupplierPrice ?? null;
+
+  const bestRetail = bestSupplier != null ? applyMargin(bestSupplier, marginPct) : 0;
+  const cheapestRetail = cheapestSupplier != null ? applyMargin(cheapestSupplier, marginPct) : 0;
+
+  return {
+    bestRetail: Number.isFinite(bestRetail) ? bestRetail : 0,
+    cheapestRetail: Number.isFinite(cheapestRetail) ? cheapestRetail : 0,
+    marginPct,
+  };
+}
+
+
+/**
+ * Cheapest supplier-side price across BOTH product-level and variant-level offers.
+ */
+function getCheapestSupplierPrice(
+  p: Product,
+  opts: { inStockOnlyPricing: boolean }
+): number | null {
+  const offers = collectAllOffers(p);
+  const candidates: number[] = [];
+
+  for (const o of offers) {
+    if (!o || o.isActive === false) continue;
+    if (opts.inStockOnlyPricing && !offerStockOk(o)) continue;
+
+    const sp = offerSupplierPrice(o);
+    if (sp > 0) candidates.push(sp);
+  }
+
+  return candidates.length ? Math.min(...candidates) : null;
+}
+
+/**
+ * Fallback retail price coming directly from Product.price / Variant.price
+ * (keeps your system working if offers don’t return price yet).
+ */
+function getFallbackRetailPrice(p: Product): number | null {
   const base = nnum(p.price);
   return Number.isFinite(base) && base > 0 ? base : null;
 }
 
-function getMinPrice(p: Product): number {
-  const basePrice = getBasePrice(p);
-  const prices: number[] = [];
-
-  if (basePrice !== null) prices.push(basePrice);
-
-  if (Array.isArray(p.variants)) {
-    for (const v of p.variants) {
-      if (!variantAvailableNow(v)) continue;
-      const vp = nnum(v.price);
-      if (Number.isFinite(vp) && vp > 0) prices.push(vp);
-    }
-  }
-
-  return prices.length ? Math.min(...prices) : 0;
-}
-
-/** Min retail price ignoring availability (so OOS can still be priced & bucketed) */
-function getMinPriceAny(p: Product): number {
-  const prices: number[] = [];
-
-  const basePrice = getBasePrice(p);
-  if (basePrice !== null) prices.push(basePrice);
-
-  if (Array.isArray(p.variants)) {
-    for (const v of p.variants) {
-      const vp = nnum(v.price);
-      if (Number.isFinite(vp) && vp > 0) prices.push(vp);
-    }
-  }
-
-  return prices.length ? Math.min(...prices) : 0;
-}
-
-function productSellable(p: Product): boolean {
+function productSellable(p: Product, settingsMarginPct: number): boolean {
   if (!isLive(p)) return false;
   if (!availableNow(p)) return false;
-  const minPrice = getMinPrice(p);
-  return Number.isFinite(minPrice) && minPrice > 0;
+
+  const display = getDisplayRetailPrice(p, settingsMarginPct);
+  return Number.isFinite(display) && display > 0;
 }
 
 /* ---------------- Analytics clicks ---------------- */
@@ -367,17 +620,15 @@ function bestSupplierRatingScore(p: Product): number {
 
     if (!Number.isFinite(avg) || avg <= 0) continue;
 
-    // ✅ confidence boost: bigger count => slightly better score
-    // (keeps "5.0 with 1 review" below "4.9 with 500 reviews")
-    const weight = Number.isFinite(cnt) && cnt > 0 ? Math.min(1, Math.log10(cnt + 1) / 3) : 0; // 0..~1
-    const score = avg + 0.15 * weight; // small bump, doesn’t dominate purchases/clicks
+    // confidence boost
+    const weight = Number.isFinite(cnt) && cnt > 0 ? Math.min(1, Math.log10(cnt + 1) / 3) : 0;
+    const score = avg + 0.15 * weight;
 
     if (score > best) best = score;
   }
 
-  return best; // 0..~5.15
+  return best;
 }
-
 
 /* ---------------- Component ---------------- */
 
@@ -388,14 +639,38 @@ export default function Catalog() {
 
   const { openModal } = useModal();
   const nav = useNavigate();
-  const qc = useQueryClient(); // ✅ must exist before mutations using it
+  const qc = useQueryClient();
 
   // Keep your behavior: hide non-sellable products in catalogue.
-  // If you later want to SHOW pending/out-of-stock but disable purchase, set this to false.
   const HIDE_OOS = false;
 
-  // ✅ include category in both queryKey and request
+  // include category in both queryKey and request
   const includeStr = 'brand,category,variants,attributes,offers' as const;
+
+  /* ---------------- ✅ Settings query (CORRECT key: marginPercent) ---------------- */
+
+  const settingsQ = useQuery<number>({
+    queryKey: ['settings', 'public', 'marginPercent'],
+    staleTime: 10_000,
+    retry: 0,
+    queryFn: async () => {
+      // Your backend exposes GET /api/settings/public (no auth)
+      const { data } = await api.get<PublicSettings>('/api/settings/public');
+
+      // be defensive: allow strings too
+      const v =
+        Number.isFinite(Number((data as any)?.marginPercent))
+          ? Number((data as any)?.marginPercent)
+          : Number.isFinite(Number((data as any)?.pricingMarkupPercent))
+            ? Number((data as any)?.pricingMarkupPercent)
+            : NaN;
+
+      return Math.max(0, Number.isFinite(v) ? v : 0);
+    },
+  });
+
+  // Effective global margin (default 0 if endpoint fails)
+  const settingsMarginPct = Number.isFinite(settingsQ.data as any) ? (settingsQ.data as number) : 0;
 
   /* ---------------- UI state ---------------- */
 
@@ -412,16 +687,15 @@ export default function Catalog() {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
 
-  // ✅ default checked (in-stock only)
+  // default checked (in-stock only)
   const [inStockOnly, setInStockOnly] = useState(true);
 
   // Pin OOS to bottom when we are not filtering them out
-  const stockRank = (p: Product) => (availableNow(p) ? 0 : 1); // 0=in stock, 1=OOS
+  const stockRank = (p: Product) => (availableNow(p) ? 0 : 1);
 
-  // ✅ price used for buckets/filtering
   const priceForFiltering = (p: Product) => {
-    if (inStockOnly) return getMinPrice(p);
-    return availableNow(p) ? getMinPrice(p) : getMinPriceAny(p);
+    if (inStockOnly) return getDisplayRetailPrice(p, settingsMarginPct);
+    return availableNow(p) ? getDisplayRetailPrice(p, settingsMarginPct) : getDisplayRetailPriceAny(p, settingsMarginPct);
   };
 
   // Fetch products (prefer LIVE, fallback if needed)
@@ -439,7 +713,6 @@ export default function Catalog() {
         return (raw || [])
           .filter((x) => x && x.id != null)
           .map((x) => {
-            // ✅ retail-only mapping (prefer retailPrice/retailBasePrice)
             const productRetail =
               Number.isFinite(Number((x as any).retailPrice))
                 ? Number((x as any).retailPrice)
@@ -475,6 +748,10 @@ export default function Catalog() {
                       inStock: o.inStock === true,
                       availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
 
+                      unitPrice: Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null,
+                      basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
+                      price: Number.isFinite(Number(o.price)) ? Number(o.price) : null,
+
                       supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
                         ? Number(o.supplierRatingAvg)
                         : Number.isFinite(Number(o.supplier?.ratingAvg))
@@ -486,14 +763,12 @@ export default function Catalog() {
                         : Number.isFinite(Number(o.supplier?.ratingCount))
                           ? Number(o.supplier.ratingCount)
                           : null,
-
-                      price: null,
                     }))
                     : [],
-
                 };
               })
               : [];
+
             const supplierOffers: SupplierOfferLite[] = Array.isArray(x.supplierOffers)
               ? x.supplierOffers.map((o: any) => ({
                 id: String(o.id),
@@ -502,6 +777,10 @@ export default function Catalog() {
                 isActive: o.isActive === true,
                 inStock: o.inStock === true,
                 availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+
+                basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
+                unitPrice: Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null,
+                price: Number.isFinite(Number(o.price)) ? Number(o.price) : null,
 
                 supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
                   ? Number(o.supplierRatingAvg)
@@ -514,16 +793,10 @@ export default function Catalog() {
                   : Number.isFinite(Number(o.supplier?.ratingCount))
                     ? Number(o.supplier.ratingCount)
                     : null,
-
-                price: null,
               }))
               : [];
 
-
-            // ✅ category name
-            const catNameRaw = (x.categoryName ?? x.category?.name ?? x.category?.title ?? '')
-              .toString()
-              .trim();
+            const catNameRaw = (x.categoryName ?? x.category?.name ?? x.category?.title ?? '').toString().trim();
             const categoryName = catNameRaw || null;
 
             return {
@@ -536,6 +809,7 @@ export default function Catalog() {
               imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
               categoryId: x.categoryId ?? x.category?.id ?? null,
               categoryName,
+              commissionPctInt: Number.isFinite(Number(x.commissionPctInt)) ? Number(x.commissionPctInt) : null,
               brandName: x.brandName ?? x.brand?.name ?? null,
               brand: x.brand ? { id: String(x.brand.id), name: String(x.brand.name) } : null,
               variants,
@@ -556,8 +830,6 @@ export default function Catalog() {
         try {
           const { data } = await api.get('/api/products', { params: { ...paramsBase, status } });
           const list = normalize(data);
-
-          // If backend doesn't support LIVE filter, keep only LIVE when possible
           const out = status === 'LIVE' ? list : list.filter((x) => isLive({ status: x.status }));
           return out.length ? out : list;
         } catch (e: any) {
@@ -617,17 +889,18 @@ export default function Catalog() {
   /* -------- Quick Add-to-Cart (simple products only) -------- */
 
   const [cartVersion, setCartVersion] = useState(0);
+  const cartSnapshot = useMemo(() => readCart(), [cartVersion]);
 
   const setCartQty = (p: Product, nextQty: number) => {
     try {
-      const unit = getBasePrice(p) ?? 0;
+      const unit = getDisplayRetailPrice(p, settingsMarginPct) || 0;
       if (!(unit > 0) && nextQty > 0) {
         openModal({ title: 'Cart', message: 'This product has no retail price yet.' });
         return;
       }
 
-      // ✅ block purchase unless LIVE + available + has retail price
-      if (!productSellable(p) && nextQty > 0) {
+      // block purchase unless LIVE + available + has retail price
+      if (!productSellable(p, settingsMarginPct) && nextQty > 0) {
         openModal({ title: 'Cart', message: 'This product is not currently available.' });
         return;
       }
@@ -687,10 +960,22 @@ export default function Catalog() {
       localStorage.setItem('cart', JSON.stringify(cart));
       setCartVersion((v) => v + 1);
 
-      // ✅ show mini-cart toast only when quantity increased (Add / +)
-      if (nextQty > prevQty) {
-        showMiniCartToast(cart, { productId: p.id, variantId: null }, { title: 'Added to cart' });
+      // ✅ show mini-cart toast for both add and remove (but not when qty unchanged)
+      if (nextQty !== prevQty) {
+        const mode = nextQty > prevQty ? "add" : "remove";
+
+        showMiniCartToast(
+          cart,
+          { productId: p.id, variantId: null },
+          {
+            mode,
+            title: mode === "remove" ? "Updated cart" : "Added to cart",
+            duration: mode === "remove" ? 2200 : 3200,
+            maxItems: 4,
+          }
+        );
       }
+
     } catch (err) {
       console.error(err);
       openModal({ title: 'Cart', message: 'Could not update cart.' });
@@ -704,7 +989,7 @@ export default function Catalog() {
       .map((p) => priceForFiltering(p))
       .filter((n) => Number.isFinite(n) && n > 0) as number[];
     return prices.length ? Math.max(...prices) : 0;
-  }, [products, inStockOnly]);
+  }, [products, inStockOnly, settingsMarginPct]);
 
   const PRICE_BUCKETS = useMemo(() => generateDynamicPriceBuckets(maxPriceSeen, 1_000), [maxPriceSeen]);
 
@@ -803,9 +1088,7 @@ export default function Catalog() {
       return catOk && brandOk;
     });
 
-    const priceCounts = PRICE_BUCKETS.map(
-      (b) => baseForPriceCounts.filter((p) => inBucket(priceForFiltering(p), b)).length
-    );
+    const priceCounts = PRICE_BUCKETS.map((b) => baseForPriceCounts.filter((p) => inBucket(priceForFiltering(p), b)).length);
 
     const visiblePriceBuckets = PRICE_BUCKETS.map((b, i) => ({
       bucket: b,
@@ -815,16 +1098,24 @@ export default function Catalog() {
 
     let filteredCore = baseByQuery.filter((p) => {
       const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? 'uncategorized');
-      const priceOk =
-        activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(priceForFiltering(p), b));
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(priceForFiltering(p), b));
       const brandOk = activeBrands.size === 0 ? true : activeBrands.has(getBrandName(p));
       return catOk && priceOk && brandOk;
     });
 
-    if (HIDE_OOS) filteredCore = filteredCore.filter((p) => productSellable(p));
+    if (HIDE_OOS) filteredCore = filteredCore.filter((p) => productSellable(p, settingsMarginPct));
 
     return { categories, brands, visiblePriceBuckets, filtered: filteredCore };
-  }, [products, selectedCategories, selectedBucketIdxs, selectedBrands, query, PRICE_BUCKETS, inStockOnly]);
+  }, [
+    products,
+    selectedCategories,
+    selectedBucketIdxs,
+    selectedBrands,
+    query,
+    PRICE_BUCKETS,
+    inStockOnly,
+    settingsMarginPct,
+  ]);
 
   /* -------- Sorting -------- */
 
@@ -843,40 +1134,36 @@ export default function Catalog() {
         return { p, score };
       })
       .sort((a, b) => {
-        // ✅ when showing all, keep OOS at bottom
         if (!inStockOnly) {
           const sr = stockRank(a.p) - stockRank(b.p);
           if (sr !== 0) return sr;
         }
 
-        const av = productSellable(a.p) ? 1 : 0;
-        const bv = productSellable(b.p) ? 1 : 0;
+        const av = productSellable(a.p, settingsMarginPct) ? 1 : 0;
+        const bv = productSellable(b.p, settingsMarginPct) ? 1 : 0;
         if (bv !== av) return bv - av;
         if (b.score !== a.score) return b.score - a.score;
 
-        // ✅ tie-break by best supplier store rating (desc)
         const ar = bestSupplierRatingScore(a.p);
         const br = bestSupplierRatingScore(b.p);
         if (br !== ar) return br - ar;
 
         return priceForFiltering(a.p) - priceForFiltering(b.p);
-
       })
       .map((x) => x.p);
-  }, [filtered, sortKey, purchasedQ.data, inStockOnly]);
+  }, [filtered, sortKey, purchasedQ.data, inStockOnly, settingsMarginPct]);
 
   const sorted = useMemo(() => {
     if (sortKey === 'relevance') return recScored;
 
     const arr = [...filtered].sort((a, b) => {
-      // ✅ when showing all, keep OOS at bottom
       if (!inStockOnly) {
         const sr = stockRank(a) - stockRank(b);
         if (sr !== 0) return sr;
       }
 
-      const av = productSellable(a) ? 1 : 0;
-      const bv = productSellable(b) ? 1 : 0;
+      const av = productSellable(a, settingsMarginPct) ? 1 : 0;
+      const bv = productSellable(b, settingsMarginPct) ? 1 : 0;
       if (bv !== av) return bv - av;
 
       if (sortKey === 'price-asc') return priceForFiltering(a) - priceForFiltering(b);
@@ -885,7 +1172,7 @@ export default function Catalog() {
     });
 
     return arr;
-  }, [filtered, recScored, sortKey, inStockOnly]);
+  }, [filtered, recScored, sortKey, inStockOnly, settingsMarginPct]);
 
   /* -------- Pagination -------- */
 
@@ -894,7 +1181,7 @@ export default function Catalog() {
 
   useEffect(() => {
     setPage(1);
-  }, [selectedCategories, selectedBucketIdxs, selectedBrands, pageSize, sortKey, query, inStockOnly]);
+  }, [selectedCategories, selectedBucketIdxs, selectedBrands, pageSize, sortKey, query, inStockOnly, settingsMarginPct]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -939,7 +1226,6 @@ export default function Catalog() {
   useEffect(() => setJumpVal(''), [totalPages]);
 
   useEffect(() => {
-    // wipe any previously cached product lists (ANY/PUBLISHED)
     qc.removeQueries({ queryKey: ['products'], exact: false });
   }, [qc]);
 
@@ -988,7 +1274,7 @@ export default function Catalog() {
     setSelectedCategories([]);
     setSelectedBucketIdxs([]);
     setSelectedBrands([]);
-    setInStockOnly(true); // ✅ default back to checked
+    setInStockOnly(true);
   };
 
   const Shimmer = () => (
@@ -997,6 +1283,7 @@ export default function Catalog() {
 
   return (
     <SiteLayout>
+      {/* (UI unchanged below — only pricing/settings logic above was fixed) */}
       <div className="max-w-screen-2xl mx-auto min-h-screen">
         {/* Hero */}
         <div className="relative overflow-hidden bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700">
@@ -1053,7 +1340,6 @@ export default function Catalog() {
                 </div>
 
                 <div className="flex items-center gap-3">
-                  {/* ✅ In stock toggle */}
                   <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-800 select-none">
                     <input
                       type="checkbox"
@@ -1250,6 +1536,9 @@ export default function Catalog() {
                       {suggestions.map((p, i) => {
                         const active = i === activeIdx;
                         const minPrice = priceForFiltering(p);
+                        const pricingInStockOnly = inStockOnly ? true : availableNow(p);
+                        const cheapest = getRetailPricePair(p, settingsMarginPct, { inStockOnlyPricing: pricingInStockOnly }).cheapestRetail;
+
                         return (
                           <li key={p.id} className="mb-3 last:mb-0">
                             <Link
@@ -1273,9 +1562,17 @@ export default function Catalog() {
                                 <div className="text-lg font-semibold truncate">{p.title}</div>
                                 <div className="text-sm opacity-80 truncate">
                                   {ngn.format(minPrice)}
+                                  {Number.isFinite(cheapest) &&
+                                    cheapest > 0 &&
+                                    Math.abs(cheapest - minPrice) > 0.01 && (
+                                      <span className="ml-2 text-zinc-500">
+                                        • Cheapest: {ngn.format(cheapest)}
+                                      </span>
+                                    )}
                                   {p.categoryName ? ` • ${p.categoryName}` : ''}
                                   {getBrandName(p) ? ` • ${getBrandName(p)}` : ''}
                                 </div>
+
                                 {p.description && (
                                   <div className="text-sm opacity-70 line-clamp-2 mt-1">{p.description}</div>
                                 )}
@@ -1326,7 +1623,18 @@ export default function Catalog() {
                 <div className="grid gap-3 md:gap-4 grid-cols-2 md:grid-cols-3">
                   {pageItems.map((p) => {
                     const fav = isFav(p.id);
-                    const minPrice = priceForFiltering(p);
+                    const pricingInStockOnly = inStockOnly ? true : availableNow(p);
+                    const pricePair = getRetailPricePair(p, settingsMarginPct, { inStockOnlyPricing: pricingInStockOnly });
+                    const bestPrice = priceForFiltering(p); // now == best-within-band
+                    const cheapestPrice = pricePair.cheapestRetail;
+
+                    const isBestValue =
+                      Number.isFinite(bestPrice) &&
+                      bestPrice > 0 &&
+                      Number.isFinite(cheapestPrice) &&
+                      cheapestPrice > 0 &&
+                      Math.abs(bestPrice - cheapestPrice) > 0.01; // best != cheapest
+
                     const brand = getBrandName(p);
 
                     const primaryImg =
@@ -1347,10 +1655,10 @@ export default function Catalog() {
 
                     const allOffers = collectAllOffers(p);
                     const totalAvail = sumActivePositiveQty(allOffers) || null;
-                    const inCart = qtyInCart(p.id, null);
+                    const inCart = qtyInCartFrom(cartSnapshot, p.id, null);
                     const remaining = totalAvail == null ? null : Math.max(0, totalAvail - inCart);
 
-                    const allowQuickAdd = productSellable(p) && (!needsOptions || false);
+                    const allowQuickAdd = productSellable(p, settingsMarginPct) && (!needsOptions || false);
                     const currentQty = inCart;
                     const canIncrement = remaining == null ? allowQuickAdd : remaining > 0;
 
@@ -1416,8 +1724,27 @@ export default function Catalog() {
                               {p.categoryName?.trim() || 'Uncategorized'}
                             </div>
 
-                            <p className="mt-1 text-sm md:text-base font-semibold">{ngn.format(minPrice)}</p>
-                          </Link>
+
+                            <div className="mt-1 flex items-center gap-2">
+                              <p className="text-sm md:text-base font-semibold">{ngn.format(bestPrice)}</p>
+
+                              {isBestValue && (
+                                <span
+                                  className="inline-flex items-center rounded-full border border-emerald-600/20 bg-emerald-600/10 px-2 py-0.5 text-[10px] md:text-[11px] font-medium text-emerald-700"
+                                  title="Selected supplier is the best-rated within ~2% of the cheapest price"
+                                >
+                                  Best value
+                                </span>
+                              )}
+                            </div>
+
+                            {Number.isFinite(cheapestPrice) &&
+                              cheapestPrice > 0 &&
+                              Math.abs(cheapestPrice - bestPrice) > 0.01 && (
+                                <div className="text-[10px] md:text-[11px] text-zinc-500">
+                                  Cheapest: {ngn.format(cheapestPrice)}
+                                </div>
+                              )}                          </Link>
 
                           {Number(p.ratingCount) > 0 && (
                             <div className="mt-2 text-[10px] md:text-[12px] text-amber-700 inline-flex items-center gap-1">
@@ -1475,13 +1802,19 @@ export default function Catalog() {
                                     {currentQty}
                                   </span>
                                   <button
-                                    onClick={() => canIncrement && setCartQty(p, currentQty + 1)}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      canIncrement && setCartQty(p, currentQty + 1);
+                                    }}
                                     disabled={!allowQuickAdd || !canIncrement}
                                     className="w-7 h-7 rounded-full border border-zinc-900 bg-zinc-900 text-white text-[14px] flex items-center justify-center disabled:opacity-40 active:scale-95 transition"
                                     aria-label="Increase quantity"
                                   >
                                     +
                                   </button>
+
                                 </div>
                               ) : (
                                 <button
@@ -1633,7 +1966,6 @@ export default function Catalog() {
               </button>
             </div>
 
-            {/* ✅ In stock toggle (mobile) */}
             <label className="inline-flex items-center gap-2 text-[11px] font-medium text-zinc-800 select-none">
               <input
                 type="checkbox"

@@ -18,10 +18,11 @@ function normRole(role: any): Role | null {
   if (r === "CUSTOMER" || r === "USER" || r === "BUYER") return "SHOPPER";
 
   if (r === "ADMIN") return "ADMIN";
-  if (r === "SUPER_ADMIN") return "SUPER_ADMIN";
+  if (r === "SUPER_ADMIN" || r === "SUPERADMIN") return "SUPER_ADMIN";
   if (r === "SHOPPER") return "SHOPPER";
   if (r === "SUPPLIER") return "SUPPLIER";
-  if (r === "SUPPLIER_RIDER") return "SUPPLIER_RIDER";
+  if (r === "SUPPLIER_RIDER" || r === "SUPPLIERRIDER") return "SUPPLIER_RIDER";
+
   return null;
 }
 
@@ -36,11 +37,7 @@ export default function ProtectedRoute({ roles, children, riderAllowPrefixes }: 
   const path = loc.pathname || "/";
 
   if (!hydrated) {
-    return (
-      <div className="min-h-[60vh] grid place-items-center text-slate-500">
-        Loading…
-      </div>
-    );
+    return <div className="min-h-[60vh] grid place-items-center text-slate-500">Loading…</div>;
   }
 
   if (!token) {
@@ -49,19 +46,16 @@ export default function ProtectedRoute({ roles, children, riderAllowPrefixes }: 
 
   // token exists but user not loaded yet → wait (prevents wrong redirects)
   if (!user) {
-    return (
-      <div className="min-h-[60vh] grid place-items-center text-slate-500">
-        Loading…
-      </div>
-    );
+    return <div className="min-h-[60vh] grid place-items-center text-slate-500">Loading…</div>;
   }
 
   if (roles && (!role || !roles.includes(role))) {
     return <Navigate to="/" replace />;
   }
 
+  // Riders: allow only specific sub-routes (exact match or under prefix/)
   if (role === "SUPPLIER_RIDER" && riderAllowPrefixes?.length) {
-    const allowed = riderAllowPrefixes.some((p) => path === p || path.startsWith(p + "/") || path.startsWith(p));
+    const allowed = riderAllowPrefixes.some((p) => path === p || path.startsWith(p + "/"));
     if (!allowed) return <Navigate to="/supplier/orders" replace />;
   }
 
