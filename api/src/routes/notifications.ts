@@ -58,6 +58,18 @@ router.get("/", requireAuth, async (req: any, res: Response) => {
   }
 });
 
+// GET /api/notifications/mine
+router.get("/mine", requireAuth, async (req: any, res) => {
+  const userId = req.user?.id;
+  const data = await prisma.notification.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+  res.json({ data });
+});
+
+
 /**
  * POST /api/notifications/read
  * Body:

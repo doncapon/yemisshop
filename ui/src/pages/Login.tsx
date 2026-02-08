@@ -4,6 +4,8 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client.js";
 import { useAuthStore, type Role } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout.js";
+import DaySpringLogo from "../components/brand/DayspringLogo.js";
+
 
 type MeResponse = {
   id: string;
@@ -24,8 +26,8 @@ type LoginOk = {
 type LoginBlocked = {
   error: string;
   needsVerification: true;
-  profile: any; // backend may return emailVerifiedAt/phoneVerifiedAt (normalize below)
-  verifyToken?: string; // <- returned by backend on 403 (recommended)
+  profile: any;
+  verifyToken?: string;
 };
 
 function normalizeProfile(raw: any): MeResponse | null {
@@ -69,16 +71,13 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);
 
-  // When supplier is blocked on 403
   const [blockedProfile, setBlockedProfile] = useState<MeResponse | null>(null);
   const [verifyToken, setVerifyToken] = useState<string | null>(null);
 
-  // Email resend state
   const [emailBusy, setEmailBusy] = useState(false);
   const [emailMsg, setEmailMsg] = useState<string | null>(null);
   const [emailCooldown, setEmailCooldown] = useState(0);
 
-  // Phone OTP state
   const [otpBusy, setOtpBusy] = useState(false);
   const [otpMsg, setOtpMsg] = useState<string | null>(null);
   const [otpCooldown, setOtpCooldown] = useState(0);
@@ -96,12 +95,10 @@ export default function Login() {
     return !!blockedProfile.emailVerified && !!blockedProfile.phoneVerified;
   }, [blockedProfile]);
 
-  // ✅ Clear the old red error once the supplier becomes fully verified
   useEffect(() => {
     if (fullyVerified) {
       setErr(null);
       setEmailMsg(null);
-      // keep otpMsg (we overwrite it anyway)
     }
   }, [fullyVerified]);
 
@@ -132,7 +129,6 @@ export default function Login() {
     setEmailMsg(null);
     setOtpMsg(null);
 
-    // reset blocked UI on a fresh attempt
     setBlockedProfile(null);
     setVerifyToken(null);
 
@@ -147,19 +143,16 @@ export default function Login() {
 
       const { token, profile, needsVerification } = res.data as LoginOk;
 
-      // Persist auth normally
       setAuth({ token, user: profile });
-
       setNeedsVerification(needsVerification ?? false);
 
       try {
         localStorage.setItem("verifyEmail", profile.email);
         if (needsVerification) localStorage.setItem("verifyToken", token);
-      } catch { }
+      } catch {}
 
       const from = (loc.state as any)?.from?.pathname as string | undefined;
 
-      // IMPORTANT: redirect targets must exist in App.tsx
       const defaultByRole: Record<Role, string> = {
         ADMIN: "/admin",
         SUPER_ADMIN: "/admin",
@@ -173,7 +166,6 @@ export default function Login() {
     } catch (e: any) {
       const status = e?.response?.status;
 
-      // ✅ Supplier blocked path (403) – render verification actions
       if (status === 403 && e?.response?.data?.needsVerification) {
         const data = e.response.data as LoginBlocked;
 
@@ -183,14 +175,13 @@ export default function Login() {
         const p = normalizeProfile(data.profile);
         setBlockedProfile(p);
 
-        // store verify session token (if backend returns it)
         const vt = data.verifyToken || null;
         setVerifyToken(vt);
 
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
           if (vt) localStorage.setItem("verify_token", vt);
-        } catch { }
+        } catch {}
 
         setCooldown(1);
         return;
@@ -209,7 +200,6 @@ export default function Login() {
     }
   };
 
-  // ----- actions for blocked suppliers -----
   const resendEmail = async () => {
     if (!blockedProfile?.email) return;
     if (emailBusy || emailCooldown > 0) return;
@@ -303,7 +293,7 @@ export default function Login() {
         if (p?.emailVerified && p?.phoneVerified) {
           setOtp("");
           setOtpMsg("All set ✅ Please login again.");
-          setErr(null); // ✅ clear the red banner
+          setErr(null);
         } else {
           setOtpMsg("Phone verified ✅");
         }
@@ -319,22 +309,28 @@ export default function Login() {
 
   return (
     <SiteLayout>
-      <div className="min-h-[100dvh] relative overflow-hidden">
-        <div className="absolute inset-0 bg-[radial-gradient(1600px_1600px_at_50%_-10%,#a78bfa33,transparent_50%),radial-gradient(5000px_500px_at_90%_0%,#22d3ee33,transparent_50%),linear-gradient(180deg,#111827,#0b1220_40%)]" />
-        <div className="pointer-events-none absolute -top-28 -right-20 w-[28rem] h-[28rem] rounded-full blur-3xl opacity-40 bg-violet-300/40" />
-        <div className="pointer-events-none absolute -bottom-28 -left-12 w-[28rem] h-[28rem] rounded-full blur-3xl opacity-40 bg-cyan-300/40" />
+      {/* Catalog-like background */}
+      <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-50 to-white">
+        {/* soft decorative glows (same vibe as ProductDetail/Catalog) */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute -top-24 -right-20 w-[26rem] h-[26rem] rounded-full blur-3xl opacity-35 bg-fuchsia-300/50" />
+          <div className="absolute -bottom-28 -left-16 w-[28rem] h-[28rem] rounded-full blur-3xl opacity-30 bg-cyan-300/50" />
+        </div>
 
-        <div className="relative grid place-items-center min-h-[100dvh] px-4">
+        <div className="relative grid place-items-center min-h-[100dvh] px-4 py-10">
           <div className="w-full max-w-md">
+            {/* Header */}
             <div className="mb-6 text-center">
-              <div className="inline-flex items-center gap-2 rounded-full bg-white/15 text-white px-3 py-1 text-xs font-medium border border-white/30 backdrop-blur">
-                <span className="inline-block size-2 rounded-full bg-emerald-400 animate-pulse" />
-                Welcome back
+              <div className="flex justify-center">
+                <div className="inline-flex items-center gap-2 rounded-2xl border bg-white/80 backdrop-blur px-4 py-2 shadow-sm">
+                  <DaySpringLogo size={26} showText={true} />
+                </div>
               </div>
-              <h1 className="mt-3 text-3xl font-semibold text-white drop-shadow-[0_1px_0_rgba(0,0,0,0.3)]">
+
+              <h1 className="mt-4 text-2xl md:text-3xl font-semibold text-zinc-900">
                 Sign in to your account
               </h1>
-              <p className="mt-1 text-sm text-white/80">
+              <p className="mt-1 text-sm text-zinc-600">
                 Access your cart, orders and personalised dashboard.
               </p>
             </div>
@@ -342,31 +338,30 @@ export default function Login() {
             <form
               onSubmit={submit}
               noValidate
-              className="rounded-2xl border border-white/30 bg-white/80 backdrop-blur-xl shadow-[0_10px_40px_-12px_rgba(59,130,246,0.35)] p-6 space-y-5"
+              className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm p-6 space-y-5"
             >
               {err && (
-                <div className="text-sm rounded-md border border-rose-300/60 bg-rose-50/90 text-rose-700 px-3 py-2">
+                <div className="text-sm rounded-xl border border-rose-300/60 bg-rose-50 text-rose-700 px-3 py-2">
                   {err}
                 </div>
               )}
 
-              {/* ✅ Supplier verification panel (ALWAYS show when blockedProfile exists) */}
+              {/* Supplier verification panel */}
               {blockedProfile?.role === "SUPPLIER" &&
                 (fullyVerified ? (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/90 px-3 py-3 text-sm text-emerald-800 space-y-2">
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 space-y-2">
                     <div className="font-semibold text-emerald-900">Verification complete ✅</div>
                     <div className="text-xs text-emerald-800">
                       Your supplier account is fully verified. Please login again to continue.
                     </div>
                   </div>
                 ) : (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-3 text-sm text-slate-800 space-y-3">
-                    <div className="text-xs text-slate-600">
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-slate-800 space-y-3">
+                    <div className="text-xs text-slate-700">
                       Supplier account is pending verification:
                       <span className="ml-2 font-medium text-slate-900">{blockedProfile.email}</span>
                     </div>
 
-                    {/* Email verification */}
                     {!blockedProfile.emailVerified && (
                       <div className="space-y-2">
                         <div className="text-sm font-semibold text-slate-900">Verify your email</div>
@@ -378,19 +373,19 @@ export default function Login() {
                             type="button"
                             onClick={resendEmail}
                             disabled={emailBusy || emailCooldown > 0}
-                            className="inline-flex items-center justify-center rounded-lg bg-slate-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                            className="inline-flex items-center justify-center rounded-xl bg-zinc-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
                           >
                             {emailBusy
                               ? "Sending…"
                               : emailCooldown > 0
-                                ? `Resend in ${emailCooldown}s`
-                                : "Resend verification email"}
+                              ? `Resend in ${emailCooldown}s`
+                              : "Resend verification email"}
                           </button>
                           <button
                             type="button"
                             onClick={checkEmailStatus}
                             disabled={emailBusy}
-                            className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
+                            className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
                           >
                             {emailBusy ? "Checking…" : "I verified email (check)"}
                           </button>
@@ -399,7 +394,6 @@ export default function Login() {
                       </div>
                     )}
 
-                    {/* Phone verification */}
                     {!blockedProfile.phoneVerified && (
                       <div className="space-y-2">
                         <div className="text-sm font-semibold text-slate-900">
@@ -414,27 +408,27 @@ export default function Login() {
                             type="button"
                             onClick={sendOtp}
                             disabled={otpBusy || otpCooldown > 0}
-                            className="inline-flex items-center justify-center rounded-lg bg-violet-700 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                            className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
                           >
                             {otpBusy
                               ? "Sending…"
                               : otpCooldown > 0
-                                ? `Send again in ${otpCooldown}s`
-                                : "Send OTP"}
+                              ? `Send again in ${otpCooldown}s`
+                              : "Send OTP"}
                           </button>
 
                           <input
                             value={otp}
                             onChange={(e) => setOtp(e.target.value)}
                             placeholder="Enter OTP"
-                            className="w-32 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 outline-none"
+                            className="w-32 rounded-xl border bg-white px-3 py-2 text-xs text-slate-900 outline-none focus:ring-4 focus:ring-fuchsia-200"
                           />
 
                           <button
                             type="button"
                             onClick={verifyOtp}
                             disabled={otpBusy}
-                            className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
+                            className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
                           >
                             {otpBusy ? "Verifying…" : "Verify OTP"}
                           </button>
@@ -454,16 +448,16 @@ export default function Login() {
                 ))}
 
               <div className="space-y-1">
-                <label className="block text-sm font-medium text-slate-800">Email</label>
+                <label className="block text-sm font-medium text-zinc-800">Email</label>
                 <div className="relative group">
                   <input
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="you@example.com"
                     autoComplete="username"
-                    className="peer w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    className="peer w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-fuchsia-600 transition">
                     ✉
                   </span>
                 </div>
@@ -471,8 +465,8 @@ export default function Login() {
 
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
-                  <label className="block text-sm font-medium text-slate-800">Password</label>
-                  <Link className="text-xs text-violet-700 hover:underline" to="/forgot-password">
+                  <label className="block text-sm font-medium text-zinc-800">Password</label>
+                  <Link className="text-xs text-fuchsia-700 hover:underline" to="/forgot-password">
                     Forgot password?
                   </Link>
                 </div>
@@ -483,9 +477,9 @@ export default function Login() {
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
                     autoComplete="current-password"
-                    className="peer w-full rounded-xl border border-slate-300/80 bg-white px-3 py-3 text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                    className="peer w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-violet-500 transition">
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-fuchsia-600 transition">
                     🔒
                   </span>
                 </div>
@@ -494,22 +488,28 @@ export default function Login() {
               <button
                 type="submit"
                 disabled={!hydrated || loading || cooldown > 0}
-                className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-600 to-cyan-500 text-white px-4 py-3 font-semibold shadow-[0_10px_30px_-12px_rgba(14,165,233,0.6)] hover:scale-[1.01] active:scale-[0.995] focus:outline-none focus:ring-4 focus:ring-cyan-300/40 transition disabled:opacity-50"
+                className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white px-4 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.995] focus:outline-none focus:ring-4 focus:ring-fuchsia-300/40 transition disabled:opacity-50"
               >
-                {!hydrated ? "Preparing…" : loading ? "Logging in…" : cooldown > 0 ? `Try again in ${cooldown}s` : "Login"}
+                {!hydrated
+                  ? "Preparing…"
+                  : loading
+                  ? "Logging in…"
+                  : cooldown > 0
+                  ? `Try again in ${cooldown}s`
+                  : "Login"}
               </button>
 
-              <div className="pt-1 text-center text-sm text-slate-700">
+              <div className="pt-1 text-center text-sm text-zinc-700">
                 Don’t have an account?{" "}
-                <Link className="text-violet-700 hover:underline" to="/register">
+                <Link className="text-fuchsia-700 hover:underline" to="/register">
                   Create one
                 </Link>
               </div>
             </form>
 
-            <p className="mt-5 text-center text-xs text-white/80">
+            <p className="mt-5 text-center text-xs text-zinc-500">
               Secured by industry-standard encryption • Need help?{" "}
-              <Link className="text-cyan-200 hover:underline" to="/support">
+              <Link className="text-fuchsia-700 hover:underline" to="/support">
                 Contact support
               </Link>
             </p>
