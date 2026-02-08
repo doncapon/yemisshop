@@ -8,7 +8,6 @@ import { useModal } from '../components/ModalProvider';
 import { motion } from 'framer-motion';
 
 import {
-  Sparkles,
   Search,
   SlidersHorizontal,
   Star,
@@ -112,7 +111,6 @@ function qtyInCartFrom(cart: CartLine[], productId: string, variantId: string | 
     .filter((x) => x.productId === productId && (variantId ? x.variantId === variantId : !x.variantId))
     .reduce((s, x) => s + Math.max(0, Number(x.qty) || 0), 0);
 }
-
 
 /* ---------------- Helpers: generic ---------------- */
 
@@ -262,9 +260,9 @@ function offerStockOk(o: SupplierOfferLite): boolean {
 }
 
 // --- Selection policy (match orders.ts approach) ---
-const SUPPLIER_BAND_PCT = 2;     // +2% band around cheapest
-const BAYES_M = 5;              // confidence strength
-const MIN_BAYES_RATING = 3.8;   // gate; fallback if it eliminates everyone
+const SUPPLIER_BAND_PCT = 2; // +2% band around cheapest
+const BAYES_M = 5; // confidence strength
+const MIN_BAYES_RATING = 3.8; // gate; fallback if it eliminates everyone
 const FALLBACK_GLOBAL_RATING_C = 4.2; // used if we can't infer a global C
 
 function bayesRating(avg: number, count: number, C: number, m: number) {
@@ -440,7 +438,6 @@ function getRetailPricePair(
   };
 }
 
-
 /**
  * Cheapest supplier-side price across BOTH product-level and variant-level offers.
  */
@@ -510,13 +507,6 @@ function readCart(): Array<{ productId: string; variantId?: string | null; qty: 
   } catch {
     return [];
   }
-}
-
-function qtyInCart(productId: string, variantId: string | null): number {
-  const cart = readCart();
-  return cart
-    .filter((x) => x.productId === productId && (variantId ? x.variantId === variantId : !x.variantId))
-    .reduce((s, x) => s + Math.max(0, Number(x.qty) || 0), 0);
 }
 
 /* ---------------- Purchased counts (for relevance sort) ---------------- */
@@ -695,7 +685,9 @@ export default function Catalog() {
 
   const priceForFiltering = (p: Product) => {
     if (inStockOnly) return getDisplayRetailPrice(p, settingsMarginPct);
-    return availableNow(p) ? getDisplayRetailPrice(p, settingsMarginPct) : getDisplayRetailPriceAny(p, settingsMarginPct);
+    return availableNow(p)
+      ? getDisplayRetailPrice(p, settingsMarginPct)
+      : getDisplayRetailPriceAny(p, settingsMarginPct);
   };
 
   // Fetch products (prefer LIVE, fallback if needed)
@@ -724,76 +716,76 @@ export default function Catalog() {
 
             const variants: Variant[] = Array.isArray(x.variants)
               ? x.variants.map((v: any) => {
-                const variantRetail =
-                  Number.isFinite(Number(v.retailPrice))
-                    ? Number(v.retailPrice)
-                    : Number.isFinite(Number(v.retailBasePrice))
-                      ? Number(v.retailBasePrice)
-                      : Number.isFinite(Number(v.price))
-                        ? Number(v.price)
-                        : null;
+                  const variantRetail =
+                    Number.isFinite(Number(v.retailPrice))
+                      ? Number(v.retailPrice)
+                      : Number.isFinite(Number(v.retailBasePrice))
+                        ? Number(v.retailBasePrice)
+                        : Number.isFinite(Number(v.price))
+                          ? Number(v.price)
+                          : null;
 
-                return {
-                  id: String(v.id),
-                  sku: v.sku ?? null,
-                  price: variantRetail,
-                  inStock: v.inStock === true,
-                  imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-                  offers: Array.isArray(v.offers)
-                    ? v.offers.map((o: any) => ({
-                      id: String(o.id),
-                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                  return {
+                    id: String(v.id),
+                    sku: v.sku ?? null,
+                    price: variantRetail,
+                    inStock: v.inStock === true,
+                    imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+                    offers: Array.isArray(v.offers)
+                      ? v.offers.map((o: any) => ({
+                          id: String(o.id),
+                          supplierId: o.supplierId ?? o.supplier?.id ?? null,
 
-                      isActive: o.isActive === true,
-                      inStock: o.inStock === true,
-                      availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                          isActive: o.isActive === true,
+                          inStock: o.inStock === true,
+                          availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
 
-                      unitPrice: Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null,
-                      basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
-                      price: Number.isFinite(Number(o.price)) ? Number(o.price) : null,
+                          unitPrice: Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null,
+                          basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
+                          price: Number.isFinite(Number(o.price)) ? Number(o.price) : null,
 
-                      supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
-                        ? Number(o.supplierRatingAvg)
-                        : Number.isFinite(Number(o.supplier?.ratingAvg))
-                          ? Number(o.supplier.ratingAvg)
-                          : null,
+                          supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
+                            ? Number(o.supplierRatingAvg)
+                            : Number.isFinite(Number(o.supplier?.ratingAvg))
+                              ? Number(o.supplier.ratingAvg)
+                              : null,
 
-                      supplierRatingCount: Number.isFinite(Number(o.supplierRatingCount))
-                        ? Number(o.supplierRatingCount)
-                        : Number.isFinite(Number(o.supplier?.ratingCount))
-                          ? Number(o.supplier.ratingCount)
-                          : null,
-                    }))
-                    : [],
-                };
-              })
+                          supplierRatingCount: Number.isFinite(Number(o.supplierRatingCount))
+                            ? Number(o.supplierRatingCount)
+                            : Number.isFinite(Number(o.supplier?.ratingCount))
+                              ? Number(o.supplier.ratingCount)
+                              : null,
+                        }))
+                      : [],
+                  };
+                })
               : [];
 
             const supplierOffers: SupplierOfferLite[] = Array.isArray(x.supplierOffers)
               ? x.supplierOffers.map((o: any) => ({
-                id: String(o.id),
-                supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                  id: String(o.id),
+                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
 
-                isActive: o.isActive === true,
-                inStock: o.inStock === true,
-                availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
 
-                basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
-                unitPrice: Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null,
-                price: Number.isFinite(Number(o.price)) ? Number(o.price) : null,
+                  basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
+                  unitPrice: Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null,
+                  price: Number.isFinite(Number(o.price)) ? Number(o.price) : null,
 
-                supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
-                  ? Number(o.supplierRatingAvg)
-                  : Number.isFinite(Number(o.supplier?.ratingAvg))
-                    ? Number(o.supplier.ratingAvg)
-                    : null,
+                  supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
+                    ? Number(o.supplierRatingAvg)
+                    : Number.isFinite(Number(o.supplier?.ratingAvg))
+                      ? Number(o.supplier.ratingAvg)
+                      : null,
 
-                supplierRatingCount: Number.isFinite(Number(o.supplierRatingCount))
-                  ? Number(o.supplierRatingCount)
-                  : Number.isFinite(Number(o.supplier?.ratingCount))
-                    ? Number(o.supplier.ratingCount)
-                    : null,
-              }))
+                  supplierRatingCount: Number.isFinite(Number(o.supplierRatingCount))
+                    ? Number(o.supplierRatingCount)
+                    : Number.isFinite(Number(o.supplier?.ratingCount))
+                      ? Number(o.supplier.ratingCount)
+                      : null,
+                }))
               : [];
 
             const catNameRaw = (x.categoryName ?? x.category?.name ?? x.category?.title ?? '').toString().trim();
@@ -958,24 +950,25 @@ export default function Catalog() {
       }
 
       localStorage.setItem('cart', JSON.stringify(cart));
+      window.dispatchEvent(new Event("cart:updated"));
+
       setCartVersion((v) => v + 1);
 
       // ✅ show mini-cart toast for both add and remove (but not when qty unchanged)
       if (nextQty !== prevQty) {
-        const mode = nextQty > prevQty ? "add" : "remove";
+        const mode = nextQty > prevQty ? 'add' : 'remove';
 
         showMiniCartToast(
           cart,
           { productId: p.id, variantId: null },
           {
             mode,
-            title: mode === "remove" ? "Updated cart" : "Added to cart",
-            duration: mode === "remove" ? 2200 : 3200,
+            title: mode === 'remove' ? 'Updated cart' : 'Added to cart',
+            duration: mode === 'remove' ? 2200 : 3200,
             maxItems: 4,
           }
         );
       }
-
     } catch (err) {
       console.error(err);
       openModal({ title: 'Cart', message: 'Could not update cart.' });
@@ -1088,7 +1081,9 @@ export default function Catalog() {
       return catOk && brandOk;
     });
 
-    const priceCounts = PRICE_BUCKETS.map((b) => baseForPriceCounts.filter((p) => inBucket(priceForFiltering(p), b)).length);
+    const priceCounts = PRICE_BUCKETS.map((b) =>
+      baseForPriceCounts.filter((p) => inBucket(priceForFiltering(p), b)).length
+    );
 
     const visiblePriceBuckets = PRICE_BUCKETS.map((b, i) => ({
       bucket: b,
@@ -1283,22 +1278,16 @@ export default function Catalog() {
 
   return (
     <SiteLayout>
-      {/* (UI unchanged below — only pricing/settings logic above was fixed) */}
-      <div className="max-w-screen-2xl mx-auto min-h-screen">
-        {/* Hero */}
-        <div className="relative overflow-hidden bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700">
-          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
-          <div className="relative px-4 md:px-8 pt-10 pb-8">
-            <div className="flex items-center justify-between gap-4">
-              <div className="space-y-1">
-                <motion.h1
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="text-2xl md:text-3xl font-bold tracking-tight text-white"
-                >
-                  Discover Products <Sparkles className="inline text-white ml-1" size={22} />
-                </motion.h1>
-                <p className="text-sm text-white/80">
+      <div className="mx-auto max-w-7xl px-4 md:px-8 py-8">
+        {/* Header (Shopify-minimal) */}
+        <div className="border-b bg-white">
+          <div className="mx-auto max-w-7xl px-4 md:px-8 py-10">
+            <div className="flex items-start justify-between gap-6">
+              <div className="min-w-0">
+                <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-zinc-900">
+                  Discover Products
+                </h1>
+                <p className="mt-2 text-sm md:text-base text-zinc-600">
                   Fresh picks, smart sorting, and instant search—tailored for you.
                 </p>
               </div>
@@ -1308,7 +1297,7 @@ export default function Catalog() {
 
         {/* Body */}
         <div
-          className="md:flex md:items-start md:gap-8 px-2 md:px-8 pb-10"
+          className="grid grid-cols-1 md:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] gap-6 lg:gap-8"
           onTouchStart={(e) => {
             const x = e.touches[0]?.clientX ?? 0;
             if (x < 24 && !mobileFiltersOpen) setTouchStartX(x);
@@ -1325,11 +1314,11 @@ export default function Catalog() {
           onTouchEnd={() => setTouchStartX(null)}
         >
           {/* LEFT: Filters */}
-          <aside className="hidden md:block space-y-6 md:w-72 lg:w-80 md:flex-none mt-6 md:mt-10">
+          <aside className="hidden md:block space-y-6 mt-6 md:mt-10">
             <motion.section
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="rounded-2xl border border-white/40 bg-white/80 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-5"
+              className="rounded-2xl border border-zinc-200 bg-white shadow-sm p-5"
             >
               <div className="flex items-center justify-between mb-3">
                 <div className="inline-flex items-center gap-2">
@@ -1354,10 +1343,10 @@ export default function Catalog() {
                     selectedBucketIdxs.length > 0 ||
                     selectedBrands.length > 0 ||
                     !inStockOnly) && (
-                      <button className="text-sm text-fuchsia-700 hover:underline" onClick={clearFilters}>
-                        Clear all
-                      </button>
-                    )}
+                    <button className="text-sm text-fuchsia-700 hover:underline" onClick={clearFilters}>
+                      Clear all
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1381,10 +1370,9 @@ export default function Catalog() {
                       <li key={c.id}>
                         <button
                           onClick={() => toggleCategory(c.id)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
-                            ? 'bg-zinc-900 text-white'
-                            : 'bg-white/80 hover:bg-black/5 text-zinc-800'
-                            }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
+                            checked ? 'bg-zinc-900 text-white' : 'bg-white/80 hover:bg-black/5 text-zinc-800'
+                          }`}
                         >
                           <span className="truncate">{c.name}</span>
                           <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1417,10 +1405,9 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
-                              ? 'bg-zinc-900 text-white'
-                              : 'bg-white/80 hover:bg-black/5 text-zinc-800'
-                              }`}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
+                              checked ? 'bg-zinc-900 text-white' : 'bg-white/80 hover:bg-black/5 text-zinc-800'
+                            }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1454,10 +1441,9 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
-                            ? 'bg-zinc-900 text-white'
-                            : 'bg-white/80 hover:bg-black/5 text-zinc-800'
-                            }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
+                            checked ? 'bg-zinc-900 text-white' : 'bg-white/80 hover:bg-black/5 text-zinc-800'
+                          }`}
                         >
                           <span>{bucket.label}</span>
                           <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1473,7 +1459,7 @@ export default function Catalog() {
           </aside>
 
           {/* RIGHT: Products */}
-          <section className="mt-8 md:mt-0 flex-1">
+          <section className="mt-8 md:mt-0 min-w-0">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-xl md:text-2xl font-semibold text-zinc-900">Products</h2>
 
@@ -1487,9 +1473,9 @@ export default function Catalog() {
               </button>
             </div>
 
-            {/* Search / Sort / Per page */}
-            <div className="flex flex-wrap items-center gap-4 mb-5">
-              <div className="relative w-[36rem] max-w-full">
+            {/* Search / Sort / Per page (clean, no “hole”) */}
+            <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_auto] gap-3 lg:gap-4 items-center mb-5">
+              <div className="relative w-full">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
                   <input
@@ -1537,14 +1523,17 @@ export default function Catalog() {
                         const active = i === activeIdx;
                         const minPrice = priceForFiltering(p);
                         const pricingInStockOnly = inStockOnly ? true : availableNow(p);
-                        const cheapest = getRetailPricePair(p, settingsMarginPct, { inStockOnlyPricing: pricingInStockOnly }).cheapestRetail;
+                        const cheapest = getRetailPricePair(p, settingsMarginPct, {
+                          inStockOnlyPricing: pricingInStockOnly,
+                        }).cheapestRetail;
 
                         return (
                           <li key={p.id} className="mb-3 last:mb-0">
                             <Link
                               to={`/product/${p.id}`}
-                              className={`flex items-center gap-4 px-3 py-3 rounded-xl hover:bg-black/5 ${active ? 'bg-black/5' : ''
-                                }`}
+                              className={`flex items-center gap-4 px-3 py-3 rounded-xl hover:bg-black/5 ${
+                                active ? 'bg-black/5' : ''
+                              }`}
                               onClick={() => bumpClick(p.id)}
                             >
                               {p.imagesJson?.[0] ? (
@@ -1565,9 +1554,7 @@ export default function Catalog() {
                                   {Number.isFinite(cheapest) &&
                                     cheapest > 0 &&
                                     Math.abs(cheapest - minPrice) > 0.01 && (
-                                      <span className="ml-2 text-zinc-500">
-                                        • Cheapest: {ngn.format(cheapest)}
-                                      </span>
+                                      <span className="ml-2 text-zinc-500">• Cheapest: {ngn.format(cheapest)}</span>
                                     )}
                                   {p.categoryName ? ` • ${p.categoryName}` : ''}
                                   {getBrandName(p) ? ` • ${getBrandName(p)}` : ''}
@@ -1586,7 +1573,7 @@ export default function Catalog() {
                 )}
               </div>
 
-              <div className="text-sm inline-flex items-center gap-2">
+              <div className="text-sm inline-flex items-center gap-2 lg:justify-self-end">
                 <ArrowUpDown size={16} className="text-zinc-600" />
                 <label className="opacity-70">Sort</label>
                 <select
@@ -1600,7 +1587,7 @@ export default function Catalog() {
                 </select>
               </div>
 
-              <div className="text-sm inline-flex items-center gap-2">
+              <div className="text-sm inline-flex items-center gap-2 lg:justify-self-end">
                 <LayoutGrid size={16} className="text-zinc-600" />
                 <label className="opacity-70">Per page</label>
                 <select
@@ -1664,18 +1651,18 @@ export default function Catalog() {
 
                     const badge = !live
                       ? {
-                        text: 'Pending approval',
-                        cls: 'bg-amber-600/10 text-amber-700 border border-amber-600/20',
-                      }
+                          text: 'Pending approval',
+                          cls: 'bg-amber-600/10 text-amber-700 border border-amber-600/20',
+                        }
                       : available
                         ? {
-                          text: 'In stock',
-                          cls: 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20',
-                        }
+                            text: 'In stock',
+                            cls: 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20',
+                          }
                         : {
-                          text: 'Out of stock',
-                          cls: 'bg-rose-600/10 text-rose-700 border border-rose-600/20',
-                        };
+                            text: 'Out of stock',
+                            cls: 'bg-rose-600/10 text-rose-700 border border-rose-600/20',
+                          };
 
                     return (
                       <motion.article
@@ -1690,8 +1677,9 @@ export default function Catalog() {
                                 <img
                                   src={primaryImg}
                                   alt={p.title}
-                                  className={`w-full h-full object-cover transition-opacity duration-300 ${hasDifferentHover ? 'opacity-100 group-hover:opacity-0' : 'opacity-100'
-                                    }`}
+                                  className={`w-full h-full object-cover transition-opacity duration-300 ${
+                                    hasDifferentHover ? 'opacity-100 group-hover:opacity-0' : 'opacity-100'
+                                  }`}
                                 />
                                 {hasDifferentHover && (
                                   <img
@@ -1724,7 +1712,6 @@ export default function Catalog() {
                               {p.categoryName?.trim() || 'Uncategorized'}
                             </div>
 
-
                             <div className="mt-1 flex items-center gap-2">
                               <p className="text-sm md:text-base font-semibold">{ngn.format(bestPrice)}</p>
 
@@ -1744,7 +1731,8 @@ export default function Catalog() {
                                 <div className="text-[10px] md:text-[11px] text-zinc-500">
                                   Cheapest: {ngn.format(cheapestPrice)}
                                 </div>
-                              )}                          </Link>
+                              )}
+                          </Link>
 
                           {Number(p.ratingCount) > 0 && (
                             <div className="mt-2 text-[10px] md:text-[12px] text-amber-700 inline-flex items-center gap-1">
@@ -1759,10 +1747,9 @@ export default function Catalog() {
                             <div className="mt-3 flex flex-wrap items-center justify-between gap-1.5">
                               <button
                                 aria-label={fav ? 'Remove from wishlist' : 'Add to wishlist'}
-                                className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full border px-2.5 py-1.5 transition ${fav
-                                  ? 'bg-rose-50 text-rose-600 border-rose-200'
-                                  : 'bg-white hover:bg-zinc-50 text-zinc-700'
-                                  }`}
+                                className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full border px-2.5 py-1.5 transition ${
+                                  fav ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-white hover:bg-zinc-50 text-zinc-700'
+                                }`}
                                 onClick={() => {
                                   if (!token) {
                                     openModal({
@@ -1814,16 +1801,16 @@ export default function Catalog() {
                                   >
                                     +
                                   </button>
-
                                 </div>
                               ) : (
                                 <button
                                   disabled={!allowQuickAdd}
                                   onClick={() => setCartQty(p, 1)}
-                                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] md:text-xs border transition ${allowQuickAdd
-                                    ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
-                                    : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
-                                    }`}
+                                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] md:text-xs border transition ${
+                                    allowQuickAdd
+                                      ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
+                                      : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
+                                  }`}
                                   aria-label="Add to cart"
                                   title={allowQuickAdd ? 'Add to cart' : 'Not available'}
                                 >
@@ -1900,10 +1887,9 @@ export default function Catalog() {
                               <button
                                 type="button"
                                 onClick={() => goTo(n)}
-                                className={`px-3 py-1.5 text-xs border rounded-xl ${n === currentPage
-                                  ? 'bg-zinc-900 text-white border-zinc-900'
-                                  : 'bg-white hover:bg-zinc-50'
-                                  }`}
+                                className={`px-3 py-1.5 text-xs border rounded-xl ${
+                                  n === currentPage ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white hover:bg-zinc-50'
+                                }`}
                                 aria-current={n === currentPage ? 'page' : undefined}
                               >
                                 {n}
@@ -1995,8 +1981,9 @@ export default function Catalog() {
                     <li key={c.id}>
                       <button
                         onClick={() => toggleCategory(c.id)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
-                          }`}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${
+                          checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
+                        }`}
                       >
                         <span className="truncate">{c.name}</span>
                         <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -2029,8 +2016,9 @@ export default function Catalog() {
                       <li key={b.name}>
                         <button
                           onClick={() => toggleBrand(b.name)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
-                            }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${
+                            checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
+                          }`}
                         >
                           <span className="truncate">{b.name}</span>
                           <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -2063,8 +2051,9 @@ export default function Catalog() {
                     <li key={bucket.label}>
                       <button
                         onClick={() => toggleBucket(idx)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
-                          }`}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${
+                          checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
+                        }`}
                       >
                         <span>{bucket.label}</span>
                         <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -2078,17 +2067,11 @@ export default function Catalog() {
             </div>
 
             {/* Clear all (mobile) */}
-            {(selectedCategories.length > 0 ||
-              selectedBucketIdxs.length > 0 ||
-              selectedBrands.length > 0 ||
-              !inStockOnly) && (
-                <button
-                  className="mt-2 text-xs font-medium text-fuchsia-700 hover:underline self-start"
-                  onClick={clearFilters}
-                >
-                  Clear all
-                </button>
-              )}
+            {(selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly) && (
+              <button className="mt-2 text-xs font-medium text-fuchsia-700 hover:underline self-start" onClick={clearFilters}>
+                Clear all
+              </button>
+            )}
           </motion.div>
         </motion.div>
       )}

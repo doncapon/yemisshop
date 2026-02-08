@@ -443,6 +443,19 @@ function writeCartLS(cart: any[]) {
   }
 }
 
+function setCartQty(cart: any[]) {
+  // keep localStorage as source of truth (already written), but this guarantees the badge updates NOW
+  try {
+    localStorage.setItem(CART_KEY, JSON.stringify(cart));
+  } catch {
+    // ignore
+  }
+
+  // ✅ notify same-tab listeners (Navbar / useCartCount)
+  window.dispatchEvent(new Event("cart:updated"));
+}
+
+
 function upsertCartLineLS(input: {
   productId: string;
   variantId: string | null;
@@ -496,8 +509,7 @@ function upsertCartLineLS(input: {
       selectedOptions: input.selectedOptions ?? [],
     });
   }
-
-  writeCartLS(cart);
+  setCartQty(cart);
   return cart as CartRowLS[];
 }
 
@@ -1718,6 +1730,8 @@ function pickCheapestPositive(a: number | null, b: number | null) {
       // ignore
     } finally {
       queryClient.invalidateQueries({ queryKey: ["cart"] });
+      window.dispatchEvent(new Event("cart:updated"));
+
     }
 
     const { attrNameById, valueNameByAttrId } = buildLabelMaps(axes);

@@ -1,11 +1,33 @@
 // src/components/Navbar.tsx
-import { Link, NavLink, useNavigate } from "react-router-dom";
+import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import type { ReactNode } from "react";
 import { useAuthStore } from "../store/auth";
 import api from "../api/client";
 import { hardResetApp } from "../utils/resetApp";
 import { performLogout } from "../utils/logout";
 import NotificationsBell from "./notifications/NotificationsBell";
+
+import {
+  Home,
+  LayoutGrid,
+  ShoppingCart,
+  Heart,
+  Package,
+  Shield,
+  CheckCircle2,
+  Truck,
+  Store,
+  User,
+  Menu,
+  X,
+  LogOut,
+  Settings,
+  ClipboardList,
+} from "lucide-react";
+
+import DaySpringLogo from "./brand/DayspringLogo";
+import { useCartCount } from "../hooks/useCartCount";
 
 type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
@@ -33,24 +55,110 @@ function useClickAway<T extends HTMLElement>(onAway: () => void) {
   return ref;
 }
 
+function IconNavLink({
+  to,
+  end,
+  icon,
+  label,
+  onClick,
+  disabled,
+  badgeCount,
+}: {
+  to: string;
+  end?: boolean;
+  icon: ReactNode;
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  badgeCount?: number;
+}) {
+  const count = Number(badgeCount || 0);
+
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      onClick={onClick}
+      className={({ isActive }) => {
+        const base =
+          "group relative inline-flex items-center justify-center rounded-xl border px-2.5 py-2 transition select-none";
+        const active = "bg-zinc-900 text-white border-zinc-900 shadow-sm";
+        const idle = "bg-white/80 text-zinc-700 border-zinc-200 hover:bg-zinc-50";
+        const dis = "opacity-50 pointer-events-none";
+        return `${base} ${isActive ? active : idle} ${disabled ? dis : ""}`;
+      }}
+      aria-label={label}
+      title={label}
+    >
+      <span className="inline-flex items-center justify-center">{icon}</span>
+
+      {/* Badge (top-right) */}
+      {count > 0 && (
+        <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+          {count > 9 ? "9+" : count}
+        </span>
+      )}
+
+      {/* Tooltip (desktop hover) */}
+      <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 text-white text-[11px] px-2 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
+        {label}
+      </span>
+    </NavLink>
+  );
+}
+
+function IconButton({
+  icon,
+  label,
+  onClick,
+  className = "",
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={
+        "group relative inline-flex items-center justify-center rounded-xl border border-zinc-200 bg-white/80 px-2.5 py-2 text-zinc-700 hover:bg-zinc-50 transition " +
+        className
+      }
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+    >
+      {icon}
+      <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 text-white text-[11px] px-2 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
+        {label}
+      </span>
+    </button>
+  );
+}
+
 export default function Navbar() {
   const token = useAuthStore((s) => s.token);
   const userRole = useAuthStore((s) => s.user?.role ?? null);
   const userEmail = useAuthStore((s) => s.user?.email ?? null);
   const nav = useNavigate();
+  const loc = useLocation();
 
   const isSupplier = userRole === "SUPPLIER";
   const isSuperAdmin = userRole === "SUPER_ADMIN";
   const isAdmin = userRole === "ADMIN" || userRole === "SUPER_ADMIN";
   const isRider = userRole === "SUPPLIER_RIDER";
 
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
 
   const [firstName, setFirstName] = useState<string | null>(null);
   const [middleName, setMiddleName] = useState<string | null>(null);
   const [lastName, setLastName] = useState<string | null>(null);
+
+  // Cart counts
+  const { distinct: cartItemsCount, totalQty: cartTotalQty } = useCartCount();
 
   // Load /me when token changes
   useEffect(() => {
@@ -109,547 +217,640 @@ export default function Navbar() {
 
   const logout = useCallback(() => {
     setMenuOpen(false);
-    setMobileOpen(false);
-    performLogout("/"); // clears cookie + clears state + hard reset
+    setMobileMoreOpen(false);
+    performLogout("/");
   }, []);
-
-  const linkBase = "inline-flex items-center px-3 py-2 rounded-md text-sm font-medium transition";
-  const linkInactive = "text-white/90 hover:bg-white/10";
-  const linkActive = "text-white bg-white/20";
 
   // Riders should only use supplier orders (and avoid the shop nav clutter)
   const brandHref = isRider ? "/supplier/orders" : "/";
 
+  // Close mobile more when route changes
+  useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
+
+  const showShopNav = !token || (!isSupplier && !isSuperAdmin && !isRider);
+  const showBuyerNav = token && !isSupplier && !isRider; // shopper/admin can still see cart/wishlist/orders
+  const showSupplierNav = token && isSupplier && !isRider;
+  const showRiderNav = token && isRider;
+
+  // Badge standard: show distinct items (Shopify-like)
+  const cartBadge = cartItemsCount;
+
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-primary-800/40 bg-primary-900/95 backdrop-blur">
-      <div className="w-full max-w-6xl mx-auto h-14 md:h-16 px-4 md:px-6 flex items-center gap-4 min-w-0">
-        {/* Brand */}
-        <div className="flex items-center gap-2">
+    <>
+      {/* Fixed top header */}
+      <header className="fixed top-0 left-0 right-0 z-50 w-full border-b border-zinc-200 bg-white/80 backdrop-blur">
+        <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-4 md:px-8 flex items-center gap-3">
+          {/* Brand */}
           <Link
             to={brandHref}
-            className="text-white text-lg font-bold tracking-tight hover:opacity-95"
+            className="inline-flex items-center hover:opacity-95"
             aria-label="DaySpring home"
           >
-            DaySpring
+            <DaySpringLogo size={28} />
           </Link>
+
+          {/* Desktop icon nav */}
+          <nav className="hidden md:flex items-center gap-2 ml-2">
+            {showRiderNav ? (
+              <IconNavLink
+                to="/supplier/orders"
+                icon={<Truck size={18} />}
+                label="Orders"
+              />
+            ) : (
+              <>
+                {/* Catalogue/Home */}
+                <IconNavLink
+                  to="/"
+                  end
+                  icon={showShopNav ? <LayoutGrid size={18} /> : <Home size={18} />}
+                  label="Catalogue"
+                />
+
+                {/* Dashboards */}
+                {showSupplierNav && (
+                  <IconNavLink
+                    to="/supplier"
+                    end
+                    icon={<Store size={18} />}
+                    label="Supplier dashboard"
+                  />
+                )}
+
+                {token && isSuperAdmin && (
+                  <IconNavLink
+                    to="/supplier"
+                    end
+                    icon={<CheckCircle2 size={18} />}
+                    label="Supplier dashboard"
+                  />
+                )}
+
+                {token && !isSupplier && !isSuperAdmin && (
+                  <IconNavLink
+                    to="/dashboard"
+                    end
+                    icon={<User size={18} />}
+                    label="Dashboard"
+                  />
+                )}
+
+                {/* Buyer nav */}
+                {showBuyerNav && (
+                  <>
+                    <IconNavLink
+                      to="/cart"
+                      icon={<ShoppingCart size={18} />}
+                      label={cartBadge > 0 ? `Cart (${cartBadge})` : "Cart"}
+                      badgeCount={cartBadge}
+                    />
+                    <IconNavLink
+                      to="/wishlist"
+                      end
+                      icon={<Heart size={18} />}
+                      label="Wishlist"
+                    />
+                    <IconNavLink
+                      to="/orders"
+                      end
+                      icon={<Package size={18} />}
+                      label="Orders"
+                    />
+                  </>
+                )}
+
+                {/* Admin */}
+                {isAdmin && (
+                  <IconNavLink
+                    to="/admin"
+                    icon={<Shield size={18} />}
+                    label="Admin"
+                  />
+                )}
+                {isAdmin && (
+                  <IconNavLink
+                    to="/admin/offer-changes"
+                    icon={<ClipboardList size={18} />}
+                    label="Offer approvals"
+                  />
+                )}
+              </>
+            )}
+          </nav>
+
+          <div className="ml-auto" />
+
+          {/* Right cluster */}
+          <div className="flex items-center gap-2">
+            {/* Desktop bell */}
+            <div className="hidden md:block">
+              <NotificationsBell placement="navbar" />
+            </div>
+
+            {/* Auth buttons (desktop) */}
+            <div className="hidden md:flex items-center gap-2">
+              {!token ? (
+                <>
+                  <NavLink
+                    to="/register-supplier"
+                    className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 transition"
+                    title="Become a supplier"
+                  >
+                    <Store size={16} />
+                    <span className="hidden lg:inline">Supply</span>
+                  </NavLink>
+
+                  <NavLink
+                    to="/login"
+                    className={({ isActive }) =>
+                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${
+                        isActive
+                          ? "bg-zinc-900 text-white border-zinc-900"
+                          : "bg-white/80 text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      }`
+                    }
+                    title="Login"
+                  >
+                    <User size={16} />
+                    <span className="hidden lg:inline">Login</span>
+                  </NavLink>
+
+                  <NavLink
+                    to="/register"
+                    className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold hover:opacity-90 transition"
+                    title="Register"
+                  >
+                    <CheckCircle2 size={16} />
+                    <span className="hidden lg:inline">Register</span>
+                  </NavLink>
+                </>
+              ) : (
+                <div className="flex items-center gap-2">
+                  {/* avatar menu */}
+                  <div className="relative" ref={menuRef}>
+                    <button
+                      onClick={() => setMenuOpen((v) => !v)}
+                      className="w-10 h-10 rounded-2xl grid place-items-center border border-zinc-200 bg-white/80 text-zinc-900 font-semibold hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
+                      aria-label="User menu"
+                      title="Account"
+                    >
+                      {initials}
+                    </button>
+
+                    {menuOpen && (
+                      <div
+                        className="absolute right-0 mt-2 w-64 rounded-2xl border border-zinc-200 bg-white shadow-xl overflow-hidden"
+                        role="menu"
+                      >
+                        <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
+                          <div className="text-xs text-zinc-500">Signed in as</div>
+                          <div className="text-sm font-semibold truncate text-zinc-900">
+                            {displayName || userEmail || "User"}
+                          </div>
+                          {userEmail && (
+                            <div className="text-[10px] text-zinc-500 truncate">
+                              {userEmail}
+                            </div>
+                          )}
+                          {isRider && (
+                            <div className="mt-1 text-[10px] text-zinc-500">
+                              Role: Rider
+                            </div>
+                          )}
+                          {/* Optional helper line (nice UX): show both counts */}
+                          {showBuyerNav && cartBadge > 0 && (
+                            <div className="mt-1 text-[10px] text-zinc-500">
+                              Cart: {cartItemsCount} items • {cartTotalQty} units
+                            </div>
+                          )}
+                        </div>
+
+                        {isRider ? (
+                          <nav className="py-1 text-sm">
+                            <button
+                              className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                              onClick={() => {
+                                setMenuOpen(false);
+                                nav("/supplier/orders");
+                              }}
+                              role="menuitem"
+                            >
+                              <Truck size={16} />
+                              Orders
+                            </button>
+
+                            <div className="my-1 border-t border-zinc-100" />
+                            <button
+                              className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition inline-flex items-center gap-2"
+                              onClick={logout}
+                              role="menuitem"
+                            >
+                              <LogOut size={16} />
+                              Logout
+                            </button>
+                          </nav>
+                        ) : (
+                          <nav className="py-1 text-sm">
+                            <button
+                              className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                              onClick={() => {
+                                setMenuOpen(false);
+                                nav("/profile");
+                              }}
+                              role="menuitem"
+                            >
+                              <User size={16} />
+                              Edit Profile
+                            </button>
+
+                            <button
+                              className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                              onClick={() => {
+                                setMenuOpen(false);
+                                nav("/account/sessions");
+                              }}
+                              role="menuitem"
+                            >
+                              <Settings size={16} />
+                              Sessions
+                            </button>
+
+                            {!isSupplier && (
+                              <button
+                                className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                                onClick={() => {
+                                  setMenuOpen(false);
+                                  nav("/orders");
+                                }}
+                                role="menuitem"
+                              >
+                                <Package size={16} />
+                                Purchase history
+                              </button>
+                            )}
+
+                            {userRole === "SUPER_ADMIN" && (
+                              <button
+                                className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                                onClick={() => {
+                                  setMenuOpen(false);
+                                  nav("/admin/settings");
+                                }}
+                                role="menuitem"
+                              >
+                                <Shield size={16} />
+                                Admin Settings
+                              </button>
+                            )}
+
+                            <div className="my-1 border-t border-zinc-100" />
+                            <button
+                              className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition inline-flex items-center gap-2"
+                              onClick={logout}
+                              role="menuitem"
+                            >
+                              <LogOut size={16} />
+                              Logout
+                            </button>
+                          </nav>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Mobile: bell + more */}
+            <div className="md:hidden flex items-center gap-2">
+              <NotificationsBell placement="navbar" />
+              <button
+                className="inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white/80 text-zinc-700 hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
+                aria-label="Open menu"
+                onClick={() => setMobileMoreOpen(true)}
+                title="Menu"
+              >
+                <Menu size={18} />
+              </button>
+            </div>
+          </div>
         </div>
 
-        {/* Desktop nav */}
-        <nav className="hidden md:flex gap-1 ml-3 min-w-0 flex-wrap">
-          {/* Riders: ONLY show Supplier Orders */}
-          {token && isRider ? (
-            <NavLink
-              to="/supplier/orders"
-              className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-            >
-              Orders
-            </NavLink>
-          ) : (
-            <>
-              <NavLink
-                to="/"
-                end
-                className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-              >
-                Catalogue
-              </NavLink>
-
-              {token && isSupplier && (
-                <NavLink
-                  to="/supplier"
-                  end
-                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-                >
-                  Dashboard
-                </NavLink>
-              )}
-
-              {token && isSuperAdmin && (
-                <NavLink
-                  to="/supplier"
-                  end
-                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-                >
-                  SupplierDashboard
-                </NavLink>
-              )}
-
-              {token && !isSupplier && !isSuperAdmin && (
-                <NavLink
-                  to="/dashboard"
-                  end
-                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-                >
-                  Dashboard
-                </NavLink>
-              )}
-
-              {!isSupplier && (
-                <NavLink
-                  to="/cart"
-                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-                >
-                  Cart
-                </NavLink>
-              )}
-
-              {token && !isSupplier && (
-                <NavLink
-                  to="/wishlist"
-                  end
-                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-                >
-                  Wishlist
-                </NavLink>
-              )}
-
-              {token && !isSupplier && (
-                <NavLink
-                  to="/orders"
-                  end
-                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-                >
-                  Orders
-                </NavLink>
-              )}
-
-              {isAdmin && (
-                <NavLink
-                  to="/admin"
-                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-                >
-                  Admin
-                </NavLink>
-              )}
-
-              {isAdmin && (
-                <NavLink
-                  to="/admin/offer-changes"
-                  className={({ isActive }) => `${linkBase} ${isActive ? linkActive : linkInactive}`}
-                >
-                  Offer approvals
-                </NavLink>
-              )}
-            </>
-          )}
-        </nav>
-
-        {/* Spacer */}
-        <div className="ml-auto" />
-
-        {/* Desktop auth / avatar */}
-        <div className="hidden md:flex items-center gap-3">
-          {!token ? (
-            <>
-              <NavLink
-                to="/register-supplier"
-                className="inline-flex items-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-amber-300 hover:bg-amber-200 transition"
-              >
-                Supply
-              </NavLink>
-
-              <NavLink
-                to="/login"
-                className={({ isActive }) =>
-                  `${linkBase} ${isActive
-                    ? "bg-white text-primary-900"
-                    : "border border-white/25 text-white hover:bg-white/10"
-                  }`
-                }
-              >
-                Login
-              </NavLink>
-
-              <NavLink
-                to="/register"
-                className="inline-flex items-center px-3 py-2 rounded-md text-sm font-semibold text-primary-800 bg-white hover:bg-zinc-50 transition"
-              >
-                Register
-              </NavLink>
-            </>
-          ) : (
-            // ✅ FIX: bell + avatar on the same row
-            <div className="flex items-center gap-3">
-              <NotificationsBell placement="navbar" />
-
-              <div className="relative" ref={menuRef}>
+        {/* Mobile top drawer ("More") */}
+        {mobileMoreOpen && (
+          <div className="md:hidden">
+            <div
+              className="fixed inset-0 z-50 bg-black/40"
+              onClick={() => setMobileMoreOpen(false)}
+            />
+            <div className="fixed z-50 top-0 right-0 left-0 border-b border-zinc-200 bg-white/95 backdrop-blur">
+              <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+                <div className="font-semibold text-zinc-900">Menu</div>
                 <button
-                  onClick={() => setMenuOpen((v) => !v)}
-                  className="w-9 h-9 rounded-full grid place-items-center border border-white/25 bg-white/10 text-white font-semibold hover:bg-white/20 focus:outline-none focus:ring-4 focus:ring-white/25 transition"
-                  aria-label="User menu"
+                  className="w-10 h-10 rounded-2xl border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+                  onClick={() => setMobileMoreOpen(false)}
+                  aria-label="Close menu"
                 >
-                  {initials}
+                  <X size={18} />
                 </button>
+              </div>
 
-                {menuOpen && (
-                  <div
-                    className="absolute right-0 mt-2 w-64 rounded-xl border border-zinc-200 bg-white shadow-lg overflow-hidden"
-                    role="menu"
-                  >
-                    <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
-                      <div className="text-xs text-zinc-500">Signed in as</div>
-                      <div className="text-sm font-medium truncate text-zinc-900">
-                        {displayName || userEmail || "User"}
+              <div className="max-w-7xl mx-auto px-4 pb-4">
+                {showRiderNav ? (
+                  <div className="grid gap-2">
+                    <button
+                      className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                      onClick={() => nav("/supplier/orders")}
+                    >
+                      <Truck size={18} />
+                      Supplier Orders
+                    </button>
+
+                    <button
+                      className="w-full rounded-2xl border border-red-200 bg-red-50 px-3 py-3 text-left text-red-700 inline-flex items-center gap-2"
+                      onClick={logout}
+                    >
+                      <LogOut size={18} />
+                      Logout
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid gap-2">
+                    <button
+                      className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                      onClick={() => nav("/")}
+                    >
+                      <LayoutGrid size={18} />
+                      Catalogue
+                    </button>
+
+                    {showBuyerNav && (
+                      <button
+                        className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2 justify-between"
+                        onClick={() => nav("/cart")}
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          <ShoppingCart size={18} />
+                          Cart
+                        </span>
+
+                        {cartBadge > 0 && (
+                          <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+                            {cartBadge > 9 ? "9+" : cartBadge}
+                          </span>
+                        )}
+                      </button>
+                    )}
+
+                    {showSupplierNav && (
+                      <button
+                        className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                        onClick={() => nav("/supplier")}
+                      >
+                        <Store size={18} />
+                        Supplier dashboard
+                      </button>
+                    )}
+
+                    {token && !isSupplier && !isSuperAdmin && (
+                      <button
+                        className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                        onClick={() => nav("/dashboard")}
+                      >
+                        <User size={18} />
+                        Dashboard
+                      </button>
+                    )}
+
+                    {isAdmin && (
+                      <>
+                        <button
+                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                          onClick={() => nav("/admin")}
+                        >
+                          <Shield size={18} />
+                          Admin
+                        </button>
+                        <button
+                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                          onClick={() => nav("/admin/offer-changes")}
+                        >
+                          <ClipboardList size={18} />
+                          Offer approvals
+                        </button>
+                      </>
+                    )}
+
+                    <div className="h-px bg-zinc-100 my-2" />
+
+                    {!token ? (
+                      <div className="grid gap-2">
+                        <button
+                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                          onClick={() => nav("/register-supplier")}
+                        >
+                          <Store size={18} />
+                          Supply
+                        </button>
+
+                        <button
+                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                          onClick={() => nav("/login")}
+                        >
+                          <User size={18} />
+                          Login
+                        </button>
+
+                        <button
+                          className="w-full rounded-2xl bg-zinc-900 text-white px-3 py-3 text-left inline-flex items-center gap-2"
+                          onClick={() => nav("/register")}
+                        >
+                          <CheckCircle2 size={18} />
+                          Register
+                        </button>
                       </div>
-                      {userEmail && (
-                        <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>
-                      )}
-                      {isRider && <div className="mt-1 text-[10px] text-zinc-500">Role: Rider</div>}
-                    </div>
-
-                    {isRider ? (
-                      <nav className="py-1 text-sm">
-                        <button
-                          className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            nav("/supplier/orders");
-                          }}
-                          role="menuitem"
-                        >
-                          Orders
-                        </button>
-                        <div className="my-1 border-t border-zinc-100" />
-                        <button
-                          className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition"
-                          onClick={logout}
-                          role="menuitem"
-                        >
-                          Logout
-                        </button>
-                      </nav>
                     ) : (
-                      <nav className="py-1 text-sm">
+                      <div className="grid gap-2">
                         <button
-                          className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            nav("/profile");
-                          }}
-                          role="menuitem"
+                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                          onClick={() => nav("/profile")}
                         >
-                          Edit Profile
+                          <User size={18} />
+                          Edit profile
                         </button>
 
                         <button
-                          className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            nav("/account/sessions");
-                          }}
-                          role="menuitem"
+                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                          onClick={() => nav("/account/sessions")}
                         >
+                          <Settings size={18} />
                           Sessions
                         </button>
 
                         {!isSupplier && (
                           <button
-                            className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                            onClick={() => {
-                              setMenuOpen(false);
-                              nav("/orders");
-                            }}
-                            role="menuitem"
+                            className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
+                            onClick={() => nav("/orders")}
                           >
+                            <Package size={18} />
                             Purchase history
                           </button>
                         )}
 
-                        {userRole === "SUPER_ADMIN" && (
-                          <button
-                            className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition"
-                            onClick={() => {
-                              setMenuOpen(false);
-                              nav("/admin/settings");
-                            }}
-                            role="menuitem"
-                          >
-                            Admin Settings
-                          </button>
-                        )}
-
-                        <div className="my-1 border-t border-zinc-100" />
                         <button
-                          className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition"
+                          className="w-full rounded-2xl border border-red-200 bg-red-50 px-3 py-3 text-left text-red-700 inline-flex items-center gap-2"
                           onClick={logout}
-                          role="menuitem"
                         >
+                          <LogOut size={18} />
                           Logout
                         </button>
-                      </nav>
+                      </div>
                     )}
                   </div>
                 )}
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
+      </header>
 
-        {/* ✅ FIX: Mobile top-right cluster = bell + hamburger */}
-        <div className="md:hidden flex items-center gap-2">
-          <NotificationsBell placement="navbar" />
-          <button
-            className="inline-flex items-center justify-center w-9 h-9 rounded-md border border-white/25 text-white hover:bg-white/10 focus:outline-none focus:ring-4 focus:ring-white/25 transition"
-            aria-label="Toggle menu"
-            onClick={() => setMobileOpen((v) => !v)}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path
-                d="M4 7h16M4 12h16M4 17h16"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-              />
-            </svg>
-          </button>
-        </div>
-      </div>
+      {/* Spacer so fixed header doesn't cover page content */}
+      <div className="h-14 md:h-16" />
 
-      {/* Mobile drawer */}
-      {mobileOpen && (
-        <div className="md:hidden border-t border-primary-800/40 bg-primary-900/98 backdrop-blur">
-          <div className="px-4 py-3 flex flex-col gap-1">
-            {/* Riders: ONLY show Supplier Orders */}
-            {token && isRider ? (
-              <>
-                <NavLink
-                  to="/supplier/orders"
-                  onClick={() => setMobileOpen(false)}
-                  className={({ isActive }) =>
-                    `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
-                    }`
-                  }
-                >
-                  Orders
-                </NavLink>
+      {/* Mobile bottom nav */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-200 bg-white/90 backdrop-blur">
+        <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-around">
+          {showRiderNav ? (
+            <>
+              <NavLink
+                to="/supplier/orders"
+                className={({ isActive }) =>
+                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                    isActive ? "text-zinc-900" : "text-zinc-500"
+                  }`
+                }
+              >
+                <Truck size={20} />
+                <span className="text-[10px]">Orders</span>
+              </NavLink>
 
-                <div className="mt-2 border-t border-white/15 pt-2" />
-                <button
-                  className="w-full text-left px-3 py-2 rounded-md text-red-200 hover:bg-red-500/10"
-                  onClick={() => {
-                    setMobileOpen(false);
-                    logout();
-                  }}
-                >
-                  Logout
-                </button>
-              </>
-            ) : (
-              <>
-                <NavLink
-                  to="/"
-                  end
-                  onClick={() => setMobileOpen(false)}
-                  className={({ isActive }) =>
-                    `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
-                    }`
-                  }
-                >
-                  Catalogue
-                </NavLink>
+              <button
+                className="flex flex-col items-center gap-1 px-3 py-1 rounded-xl text-zinc-500"
+                onClick={() => setMobileMoreOpen(true)}
+              >
+                <Menu size={20} />
+                <span className="text-[10px]">More</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <NavLink
+                to="/"
+                end
+                className={({ isActive }) =>
+                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                    isActive ? "text-zinc-900" : "text-zinc-500"
+                  }`
+                }
+              >
+                <LayoutGrid size={20} />
+                <span className="text-[10px]">Shop</span>
+              </NavLink>
 
-                {token && isSupplier && (
-                  <NavLink
-                    to="/supplier"
-                    end
-                    onClick={() => setMobileOpen(false)}
-                    className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
-                      }`
-                    }
-                  >
-                    Dashboard
-                  </NavLink>
-                )}
-
-                {token && isSuperAdmin && (
-                  <NavLink
-                    to="/supplier"
-                    end
-                    onClick={() => setMobileOpen(false)}
-                    className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
-                      }`
-                    }
-                  >
-                    SupplierDashboard
-                  </NavLink>
-                )}
-
-                {token && !isSupplier && !isSuperAdmin && (
-                  <NavLink
-                    to="/dashboard"
-                    end
-                    onClick={() => setMobileOpen(false)}
-                    className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
-                      }`
-                    }
-                  >
-                    Dashboard
-                  </NavLink>
-                )}
-
-                {!isSupplier && (
+              {showBuyerNav ? (
+                <>
+                  {/* Cart badge (mobile bottom) */}
                   <NavLink
                     to="/cart"
-                    onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      `relative flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                        isActive ? "text-zinc-900" : "text-zinc-500"
                       }`
                     }
+                    aria-label={cartBadge > 0 ? `Cart (${cartBadge})` : "Cart"}
                   >
-                    Cart
+                    <div className="relative">
+                      <ShoppingCart size={20} />
+                      {cartBadge > 0 && (
+                        <span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+                          {cartBadge > 9 ? "9+" : cartBadge}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px]">Cart</span>
                   </NavLink>
-                )}
 
-                {token && !isSupplier && (
                   <NavLink
                     to="/wishlist"
-                    onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                        isActive ? "text-zinc-900" : "text-zinc-500"
                       }`
                     }
                   >
-                    Wishlist
+                    <Heart size={20} />
+                    <span className="text-[10px]">Wish</span>
                   </NavLink>
-                )}
 
-                {token && !isSupplier && (
                   <NavLink
                     to="/orders"
-                    onClick={() => setMobileOpen(false)}
                     className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
+                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                        isActive ? "text-zinc-900" : "text-zinc-500"
                       }`
                     }
                   >
-                    Orders
+                    <Package size={20} />
+                    <span className="text-[10px]">Orders</span>
                   </NavLink>
-                )}
-
-                {isAdmin && (
-                  <NavLink
-                    to="/admin"
-                    onClick={() => setMobileOpen(false)}
-                    className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
-                      }`
-                    }
-                  >
-                    Admin
-                  </NavLink>
-                )}
-
-                {isAdmin && (
-                  <NavLink
-                    to="/admin/offer-changes"
-                    onClick={() => setMobileOpen(false)}
-                    className={({ isActive }) =>
-                      `${linkBase} ${isActive ? "bg-white/20 text-white" : "text-white/90 hover:bg-white/10"
-                      }`
-                    }
-                  >
-                    Offer approvals
-                  </NavLink>
-                )}
-
-                <div className="mt-2 border-t border-white/15 pt-2" />
-
-                {!token ? (
-                  <div className="flex gap-2">
+                </>
+              ) : (
+                <>
+                  {token && isSupplier && (
                     <NavLink
-                      to="/register-supplier"
-                      onClick={() => setMobileOpen(false)}
-                      className="flex-1 text-center inline-flex items-center justify-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-amber-300 hover:bg-amber-200 transition"
-                    >
-                      Supply
-                    </NavLink>
-
-                    <NavLink
-                      to="/login"
-                      onClick={() => setMobileOpen(false)}
+                      to="/supplier"
+                      end
                       className={({ isActive }) =>
-                        `flex-1 text-center ${linkBase} ${isActive
-                          ? "bg-white text-primary-900"
-                          : "border border-white/25 text-white hover:bg-white/10"
+                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                          isActive ? "text-zinc-900" : "text-zinc-500"
                         }`
                       }
                     >
-                      Login
+                      <Store size={20} />
+                      <span className="text-[10px]">Supplier</span>
                     </NavLink>
+                  )}
 
+                  {isAdmin && (
                     <NavLink
-                      to="/register"
-                      onClick={() => setMobileOpen(false)}
-                      className="flex-1 text-center inline-flex items-center justify-center px-3 py-2 rounded-md text-sm font-semibold text-primary-900 bg-white hover:bg-zinc-50 transition"
+                      to="/admin"
+                      className={({ isActive }) =>
+                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                          isActive ? "text-zinc-900" : "text-zinc-500"
+                        }`
+                      }
                     >
-                      Register
+                      <Shield size={20} />
+                      <span className="text-[10px]">Admin</span>
                     </NavLink>
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-1">
-                    <button
-                      className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
-                      onClick={() => {
-                        setMobileOpen(false);
-                        nav("/profile");
-                      }}
-                    >
-                      Edit Profile
-                    </button>
+                  )}
+                </>
+              )}
 
-                    <button
-                      className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
-                      onClick={() => {
-                        setMobileOpen(false);
-                        nav("/account/sessions");
-                      }}
-                    >
-                      Sessions
-                    </button>
-
-                    {!isSupplier && (
-                      <button
-                        className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
-                        onClick={() => {
-                          setMobileOpen(false);
-                          nav("/orders");
-                        }}
-                      >
-                        Purchase history
-                      </button>
-                    )}
-
-                    {userRole === "SUPER_ADMIN" && (
-                      <button
-                        className="w-full text-left px-3 py-2 rounded-md text-white/90 hover:bg-white/10"
-                        onClick={() => {
-                          setMobileOpen(false);
-                          nav("/admin/settings");
-                        }}
-                      >
-                        Admin Settings
-                      </button>
-                    )}
-
-                    <button
-                      className="w-full text-left px-3 py-2 rounded-md text-red-200 hover:bg-red-500/10"
-                      onClick={() => {
-                        setMobileOpen(false);
-                        logout();
-                      }}
-                    >
-                      Logout
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+              <button
+                className="flex flex-col items-center gap-1 px-3 py-1 rounded-xl text-zinc-500"
+                onClick={() => setMobileMoreOpen(true)}
+              >
+                <Menu size={20} />
+                <span className="text-[10px]">More</span>
+              </button>
+            </>
+          )}
         </div>
-      )}
-    </header>
+      </div>
+
+      {/* Spacer so bottom nav doesn't cover content */}
+      <div className="md:hidden h-16" />
+    </>
   );
 }
