@@ -1,0 +1,9 @@
+# .env.example
+NODE_ENV=production
+PORT=3000
+
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DB?schema=public
+JWT_SECRET=change-me
+PAYSTACK_SECRET_KEY=sk_test_xxx
+EMAIL_PROVIDER_API_KEY=xxx
+WHATSAPP_API_KEY=xxx
