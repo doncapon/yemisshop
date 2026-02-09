@@ -195,7 +195,7 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
     // Notify customer
     if (refundMeta.requestedByUserId) {
       await notifyUser(refundMeta.requestedByUserId, {
-        type: "REFUND_UPDATED",
+        type: "REFUND_STATUS_CHANGED",
         title: "Refund updated",
         body:
           decision === "APPROVE"
@@ -213,7 +213,7 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
       });
       if (supplier?.userId) {
         await notifyUser(supplier.userId, {
-          type: "REFUND_UPDATED",
+          type: "REFUND_STATUS_CHANGED",
           title: "Refund updated",
           body:
             decision === "APPROVE"
@@ -227,7 +227,7 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
     // Notify all admins
     const adminUserIds = await getAdminUserIds();
     await notifyMany(adminUserIds, {
-      type: "REFUND_UPDATED",
+      type: "REFUND_STATUS_CHANGED",
       title: "Refund decision recorded",
       body: `Admin ${decision} for refund on order ${refundMeta.orderId}.`,
       data: { refundId: refundMeta.id, orderId: refundMeta.orderId, decision },
@@ -381,7 +381,7 @@ router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
     // Customer
     if (refundMeta.requestedByUserId) {
       await notifyUser(refundMeta.requestedByUserId, {
-        type: "REFUND_UPDATED",
+        type: "REFUND_STATUS_CHANGED",
         title: "Refund completed",
         body: `Your refund has been marked as refunded for order ${refundMeta.orderId}.`,
         data: { refundId: refundMeta.id, orderId: refundMeta.orderId, status: "REFUNDED" },
@@ -396,7 +396,7 @@ router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
       });
       if (supplier?.userId) {
         await notifyUser(supplier.userId, {
-          type: "REFUND_UPDATED",
+          type: "REFUND_STATUS_CHANGED",
           title: "Refund completed",
           body: `A refund has been marked as refunded for order ${refundMeta.orderId}.`,
           data: { refundId: refundMeta.id, orderId: refundMeta.orderId, status: "REFUNDED" },
@@ -407,7 +407,7 @@ router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
     // Admins
     const adminUserIds = await getAdminUserIds();
     await notifyMany(adminUserIds, {
-      type: "REFUND_UPDATED",
+      type: "REFUND_STATUS_CHANGED",
       title: "Refund marked refunded",
       body: `Refund marked REFUNDED for order ${refundMeta.orderId}.`,
       data: { refundId: refundMeta.id, orderId: refundMeta.orderId, status: "REFUNDED" },
