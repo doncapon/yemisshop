@@ -237,7 +237,7 @@ router.patch("/:id", requireAuth, async (req: any, res) => {
     // 🔔 Notify admins
     const adminIds = await getAdminUserIds();
     await notifyMany(adminIds, {
-      type: "REFUND_UPDATED",
+      type: "REFUND_STATUS_CHANGED",
       title: "Supplier responded to refund",
       body: `Supplier ${s.name} marked refund as ${out.nextStatus} for order ${out.refundMeta.orderId}.`,
       data: {
@@ -252,7 +252,7 @@ router.patch("/:id", requireAuth, async (req: any, res) => {
     // 🔔 Notify customer (refund requester)
     if (out.refundMeta.requestedByUserId) {
       await notifyUser(out.refundMeta.requestedByUserId, {
-        type: "REFUND_UPDATED",
+        type: "REFUND_STATUS_CHANGED",
         title: "Refund update",
         body: `Your refund request for order ${out.refundMeta.orderId} is now ${out.nextStatus}.`,
         data: {
