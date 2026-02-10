@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 # start.sh - entrypoint for Railway API container
 
 set -e

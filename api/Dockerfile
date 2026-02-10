@@ -12,11 +12,11 @@ FROM base AS deps
 # Copy only package manifests for better cache usage
 COPY package*.json ./
 
-# Install ALL deps (keep dev deps because we run prisma CLI at runtime)
-RUN npm ci
-
 # Bring prisma now so we can generate the client into node_modules
 COPY prisma ./prisma
+
+# Install ALL deps (keep dev deps because we run prisma CLI at runtime)
+RUN npm ci
 
 # Generate Prisma client artifacts into node_modules/@prisma/*
 RUN npx prisma generate
@@ -56,8 +56,8 @@ COPY start.sh ./start.sh
 RUN chmod +x ./start.sh
 
 # Default internal port (Railway will set PORT)
-ENV PORT=4000
-EXPOSE 4000
+ENV PORT=8080
+EXPOSE 8080
 
 # One entrypoint
 CMD ["./start.sh"]
