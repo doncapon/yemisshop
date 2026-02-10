@@ -161,8 +161,6 @@ function readCart(): CartLine[] {
         unitPrice: unit,
         variantId: x.variantId ?? null,
         selectedOptions,
-
-        price: unit,
         totalPrice: num(x.totalPrice, unit * qty),
         image: x.image ?? null,
 
@@ -203,8 +201,6 @@ function writeCart(lines: CartLine[]) {
       supplierId: l.supplierId ?? null,
       offerId: l.offerId ?? undefined,
 
-      // legacy mirror
-      price: unit,
       totalPrice: total,
     };
   });

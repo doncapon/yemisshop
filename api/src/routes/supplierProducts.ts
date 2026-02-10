@@ -42,16 +42,16 @@ router.get("/", requireAuth, async (req, res) => {
     ...(status !== "ANY" ? { status: status as any } : {}),
     ...(q
       ? {
-          AND: [
-            {
-              OR: [
-                { title: { contains: q, mode: "insensitive" } },
-                { sku: { contains: q, mode: "insensitive" } },
-                { description: { contains: q, mode: "insensitive" } },
-              ],
-            },
-          ],
-        }
+        AND: [
+          {
+            OR: [
+              { title: { contains: q, mode: "insensitive" } },
+              { sku: { contains: q, mode: "insensitive" } },
+              { description: { contains: q, mode: "insensitive" } },
+            ],
+          },
+        ],
+      }
       : {}),
   };
 
@@ -97,6 +97,24 @@ router.get("/", requireAuth, async (req, res) => {
   ]);
 
   const productIds = items.map((p: any) => String(p.id));
+
+  const variantMin = await prisma.supplierVariantOffer.groupBy({
+    by: ["productId"],
+    where: {
+      supplierId: s.id,
+      productId: { in: productIds },
+      isActive: true,
+      inStock: true,
+      availableQty: { gt: 0 },
+      unitPrice: { gt: new Prisma.Decimal("0") },
+    } as any,
+    _min: { unitPrice: true },
+  });
+
+  const variantMinByProduct: Record<string, number> = {};
+  for (const r of variantMin as any[]) {
+    variantMinByProduct[String(r.productId)] = Number(r._min?.unitPrice ?? 0) || 0;
+  }
 
   // ✅ active/in-stock totals (used for row stock display)
   const [baseAgg, variantAgg] = await Promise.all([
@@ -150,6 +168,14 @@ router.get("/", requireAuth, async (req, res) => {
         String(p.supplierId ?? "") === String(s.id) ||
         (s.userId && (String(p.ownerId ?? "") === String(s.userId) || String(p.userId ?? "") === String(s.userId)));
 
+      const baseOfferPrice =
+        offer?.basePrice != null && Number(offer.basePrice) > 0 ? Number(offer.basePrice) : 0;
+
+      const variantFallbackPrice = variantMinByProduct[pid] ?? 0;
+
+      const displayBasePrice = baseOfferPrice > 0 ? baseOfferPrice : variantFallbackPrice;
+
+
       return {
         id: p.id,
         title: p.title,
@@ -163,7 +189,7 @@ router.get("/", requireAuth, async (req, res) => {
         brandId: p.brandId ?? null,
 
         // price displayed is supplier's base offer price if present, otherwise 0
-        price: offer?.basePrice != null ? Number(offer.basePrice) : 0,
+        basePrice: displayBasePrice,
         currency: offer?.currency ?? "NGN",
         offerIsActive: offer?.isActive ?? false,
 
@@ -211,7 +237,7 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
     const inStock = payload.offer?.inStock ?? payload.inStock ?? qty > 0;
 
     const created = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const offerBasePrice = payload.offer?.basePrice ?? payload.price;
+      const offerBasePrice = payload.offer?.basePrice ?? payload.basePrice;
 
       const product = await tx.product.create({
         data: {
@@ -254,12 +280,12 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
         for (const v of variants as any[]) {
           const opts = normalizeOptions(
             v?.options ??
-              v?.optionSelections ??
-              v?.attributes ??
-              v?.attributeSelections ??
-              v?.variantOptions ??
-              v?.VariantOptions ??
-              []
+            v?.optionSelections ??
+            v?.attributes ??
+            v?.attributeSelections ??
+            v?.variantOptions ??
+            v?.VariantOptions ??
+            []
           );
 
           const directId = String(v?.variantId ?? v?.id ?? "").trim();
@@ -281,7 +307,7 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
               isActive: vIsActive,
               inStock: !!vInStock,
               availableQty: vQtyNonNeg,
-              price: unitPriceNum,
+              basePrice: unitPriceNum,
             })
           ) {
             await assertSupplierPayoutReadyForPurchasableOfferTx(
@@ -394,16 +420,16 @@ const toDecimal = (v: Decimalish) => {
 
 type SupplierCtx =
   | {
-      ok: true;
-      supplierId: string;
-      supplier: {
-        id: string;
-        name?: string | null;
-        status?: any;
-        userId?: string | null;
-      };
-      impersonating: boolean;
-    }
+    ok: true;
+    supplierId: string;
+    supplier: {
+      id: string;
+      name?: string | null;
+      status?: any;
+      userId?: string | null;
+    };
+    impersonating: boolean;
+  }
   | { ok: false; status: number; error: string };
 
 async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
@@ -523,10 +549,10 @@ function normalizeOptions(raw: any): Array<{ attributeId: string; valueId: strin
   const pickAttributeId = (o: any) =>
     String(
       o?.attributeId ??
-        o?.attribute?.id ??
-        o?.attributeValue?.attributeId ??
-        o?.value?.attributeId ??
-        ""
+      o?.attribute?.id ??
+      o?.attributeValue?.attributeId ??
+      o?.value?.attributeId ??
+      ""
     ).trim();
 
   const pickValueId = (o: any) =>
@@ -622,7 +648,7 @@ async function upsertSupplierProductOffer(
       isActive,
       inStock,
       availableQty: Math.max(0, Math.trunc(availableQty ?? 0)),
-      price: basePriceNum,
+      basePrice: basePriceNum,
     })
   ) {
     await assertSupplierPayoutReadyForPurchasableOfferTx(
@@ -851,12 +877,12 @@ function offerBecomesPurchasable(input: {
   isActive?: boolean;
   inStock?: boolean;
   availableQty?: number;
-  price?: number;
+  basePrice?: number;
 }) {
   const isActive = input.isActive !== false;
   const inStock = input.inStock !== false;
   const qty = Math.max(0, Math.trunc(input.availableQty ?? 0));
-  const price = Number(input.price ?? 0);
+  const price = Number(input.basePrice ?? 0);
 
   return isActive && inStock && qty > 0 && price > 0;
 }
@@ -953,7 +979,7 @@ const VariantCreateSchema = z
 const CreateSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
-  price: z.union([z.number(), z.string()]),
+  basePrice: z.union([z.number(), z.string()]),
   sku: z.string().trim().min(1).nullable().optional(),
   inStock: z.boolean().optional(),
   categoryId: z.string().optional(),
@@ -987,7 +1013,7 @@ const UpdateSchema = z
   .object({
     title: z.string().min(1).optional(),
     description: z.string().optional(),
-    price: z.union([z.number(), z.string()]).optional(),
+    basePrice: z.union([z.number(), z.string()]).optional(),
     sku: z.string().min(1).optional(),
     inStock: z.boolean().optional(),
     categoryId: z.string().nullable().optional(),
@@ -1026,17 +1052,134 @@ function supplierOfferOrderBy() {
 }
 
 
-// ✅ DETAIL
-// Allow supplier to open product detail if:
-//  - they own it, OR
-//  - they have ever created base offer or variant offer for it, OR
-//  - it's a LIVE catalog product (not theirs) so they can create offers for it
+
+/* ----------------- DMMF helpers (avoid include/select runtime crashes) ----------------- */
+function getModel(name: string) {
+  return (Prisma as any).dmmf?.datamodel?.models?.find((m: any) => m.name === name);
+}
+
+function modelFieldSet(modelName: string) {
+  const m = getModel(modelName);
+  const fields = m?.fields ?? [];
+  return new Set<string>(fields.map((f: any) => String(f.name)));
+}
+
+function hasModelField(modelName: string, fieldName: string) {
+  return modelFieldSet(modelName).has(fieldName);
+}
+
+function findRel(modelName: string, typeName: string, opts?: { isList?: boolean }) {
+  const m = getModel(modelName);
+  const fields = m?.fields ?? [];
+  return fields.find((f: any) => {
+    if (f.kind !== "object") return false;
+    if (f.type !== typeName) return false;
+    if (typeof opts?.isList === "boolean" && !!f.isList !== opts.isList) return false;
+    return true;
+  })?.name as string | undefined;
+}
+
+/** Pick the first model that exists in Prisma DMMF */
+function pickFirstModelName(names: string[]) {
+  for (const n of names) if (getModel(n)) return n;
+  return null;
+}
+
+/** Build a safe select object: include only fields that exist */
+function safeSelect(modelName: string, fields: Record<string, boolean>) {
+  const out: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (!v) continue;
+    if (hasModelField(modelName, k)) out[k] = true;
+  }
+  return out;
+}
+
+/* ------------------------------ GET /:id ------------------------------ */
 router.get("/:id", requireAuth, async (req, res) => {
   const ctx = await resolveSupplierContext(req);
   if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
   const s = ctx.supplier;
   const { id } = req.params;
+
+  // Product relations (names vary per schema, so resolve dynamically)
+  const productVariantsRel = findRel("Product", "ProductVariant", { isList: true }) ?? "ProductVariant";
+  const productBaseOffersRel = findRel("Product", "SupplierProductOffer", { isList: true }) ?? "supplierProductOffers";
+  const productVariantOffersRel = findRel("Product", "SupplierVariantOffer", { isList: true }) ?? "supplierVariantOffers";
+  const productBrandRel = findRel("Product", "Brand", { isList: false }) ?? "brand";
+
+  // ProductVariant relations
+  const variantOptionsRel = findRel("ProductVariant", "ProductVariantOption", { isList: true }) ?? "options";
+  const variantSupplierOffersRel =
+    findRel("ProductVariant", "SupplierVariantOffer", { isList: true }) ?? "supplierVariantOffers";
+
+  // Attribute models may differ; try common names safely
+  const attributeModelName = pickFirstModelName(["Attribute", "ProductAttribute", "CatalogAttribute"]);
+  const attributeValueModelName = pickFirstModelName(["AttributeValue", "ProductAttributeValue", "CatalogAttributeValue"]);
+
+  const attributeClient =
+    (prisma as any).attribute ||
+    (prisma as any).productAttribute ||
+    (prisma as any).catalogAttribute ||
+    null;
+
+  const attributeValueClient =
+    (prisma as any).attributeValue ||
+    (prisma as any).productAttributeValue ||
+    (prisma as any).catalogAttributeValue ||
+    null;
+
+  // ----------------- Load product (safe includes) -----------------
+  const include: any = {};
+
+  include[productVariantsRel] = {
+    where: { isActive: true, archivedAt: null } as any,
+    include: {
+      [variantOptionsRel]: {
+        select: {
+          attributeId: true,
+          valueId: true,
+          attribute: { select: { id: true, name: true, type: true } },
+          value: { select: { id: true, name: true, code: true } }, // ✅ code exists on AttributeValue in your schema
+        },
+      },
+      [variantSupplierOffersRel]: {
+        where: { supplierId: s.id },
+        select: {
+          id: true,
+          unitPrice: true,
+          availableQty: true,
+          inStock: true,
+          isActive: true,
+          leadDays: true,
+          currency: true,
+          variantId: true,
+        },
+        take: 1,
+      },
+    },
+    orderBy: { createdAt: "asc" },
+  };
+
+  include[productBaseOffersRel] = {
+    where: { supplierId: s.id },
+    select: {
+      id: true,
+      basePrice: true,
+      currency: true,
+      inStock: true,
+      isActive: true,
+      leadDays: true,
+      availableQty: true,
+      updatedAt: true,
+      createdAt: true,
+    },
+    ...(supplierOfferOrderBy() ? { orderBy: supplierOfferOrderBy() as any } : {}),
+    take: 1,
+  };
+
+  include[productBrandRel] = { select: { id: true, name: true } };
 
   const p = await prisma.product.findFirst({
     where: {
@@ -1045,79 +1188,31 @@ router.get("/:id", requireAuth, async (req, res) => {
       OR: [
         // owned
         { supplierId: s.id } as any,
-        ...(s.userId
-          ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[])
-          : []),
+        ...(s.userId ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[]) : []),
 
         // ever offered
-        { supplierProductOffers: { some: { supplierId: s.id } } } as any,
-        { supplierVariantOffers: { some: { supplierId: s.id } } } as any,
+        { [productBaseOffersRel]: { some: { supplierId: s.id } } } as any,
+        { [productVariantOffersRel]: { some: { supplierId: s.id } } } as any,
 
-        // ✅ NEW: allow viewing LIVE catalog products not owned by this supplier
+        // ✅ allow viewing LIVE catalog products not owned by this supplier
         {
-          AND: [
-            { status: "LIVE" as any },
-            { OR: [{ supplierId: { not: s.id } }, { supplierId: null }] } as any,
-          ],
+          AND: [{ status: "LIVE" as any }, { OR: [{ supplierId: { not: s.id } }, { supplierId: null }] } as any],
         } as any,
       ],
     },
-    include: {
-      // ✅ IMPORTANT: in catalog mode, supplier may not have any offers yet,
-      // so return ALL active variants (not only ones already offered)
-      ProductVariant: {
-        where: { isActive: true, archivedAt: null } as any,
-        include: {
-          options: {
-            select: {
-              attributeId: true,
-              valueId: true,
-              attribute: { select: { id: true, name: true, type: true } },
-              value: { select: { id: true, name: true, code: true } },
-            },
-          },
-          supplierVariantOffers: {
-            where: { supplierId: s.id },
-            select: {
-              id: true,
-              unitPrice: true,
-              availableQty: true,
-              inStock: true,
-              isActive: true,
-              leadDays: true,
-              currency: true,
-            },
-            take: 1,
-          },
-        },
-        orderBy: { createdAt: "asc" },
-      },
-
-      supplierProductOffers: {
-        where: { supplierId: s.id },
-        select: {
-          id: true,
-          basePrice: true,
-          currency: true,
-          inStock: true,
-          isActive: true,
-          leadDays: true,
-          availableQty: true,
-        },
-        ...(supplierOfferOrderBy() ? { orderBy: supplierOfferOrderBy() as any } : {}),
-        take: 1,
-      },
-    },
+    include,
   });
 
   if (!p) return res.status(404).json({ error: "Not found" });
 
-  const myOffer = (p as any).supplierProductOffers?.[0] ?? null;
+  const myOffer = (p as any)[productBaseOffersRel]?.[0] ?? null;
 
   const basePrice = myOffer?.basePrice != null ? Number(myOffer.basePrice) : 0;
   const baseQty = myOffer?.availableQty ?? (p as any).availableQty ?? 0;
   const currency = myOffer?.currency ?? "NGN";
 
+  // ----------------- Build attribute guide (names + values) -----------------
+  // 1) start from productAttributeOption/Text if present
   let [attributeValues, attributeTexts] = await Promise.all([
     prisma.productAttributeOption.findMany({
       where: { productId: id },
@@ -1129,6 +1224,7 @@ router.get("/:id", requireAuth, async (req, res) => {
     }),
   ]);
 
+  // 2) fallback: derive from variant options if productAttributeOption not seeded
   if (!attributeValues.length) {
     attributeValues = await prisma.productVariantOption.findMany({
       where: { variant: { productId: id } } as any,
@@ -1137,10 +1233,128 @@ router.get("/:id", requireAuth, async (req, res) => {
     });
   }
 
+  const attrIds = Array.from(new Set(attributeValues.map((x: any) => String(x.attributeId))));
+  const valIds = Array.from(new Set(attributeValues.map((x: any) => String(x.valueId))));
+
+  // ✅ SAFE selects (NO Attribute.code; YES AttributeValue.code)
+  const attrSelect =
+    attributeModelName
+      ? safeSelect(attributeModelName, {
+          id: true,
+          name: true,
+          type: true,
+          isActive: true,
+          // code: true,  // ❌ NOT in your Attribute model
+        })
+      : { id: true, name: true, type: true };
+
+  const valSelect =
+    attributeValueModelName
+      ? safeSelect(attributeValueModelName, {
+          id: true,
+          name: true,
+          code: true,        // ✅ exists on AttributeValue in your schema
+          attributeId: true, // ✅ exists
+          isActive: true,
+          position: true,
+        })
+      : { id: true, name: true, code: true, attributeId: true };
+
+  const [attrs, vals] = await Promise.all([
+    attributeClient && attrIds.length
+      ? attributeClient.findMany({
+          where: { id: { in: attrIds } },
+          select: attrSelect,
+        })
+      : Promise.resolve([]),
+    attributeValueClient && valIds.length
+      ? attributeValueClient.findMany({
+          where: { id: { in: valIds } },
+          select: valSelect,
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const attrById = new Map<string, any>((attrs as any[]).map((a: any) => [String(a.id), a]));
+
+  const valsByAttr = new Map<string, any[]>();
+  for (const v of vals as any[]) {
+    const aid = String(v.attributeId ?? "");
+    if (!aid) continue;
+    const list = valsByAttr.get(aid) ?? [];
+    list.push(v);
+    valsByAttr.set(aid, list);
+  }
+
+  // Friendly UI guide: [{attributeName, values:[{name,code}]}]
+  const attributeGuide = attrIds.map((attributeId: any) => {
+    const a = attrById.get(attributeId);
+    const values = (valsByAttr.get(attributeId) ?? [])
+      .map((v: any) => ({
+        id: String(v.id),
+        name: String(v.name ?? ""),
+        code: v.code ?? null,
+      }))
+      .sort((x: any, y: any) => String(x.name).localeCompare(String(y.name)));
+
+    return {
+      attributeId,
+      attributeName: a?.name ?? attributeId,
+      attributeType: a?.type ?? null,
+      values,
+    };
+  });
+
+  const attributeTextGuide = (attributeTexts as any[]).map((t: any) => {
+    const a = attrById.get(String(t.attributeId));
+    return {
+      attributeId: String(t.attributeId),
+      attributeName: a?.name ?? String(t.attributeId),
+      attributeType: a?.type ?? null,
+      value: String(t.value ?? ""),
+    };
+  });
+
+  // ----------------- Variants output -----------------
+  const variantsRelData = (p as any)[productVariantsRel] ?? [];
+  const variants = Array.isArray(variantsRelData)
+    ? variantsRelData.map((v: any) => {
+        const vo = v?.[variantSupplierOffersRel]?.[0] ?? null;
+        return {
+          id: v.id,
+          sku: v.sku,
+          unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
+          availableQty: vo?.availableQty ?? v.availableQty ?? 0,
+          inStock: vo?.inStock ?? v.inStock,
+          isActive: vo?.isActive ?? true,
+          supplierVariantOffer: vo
+            ? {
+                id: vo.id,
+                unitPrice: Number(vo.unitPrice ?? 0),
+                availableQty: vo.availableQty ?? 0,
+                inStock: vo.inStock ?? true,
+                isActive: vo.isActive ?? true,
+                leadDays: vo.leadDays ?? null,
+                currency: vo.currency ?? "NGN",
+              }
+            : null,
+          options: Array.isArray(v?.[variantOptionsRel])
+            ? v[variantOptionsRel].map((o: any) => ({ attributeId: o.attributeId, valueId: o.valueId }))
+            : [],
+        };
+      })
+    : [];
+
   return res.json({
     data: {
+      // ✅ Friendly guides for the supplier UI
+      attributeGuide,
+      attributeTextGuide,
+
+      // ✅ Backwards-compatible raw payloads
       attributeValues,
       attributeTexts,
+
       id: (p as any).id,
       title: (p as any).title,
       description: (p as any).description,
@@ -1149,9 +1363,10 @@ router.get("/:id", requireAuth, async (req, res) => {
       imagesJson: Array.isArray((p as any).imagesJson) ? (p as any).imagesJson : [],
       categoryId: (p as any).categoryId ?? null,
       brandId: (p as any).brandId ?? null,
+      brand: (p as any)[productBrandRel] ?? null,
 
-      // price here is YOUR base offer price (not retail)
-      price: basePrice,
+      // supplier’s base offer (not retail)
+      basePrice,
       currency,
       availableQty: baseQty,
 
@@ -1167,32 +1382,7 @@ router.get("/:id", requireAuth, async (req, res) => {
           }
         : null,
 
-      variants:
-        (p as any).ProductVariant?.map((v: any) => {
-          const vo = v.supplierVariantOffers?.[0] ?? null;
-          return {
-            id: v.id,
-            sku: v.sku,
-            unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
-            availableQty: vo?.availableQty ?? v.availableQty ?? 0,
-            inStock: vo?.inStock ?? v.inStock,
-            isActive: vo?.isActive ?? true,
-            supplierVariantOffer: vo
-              ? {
-                  id: vo.id,
-                  unitPrice: Number(vo.unitPrice ?? 0),
-                  availableQty: vo.availableQty ?? 0,
-                  inStock: vo.inStock ?? true,
-                  isActive: vo.isActive ?? true,
-                  leadDays: vo.leadDays ?? null,
-                  currency: vo.currency ?? "NGN",
-                }
-              : null,
-            options: Array.isArray(v.options)
-              ? v.options.map((o: any) => ({ attributeId: o.attributeId, valueId: o.valueId }))
-              : [],
-          };
-        }) ?? [],
+      variants,
     },
   });
 });

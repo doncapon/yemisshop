@@ -417,7 +417,7 @@ function supplierBaseFromRetail(retail: number): Prisma.Decimal {
 }
 
 function supplierUnitPriceFromVariantRetail(variantRetail: number): Prisma.Decimal {
-  // supplier unit price: ~55%–90% of variant retail
+  // supplier unit price= ~55%–90% of variant retail
   const pct = 0.55 + Math.random() * 0.35;
   const val = Math.max(300, Math.round(variantRetail * pct));
   return new Prisma.Decimal(val);

@@ -375,20 +375,20 @@ async function hydrateLinePrice(line: CartItem): Promise<CartItem> {
 
       const usable = allOffers
         .map((o: any) => ({
-          price: asMoney(o.price, NaN),
+          unitPrice: asMoney(o.price, NaN),
           availableQty: asInt(o.availableQty ?? o.available ?? o.qty ?? 0, 0),
           isActive: o.isActive !== false,
           variantId: o.variantId ?? null,
         }))
-        .filter((o) => o.isActive && o.availableQty > 0 && o.price > 0);
+        .filter((o) => o.isActive && o.availableQty > 0 && o.unitPrice > 0);
 
       const scoped = line.variantId
         ? usable.filter((o) => String(o.variantId) === String(line.variantId))
         : usable;
 
       if (scoped.length) {
-        scoped.sort((a, b) => a.price - b.price);
-        unit = scoped[0].price;
+        scoped.sort((a, b) => a.unitPrice - b.unitPrice);
+        unit = scoped[0].unitPrice;
       }
     }
 

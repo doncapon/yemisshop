@@ -174,7 +174,7 @@ const IdSchema = z.string().min(1, 'id is required');
 
 const UpdateVariantSchema = z.object({
   sku: z.string().min(1).optional(),
-  price: z.number().nullable().optional(), // null to clear price override
+  unitPrice: z.number().nullable().optional(), // null to clear price override
   inStock: z.boolean().optional(),
   imagesJson: z.array(z.string().url()).optional(),
   options: z
@@ -214,7 +214,7 @@ r.put(
     const updated = await prisma.$transaction(async (tx: { productVariant: { update: (arg0: { where: { id: string; }; data: any; }) => any; findUnique: (arg0: { where: { id: string; }; include: { options: { include: { attribute: boolean; value: boolean; }; }; }; }) => any; }; productVariantOption: { deleteMany: (arg0: { where: { variantId: string; }; }) => any; createMany: (arg0: { data: { variantId: string; attributeId: string; valueId: string; }[]; skipDuplicates: boolean; }) => any; }; }) => {
       const data: any = {};
       if (payload.sku !== undefined) data.sku = payload.sku;
-      if (payload.price !== undefined) data.price = payload.price === null ? null : new Prisma.Decimal(payload.price);
+      if (payload.unitPrice !== undefined) data.price = payload.unitPrice === null ? null : new Prisma.Decimal(payload.unitPrice);
       if (payload.inStock !== undefined) data.inStock = payload.inStock;
       if (payload.imagesJson !== undefined) data.imagesJson = payload.imagesJson;
 

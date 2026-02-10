@@ -21,7 +21,7 @@ export type AdminUser = {
 export type AdminProduct = {
   id: string;
   title: string;
-  price: Decimal | number | string;
+  retailPrice: Decimal | number | string;
   status: string;
   imagesJson?: string[];
   createdAt?: Date | string;
@@ -713,7 +713,7 @@ export async function pendingProducts(q?: string): Promise<AdminProduct[]> {
     select: {
       id: true,
       title: true,
-      price: true,
+      retailPrice: true,
       status: true,
       imagesJson: true,
       createdAt: true,
@@ -731,7 +731,7 @@ export async function approveProduct(productId: string) {
       id: true,
       title: true,
       status: true,
-      price: true,
+      retailPrice: true,
       imagesJson: true,
       createdAt: true,
     },
@@ -747,7 +747,7 @@ export async function rejectProduct(productId: string) {
       id: true,
       title: true,
       status: true,
-      price: true,
+      retailPrice: true,
       imagesJson: true,
       createdAt: true,
     },

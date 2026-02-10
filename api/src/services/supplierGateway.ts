@@ -26,7 +26,7 @@ type PlaceOrderPayload = {
   productId: string;
   qty: number;
   /** Unit price in major units (e.g., NGN). */
-  price: number;
+  basePrice: number;
 };
 type PayPayload = {
   reference: string | undefined;
@@ -130,7 +130,7 @@ export async function callSupplierPlaceOrder<T = any>(
     body: JSON.stringify({
       productId: payload.productId,
       quantity: payload.qty,
-      unitPrice: payload.price,
+      unitPrice: payload.basePrice,
     }),
     timeoutMs: opts?.timeoutMs,
   });

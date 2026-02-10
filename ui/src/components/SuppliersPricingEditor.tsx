@@ -22,7 +22,7 @@ type Offer = {
   productId: string;
   variantId?: string | null;
 
-  price: number | string;
+  unitPrice: number | string;
   currency: string;           // e.g. 'NGN'
   inStock: boolean;
   leadDays?: number | null;
@@ -161,7 +161,7 @@ export function SuppliersPricingEditor({
     if (!offers.length) return null;
     const cand = offers.filter(o => o.isActive && o.inStock);
     if (!cand.length) return null;
-    return cand.slice().sort((a, b) => Number(a.price) - Number(b.price))[0];
+    return cand.slice().sort((a, b) => Number(a.unitPrice) - Number(b.unitPrice))[0];
   }, [offers]);
 
   return (
@@ -176,7 +176,7 @@ export function SuppliersPricingEditor({
               Cheapest active:{' '}
               <b>{suppliers.find(s => s.id === cheapest.supplierId)?.name || cheapest.supplierId}</b>
               {' • '}
-              {fmtMoney(Number(cheapest.price), cheapest.currency || 'NGN')}
+              {fmtMoney(Number(cheapest.unitPrice), cheapest.currency || 'NGN')}
               {(() => {
                 const vSku =
                   cheapest.variant?.sku ||
@@ -214,7 +214,7 @@ export function SuppliersPricingEditor({
             {offers.map(of => {
               const sup = suppliers.find(s => s.id === of.supplierId);
               const sku = of.variant?.sku || variants.find(v => v.id === of.variantId)?.sku;
-              const priceN = Number(of.price);
+              const priceN = Number(of.unitPrice);
               return (
                 <tr key={of.id}>
                   <td className="px-3 py-2">{sup?.name || of.supplierId}</td>
@@ -303,7 +303,7 @@ export function SuppliersPricingEditor({
                       step="0.01"
                       className="border rounded-lg px-2 py-1 w-28"
                       value={newOffer.price ?? ''}
-                      onChange={(e) => setNewOffer(o => ({ ...o, price: e.target.value }))}
+                      onChange={(e) => setNewOffer(o => ({ ...o, unitPrice: e.target.value }))}
                     />
                   </div>
                 </td>
@@ -348,7 +348,7 @@ export function SuppliersPricingEditor({
                       createOffer.mutate({
                         supplierId: newOffer.supplierId,
                         variantId: newOffer.variantId || undefined,
-                        price: Number(newOffer.price),
+                      unitPrice: Number(newOffer.price),
                         currency: newOffer.currency || 'NGN',
                         inStock: !!newOffer.inStock,
                         leadDays: newOffer.leadDays === '' ? undefined : Number(newOffer.leadDays),

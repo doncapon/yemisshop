@@ -83,7 +83,7 @@ type NormalizedOffer = {
   isActive: boolean;
   inStock: boolean;
   availableQty: number;
-  price: number | null; // supplier price
+  unitPrice: number | null; // supplier price
 };
 
 function pickBool(o: any, keys: string[], fallback: boolean) {
@@ -220,7 +220,7 @@ async function loadOffersForProduct(productId: string): Promise<NormalizedOffer[
         isActive,
         inStock,
         availableQty,
-        price: pickPrice(r),
+        unitPrice: pickPrice(r),
       });
     }
   };
@@ -253,7 +253,7 @@ function cheapestOffer(params: {
   for (const o of offers || []) {
     if (!o.isActive || !o.inStock) continue;
 
-    const price = o.price != null ? Number(o.price) : NaN;
+    const price = o.unitPrice != null ? Number(o.unitPrice) : NaN;
     if (!Number.isFinite(price) || price <= 0) continue;
 
     if (kind === "BASE") {

@@ -446,4 +446,192 @@ router.post("/quote", async (req, res) => {
   });
 });
 
+
+/* ------------------------- DMMF helpers (safe selects) ------------------------- */
+function getModel(name: string) {
+  return (Prisma as any).dmmf?.datamodel?.models?.find((m: any) => m.name === name);
+}
+function modelHasField(modelName: string, fieldName: string) {
+  const m = getModel(modelName);
+  return !!m?.fields?.some((f: any) => f.name === fieldName);
+}
+function findRel(modelName: string, typeName: string, opts?: { isList?: boolean }) {
+  const m = getModel(modelName);
+  const fields = m?.fields ?? [];
+  return fields.find((f: any) => {
+    if (f.kind !== "object") return false;
+    if (f.type !== typeName) return false;
+    if (typeof opts?.isList === "boolean" && !!f.isList !== opts.isList) return false;
+    return true;
+  })?.name as string | undefined;
+}
+
+/* ------------------------------- categories ---------------------------------- */
+/**
+ * GET /api/catalog/categories
+ * Returns: [{ id, name, slug? }]
+ */
+router.get("/categories", async (req, res) => {
+  try {
+    const q = String(req.query.q ?? "").trim();
+
+    const MODEL = "Category";
+    if (!getModel(MODEL)) {
+      return res.status(404).json({ error: `Model ${MODEL} not found in Prisma schema` });
+    }
+
+    const hasSlug = modelHasField(MODEL, "slug");
+    const hasIsActive = modelHasField(MODEL, "isActive");
+    const hasSortOrder = modelHasField(MODEL, "sortOrder");
+
+    const where: any = {
+      ...(hasIsActive ? { isActive: true } : {}),
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              ...(hasSlug ? [{ slug: { contains: q, mode: "insensitive" } }] : []),
+            ],
+          }
+        : {}),
+    };
+
+    const select: any = {
+      id: true,
+      name: true,
+      ...(hasSlug ? { slug: true } : {}),
+    };
+
+    const orderBy: any[] = [];
+    if (hasSortOrder) orderBy.push({ sortOrder: "asc" });
+    orderBy.push({ name: "asc" });
+
+    const rows = await (prisma as any).category.findMany({ where, select, orderBy });
+    return res.json({ data: rows });
+  } catch (e: any) {
+    console.error("[catalog.categories GET] error:", e);
+    return res.status(500).json({ error: e?.message || "Internal Server Error" });
+  }
+});
+
+/* --------------------------------- brands ----------------------------------- */
+/**
+ * GET /api/catalog/brands
+ * Returns: [{ id, name, slug? }]
+ */
+router.get("/brands", async (req, res) => {
+  try {
+    const q = String(req.query.q ?? "").trim();
+
+    const MODEL = "Brand";
+    if (!getModel(MODEL)) {
+      return res.status(404).json({ error: `Model ${MODEL} not found in Prisma schema` });
+    }
+
+    const hasSlug = modelHasField(MODEL, "slug");
+    const hasIsActive = modelHasField(MODEL, "isActive");
+    const hasSortOrder = modelHasField(MODEL, "sortOrder");
+
+    const where: any = {
+      ...(hasIsActive ? { isActive: true } : {}),
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              ...(hasSlug ? [{ slug: { contains: q, mode: "insensitive" } }] : []),
+            ],
+          }
+        : {}),
+    };
+
+    const select: any = {
+      id: true,
+      name: true,
+      ...(hasSlug ? { slug: true } : {}),
+    };
+
+    const orderBy: any[] = [];
+    if (hasSortOrder) orderBy.push({ sortOrder: "asc" });
+    orderBy.push({ name: "asc" });
+
+    const rows = await (prisma as any).brand.findMany({ where, select, orderBy });
+    return res.json({ data: rows });
+  } catch (e: any) {
+    console.error("[catalog.brands GET] error:", e);
+    return res.status(500).json({ error: e?.message || "Internal Server Error" });
+  }
+});
+
+/* ------------------------------- attributes ---------------------------------- */
+/**
+ * GET /api/catalog/attributes
+ * Returns attribute definitions + optional values list if relation exists.
+ */
+router.get("/attributes", async (req, res) => {
+  try {
+    const q = String(req.query.q ?? "").trim();
+
+    const ATTRIBUTE_MODEL = "Attribute";
+    const VALUE_MODEL = "AttributeValue";
+
+    if (!getModel(ATTRIBUTE_MODEL)) {
+      return res.status(404).json({
+        error: `Model ${ATTRIBUTE_MODEL} not found in Prisma schema`,
+        hint: "If your schema uses a different model name, rename it here.",
+      });
+    }
+
+    const hasCode = modelHasField(ATTRIBUTE_MODEL, "code");
+    const hasType = modelHasField(ATTRIBUTE_MODEL, "type");
+    const hasIsActive = modelHasField(ATTRIBUTE_MODEL, "isActive");
+    const hasSortOrder = modelHasField(ATTRIBUTE_MODEL, "sortOrder");
+
+    const valuesRel =
+      getModel(VALUE_MODEL) ? findRel(ATTRIBUTE_MODEL, VALUE_MODEL, { isList: true }) : undefined;
+
+    const where: any = {
+      ...(hasIsActive ? { isActive: true } : {}),
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              ...(hasCode ? [{ code: { contains: q, mode: "insensitive" } }] : []),
+            ],
+          }
+        : {}),
+    };
+
+    const select: any = {
+      id: true,
+      name: true,
+      ...(hasCode ? { code: true } : {}),
+      ...(hasType ? { type: true } : {}),
+    };
+
+    if (valuesRel) {
+      const valHasCode = modelHasField(VALUE_MODEL, "code");
+      const valHasSortOrder = modelHasField(VALUE_MODEL, "sortOrder");
+
+      select[valuesRel] = {
+        select: {
+          id: true,
+          name: true,
+          ...(valHasCode ? { code: true } : {}),
+        },
+        orderBy: valHasSortOrder ? ({ sortOrder: "asc" } as const) : ({ name: "asc" } as const),
+      };
+    }
+
+    const orderBy: any[] = [];
+    if (hasSortOrder) orderBy.push({ sortOrder: "asc" });
+    orderBy.push({ name: "asc" });
+
+    const rows = await (prisma as any).attribute.findMany({ where, select, orderBy });
+    return res.json({ data: rows });
+  } catch (e: any) {
+    console.error("[catalog.attributes GET] error:", e);
+    return res.status(500).json({ error: e?.message || "Internal Server Error" });
+  }
+});
+
 export default router;

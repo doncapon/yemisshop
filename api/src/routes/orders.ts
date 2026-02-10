@@ -308,7 +308,7 @@ type CandidateOffer = {
   supplierId: string;
   availableQty: number;
 
-  offerPrice: number;
+  unitPrice: number;
 
   model: "BASE_OFFER" | "VARIANT_OFFER" | "LEGACY_OFFER";
 
@@ -326,7 +326,7 @@ async function orderCandidatesGateBandTx(tx: any, candidates: CandidateOffer[]) 
   const policy = await getSupplierSelectionPolicyTx(tx);
 
   let cheapest = Infinity;
-  for (const c of candidates) cheapest = Math.min(cheapest, Number(c.offerPrice) || Infinity);
+  for (const c of candidates) cheapest = Math.min(cheapest, Number(c.unitPrice) || Infinity);
 
   const bandMax = cheapest * (1 + policy.bandPercent / 100);
 
@@ -339,7 +339,7 @@ async function orderCandidatesGateBandTx(tx: any, candidates: CandidateOffer[]) 
     );
 
     const lead = Number.isFinite(Number(c.leadDays)) ? Number(c.leadDays) : Infinity;
-    const inBand = Number(c.offerPrice) <= bandMax;
+    const inBand = Number(c.unitPrice) <= bandMax;
 
     return { c, bayes, lead, inBand };
   });
@@ -351,7 +351,7 @@ async function orderCandidatesGateBandTx(tx: any, candidates: CandidateOffer[]) 
     if (a.inBand !== b.inBand) return a.inBand ? -1 : 1;
     if (b.bayes !== a.bayes) return b.bayes - a.bayes;
     if (a.lead !== b.lead) return a.lead - b.lead;
-    return Number(a.c.offerPrice) - Number(b.c.offerPrice);
+    return Number(a.c.unitPrice) - Number(b.c.unitPrice);
   });
 
   return pool.map((x) => x.c);
@@ -378,7 +378,7 @@ async function debugSupplierSelectionTx(
     return;
   }
 
-  const cheapest = Math.min(...before.map((c) => safeNum(c.offerPrice, Infinity)));
+  const cheapest = Math.min(...before.map((c) => safeNum(c.unitPrice, Infinity)));
   const bandMax = cheapest * (1 + policy.bandPercent / 100);
 
   const score = (c: CandidateOffer) => {
@@ -387,7 +387,7 @@ async function debugSupplierSelectionTx(
         safeNum(c.supplierRatingAvg, 0) +
       (policy.bayesM / (Number(c.supplierRatingCount ?? 0) + policy.bayesM)) * policy.globalRatingC;
 
-    const inBand = safeNum(c.offerPrice, Infinity) <= bandMax;
+    const inBand = safeNum(c.unitPrice, Infinity) <= bandMax;
     const passesGate = bayes >= policy.minBayesRating;
 
     return { bayes: fmt2(bayes), inBand, passesGate };
@@ -400,7 +400,7 @@ async function debugSupplierSelectionTx(
         supplierId: c.supplierId,
         offerId: c.id,
         model: c.model,
-        price: fmt2(c.offerPrice),
+        basePrice: fmt2(c.unitPrice),
         qty: safeNum(c.availableQty, 0),
         leadDays: c.leadDays ?? null,
         ratingAvg: c.supplierRatingAvg ?? null,
@@ -410,7 +410,7 @@ async function debugSupplierSelectionTx(
         passesGate: s.passesGate,
       };
     })
-    .sort((a, b) => a.price - b.price);
+    .sort((a, b) => a.basePrice - b.basePrice);
 
   const gatedCount = beforeScored.filter((x) => x.passesGate).length;
   const fallbackUsed = gatedCount === 0;
@@ -421,7 +421,7 @@ async function debugSupplierSelectionTx(
       supplierId: c.supplierId,
       offerId: c.id,
       model: c.model,
-      price: fmt2(c.offerPrice),
+      basePrice: fmt2(c.unitPrice),
       qty: safeNum(c.availableQty, 0),
       leadDays: c.leadDays ?? null,
       bayes: s.bayes,
@@ -450,7 +450,7 @@ async function debugSupplierSelectionTx(
 
 function sortOffersCheapestFirst(list: CandidateOffer[]) {
   list.sort((a, b) =>
-    a.offerPrice !== b.offerPrice ? a.offerPrice - b.offerPrice : b.availableQty - a.availableQty
+    a.unitPrice !== b.unitPrice ? a.unitPrice - b.unitPrice : b.availableQty - a.availableQty
   );
   return list;
 }
@@ -507,7 +507,7 @@ async function fetchActiveBaseOffersTx(tx: any, where: { productId: string }): P
     id: b.id,
     supplierId: sid,
     availableQty: b.availableQty,
-    offerPrice: b.basePrice,
+    unitPrice: b.basePrice,
     model: "BASE_OFFER" as const,
     supplierProductOfferId: b.id,
     supplierVariantOfferId: null,
@@ -526,9 +526,9 @@ async function fetchActiveBaseOffersTx(tx: any, where: { productId: string }): P
         isActive: true,
         inStock: true,
         availableQty: { gt: 0 },
-        offerPrice: { gt: 0 },
+        unitPrice: { gt: 0 },
       },
-      select: { id: true, supplierId: true, availableQty: true, offerPrice: true },
+      select: { id: true, supplierId: true, availableQty: true, unitPrice: true },
     }) ?? [])) ?? [];
 
   const legacy: CandidateOffer[] = (legacyList || [])
@@ -539,14 +539,14 @@ async function fetchActiveBaseOffersTx(tx: any, where: { productId: string }): P
         id: String(o.id),
         supplierId: sid,
         availableQty: Math.max(0, asNumber(o.availableQty, 0)),
-        offerPrice: asNumber(o.offerPrice, 0),
+        unitPrice: asNumber(o.unitPrice, 0),
         model: "LEGACY_OFFER" as const,
         supplierProductOfferId: null,
         supplierVariantOfferId: null,
       };
     })
     .filter(Boolean)
-    .filter((o: any) => o.availableQty > 0 && o.offerPrice > 0);
+    .filter((o: any) => o.availableQty > 0 && o.unitPrice > 0);
 
   return sortOffersCheapestFirst(legacy);
 }
@@ -587,7 +587,7 @@ export async function fetchOneOfferByIdTx(
         id: String(vo.id),
         supplierId: sid,
         availableQty: Math.max(0, asNumber(vo.availableQty, 0)),
-        offerPrice: supplierUnit,
+        unitPrice: supplierUnit,
         model: "VARIANT_OFFER",
         supplierProductOfferId: vo.supplierProductOfferId ? String(vo.supplierProductOfferId) : null,
         supplierVariantOfferId: String(vo.id),
@@ -628,7 +628,7 @@ export async function fetchOneOfferByIdTx(
         id: String(bo.id),
         supplierId: sid,
         availableQty: Math.max(0, asNumber(bo.availableQty, 0)),
-        offerPrice: supplierUnit,
+        unitPrice: supplierUnit,
         model: "BASE_OFFER",
         supplierProductOfferId: String(bo.id),
         supplierVariantOfferId: null,
@@ -649,7 +649,7 @@ export async function fetchOneOfferByIdTx(
         variantId: true,
         supplierId: true,
         availableQty: true,
-        offerPrice: true,
+        unitPrice: true,
         inStock: true,
       },
     }) ?? null)) ?? null;
@@ -665,7 +665,7 @@ export async function fetchOneOfferByIdTx(
     id: String(so.id),
     supplierId: sid,
     availableQty: Math.max(0, asNumber(so.availableQty, 0)),
-    offerPrice: asNumber(so.offerPrice, 0),
+    unitPrice: asNumber(so.unitPrice, 0),
     model: "LEGACY_OFFER",
     supplierProductOfferId: null,
     supplierVariantOfferId: null,
@@ -707,9 +707,9 @@ async function fetchActiveOffersTx(
           isActive: true,
           inStock: true,
           availableQty: { gt: 0 },
-          offerPrice: { gt: 0 },
+          unitPrice: { gt: 0 },
         },
-        select: { id: true, supplierId: true, availableQty: true, offerPrice: true },
+        select: { id: true, supplierId: true, availableQty: true, unitPrice: true },
       }) ?? [])) ?? [];
 
     const legacyOut: CandidateOffer[] = (legacy || [])
@@ -720,14 +720,14 @@ async function fetchActiveOffersTx(
           id: String(o.id),
           supplierId: sid,
           availableQty: Math.max(0, asNumber(o.availableQty, 0)),
-          offerPrice: asNumber(o.offerPrice, 0),
+          unitPrice: asNumber(o.unitPrice, 0),
           model: "LEGACY_OFFER" as const,
           supplierProductOfferId: null,
           supplierVariantOfferId: null,
         };
       })
       .filter(Boolean)
-      .filter((o: any) => o.availableQty > 0 && o.offerPrice > 0);
+      .filter((o: any) => o.availableQty > 0 && o.unitPrice > 0);
 
     return sortOffersCheapestFirst(legacyOut);
   }
@@ -765,7 +765,7 @@ async function fetchActiveOffersTx(
       id: v.id,
       supplierId: sid,
       availableQty: v.qty,
-      offerPrice: v.unitPrice,
+      unitPrice: v.unitPrice,
       model: "VARIANT_OFFER",
       supplierProductOfferId: v.baseId,
       supplierVariantOfferId: v.id,
@@ -1401,7 +1401,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
             allocations.push({
               supplierId: o.supplierId,
               qty: take,
-              supplierUnitCost: Number(o.offerPrice),
+              supplierUnitCost: Number(o.unitPrice),
               model: o.model,
               supplierProductOfferId:
                 o.model === "BASE_OFFER"

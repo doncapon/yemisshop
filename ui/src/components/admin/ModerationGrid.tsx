@@ -19,14 +19,14 @@ type SupplierOfferLite = {
 
   // ✅ important: backend uses offerPrice; some older payloads use price
   offerPrice?: number | string | null;
-  price?: number | string | null;
+  unitPrice?: number | string | null;
   currency?: string | null;
 };
 
 type AdminProduct = {
   id: string;
   title: string;
-  price: number | string | null;
+  retailPrice: number | string | null;
   status: string;
   imagesJson?: string[] | string;
   createdAt?: string;
@@ -204,7 +204,7 @@ function useModeratableProductsQuery(token: string | null | undefined, q: string
 
               // price fields (support lots of possible payloads)
               offerPrice: o?.offerPrice ?? o?.unitPrice ?? o?.priceNGN ?? null,
-              price: o?.price ?? null,
+              unitPrice: o?.unitPrice ?? null,
               currency: o?.currency ?? null,
             };
 
@@ -702,8 +702,8 @@ export function ModerationGrid({ token, search, setSearch, onApprove, onInspect 
                 <div className="font-medium truncate">{p.title || 'Untitled product'}</div>
                 <div className="text-xs text-zinc-500">
                   {p.sku ? `SKU: ${p.sku}` : ''}
-                  {p.sku && p.price != null ? ' • ' : ''}
-                  {p.price != null ? `₦${Number(p.price || 0).toLocaleString()}` : ''}
+                  {p.sku && p.retailPrice != null ? ' • ' : ''}
+                  {p.retailPrice != null ? `₦${Number(p.retailPrice || 0).toLocaleString()}` : ''}
                 </div>
               </div>
             </div>

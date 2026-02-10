@@ -31,18 +31,16 @@ type SupplierOfferLite = {
   cost?: number | string | null;
   supplierPrice?: number | string | null;
   basePrice?: number | string | null;
-  price?: number | string | null;
   amount?: number | string | null;
 };
 
 type AdminProduct = {
   id: string;
   title: string;
-  price: number | string;
+  retailPrice: number | string;
   status: string;
   imagesJson?: string[] | string;
   createdAt?: string;
-  retailPrice?: number | string | null;
   isDeleted?: boolean;
   isDelete?: boolean;
 
@@ -1101,7 +1099,7 @@ export function ManageProducts({
 
   const defaultPending = {
     title: "",
-    price: "",
+    retailPrice: "",
     status: "PENDING",
     categoryId: "",
     brandId: "",
@@ -1363,7 +1361,7 @@ export function ManageProducts({
   useEffect(() => {
     if (!editingId) return;
     if (computedRetailFromEditing == null) return;
-    setPending((p) => ({ ...p, price: String(computedRetailFromEditing) }));
+    setPending((p) => ({ ...p, retailPrice: String(computedRetailFromEditing) }));
   }, [editingId, computedRetailFromEditing]);
 
   const parseUrlList = (s: string) =>
@@ -1633,7 +1631,7 @@ export function ManageProducts({
     }
 
     const fromInput = toNumberLoose(row?.retailPrice);
-    const baseFallback = Number(pending.price) || 0;
+    const baseFallback = Number(pending.retailPrice) || 0;
 
     return {
       baseRetail: baseFallback,
@@ -1868,7 +1866,6 @@ export function ManageProducts({
   }: {
     base: {
       title: string;
-      price: number;
       status: string;
       sku?: string;
       categoryId?: string;
@@ -2029,8 +2026,8 @@ export function ManageProducts({
       return;
     }
 
-    const priceNumCreate = Number(pending.price) || 0;
-    const priceNumEdit = computedRetailFromEditing != null ? computedRetailFromEditing : Number(pending.price) || 0;
+    const priceNumCreate = Number(pending.retailPrice) || 0;
+    const priceNumEdit = computedRetailFromEditing != null ? computedRetailFromEditing : Number(pending.retailPrice) || 0;
     const retailBase = editingId ? priceNumEdit : priceNumCreate;
 
     const check = validateRetailAboveSupplierPrices({
@@ -2053,7 +2050,6 @@ export function ManageProducts({
     const base: any = {
       title,
       retailPrice: retailBase,
-      price: retailBase,
       status: pending.status,
       sku: ensuredProductSku || undefined,
       description: pending.description != null ? pending.description : undefined,
@@ -2510,7 +2506,7 @@ export function ManageProducts({
 
       const nextPending = {
         title: full.title || "",
-        price: String(full.retailPrice ?? full.price ?? ""),
+        retailPrice: String(full.retailPrice ?? ""),
         status: full.status === "PUBLISHED" || full.status === "LIVE" ? full.status : "PENDING",
         categoryId: full.categoryId || "",
         brandId: full.brandId || "",
@@ -2572,49 +2568,6 @@ export function ManageProducts({
         e.stopPropagation();
       }}
     >
-      {/* ================= Toolbar ================= */}
-      <div className="rounded-2xl border bg-white shadow-sm p-3">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap gap-2">
-            {presetButtons.map((b) => (
-              <button
-                key={b.key}
-                type="button"
-                onClick={() => setPresetAndUrl(b.key)}
-                className={b.key === preset ? "px-3 py-2 rounded-xl bg-slate-900 text-white text-sm" : "px-3 py-2 rounded-xl border text-sm hover:bg-slate-50"}
-              >
-                {b.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex-1 min-w-[220px]" onMouseDown={(e) => e.stopPropagation()}>
-              <input
-                value={qInput}
-                onChange={(e) => {
-                  setQInput(e.target.value);
-                }}
-                onBlur={() => {
-                  try {
-                    setSearch(qInput);
-                  } catch {}
-                }}
-                placeholder="Search by title / SKU / owner / etc…"
-                className="w-full rounded-xl border px-3 py-2 text-sm"
-              />
-            </div>
-
-            <button
-              type="button"
-              onClick={startNewProduct}
-              className="ml-auto shrink-0 whitespace-nowrap rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
-            >
-              + New product
-            </button>
-          </div>
-        </div>
-      </div>
 
       {/* ================= Editor ================= */}
       {(showEditor || !!editingId) && (
@@ -2662,7 +2615,7 @@ export function ManageProducts({
                 suppliers={suppliersQ.data}
                 token={token}
                 readOnly={!(isSuper || isAdmin)}
-                defaultUnitCost={Number(pending.price) || 0}
+                defaultUnitCost={Number(pending.retailPrice) || 0}
                 onSaved={() => {
                   refreshEditingProduct();
                 }}
@@ -2705,8 +2658,8 @@ export function ManageProducts({
                   <div>
                     <label className="text-sm font-medium text-slate-700">{editingId ? "Retail Price (NGN) (computed FROM)" : "Price (NGN)"}</label>
                     <input
-                      value={pending.price}
-                      onChange={(e) => setPending((p) => ({ ...p, price: e.target.value }))}
+                      value={pending.retailPrice}
+                      onChange={(e) => setPending((p) => ({ ...p, retailPrice: e.target.value }))}
                       className="mt-1 w-full rounded-xl border px-3 py-2"
                       placeholder="0"
                       inputMode="decimal"
@@ -3128,6 +3081,50 @@ export function ManageProducts({
           </div>
         </div>
       )}
+
+      {/* ================= Toolbar ================= */}
+      <div className="rounded-2xl border bg-white shadow-sm p-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap gap-2">
+            {presetButtons.map((b) => (
+              <button
+                key={b.key}
+                type="button"
+                onClick={() => setPresetAndUrl(b.key)}
+                className={b.key === preset ? "px-3 py-2 rounded-xl bg-slate-900 text-white text-sm" : "px-3 py-2 rounded-xl border text-sm hover:bg-slate-50"}
+              >
+                {b.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex-1 min-w-[220px]" onMouseDown={(e) => e.stopPropagation()}>
+              <input
+                value={qInput}
+                onChange={(e) => {
+                  setQInput(e.target.value);
+                }}
+                onBlur={() => {
+                  try {
+                    setSearch(qInput);
+                  } catch {}
+                }}
+                placeholder="Search by title / SKU / owner / etc…"
+                className="w-full rounded-xl border px-3 py-2 text-sm"
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={startNewProduct}
+              className="ml-auto shrink-0 whitespace-nowrap rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+            >
+              + New product
+            </button>
+          </div>
+        </div>
+      </div>
 
       {/* ================= Products Table ================= */}
       <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">

@@ -728,7 +728,7 @@ export default function Catalog() {
                   return {
                     id: String(v.id),
                     sku: v.sku ?? null,
-                    price: variantRetail,
+                    unitPrice: variantRetail,
                     inStock: v.inStock === true,
                     imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
                     offers: Array.isArray(v.offers)
@@ -739,10 +739,7 @@ export default function Catalog() {
                           isActive: o.isActive === true,
                           inStock: o.inStock === true,
                           availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
-
-                          unitPrice: Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null,
                           basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
-                          price: Number.isFinite(Number(o.price)) ? Number(o.price) : null,
 
                           supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
                             ? Number(o.supplierRatingAvg)
@@ -771,8 +768,6 @@ export default function Catalog() {
                   availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
 
                   basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
-                  unitPrice: Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null,
-                  price: Number.isFinite(Number(o.price)) ? Number(o.price) : null,
 
                   supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
                     ? Number(o.supplierRatingAvg)
@@ -795,7 +790,7 @@ export default function Catalog() {
               id: String(x.id),
               title: String(x.title ?? ''),
               description: x.description ?? '',
-              price: productRetail,
+              retailPrice: productRetail,
               offersFrom: Number.isFinite(Number(x.offersFrom)) ? Number(x.offersFrom) : null,
               inStock: x.inStock === true,
               imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
@@ -931,7 +926,6 @@ export default function Catalog() {
             qty: nextQty,
             unitPrice: unit,
             totalPrice: unit * nextQty,
-            price: unit,
             image: primaryImg ?? cart[idx].image ?? null,
           };
         } else {
@@ -942,7 +936,6 @@ export default function Catalog() {
             qty: nextQty,
             unitPrice: unit,
             totalPrice: unit * nextQty,
-            price: unit,
             selectedOptions: [],
             image: primaryImg,
           });

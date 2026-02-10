@@ -96,7 +96,7 @@ type Row = {
    *
    * NOTE: internal number value (0 means blank in UI)
    */
-  price: number;
+  unitPrice: number;
 
   availableQty: number;
   isActive: boolean;
@@ -558,7 +558,7 @@ export default function SuppliersOfferManager({
       supplierId: o.supplierId,
       variantId: isVariant ? rawVid : null,
       kind: isVariant ? "VARIANT" : "BASE",
-      price: Math.max(0, safeNum(price, 0)),
+      unitPrice: Math.max(0, safeNum(price, 0)),
       availableQty: qty,
       isActive,
       inStock: deriveInStock(isActive, qty),
@@ -604,7 +604,7 @@ export default function SuppliersOfferManager({
 
         const keptQty = Math.max(0, Math.trunc(Number(r.availableQty ?? 0) || 0));
         const keptIsActive = !!r.isActive;
-        const keptPrice = Math.max(0, safeNum(r.price, 0));
+        const keptPrice = Math.max(0, safeNum(r.unitPrice, 0));
         const keptLead = r.leadDays ?? "";
 
         const idToDelete = r.offerId ? r.offerId : null;
@@ -616,7 +616,7 @@ export default function SuppliersOfferManager({
           supplierId,
           variantId,
           kind: nextKind,
-          price: keptPrice,
+          unitPrice: keptPrice,
           availableQty: keptQty,
           isActive: keptIsActive,
           inStock: deriveInStock(keptIsActive, keptQty),
@@ -727,7 +727,7 @@ export default function SuppliersOfferManager({
             supplierId: match.supplierId,
             variantId: match.variantId,
             kind: match.kind,
-            price: match.price,
+            unitPrice: match.unitPrice,
             availableQty: match.availableQty,
             isActive: match.isActive,
             inStock: match.inStock,
@@ -778,7 +778,7 @@ export default function SuppliersOfferManager({
       supplierId: startSupplierId,
       variantId: null,
       kind: "BASE",
-      price: 0,
+      unitPrice: 0,
       availableQty: startQty,
       isActive: startIsActive,
       inStock: deriveInStock(startIsActive, startQty),
@@ -879,7 +879,7 @@ export default function SuppliersOfferManager({
         const qty = Math.max(0, Math.trunc(Number(r.availableQty) || 0));
         const isActive = !!r.isActive;
 
-        const price = Math.max(0, safeNum(r.price, 0));
+        const price = Math.max(0, safeNum(r.unitPrice, 0));
         if (price <= 0) throw new Error("Price must be greater than 0.");
 
         const leadDays =
@@ -985,7 +985,7 @@ export default function SuppliersOfferManager({
         if (!vid) return "Variant is required";
       }
 
-      const p = safeNum(r.price, 0);
+      const p = safeNum(r.unitPrice, 0);
       if (p <= 0) return "Price must be greater than 0";
     }
 
@@ -1096,7 +1096,7 @@ export default function SuppliersOfferManager({
                   })),
                 ];
 
-                const priceNum = safeNum(r.price, 0);
+                const priceNum = safeNum(r.unitPrice, 0);
                 const priceInputValue: string = priceNum <= 0 ? "" : String(priceNum);
 
                 return (
@@ -1184,12 +1184,12 @@ export default function SuppliersOfferManager({
                           const next = raw === "" ? 0 : safeNum(raw, 0);
 
                           setRows((prev) =>
-                            prev.map((x) => (x.rowKey === r.rowKey ? { ...x, price: Math.max(0, next) } : x))
+                            prev.map((x) => (x.rowKey === r.rowKey ? { ...x, unitPrice: Math.max(0, next) } : x))
                           );
                         }}
                         onBlur={() => {
-                          if (safeNum(r.price, 0) < 0) {
-                            setRows((prev) => prev.map((x) => (x.rowKey === r.rowKey ? { ...x, price: 0 } : x)));
+                          if (safeNum(r.unitPrice, 0) < 0) {
+                            setRows((prev) => prev.map((x) => (x.rowKey === r.rowKey ? { ...x, unitPrice: 0 } : x)));
                           }
                         }}
                         disabled={saving || !canEdit || !supplierOk}

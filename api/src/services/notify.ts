@@ -133,9 +133,9 @@ export async function notifySuppliersForOrder(orderId: string) {
             isActive: true,
             inStock: true,
           },
-          orderBy: { price: 'asc' },
+          orderBy: { unitPrice: 'asc' },
           select: {
-            price: true,
+            unitPrice: true,
             id: true,
             supplierId: true,
             supplier: { select: { name: true, whatsappPhone: true } },
@@ -148,9 +148,9 @@ export async function notifySuppliersForOrder(orderId: string) {
             isActive: true,
             inStock: true,
           },
-          orderBy: { price: 'asc' },
+          orderBy: { unitPrice: 'asc' },
           select: {
-            price: true,
+            unitPrice: true,
             id: true,
             supplierId: true,
             supplier: { select: { name: true, whatsappPhone: true } },
@@ -158,7 +158,7 @@ export async function notifySuppliersForOrder(orderId: string) {
         }));
 
       if (cheapest) {
-        supplierUnit = Number(cheapest.price || 0);
+        supplierUnit = Number(cheapest.unitPrice || 0);
       }
     }
 

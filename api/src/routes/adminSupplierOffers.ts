@@ -100,7 +100,7 @@ const patchVariantSchema = z.object({
     .optional(),
 
   // VARIANT price fields
-  price: coerceNumber(0).optional(), // maps to unitPrice
+  unitPrice: coerceNumber(0).optional(), // maps to unitPrice
   currency: z.string().min(1).optional(),
   availableQty: coerceInt(0).optional(),
   leadDays: coerceInt(0).nullable().optional(),
@@ -133,7 +133,7 @@ const createSchema = z
       }, z.string().min(1).nullable())
       .optional(),
 
-    price: coerceNumber(0),
+    unitPrice: coerceNumber(0),
 
     currency: z.string().min(1).default("NGN"),
     availableQty: coerceInt(0, 0).optional(),
@@ -374,7 +374,7 @@ router.post(
     const isActive = parsed.isActive ?? true;
     const inStock = !!isActive && qty > 0;
 
-    const price = Number(parsed.price ?? 0);
+    const price = Number(parsed.unitPrice ?? 0);
     if (!Number.isFinite(price) || price <= 0) {
       return res.status(400).json({ error: "price must be greater than 0" });
     }
@@ -684,7 +684,7 @@ router.patch(
         if (dup) return res.status(409).json({ error: "A base offer already exists for this supplier + product." });
 
         const nextPrice =
-          patch.price !== undefined ? Number(patch.price) : existing.unitPrice != null ? Number(existing.unitPrice) : 0;
+          patch.unitPrice !== undefined ? Number(patch.unitPrice) : existing.unitPrice != null ? Number(existing.unitPrice) : 0;
 
         if (!Number.isFinite(nextPrice) || nextPrice <= 0) {
           return res.status(400).json({ error: "price must be greater than 0" });
@@ -736,8 +736,8 @@ router.patch(
       if (patch.supplierId) data.supplierId = patch.supplierId;
       if (patch.currency) data.currency = patch.currency;
 
-      if (patch.price !== undefined) {
-        const p = Number(patch.price);
+      if (patch.unitPrice !== undefined) {
+        const p = Number(patch.unitPrice);
         if (!Number.isFinite(p) || p <= 0) return res.status(400).json({ error: "price must be greater than 0" });
         data.unitPrice = toDecimal(p);
       }

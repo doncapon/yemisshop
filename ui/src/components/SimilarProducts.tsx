@@ -5,7 +5,7 @@ import api from '../api/client';
 type Product = {
   id: string;
   title: string;
-  price: number;
+  retailPrice: number;
   imagesJson?: string[];
 };
 
@@ -41,7 +41,7 @@ export default function SimilarProducts({ productId }: { productId: string }) {
             )}
             <div className="p-3">
               <div className="line-clamp-2 font-medium text-ink">{p.title}</div>
-              <div className="mt-1 font-semibold text-accent-700">{ngn.format(Number(p.price) || 0)}</div>
+              <div className="mt-1 font-semibold text-accent-700">{ngn.format(Number(p.retailPrice) || 0)}</div>
             </div>
           </Link>
         ))}

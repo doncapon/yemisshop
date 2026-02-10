@@ -4,6 +4,7 @@ import { Bell } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
+import { createPortal } from "react-dom";
 
 type NotificationWire = {
   id: string;
@@ -28,13 +29,22 @@ function formatTime(ts: string) {
 }
 
 type Props = {
-  /** "navbar" = inline/relative (recommended). "floating" = fixed top-right overlay. */
   placement?: "navbar" | "floating";
-  /** Optional: additional wrapper classes */
   className?: string;
+  enableRealtime?: boolean;
+  pollIntervalMs?: number;
 };
 
-export default function NotificationsBell({ placement = "navbar", className = "" }: Props) {
+type SseMessage =
+  | { type: "notification"; notification: NotificationWire; unreadCount?: number }
+  | { type: "snapshot"; items: NotificationWire[]; unreadCount: number };
+
+export default function NotificationsBell({
+  placement = "navbar",
+  className = "",
+  enableRealtime = true,
+  pollIntervalMs = 30_000,
+}: Props) {
   const user = useAuthStore((s: any) => s.user);
   const userId = user?.id as string | undefined;
 
@@ -43,10 +53,7 @@ export default function NotificationsBell({ placement = "navbar", className = ""
   const [open, setOpen] = React.useState(false);
   const [inlineToast, setInlineToast] = React.useState<NotificationWire | null>(null);
 
-  // store timer id so we can pause/resume
   const toastTimeoutRef = React.useRef<number | null>(null);
-
-  // Wrapper ref for click-outside detection
   const popoverRef = React.useRef<HTMLDivElement | null>(null);
 
   /* -------- toast timer helpers (5s, pause on hover) -------- */
@@ -66,13 +73,63 @@ export default function NotificationsBell({ placement = "navbar", className = ""
     }, 5000);
   }, [clearToastTimer]);
 
-  /* -------- query -------- */
+  /* -------- no-toast-on-refresh + login toast once -------- */
+
+  const prevIdsRef = React.useRef<Set<string>>(new Set());
+  const didInitRef = React.useRef(false);
+
+  const seenIdsKey = React.useMemo(() => {
+    if (!userId) return null;
+    return `notif_seen_ids:${userId}`;
+  }, [userId]);
+
+  const loginSessionKey = React.useMemo(() => {
+    if (!userId) return null;
+    return `notif_login_toast_shown:${userId}`;
+  }, [userId]);
+
+  const loadSeenIdsFromSession = React.useCallback(() => {
+    if (!seenIdsKey) return new Set<string>();
+    try {
+      const raw = sessionStorage.getItem(seenIdsKey);
+      if (!raw) return new Set<string>();
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return new Set<string>();
+      return new Set(arr.map((x) => String(x)));
+    } catch {
+      return new Set<string>();
+    }
+  }, [seenIdsKey]);
+
+  const saveSeenIdsToSession = React.useCallback(
+    (set: Set<string>) => {
+      if (!seenIdsKey) return;
+      try {
+        const arr = Array.from(set).slice(0, 300);
+        sessionStorage.setItem(seenIdsKey, JSON.stringify(arr));
+      } catch {
+        // ignore
+      }
+    },
+    [seenIdsKey]
+  );
+
+  React.useEffect(() => {
+    didInitRef.current = false;
+    prevIdsRef.current = loadSeenIdsFromSession();
+    setOpen(false);
+    setInlineToast(null);
+    clearToastTimer();
+  }, [userId, clearToastTimer, loadSeenIdsFromSession]);
+
+  /* -------- polling query (always works) -------- */
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["notifications", userId], // ✅ per-user cache
+    queryKey: ["notifications", userId],
     enabled: !!userId,
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: pollIntervalMs,
+    refetchOnWindowFocus: false,
     queryFn: async () => {
       const { data } = await api.get("/api/notifications", { params: { limit: 20 } });
       const payload = (data as any)?.data ?? data ?? {};
@@ -80,48 +137,22 @@ export default function NotificationsBell({ placement = "navbar", className = ""
     },
   });
 
-  /* -------- "do not toast on refresh" logic --------
-     - We treat the first successful fetch as a baseline.
-     - Optionally show ONE toast only on a fresh login session (not refresh).
-  */
-
-  const prevIdsRef = React.useRef<Set<string>>(new Set());
-  const didInitRef = React.useRef(false);
-
-  // Session flag: allow a single "login toast" per session, but NOT on refresh
-  const loginSessionKey = React.useMemo(() => {
-    if (!userId) return null;
-    return `notif_login_toast_shown:${userId}`;
-  }, [userId]);
-
-  React.useEffect(() => {
-    // When user changes, reset baseline + close dropdown/toast
-    didInitRef.current = false;
-    prevIdsRef.current = new Set();
-    setOpen(false);
-    setInlineToast(null);
-    clearToastTimer();
-  }, [userId, clearToastTimer]);
-
   React.useEffect(() => {
     if (!data?.items || !userId) return;
 
     const items = data.items;
-    const currentIds = new Set(items.map((n) => n.id));
 
-    // Determine whether we should show the "login toast" once per session.
     const canShowLoginToast =
       !!loginSessionKey && sessionStorage.getItem(loginSessionKey) !== "1";
 
-    // 1) First load: set baseline so refresh doesn't trigger "new" toast
+    // first load baseline
     if (!didInitRef.current) {
-      prevIdsRef.current = currentIds;
+      prevIdsRef.current = new Set(items.map((n) => n.id));
+      saveSeenIdsToSession(prevIdsRef.current);
       didInitRef.current = true;
 
-      // Optional: show ONE toast only right after a *fresh login session*
-      // (won't happen on refresh because sessionStorage persists through refresh)
+      // login toast once per session
       if (canShowLoginToast) {
-        // pick the newest unread notification (if any)
         const newestUnread = [...items]
           .filter((n) => !n.readAt)
           .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0];
@@ -130,14 +161,12 @@ export default function NotificationsBell({ placement = "navbar", className = ""
           setInlineToast(newestUnread);
           scheduleToastHide();
         }
-
         sessionStorage.setItem(loginSessionKey!, "1");
       }
-
       return;
     }
 
-    // 2) Subsequent refetches: toast only for genuinely new unread notifications
+    // subsequent polls: only genuine new unread
     const prevIds = prevIdsRef.current;
     const newUnread = items.find((n) => !prevIds.has(n.id) && !n.readAt);
 
@@ -146,17 +175,19 @@ export default function NotificationsBell({ placement = "navbar", className = ""
       scheduleToastHide();
     }
 
-    prevIdsRef.current = currentIds;
-  }, [data?.items, userId, loginSessionKey, scheduleToastHide]);
+    console.log("notif items:", data.items.map(n => ({ id: n.id, readAt: n.readAt, createdAt: n.createdAt })));
+    console.log("baseline size:", prevIdsRef.current.size);
 
-  // Cleanup on unmount
+    prevIdsRef.current = new Set(items.map((n) => n.id));
+    saveSeenIdsToSession(prevIdsRef.current);
+  }, [data?.items, userId, loginSessionKey, scheduleToastHide, saveSeenIdsToSession]);
+
   React.useEffect(() => {
-    return () => {
-      clearToastTimer();
-    };
+    return () => clearToastTimer();
   }, [clearToastTimer]);
 
-  // Close on outside click + ESC
+  /* -------- close dropdown on outside click + ESC -------- */
+
   React.useEffect(() => {
     if (!open) return;
 
@@ -182,15 +213,138 @@ export default function NotificationsBell({ placement = "navbar", className = ""
     };
   }, [open]);
 
+  /* -------- mark as read -------- */
+
   const markReadMutation = useMutation({
     mutationFn: async (ids: string[] | "all") => {
       if (ids === "all") await api.post("/api/notifications/read", { all: true });
       else if (ids.length) await api.post("/api/notifications/read", { ids });
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["notifications", userId] });
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["notifications", userId] }),
   });
+
+  /* -------- realtime SSE (optional, auto-disable on 404) -------- */
+
+  const sseRef = React.useRef<EventSource | null>(null);
+  const [sseAlive, setSseAlive] = React.useState(false);
+
+  // session flag to stop retrying SSE if endpoint is missing
+  const sseDisabledKey = React.useMemo(() => {
+    if (!userId) return null;
+    return `notif_sse_disabled:${userId}`;
+  }, [userId]);
+
+  const isSseDisabled = React.useMemo(() => {
+    if (!sseDisabledKey) return false;
+    return sessionStorage.getItem(sseDisabledKey) === "1";
+  }, [sseDisabledKey]);
+
+  const disableSseForSession = React.useCallback(() => {
+    if (!sseDisabledKey) return;
+    sessionStorage.setItem(sseDisabledKey, "1");
+  }, [sseDisabledKey]);
+
+  const upsertIntoCacheAndToast = React.useCallback(
+    (incoming: NotificationWire, unreadCountOverride?: number) => {
+      if (!userId) return;
+
+      qc.setQueryData(["notifications", userId], (old: any) => {
+        const prev: NotificationsResponse =
+          (old as NotificationsResponse) ?? { items: [], unreadCount: 0, nextCursor: null };
+
+        const exists = prev.items.some((x) => x.id === incoming.id);
+        const nextItems = exists
+          ? prev.items
+          : [incoming, ...prev.items]
+            .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))
+            .slice(0, 20);
+
+        const computedUnread =
+          typeof unreadCountOverride === "number"
+            ? unreadCountOverride
+            : nextItems.filter((n) => !n.readAt).length;
+
+        return { ...prev, items: nextItems, unreadCount: computedUnread };
+      });
+
+      // toast only if truly new + unread
+      const prevIds = prevIdsRef.current;
+      if (!prevIds.has(incoming.id) && !incoming.readAt) {
+        setInlineToast(incoming);
+        scheduleToastHide();
+      }
+
+      prevIdsRef.current = new Set([incoming.id, ...Array.from(prevIdsRef.current)]);
+      saveSeenIdsToSession(prevIdsRef.current);
+    },
+    [qc, userId, scheduleToastHide, saveSeenIdsToSession]
+  );
+
+  React.useEffect(() => {
+    if (!enableRealtime) return;
+    if (!userId) return;
+    if (isSseDisabled) return;
+    if (sseRef.current) return;
+
+    try {
+      const es = new EventSource("/api/notifications/stream");
+      sseRef.current = es;
+
+      es.onopen = () => setSseAlive(true);
+
+      es.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data) as SseMessage;
+
+          if (msg?.type === "notification" && (msg as any).notification?.id) {
+            upsertIntoCacheAndToast(msg.notification, msg.unreadCount);
+            return;
+          }
+
+          if (msg?.type === "snapshot" && Array.isArray((msg as any).items)) {
+            const snap = msg as any as { items: NotificationWire[]; unreadCount: number };
+            qc.setQueryData(["notifications", userId], {
+              items: snap.items.slice(0, 20),
+              unreadCount: snap.unreadCount ?? snap.items.filter((n) => !n.readAt).length,
+              nextCursor: null,
+            });
+
+            prevIdsRef.current = new Set(snap.items.map((n) => n.id));
+            saveSeenIdsToSession(prevIdsRef.current);
+          }
+        } catch {
+          // ignore malformed
+        }
+      };
+
+      es.onerror = () => {
+        setSseAlive(false);
+
+        // ✅ If endpoint is missing (404), disable SSE for this session.
+        // EventSource doesn't expose status code directly, so we infer:
+        // if it errors before ever opening, it's likely 404 / auth / network.
+        if (!sseAlive) disableSseForSession();
+
+        try {
+          es.close();
+        } catch { }
+        sseRef.current = null;
+      };
+
+      return () => {
+        setSseAlive(false);
+        try {
+          es.close();
+        } catch { }
+        sseRef.current = null;
+      };
+    } catch {
+      setSseAlive(false);
+      disableSseForSession();
+      sseRef.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enableRealtime, userId, isSseDisabled, qc, upsertIntoCacheAndToast, saveSeenIdsToSession]);
 
   if (!userId) return null;
 
@@ -222,13 +376,13 @@ export default function NotificationsBell({ placement = "navbar", className = ""
 
   return (
     <>
-      {/* Bell button + dropdown wrapper */}
       <div ref={popoverRef} className={`${wrapperClass} ${className}`}>
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
           className="relative inline-flex h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-white/90 backdrop-blur shadow-sm hover:bg-zinc-50 transition"
           aria-label="Notifications"
+          title={sseAlive ? "Notifications (live)" : "Notifications"}
         >
           <Bell size={18} className="text-zinc-700" />
           {unreadCount > 0 && (
@@ -238,11 +392,23 @@ export default function NotificationsBell({ placement = "navbar", className = ""
           )}
         </button>
 
-        {/* Dropdown panel */}
         {open && (
           <div className="absolute right-0 mt-2 w-[min(92vw,360px)] rounded-2xl border border-zinc-200 bg-white/95 backdrop-blur shadow-lg overflow-hidden">
             <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-100">
-              <div className="text-xs font-semibold text-zinc-700">Notifications</div>
+              <div className="flex items-center gap-2">
+                <div className="text-xs font-semibold text-zinc-700">Notifications</div>
+                {enableRealtime && (
+                  <span
+                    className={`text-[10px] px-2 py-0.5 rounded-full border ${sseAlive
+                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                      : "bg-zinc-50 text-zinc-600 border-zinc-200"
+                      }`}
+                  >
+                    {sseAlive ? "LIVE" : "POLL"}
+                  </span>
+                )}
+              </div>
+
               {unreadCount > 0 && (
                 <button
                   type="button"
@@ -268,16 +434,14 @@ export default function NotificationsBell({ placement = "navbar", className = ""
                     return (
                       <li
                         key={n.id}
-                        className={`px-3 py-2.5 text-xs cursor-pointer hover:bg-zinc-50 ${
-                          unread ? "bg-fuchsia-50/60" : "bg-white"
-                        }`}
+                        className={`px-3 py-2.5 text-xs cursor-pointer hover:bg-zinc-50 ${unread ? "bg-fuchsia-50/60" : "bg-white"
+                          }`}
                         onClick={() => handleItemClick(n)}
                       >
                         <div className="flex items-start gap-2">
                           <div
-                            className={`mt-[3px] h-2 w-2 rounded-full ${
-                              unread ? "bg-fuchsia-500" : "bg-zinc-300"
-                            }`}
+                            className={`mt-[3px] h-2 w-2 rounded-full ${unread ? "bg-fuchsia-500" : "bg-zinc-300"
+                              }`}
                           />
                           <div className="min-w-0 flex-1">
                             <div className="font-semibold text-zinc-800 truncate">{n.title}</div>
@@ -299,39 +463,42 @@ export default function NotificationsBell({ placement = "navbar", className = ""
         )}
       </div>
 
-      {/* Inline toast for newest notification */}
-      {inlineToast && (
-        <div
-          className="fixed top-24 right-6 z-50 max-w-sm md:max-w-md"
-          onMouseEnter={clearToastTimer}
-          onMouseLeave={scheduleToastHide}
-        >
-          <div className="rounded-2xl border border-zinc-200 bg-white/95 shadow-xl px-4 py-3.5 md:px-5 md:py-4">
-            <div className="flex items-start gap-3">
-              <div className="mt-[4px] h-2.5 w-2.5 rounded-full bg-fuchsia-500 flex-shrink-0" />
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold text-zinc-900 truncate">
-                  {inlineToast.title}
+      {/* Inline toast for newest notification (PORTAL: avoids transform/overflow clipping) */}
+      {inlineToast &&
+        createPortal(
+          <div
+            className="fixed top-24 right-6 z-[9999] max-w-sm md:max-w-md"
+            onMouseEnter={clearToastTimer}
+            onMouseLeave={scheduleToastHide}
+          >
+            <div className="rounded-2xl border border-zinc-200 bg-white/95 shadow-xl px-4 py-3.5 md:px-5 md:py-4">
+              <div className="flex items-start gap-3">
+                <div className="mt-[4px] h-2.5 w-2.5 rounded-full bg-fuchsia-500 flex-shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-zinc-900 truncate">
+                    {inlineToast.title}
+                  </div>
+                  <div className="mt-1 text-[13px] leading-snug text-zinc-800 line-clamp-4">
+                    {inlineToast.body}
+                  </div>
                 </div>
-                <div className="mt-1 text-[13px] leading-snug text-zinc-800 line-clamp-4">
-                  {inlineToast.body}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearToastTimer();
+                    setInlineToast(null);
+                  }}
+                  className="ml-2 text-xs text-zinc-400 hover:text-zinc-600"
+                  aria-label="Close notification preview"
+                >
+                  ×
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  clearToastTimer();
-                  setInlineToast(null);
-                }}
-                className="ml-2 text-xs text-zinc-400 hover:text-zinc-600"
-                aria-label="Close notification preview"
-              >
-                ×
-              </button>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
+
     </>
   );
 }

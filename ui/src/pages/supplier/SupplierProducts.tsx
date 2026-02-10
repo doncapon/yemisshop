@@ -23,7 +23,7 @@ type SupplierProductListItem = {
   id: string;
   title: string;
   sku: string;
-  price: number;
+  basePrice: number;
   status: string;
   inStock: boolean;
   imagesJson: string[];
@@ -313,7 +313,7 @@ export default function SupplierProductsPage() {
                         </span>
                       </td>
                       <td className="py-3">{p.inStock ? "In stock" : "Out"}</td>
-                      <td className="py-3">₦{Number.isFinite(p.price) ? p.price.toLocaleString("en-NG") : "—"}</td>
+                      <td className="py-3">₦{Number.isFinite(p.basePrice) ? p.basePrice.toLocaleString("en-NG") : "—"}</td>
 
                       <td className="py-3">
                         <button

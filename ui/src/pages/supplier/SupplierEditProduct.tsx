@@ -496,7 +496,7 @@ export default function SupplierEditProduct() {
       // ✅ offers-only should load from catalog detail endpoint first
       const attempts = offersOnly
         ? [
-            `/api/supplier/catalog/products/${id}`,
+            `/api/supplier/products/${id}`,
             // fallback to supplier products detail only if it happens to be accessible (already offered/owned)
             `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
             `/api/supplier/products/${id}`,
@@ -723,7 +723,7 @@ export default function SupplierEditProduct() {
     setBrandId(p.brandId ?? "");
     setDescription(p.description ?? "");
 
-    // ✅ Base price:
+    // ✅ BasePrice:
     // - prefer my offer.basePrice
     // - else fall back to product retailPrice/autoPrice
     const productFallback = Number(p.retailPrice ?? 0) || Number((p as any).autoPrice ?? 0) || 0;

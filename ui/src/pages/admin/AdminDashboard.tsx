@@ -110,7 +110,7 @@ type SupplierOfferLite = {
 type AdminProduct = {
   id: string;
   title: string;
-  price: number | string;
+  retailPrice: number | string;
   status: string;
   imagesJson?: string[];
   createdAt?: string;
@@ -1061,7 +1061,7 @@ export default function AdminDashboard() {
                     <td className="px-3 py-3">{u.email}</td>
                     <td className="px-3 py-3">
                       {role === "SUPER_ADMIN" ? (
-                        <RoleSelect value={u.role} onChange={(newRole) => updateUserRole.mutate({ userId: u.id, role: newRole })} />
+                       u.role === 'SUPPLIER' ? u.role: <RoleSelect value={u.role} onChange={(newRole) => updateUserRole.mutate({ userId: u.id, role: newRole })}  />
                       ) : (
                         u.role
                       )}
