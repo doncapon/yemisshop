@@ -192,7 +192,7 @@ router.get("/products", requireAuth, async (req: any, res) => {
             ...p,
             imagesJson: productImages,
             ProductVariant: normVariants,
-            price: p.retailPrice ?? null, // alias for UI
+            retailPrice: p.retailPrice ?? null, // alias for UI
         };
     });
 
@@ -362,7 +362,7 @@ router.get("/:id", requireAuth, async (req: any, res) => {
             brandId: (p as any).brandId ?? null,
 
             // price is YOUR base offer price (not retail)
-            price: basePrice,
+            basePrice,
             currency,
             availableQty: baseQty,
             pendingOfferChanges: pending,

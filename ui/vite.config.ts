@@ -11,5 +11,5 @@ export default defineConfig({
       }
     }
   },
-  base: "/ui"
+  base: "/"
 })

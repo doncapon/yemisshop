@@ -10,18 +10,18 @@ r.get('/products', requireAuth, requireAdmin, async (req, res) => {
 
   // --- re-use the same definitions you used for counts ---
   const variantAwareAvailable = {
-    OR: [{ inStock: true }, { variants: { some: { inStock: true, price: { not: null, gt: new Prisma.Decimal(0) } } } }],
+    OR: [{ inStock: true }, { variants: { some: { inStock: true, unitPrice: { not: null, gt: new Prisma.Decimal(0) } } } }],
   } as const;
   const anyOffer = {
     OR: [
       { supplierOffers: { some: {} } },
-      { variants: { some: { price: { not: null, gt: new Prisma.Decimal(0) }, offers: { some: {} } } } },
+      { variants: { some: { unitPrice: { not: null, gt: new Prisma.Decimal(0) }, offers: { some: {} } } } },
     ],
   } as const;
   const anyActiveOffer = {
     OR: [
       { supplierOffers: { some: { isActive: true, inStock: true } } },
-      { variants: { some: { price: { not: null, gt: new Prisma.Decimal(0) }, offers: { some: { isActive: true, inStock: true } } } } },
+      { variants: { some: { unitPrice: { not: null, gt: new Prisma.Decimal(0) }, offers: { some: { isActive: true, inStock: true } } } } },
     ],
   } as const;
 
@@ -48,7 +48,7 @@ r.get('/products', requireAuth, requireAdmin, async (req, res) => {
   };
   if (bucket === 'published-with-active-offer') where = { status: 'PUBLISHED', AND: [positivePrice, anyActiveOffer] };
   // “with-variants” should mean: has at least one positively-priced variant
-  if (bucket === 'with-variants') where = { variants: { some: { price: { not: null, gt: new Prisma.Decimal(0) } } } };
+  if (bucket === 'with-variants') where = { variants: { some: { unitPrice: { not: null, gt: new Prisma.Decimal(0) } } } };
   if (bucket === 'simple') where = {
     // either truly no variants, or all variants are non-positive — depending on your preference.
     // Most commonly: "no variants at all":

@@ -138,7 +138,7 @@ const QSchema = z.object({
 });
 
 /**
- * ✅ Retail-only public price:
+ * ✅ Retail-only public price
  * - If priceMode=ADMIN and retailPrice>0 => retailPrice
  * - Else if autoPrice>0 => autoPrice
  * - Else retailPrice (nullable)
@@ -299,12 +299,12 @@ router.get(
       ...(isLive ? { status: "LIVE" as any } : {}),
       ...(q
         ? {
-            OR: [
-              { title: { contains: q, mode: "insensitive" } },
-              { sku: { contains: q, mode: "insensitive" } },
-              { description: { contains: q, mode: "insensitive" } },
-            ],
-          }
+          OR: [
+            { title: { contains: q, mode: "insensitive" } },
+            { sku: { contains: q, mode: "insensitive" } },
+            { description: { contains: q, mode: "insensitive" } },
+          ],
+        }
         : {}),
     };
 
@@ -409,15 +409,15 @@ router.get(
     const [cats, brands] = await Promise.all([
       wantCategory && categoryIds.length
         ? prisma.category.findMany({
-            where: { id: { in: categoryIds } },
-            select: { id: true, name: true, slug: true },
-          })
+          where: { id: { in: categoryIds } },
+          select: { id: true, name: true, slug: true },
+        })
         : Promise.resolve([]),
       wantBrand && brandIds.length
         ? prisma.brand.findMany({
-            where: { id: { in: brandIds } },
-            select: { id: true, name: true },
-          })
+          where: { id: { in: brandIds } },
+          select: { id: true, name: true },
+        })
         : Promise.resolve([]),
     ]);
 
@@ -438,21 +438,21 @@ router.get(
     const variantsRows =
       wantVariants || needOffers
         ? await prisma.productVariant.findMany({
-            where: {
-              productId: { in: ids },
-              ...(vWhere ? vWhere : {}),
-            } as any,
-            select: {
-              id: true,
-              productId: true,
-              sku: true,
-              retailPrice: true,
-              inStock: true,
-              imagesJson: true,
-              availableQty: true,
-            },
-            orderBy: { createdAt: "asc" },
-          })
+          where: {
+            productId: { in: ids },
+            ...(vWhere ? vWhere : {}),
+          } as any,
+          select: {
+            id: true,
+            productId: true,
+            sku: true,
+            retailPrice: true,
+            inStock: true,
+            imagesJson: true,
+            availableQty: true,
+          },
+          orderBy: { createdAt: "asc" },
+        })
         : [];
 
     const variantsByProduct = new Map<string, any[]>();
@@ -471,27 +471,27 @@ router.get(
     const baseOffers =
       needOffers
         ? await prisma.supplierProductOffer.findMany({
-            where: {
-              productId: { in: ids },
-              isActive: true,
-              ...(offerSupplierPayoutReadyWhere(BASE_OFFER_MODEL, false) as any),
-            } as any,
-            select: {
-              id: true,
-              productId: true,
-              supplierId: true,
-              basePrice: true,
-              inStock: true,
-              isActive: true,
-              availableQty: true,
-              currency: true,
-              leadDays: true,
+          where: {
+            productId: { in: ids },
+            isActive: true,
+            ...(offerSupplierPayoutReadyWhere(BASE_OFFER_MODEL, false) as any),
+          } as any,
+          select: {
+            id: true,
+            productId: true,
+            supplierId: true,
+            basePrice: true,
+            inStock: true,
+            isActive: true,
+            availableQty: true,
+            currency: true,
+            leadDays: true,
 
-              ...(hasRelation(BASE_OFFER_MODEL, "supplier")
-                ? { supplier: { select: supplierRatingSelect() } }
-                : {}),
-            },
-          })
+            ...(hasRelation(BASE_OFFER_MODEL, "supplier")
+              ? { supplier: { select: supplierRatingSelect() } }
+              : {}),
+          },
+        })
         : [];
 
     const baseBySupplierByProduct = new Map<string, Map<string, number>>();
@@ -537,32 +537,32 @@ router.get(
     const variantOffers =
       needOffers && variantIdsAll.length
         ? await prisma.supplierVariantOffer.findMany({
-            where: {
-              variantId: { in: variantIdsAll },
-              isActive: true,
-              ...(offerSupplierPayoutReadyWhere(VAR_OFFER_MODEL, false) as any),
-            } as any,
-            select: {
-              id: true,
-              variantId: true,
-              supplierId: true,
-              inStock: true,
-              isActive: true,
-              availableQty: true,
+          where: {
+            variantId: { in: variantIdsAll },
+            isActive: true,
+            ...(offerSupplierPayoutReadyWhere(VAR_OFFER_MODEL, false) as any),
+          } as any,
+          select: {
+            id: true,
+            variantId: true,
+            supplierId: true,
+            inStock: true,
+            isActive: true,
+            availableQty: true,
 
-              // ✅ Schema: SupplierVariantOffer.unitPrice is the final unit price
-              unitPrice: true,
+            // ✅ Schema: SupplierVariantOffer.unitPrice is the final unit price
+            unitPrice: true,
 
-              currency: true,
-              leadDays: true,
-              supplierProductOfferId: true,
-              productId: true,
+            currency: true,
+            leadDays: true,
+            supplierProductOfferId: true,
+            productId: true,
 
-              ...(hasRelation(VAR_OFFER_MODEL, "supplier")
-                ? { supplier: { select: supplierRatingSelect() } }
-                : {}),
-            } as any,
-          })
+            ...(hasRelation(VAR_OFFER_MODEL, "supplier")
+              ? { supplier: { select: supplierRatingSelect() } }
+              : {}),
+          } as any,
+        })
         : [];
 
     const variantOffersByVariant = new Map<string, any[]>();
@@ -638,20 +638,20 @@ router.get(
 
     const [attrOpts, attrTexts] = wantAttributes
       ? await Promise.all([
-          prisma.productAttributeOption.findMany({
-            where: { productId: { in: ids } },
-            include: {
-              attribute: { select: { id: true, name: true, type: true } },
-              value: { select: { id: true, name: true, code: true } },
-            },
-          }),
-          prisma.productAttributeText.findMany({
-            where: { productId: { in: ids } },
-            include: {
-              attribute: { select: { id: true, name: true, type: true } },
-            },
-          }),
-        ])
+        prisma.productAttributeOption.findMany({
+          where: { productId: { in: ids } },
+          include: {
+            attribute: { select: { id: true, name: true, type: true } },
+            value: { select: { id: true, name: true, code: true } },
+          },
+        }),
+        prisma.productAttributeText.findMany({
+          where: { productId: { in: ids } },
+          include: {
+            attribute: { select: { id: true, name: true, type: true } },
+          },
+        }),
+      ])
       : [[], []];
 
     const attrByProduct = new Map<string, { values: any[]; texts: any[]; summary: any[] }>();
@@ -711,57 +711,54 @@ router.get(
 
       const variantsOut = wantVariants
         ? (variantsByProduct.get(pid) ?? []).map((v: any) => {
-            const vid = String(v.id);
-            const vOffers = needOffers ? variantOffersByVariant.get(vid) ?? [] : [];
+          const vid = String(v.id);
+          const vOffers = needOffers ? variantOffersByVariant.get(vid) ?? [] : [];
 
-            const vQty = needOffers
-              ? vOffers.reduce((acc: number, x: any) => {
-                  if (x?.isActive !== true) return acc;
-                  if (x?.inStock !== true) return acc;
-                  const qn = Number(x?.availableQty ?? 0) || 0;
-                  return acc + (qn > 0 ? qn : 0);
-                }, 0)
-              : 0;
+          const vQty = needOffers
+            ? vOffers.reduce((acc: number, x: any) => {
+              if (x?.isActive !== true) return acc;
+              if (x?.inStock !== true) return acc;
+              const qn = Number(x?.availableQty ?? 0) || 0;
+              return acc + (qn > 0 ? qn : 0);
+            }, 0)
+            : 0;
 
-            const bestVariantRating = pickBestRating(ratingsByVariant.get(vid) ?? []);
+          const bestVariantRating = pickBestRating(ratingsByVariant.get(vid) ?? []);
 
-            return {
-              id: vid,
-              sku: v.sku ?? null,
-              price: v.retailPrice != null ? toNum(v.retailPrice) : null,
-              inStock: vQty > 0 || v.inStock === true,
-              imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-              availableQty: vQty,
+          return {
+            id: vid,
+            sku: v.sku ?? null,
+            retailPrice: v.retailPrice != null ? toNum(v.retailPrice) : null,
+            inStock: vQty > 0 || v.inStock === true,
+            imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+            availableQty: vQty,
 
-              offers: needOffers
-                ? vOffers.map((o: any) => {
-                    const r = readSupplierRatingFromOffer(o);
-                    return {
-                      id: String(o.id),
-                      supplierId: r.supplierId,
+            offers: needOffers
+              ? vOffers.map((o: any) => {
+                const r = readSupplierRatingFromOffer(o);
+                return {
+                  id: String(o.id),
+                  supplierId: r.supplierId,
 
-                      isActive: o.isActive === true,
-                      inStock: o.inStock === true,
-                      availableQty: Number(o.availableQty ?? 0) || 0,
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  availableQty: Number(o.availableQty ?? 0) || 0,
 
-                      // ✅ expose unitPrice for frontend to compute retail display if needed
-                      unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
+                  // ✅ expose unitPrice for frontend to compute retail display if needed
+                  unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
 
-                      // legacy compatibility field (keep null)
-                      price: null,
+                  supplier: {
+                    id: r.supplierId,
+                    ratingAvg: r.ratingAvg,
+                    ratingCount: r.ratingCount,
+                  },
+                };
+              })
+              : [],
 
-                      supplier: {
-                        id: r.supplierId,
-                        ratingAvg: r.ratingAvg,
-                        ratingCount: r.ratingCount,
-                      },
-                    };
-                  })
-                : [],
-
-              bestSupplierRating: bestVariantRating,
-            };
-          })
+            bestSupplierRating: bestVariantRating,
+          };
+        })
         : [];
 
       const attrs = attrByProduct.get(pid);
@@ -783,10 +780,7 @@ router.get(
         description: p.description,
 
         // ✅ price that the catalogue should display (now refreshes from supplier offers)
-        price: displayPrice,
-
-        // keep raw fields
-        retailPrice,
+        retailPrice: displayPrice,
         autoPrice,
         priceMode: p.priceMode ?? null,
 
@@ -811,30 +805,27 @@ router.get(
 
         supplierOffers: needOffers
           ? (baseOffers as any[])
-              .filter((o: any) => String(o.productId) === pid)
-              .map((o: any) => {
-                const r = readSupplierRatingFromOffer(o);
-                return {
-                  id: String(o.id),
-                  supplierId: String(o.supplierId),
+            .filter((o: any) => String(o.productId) === pid)
+            .map((o: any) => {
+              const r = readSupplierRatingFromOffer(o);
+              return {
+                id: String(o.id),
+                supplierId: String(o.supplierId),
 
-                  isActive: o.isActive === true,
-                  inStock: o.inStock === true,
-                  availableQty: Number(o.availableQty ?? 0) || 0,
+                isActive: o.isActive === true,
+                inStock: o.inStock === true,
+                availableQty: Number(o.availableQty ?? 0) || 0,
 
-                  // ✅ expose basePrice for frontend to compute retail display if needed
-                  basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
+                // ✅ expose basePrice for frontend to compute retail display if needed
+                basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
 
-                  // legacy compatibility field (keep null)
-                  price: null,
-
-                  supplier: {
-                    id: r.supplierId,
-                    ratingAvg: r.ratingAvg,
-                    ratingCount: r.ratingCount,
-                  },
-                };
-              })
+                supplier: {
+                  id: r.supplierId,
+                  ratingAvg: r.ratingAvg,
+                  ratingCount: r.ratingCount,
+                },
+              };
+            })
           : [],
 
         variants: variantsOut,
@@ -896,7 +887,7 @@ router.get(
       results.map((p: any) => ({
         id: p.id,
         title: p.title,
-        price: p.retailPrice != null ? toNum(p.retailPrice) : null,
+        retailPrice: p.retailPrice != null ? toNum(p.retailPrice) : null,
         imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
         inStock: p.inStock !== false,
       }))
@@ -969,9 +960,6 @@ router.get(
       title: p.title,
       description: p.description,
 
-      // ✅ public display price is retail/auto logic (retail-only)
-      price: computePublicDisplayPriceRetailOnly(p),
-
       // expose these like admin does
       retailPrice,
       autoPrice,
@@ -996,7 +984,7 @@ router.get(
       data.variants = variants.map((v: any) => ({
         id: v.id,
         sku: v.sku,
-        price: v.retailPrice != null ? toNum(v.retailPrice) : null,
+        retailPrice: v.retailPrice != null ? toNum(v.retailPrice) : null,
         inStock: v.inStock,
         imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
 
@@ -1119,7 +1107,8 @@ router.get(
             isActive: o.isActive === true,
             availableQty: Number(o.availableQty ?? 0) || 0,
             leadDays: o.leadDays ?? null,
-            price: o.basePrice != null ? toNum(o.basePrice) : null,
+            basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
+            unitPrice: o.basePrice != null ? toNum(o.basePrice) : null, // ✅ so UI can always read unitPrice
             model: "BASE",
             supplier: {
               id: r.supplierId,
@@ -1128,6 +1117,58 @@ router.get(
             },
           };
         }),
+
+        // ✅ ALSO expose schema-shaped arrays so frontend can read them directly
+        data.supplierProductOffers = baseOffers.map((o: any) => ({
+          id: String(o.id),
+          supplierId: String(o.supplierId),
+          productId: String(o.productId),
+
+          basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
+          currency: o.currency ?? "NGN",
+
+          availableQty: Number(o.availableQty ?? 0) || 0,
+          inStock: o.inStock === true,
+          isActive: o.isActive === true,
+          leadDays: o.leadDays ?? null,
+
+          // ✅ include supplier name so ProductDetail can show it if needed
+          supplier: o.supplier
+            ? {
+              id: String(o.supplier.id ?? o.supplierId),
+              name: o.supplier.name ? String(o.supplier.name) : undefined,
+              ratingAvg: o.supplier.ratingAvg != null ? toNum(o.supplier.ratingAvg) : undefined,
+              ratingCount: Number(o.supplier.ratingCount ?? 0) || 0,
+            }
+            : undefined,
+        })),
+
+        data.supplierVariantOffers = variantOffers.map((o: any) => ({
+          id: String(o.id),
+          supplierId: String(o.supplierId),
+          productId: String(o.productId),
+          variantId: String(o.variantId),
+
+          supplierProductOfferId: o.supplierProductOfferId ? String(o.supplierProductOfferId) : null,
+
+          unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
+          currency: o.currency ?? "NGN",
+
+          availableQty: Number(o.availableQty ?? 0) || 0,
+          inStock: o.inStock === true,
+          isActive: o.isActive === true,
+          leadDays: o.leadDays ?? null,
+
+          supplier: o.supplier
+            ? {
+              id: String(o.supplier.id ?? o.supplierId),
+              name: o.supplier.name ? String(o.supplier.name) : undefined,
+              ratingAvg: o.supplier.ratingAvg != null ? toNum(o.supplier.ratingAvg) : undefined,
+              ratingCount: Number(o.supplier.ratingCount ?? 0) || 0,
+            }
+            : undefined,
+        })),
+
 
         // ✅ NO bump math. Use unitPrice; if missing, fallback to supplier base price.
         ...variantOffers.map((o: any) => {
@@ -1154,7 +1195,7 @@ router.get(
             leadDays: o.leadDays ?? null,
 
             // ✅ final supplier variant unit price
-            price: finalPrice,
+            unitPrice: finalPrice, // ✅ schema-consistent: SupplierVariantOffer.unitPrice
 
             model: "VARIANT",
             supplier: {
@@ -1166,6 +1207,8 @@ router.get(
         }),
       ];
     }
+
+
 
     res.json({ data });
   })

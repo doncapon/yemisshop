@@ -51,8 +51,7 @@ type OfferWire = {
   availableQty: number;
   leadDays?: number | null;
 
-  // supplier price (normalized)
-  price?: number | null;
+  unitPrice?: number | null;
 
   model: "BASE" | "VARIANT";
 };
@@ -171,7 +170,7 @@ function normalizeVariants(p: any): VariantWire[] {
   const src: any[] = Array.isArray(p?.variants) ? p.variants : [];
 
   const readVariantRetail = (x: any) => {
-    const raw = x?.retailPrice ?? x?.price ?? null;
+    const raw = x?.retailPrice ?? null;
     return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
   };
 
@@ -211,78 +210,49 @@ function normalizeVariants(p: any): VariantWire[] {
       : [],
   }));
 }
+function offersFromSchema(p: any): OfferWire[] {
+  const base: any[] = Array.isArray(p?.supplierProductOffers) ? p.supplierProductOffers : [];
+  const vars: any[] = Array.isArray(p?.supplierVariantOffers) ? p.supplierVariantOffers : [];
 
-function normalizeOffers(p: any): OfferWire[] {
-  const src: any[] =
-    (Array.isArray(p?.offers) && p.offers) ||
-    (Array.isArray(p?.supplierOffers) && p.supplierOffers) ||
-    (Array.isArray(p?.supplier_offers) && p.supplier_offers) ||
-    (Array.isArray(p?.supplieroffers) && p.supplieroffers) ||
-    [];
+  const out: OfferWire[] = [];
 
-  const readOfferPrice = (o: any) => {
-    // accept multiple fields (basePrice/unitPrice/price/unitCost/cost/etc)
-    const raw =
-      o?.unitPrice ??
-      o?.basePrice ??
-      o?.supplierPrice ??
-      o?.unitCost ??
-      o?.cost ??
-      o?.price ??
-      null;
-    return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
-  };
-
-  const readQty = (o: any) =>
-    toNum(
-      o?.availableQty ??
-      o?.available ??
-      o?.qty ??
-      o?.stock ??
-      o?.available_quantity ??
-      0,
-      0
-    );
-
-  const readSupplierName = (o: any) => {
-    const raw = o?.supplierName ?? o?.supplier?.name ?? o?.supplier?.businessName ?? null;
-    return raw != null ? String(raw) : null;
-  };
-
-  return src.map((o: any) => {
-    const hasActiveKey = "isActive" in o || "active" in o || "enabled" in o;
-    const hasStockKey = "inStock" in o || "available" in o || "in_stock" in o;
-
-    const isActive = hasActiveKey
-      ? toBool(o?.isActive ?? o?.active ?? o?.enabled, false)
-      : true;
-    const inStock = hasStockKey
-      ? toBool(o?.inStock ?? o?.in_stock ?? o?.available, false)
-      : true;
-
-    const variantId = o?.variantId ? String(o.variantId) : null;
-
-    const model =
-      String(o?.model ?? "").toUpperCase() === "VARIANT" || variantId
-        ? "VARIANT"
-        : "BASE";
-
-    return {
+  for (const o of base) {
+    out.push({
       id: String(o.id),
       supplierId: String(o.supplierId),
-      supplierName: readSupplierName(o),
+      supplierName: o?.supplier?.name ? String(o.supplier.name) : null,
       productId: String(o.productId),
-      variantId,
-      currency: o.currency ?? "NGN",
-      inStock,
-      isActive,
-      availableQty: readQty(o),
-      leadDays: o.leadDays ?? o?.lead_time_days ?? null,
-      price: readOfferPrice(o),
-      model: model as "BASE" | "VARIANT",
-    };
-  });
+      variantId: null,
+      currency: o?.currency ?? "NGN",
+      inStock: Boolean(o?.inStock),
+      isActive: Boolean(o?.isActive),
+      availableQty: Number(o?.availableQty ?? 0) || 0,
+      leadDays: o?.leadDays ?? null,
+      unitPrice: o?.basePrice != null ? Number(o.basePrice) : null, // ✅ basePrice only
+      model: "BASE",
+    });
+  }
+
+  for (const o of vars) {
+    out.push({
+      id: String(o.id),
+      supplierId: String(o.supplierId),
+      supplierName: o?.supplier?.name ? String(o.supplier.name) : null,
+      productId: String(o.productId),
+      variantId: String(o.variantId),
+      currency: o?.currency ?? "NGN",
+      inStock: Boolean(o?.inStock),
+      isActive: Boolean(o?.isActive),
+      availableQty: Number(o?.availableQty ?? 0) || 0,
+      leadDays: o?.leadDays ?? null,
+      unitPrice: o?.unitPrice != null ? Number(o.unitPrice) : null, // ✅ unitPrice only
+      model: "VARIANT",
+    });
+  }
+
+  return out;
 }
+
 
 function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
   if (p?.attributes && typeof p.attributes === "object" && !Array.isArray(p.attributes)) {
@@ -416,8 +386,6 @@ type CartRowLS = {
   unitPrice?: number;
   totalPrice?: number;
 
-  // legacy
-  price?: number;
   image?: string | null;
 
   selectedOptions?: any[];
@@ -435,13 +403,6 @@ function readCartLS(): any[] {
   }
 }
 
-function writeCartLS(cart: any[]) {
-  try {
-    localStorage.setItem(CART_KEY, JSON.stringify(cart));
-  } catch {
-    // ignore
-  }
-}
 
 function setCartQty(cart: any[]) {
   // keep localStorage as source of truth (already written), but this guarantees the badge updates NOW
@@ -492,7 +453,6 @@ function upsertCartLineLS(input: {
       qty: nextQty,
       unitPrice: input.unitPrice,
       totalPrice: input.unitPrice * nextQty,
-      price: input.unitPrice,
       image: input.image ?? cart[safeIdx]?.image ?? null,
       selectedOptions: input.selectedOptions ?? cart[safeIdx]?.selectedOptions ?? [],
     };
@@ -504,7 +464,6 @@ function upsertCartLineLS(input: {
       qty: 1,
       unitPrice: input.unitPrice,
       totalPrice: input.unitPrice,
-      price: input.unitPrice,
       image: input.image ?? null,
       selectedOptions: input.selectedOptions ?? [],
     });
@@ -582,7 +541,7 @@ type BestOfferPick = {
   supplierName?: string | null;
   model: "BASE" | "VARIANT";
   variantId: string | null;
-  price: number;
+  unitPrice: number;
   leadDays: number | null;
   availableQty: number;
 };
@@ -603,7 +562,7 @@ function pickBestOffer(params: {
   };
 
   const betterThan = (a: BestOfferPick, b: BestOfferPick) => {
-    if (a.price !== b.price) return a.price < b.price;
+    if (a.unitPrice !== b.unitPrice) return a.unitPrice < b.unitPrice;
     const la = leadScore(a.leadDays);
     const lb = leadScore(b.leadDays);
     if (la !== lb) return la < lb;
@@ -618,7 +577,7 @@ function pickBestOffer(params: {
     const qty = Number(o.availableQty ?? 0) || 0;
     if (qty <= 0) continue;
 
-    const price = o.price != null && Number.isFinite(Number(o.price)) ? Number(o.price) : null;
+    const price = o.unitPrice != null && Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null;
     if (price == null || price <= 0) continue;
 
     const isVariant = o.model === "VARIANT" || !!o.variantId;
@@ -645,7 +604,7 @@ function pickBestOffer(params: {
       supplierName: o.supplierName ?? null,
       model: isVariant ? "VARIANT" : "BASE",
       variantId: o.variantId ? String(o.variantId) : null,
-      price: Number(price),
+      unitPrice: Number(price),
       leadDays: o.leadDays ?? null,
       availableQty: qty,
     };
@@ -677,39 +636,42 @@ export default function ProductDetail() {
    * ✅ Load marginPercent from settings/public
    * (backend returns BOTH: marginPercent + pricingMarkupPercent for compatibility)
    */
-  const settingsQ = useQuery({
-    queryKey: ["public-settings"],
+  /**
+   * ✅ Load marginPercent from settings/public
+   * Use SAME queryKey + parsing as Catalog to avoid cache collisions (5 vs 10).
+   */
+  const settingsQ = useQuery<number>({
+    queryKey: ["settings", "public", "marginPercent"],
+    staleTime: 10_000,
+    retry: 0,
     queryFn: async () => {
       const { data } = await api.get("/api/settings/public");
       const s = (data as any) ?? {};
-      const margin =
-        toNum(s?.marginPercent, NaN) ||
-        toNum(s?.pricingMarkupPercent, NaN) ||
-        toNum(s?.markupPercent, NaN) ||
-        0;
 
-      return {
-        marginPercent: Math.max(0, margin),
-      };
+      const v =
+        Number.isFinite(Number(s?.marginPercent))
+          ? Number(s.marginPercent)
+          : Number.isFinite(Number(s?.pricingMarkupPercent))
+            ? Number(s.pricingMarkupPercent)
+            : NaN;
+
+      return Math.max(0, Number.isFinite(v) ? v : 0);
     },
-    staleTime: 0,
-    refetchOnWindowFocus: true,
   });
 
-  const marginPercent = settingsQ.data?.marginPercent ?? 0;
-
+  const marginPercent = Number.isFinite(settingsQ.data as any) ? (settingsQ.data as number) : 0;
   const productQ = useQuery({
     queryKey: ["product", id],
     queryFn: async () => {
       const { data } = await api.get(`/api/products/${id}`, {
-        params: { include: "brand,variants,attributes,offers" },
+        params: { include: "brand,variants,attributes,supplierProductOffers,supplierVariantOffers" },
       });
 
       const payload = (data as any)?.data ?? data ?? {};
       const p = (payload as any)?.data ?? payload;
 
       const variants = normalizeVariants(p);
-      const offers = normalizeOffers(p);
+      const offers = offersFromSchema(p);
 
       // ---------------- Stock computation (your existing logic) ----------------
       const baseOffers = offers.filter((o) => o.model === "BASE" && !o.variantId);
@@ -753,7 +715,7 @@ export default function ProductDetail() {
       const sellableVariantIds = new Set(Object.keys(stockByVariantId));
 
       const readProductRetail = (x: any) => {
-        const raw = x?.retailPrice ?? x?.price ?? x?.retailBasePrice ?? x?.retailBase ?? null;
+        const raw = x?.retailPrice ?? null;
         return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
       };
 
@@ -810,9 +772,7 @@ export default function ProductDetail() {
         retailPrice:
           x?.retailPrice != null && Number.isFinite(Number(x.retailPrice))
             ? Number(x.retailPrice)
-            : x?.price != null && Number.isFinite(Number(x.price))
-              ? Number(x.price)
-              : null,
+            : null,
         imagesJson: Array.isArray(x?.imagesJson) ? x.imagesJson : [],
         inStock: x?.inStock !== false,
       })) as SimilarProductWire[];
@@ -980,7 +940,7 @@ export default function ProductDetail() {
    * ✅ Determine cheapest overall VARIANT selection (only if cheapest overall offer is VARIANT)
    */
   const cheapestOverallVariant = React.useMemo(() => {
-    if (!cheapestOverallOffer?.price) return null;
+    if (!cheapestOverallOffer?.unitPrice) return null;
     if (cheapestOverallOffer.model !== "VARIANT") return null;
     const vid = cheapestOverallOffer.variantId;
     if (!vid) return null;
@@ -1000,57 +960,57 @@ export default function ProductDetail() {
  * NOTE:
  * - `sellableVariantIds` helps prevent choosing variant offers that can’t actually be sold.
  */
-function cheapestOfferPrice(params: {
-  offers: OfferWire[];
-  kind: "BASE" | "VARIANT" | "ANY";
-  variantId?: string | null;
-  sellableVariantIds?: Set<string>;
-}) {
-  const { offers, kind, variantId, sellableVariantIds } = params;
+  function cheapestOfferPrice(params: {
+    offers: OfferWire[];
+    kind: "BASE" | "VARIANT" | "ANY";
+    variantId?: string | null;
+    sellableVariantIds?: Set<string>;
+  }) {
+    const { offers, kind, variantId, sellableVariantIds } = params;
 
-  let best: number | null = null;
+    let best: number | null = null;
 
-  for (const o of offers || []) {
-    if (!o) continue;
-    if (!o.isActive || !o.inStock) continue;
+    for (const o of offers || []) {
+      if (!o) continue;
+      if (!o.isActive || !o.inStock) continue;
 
-    const qty = Number(o.availableQty ?? 0) || 0;
-    if (qty <= 0) continue;
+      const qty = Number(o.availableQty ?? 0) || 0;
+      if (qty <= 0) continue;
 
-    const price = o.price != null && Number.isFinite(Number(o.price)) ? Number(o.price) : null;
-    if (price == null || price <= 0) continue;
+      const price = o.unitPrice != null && Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null;
+      if (price == null || price <= 0) continue;
 
-    const isVariant = o.model === "VARIANT" || !!o.variantId;
-    const isBase = !isVariant;
+      const isVariant = o.model === "VARIANT" || !!o.variantId;
+      const isBase = !isVariant;
 
-    if (kind === "BASE" && !isBase) continue;
-    if (kind === "VARIANT" && !isVariant) continue;
+      if (kind === "BASE" && !isBase) continue;
+      if (kind === "VARIANT" && !isVariant) continue;
 
-    if (kind === "VARIANT") {
-      if (!variantId) continue;
-      if (String(o.variantId ?? "") !== String(variantId)) continue;
-      if (sellableVariantIds && !sellableVariantIds.has(String(variantId))) continue;
-    }
-
-    if (kind === "ANY" && isVariant) {
-      if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId))) {
-        continue;
+      if (kind === "VARIANT") {
+        if (!variantId) continue;
+        if (String(o.variantId ?? "") !== String(variantId)) continue;
+        if (sellableVariantIds && !sellableVariantIds.has(String(variantId))) continue;
       }
+
+      if (kind === "ANY" && isVariant) {
+        if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId))) {
+          continue;
+        }
+      }
+
+      if (best == null || price < best) best = price;
     }
 
-    if (best == null || price < best) best = price;
+    return best;
   }
 
-  return best;
-}
-
-function pickCheapestPositive(a: number | null, b: number | null) {
-  const av = a != null && a > 0 ? a : null;
-  const bv = b != null && b > 0 ? b : null;
-  if (av == null) return bv;
-  if (bv == null) return av;
-  return Math.min(av, bv);
-}
+  function pickCheapestPositive(a: number | null, b: number | null) {
+    const av = a != null && a > 0 ? a : null;
+    const bv = b != null && b > 0 ? b : null;
+    if (av == null) return bv;
+    if (bv == null) return av;
+    return Math.min(av, bv);
+  }
 
 
   /**
@@ -1237,11 +1197,11 @@ function pickCheapestPositive(a: number | null, b: number | null) {
     if (!pickedPairs.length) {
       const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
       const retailFromSupplier =
-        bestAny?.price != null ? applyMargin(bestAny.price, marginPercent) : null;
+        bestAny?.unitPrice != null ? applyMargin(bestAny.unitPrice, marginPercent) : null;
 
       return {
         mode: "VARIANT" as const,
-        supplierPrice: bestAny?.price ?? null,
+        supplierPrice: bestAny?.unitPrice ?? null,
         supplierId: bestAny?.supplierId ?? null,
         supplierName: bestAny?.supplierName ?? null,
         offerId: bestAny?.offerId ?? null,
@@ -1277,11 +1237,11 @@ function pickCheapestPositive(a: number | null, b: number | null) {
     if (!matched) {
       const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
       const retailFromSupplier =
-        bestAny?.price != null ? applyMargin(bestAny.price, marginPercent) : null;
+        bestAny?.unitPrice != null ? applyMargin(bestAny.unitPrice, marginPercent) : null;
 
       return {
         mode: "VARIANT" as const,
-        supplierPrice: bestAny?.price ?? null,
+        supplierPrice: bestAny?.unitPrice ?? null,
         supplierId: bestAny?.supplierId ?? null,
         supplierName: bestAny?.supplierName ?? null,
         offerId: bestAny?.offerId ?? null,
@@ -1311,7 +1271,7 @@ function pickCheapestPositive(a: number | null, b: number | null) {
 
     const chosen = bestVariant ?? bestBase;
     const retailFromSupplier =
-      chosen?.price != null ? applyMargin(chosen.price, marginPercent) : null;
+      chosen?.unitPrice != null ? applyMargin(chosen.unitPrice, marginPercent) : null;
 
     const fallbackVariantRetail = toNum(matched.retailPrice, 0);
     const fallbackRetail =
@@ -1319,7 +1279,7 @@ function pickCheapestPositive(a: number | null, b: number | null) {
 
     return {
       mode: "VARIANT" as const,
-      supplierPrice: chosen?.price ?? null,
+      supplierPrice: chosen?.unitPrice ?? null,
       supplierId: chosen?.supplierId ?? null,
       supplierName: chosen?.supplierName ?? null,
       offerId: chosen?.offerId ?? null,
@@ -1797,7 +1757,7 @@ function pickCheapestPositive(a: number | null, b: number | null) {
           const payload = (data as any)?.data ?? data ?? {};
           const p = (payload as any)?.data ?? payload;
 
-          const offers = normalizeOffers(p);
+          const offers = offersFromSchema(p);
 
           // best-effort sellableVariantIds from VARIANT offers
           const sellableVariantIds = new Set<string>();
@@ -1817,7 +1777,7 @@ function pickCheapestPositive(a: number | null, b: number | null) {
           });
 
           return {
-            supplierPrice: bestAny?.price ?? null,
+            supplierPrice: bestAny?.unitPrice ?? null,
           };
         },
       })),
@@ -2083,8 +2043,8 @@ function pickCheapestPositive(a: number | null, b: number | null) {
                       alt={`thumb-${absoluteIndex}`}
                       onClick={() => setMainIndex(absoluteIndex)}
                       className={`w-24 h-20 rounded-xl border object-cover select-none cursor-pointer ${isActive
-                          ? "ring-2 ring-fuchsia-500 border-fuchsia-500"
-                          : "hover:opacity-90 bg-white"
+                        ? "ring-2 ring-fuchsia-500 border-fuchsia-500"
+                        : "hover:opacity-90 bg-white"
                         }`}
                       onError={(e) => (e.currentTarget.style.opacity = "0.25")}
                     />
@@ -2337,8 +2297,8 @@ function pickCheapestPositive(a: number | null, b: number | null) {
                           />
                           <span
                             className={`absolute left-2 top-2 inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium border ${sp.inStock !== false
-                                ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
-                                : "bg-rose-600/10 text-rose-700 border-rose-600/20"
+                              ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
+                              : "bg-rose-600/10 text-rose-700 border-rose-600/20"
                               }`}
                           >
                             {sp.inStock !== false ? "In stock" : "Out of stock"}

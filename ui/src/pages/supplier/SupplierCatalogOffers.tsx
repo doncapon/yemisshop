@@ -6,6 +6,7 @@ import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 import { Link } from "react-router-dom";
+import SiteLayout from "../../layouts/SiteLayout";
 
 const NGN = new Intl.NumberFormat("en-NG", {
     style: "currency",
@@ -16,10 +17,6 @@ const NGN = new Intl.NumberFormat("en-NG", {
 const toNum = (v: any, d = 0) => {
     const n = Number(v);
     return Number.isFinite(n) ? n : d;
-};
-
-type SettingsWire = {
-    pricingMarkupPercent?: number | string | null;
 };
 
 type OfferBase = {
@@ -36,7 +33,7 @@ type OfferBase = {
 type OfferVariant = {
     id: string;
     variantId: string;
-    unitPrice: number | string; // this is supplier offer price in your current API
+    unitPrice: number | string; // supplier offer price
     availableQty: number;
     leadDays: number | null;
     isActive: boolean;
@@ -57,7 +54,7 @@ type VariantWire = {
     options?: Array<{
         attributeId: string;
         valueId: string;
-        attribute?: { id: string; name: string; type?: string };
+        attribute?: { id: string; name: string; type?: string; code?: string | null };
         value?: { id: string; name: string; code?: string | null };
     }>;
 };
@@ -76,10 +73,23 @@ type ProductWire = {
     supplierVariantOffers?: OfferVariant[];
 };
 
+type AttributeValueWire = {
+    attributeId: string;
+    valueId: string;
+    attribute?: { id: string; name: string; type?: string; code?: string | null };
+    value?: { id: string; name: string; code?: string | null };
+};
+
+type AttributeTextWire = {
+    attributeId: string;
+    value: string;
+    attribute?: { id: string; name: string; type?: string; code?: string | null };
+};
+
 function formatVariantLabel(v: VariantWire) {
     const parts =
         (v.options || [])
-            .map((o) => `${o.attribute?.name ?? "Attr"}: ${o.value?.name ?? "Value"}`)
+            .map((o) => `${o.attribute?.name ?? o.attributeId}: ${o.value?.name ?? o.valueId}`)
             .filter(Boolean) || [];
     const sku = v.sku ? `(${v.sku})` : "";
     return `${sku} ${parts.join(" • ")}`.trim();
@@ -113,7 +123,12 @@ function normalizeVariant(v: any): VariantWire {
                 attributeId: String(o?.attributeId ?? ""),
                 valueId: String(o?.valueId ?? ""),
                 attribute: o?.attribute
-                    ? { id: String(o.attribute.id), name: String(o.attribute.name), type: o.attribute.type }
+                    ? {
+                        id: String(o.attribute.id),
+                        name: String(o.attribute.name),
+                        type: o.attribute.type,
+                        code: o.attribute.code ?? null,
+                    }
                     : undefined,
                 value: o?.value
                     ? { id: String(o.value.id), name: String(o.value.name), code: o.value.code ?? null }
@@ -146,8 +161,151 @@ function calcRetailFromOffer(offerPrice: number, pricingMarkupPercent: string | 
     const safeM = Number.isFinite(m) ? m : 0;
     const safeP = Number.isFinite(p) ? p : 0;
     const retail = safeP * (1 + safeM / 100);
-    // round to 2 dp for display consistency
     return Math.round(retail * 100) / 100;
+}
+
+/**
+ * ✅ IMPORTANT: Hook-safe per-product attributes fetcher
+ * - This component can be rendered inside a map safely (hooks are inside the component, not in the loop).
+ * - Uses your existing backend: GET /api/supplier/products/:id (returns attributeValues + attributeTexts)
+ */
+function ProductAttributesPreview({
+    productId,
+    enabled,
+}: {
+    productId: string;
+    enabled: boolean;
+}) {
+    const token = useAuthStore((s: any) => s.token);
+
+    const q = useQuery({
+        queryKey: ["supplier-product-attributes", productId],
+        enabled: !!token && enabled,
+        queryFn: async () => {
+            const { data } = await api.get(`/api/supplier/products/${productId}`, {
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            });
+            const payload = (data as any)?.data ?? data;
+            return payload as {
+                attributeValues?: AttributeValueWire[];
+                attributeTexts?: AttributeTextWire[];
+            };
+        },
+        staleTime: 30_000,
+        refetchOnWindowFocus: false,
+    });
+
+    const attributeValues = (q.data?.attributeValues ?? []) as AttributeValueWire[];
+    const attributeTexts = (q.data?.attributeTexts ?? []) as AttributeTextWire[];
+
+    // Group options by attribute for a clean display
+    const grouped = React.useMemo(() => {
+        const map = new Map<
+            string,
+            { label: string; values: { id: string; label: string }[] }
+        >();
+
+        for (const row of attributeValues) {
+            const aLabel =
+                row.attribute?.code ||
+                row.attribute?.name ||
+                row.attributeId ||
+                "Attribute";
+
+            const vLabel =
+                row.value?.code ||
+                row.value?.name ||
+                row.valueId ||
+                "Value";
+
+            const key = String(row.attributeId || aLabel);
+            if (!map.has(key)) map.set(key, { label: aLabel, values: [] });
+            map.get(key)!.values.push({ id: row.valueId, label: vLabel });
+        }
+
+        // de-dupe values per attribute
+        for (const [k, g] of map.entries()) {
+            const seen = new Set<string>();
+            g.values = g.values.filter((v) => {
+                const kk = `${v.id}:${v.label}`;
+                if (seen.has(kk)) return false;
+                seen.add(kk);
+                return true;
+            });
+            map.set(k, g);
+        }
+
+        return Array.from(map.values());
+    }, [attributeValues]);
+
+    if (!enabled) return null;
+
+    return (
+        <div className="rounded-2xl border bg-white p-3 md:p-4">
+            <div className="font-semibold">Attributes on this product</div>
+            <div className="text-xs text-zinc-500 mt-1">
+                Use these as a guide for what variants/options exist (e.g. Color, Size, Material).
+            </div>
+
+            {q.isLoading ? (
+                <div className="mt-3 text-sm text-zinc-600">Loading attributes…</div>
+            ) : q.isError ? (
+                <div className="mt-3 text-sm text-rose-600">
+                    Failed to load attributes.
+                    <div className="text-[11px] opacity-70 mt-1">{String((q.error as any)?.message ?? "")}</div>
+                </div>
+            ) : (grouped.length === 0 && attributeTexts.length === 0) ? (
+                <div className="mt-3 text-sm text-zinc-600">
+                    No attribute options found for this product.
+                </div>
+            ) : (
+                <div className="mt-3 grid gap-3">
+                    {/* option attributes */}
+                    {grouped.map((g) => (
+                        <div key={g.label} className="grid gap-2">
+                            <div className="text-[11px] text-zinc-600">{g.label}</div>
+                            <div className="flex flex-wrap gap-2">
+                                {g.values.map((v) => (
+                                    <span
+                                        key={`${g.label}:${v.id}:${v.label}`}
+                                        className="inline-flex items-center px-2 py-1 rounded-full text-[11px] border bg-zinc-50 text-zinc-700 border-zinc-200"
+                                    >
+                                        {v.label}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+
+                    {/* text attributes */}
+                    {attributeTexts.length > 0 && (
+                        <div className="grid gap-2">
+                            <div className="text-[11px] text-zinc-600">Text attributes</div>
+                            <div className="flex flex-wrap gap-2">
+                                {attributeTexts.map((t, idx) => {
+                                    const aLabel =
+                                        t.attribute?.code ||
+                                        t.attribute?.name ||
+                                        t.attributeId ||
+                                        "Attribute";
+                                    const val = String(t.value ?? "").trim();
+                                    if (!val) return null;
+                                    return (
+                                        <span
+                                            key={`${t.attributeId}:${idx}`}
+                                            className="inline-flex items-center px-2 py-1 rounded-full text-[11px] border bg-white text-zinc-700 border-zinc-200"
+                                        >
+                                            {aLabel}: {val}
+                                        </span>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
 }
 
 export default function SupplierCatalogOffers() {
@@ -158,12 +316,12 @@ export default function SupplierCatalogOffers() {
     const qDebounced = useDebounced(q, 300);
 
     const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
+
     const settingsQ = useQuery({
         queryKey: ["public-pricing-settings"],
         queryFn: async () => {
             const { data } = await api.get("/api/settings/public");
             const payload = (data as any)?.data ?? data;
-
             const mp = toNum(payload?.marginPercent ?? payload?.pricingMarkupPercent ?? 0, 0);
             return { marginPercent: mp };
         },
@@ -223,7 +381,7 @@ export default function SupplierCatalogOffers() {
         mutationFn: async (input: {
             productId: string;
             variantId: string;
-            unitPrice: number; // supplier offer price
+            unitPrice: number;
             availableQty: number;
             leadDays: number | null;
             isActive: boolean;
@@ -250,203 +408,207 @@ export default function SupplierCatalogOffers() {
     const items = catalogQ.data?.items ?? [];
 
     return (
-        <SupplierLayout>
-            <div className="max-w-6xl mx-auto p-4 md:p-6">
-                <div className="rounded-2xl border bg-white shadow-sm p-4 md:p-5">
-                    <div className="flex items-start justify-between gap-3 flex-wrap">
-                        <div className="min-w-0">
-                            <h1 className="text-xl md:text-2xl font-semibold">Catalogue: Offer Other Suppliers’ Products</h1>
-                            <div className="text-xs text-zinc-500 mt-1">
-                                Search by title, SKU, variant SKU, attribute/value (e.g. “Red Large”).
+        <SiteLayout>
+            <SupplierLayout>
+                <div className="max-w-6xl mx-auto p-4 md:p-6">
+                    <div className="rounded-2xl border bg-white shadow-sm p-4 md:p-5">
+                        <div className="flex items-start justify-between gap-3 flex-wrap">
+                            <div className="min-w-0">
+                                <h1 className="text-xl md:text-2xl font-semibold">Catalogue: Offer Other Suppliers’ Products</h1>
+                                <div className="text-xs text-zinc-500 mt-1">
+                                    Search by title, SKU, variant SKU, attribute/value (e.g. “Red Large”).
+                                </div>
+
+                                <div className="text-[11px] text-zinc-500 mt-2">
+                                    Pricing uses platform margin:{" "}
+                                    <span className="font-semibold">
+                                        {Number.isFinite(pricingMarkupPercent) ? `${pricingMarkupPercent}%` : "0%"}
+                                    </span>
+                                </div>
                             </div>
 
-                            <div className="text-[11px] text-zinc-500 mt-2">
-                                Pricing uses platform margin:{" "}
-                                <span className="font-semibold">{Number.isFinite(pricingMarkupPercent) ? `${pricingMarkupPercent}%` : "0%"}</span>
+                            <button
+                                type="button"
+                                onClick={() => catalogQ.refetch()}
+                                className="inline-flex items-center gap-2 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-sm"
+                            >
+                                <RefreshCcw className="h-4 w-4" />
+                                Refresh
+                            </button>
+                        </div>
+
+                        <div className="mt-4 flex items-center gap-2">
+                            <div className="relative flex-1">
+                                <Search className="h-4 w-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                                <input
+                                    value={q}
+                                    onChange={(e) => setQ(e.target.value)}
+                                    placeholder="Search products / variants…"
+                                    className="w-full pl-9 pr-3 py-2 rounded-xl border bg-white focus:outline-none focus:ring-4 focus:ring-fuchsia-200"
+                                />
                             </div>
                         </div>
 
-                        <button
-                            type="button"
-                            onClick={() => catalogQ.refetch()}
-                            className="inline-flex items-center gap-2 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-sm"
-                        >
-                            <RefreshCcw className="h-4 w-4" />
-                            Refresh
-                        </button>
-                    </div>
+                        {catalogQ.isLoading ? (
+                            <div className="mt-4 text-sm text-zinc-600">Loading catalogue…</div>
+                        ) : catalogQ.isError ? (
+                            <div className="mt-4 text-sm text-rose-600">
+                                Failed to load catalogue.
+                                <div className="text-[11px] opacity-70 mt-1">{String((catalogQ.error as any)?.message ?? "")}</div>
+                            </div>
+                        ) : items.length === 0 ? (
+                            <div className="mt-4 text-sm text-zinc-600">No products found.</div>
+                        ) : (
+                            <div className="mt-5 grid gap-3">
+                                {items.map((p) => {
+                                    const img = (p.imagesJson || [])[0] || "/placeholder.svg";
+                                    const baseOffer = (p.supplierProductOffers || [])[0] || null;
 
-                    <div className="mt-4 flex items-center gap-2">
-                        <div className="relative flex-1">
-                            <Search className="h-4 w-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                            <input
-                                value={q}
-                                onChange={(e) => setQ(e.target.value)}
-                                placeholder="Search products / variants…"
-                                className="w-full pl-9 pr-3 py-2 rounded-xl border bg-white focus:outline-none focus:ring-4 focus:ring-fuchsia-200"
-                            />
-                        </div>
-                    </div>
+                                    const isOpen = !!expanded[p.id];
+                                    const variants = p.ProductVariant || [];
+                                    const vOffers = p.supplierVariantOffers || [];
+                                    const offerByVariantId = new Map(vOffers.map((o) => [o.variantId, o]));
 
-                    {catalogQ.isLoading ? (
-                        <div className="mt-4 text-sm text-zinc-600">Loading catalogue…</div>
-                    ) : catalogQ.isError ? (
-                        <div className="mt-4 text-sm text-rose-600">
-                            Failed to load catalogue.
-                            <div className="text-[11px] opacity-70 mt-1">{String((catalogQ.error as any)?.message ?? "")}</div>
-                        </div>
-                    ) : items.length === 0 ? (
-                        <div className="mt-4 text-sm text-zinc-600">No products found.</div>
-                    ) : (
-                        <div className="mt-5 grid gap-3">
-                            {items.map((p) => {
-                                const img = (p.imagesJson || [])[0] || "/placeholder.svg";
-                                const baseOffer = (p.supplierProductOffers || [])[0] || null;
-
-                                const isOpen = !!expanded[p.id];
-                                const variants = p.ProductVariant || [];
-                                const vOffers = p.supplierVariantOffers || [];
-                                const offerByVariantId = new Map(vOffers.map((o) => [o.variantId, o]));
-
-                                return (
-                                    <div key={p.id} className="rounded-2xl border bg-white overflow-hidden">
-                                        <div className="p-3 md:p-4 flex gap-3">
-                                            <div className="w-20 h-20 rounded-xl border bg-zinc-50 overflow-hidden shrink-0">
-                                                <img
-                                                    src={img}
-                                                    alt={p.title}
-                                                    className="w-full h-full object-cover"
-                                                    onError={(e) => (e.currentTarget.style.opacity = "0.25")}
-                                                />
-                                            </div>
-
-                                            <div className="min-w-0 flex-1">
-                                                <div className="flex items-start justify-between gap-3">
-                                                    <div className="min-w-0">
-                                                        <div className="font-semibold line-clamp-2">{p.title}</div>
-                                                        <div className="text-xs text-zinc-500 mt-1">
-                                                            {p.brand?.name ? `${p.brand.name} • ` : ""}
-                                                            SKU: {p.sku || "—"}
-                                                        </div>
-
-                                                        {baseOffer ? (
-                                                            <div className="mt-2 inline-flex items-center gap-2 text-[11px] px-2.5 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
-                                                                You’re offering this product
-                                                                <span className="opacity-80">•</span>
-                                                                Offer price: {NGN.format(toNum(baseOffer.basePrice, 0))}
-                                                            </div>
-                                                        ) : (
-                                                            <div className="mt-2 inline-flex items-center gap-2 text-[11px] px-2.5 py-1 rounded-full border bg-zinc-50 text-zinc-700">
-                                                                Not offered yet
-                                                            </div>
-                                                        )}
-                                                    </div>
-
-                                                    <div className="shrink-0 flex items-center gap-2">
-                                                        <Link
-                                                            to={`/supplier/products/${p.id}/edit?scope=offers_mine`}
-                                                            className="inline-flex items-center gap-2 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-sm"
-                                                            title="Edit this product offers in my store"
-                                                        >
-                                                            Edit
-                                                        </Link>
-
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setExpanded((s) => ({ ...s, [p.id]: !s[p.id] }))}
-                                                            className="inline-flex items-center gap-2 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-sm"
-                                                        >
-                                                            {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                                                            {isOpen ? "Hide" : "Offer"}
-                                                        </button>
-                                                    </div>
+                                    return (
+                                        <div key={p.id} className="rounded-2xl border bg-white overflow-hidden">
+                                            <div className="p-3 md:p-4 flex gap-3">
+                                                <div className="w-20 h-20 rounded-xl border bg-zinc-50 overflow-hidden shrink-0">
+                                                    <img
+                                                        src={img}
+                                                        alt={p.title}
+                                                        className="w-full h-full object-cover"
+                                                        onError={(e) => (e.currentTarget.style.opacity = "0.25")}
+                                                    />
                                                 </div>
 
-                                                {isOpen && (
-                                                    <div className="mt-4 grid gap-4">
-                                                        <BaseOfferEditor
-                                                            productId={p.id}
-                                                            existing={baseOffer}
-                                                            // base offer now is supplier offer price; we only need a numeric default
-                                                            defaultOfferPrice={toNum(baseOffer?.basePrice, 0) || 0}
-                                                            pricingMarkupPercent={pricingMarkupPercent}
-                                                            onSave={(row) => upsertBaseM.mutate(row)}
-                                                            onDelete={() => deleteBaseM.mutate(p.id)}
-                                                            busy={upsertBaseM.isPending || deleteBaseM.isPending}
-                                                        />
-
-                                                        <div className="rounded-2xl border bg-zinc-50 p-3 md:p-4">
-                                                            <div className="flex items-center justify-between gap-3">
-                                                                <div>
-                                                                    <div className="font-semibold">Variant offers</div>
-                                                                    <div className="text-xs text-zinc-500">
-                                                                        Enter your offer price. Retail is calculated from margin.
-                                                                    </div>
-                                                                </div>
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="flex items-start justify-between gap-3">
+                                                        <div className="min-w-0">
+                                                            <div className="font-semibold line-clamp-2">{p.title}</div>
+                                                            <div className="text-xs text-zinc-500 mt-1">
+                                                                {p.brand?.name ? `${p.brand.name} • ` : ""}
+                                                                SKU: {p.sku || "—"}
                                                             </div>
 
-                                                            {variants.length === 0 ? (
-                                                                <div className="mt-3 text-sm text-zinc-600">No variants on this product.</div>
+                                                            {baseOffer ? (
+                                                                <div className="mt-2 inline-flex items-center gap-2 text-[11px] px-2.5 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
+                                                                    You’re offering this product
+                                                                    <span className="opacity-80">•</span>
+                                                                    Offer price: {NGN.format(toNum(baseOffer.basePrice, 0))}
+                                                                </div>
                                                             ) : (
-                                                                <div className="mt-3 grid gap-2">
-                                                                    {variants.map((v) => {
-                                                                        const existing = offerByVariantId.get(v.id) || null;
-
-                                                                        return (
-                                                                            <VariantOfferRow
-                                                                                key={v.id}
-                                                                                productId={p.id}
-                                                                                variant={v}
-                                                                                existing={existing}
-                                                                                // if no offer yet, start with 0 (supplier must input offer price)
-                                                                                defaultOfferPrice={toNum(existing?.unitPrice, 0) || 0}
-                                                                                pricingMarkupPercent={pricingMarkupPercent}
-                                                                                canEdit={true}
-                                                                                onSave={(row) => upsertVariantM.mutate(row)}
-                                                                                onDelete={(offerId) => deleteVariantM.mutate(offerId)}
-                                                                                busy={upsertVariantM.isPending || deleteVariantM.isPending}
-                                                                            />
-                                                                        );
-                                                                    })}
+                                                                <div className="mt-2 inline-flex items-center gap-2 text-[11px] px-2.5 py-1 rounded-full border bg-zinc-50 text-zinc-700">
+                                                                    Not offered yet
                                                                 </div>
                                                             )}
+                                                        </div>
 
-                                                            {(upsertVariantM.error || deleteVariantM.error) && (
-                                                                <div className="mt-2 text-[11px] text-rose-700">
+                                                        <div className="shrink-0 flex items-center gap-2">
+                                                            <Link
+                                                                to={`/supplier/products/${p.id}/edit?scope=offers_mine`}
+                                                                className="inline-flex items-center gap-2 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-sm"
+                                                                title="Edit this product offers in my store"
+                                                            >
+                                                                Edit
+                                                            </Link>
+
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setExpanded((s) => ({ ...s, [p.id]: !s[p.id] }))}
+                                                                className="inline-flex items-center gap-2 rounded-xl border bg-white hover:bg-zinc-50 px-3 py-2 text-sm"
+                                                            >
+                                                                {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                                                                {isOpen ? "Hide" : "Offer"}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    {isOpen && (
+                                                        <div className="mt-4 grid gap-4">
+                                                            {/* ✅ NEW: Attributes preview (hook-safe) */}
+                                                            <ProductAttributesPreview productId={p.id} enabled={isOpen} />
+
+                                                            <BaseOfferEditor
+                                                                productId={p.id}
+                                                                existing={baseOffer}
+                                                                defaultOfferPrice={toNum(baseOffer?.basePrice, 0) || 0}
+                                                                pricingMarkupPercent={pricingMarkupPercent}
+                                                                onSave={(row) => upsertBaseM.mutate(row)}
+                                                                onDelete={() => deleteBaseM.mutate(p.id)}
+                                                                busy={upsertBaseM.isPending || deleteBaseM.isPending}
+                                                            />
+
+                                                            <div className="rounded-2xl border bg-zinc-50 p-3 md:p-4">
+                                                                <div className="flex items-center justify-between gap-3">
+                                                                    <div>
+                                                                        <div className="font-semibold">Variant offers</div>
+                                                                        <div className="text-xs text-zinc-500">
+                                                                            Enter your offer price. Retail is calculated from margin.
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+
+                                                                {variants.length === 0 ? (
+                                                                    <div className="mt-3 text-sm text-zinc-600">No variants on this product.</div>
+                                                                ) : (
+                                                                    <div className="mt-3 grid gap-2">
+                                                                        {variants.map((v) => {
+                                                                            const existing = offerByVariantId.get(v.id) || null;
+                                                                            return (
+                                                                                <VariantOfferRow
+                                                                                    key={v.id}
+                                                                                    productId={p.id}
+                                                                                    variant={v}
+                                                                                    existing={existing}
+                                                                                    defaultOfferPrice={toNum(existing?.unitPrice, 0) || 0}
+                                                                                    pricingMarkupPercent={pricingMarkupPercent}
+                                                                                    canEdit={true}
+                                                                                    onSave={(row) => upsertVariantM.mutate(row)}
+                                                                                    onDelete={(offerId) => deleteVariantM.mutate(offerId)}
+                                                                                    busy={upsertVariantM.isPending || deleteVariantM.isPending}
+                                                                                />
+                                                                            );
+                                                                        })}
+                                                                    </div>
+                                                                )}
+
+                                                                {(upsertVariantM.error || deleteVariantM.error) && (
+                                                                    <div className="mt-2 text-[11px] text-rose-700">
+                                                                        {String(
+                                                                            (upsertVariantM.error as any)?.response?.data?.error ||
+                                                                            (deleteVariantM.error as any)?.response?.data?.error ||
+                                                                            (upsertVariantM.error as any)?.message ||
+                                                                            (deleteVariantM.error as any)?.message ||
+                                                                            "Error"
+                                                                        )}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+
+                                                            {(upsertBaseM.error || deleteBaseM.error) && (
+                                                                <div className="text-[11px] text-rose-700">
                                                                     {String(
-                                                                        (upsertVariantM.error as any)?.response?.data?.error ||
-                                                                        (deleteVariantM.error as any)?.response?.data?.error ||
-                                                                        (upsertVariantM.error as any)?.message ||
-                                                                        (deleteVariantM.error as any)?.message ||
+                                                                        (upsertBaseM.error as any)?.response?.data?.error ||
+                                                                        (deleteBaseM.error as any)?.response?.data?.error ||
+                                                                        (upsertBaseM.error as any)?.message ||
+                                                                        (deleteBaseM.error as any)?.message ||
                                                                         "Error"
                                                                     )}
                                                                 </div>
                                                             )}
                                                         </div>
-
-                                                        {(upsertBaseM.error || deleteBaseM.error) && (
-                                                            <div className="text-[11px] text-rose-700">
-                                                                {String(
-                                                                    (upsertBaseM.error as any)?.response?.data?.error ||
-                                                                    (deleteBaseM.error as any)?.response?.data?.error ||
-                                                                    (upsertBaseM.error as any)?.message ||
-                                                                    (deleteBaseM.error as any)?.message ||
-                                                                    "Error"
-                                                                )}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                )}
+                                                    )}
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    )}
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
                 </div>
-            </div>
-        </SupplierLayout>
+            </SupplierLayout>
+        </SiteLayout>
     );
 }
 
@@ -474,7 +636,6 @@ function BaseOfferEditor({
     onDelete: () => void;
     busy: boolean;
 }) {
-    // ✅ renamed: offerPrice (supplier input)
     const [offerPrice, setOfferPrice] = React.useState(() => toNum(existing?.basePrice, defaultOfferPrice));
     const [availableQty, setAvailableQty] = React.useState(() => toNum(existing?.availableQty, 0));
     const [leadDays, setLeadDays] = React.useState<number | null>(() => existing?.leadDays ?? null);
@@ -539,7 +700,6 @@ function BaseOfferEditor({
                 </div>
             </div>
 
-            {/* ✅ FIXED GRID (no interlocking borders) + new computed retail */}
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
                 <label className="grid gap-1 min-w-0">
                     <span className="text-[11px] text-zinc-600">Offer price (NGN)</span>
@@ -631,7 +791,6 @@ function VariantOfferRow({
     onDelete: (offerId: string) => void;
     busy: boolean;
 }) {
-    // ✅ renamed: offerPrice (supplier input)
     const [offerPrice, setOfferPrice] = React.useState(() => toNum(existing?.unitPrice, defaultOfferPrice));
     const [availableQty, setAvailableQty] = React.useState(() => toNum(existing?.availableQty, 0));
     const [leadDays, setLeadDays] = React.useState<number | null>(() => existing?.leadDays ?? null);
@@ -648,7 +807,6 @@ function VariantOfferRow({
 
     const label = formatVariantLabel(variant);
     const saveDisabled = busy || !canEdit || toNum(offerPrice, 0) <= 0;
-
     const retailCalc = calcRetailFromOffer(toNum(offerPrice, 0), pricingMarkupPercent);
 
     return (
@@ -703,7 +861,6 @@ function VariantOfferRow({
                 </div>
             </div>
 
-            {/* ✅ FIXED GRID + offer price + computed retail (read-only) */}
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
                 <label className="grid gap-1 min-w-0">
                     <span className="text-[11px] text-zinc-600">Offer price (NGN)</span>
@@ -749,12 +906,22 @@ function VariantOfferRow({
                 </label>
 
                 <label className="flex items-center gap-2 rounded-xl border px-3 h-10 bg-white whitespace-nowrap">
-                    <input type="checkbox" checked={inStock} onChange={(e) => setInStock(e.target.checked)} disabled={!canEdit} />
+                    <input
+                        type="checkbox"
+                        checked={inStock}
+                        onChange={(e) => setInStock(e.target.checked)}
+                        disabled={!canEdit}
+                    />
                     <span className="text-sm">In stock</span>
                 </label>
 
                 <label className="flex items-center gap-2 rounded-xl border px-3 h-10 bg-white whitespace-nowrap">
-                    <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} disabled={!canEdit} />
+                    <input
+                        type="checkbox"
+                        checked={isActive}
+                        onChange={(e) => setIsActive(e.target.checked)}
+                        disabled={!canEdit}
+                    />
                     <span className="text-sm">Active</span>
                 </label>
             </div>

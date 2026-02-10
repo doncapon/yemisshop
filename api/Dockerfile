@@ -37,7 +37,6 @@ RUN npm run build
 # ---------- Runtime layer ----------
 FROM node:20-alpine AS runner
 WORKDIR /app
-ENV NODE_ENV=production
 
 # Keep the same system libs as base
 RUN apk add --no-cache openssl libc6-compat
@@ -55,9 +54,10 @@ COPY --from=build /app/prisma ./prisma
 COPY start.sh ./start.sh
 RUN chmod +x ./start.sh
 
-# Default internal port (Railway will set PORT)
+
+
+ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
 
-# One entrypoint
-CMD ["./start.sh"]
+CMD ["node", "dist/server.js"]

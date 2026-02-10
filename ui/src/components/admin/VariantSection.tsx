@@ -231,7 +231,7 @@ export function VariantsSection() {
       if (!selectedProduct) throw new Error("Pick a product first");
       const payload = {
         sku: sku.trim() || null,
-        price: price.trim() ? Number(price) : null,
+        unitPrice: price.trim() ? Number(price) : null,
         // sending inStock is fine for now, but UI will render from offers availability
         inStock,
         optionValues: Object.entries(selValues).map(([attributeId, valueId]) => ({ attributeId, valueId })),
@@ -251,7 +251,7 @@ export function VariantsSection() {
   });
 
   const updateVariant = useMutation({
-    mutationFn: async (v: { id: string; sku?: string | null; price?: number | null; inStock?: boolean }) => {
+    mutationFn: async (v: { id: string; sku?: string | null; unitPrice?: number | null; inStock?: boolean }) => {
       const { data } = await api.put(`/api/admin/variants/${v.id}`, v, { headers: authHeaders });
       return data;
     },
@@ -625,14 +625,14 @@ export function VariantsSection() {
                             className="px-2 py-1 rounded border"
                             onClick={() => {
                               const newSku = prompt("SKU", v.sku || "") ?? v.sku;
-                              const newPriceStr = prompt("Price (leave empty to use product price)", v.price ?? "") ?? v.price;
+                              const newPriceStr = prompt("Price (leave empty to use product price)", v.unitPrice ?? "") ?? v.unitPrice;
                               const newPrice = newPriceStr === "" ? null : Number(newPriceStr);
                               // Keep supporting manual flag for now; computed stock still wins for display
                               const newStock = confirm("Set as IN STOCK? (Cancel = OUT)");
                               updateVariant.mutate({
                                 id: v.id,
                                 sku: newSku || null,
-                                price: newPriceStr === "" ? null : newPrice,
+                                unitPrice: newPriceStr === "" ? null : newPrice,
                                 inStock: newStock,
                               });
                             }}

@@ -71,7 +71,6 @@ function normalizeCart(cartRaw: any[]): CartRow[] {
           qty: Math.max(0, Math.floor(Number(x.qty) || 0)),
           unitPrice: Number.isFinite(Number(x.unitPrice)) ? Number(x.unitPrice) : undefined,
           totalPrice: Number.isFinite(Number(x.totalPrice)) ? Number(x.totalPrice) : undefined,
-          price: Number.isFinite(Number(x.price)) ? Number(x.price) : undefined,
           image: x.image ?? null,
         }))
         .filter((x) => x.productId && x.qty > 0)

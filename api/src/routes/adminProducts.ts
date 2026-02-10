@@ -149,7 +149,7 @@ type Tx = Prisma.TransactionClient | PrismaClient;
 
 type OfferInput = {
   supplierId: string;
-  price: number | string; // NGN
+  unitPrice: number | string; // NGN
   variantId?: string | null;
   inStock?: boolean;
   isActive?: boolean;
@@ -168,7 +168,7 @@ type NormalizedVariantOption = {
 type NormalizedVariant = {
   sku: string | null;
   /** FULL VARIANT PRICE (stands alone) */
-  price: number | null;
+  unitPrice: number | null;
   inStock: boolean;
   imagesJson: string[];
   options: NormalizedVariantOption[];
@@ -307,7 +307,7 @@ function computeRetailPriceAuto(reqBody: any, parsedBody: any): number | undefin
   if (!variantsNorm.length) return undefined;
 
   const explicitVariantPrices = variantsNorm
-    .map((v) => toMoneyNumber(v?.price))
+    .map((v) => toMoneyNumber(v?.unitPrice))
     .filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0);
 
   if (explicitVariantPrices.length) return round2(Math.min(...explicitVariantPrices));
@@ -405,7 +405,7 @@ const VariantLooseSchema = z.object({
     }),
 
   // ✅ price is the FULL variant price
-  price: z.preprocess((v) => (v === "" || v == null ? null : v), z.coerce.number().nullable()).optional(),
+  unitPrice: z.preprocess((v) => (v === "" || v == null ? null : v), z.coerce.number().nullable()).optional(),
 
   inStock: z.coerce.boolean().optional(),
   imagesJson: z.array(z.string()).optional(),
@@ -429,7 +429,7 @@ function normalizeVariantsPayload(body: any): NormalizedVariant[] {
 
     return {
       sku: v.sku ?? null,
-      price: v.price ?? null,
+      unitPrice: v.unitPrice ?? null,
       inStock: v.inStock ?? true,
       imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
       options,
@@ -535,7 +535,7 @@ async function writeAttributesAndVariants(
 
       // ✅ NO bump logic: variant price stands alone; fallback to product retailPrice (basePrice) if missing.
       const derived =
-        v.price != null && Number.isFinite(Number(v.price)) ? Number(v.price) : Number.isFinite(basePrice) ? basePrice : 0;
+        v.unitPrice != null && Number.isFinite(Number(v.unitPrice)) ? Number(v.unitPrice) : Number.isFinite(basePrice) ? basePrice : 0;
 
       const created = await tx.productVariant.create({
         data: {
@@ -599,8 +599,6 @@ export const CreateProductSchema = z.object({
   title: z.string().trim().min(1),
   description: z.string().trim().min(1),
   sku: z.string().trim().optional(),
-
-  price: MoneyLike.optional(),
   retailPrice: MoneyLike.optional(),
 
   status: z.string().optional(),
@@ -635,7 +633,6 @@ const UpdateProductSchema = z
     title: z.string().min(1).optional(),
     description: z.string().optional(),
 
-    price: NumLikeOptional,
     retailPrice: NumLikeOptional,
 
     sku: z.string().optional(),
@@ -736,7 +733,6 @@ function normalizeVariantsForApiResponse(product: any, includeOptions = false) {
       ...v,
       id: String(v?.id ?? v?.variantId ?? v?.variant?.id ?? ""),
       sku: v?.sku ?? null,
-      price: retailPrice != null ? Number(retailPrice) : null,
       retailPrice: retailPrice != null ? Number(retailPrice) : null,
       inStock: typeof v?.inStock === "boolean" ? v.inStock : true,
       imagesJson: Array.isArray(v?.imagesJson) ? v.imagesJson : [],
@@ -1058,18 +1054,12 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
             // ✅ price must be > 0 (schema-safe; no invalid `not: null` for non-nullable Decimals)
             ...(getModelField("SupplierProductOffer", "basePrice")
               ? { basePrice: decimalGtZeroFilter("SupplierProductOffer", "basePrice") }
-              : getModelField("SupplierProductOffer", "offerPrice")
-                ? { offerPrice: decimalGtZeroFilter("SupplierProductOffer", "offerPrice") }
-                : getModelField("SupplierProductOffer", "price")
-                  ? { price: decimalGtZeroFilter("SupplierProductOffer", "price") }
-                  : {}),
+                :{}),
           } as any,
           select: {
             productId: true,
             supplierId: true,
             ...(getModelField("SupplierProductOffer", "basePrice") ? { basePrice: true } : {}),
-            ...(getModelField("SupplierProductOffer", "offerPrice") ? { offerPrice: true } : {}),
-            ...(getModelField("SupplierProductOffer", "price") ? { price: true } : {}),
           } as any,
         })
       : Promise.resolve([] as any[]),
@@ -1088,19 +1078,13 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
             // ✅ unit price must be > 0 (schema-safe)
             ...(getModelField("SupplierVariantOffer", "unitPrice")
               ? { unitPrice: decimalGtZeroFilter("SupplierVariantOffer", "unitPrice") }
-              : getModelField("SupplierVariantOffer", "offerPrice")
-                ? { offerPrice: decimalGtZeroFilter("SupplierVariantOffer", "offerPrice") }
-                : getModelField("SupplierVariantOffer", "price")
-                  ? { price: decimalGtZeroFilter("SupplierVariantOffer", "price") }
-                  : {}),
+             :{}),
           } as any,
           select: {
             variantId: true,
             productId: true,
             supplierId: true,
             ...(getModelField("SupplierVariantOffer", "unitPrice") ? { unitPrice: true } : {}),
-            ...(getModelField("SupplierVariantOffer", "offerPrice") ? { offerPrice: true } : {}),
-            ...(getModelField("SupplierVariantOffer", "price") ? { price: true } : {}),
           } as any,
         })
       : Promise.resolve([] as any[]),
@@ -1343,9 +1327,8 @@ router.post(
     res.json({
       data: {
         ...updated,
-        retailPrice: updated.retailPrice != null ? Number(updated.retailPrice) : null,
         autoPrice: updated.autoPrice != null ? Number(updated.autoPrice) : null,
-        price: computeDisplayPrice(updated),
+        retailPrice: computeDisplayPrice(updated),
       },
     });
   })
@@ -1379,9 +1362,8 @@ router.post(
     res.json({
       data: {
         ...data,
-        retailPrice: data.retailPrice != null ? Number(data.retailPrice) : null,
         autoPrice: data.autoPrice != null ? Number(data.autoPrice) : null,
-        price: computeDisplayPrice(data),
+        retailPrice: computeDisplayPrice(data),
       },
     });
   })
@@ -1415,9 +1397,8 @@ router.post(
     res.json({
       data: {
         ...data,
-        retailPrice: data.retailPrice != null ? Number(data.retailPrice) : null,
         autoPrice: data.autoPrice != null ? Number(data.autoPrice) : null,
-        price: computeDisplayPrice(data),
+        retailPrice: computeDisplayPrice(data),
       },
     });
   })
@@ -1463,10 +1444,8 @@ export const createProductHandler = wrap(async (req, res) => {
 
   const autoRetail = computeRetailPriceAuto(req.body, body);
   const nextRetail =
-    body.price != null
-      ? body.price
-      : body.retailPrice != null
-        ? body.retailPrice
+    body.retailPrice != null?
+     body.retailPrice
         : autoRetail !== undefined
           ? autoRetail
           : undefined;
@@ -2014,9 +1993,8 @@ router.post(
     return res.json({
       data: {
         ...updated,
-        retailPrice: updated.retailPrice != null ? Number(updated.retailPrice) : null,
         autoPrice: updated.autoPrice != null ? Number(updated.autoPrice) : null,
-        price: computeDisplayPrice(updated),
+        retailPrice: computeDisplayPrice(updated),
       },
     });
   })
@@ -2242,10 +2220,9 @@ router.get(
     const out: any = {
       ...product,
       attributes,
-      retailPrice: (product as any).retailPrice != null ? Number((product as any).retailPrice) : null,
       autoPrice: (product as any).autoPrice != null ? Number((product as any).autoPrice) : null,
       communicationCost: (product as any).communicationCost != null ? Number((product as any).communicationCost) : null,
-      price: computeDisplayPrice(product),
+      retailPrice: computeDisplayPrice(product),
     };
 
     // normalize variants (your existing helper)
