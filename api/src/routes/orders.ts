@@ -22,6 +22,7 @@ import {
   notifyAdmins,
   notifySupplierBySupplierId,
 } from "../services/notifications.service.js";
+import { requiredString } from "../lib/http.js";
 
 const router = Router();
 
@@ -2015,7 +2016,7 @@ router.get("/summary", requireAuth, async (req, res) => {
 
 router.get("/:id", requireAuth, async (req, res) => {
   try {
-    const id = req.params.id;
+    const id = requiredString(req.params.id);
 
     const order = await prisma.order.findUnique({
       where: { id },
@@ -2191,7 +2192,7 @@ router.get("/:id", requireAuth, async (req, res) => {
 
 router.get("/:orderId/profit", requireSuperAdmin, async (req, res) => {
   try {
-    const { orderId } = req.params;
+    const orderId  = requiredString(req.params.orderId);
 
     const order = await prisma.order.findUnique({
       where: { id: orderId },
@@ -2260,7 +2261,7 @@ router.get("/:orderId/profit", requireSuperAdmin, async (req, res) => {
 const OrderOtpPurpose = z.enum(["PAY_ORDER", "CANCEL_ORDER"]);
 
 router.post("/:id/otp/request", requireAuth, async (req, res) => {
-  const orderId = String(req.params.id);
+  const orderId = requiredString((req.params.id));
   const actorId = getUserId(req);
   if (!actorId) return res.status(401).json({ error: "Unauthorized" });
 
@@ -2354,7 +2355,7 @@ router.post("/:id/otp/request", requireAuth, async (req, res) => {
 
 router.post("/:id/otp/verify", requireAuth, async (req, res) => {
   try {
-    const orderId = String(req.params.id);
+    const orderId = requiredString((req.params.id));
     const actorId = getUserId(req);
     if (!actorId) return res.status(401).json({ error: "Unauthorized" });
 
@@ -2366,7 +2367,7 @@ router.post("/:id/otp/verify", requireAuth, async (req, res) => {
     const code = String(raw).trim();
     if (!/^\d{6}$/.test(code)) return res.status(400).json({ error: "OTP must be 6 digits" });
 
-    const out = await prisma.$transaction(async (tx: any) => {
+    const out = await prisma.$transaction(async (tx) => {
       // find latest unconsumed request for this user/order/purpose
       const row = await tx.orderOtpRequest.findFirst({
         where: {
@@ -2430,7 +2431,7 @@ async function assertValidOtpTokenTx(
 function requireOtp(purpose: "PAY_ORDER" | "CANCEL_ORDER") {
   return async (req: any, res: any, next: any) => {
     try {
-      const orderId = String(req.params.orderId ?? req.params.id);
+      const orderId = requiredString(req.params.orderId ?? req.params.id);
       const otpToken = String(req.header("x-otp-token") ?? "").trim();
       if (!otpToken) return res.status(401).json({ error: "Missing x-otp-token" });
 
@@ -2471,7 +2472,7 @@ router.post("/:orderId/cancel", requireAuth, requireOtp("CANCEL_ORDER"), async (
     const adminOk = isAdmin(role);
     const supplierOk = isSupplier(role);
 
-    const out = await prisma.$transaction(async (tx: any) => {
+    const out = await prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
         where: { id: orderId },
         select: { id: true, userId: true, status: true, total: true, user: { select: { id: true, email: true } } },
@@ -2631,7 +2632,7 @@ router.post("/:orderId/cancel-otp/request", requireAuth, async (req: any, res) =
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
     if (!isSupplier(role) && !isAdmin(role)) return res.status(403).json({ error: "Forbidden" });
 
-    const out = await prisma.$transaction(async (tx: any) => {
+    const out = await prisma.$transaction(async (tx) => {
       return requestOrderOtpForPurposeTx(tx as any, {
         orderId: String(orderId),
         purpose: "CANCEL_ORDER",
@@ -2684,7 +2685,7 @@ router.post("/:orderId/cancel-otp/verify", requireAuth, async (req: any, res) =>
   }
 
   try {
-    const out = await prisma.$transaction(async (tx: any) => {
+    const out = await prisma.$transaction(async (tx) => {
       return verifyOrderOtpForPurposeTx(tx, {
         orderId: String(orderId),
         purpose: "CANCEL_ORDER",

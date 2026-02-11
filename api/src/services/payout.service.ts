@@ -165,7 +165,7 @@ export async function paySupplierForPurchaseOrder(purchaseOrderId: string, actor
   });
   if (already) {
     // Make sure statuses are correct even if transfer init exists
-    await prisma.$transaction(async (tx: { purchaseOrder: { update: (arg0: { where: { id: any; }; data: { payoutStatus: string; paidOutAt: any; }; }) => any; }; supplierPaymentAllocation: { updateMany: (arg0: { where: { purchaseOrderId: any; paymentId: any; }; data: { status: "PAID"; releasedAt: Date; }; }) => any; }; }) => {
+    await prisma.$transaction(async (tx) => {
       await tx.purchaseOrder.update({
         where: { id: po.id },
         data: { payoutStatus: "RELEASED", paidOutAt: po.paidOutAt ?? new Date() },
@@ -183,7 +183,7 @@ export async function paySupplierForPurchaseOrder(purchaseOrderId: string, actor
 
   // 6) Trial-mode = don't actually transfer, but mark as released so UI works
   if (TRIAL_MODE) {
-    await prisma.$transaction(async (tx: { paymentEvent: { create: (arg0: { data: { paymentId: any; type: string; data: { purchaseOrderId: any; supplierId: any; reason: string; amount: number; actor: { id?: string; role?: string; } | undefined; }; }; }) => any; }; purchaseOrder: { update: (arg0: { where: { id: any; }; data: { payoutStatus: string; paidOutAt: Date; }; }) => any; }; supplierPaymentAllocation: { updateMany: (arg0: { where: { purchaseOrderId: any; paymentId: any; }; data: { status: "PAID"; releasedAt: Date; }; }) => any; }; }) => {
+    await prisma.$transaction(async (tx) => {
       await tx.paymentEvent.create({
         data: {
           paymentId,
@@ -215,7 +215,7 @@ export async function paySupplierForPurchaseOrder(purchaseOrderId: string, actor
   });
 
   // 8) Persist logs + status updates
-  await prisma.$transaction(async (tx: { paymentEvent: { create: (arg0: { data: { paymentId: any; type: string; data: { purchaseOrderId: any; supplierId: any; amount: number; transfer: any; actor: { id?: string; role?: string; } | undefined; }; }; }) => any; }; purchaseOrder: { update: (arg0: { where: { id: any; }; data: { payoutStatus: string; paidOutAt: Date; }; }) => any; }; supplierPaymentAllocation: { updateMany: (arg0: { where: { purchaseOrderId: any; paymentId: any; }; data: { status: "PAID"; releasedAt: Date; }; }) => any; }; }) => {
+  await prisma.$transaction(async (tx) => {
     await tx.paymentEvent.create({
       data: {
         paymentId,

@@ -11,6 +11,7 @@ import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
 import { ps, PAYSTACK_MODE, PAYSTACK_SECRET_KEY } from "../lib/paystack.js";
 import { Prisma } from "@prisma/client";
 import { notifyCustomerOrderCancelled, notifyCustomerOrderRefunded } from "../services/notifications.service.js";
+import { requiredString } from "../lib/http.js";
 
 export const TRIAL_MODE =
   String(process.env.TRIAL_MODE || "").toLowerCase() === "true" ||
@@ -197,7 +198,7 @@ router.get("/:orderId", requireAdmin, async (req, res) => {
    GET /api/admin/orders/:id/suppliers
 ========================================================= */
 router.get("/:id/suppliers", requireSuperAdmin, async (req, res) => {
-  const orderId = String(req.params.id);
+  const orderId = requiredString(req.params.id);
 
   const pos = await prisma.purchaseOrder.findMany({
     where: { orderId },
@@ -242,8 +243,8 @@ router.get("/:id/suppliers", requireSuperAdmin, async (req, res) => {
    POST /api/admin/orders/:orderId/cancel
 ========================================================= */
 router.post("/:orderId/cancel", requireAdmin, async (req, res) => {
-  const { orderId } = req.params;
-  const actorId = String((req as any).user?.id ?? "");
+  const orderId = requiredString(req.params.orderId);
+  const actorId = requiredString((req as any).user?.id ?? "");
 
   // ✅ OTP REQUIRED HERE
   try {
@@ -254,7 +255,7 @@ router.post("/:orderId/cancel", requireAdmin, async (req, res) => {
   }
 
   try {
-    const updated = await prisma.$transaction(async (tx: any) => {
+    const updated = await prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
         where: { id: orderId },
         include: {
@@ -363,8 +364,8 @@ router.post("/:orderId/cancel", requireAdmin, async (req, res) => {
    - If paystack -> resolve tx id and call /refund
 ========================================================= */
 router.post("/:orderId/refund", requireAdmin, async (req, res) => {
-  const { orderId } = req.params;
-  const actorId = String((req as any).user?.id ?? "");
+  const orderId  = requiredString(req.params.orderId);
+  const actorId = requiredString((req as any).user?.id ?? "");
 
   // ✅ OTP REQUIRED FOR REFUND
   try {
@@ -480,7 +481,7 @@ router.post("/:orderId/refund", requireAdmin, async (req, res) => {
     }
 
     // ---- Create Refund rows (one per PO) ----
-    createdRefunds = await prisma.$transaction(async (tx: any) => {
+    createdRefunds = await prisma.$transaction(async (tx) => {
       await tx.paymentEvent.create({
         data: {
           paymentId: paidPayment.id,
@@ -558,7 +559,7 @@ router.post("/:orderId/refund", requireAdmin, async (req, res) => {
 
             provider: isPaystack ? "PAYSTACK" : "TRIAL",
             providerStatus: "INITIATED",
-            providerPayload: null,
+            providerPayload: Prisma.JsonNull,
             providerReference: null,
 
             // admin metadata (optional, but you had it)
@@ -609,7 +610,7 @@ router.post("/:orderId/refund", requireAdmin, async (req, res) => {
         note: "Refund simulated (non-Paystack payment or trial/manual paid)",
       };
 
-      await prisma.$transaction(async (tx: any) => {
+      await prisma.$transaction(async (tx) => {
         await tx.paymentEvent.create({
           data: { paymentId: paidPayment.id, type: "REFUND_SUCCESS", data: refundData },
         });
@@ -706,7 +707,7 @@ router.post("/:orderId/refund", requireAdmin, async (req, res) => {
       dbg("paystack refund failed:", errPayload);
 
       // record provider failure but keep Refund.status = APPROVED so you can retry
-      await prisma.$transaction(async (tx: any) => {
+      await prisma.$transaction(async (tx) => {
         await tx.paymentEvent.create({
           data: { paymentId: paidPayment.id, type: "REFUND_ERROR", data: errPayload },
         });
@@ -733,7 +734,7 @@ router.post("/:orderId/refund", requireAdmin, async (req, res) => {
     dbg("paystack refund success: top-level status=", resp.data?.status, "data=", refundData);
 
     // Persist success + ledger debits
-    await prisma.$transaction(async (tx: any) => {
+    await prisma.$transaction(async (tx) => {
       await tx.paymentEvent.create({
         data: { paymentId: paidPayment.id, type: "REFUND_SUCCESS", data: refundData },
       });
@@ -804,7 +805,7 @@ router.post("/:orderId/refund", requireAdmin, async (req, res) => {
     try {
       const errPayload = e?.response?.data || { message: e?.message || "Refund failed" };
       if (createdRefunds?.length) {
-        await prisma.$transaction(async (tx: any) => {
+        await prisma.$transaction(async (tx) => {
           // best effort event
           // (safe even if duplicates; if you have unique constraint on PaymentEvent you can ignore)
           await tx.paymentEvent
@@ -844,7 +845,7 @@ router.post("/:orderId/refund", requireAdmin, async (req, res) => {
 ========================================================= */
 router.get("/:orderId/activities", requireAdmin, async (req, res, next) => {
   try {
-    const { orderId } = req.params;
+    const orderId = requiredString(req.params.orderId);
     const items = await prisma.orderActivity.findMany({
       where: { orderId },
       orderBy: { createdAt: "desc" },

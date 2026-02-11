@@ -285,7 +285,7 @@ router.post(
       }
     }
 
-    await prisma.$transaction(async (tx: any) => {
+    await prisma.$transaction(async (tx) => {
       // mark otp verified/consumed once
       if (!otpRow.verifiedAt) {
         await tx.purchaseOrderDeliveryOtp.update({

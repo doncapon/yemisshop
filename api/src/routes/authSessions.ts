@@ -3,6 +3,7 @@ import { Router, type Request, type Response, type NextFunction, type RequestHan
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { clearAccessTokenCookie } from "../lib/authCookies.js";
+import { requiredString } from "../lib/http.js";
 
 const router = Router();
 
@@ -49,7 +50,7 @@ router.get("/sessions", requireAuth, async (req, res) => {
 // DELETE /api/auth/sessions/:id  (revoke one session)
 router.delete("/sessions/:id", requireAuth, async (req, res) => {
   const userId = getUserId(req);
-  const id = String(req.params.id);
+  const id = requiredString(req.params.id);
 
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
@@ -93,7 +94,7 @@ router.post("/sessions/revoke-others", requireAuth, async (req, res) => {
 // PATCH /api/auth/sessions/:id (optional: rename device)
 router.patch("/sessions/:id", requireAuth, async (req, res) => {
   const userId = getUserId(req);
-  const id = String(req.params.id);
+  const id = requiredString(req.params.id);
   const deviceName = typeof req.body?.deviceName === "string" ? req.body.deviceName.trim() : "";
 
   if (!userId) return res.status(401).json({ error: "Unauthorized" });

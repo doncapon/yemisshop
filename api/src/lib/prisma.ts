@@ -1,7 +1,12 @@
-// src/lib/prisma.ts (workaround)
-import prismaPkg from '@prisma/client'
-const { PrismaClient } = prismaPkg as any;
+// api/src/lib/prisma.ts
+import { PrismaClient } from "@prisma/client";
 
-const g = globalThis as any;
-export const prisma = g.prisma ?? new PrismaClient({ log: ['warn', 'error'] });
-if (process.env.NODE_ENV !== 'production') g.prisma = prisma;
+const g = globalThis as unknown as { prisma?: PrismaClient };
+
+export const prisma =
+  g.prisma ??
+  new PrismaClient({
+    log: process.env.NODE_ENV === "production" ? ["error"] : ["warn", "error"],
+  });
+
+if (process.env.NODE_ENV !== "production") g.prisma = prisma;

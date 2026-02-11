@@ -4,6 +4,8 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
 import slugify from "../lib/slugify.js";
 import { z } from "zod";
+import { requiredString } from "../lib/http.js";
+import { CatalogRequestStatus } from "@prisma/client";
 
 const r = Router();
 r.use(requireAuth, requireAdmin);
@@ -94,7 +96,7 @@ r.get("/", async (req, res, next) => {
  */
 r.patch("/:id", async (req, res, next) => {
   try {
-    const id = req.params.id;
+    const id = requiredString(req.params.id);
 
     const bodyZ = z.object({
       payload: z.any().optional(),
@@ -134,9 +136,9 @@ r.patch("/:id", async (req, res, next) => {
  */
 r.post("/:id/approve", async (req, res, next) => {
   try {
-    const id = req.params.id;
+    const id = requiredString(req.params.id);
 
-    const result = await prisma.$transaction(async (tx: { catalogRequest: { findUnique: (arg0: { where: { id: string; }; }) => any; update: (arg0: { where: { id: string; }; data: { status: string; reviewedAt: Date; reviewedById: any; }; }) => any; }; category: { create: (arg0: { data: { name: string; slug: string; parentId: string | null; position: number; isActive: boolean; }; }) => any; }; brand: { create: (arg0: { data: { name: string; slug: string; logoUrl: string | null; isActive: boolean; }; }) => any; }; attribute: { create: (arg0: { data: { name: string; type: "TEXT" | "SELECT" | "MULTISELECT"; isActive: boolean; }; }) => any; findUnique: (arg0: { where: { id: string; }; }) => any; }; attributeValue: { create: (arg0: { data: { attributeId: string; name: string; code: string | null; position: number; isActive: boolean; }; }) => any; }; }) => {
+    const result = await prisma.$transaction(async (tx) => {
       const reqRow = await tx.catalogRequest.findUnique({ where: { id } });
       if (!reqRow) return { status: 404 as const, body: { error: "Not found" } };
       if (reqRow.status !== "PENDING") {
@@ -227,7 +229,7 @@ r.post("/:id/approve", async (req, res, next) => {
       const updatedRequest = await tx.catalogRequest.update({
         where: { id },
         data: {
-          status: "APPROVED",
+          status:  CatalogRequestStatus.APPROVED,
           reviewedAt: new Date(),
           reviewedById,
         },
@@ -247,7 +249,7 @@ r.post("/:id/approve", async (req, res, next) => {
  */
 r.post("/:id/reject", async (req, res, next) => {
   try {
-    const id = req.params.id;
+    const id = requiredString(req.params.id);
     const bodyZ = z.object({ adminNote: z.string().optional().nullable() });
     const body = bodyZ.parse(req.body ?? {});
 

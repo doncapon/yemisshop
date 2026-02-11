@@ -14,13 +14,13 @@ import {
   markPaymentRefunded,
 
   listPayments as listPaymentsSvc,
-  opsSnapshot as opsSnapshotSvc,
-  createCoupon as createCouponSvc,
+  opsSnapshot as opsSnapshotSvc
 } from '../services/admin.service.js';
 import { toCsv } from '../lib/csv.js';
 import { startOfDay, subDays } from 'date-fns';
 import { prisma } from '../lib/prisma.js';
 import { Prisma } from '@prisma/client';
+import { requiredString } from '../lib/http.js';
 
 const r = Router();
 r.use(requireAuth, requireAdmin);
@@ -37,11 +37,11 @@ r.get('/users', async (req, res) => {
 });
 
 r.post('/users/:userId/deactivate',  requireSuperAdmin, async (req, res) => {
-  res.json(await suspendUser(req.params.userId));
+  res.json(await suspendUser(requiredString(req.params.userId)));
 });
 
 r.post('/users/:userId/reactivate',  requireSuperAdmin, async (req, res) => {
-  res.json(await reactivateUser(req.params.userId));
+  res.json(await reactivateUser(requiredString(req.params.userId)));
 });
 
 /**
@@ -68,7 +68,7 @@ r.post(
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    const targetId = String(req.params.id || '').trim();
+    const targetId = requiredString(req.params.id || '').trim();
     if (!targetId) return res.status(400).json({ error: 'Missing user id' });
 
     const { role } = SetRoleSchema.parse({
@@ -105,10 +105,10 @@ r.get('/payments', async (req, res) => {
   res.json({ data: await listPaymentsSvc(q) });
 });
 r.post('/payments/:paymentId/verify',  requireSuperAdmin, async (req, res) => {
-  res.json(await markPaymentPaid(req.params.paymentId));
+  res.json(await markPaymentPaid(requiredString(req.params.paymentId)));
 });
 r.post('/payments/:paymentId/refund', requireSuperAdmin, async (req, res) => {
-  res.json(await markPaymentRefunded(req.params.paymentId));
+  res.json(await markPaymentRefunded(requiredString(req.params.paymentId)));
 });
 
 /* Ops */
@@ -123,15 +123,15 @@ r.post('/marketing/announce', async (req, res) => {
   // TODO: enqueue/email broadcast; for now return ok
   res.json({ ok: true });
 });
-r.post('/marketing/coupons', async (req, res) => {
-  const { code, pct, maxUses } = req.body || {};
-  if (!code || !pct) return res.status(400).json({ error: 'code & pct required' });
-  try {
-    res.json(await createCouponSvc({ code, pct: Number(pct), maxUses: Number(maxUses) }));
-  } catch (e: any) {
-    res.status(400).json({ error: e?.message || 'Failed to create coupon' });
-  }
-});
+// r.post('/marketing/coupons', async (req, res) => {
+//   const { code, pct, maxUses } = req.body || {};
+//   if (!code || !pct) return res.status(400).json({ error: 'code & pct required' });
+//   try {
+//     res.json(await createCouponSvc({ code, pct: Number(pct), maxUses: Number(maxUses) }));
+//   } catch (e: any) {
+//     res.status(400).json({ error: e?.message || 'Failed to create coupon' });
+//   }
+// });
 
 /* Analytics export (CSV) */
 r.get('/analytics/export', requireSuperAdmin, async (_req, res) => {
@@ -211,7 +211,7 @@ r.put(
       }
     }
 
-    const updated = await prisma.$transaction(async (tx: { productVariant: { update: (arg0: { where: { id: string; }; data: any; }) => any; findUnique: (arg0: { where: { id: string; }; include: { options: { include: { attribute: boolean; value: boolean; }; }; }; }) => any; }; productVariantOption: { deleteMany: (arg0: { where: { variantId: string; }; }) => any; createMany: (arg0: { data: { variantId: string; attributeId: string; valueId: string; }[]; skipDuplicates: boolean; }) => any; }; }) => {
+    const updated = await prisma.$transaction(async (tx) => {
       const data: any = {};
       if (payload.sku !== undefined) data.sku = payload.sku;
       if (payload.unitPrice !== undefined) data.price = payload.unitPrice === null ? null : new Prisma.Decimal(payload.unitPrice);

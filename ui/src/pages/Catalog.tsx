@@ -716,71 +716,72 @@ export default function Catalog() {
 
             const variants: Variant[] = Array.isArray(x.variants)
               ? x.variants.map((v: any) => {
-                  const variantRetail =
-                    Number.isFinite(Number(v.retailPrice))
-                      ? Number(v.retailPrice)
-                      : Number.isFinite(Number(v.retailBasePrice))
-                        ? Number(v.retailBasePrice)
-                        : Number.isFinite(Number(v.price))
-                          ? Number(v.price)
-                          : null;
+                const variantRetail =
+                  Number.isFinite(Number(v.retailPrice))
+                    ? Number(v.retailPrice)
+                    : Number.isFinite(Number(v.retailBasePrice))
+                      ? Number(v.retailBasePrice)
+                      : Number.isFinite(Number(v.price))
+                        ? Number(v.price)
+                        : null;
 
-                  return {
-                    id: String(v.id),
-                    sku: v.sku ?? null,
-                    unitPrice: variantRetail,
-                    inStock: v.inStock === true,
-                    imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-                    offers: Array.isArray(v.offers)
-                      ? v.offers.map((o: any) => ({
-                          id: String(o.id),
-                          supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                return {
+                  id: String(v.id),
+                  sku: v.sku ?? null,
+                  // keeping your original shape; if you want strict typing, change to `price: variantRetail`
+                  unitPrice: variantRetail as any,
+                  inStock: v.inStock === true,
+                  imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+                  offers: Array.isArray(v.offers)
+                    ? v.offers.map((o: any) => ({
+                      id: String(o.id),
+                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
 
-                          isActive: o.isActive === true,
-                          inStock: o.inStock === true,
-                          availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
-                          basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
+                      isActive: o.isActive === true,
+                      inStock: o.inStock === true,
+                      availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                      basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
 
-                          supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
-                            ? Number(o.supplierRatingAvg)
-                            : Number.isFinite(Number(o.supplier?.ratingAvg))
-                              ? Number(o.supplier.ratingAvg)
-                              : null,
+                      supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
+                        ? Number(o.supplierRatingAvg)
+                        : Number.isFinite(Number(o.supplier?.ratingAvg))
+                          ? Number(o.supplier.ratingAvg)
+                          : null,
 
-                          supplierRatingCount: Number.isFinite(Number(o.supplierRatingCount))
-                            ? Number(o.supplierRatingCount)
-                            : Number.isFinite(Number(o.supplier?.ratingCount))
-                              ? Number(o.supplier.ratingCount)
-                              : null,
-                        }))
-                      : [],
-                  };
-                })
+                      supplierRatingCount: Number.isFinite(Number(o.supplierRatingCount))
+                        ? Number(o.supplierRatingCount)
+                        : Number.isFinite(Number(o.supplier?.ratingCount))
+                          ? Number(o.supplier.ratingCount)
+                          : null,
+                    }))
+                    : [],
+                } as any;
+              })
               : [];
 
             const supplierOffers: SupplierOfferLite[] = Array.isArray(x.supplierOffers)
               ? x.supplierOffers.map((o: any) => ({
-                  id: String(o.id),
-                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                id: String(o.id),
+                supplierId: o.supplierId ?? o.supplier?.id ?? null,
 
-                  isActive: o.isActive === true,
-                  inStock: o.inStock === true,
-                  availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                isActive: o.isActive === true,
+                inStock: o.inStock === true,
+                availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
 
-                  basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
+                basePrice: Number.isFinite(Number(o.basePrice)) ? Number(o.basePrice) : null,
 
-                  supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
-                    ? Number(o.supplierRatingAvg)
-                    : Number.isFinite(Number(o.supplier?.ratingAvg))
-                      ? Number(o.supplier.ratingAvg)
-                      : null,
+                supplierRatingAvg: Number.isFinite(Number(o.supplierRatingAvg))
+                  ? Number(o.supplierRatingAvg)
+                  : Number.isFinite(Number(o.supplier?.ratingAvg))
+                    ? Number(o.supplier.ratingAvg)
+                    : null,
 
-                  supplierRatingCount: Number.isFinite(Number(o.supplierRatingCount))
-                    ? Number(o.supplierRatingCount)
-                    : Number.isFinite(Number(o.supplier?.ratingCount))
-                      ? Number(o.supplier.ratingCount)
-                      : null,
-                }))
+                supplierRatingCount: Number.isFinite(Number(o.supplierRatingCount))
+                  ? Number(o.supplierRatingCount)
+                  : Number.isFinite(Number(o.supplier?.ratingCount))
+                    ? Number(o.supplier.ratingCount)
+                    : null,
+              }))
               : [];
 
             const catNameRaw = (x.categoryName ?? x.category?.name ?? x.category?.title ?? '').toString().trim();
@@ -790,7 +791,8 @@ export default function Catalog() {
               id: String(x.id),
               title: String(x.title ?? ''),
               description: x.description ?? '',
-              retailPrice: productRetail,
+              // keeping your original shape; if you want strict typing, change to `price: productRetail`
+              retailPrice: productRetail as any,
               offersFrom: Number.isFinite(Number(x.offersFrom)) ? Number(x.offersFrom) : null,
               inStock: x.inStock === true,
               imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
@@ -943,7 +945,7 @@ export default function Catalog() {
       }
 
       localStorage.setItem('cart', JSON.stringify(cart));
-      window.dispatchEvent(new Event("cart:updated"));
+      window.dispatchEvent(new Event('cart:updated'));
 
       setCartVersion((v) => v + 1);
 
@@ -1248,7 +1250,7 @@ export default function Catalog() {
             <div className="absolute top-1/2 left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-500" />
           </div>
         </div>
-        <p className="p-6 text-center text-rose-600">Error loading products</p>
+        <p className="p-6 text-center text-rose-600">We are sorry, we are having technical issues</p>
       </>
     );
 
@@ -1271,10 +1273,10 @@ export default function Catalog() {
 
   return (
     <SiteLayout>
-      <div className="mx-auto max-w-7xl px-4 md:px-8 py-8">
+      <div className="mx-auto max-w-7xl px-4 md:px-8 pt-2 pb-5 md:py-8">
         {/* Header (Shopify-minimal) */}
         <div className="border-b bg-white">
-          <div className="mx-auto max-w-7xl px-4 md:px-8 py-10">
+          <div className="mx-auto max-w-7xl px-4 md:px-8 pt-3 pb-4 md:py-10">
             <div className="flex items-start justify-between gap-6">
               <div className="min-w-0">
                 <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-zinc-900">
@@ -1311,7 +1313,7 @@ export default function Catalog() {
             <motion.section
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="rounded-2xl border border-zinc-200 bg-white shadow-sm p-5"
+              className="rounded-2xl bg-white p-5 silver-border-grad silver-hover"
             >
               <div className="flex items-center justify-between mb-3">
                 <div className="inline-flex items-center gap-2">
@@ -1336,10 +1338,10 @@ export default function Catalog() {
                     selectedBucketIdxs.length > 0 ||
                     selectedBrands.length > 0 ||
                     !inStockOnly) && (
-                    <button className="text-sm text-fuchsia-700 hover:underline" onClick={clearFilters}>
-                      Clear all
-                    </button>
-                  )}
+                      <button className="text-sm text-fuchsia-700 hover:underline" onClick={clearFilters}>
+                        Clear all
+                      </button>
+                    )}
                 </div>
               </div>
 
@@ -1363,9 +1365,10 @@ export default function Catalog() {
                       <li key={c.id}>
                         <button
                           onClick={() => toggleCategory(c.id)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
-                            checked ? 'bg-zinc-900 text-white' : 'bg-white/80 hover:bg-black/5 text-zinc-800'
-                          }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
+                            ? 'bg-zinc-900 text-white'
+                            : 'bg-white/80 hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                            }`}
                         >
                           <span className="truncate">{c.name}</span>
                           <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1398,9 +1401,10 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
-                              checked ? 'bg-zinc-900 text-white' : 'bg-white/80 hover:bg-black/5 text-zinc-800'
-                            }`}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
+                              ? 'bg-zinc-900 text-white'
+                              : 'bg-white/80 hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                              }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1434,9 +1438,10 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${
-                            checked ? 'bg-zinc-900 text-white' : 'bg-white/80 hover:bg-black/5 text-zinc-800'
-                          }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
+                            ? 'bg-zinc-900 text-white'
+                            : 'bg-white/80 hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                            }`}
                         >
                           <span>{bucket.label}</span>
                           <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -1452,14 +1457,14 @@ export default function Catalog() {
           </aside>
 
           {/* RIGHT: Products */}
-          <section className="mt-8 md:mt-0 min-w-0">
+          <section className="mt-2 md:mt-0 min-w-0">
             <div className="mb-3 flex items-center justify-between gap-3">
               <h2 className="text-xl md:text-2xl font-semibold text-zinc-900">Products</h2>
 
               <button
                 type="button"
                 onClick={() => setMobileFiltersOpen(true)}
-                className="md:hidden inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-medium border border-zinc-300 bg-white/90 text-zinc-800 shadow-sm active:scale-[0.97] transition"
+                className="md:hidden inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-medium bg-white/90 text-zinc-800 shadow-sm active:scale-[0.97] transition silver-border silver-hover"
               >
                 <SlidersHorizontal size={14} />
                 Filters
@@ -1501,7 +1506,7 @@ export default function Catalog() {
                       }
                     }}
                     placeholder="Search products, brands, or categories…"
-                    className="border rounded-2xl pl-9 pr-4 py-3 w-full bg-white/90 backdrop-blur focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
+                    className="rounded-2xl pl-9 pr-4 py-3 w-full bg-white/90 backdrop-blur transition silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
                     aria-label="Search products"
                   />
                 </div>
@@ -1509,7 +1514,7 @@ export default function Catalog() {
                 {showSuggest && query && suggestions.length > 0 && (
                   <div
                     ref={suggestRef}
-                    className="absolute left-0 right-0 mt-3 bg-white border rounded-2xl shadow-2xl z-20 overflow-hidden"
+                    className="absolute left-0 right-0 mt-3 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden silver-border-grad"
                   >
                     <ul className="max-h-[80vh] overflow-auto p-3">
                       {suggestions.map((p, i) => {
@@ -1524,19 +1529,18 @@ export default function Catalog() {
                           <li key={p.id} className="mb-3 last:mb-0">
                             <Link
                               to={`/product/${p.id}`}
-                              className={`flex items-center gap-4 px-3 py-3 rounded-xl hover:bg-black/5 ${
-                                active ? 'bg-black/5' : ''
-                              }`}
+                              className={`flex items-center gap-4 px-3 py-3 rounded-xl hover:bg-black/5 ${active ? 'bg-black/5' : ''
+                                }`}
                               onClick={() => bumpClick(p.id)}
                             >
                               {p.imagesJson?.[0] ? (
                                 <img
                                   src={p.imagesJson[0]}
                                   alt={p.title}
-                                  className="w-[120px] h-[120px] object-cover rounded-xl border"
+                                  className="w-[120px] h-[120px] object-cover rounded-xl silver-border"
                                 />
                               ) : (
-                                <div className="w-[120px] h-[120px] rounded-xl border grid place-items-center text-base text-gray-500">
+                                <div className="w-[120px] h-[120px] rounded-xl silver-border grid place-items-center text-base text-gray-500">
                                   —
                                 </div>
                               )}
@@ -1572,7 +1576,7 @@ export default function Catalog() {
                 <select
                   value={sortKey}
                   onChange={(e) => setSortKey(e.target.value as any)}
-                  className="border rounded-xl px-3 py-2 bg-white/90"
+                  className="rounded-xl px-3 py-2 bg-white/90 silver-border"
                 >
                   <option value="relevance">Relevance</option>
                   <option value="price-asc">Price: Low → High</option>
@@ -1586,7 +1590,7 @@ export default function Catalog() {
                 <select
                   value={pageSize}
                   onChange={(e) => setPageSize(Number(e.target.value) as 6 | 9 | 12)}
-                  className="border rounded-xl px-3 py-2 bg-white/90"
+                  className="rounded-xl px-3 py-2 bg-white/90 silver-border"
                 >
                   <option value={6}>6</option>
                   <option value={9}>9</option>
@@ -1604,7 +1608,9 @@ export default function Catalog() {
                   {pageItems.map((p) => {
                     const fav = isFav(p.id);
                     const pricingInStockOnly = inStockOnly ? true : availableNow(p);
-                    const pricePair = getRetailPricePair(p, settingsMarginPct, { inStockOnlyPricing: pricingInStockOnly });
+                    const pricePair = getRetailPricePair(p, settingsMarginPct, {
+                      inStockOnlyPricing: pricingInStockOnly,
+                    });
                     const bestPrice = priceForFiltering(p); // now == best-within-band
                     const cheapestPrice = pricePair.cheapestRetail;
 
@@ -1644,24 +1650,24 @@ export default function Catalog() {
 
                     const badge = !live
                       ? {
-                          text: 'Pending approval',
-                          cls: 'bg-amber-600/10 text-amber-700 border border-amber-600/20',
-                        }
+                        text: 'Pending approval',
+                        cls: 'bg-amber-600/10 text-amber-700 border border-amber-600/20',
+                      }
                       : available
                         ? {
-                            text: 'In stock',
-                            cls: 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20',
-                          }
+                          text: 'In stock',
+                          cls: 'bg-emerald-600/10 text-emerald-700 border border-emerald-600/20',
+                        }
                         : {
-                            text: 'Out of stock',
-                            cls: 'bg-rose-600/10 text-rose-700 border border-rose-600/20',
-                          };
+                          text: 'Out of stock',
+                          cls: 'bg-rose-600/10 text-rose-700 border border-rose-600/20',
+                        };
 
                     return (
                       <motion.article
                         key={p.id}
                         whileHover={{ y: -4 }}
-                        className="group rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden"
+                        className="group rounded-2xl bg-white/90 backdrop-blur overflow-hidden silver-border-grad silver-hover"
                       >
                         <Link to={`/product/${p.id}`} className="block" onClick={() => bumpClick(p.id)}>
                           <div className="relative w-full h-40 sm:h-44 md:h-48 overflow-hidden">
@@ -1670,9 +1676,8 @@ export default function Catalog() {
                                 <img
                                   src={primaryImg}
                                   alt={p.title}
-                                  className={`w-full h-full object-cover transition-opacity duration-300 ${
-                                    hasDifferentHover ? 'opacity-100 group-hover:opacity-0' : 'opacity-100'
-                                  }`}
+                                  className={`w-full h-full object-cover transition-opacity duration-300 ${hasDifferentHover ? 'opacity-100 group-hover:opacity-0' : 'opacity-100'
+                                    }`}
                                 />
                                 {hasDifferentHover && (
                                   <img
@@ -1740,9 +1745,10 @@ export default function Catalog() {
                             <div className="mt-3 flex flex-wrap items-center justify-between gap-1.5">
                               <button
                                 aria-label={fav ? 'Remove from wishlist' : 'Add to wishlist'}
-                                className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full border px-2.5 py-1.5 transition ${
-                                  fav ? 'bg-rose-50 text-rose-600 border-rose-200' : 'bg-white hover:bg-zinc-50 text-zinc-700'
-                                }`}
+                                className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full px-2.5 py-1.5 transition ${fav
+                                  ? 'bg-rose-50 text-rose-600 border border-rose-200'
+                                  : 'bg-white text-zinc-700 silver-border hover:bg-zinc-50 hover:silver-hover'
+                                  }`}
                                 onClick={() => {
                                   if (!token) {
                                     openModal({
@@ -1773,7 +1779,7 @@ export default function Catalog() {
                                 <div className="inline-flex items-center gap-1">
                                   <button
                                     onClick={() => setCartQty(p, currentQty - 1)}
-                                    className="w-7 h-7 rounded-full border border-zinc-300 bg-white text-[14px] flex items-center justify-center text-zinc-700 active:scale-95 transition"
+                                    className="w-7 h-7 rounded-full bg-white text-[14px] flex items-center justify-center text-zinc-700 active:scale-95 transition silver-border hover:silver-hover"
                                     aria-label="Decrease quantity"
                                   >
                                     -
@@ -1799,11 +1805,10 @@ export default function Catalog() {
                                 <button
                                   disabled={!allowQuickAdd}
                                   onClick={() => setCartQty(p, 1)}
-                                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] md:text-xs border transition ${
-                                    allowQuickAdd
-                                      ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
-                                      : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
-                                  }`}
+                                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] md:text-xs border transition ${allowQuickAdd
+                                    ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
+                                    : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
+                                    }`}
                                   aria-label="Add to cart"
                                   title={allowQuickAdd ? 'Add to cart' : 'Not available'}
                                 >
@@ -1840,12 +1845,12 @@ export default function Catalog() {
                         max={totalPages}
                         value={jumpVal}
                         onChange={(e) => setJumpVal(e.target.value)}
-                        className="w-20 border rounded-xl px-3 py-1.5 bg-white"
+                        className="w-20 rounded-xl px-3 py-1.5 bg-white silver-border"
                         aria-label="Jump to page"
                       />
                       <button
                         type="submit"
-                        className="px-3 py-1.5 border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                        className="px-3 py-1.5 rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
                         disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
                       >
                         Go
@@ -1855,7 +1860,7 @@ export default function Catalog() {
                     <div className="flex items-center gap-1 sm:gap-2">
                       <button
                         type="button"
-                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
                         onClick={() => goTo(1)}
                         disabled={currentPage <= 1}
                       >
@@ -1863,7 +1868,7 @@ export default function Catalog() {
                       </button>
                       <button
                         type="button"
-                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
                         onClick={() => goTo(currentPage - 1)}
                         disabled={currentPage <= 1}
                       >
@@ -1880,9 +1885,10 @@ export default function Catalog() {
                               <button
                                 type="button"
                                 onClick={() => goTo(n)}
-                                className={`px-3 py-1.5 text-xs border rounded-xl ${
-                                  n === currentPage ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white hover:bg-zinc-50'
-                                }`}
+                                className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
+                                  ? 'bg-zinc-900 text-white border border-zinc-900'
+                                  : 'bg-white hover:bg-zinc-50 silver-border hover:silver-hover'
+                                  }`}
                                 aria-current={n === currentPage ? 'page' : undefined}
                               >
                                 {n}
@@ -1894,7 +1900,7 @@ export default function Catalog() {
 
                       <button
                         type="button"
-                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
                         onClick={() => goTo(currentPage + 1)}
                         disabled={currentPage >= totalPages}
                       >
@@ -1902,7 +1908,7 @@ export default function Catalog() {
                       </button>
                       <button
                         type="button"
-                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs border rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50"
+                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
                         onClick={() => goTo(totalPages)}
                         disabled={currentPage >= totalPages}
                       >
@@ -1928,7 +1934,7 @@ export default function Catalog() {
           <div className="absolute inset-0 bg-black/40" onClick={() => setMobileFiltersOpen(false)} />
 
           <motion.div
-            className="absolute inset-y-0 left-0 w-[82%] max-w-xs bg-white rounded-tr-3xl rounded-br-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4"
+            className="absolute inset-y-0 left-0 w-[82%] max-w-xs bg-white rounded-tr-3xl rounded-br-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 silver-border-grad"
             initial={{ x: '-100%' }}
             animate={{ x: 0 }}
             exit={{ x: '-100%' }}
@@ -1974,9 +1980,10 @@ export default function Catalog() {
                     <li key={c.id}>
                       <button
                         onClick={() => toggleCategory(c.id)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${
-                          checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
-                        }`}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked
+                          ? 'bg-zinc-900 text-white'
+                          : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                          }`}
                       >
                         <span className="truncate">{c.name}</span>
                         <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -2009,9 +2016,10 @@ export default function Catalog() {
                       <li key={b.name}>
                         <button
                           onClick={() => toggleBrand(b.name)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${
-                            checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
-                          }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked
+                            ? 'bg-zinc-900 text-white'
+                            : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                            }`}
                         >
                           <span className="truncate">{b.name}</span>
                           <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -2044,9 +2052,10 @@ export default function Catalog() {
                     <li key={bucket.label}>
                       <button
                         onClick={() => toggleBucket(idx)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${
-                          checked ? 'bg-zinc-900 text-white' : 'bg-white hover:bg-black/5 text-zinc-800'
-                        }`}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked
+                          ? 'bg-zinc-900 text-white'
+                          : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                          }`}
                       >
                         <span>{bucket.label}</span>
                         <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
@@ -2060,11 +2069,17 @@ export default function Catalog() {
             </div>
 
             {/* Clear all (mobile) */}
-            {(selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly) && (
-              <button className="mt-2 text-xs font-medium text-fuchsia-700 hover:underline self-start" onClick={clearFilters}>
-                Clear all
-              </button>
-            )}
+            {(selectedCategories.length > 0 ||
+              selectedBucketIdxs.length > 0 ||
+              selectedBrands.length > 0 ||
+              !inStockOnly) && (
+                <button
+                  className="mt-2 text-xs font-medium text-fuchsia-700 hover:underline self-start"
+                  onClick={clearFilters}
+                >
+                  Clear all
+                </button>
+              )}
           </motion.div>
         </motion.div>
       )}

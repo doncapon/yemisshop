@@ -7,6 +7,15 @@ import SiteLayout from "../layouts/SiteLayout.js";
 import StatusDot from "../components/StatusDot.js";
 import { useModal } from "../components/ModalProvider";
 
+/* ---------------- “Silver” UI helpers ---------------- */
+const SILVER_BORDER = "border border-zinc-200/80";
+const SILVER_SHADOW_SM = "shadow-[0_8px_20px_rgba(148,163,184,0.18)]";
+const SILVER_SHADOW_MD = "shadow-[0_12px_30px_rgba(148,163,184,0.22)]";
+const SILVER_SHADOW_LG = "shadow-[0_18px_60px_rgba(148,163,184,0.30)]";
+
+const CARD_2XL = `rounded-2xl ${SILVER_BORDER} bg-white ${SILVER_SHADOW_MD}`;
+const CARD_XL = `rounded-xl ${SILVER_BORDER} bg-white ${SILVER_SHADOW_SM}`;
+
 /* ---------------- Types (loose to match API) ---------------- */
 type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | string;
 
@@ -96,17 +105,17 @@ type OtpPurpose = "PAY_ORDER" | "CANCEL_ORDER" | "REFUND_ORDER";
 type OtpState =
   | { open: false }
   | {
-    open: true;
-    orderId: string;
-    purpose: OtpPurpose;
-    requestId: string;
-    expiresAt: number;
-    channelHint?: string | null;
-    otp: string;
-    busy: boolean;
-    error?: string | null;
-    onSuccess: (otpToken: string) => Promise<void> | void;
-  };
+      open: true;
+      orderId: string;
+      purpose: OtpPurpose;
+      requestId: string;
+      expiresAt: number;
+      channelHint?: string | null;
+      otp: string;
+      busy: boolean;
+      error?: string | null;
+      onSuccess: (otpToken: string) => Promise<void> | void;
+    };
 
 type RefundReason =
   | "NOT_RECEIVED"
@@ -177,31 +186,31 @@ function normalizeRefund(r: any): RefundRow {
     supplier: r?.supplier ? { id: String(r.supplier.id ?? ""), name: r.supplier.name ?? null } : null,
     purchaseOrder: r?.purchaseOrder
       ? {
-        id: String(r.purchaseOrder.id ?? ""),
-        status: r.purchaseOrder.status ?? null,
-        payoutStatus: r.purchaseOrder.payoutStatus ?? null,
-      }
+          id: String(r.purchaseOrder.id ?? ""),
+          status: r.purchaseOrder.status ?? null,
+          payoutStatus: r.purchaseOrder.payoutStatus ?? null,
+        }
       : null,
     events: Array.isArray(r?.events)
       ? r.events.map((e: any) => ({
-        id: String(e?.id ?? ""),
-        type: e?.type ?? null,
-        message: e?.message ?? null,
-        createdAt: e?.createdAt ?? null,
-      }))
+          id: String(e?.id ?? ""),
+          type: e?.type ?? null,
+          message: e?.message ?? null,
+          createdAt: e?.createdAt ?? null,
+        }))
       : [],
     items: Array.isArray(r?.items)
       ? r.items.map((it: any) => ({
-        id: String(it?.id ?? ""),
-        orderItem: it?.orderItem
-          ? {
-            id: String(it.orderItem.id ?? ""),
-            title: it.orderItem.title ?? null,
-            quantity: it.orderItem.quantity ?? null,
-            unitPrice: it.orderItem.unitPrice ?? null,
-          }
-          : null,
-      }))
+          id: String(it?.id ?? ""),
+          orderItem: it?.orderItem
+            ? {
+                id: String(it.orderItem.id ?? ""),
+                title: it.orderItem.title ?? null,
+                quantity: it.orderItem.quantity ?? null,
+                unitPrice: it.orderItem.unitPrice ?? null,
+              }
+            : null,
+        }))
       : [],
   };
 }
@@ -235,12 +244,12 @@ const fmtDate = (s?: string | null) => {
   return Number.isNaN(+d)
     ? String(s)
     : d.toLocaleString(undefined, {
-      month: "short",
-      day: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
 };
 
 const todayYMD = () => {
@@ -348,10 +357,10 @@ function normalizeItem(it: any): OrderItem {
     selectedOptions,
     variant: variant
       ? {
-        id: String(variant?.id ?? ""),
-        sku: variant?.sku ?? null,
-        imagesJson: variant?.imagesJson ?? variant?.images ?? null,
-      }
+          id: String(variant?.id ?? ""),
+          sku: variant?.sku ?? null,
+          imagesJson: variant?.imagesJson ?? variant?.images ?? null,
+        }
       : null,
   };
 }
@@ -405,33 +414,33 @@ function normalizeOrder(raw: any): OrderRow {
     items,
     payments: payments.length
       ? payments.map((p) => ({
-        id: String(p?.id ?? ""),
-        status: String(p?.status ?? ""),
-        provider: p?.provider ?? null,
-        reference: p?.reference ?? p?.ref ?? null,
-        amount: p?.amount ?? null,
-        createdAt: p?.createdAt ?? p?.created_at ?? null,
-        allocations: Array.isArray(p?.allocations)
-          ? p.allocations.map((a: any) => ({
-            id: String(a?.id ?? ""),
-            supplierId: String(a?.supplierId ?? ""),
-            supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
-            amount: a?.amount ?? null,
-            status: a?.status ?? null,
-            purchaseOrderId: a?.purchaseOrderId ?? null,
-          }))
-          : [],
-      }))
+          id: String(p?.id ?? ""),
+          status: String(p?.status ?? ""),
+          provider: p?.provider ?? null,
+          reference: p?.reference ?? p?.ref ?? null,
+          amount: p?.amount ?? null,
+          createdAt: p?.createdAt ?? p?.created_at ?? null,
+          allocations: Array.isArray(p?.allocations)
+            ? p.allocations.map((a: any) => ({
+                id: String(a?.id ?? ""),
+                supplierId: String(a?.supplierId ?? ""),
+                supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
+                amount: a?.amount ?? null,
+                status: a?.status ?? null,
+                purchaseOrderId: a?.purchaseOrderId ?? null,
+              }))
+            : [],
+        }))
       : undefined,
     payment: payment
       ? {
-        id: String(payment?.id ?? ""),
-        status: String(payment?.status ?? ""),
-        provider: payment?.provider ?? null,
-        reference: payment?.reference ?? payment?.ref ?? null,
-        amount: payment?.amount ?? null,
-        createdAt: payment?.createdAt ?? payment?.created_at ?? null,
-      }
+          id: String(payment?.id ?? ""),
+          status: String(payment?.status ?? ""),
+          provider: payment?.provider ?? null,
+          reference: payment?.reference ?? payment?.ref ?? null,
+          amount: payment?.amount ?? null,
+          createdAt: payment?.createdAt ?? payment?.created_at ?? null,
+        }
       : null,
     paidAmount: raw?.paidAmount ?? raw?.paid_amount ?? null,
     metrics: raw?.metrics ?? null,
@@ -507,7 +516,7 @@ function Pagination({
       <button
         onClick={() => go(page - 1)}
         disabled={page <= 1}
-        className="px-2 py-1 md:px-3 md:py-1.5 text-[10px] md:text-xs rounded-lg border bg-white disabled:opacity-40"
+        className="px-2 py-1 md:px-3 md:py-1.5 text-[10px] md:text-xs rounded-lg border border-zinc-200/80 bg-white disabled:opacity-40"
       >
         Prev
       </button>
@@ -516,8 +525,9 @@ function Pagination({
         <>
           <button
             onClick={() => go(1)}
-            className={`px-2 py-1 md:px-3 md:py-1.5 text-[10px] md:text-xs rounded-lg border ${page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-              }`}
+            className={`px-2 py-1 md:px-3 md:py-1.5 text-[10px] md:text-xs rounded-lg border border-zinc-200/80 ${
+              page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+            }`}
           >
             1
           </button>
@@ -529,8 +539,9 @@ function Pagination({
         <button
           key={p}
           onClick={() => go(p)}
-          className={`px-2 py-1 md:px-3 md:py-1.5 text-[10px] md:text-xs rounded-lg border ${p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-            }`}
+          className={`px-2 py-1 md:px-3 md:py-1.5 text-[10px] md:text-xs rounded-lg border border-zinc-200/80 ${
+            p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+          }`}
         >
           {p}
         </button>
@@ -541,8 +552,9 @@ function Pagination({
           {end < totalPages - 1 && <span className="px-1 text-[9px] md:text-xs text-ink-soft">…</span>}
           <button
             onClick={() => go(totalPages)}
-            className={`px-2 py-1 md:px-3 md:py-1.5 text-[10px] md:text-xs rounded-lg border ${page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-              }`}
+            className={`px-2 py-1 md:px-3 md:py-1.5 text-[10px] md:text-xs rounded-lg border border-zinc-200/80 ${
+              page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+            }`}
           >
             {totalPages}
           </button>
@@ -552,7 +564,7 @@ function Pagination({
       <button
         onClick={() => go(page + 1)}
         disabled={page >= totalPages}
-        className="px-2 py-1 md:px-3 md:py-1.5 text-[10px] md:text-xs rounded-lg border bg-white disabled:opacity-40"
+        className="px-2 py-1 md:px-3 md:py-1.5 text-[10px] md:text-xs rounded-lg border border-zinc-200/80 bg-white disabled:opacity-40"
       >
         Next
       </button>
@@ -872,7 +884,7 @@ export default function OrdersPage() {
               setSearchParams(sp, { replace: true });
             }}
             placeholder="Order ID, user, item, payment ref…"
-            className="w-full border rounded-xl px-3 py-2"
+            className="w-full border border-zinc-200/80 rounded-xl px-3 py-2"
           />
         </div>
 
@@ -881,7 +893,7 @@ export default function OrdersPage() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="w-full border rounded-xl px-3 py-2"
+            className="w-full border border-zinc-200/80 rounded-xl px-3 py-2"
           >
             <option value="ALL">All</option>
             <option value="PENDING">Pending</option>
@@ -894,31 +906,59 @@ export default function OrdersPage() {
 
         <div className="md:col-span-3">
           <label className="text-xs text-ink-soft">From</label>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="w-full border border-zinc-200/80 rounded-xl px-3 py-2"
+          />
         </div>
 
         <div className="md:col-span-3">
           <label className="text-xs text-ink-soft">To</label>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="w-full border border-zinc-200/80 rounded-xl px-3 py-2"
+          />
         </div>
 
         <div className="md:col-span-2">
           <label className="text-xs text-ink-soft">Min ₦</label>
-          <input type="number" min={0} value={minTotal} onChange={(e) => setMinTotal(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
+          <input
+            type="number"
+            min={0}
+            value={minTotal}
+            onChange={(e) => setMinTotal(e.target.value)}
+            className="w-full border border-zinc-200/80 rounded-xl px-3 py-2"
+          />
         </div>
 
         <div className="md:col-span-2">
           <label className="text-xs text-ink-soft">Max ₦</label>
-          <input type="number" min={0} value={maxTotal} onChange={(e) => setMaxTotal(e.target.value)} className="w-full border rounded-xl px-3 py-2" />
+          <input
+            type="number"
+            min={0}
+            value={maxTotal}
+            onChange={(e) => setMaxTotal(e.target.value)}
+            className="w-full border border-zinc-200/80 rounded-xl px-3 py-2"
+          />
         </div>
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button className="rounded-lg border bg-white px-3 py-2 text-sm hover:bg-black/5" onClick={() => ordersQ.refetch()}>
+        <button
+          className="rounded-lg border border-zinc-200/80 bg-white px-3 py-2 text-sm hover:bg-black/5"
+          onClick={() => ordersQ.refetch()}
+        >
           Refresh data
         </button>
 
-        <button className="rounded-lg border bg-white px-3 py-2 text-sm hover:bg-black/5" onClick={clearFilters}>
+        <button
+          className="rounded-lg border border-zinc-200/80 bg-white px-3 py-2 text-sm hover:bg-black/5"
+          onClick={clearFilters}
+        >
           Clear filters
         </button>
 
@@ -926,8 +966,9 @@ export default function OrdersPage() {
           type="button"
           aria-pressed={isTodayActive}
           onClick={toggleToday}
-          className={`rounded-lg px-3 py-2 text-sm border transition ${isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-            }`}
+          className={`rounded-lg px-3 py-2 text-sm border transition ${
+            isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : "bg-white border-zinc-200/80 hover:bg-black/5"
+          }`}
         >
           Today
         </button>
@@ -947,41 +988,40 @@ export default function OrdersPage() {
   );
 
   /* ---------------- Metrics ---------------- */
-const profitRangeQ = useQuery({
-  queryKey: ["metrics", "profit-summary", token, { from: toYMD(from), to: toYMD(to) }],
-  enabled: isMetricsRole && !!token,
-  queryFn: async () => {
-    const params = new URLSearchParams();
-    if (toYMD(from)) params.set("from", toYMD(from)!);
-    if (toYMD(to)) params.set("to", toYMD(to)!);
+  const profitRangeQ = useQuery({
+    queryKey: ["metrics", "profit-summary", token, { from: toYMD(from), to: toYMD(to) }],
+    enabled: isMetricsRole && !!token,
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (toYMD(from)) params.set("from", toYMD(from)!);
+      if (toYMD(to)) params.set("to", toYMD(to)!);
 
-    const { data } = await api.get(
-      `/api/admin/metrics/profit-summary${params.toString() ? `?${params.toString()}` : ""}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+      const { data } = await api.get(
+        `/api/admin/metrics/profit-summary${params.toString() ? `?${params.toString()}` : ""}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
 
-    return data as {
-      revenuePaid: number | string;
-      refunds: number | string;
-      revenueNet: number | string;
-      gatewayFees: number | string;
-      taxCollected: number | string;
-      commsNet: number | string;
-      grossProfit: number | string;
-      grossProfitSafe?: number | string;
-
-      today?: {
+      return data as {
+        revenuePaid: number | string;
+        refunds: number | string;
+        revenueNet: number | string;
+        gatewayFees: number | string;
+        taxCollected: number | string;
+        commsNet: number | string;
         grossProfit: number | string;
         grossProfitSafe?: number | string;
+
+        today?: {
+          grossProfit: number | string;
+          grossProfitSafe?: number | string;
+        };
+
+        range: { from: string; to: string };
       };
-
-      range: { from: string; to: string };
-    };
-  },
-  refetchOnWindowFocus: false,
-  staleTime: 10_000,
-});
-
+    },
+    refetchOnWindowFocus: false,
+    staleTime: 10_000,
+  });
 
   const aggregates = useMemo(() => {
     if (!isMetricsRole) return null;
@@ -1000,30 +1040,29 @@ const profitRangeQ = useQuery({
     return { revenuePaid, refunds: refundsAmt, revenueNet };
   }, [filteredSorted, isMetricsRole]);
 
-const grossProfit = useMemo(() => {
-  if (!isMetricsRole) return 0;
+  const grossProfit = useMemo(() => {
+    if (!isMetricsRole) return 0;
 
-  const apiRes: any = profitRangeQ.data;
-  if (apiRes) {
-    const raw = fmtN(apiRes.grossProfit);
-    if (Number.isFinite(raw) && raw !== 0) return raw;
+    const apiRes: any = profitRangeQ.data;
+    if (apiRes) {
+      const raw = fmtN(apiRes.grossProfit);
+      if (Number.isFinite(raw) && raw !== 0) return raw;
 
-    // fallback only if grossProfit missing/invalid
-    const safe = fmtN(apiRes.grossProfitSafe);
-    return safe;
-  }
+      // fallback only if grossProfit missing/invalid
+      const safe = fmtN(apiRes.grossProfitSafe);
+      return safe;
+    }
 
-  // fallback: service fee sum (your existing fallback)
-  let acc = 0;
-  for (const o of filteredSorted) {
-    const realized = isPaidStatus(o.status) || fmtN(o.paidAmount) > 0;
-    if (!realized) continue;
-    const svc = orderServiceFee(o);
-    if (svc !== 0) acc += svc;
-  }
-  return acc;
-}, [isMetricsRole, profitRangeQ.data, filteredSorted]);
-
+    // fallback: service fee sum (your existing fallback)
+    let acc = 0;
+    for (const o of filteredSorted) {
+      const realized = isPaidStatus(o.status) || fmtN(o.paidAmount) > 0;
+      if (!realized) continue;
+      const svc = orderServiceFee(o);
+      if (svc !== 0) acc += svc;
+    }
+    return acc;
+  }, [isMetricsRole, profitRangeQ.data, filteredSorted]);
 
   /* ---------------- Actions ---------------- */
   const onToggle = (id: string) => setExpandedId((curr) => (curr === id ? null : id));
@@ -1267,7 +1306,7 @@ const grossProfit = useMemo(() => {
           try {
             w.focus();
             w.print();
-          } catch { }
+          } catch {}
         };
         w.addEventListener("load", onLoad, { once: true });
       }
@@ -1313,8 +1352,8 @@ const grossProfit = useMemo(() => {
     const orderItemIds =
       draft.mode === "SOME"
         ? Object.entries(draft.selectedItemIds || {})
-          .filter(([, v]) => v)
-          .map(([id]) => id)
+            .filter(([, v]) => v)
+            .map(([id]) => id)
         : undefined;
 
     const payload: any = {
@@ -1359,7 +1398,7 @@ const grossProfit = useMemo(() => {
             const lastEvent = (r.events || [])[0];
 
             return (
-              <div key={r.id} className="rounded-xl border bg-white p-3">
+              <div key={r.id} className={`${CARD_XL} p-3`}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-xs text-ink-soft">Refund ID</div>
@@ -1397,7 +1436,7 @@ const grossProfit = useMemo(() => {
                 {r.message && <div className="mt-2 text-sm text-zinc-700 whitespace-pre-wrap">{r.message}</div>}
 
                 {lastEvent && (
-                  <div className="mt-3 rounded-lg border bg-zinc-50 p-2">
+                  <div className={`mt-3 rounded-lg ${SILVER_BORDER} bg-zinc-50 p-2`}>
                     <div className="text-xs text-ink-soft">Latest update • {fmtDate(lastEvent.createdAt || undefined)}</div>
                     <div className="text-sm text-zinc-700 whitespace-pre-wrap">
                       {lastEvent.message || lastEvent.type || "—"}
@@ -1412,7 +1451,7 @@ const grossProfit = useMemo(() => {
       footer: (
         <button
           type="button"
-          className="px-3 py-1.5 rounded-md border bg-white hover:bg-black/5 text-sm"
+          className="px-3 py-1.5 rounded-md border border-zinc-200/80 bg-white hover:bg-black/5 text-sm"
           onClick={() => refundsQ.refetch()}
         >
           Refresh
@@ -1557,10 +1596,10 @@ const grossProfit = useMemo(() => {
             Tell us why you want a refund. Your request will be reviewed by the supplier (and escalated to admin if needed).
           </div>
 
-          <div className="rounded-xl border p-3 bg-white">
+          <div className={`${CARD_XL} p-3`}>
             <div className="text-xs text-ink-soft">Reason</div>
             <select
-              className="mt-1 w-full border rounded-xl px-3 py-2 text-sm"
+              className="mt-1 w-full border border-zinc-200/80 rounded-xl px-3 py-2 text-sm"
               value={draft.reason}
               onChange={(e) => setDraft((s) => ({ ...s, reason: e.target.value as RefundReason }))}
               disabled={draft.busy}
@@ -1574,7 +1613,7 @@ const grossProfit = useMemo(() => {
             </select>
           </div>
 
-          <div className="rounded-xl border p-3 bg-white">
+          <div className={`${CARD_XL} p-3`}>
             <div className="flex items-center justify-between">
               <div className="text-xs text-ink-soft">Refund scope</div>
               <div className="text-[11px] text-ink-soft">Choose all items or some items</div>
@@ -1610,7 +1649,10 @@ const grossProfit = useMemo(() => {
                   const checked = !!draft.selectedItemIds?.[it.id];
 
                   return (
-                    <label key={it.id} className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2">
+                    <label
+                      key={it.id}
+                      className={`flex items-center justify-between gap-2 rounded-lg ${SILVER_BORDER} px-3 py-2`}
+                    >
                       <div className="min-w-0">
                         <div className="text-sm font-medium text-zinc-900 truncate">{name}</div>
                         <div className="text-[11px] text-ink-soft">
@@ -1640,10 +1682,10 @@ const grossProfit = useMemo(() => {
             )}
           </div>
 
-          <div className="rounded-xl border p-3 bg-white">
+          <div className={`${CARD_XL} p-3`}>
             <div className="text-xs text-ink-soft">Message (optional)</div>
             <textarea
-              className="mt-1 w-full border rounded-xl px-3 py-2 text-sm min-h-[90px]"
+              className="mt-1 w-full border border-zinc-200/80 rounded-xl px-3 py-2 text-sm min-h-[90px]"
               placeholder="Add details that help us resolve this faster…"
               value={draft.message}
               onChange={(e) => setDraft((s) => ({ ...s, message: e.target.value }))}
@@ -1653,7 +1695,7 @@ const grossProfit = useMemo(() => {
           </div>
 
           {refundReasonWantsImages(draft.reason) && (
-            <div className="rounded-xl border p-3 bg-white">
+            <div className={`${CARD_XL} p-3`}>
               <div className="flex items-center justify-between">
                 <div className="text-xs text-ink-soft">Evidence photos (optional)</div>
                 <div className="text-[11px] text-ink-soft">Up to 5 images • JPG/PNG/WebP • max 5MB each</div>
@@ -1683,7 +1725,7 @@ const grossProfit = useMemo(() => {
           <div className="flex items-center justify-end gap-2 pt-1">
             <button
               type="button"
-              className="px-3 py-1.5 rounded-md border bg-white hover:bg-black/5 text-sm"
+              className="px-3 py-1.5 rounded-md border border-zinc-200/80 bg-white hover:bg-black/5 text-sm"
               onClick={() => closeModal()}
               disabled={draft.busy}
             >
@@ -1727,20 +1769,26 @@ const grossProfit = useMemo(() => {
           </div>
 
           <div className="flex items-center gap-2 md:hidden">
-            <button onClick={() => setFiltersOpen(true)} className="rounded-xl border px-3 py-2 text-xs bg-white shadow-sm">
+            <button
+              onClick={() => setFiltersOpen(true)}
+              className="rounded-xl border border-zinc-200/80 px-3 py-2 text-xs bg-white shadow-[0_6px_16px_rgba(148,163,184,0.18)]"
+            >
               Filters
             </button>
-            <button onClick={() => ordersQ.refetch()} className="rounded-xl border px-3 py-2 text-xs bg-white shadow-sm">
+            <button
+              onClick={() => ordersQ.refetch()}
+              className="rounded-xl border border-zinc-200/80 px-3 py-2 text-xs bg-white shadow-[0_6px_16px_rgba(148,163,184,0.18)]"
+            >
               Refresh
             </button>
           </div>
         </div>
 
-        <div className="mb-4 rounded-2xl border bg-white shadow-sm p-4 hidden md:block">{FilterContent}</div>
+        <div className={`mb-4 p-4 hidden md:block ${CARD_2XL}`}>{FilterContent}</div>
 
         {!isAdmin && (
           <button
-            className="hidden md:inline-flex items-center gap-2 rounded-lg border bg-white hover:bg-black/5 px-3 py-2 text-sm"
+            className="hidden md:inline-flex items-center gap-2 rounded-lg border border-zinc-200/80 bg-white hover:bg-black/5 px-3 py-2 text-sm shadow-[0_6px_16px_rgba(148,163,184,0.18)]"
             onClick={() => openRefundStatusModal(null)}
           >
             My Refunds{refunds.length ? ` (${refunds.length})` : ""}
@@ -1750,7 +1798,7 @@ const grossProfit = useMemo(() => {
         {filtersOpen && (
           <div className="fixed inset-0 z-40 md:hidden">
             <div className="absolute inset-0 bg-black/40" onClick={() => setFiltersOpen(false)} />
-            <div className="absolute inset-y-0 left-0 w-[80%] max-w-xs bg-white shadow-2xl p-4">
+            <div className={`absolute inset-y-0 left-0 w-[80%] max-w-xs p-4 ${CARD_2XL} rounded-none rounded-r-2xl`}>
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-sm font-semibold">Filter orders</h2>
                 <button onClick={() => setFiltersOpen(false)} className="text-xs text-ink-soft px-2 py-1 rounded-lg hover:bg-black/5">
@@ -1764,14 +1812,14 @@ const grossProfit = useMemo(() => {
 
         {isMetricsRole && aggregates && (
           <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-            <div className="rounded-xl border p-3 bg-white">
+            <div className={`${CARD_XL} p-3`}>
               <div className="text-ink-soft">Revenue (net)</div>
               <div className="font-semibold">{ngn.format(aggregates.revenueNet)}</div>
               <div className="text-[11px] text-ink-soft">
                 Paid {ngn.format(aggregates.revenuePaid)} • Refunds {ngn.format(aggregates.refunds)}
               </div>
             </div>
-            <div className="rounded-xl border p-3 bg-white">
+            <div className={`${CARD_XL} p-3`}>
               <div className="text-ink-soft">Gross Profit</div>
               <div className="font-semibold">{ngn.format(grossProfit)}</div>
             </div>
@@ -1779,18 +1827,18 @@ const grossProfit = useMemo(() => {
         )}
 
         {/* Desktop Orders table */}
-        <div className="rounded-2xl border bg-white shadow-sm overflow-hidden mt-4 hidden md:block">
-          <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
+        <div className={`overflow-hidden mt-4 hidden md:block ${CARD_2XL}`}>
+          <div className="px-4 md:px-5 py-3 border-b border-zinc-200/70 flex items-center justify-between">
             <div className="text-sm text-ink-soft">
               {loading
                 ? "Loading…"
                 : filteredSorted.length
-                  ? `Showing ${pageStart}-${pageEnd} of ${filteredSorted.length} orders`
-                  : "No orders match your filters."}
+                ? `Showing ${pageStart}-${pageEnd} of ${filteredSorted.length} orders`
+                : "No orders match your filters."}
             </div>
             <button
               onClick={() => ordersQ.refetch()}
-              className="inline-flex items-center gap-2 rounded-lg border bg-white hover:bg-black/5 px-3 py-2 text-sm"
+              className="inline-flex items-center gap-2 rounded-lg border border-zinc-200/80 bg-white hover:bg-black/5 px-3 py-2 text-sm shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
             >
               Refresh
             </button>
@@ -1810,7 +1858,7 @@ const grossProfit = useMemo(() => {
                 </tr>
               </thead>
 
-              <tbody className="divide-y">
+              <tbody className="divide-y divide-zinc-200/70">
                 {loading && (
                   <>
                     <SkeletonRow cols={colSpan} mode="table" />
@@ -1895,12 +1943,13 @@ const grossProfit = useMemo(() => {
 
                           <td className="px-3 py-3">
                             <button
-                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${isPaidEffective
-                                ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
-                                : isPendingOrCreated
+                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${
+                                isPaidEffective
+                                  ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                                  : isPendingOrCreated
                                   ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
-                                  : "bg-white hover:bg-black/5 text-ink-soft"
-                                }`}
+                                  : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
+                              }`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onToggle(o.id);
@@ -1914,11 +1963,12 @@ const grossProfit = useMemo(() => {
                         {isOpen && (
                           <tr>
                             <td colSpan={colSpan} className="p-0">
-                              <div className="px-4 md:px-6 py-4 bg-white border-t">
+                              <div className="px-4 md:px-6 py-4 bg-white border-t border-zinc-200/70">
                                 <div className="flex flex-wrap items-center justify-between gap-3">
                                   <div className="text-sm">
                                     <div>
-                                      <span className="text-ink-soft">Order:</span> <span className="font-mono">{details.id}</span>
+                                      <span className="text-ink-soft">Order:</span>{" "}
+                                      <span className="font-mono">{details.id}</span>
                                     </div>
                                     <div className="text-ink-soft">
                                       Placed: {fmtDate(details.createdAt)} • Status: <b>{details.status}</b>
@@ -1940,7 +1990,7 @@ const grossProfit = useMemo(() => {
                                   <div className="flex flex-wrap gap-2">
                                     {isPendingOrCreated && (
                                       <button
-                                        className="rounded-lg bg-emerald-600 text-white px-4 py-2 text-xs md:text-sm hover:bg-emerald-700"
+                                        className="rounded-lg bg-emerald-600 text-white px-4 py-2 text-xs md:text-sm hover:bg-emerald-700 shadow-[0_10px_24px_rgba(16,185,129,0.18)]"
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           onPay(details.id);
@@ -1952,7 +2002,7 @@ const grossProfit = useMemo(() => {
 
                                     {!isAdmin && canRequestRefundAsCustomer(details, latestPayment) && (
                                       <button
-                                        className="rounded-lg border px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-indigo-700"
+                                        className="rounded-lg border border-zinc-200/80 px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-indigo-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           onCustomerRefund(details);
@@ -1964,7 +2014,7 @@ const grossProfit = useMemo(() => {
 
                                     {canCancelThis && (
                                       <button
-                                        className="rounded-lg border px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-rose-600"
+                                        className="rounded-lg border border-zinc-200/80 px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-rose-600 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           onCancel(details.id);
@@ -1977,7 +2027,7 @@ const grossProfit = useMemo(() => {
                                     {canShowReceipt && (
                                       <>
                                         <button
-                                          className="inline-flex items-center justify-center rounded-lg border bg-white px-3 py-2 text-xs md:text-sm hover:bg-black/5"
+                                          className="inline-flex items-center justify-center rounded-lg border border-zinc-200/80 bg-white px-3 py-2 text-xs md:text-sm hover:bg-black/5 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (!receiptKey) return;
@@ -1988,7 +2038,7 @@ const grossProfit = useMemo(() => {
                                         </button>
 
                                         <button
-                                          className="inline-flex items-center justify-center rounded-lg border bg-white px-3 py-2 text-xs md:text-sm hover:bg-black/5"
+                                          className="inline-flex items-center justify-center rounded-lg border border-zinc-200/80 bg-white px-3 py-2 text-xs md:text-sm hover:bg-black/5 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (!receiptKey) return;
@@ -1999,7 +2049,7 @@ const grossProfit = useMemo(() => {
                                         </button>
 
                                         <button
-                                          className="inline-flex items-center justify-center rounded-lg border bg-white px-3 py-2 text-xs md:text-sm hover:bg-black/5"
+                                          className="inline-flex items-center justify-center rounded-lg border border-zinc-200/80 bg-white px-3 py-2 text-xs md:text-sm hover:bg-black/5 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (!receiptKey) return;
@@ -2013,7 +2063,7 @@ const grossProfit = useMemo(() => {
 
                                     {canRefund(details, latestPayment) && (
                                       <button
-                                        className="rounded-lg border px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-indigo-700"
+                                        className="rounded-lg border border-zinc-200/80 px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-indigo-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           onRefund(details.id);
@@ -2026,7 +2076,7 @@ const grossProfit = useMemo(() => {
                                 </div>
 
                                 {/* Keep your existing expanded content tables/OTP blocks here */}
-                                <div className="mt-4 rounded-xl border bg-white overflow-hidden">
+                                <div className={`mt-4 overflow-hidden ${CARD_XL}`}>
                                   {/* ... */}
                                 </div>
                               </div>
@@ -2063,7 +2113,7 @@ const grossProfit = useMemo(() => {
           )}
 
           {!loading && paginated.length === 0 && (
-            <div className="rounded-2xl border bg-white py-6 px-4 text-center text-zinc-500">No orders match your filters.</div>
+            <div className={`${CARD_2XL} py-6 px-4 text-center text-zinc-500`}>No orders match your filters.</div>
           )}
 
           {!loading &&
@@ -2085,7 +2135,7 @@ const grossProfit = useMemo(() => {
               return (
                 <div
                   key={o.id}
-                  className="rounded-2xl border bg-white shadow-sm p-3 flex flex-col gap-2"
+                  className={`${CARD_2XL} p-3 flex flex-col gap-2`}
                   onClick={() => setExpandedId((curr) => (curr === o.id ? null : o.id))}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -2101,10 +2151,10 @@ const grossProfit = useMemo(() => {
                       <div className="text-xs text-ink-soft">
                         {firstItemTitle
                           ? firstItemTitle.toString().slice(0, 40) +
-                          (details.items && details.items.length > 1 ? ` +${details.items.length - 1} more` : "")
+                            (details.items && details.items.length > 1 ? ` +${details.items.length - 1} more` : "")
                           : isOpen && orderDetailQ.isFetching
-                            ? "Loading items…"
-                            : `${details.items?.length || 0} item(s)`}
+                          ? "Loading items…"
+                          : `${details.items?.length || 0} item(s)`}
                       </div>
                       <div className="text-[10px] text-ink-soft">Placed {fmtDate(details.createdAt)}</div>
                     </div>
@@ -2116,7 +2166,7 @@ const grossProfit = useMemo(() => {
 
                   {!isAdmin && (
                     <button
-                      className="rounded-lg border px-4 py-2 text-xs hover:bg-black/5 text-zinc-700"
+                      className="rounded-lg border border-zinc-200/80 px-4 py-2 text-xs hover:bg-black/5 text-zinc-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                       onClick={(e) => {
                         e.stopPropagation();
                         refundsQ.refetch();
@@ -2130,7 +2180,7 @@ const grossProfit = useMemo(() => {
                   <div className="flex flex-wrap items-center gap-2 mt-1">
                     {isPendingOrCreated && (
                       <button
-                        className="rounded-lg bg-emerald-600 text-white px-3 py-1.5 text-[10px]"
+                        className="rounded-lg bg-emerald-600 text-white px-3 py-1.5 text-[10px] shadow-[0_10px_24px_rgba(16,185,129,0.18)]"
                         onClick={(e) => {
                           e.stopPropagation();
                           onPay(details.id);
@@ -2142,7 +2192,7 @@ const grossProfit = useMemo(() => {
 
                     {!isAdmin && canRequestRefundAsCustomer(details, latestPayment) && (
                       <button
-                        className="rounded-lg border px-3 py-1.5 text-[10px] text-indigo-700"
+                        className="rounded-lg border border-zinc-200/80 px-3 py-1.5 text-[10px] text-indigo-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                         onClick={(e) => {
                           e.stopPropagation();
                           onCustomerRefund(details);
@@ -2154,7 +2204,7 @@ const grossProfit = useMemo(() => {
 
                     {!isAdmin && (
                       <button
-                        className="rounded-lg border px-3 py-1.5 text-[10px] text-zinc-700"
+                        className="rounded-lg border border-zinc-200/80 px-3 py-1.5 text-[10px] text-zinc-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                         onClick={(e) => {
                           e.stopPropagation();
                           refundsQ.refetch();
@@ -2167,7 +2217,7 @@ const grossProfit = useMemo(() => {
 
                     {canShowReceipt && (
                       <button
-                        className="rounded-lg border px-3 py-1.5 text-[10px] bg-white"
+                        className="rounded-lg border border-zinc-200/80 px-3 py-1.5 text-[10px] bg-white shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                         onClick={(e) => {
                           e.stopPropagation();
                           if (!receiptKey) return;
@@ -2180,7 +2230,7 @@ const grossProfit = useMemo(() => {
 
                     {canCancelThis && (
                       <button
-                        className="rounded-lg border px-3 py-1.5 text-[10px] text-rose-600"
+                        className="rounded-lg border border-zinc-200/80 px-3 py-1.5 text-[10px] text-rose-600 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
                         onClick={(e) => {
                           e.stopPropagation();
                           onCancel(details.id);
@@ -2192,7 +2242,7 @@ const grossProfit = useMemo(() => {
                   </div>
 
                   {expandedId === o.id && (
-                    <div className="mt-2 border-t pt-2 space-y-1">
+                    <div className="mt-2 border-t border-zinc-200/70 pt-2 space-y-1">
                       {(details.items || []).slice(0, 5).map((it) => (
                         <div key={it.id} className="flex justify-between text-[10px] text-ink-soft">
                           <span>
@@ -2200,7 +2250,9 @@ const grossProfit = useMemo(() => {
                             {it.quantity && <span>{` • ${it.quantity} pcs`}</span>}
                           </span>
                           <span>
-                            {ngn.format(it.lineTotal != null ? fmtN(it.lineTotal) : fmtN(it.unitPrice) * Number(it.quantity ?? 1))}
+                            {ngn.format(
+                              it.lineTotal != null ? fmtN(it.lineTotal) : fmtN(it.unitPrice) * Number(it.quantity ?? 1)
+                            )}
                           </span>
                         </div>
                       ))}
@@ -2234,7 +2286,7 @@ const grossProfit = useMemo(() => {
         {otpModal.open && (
           <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
             <div className="absolute inset-0 bg-black/40" />
-            <div className="relative w-full max-w-md rounded-2xl bg-white shadow-2xl border p-4">
+            <div className={`relative w-full max-w-md rounded-2xl bg-white p-4 ${SILVER_BORDER} ${SILVER_SHADOW_LG}`}>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-semibold">Enter OTP</div>
@@ -2252,11 +2304,13 @@ const grossProfit = useMemo(() => {
                 <input
                   value={otpModal.otp}
                   onChange={(e) =>
-                    setOtpModal((s) => (!s.open ? s : { ...s, otp: e.target.value.replace(/\D/g, "").slice(0, 6), error: null }))
+                    setOtpModal((s) =>
+                      !s.open ? s : { ...s, otp: e.target.value.replace(/\D/g, "").slice(0, 6), error: null }
+                    )
                   }
                   inputMode="numeric"
                   autoFocus
-                  className="mt-1 w-full border rounded-xl px-3 py-2 text-base tracking-widest"
+                  className="mt-1 w-full border border-zinc-200/80 rounded-xl px-3 py-2 text-base tracking-widest"
                   placeholder="123456"
                 />
                 {!!otpModal.error && <div className="mt-2 text-xs text-rose-600">{otpModal.error}</div>}
@@ -2281,10 +2335,10 @@ const grossProfit = useMemo(() => {
                         !s.open
                           ? s
                           : {
-                            ...s,
-                            busy: false,
-                            error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
-                          }
+                              ...s,
+                              busy: false,
+                              error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
+                            }
                       );
                     }
                   }}
@@ -2294,7 +2348,7 @@ const grossProfit = useMemo(() => {
 
                 <button
                   disabled={otpModal.busy}
-                  className="rounded-xl border bg-white px-3 py-2 text-sm hover:bg-black/5 disabled:opacity-50"
+                  className="rounded-xl border border-zinc-200/80 bg-white px-3 py-2 text-sm hover:bg-black/5 disabled:opacity-50"
                   onClick={async () => {
                     if (!otpModal.open) return;
                     try {
@@ -2304,16 +2358,18 @@ const grossProfit = useMemo(() => {
                         !s.open
                           ? s
                           : {
-                            ...s,
-                            busy: false,
-                            requestId: r.requestId,
-                            expiresAt: r.expiresAt,
-                            channelHint: r.channelHint,
-                            otp: "",
-                          }
+                              ...s,
+                              busy: false,
+                              requestId: r.requestId,
+                              expiresAt: r.expiresAt,
+                              channelHint: r.channelHint,
+                              otp: "",
+                            }
                       );
                     } catch (e: any) {
-                      setOtpModal((s) => (!s.open ? s : { ...s, busy: false, error: e?.response?.data?.error || "Could not resend OTP" }));
+                      setOtpModal((s) =>
+                        !s.open ? s : { ...s, busy: false, error: e?.response?.data?.error || "Could not resend OTP" }
+                      );
                     }
                   }}
                 >
@@ -2340,7 +2396,7 @@ function SkeletonRow({
 }) {
   if (mode === "card") {
     return (
-      <div className="rounded-2xl border bg-white shadow-sm p-3 animate-pulse">
+      <div className={`${CARD_2XL} p-3 animate-pulse`}>
         <div className="h-3 w-1/2 bg-zinc-200 rounded" />
         <div className="mt-3 h-3 w-3/4 bg-zinc-200 rounded" />
         <div className="mt-2 h-3 w-2/3 bg-zinc-200 rounded" />

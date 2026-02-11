@@ -105,7 +105,7 @@ router.post('/backfill', requireAuth, async (req, res, next) => {
       return res.status(403).json({ error: 'Admins only' });
     }
 
-    await prisma.$transaction(async (tx: { product: { groupBy: (arg0: { by: string[]; _count: { _all: boolean; } | { _all: boolean; }; }) => any; findFirst: (arg0: { where: { categoryId: string; } | { brandId: string; }; select: any; }) => any; }; category: { findUnique: (arg0: { where: { id: string; }; }) => any; create: (arg0: { data: { id: string; name: any; slug: string; isActive: boolean; }; }) => any; }; brand: { findUnique: (arg0: { where: { id: string; }; }) => any; create: (arg0: { data: { id: string; name: any; slug: string; isActive: boolean; }; }) => any; }; productAttributeOption: { groupBy: (arg0: { by: string[]; _count: { _all: boolean; }; }) => Promise<any>; findFirst: (arg0: { where: { attributeId: string; }; include: { attribute: { select: { name: boolean; type: boolean; }; }; }; }) => any; }; productVariantOption: { groupBy: (arg0: { by: string[]; _count: { _all: boolean; }; }) => Promise<any>; findFirst: (arg0: { where: { attributeId: string; }; include: { attribute: { select: { name: boolean; type: boolean; }; }; }; }) => any; }; attribute: { findUnique: (arg0: { where: { id: string; }; }) => Promise<any>; create: (arg0: { data: { id: string; name: string; type: string; isActive: boolean; }; }) => any; }; }) => {
+    await prisma.$transaction(async (tx) => {
       /* -------------------- 1) Categories from Product.categoryId -------------------- */
       const catRefs = await tx.product.groupBy({
         by: ['categoryId'],

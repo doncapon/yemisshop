@@ -9,6 +9,7 @@ import {
   notifyAdmins,
   notifySupplierBySupplierId,
 } from "../services/notifications.service.js";
+import { requiredString } from "../lib/http.js";
 
 const router = Router();
 const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
@@ -107,7 +108,7 @@ router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Res
   try {
     if (!isAdmin(req.user?.role)) return res.status(403).json({ error: "Forbidden" });
 
-    const id = String(req.params.id || "").trim();
+    const id = requiredString(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "Missing allocation id" });
 
     const createLedger = req.body?.createLedger === true;

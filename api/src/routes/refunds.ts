@@ -155,7 +155,7 @@ router.post("/", requireAuth, async (req: any, res) => {
     const requestedByUserId = isAdmin(role) ? order.userId : actorId;
 
     try {
-        const created = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+        const created = await prisma.$transaction(async (tx) => {
             let pos: Array<{ id: string; supplierId: string; orderId: string }> = [];
 
             if (purchaseOrderId) {

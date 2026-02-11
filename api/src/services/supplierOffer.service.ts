@@ -60,7 +60,7 @@ function computeInStockFromQty(qty: any): boolean | undefined {
 export async function updateSupplierOffer(id: string, data: UpdateOfferInput) {
   const parsed = parseOfferId(id);
 
-  return prisma.$transaction(async (tx: any) => {
+  return prisma.$transaction(async (tx) => {
     // ---- BASE OFFER (SupplierProductOffer) ----
     if (parsed.model === "BASE") {
       const current = await tx.supplierProductOffer.findUnique({
@@ -143,37 +143,6 @@ export async function updateSupplierOffer(id: string, data: UpdateOfferInput) {
       await syncProductInStockCacheTx(tx, updated.productId);
       return { ...updated, id: `variant:${updated.id}` };
     }
-
-    // ---- LEGACY OFFER (supplierOffer) ----
-    // Keep this only if you still have the legacy table in your DB.
-    const current = await tx.supplierOffer.findUnique({
-      where: { id: parsed.id },
-      select: { id: true, productId: true, availableQty: true },
-    });
-    if (!current) throw new Error("Offer not found");
-
-    const nextQty =
-      data.availableQty != null
-        ? Math.trunc(asFiniteNumber(data.availableQty, current.availableQty)!)
-        : undefined;
-
-    const nextInStock = computeInStockFromQty(nextQty);
-
-    const updated = await tx.supplierOffer.update({
-      where: { id: parsed.id },
-      data: {
-        ...(data.price != null ? { offerPrice: asFiniteNumber(data.price, 0) ?? 0 } : {}),
-        ...(data.currency != null ? { currency: data.currency } : {}),
-        ...(data.isActive != null ? { isActive: !!data.isActive } : {}),
-        ...(nextQty != null ? { availableQty: nextQty } : {}),
-        ...(data.leadDays !== undefined ? { leadDays: data.leadDays } : {}),
-        ...(nextInStock != null ? { inStock: nextInStock } : {}),
-      },
-      select: { id: true, productId: true, availableQty: true, inStock: true, isActive: true },
-    });
-
-    await syncProductInStockCacheTx(tx, updated.productId);
-    return updated;
   });
 }
 
@@ -185,7 +154,7 @@ export async function restockSupplierOffer(id: string, delta: number) {
   const parsed = parseOfferId(id);
   if (!Number.isFinite(delta)) throw new Error("Invalid delta");
 
-  return prisma.$transaction(async (tx: any) => {
+  return prisma.$transaction(async (tx) => {
     const d = Math.trunc(delta);
 
     // BASE
@@ -229,24 +198,5 @@ export async function restockSupplierOffer(id: string, delta: number) {
       await syncProductInStockCacheTx(tx, updated.productId);
       return { ...updated, id: `variant:${updated.id}` };
     }
-
-    // LEGACY
-    const current = await tx.supplierOffer.findUnique({
-      where: { id: parsed.id },
-      select: { id: true, productId: true, availableQty: true },
-    });
-    if (!current) throw new Error("Offer not found");
-
-    const nextQty = Number(current.availableQty ?? 0) + d;
-    if (nextQty < 0) throw new Error("Resulting quantity would be negative");
-
-    const updated = await tx.supplierOffer.update({
-      where: { id: parsed.id },
-      data: { availableQty: nextQty, inStock: nextQty > 0 },
-      select: { id: true, productId: true, availableQty: true, inStock: true },
-    });
-
-    await syncProductInStockCacheTx(tx, updated.productId);
-    return updated;
   });
 }

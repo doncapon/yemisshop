@@ -7,6 +7,7 @@ import paystack from './paystack.js';
 import { prisma } from '../lib/prisma.js';
 import { requireAdmin, requireSuperAdmin } from '../middleware/auth.js';
 import z from 'zod';
+import { requiredString } from '../lib/http.js';
 
 const router = Router();
 
@@ -280,7 +281,7 @@ router.get('/ledger', requireAdmin, async (req: Request, res: Response) => {
 // GET /api/admin/suppliers/:id
 router.get('/:id', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id  = requiredString(req.params.id);
 
     const supplier = await prisma.supplier.findUnique({
       where: { id },
@@ -401,7 +402,7 @@ router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
 // PUT /api/admin/suppliers/:id
 router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id  = requiredString(req.params.id);
     const {
       name,
       type,
@@ -515,7 +516,7 @@ router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
 // DELETE /api/admin/suppliers/:id
 router.delete('/:id', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const  id  = requiredString(req.params.id);
 
     const usage = await supplierUsageCounts(id);
 
@@ -539,7 +540,7 @@ router.delete('/:id', requireSuperAdmin, async (req: Request, res: Response) => 
 // POST /api/admin/suppliers/:id/link-bank
 router.post('/:id/link-bank', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = requiredString(req.params.id);
     const { supplierName, bankCode, accountNumber, bankName, country = 'NG', currency = 'NGN' } = req.body || {};
 
     if (!bankCode || !accountNumber) {
@@ -607,7 +608,7 @@ router.post('/:id/link-bank', requireSuperAdmin, async (req: Request, res: Respo
 // POST /api/admin/suppliers/:id/bank-verify
 router.post('/:id/bank-verify', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
-    const supplierId = String(req.params.id);
+    const supplierId = requiredString(req.params.id);
 
     const body = z
       .object({
@@ -704,7 +705,7 @@ router.post('/:id/bank-verify', requireSuperAdmin, async (req: Request, res: Res
  */
 router.post('/:id/ledger-adjust', requireSuperAdmin, async (req: Request, res: Response) => {
   try {
-    const supplierId = String(req.params.id || '').trim();
+    const supplierId = requiredString(req.params.id || '').trim();
     if (!supplierId) return res.status(400).json({ error: 'Missing supplier id' });
 
     const adminId = (req as any)?.user?.id ?? null;

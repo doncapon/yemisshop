@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireSuperAdmin } from "../middleware/auth.js";
+import { requiredString } from "../lib/http.js";
 
 const router = Router();
 
@@ -218,7 +219,7 @@ router.get("/", requireAuth, requireSuperAdmin, async (_req, res) => {
 });
 
 router.get("/:id", requireAuth, requireSuperAdmin, async (req, res) => {
-  const row = await prisma.setting.findUnique({ where: { id: req.params.id } });
+  const row = await prisma.setting.findUnique({ where: { id: requiredString(req.params.id) } });
   if (!row) return res.status(404).json({ error: "Not found" });
   return res.json(row);
 });
@@ -258,13 +259,13 @@ router.patch("/:id", requireAuth, requireSuperAdmin, async (req, res) => {
 
   try {
     try {
-      const row = await prisma.setting.update({ where: { id: req.params.id }, data });
+      const row = await prisma.setting.update({ where: { id: requiredString(req.params.id) }, data });
       return res.json(row);
     } catch (e: any) {
       if (e?.code === "P2022" || /Unknown argument .*isPublic|meta/i.test(String(e?.message))) {
         const fallback: Record<string, any> = {};
         if (typeof value === "string") fallback.value = value;
-        const row = await prisma.setting.update({ where: { id: req.params.id }, data: fallback });
+        const row = await prisma.setting.update({ where: { id: requiredString(req.params.id) }, data: fallback });
         return res.json(row);
       }
       if (e?.code === "P2025") return res.status(404).json({ error: "Not found" });
@@ -277,7 +278,7 @@ router.patch("/:id", requireAuth, requireSuperAdmin, async (req, res) => {
 
 router.delete("/:id", requireAuth, requireSuperAdmin, async (req, res) => {
   try {
-    await prisma.setting.delete({ where: { id: req.params.id } });
+    await prisma.setting.delete({ where: { id: requiredString(req.params.id) } });
     return res.status(204).end();
   } catch (e: any) {
     if (e?.code === "P2025") return res.status(404).json({ error: "Not found" });

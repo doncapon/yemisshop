@@ -28,11 +28,11 @@ const lcFirst = (s: string) => (s ? s[0].toLowerCase() + s.slice(1) : s);
 
 const MODELS = Prisma.dmmf.datamodel.models;
 
-const modelByName = (name: string) => MODELS.find((m) => m.name === name);
+const modelByName = (name: string) => MODELS.find((m:any) => m.name === name);
 
 const fieldMap = (modelName: string) => {
   const m = modelByName(modelName);
-  return new Map((m?.fields ?? []).map((f) => [f.name, f]));
+  return new Map((m?.fields ?? []).map((f:any) => [f.name, f]));
 };
 
 const hasField = (modelName: string, fieldName: string) => fieldMap(modelName).has(fieldName);
@@ -43,7 +43,7 @@ function findSettingsModelName(): string | null {
   for (const n of preferred) if (modelByName(n)) return n;
 
   // fallback: any model containing "setting"
-  const any = MODELS.find((m) => m.name.toLowerCase().includes("setting"));
+  const any = MODELS.find((m:any) => m.name.toLowerCase().includes("setting"));
   return any?.name ?? null;
 }
 
@@ -127,7 +127,7 @@ function pickPrice(o: any): number | null {
 }
 
 function isOfferLikeModel(m: (typeof MODELS)[number]) {
-  const f = new Set((m.fields ?? []).map((x) => x.name));
+  const f = new Set((m.fields ?? []).map((x:any) => x.name));
   // must have these
   if (!f.has("productId")) return false;
   if (!f.has("supplierId")) return false;
@@ -145,8 +145,8 @@ function getOfferModelNames() {
   const offerModels = MODELS.filter(isOfferLikeModel);
 
   // split base-only models vs variant-capable models
-  const unified = offerModels.filter((m) => (m.fields ?? []).some((f) => f.name === "variantId"));
-  const baseOnly = offerModels.filter((m) => !(m.fields ?? []).some((f) => f.name === "variantId"));
+  const unified = offerModels.filter((m:any) => (m.fields ?? []).some((f:any) => f.name === "variantId"));
+  const baseOnly = offerModels.filter((m:any) => !(m.fields ?? []).some((f:any) => f.name === "variantId"));
 
   // Prefer the most “offer-looking” names if there are many
   const scoreName = (name: string) => {
@@ -159,8 +159,8 @@ function getOfferModelNames() {
     return s;
   };
 
-  const bestUnified = unified.sort((a, b) => scoreName(b.name) - scoreName(a.name))[0]?.name ?? null;
-  const bestBaseOnly = baseOnly.sort((a, b) => scoreName(b.name) - scoreName(a.name))[0]?.name ?? null;
+  const bestUnified = unified.sort((a:any, b:any) => scoreName(b.name) - scoreName(a.name))[0]?.name ?? null;
+  const bestBaseOnly = baseOnly.sort((a:any, b:any) => scoreName(b.name) - scoreName(a.name))[0]?.name ?? null;
 
   return { bestUnified, bestBaseOnly };
 }
@@ -475,7 +475,7 @@ router.post("/items", async (req, res) => {
 
     // Build order item data, adding supplier fields if your schema supports it
     const orderItemModel = modelByName("OrderItem");
-    const orderItemFields = new Set((orderItemModel?.fields ?? []).map((f) => f.name));
+    const orderItemFields = new Set((orderItemModel?.fields ?? []).map((f:any) => f.name));
 
     const data: any = {
       orderId,

@@ -3,6 +3,7 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { notifyMany, notifyUser } from "../services/notifications.service.js";
+import { requiredString } from "../lib/http.js";
 
 const router = Router();
 
@@ -103,41 +104,7 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
   }
 
   try {
-    const updated = await prisma.$transaction(async (tx: {
-      refund: {
-        findUnique: (args: {
-          where: { id: string };
-          select: {
-            id: boolean;
-            status: boolean;
-            orderId: boolean;
-            purchaseOrderId: boolean;
-            supplierId: boolean;
-            requestedByUserId: boolean;
-          };
-        }) => any;
-        update: (args: {
-          where: { id: string };
-          data: {
-            status: any;
-            adminResolvedAt: Date;
-            adminResolvedById: any;
-            adminDecision: string;
-            adminNote: string | undefined;
-          };
-        }) => any;
-      };
-      refundEvent: {
-        create: (args: {
-          data: {
-            refundId: string;
-            type: string;
-            message: string | undefined;
-            meta: { adminId: any; decision: string };
-          };
-        }) => any;
-      };
-    }) => {
+    const updated = await prisma.$transaction(async (tx) => {
       const refund = await tx.refund.findUnique({
         where: { id },
         select: {
@@ -258,57 +225,10 @@ router.patch("/:id/decision", requireAuth, async (req: any, res) => {
 router.post("/:id/mark-refunded", requireAuth, async (req: any, res) => {
   if (!isAdmin(req.user?.role)) return res.status(403).json({ error: "Admin only" });
 
-  const id = norm(req.params.id);
+  const id = norm(requiredString(req.params.id));
 
   try {
-    const updated = await prisma.$transaction(async (tx: {
-      refund: {
-        findUnique: (args: {
-          where: { id: string };
-          select: {
-            id: boolean;
-            status: boolean;
-            orderId: boolean;
-            purchaseOrderId: boolean;
-            supplierId: boolean;
-            requestedByUserId: boolean;
-          };
-        }) => any;
-        update: (args: {
-          where: { id: string };
-          data: {
-            status: any;
-            processedAt: Date;
-            providerStatus: string | undefined;
-            providerReference: string | undefined;
-            providerPayload: any;
-            paidAt: Date | undefined;
-          };
-        }) => any;
-      };
-      refundEvent: {
-        create: (args: {
-          data: {
-            refundId: string;
-            type: string;
-            message: string;
-            meta: { adminId: any; providerStatus: any; providerReference: any };
-          };
-        }) => any;
-      };
-      purchaseOrder: {
-        update: (args: {
-          where: { id: any };
-          data: { payoutStatus: any };
-        }) => any;
-      };
-      payment: {
-        updateMany: (args: {
-          where: { orderId: any };
-          data: { status: any; refundedAt: Date };
-        }) => any;
-      };
-    }) => {
+    const updated = await prisma.$transaction(async (tx) => {
       const refund = await tx.refund.findUnique({
         where: { id },
         select: {

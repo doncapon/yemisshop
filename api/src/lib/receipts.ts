@@ -1,18 +1,28 @@
-import { prisma } from '../lib/prisma.js';
-import { Prisma } from '@prisma/client'
+// src/lib/receipts.ts
+import { prisma } from "../lib/prisma.js";
+import { Prisma } from "@prisma/client";
 
 function shortDate(d: Date) {
   const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
   return `${y}${m}${day}`; // e.g. 20250321
 }
 
 function compactReceiptNo(payId: string, reference: string, paidAt?: Date | null) {
   const datePart = shortDate(paidAt ?? new Date());
   // last 6 from payment reference (usually unique enough) + last 4 of payment id
-  const tail = `${reference.replace(/[^A-Z0-9]/gi, '').slice(-6)}${payId.slice(-4)}`.toUpperCase();
+  const tail = `${String(reference || "")
+    .replace(/[^A-Z0-9]/gi, "")
+    .slice(-6)}${String(payId || "").slice(-4)}`.toUpperCase();
   return `RCT-${datePart}-${tail}`;
+}
+
+function toJsonObject(v: unknown): Prisma.JsonObject {
+  // Prisma JSON cannot store Date objects; convert Dates to ISO strings
+  return JSON.parse(
+    JSON.stringify(v, (_k, val) => (val instanceof Date ? val.toISOString() : val))
+  ) as Prisma.JsonObject;
 }
 
 export async function issueReceiptIfNeeded(paymentId: string) {
@@ -27,21 +37,27 @@ export async function issueReceiptIfNeeded(paymentId: string) {
           items: {
             include: {
               product: { select: { title: true, sku: true } },
-              variant: { select: { sku: true, imagesJson: true } }, // you added this relation
+              variant: { select: { sku: true, imagesJson: true } },
             },
           },
         },
       },
     },
   });
-  if (!pay) throw new Error('Payment not found');
-  if (pay.status !== 'PAID') return null;              // only issue on successful payments
+
+  if (!pay) throw new Error("Payment not found");
+  if (pay.status !== "PAID") return null; // only issue on successful payments
 
   // If already issued, return the snapshot (idempotent)
   if (pay.receiptNo && pay.receiptData) return pay;
 
   const o = pay.order;
-  if (!o) throw new Error('Payment missing order');
+  if (!o) throw new Error("Payment missing order");
+
+  const shippingBreakdown = (o as any).shippingBreakdownJson ?? null;
+
+  const shippingTotal =
+    (shippingBreakdown && (shippingBreakdown.total ?? shippingBreakdown.shippingTotal)) ?? 0;
 
   // Build a render-ready snapshot (keeps your receipts consistent in time)
   const snapshot = {
@@ -50,42 +66,52 @@ export async function issueReceiptIfNeeded(paymentId: string) {
     paidAt: pay.paidAt ?? new Date(),
     provider: pay.provider,
     channel: pay.channel,
-    amount: pay.amount,  // Decimal kept; format on the frontend
-    currency: 'NGN',
+    amount: pay.amount, // Decimal kept; format on the frontend
+    currency: "NGN",
 
     order: {
       id: o.id,
       status: o.status,
       subtotal: o.subtotal,
       tax: o.tax,
-      shipping: o.shipping,
+      shipping: {
+        total: shippingTotal,
+        breakdown: shippingBreakdown,
+      },
       total: o.total,
       createdAt: o.createdAt,
       shippingAddress: o.shippingAddress, // raw; render selectively
-      items: o.items.map((it: { id: any; title: any; product: { title: any; sku: any; }; variant: { sku: any; }; unitPrice: Prisma.Decimal.Value; quantity: Prisma.Decimal.Value; lineTotal: any; selectedOptions: any; }) => ({
-        id: it.id,
-        title: it.title || it.product?.title || 'Item',
-        variantSku: it.variant?.sku || null,
-        productSku: it.product?.sku || null,
-        unitPrice: it.unitPrice,
-        quantity: it.quantity,
-        lineTotal: it.lineTotal ?? new Prisma.Decimal(it.quantity).times(it.unitPrice),
-        selectedOptions: it.selectedOptions ?? [],
-      })),
+      items: o.items.map((it) => {
+        const qty = new Prisma.Decimal(it.quantity as any);
+        const unit = new Prisma.Decimal(it.unitPrice as any);
+        const computedLineTotal =
+          it.lineTotal != null ? new Prisma.Decimal(it.lineTotal as any) : qty.times(unit);
+
+        return {
+          id: it.id,
+          title: it.title || it.product?.title || "Item",
+          variantSku: it.variant?.sku || null,
+          productSku: it.product?.sku || null,
+          unitPrice: it.unitPrice,
+          quantity: it.quantity,
+          lineTotal: computedLineTotal,
+          selectedOptions: (it as any).selectedOptions ?? [],
+        };
+      }),
     },
 
     customer: {
-      email: o.user?.email || '',
-      name: [o.user?.firstName, o.user?.lastName].filter(Boolean).join(' ') || '',
-      phone: o.user?.phone || '',
+      email: o.user?.email || "",
+      name: [o.user?.firstName, o.user?.lastName].filter(Boolean).join(" ") || "",
+      phone: o.user?.phone || "",
     },
 
     // Your brand info — hardcode or read from env/config
     merchant: {
-      name: process.env.APP_NAME || 'DaySpring',
-      addressLine1: process.env.MERCHANT_ADDR1 || '',
-      addressLine2: process.env.MERCHANT_ADDR2 || '',
-      supportEmail: process.env.SUPPORT_EMAIL || 'support@example.com',
+      name: process.env.APP_NAME || "DaySpring",
+      addressLine1: process.env.MERCHANT_ADDR1 || "",
+      addressLine2: process.env.MERCHANT_ADDR2 || "",
+      supportEmail: process.env.SUPPORT_EMAIL || "support@example.com",
     },
   };
 
@@ -99,19 +125,21 @@ export async function issueReceiptIfNeeded(paymentId: string) {
       data: {
         receiptNo: proposed,
         receiptIssuedAt: new Date(),
-        receiptData: snapshot as Prisma.JsonObject,
+        receiptData: toJsonObject(snapshot),
       },
     });
     return updated;
   } catch (e: any) {
-    if (String(e?.code) !== 'P2002') throw e; // not unique conflict
-    const alt = `${proposed}-${(Math.random() * 36 ** 2 | 0).toString(36).toUpperCase().padStart(2, '0')}`;
+    if (String(e?.code) !== "P2002") throw e; // not unique conflict
+    const alt = `${proposed}-${(((Math.random() * 36 ** 2) | 0).toString(36) as string)
+      .toUpperCase()
+      .padStart(2, "0")}`;
     const updated = await prisma.payment.update({
       where: { id: paymentId },
       data: {
         receiptNo: alt,
         receiptIssuedAt: new Date(),
-        receiptData: snapshot as Prisma.JsonObject,
+        receiptData: toJsonObject(snapshot),
       },
     });
     return updated;

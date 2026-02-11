@@ -48,7 +48,6 @@ export const prismaSoft = prisma.$extends({
         const whereUnique = args.where; // id/sku/...
         return prisma.product.findFirst({
           select: args.select,
-          include: args.include,
           where: {
             AND: [
               { isDeleted: false },
@@ -86,7 +85,6 @@ export const prismaSoft = prisma.$extends({
       async findUniqueNotDeleted(args: Prisma.ProductFindUniqueArgs) {
         return prisma.product.findFirst({
           select: args.select,
-          include: args.include,
           where: {
             AND: [
               { isDeleted: false },

@@ -5,6 +5,7 @@ import { requireAdmin, requireAuth, requireSuperAdmin } from "../middleware/auth
 import { z } from "zod";
 
 import { prisma } from "../lib/prisma.js";
+import { requiredString } from "../lib/http.js";
 
 const router = Router();
 
@@ -1042,51 +1043,51 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
   const [baseOffers, variantOffers] = await Promise.all([
     productIds.length
       ? prisma.supplierProductOffer.findMany({
-          where: {
-            productId: { in: productIds },
+        where: {
+          productId: { in: productIds },
 
-            ...(getModelField("SupplierProductOffer", "isActive") ? { isActive: true } : {}),
-            ...(getModelField("SupplierProductOffer", "inStock") ? { inStock: true } : {}),
-            ...(getModelField("SupplierProductOffer", "availableQty")
-              ? { availableQty: intGtZeroFilter("SupplierProductOffer", "availableQty") }
-              : {}),
+          ...(getModelField("SupplierProductOffer", "isActive") ? { isActive: true } : {}),
+          ...(getModelField("SupplierProductOffer", "inStock") ? { inStock: true } : {}),
+          ...(getModelField("SupplierProductOffer", "availableQty")
+            ? { availableQty: intGtZeroFilter("SupplierProductOffer", "availableQty") }
+            : {}),
 
-            // ✅ price must be > 0 (schema-safe; no invalid `not: null` for non-nullable Decimals)
-            ...(getModelField("SupplierProductOffer", "basePrice")
-              ? { basePrice: decimalGtZeroFilter("SupplierProductOffer", "basePrice") }
-                :{}),
-          } as any,
-          select: {
-            productId: true,
-            supplierId: true,
-            ...(getModelField("SupplierProductOffer", "basePrice") ? { basePrice: true } : {}),
-          } as any,
-        })
+          // ✅ price must be > 0 (schema-safe; no invalid `not: null` for non-nullable Decimals)
+          ...(getModelField("SupplierProductOffer", "basePrice")
+            ? { basePrice: decimalGtZeroFilter("SupplierProductOffer", "basePrice") }
+            : {}),
+        } as any,
+        select: {
+          productId: true,
+          supplierId: true,
+          ...(getModelField("SupplierProductOffer", "basePrice") ? { basePrice: true } : {}),
+        } as any,
+      })
       : Promise.resolve([] as any[]),
 
     allVariantIds.length
       ? prisma.supplierVariantOffer.findMany({
-          where: {
-            variantId: { in: allVariantIds },
+        where: {
+          variantId: { in: allVariantIds },
 
-            ...(getModelField("SupplierVariantOffer", "isActive") ? { isActive: true } : {}),
-            ...(getModelField("SupplierVariantOffer", "inStock") ? { inStock: true } : {}),
-            ...(getModelField("SupplierVariantOffer", "availableQty")
-              ? { availableQty: intGtZeroFilter("SupplierVariantOffer", "availableQty") }
-              : {}),
+          ...(getModelField("SupplierVariantOffer", "isActive") ? { isActive: true } : {}),
+          ...(getModelField("SupplierVariantOffer", "inStock") ? { inStock: true } : {}),
+          ...(getModelField("SupplierVariantOffer", "availableQty")
+            ? { availableQty: intGtZeroFilter("SupplierVariantOffer", "availableQty") }
+            : {}),
 
-            // ✅ unit price must be > 0 (schema-safe)
-            ...(getModelField("SupplierVariantOffer", "unitPrice")
-              ? { unitPrice: decimalGtZeroFilter("SupplierVariantOffer", "unitPrice") }
-             :{}),
-          } as any,
-          select: {
-            variantId: true,
-            productId: true,
-            supplierId: true,
-            ...(getModelField("SupplierVariantOffer", "unitPrice") ? { unitPrice: true } : {}),
-          } as any,
-        })
+          // ✅ unit price must be > 0 (schema-safe)
+          ...(getModelField("SupplierVariantOffer", "unitPrice")
+            ? { unitPrice: decimalGtZeroFilter("SupplierVariantOffer", "unitPrice") }
+            : {}),
+        } as any,
+        select: {
+          variantId: true,
+          productId: true,
+          supplierId: true,
+          ...(getModelField("SupplierVariantOffer", "unitPrice") ? { unitPrice: true } : {}),
+        } as any,
+      })
       : Promise.resolve([] as any[]),
   ]);
 
@@ -1298,7 +1299,7 @@ router.post(
   "/:id/status",
   requireAdmin,
   wrap(async (req, res) => {
-    const { id } = req.params;
+    const id = requiredString(req.params.id);
     const { status } = StatusSchema.parse(req.body ?? {});
 
     if (status === "PUBLISHED" || status === "LIVE") {
@@ -1338,7 +1339,7 @@ router.post(
   "/:productId/approve",
   requireSuperAdmin,
   wrap(async (req, res) => {
-    const { productId } = req.params;
+    const productId = requiredString(req.params.productId);
 
     if (!isValidProductStatus("PUBLISHED")) {
       return res.status(400).json({ error: "Schema does not support PUBLISHED status" });
@@ -1373,7 +1374,7 @@ router.post(
   "/:productId/reject",
   requireAdmin,
   wrap(async (req, res) => {
-    const { productId } = req.params;
+    const productId = requiredString(req.params.productId);
 
     if (!isValidProductStatus("REJECTED")) {
       return res.status(400).json({ error: "Schema does not support REJECTED status" });
@@ -1444,13 +1445,13 @@ export const createProductHandler = wrap(async (req, res) => {
 
   const autoRetail = computeRetailPriceAuto(req.body, body);
   const nextRetail =
-    body.retailPrice != null?
-     body.retailPrice
-        : autoRetail !== undefined
-          ? autoRetail
-          : undefined;
+    body.retailPrice != null ?
+      body.retailPrice
+      : autoRetail !== undefined
+        ? autoRetail
+        : undefined;
 
-  const created = await prisma.$transaction(async (tx: any) => {
+  const created = await prisma.$transaction(async (tx) => {
     const adminMode = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
     const desiredSku = String(body.sku ?? "").trim() ? skuSafePart(body.sku) : buildSkuFromTitle(body.title);
 
@@ -1533,15 +1534,15 @@ export const createProductHandler = wrap(async (req, res) => {
     // ✅ IMPORTANT: default variant.retailPrice if missing/null/undefined
     const variantsWithDefaultRetail = Array.isArray((body as any).variants)
       ? (body as any).variants.map((v: any) => {
-          const raw = v?.retailPrice ?? v?.price;
-          const n = raw == null ? null : Number(raw);
-          const hasValid = n != null && Number.isFinite(n) && n > 0;
+        const raw = v?.retailPrice ?? v?.price;
+        const n = raw == null ? null : Number(raw);
+        const hasValid = n != null && Number.isFinite(n) && n > 0;
 
-          return {
-            ...v,
-            retailPrice: hasValid ? n : productRetailNum,
-          };
-        })
+        return {
+          ...v,
+          retailPrice: hasValid ? n : productRetailNum,
+        };
+      })
       : undefined;
 
     if (Array.isArray(body.attributeSelections) && body.attributeSelections.length) {
@@ -1572,7 +1573,7 @@ router.post("/", createProductHandler);
 /* --------------------- Update product (PUT/PATCH) unified --------------------- */
 
 export const updateProductHandler = wrap(async (req, res) => {
-  const id = String(req.params.id);
+  const id = requiredString(req.params.id);
 
   const parsed = UpdateProductSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
@@ -1587,7 +1588,7 @@ export const updateProductHandler = wrap(async (req, res) => {
   const nextRetail =
     body.price != null ? body.price : body.retailPrice != null ? body.retailPrice : autoRetail !== undefined ? autoRetail : undefined;
 
-  const updated = await prisma.$transaction(async (tx: any) => {
+  const updated = await prisma.$transaction(async (tx) => {
     const data: any = {
       ...(body.title !== undefined ? { title: body.title } : {}),
       ...(body.description !== undefined ? { description: body.description } : {}),
@@ -1783,7 +1784,7 @@ router.post(
   "/:id/variants/bulk",
   requireAdmin,
   wrap(async (req, res) => {
-    const productId = String(req.params.id);
+    const productId = requiredString(req.params.id);
 
     const variantsRaw = Array.isArray(req.body?.variants) ? req.body.variants : [];
     const replace = req.body?.replace !== false;
@@ -1809,7 +1810,7 @@ router.post(
     const hasIsActive = hasScalar(variantModelName, "isActive");
     const hasIsDeleted = hasScalar(variantModelName, "isDeleted");
 
-    const result = await prisma.$transaction(async (tx: any) => {
+    const result = await prisma.$transaction(async (tx) => {
       const include: any = {};
       if (optionsRel) include[optionsRel] = true;
 
@@ -1830,7 +1831,7 @@ router.post(
 
       const existingByCombo = new Map<string, string>();
       for (const ev of existing || []) {
-        const opts = (optionsRel && ev?.[optionsRel]) || ev?.options || ev?.ProductVariantOptions || ev?.ProductVariantOption || [];
+        const opts = (optionsRel && (ev as any)?.[optionsRel]) || [];
         const k = comboKey(Array.isArray(opts) ? opts : []);
         if (k && !existingByCombo.has(k)) existingByCombo.set(k, String(ev.id));
       }
@@ -1973,7 +1974,7 @@ router.post(
   "/:id/go-live",
   requireSuperAdmin,
   wrap(async (req, res) => {
-    const id = String(req.params.id);
+    const id = requiredString(req.params.id);
 
     const mustHaveOffer = String((req.query as any)?.requireOffer ?? "1") !== "0";
     if (mustHaveOffer) {
@@ -2008,7 +2009,7 @@ router.delete(
   "/:id",
   requireAdmin,
   wrap(async (req, res) => {
-    const id = String(req.params.id);
+    const id = requiredString(req.params.id);
 
     const canSoft = hasProductScalarField("isDeleted") || hasProductScalarField("isDelete");
 
@@ -2045,7 +2046,7 @@ router.get(
   "/:id/has-orders",
   requireAdmin,
   wrap(async (req, res) => {
-    const productId = String(req.params.id);
+    const productId = requiredString(req.params.id);
 
     let total = 0;
 
@@ -2103,7 +2104,7 @@ router.get(
   "/:id",
   requireAdmin,
   wrap(async (req, res) => {
-    const id = String(req.params.id);
+    const id = requiredString(requiredString(req.params.id));
     const includeSet = parseIncludeParam(req.query);
 
     const select: any = {
@@ -2273,17 +2274,17 @@ router.get(
       // cheapest unit per variant
       const variantOffers = variantIds.length
         ? await prisma.supplierVariantOffer.findMany({
-            where: {
-              variantId: { in: variantIds },
-              ...(getModelField("SupplierVariantOffer", "isActive") ? { isActive: true } : {}),
-              ...(getModelField("SupplierVariantOffer", "inStock") ? { inStock: true } : {}),
-              ...(getModelField("SupplierVariantOffer", "availableQty") ? { availableQty: { gt: 0 } } : {}),
-              ...(getModelField("SupplierVariantOffer", "unitPrice")
-                ? { unitPrice: decimalGtZeroFilter("SupplierVariantOffer", "unitPrice") }
-                : {}),
-            } as any,
-            select: { variantId: true, unitPrice: true, supplierId: true },
-          })
+          where: {
+            variantId: { in: variantIds },
+            ...(getModelField("SupplierVariantOffer", "isActive") ? { isActive: true } : {}),
+            ...(getModelField("SupplierVariantOffer", "inStock") ? { inStock: true } : {}),
+            ...(getModelField("SupplierVariantOffer", "availableQty") ? { availableQty: { gt: 0 } } : {}),
+            ...(getModelField("SupplierVariantOffer", "unitPrice")
+              ? { unitPrice: decimalGtZeroFilter("SupplierVariantOffer", "unitPrice") }
+              : {}),
+          } as any,
+          select: { variantId: true, unitPrice: true, supplierId: true },
+        })
         : [];
 
       const bestUnitByVariantId = new Map<string, { unit: number; supplierId: string }>();
