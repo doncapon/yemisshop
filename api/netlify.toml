@@ -5,8 +5,6 @@
 [functions]
   directory = "netlify/functions"
 
-# Keep your existing /api/* URLs working:
-# /api/settings/public -> /.netlify/functions/api/api/settings/public
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api/api/:splat"
