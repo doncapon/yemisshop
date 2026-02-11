@@ -1,10 +1,10 @@
 [build]
-  base = "api"
+  base = "."
   command = "npm ci --include=dev && npx prisma generate && npm run build"
-  publish = "api/dist"
+  publish = "dist"
 
 [functions]
-  directory = "api/netlify/functions"
+  directory = "netlify/functions"
 
 [[redirects]]
   from = "/api/*"
