@@ -167,7 +167,14 @@ app.post(
 // /* 8) Public uploads */
 const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.resolve(process.cwd(), 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d', index: false }));
+// Serve uploaded files via /api so Netlify redirect forwards it to the function
+app.use("/api/uploads/files", express.static(UPLOADS_DIR, { maxAge: "30d", index: false }));
+
+// Keep this only for local/dev convenience (optional)
+if (!process.env.NETLIFY) {
+  app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "30d", index: false }));
+}
+
 app.use('/api/uploads', uploadsRouter);
 app.use('/api', supplierOffersList);
 
