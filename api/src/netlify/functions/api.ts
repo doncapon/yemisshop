@@ -5,5 +5,5 @@ const app = createApp();
 
 
 export const handler = serverless(app, {
-  basePath: "./netlify/functions/api",
+  basePath: "/.netlify/functions/api",
 });

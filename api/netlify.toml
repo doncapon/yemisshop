@@ -1,13 +1,24 @@
 [build]
-  base = "."
   command = "npm ci --include=dev && npx prisma generate && npm run build"
   publish = "dist"
 
 [functions]
-  directory = "netlify/functions"
+  directory = "src/netlify/functions"
+  node_bundler = "esbuild"
+
+# Optional but VERY common with Prisma on serverless:
+# (prevents “Query engine not found” at runtime)
+  included_files = ["prisma/**", "node_modules/.prisma/**", "node_modules/@prisma/**"]
 
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api/api/:splat"
+  status = 200
+  force = true
+
+# so visiting /api (no splat) doesn’t 404
+[[redirects]]
+  from = "/api"
+  to = "/.netlify/functions/api/api"
   status = 200
   force = true
