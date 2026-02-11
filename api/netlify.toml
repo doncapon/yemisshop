@@ -1,5 +1,5 @@
 [build]
-  command = "npm ci --include=dev && npx prisma generate && npm run build"
+command = "npm ci --include=dev && npx prisma generate && npx prisma migrate deploy && npx prisma db seed && npm run build"
   publish = "dist"
 
 [functions]
