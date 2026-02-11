@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAdmin, requireSuperAdmin } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
+import { requiredString } from '../lib/http.js';
 
 const r = Router();
 
@@ -57,7 +58,7 @@ r.post('/', requireSuperAdmin,  requireAdmin, async (req, res) => {
 
 // PUT /api/admin/attributes/:id
 r.put('/:id', requireSuperAdmin, requireAdmin,async (req, res) => {
-  const id = req.params.id;
+  const id = requiredString(req.params.id);
   const { name, type, isActive } = req.body || {};
 
   const data: any = {};
@@ -92,7 +93,7 @@ r.put('/:id', requireSuperAdmin, requireAdmin,async (req, res) => {
 // POST /api/admin/attributes/:attributeId/values
 // Require: name, code (non-empty), and enforce unique code
 r.post('/:attributeId/values', requireSuperAdmin, requireAdmin, async (req, res) => {
-  const attributeId = req.params.attributeId;
+  const attributeId = requiredString(req.params.attributeId);
   const { name, code, position = 0, isActive = true } = req.body || {};
 
   if (!isNonEmptyString(name)) {
@@ -130,7 +131,7 @@ r.post('/:attributeId/values', requireSuperAdmin, requireAdmin, async (req, res)
 // PUT /api/admin/attributes/:attributeId/values/:id
 // If code is provided, it must be non-empty & unique
 r.put('/:attributeId/values/:id', requireSuperAdmin, async (req, res) => {
-  const id = req.params.id;
+  const id = requiredString(req.params.id);
   const { name, code, position, isActive } = req.body || {};
 
   const data: any = {};
@@ -186,7 +187,7 @@ r.put('/:attributeId/values/:id', requireSuperAdmin, async (req, res) => {
 
 // DELETE /api/admin/attributes/:attributeId/values/:id
 r.delete('/:attributeId/values/:id', requireSuperAdmin, async (req, res) => {
-  const id = req.params.id;
+  const id = requiredString(req.params.id);
   await prisma.attributeValue.delete({ where: { id } });
   res.json({ ok: true });
 });
@@ -196,7 +197,7 @@ r.delete('/:attributeId/values/:id', requireSuperAdmin, async (req, res) => {
 // DELETE /api/admin/attributes/:id
 r.delete('/:id', requireSuperAdmin,  requireAdmin, async (req, res, next) => {
   try {
-    const id = req.params.id;
+    const id = requiredString(req.params.id);
 
     // Check if attribute is used anywhere before deleting
     let used = 0;

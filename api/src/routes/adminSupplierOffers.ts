@@ -6,6 +6,7 @@ import { z } from "zod";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
+import { requiredString } from "../lib/http.js";
 
 const router = express.Router();
 
@@ -477,7 +478,7 @@ router.patch(
   "/supplier-offers/:id",
   wrap(async (req, res, next) => {
     try {
-      const parsedId = parsePrefixedId(String(req.params.id || "").trim());
+      const parsedId = parsePrefixedId(requiredString(req.params.id || "").trim());
 
       if (parsedId.kind === "LEGACY") {
         return res.status(400).json({
@@ -570,7 +571,7 @@ router.patch(
           const nextLeadDays =
             patch.leadDays !== undefined ? (patch.leadDays == null ? null : patch.leadDays) : existing.leadDays ?? null;
 
-          const moved = await prisma.$transaction(async (tx: any) => {
+          const moved = await prisma.$transaction(async (tx) => {
             // create new VARIANT row (new id) OR keep same id if your schema allows it
             // safer default: new id. If you insist on same id, set id: existing.id but ensure no FK/hard constraints.
             const created = await tx.supplierVariantOffer.create({
@@ -700,7 +701,7 @@ router.patch(
         const nextLeadDays =
           patch.leadDays !== undefined ? (patch.leadDays == null ? null : patch.leadDays) : existing.leadDays ?? null;
 
-        const moved = await prisma.$transaction(async (tx: any) => {
+        const moved = await prisma.$transaction(async (tx) => {
           const created = await tx.supplierProductOffer.create({
             data: {
               supplierId: targetSupplierId,
@@ -807,7 +808,7 @@ router.patch(
 router.delete(
   "/supplier-offers/:id",
   wrap(async (req, res) => {
-    const parsedId = parsePrefixedId(String(req.params.id || "").trim());
+    const parsedId = parsePrefixedId(requiredString(req.params.id || "").trim());
 
     if (parsedId.kind === "LEGACY") {
       return res.status(400).json({
@@ -815,7 +816,7 @@ router.delete(
       });
     }
 
-    const result = await prisma.$transaction(async (tx: any) => {
+    const result = await prisma.$transaction(async (tx) => {
       // ---------------- VARIANT ----------------
       if (parsedId.kind === "VARIANT") {
         const row = await tx.supplierVariantOffer.findUnique({
@@ -949,7 +950,7 @@ router.delete(
 
     await assertProductOffersDeletable(productId);
 
-    const deleted = await prisma.$transaction(async (tx: any) => {
+    const deleted = await prisma.$transaction(async (tx) => {
       const delVar = await tx.supplierVariantOffer.deleteMany({
         where: { variant: { productId } } as any,
       });
@@ -984,7 +985,7 @@ router.post(
     });
     if (!product) return res.status(404).json({ error: "Product not found" });
 
-    const result = await prisma.$transaction(async (tx: any) => {
+    const result = await prisma.$transaction(async (tx) => {
       const variantOffers = await tx.supplierVariantOffer.findMany({
         where: { variant: { productId } } as any,
         select: {

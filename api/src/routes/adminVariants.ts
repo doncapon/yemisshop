@@ -41,7 +41,7 @@ router.patch("/:variantId", async (req, res) => {
       ...(imagesJson !== undefined ? { imagesJson } : {}),
     };
 
-    const result = await prisma.$transaction(async (tx: any) => {
+    const result = await prisma.$transaction(async (tx) => {
       await tx.productVariant.update({ where: { id: variantId }, data });
 
       if (Array.isArray(options)) {

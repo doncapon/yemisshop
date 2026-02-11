@@ -3,23 +3,24 @@
   "version": "0.2.0",
   "type": "module",
   "prisma": {
-    "seed": "node prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node dist/src/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
     "seeds": "node dist/prisma/seed.js",
-    "seed": "node prisma/seed.ts",
+    "seed": "prisma db seed",
     "postdeploy": "npm run seed",
     "prestart": "prisma migrate deploy && echo '--- PWD ---' && pwd && echo '--- ls -la ---' && ls -la && echo '--- ls -R dist ---' && ls -R dist || true"
   },
   "dependencies": {
-    "@prisma/client": "^6.17.1",
+    "@prisma/adapter-pg": "^7.3.0",
+    "@prisma/client": "^6.19.2",
     "axios": "^1.12.2",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
@@ -38,8 +39,10 @@
     "nodemailer": "^7.0.6",
     "paystack-api": "^2.0.6",
     "pdfkit": "^0.17.2",
+    "pg": "^8.18.0",
     "process": "^0.11.10",
     "resend": "^6.4.2",
+    "tsx": "^4.21.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -52,15 +55,19 @@
     "@types/luxon": "^3.7.1",
     "@types/morgan": "^1.9.10",
     "@types/multer": "^2.0.0",
-    "@types/node": "^24.10.4",
+    "@types/node": "^24.10.13",
     "@types/nodemailer": "^7.0.2",
     "@types/pdfkit": "^0.17.3",
+    "@types/pg": "^8.16.0",
     "dotenv-cli": "^11.0.0",
     "multer": "^2.0.2",
-    "prisma": "^6.16.3",
+    "prisma": "^6.19.2",
     "slugify": "^1.6.6",
     "ts-node": "^10.9.2",
-    "tsx": "^4.20.6",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
+  },
+  "volta": {
+    "node": "22.12.0"
   }
 }

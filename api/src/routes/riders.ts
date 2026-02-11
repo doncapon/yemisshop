@@ -133,7 +133,7 @@ router.post("/invite", requireAuth, async (req: any, res: Response) => {
     const inviteHash = sha256(inviteToken);
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
 
-    const out = await prisma.$transaction(async (tx: any) => {
+    const out = await prisma.$transaction(async (tx) => {
       let user = await tx.user.findUnique({
         where: { email },
         select: { id: true, role: true, status: true },
@@ -281,7 +281,7 @@ router.post("/accept-invite", async (req: any, res: Response) => {
 
     const tokenHash = sha256(token);
 
-    const out = await prisma.$transaction(async (tx: any) => {
+    const out = await prisma.$transaction(async (tx) => {
       const user = await tx.user.findUnique({
         where: { email },
         select: {

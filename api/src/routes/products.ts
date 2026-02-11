@@ -35,8 +35,8 @@ function toNum(d: any): number | null {
 /* -------------------------------------------------------------------------- */
 
 function getModelFields(modelName: string): Map<string, any> {
-  const m = Prisma.dmmf.datamodel.models.find((x) => x.name === modelName);
-  return new Map((m?.fields ?? []).map((f) => [f.name, f]));
+  const m = Prisma.dmmf.datamodel.models.find((x:any) => x.name === modelName);
+  return new Map((m?.fields ?? []).map((f:any) => [f.name, f]));
 }
 function hasScalar(modelName: string, fieldName: string) {
   const f = getModelFields(modelName).get(fieldName);

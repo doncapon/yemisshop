@@ -3,6 +3,7 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireAdmin, requireSuperAdmin } from "../middleware/auth.js";
 import slugify from "../lib/slugify.js";
+import { requiredString } from "../lib/http.js";
 
 const r = Router();
 
@@ -47,7 +48,7 @@ r.post("/", requireSuperAdmin, async (req, res, next) => {
 // PUT /api/admin/categories/:id  (Super admin only)
 r.put("/:id", requireSuperAdmin, async (req, res, next) => {
   try {
-    const id = req.params.id;
+    const id = requiredString(req.params.id);
     const { name, slug, parentId, position, isActive } = req.body || {};
 
     const updated = await prisma.category.update({
@@ -70,7 +71,7 @@ r.put("/:id", requireSuperAdmin, async (req, res, next) => {
 // DELETE /api/admin/categories/:id  (Super admin only)
 r.delete("/:id", requireSuperAdmin, async (req, res, next) => {
   try {
-    const id = req.params.id;
+    const id = requiredString(req.params.id);
 
     const used = await prisma.product.count({ where: { categoryId: id } });
     if (used > 0) {

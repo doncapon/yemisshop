@@ -3,9 +3,8 @@ import { PrismaClient, $Enums } from '@prisma/client'
 import type { Prisma } from '@prisma/client'
 import type { Role } from '../types/role.js';
 import { prisma } from '../lib/prisma.js';
-import { startOfDay, addDays } from 'date-fns';
-import { Decimal } from '@prisma/client/runtime/binary';
 import { DateTime } from 'luxon';
+import { Decimal } from '@prisma/client/runtime/client';
 
 /* ------------------------------------------------------------------ */
 /* Types returned by the service                                       */
@@ -21,11 +20,12 @@ export type AdminUser = {
 export type AdminProduct = {
   id: string;
   title: string;
-  retailPrice: Decimal | number | string;
+  retailPrice: Decimal | number | string | null;
   status: string;
   imagesJson?: string[];
   createdAt?: Date | string;
 };
+
 
 export type AdminPayment = {
   id: string;
@@ -81,8 +81,8 @@ export async function computeProfitForWindow(
       where: { createdAt: { gte: from, lte: to } },
       select: { id: true },
     });
-    scopedOrderIds = ordersInWindow.map((o) => o.id);
-    if (!scopedOrderIds.length) {
+    scopedOrderIds = ordersInWindow.map((o: any) => o.id);
+    if (!scopedOrderIds!.length) {
       return {
         revenuePaid: 0,
         refunds: 0,
@@ -204,7 +204,7 @@ export async function computeProfitForWindow(
         where: { id: { in: orderIds } },
         select: { id: true, total: true },
       });
-      const totalById = new Map(totals.map((o) => [o.id, N(o.total)]));
+      const totalById = new Map(totals.map((o: any) => [o.id, N(o.total)]));
 
       for (const r of commsRows) {
         const oid = String(r.orderId || "");
@@ -479,31 +479,27 @@ export async function getOverview(): Promise<Overview> {
   };
 }
 
-export async function createCoupon(args: { code: string; pct: number; maxUses: number }) {
-  const code = args.code.trim().toUpperCase();
-  if (!code) throw new Error('Coupon code is required');
-  if (args.pct < 1 || args.pct > 90) throw new Error('Percent must be between 1 and 90');
-  if (args.maxUses < 1) throw new Error('Max uses must be at least 1');
+// export async function createCoupon(args: { code: string; pct: number; maxUses: number }) {
+//   const code = args.code.trim().toUpperCase();
+//   if (!code) throw new Error('Coupon code is required');
+//   if (args.pct < 1 || args.pct > 90) throw new Error('Percent must be between 1 and 90');
+//   if (args.maxUses < 1) throw new Error('Max uses must be at least 1');
 
-  try {
-    const created = await prisma.coupon.create({
-      data: {
-        code,
-        pct: Math.round(args.pct),
-        maxUses: Math.round(args.maxUses),
-        usedCount: 0,
-        status: 'ACTIVE',
-      },
-      select: { id: true, code: true, pct: true, maxUses: true, usedCount: true, status: true, createdAt: true },
-    });
-    return created;
-  } catch (err: any) {
-    if (err?.code === 'P2021' || /prisma\.coupon/i.test(String(err))) {
-      throw new Error('Coupon model not found. Please add a Coupon model to your Prisma schema.');
-    }
-    throw err;
-  }
-}
+//   try {
+//     const created = await prisma.coupon.create({
+//       data: {
+//         code,
+//       },
+//       select: { id: true, code: true, createdAt: true },
+//     });
+//     return created;
+//   } catch (err: any) {
+//     if (err?.code === 'P2021' || /prisma\.coupon/i.test(String(err))) {
+//       throw new Error('Coupon model not found. Please add a Coupon model to your Prisma schema.');
+//     }
+//     throw err;
+//   }
+// }
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -847,14 +843,17 @@ export async function opsSnapshot(): Promise<{
   }
 
   try {
-    const events = await prisma.securityEvent?.findMany?.({
-      orderBy: { createdAt: 'desc' },
-      take: 20,
-      select: { message: true, level: true, createdAt: true },
-    });
-    if (Array.isArray(events)) {
-      securityEvents = events;
+    const securityEventClient = (prisma as any)["securityEvent"];
+    if (securityEventClient?.findMany) {
+      const events = await securityEventClient.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: { message: true, level: true, createdAt: true },
+      });
+      if (Array.isArray(events)) securityEvents = events;
     }
+
+
   } catch {
     // ignore, return empty events
   }

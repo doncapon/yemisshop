@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireAdmin, requireSuperAdmin} from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import slugify from '../lib/slugify.js'; // simple helper; add below snippet if you don't have one
+import { requiredString } from '../lib/http.js';
 
 
 
@@ -27,7 +28,7 @@ r.post('/', requireSuperAdmin, requireAdmin, async (req, res) => {
 });
 
 r.put('/:id', requireSuperAdmin,  requireAdmin, async (req, res) => {
-  const id = req.params.id;
+  const id = requiredString(req.params.id);
   const { name, slug, logoUrl, isActive } = req.body || {};
   const updated = await prisma.brand.update({
     where: { id },
@@ -44,7 +45,7 @@ r.put('/:id', requireSuperAdmin,  requireAdmin, async (req, res) => {
 // DELETE /api/admin/brands/:id
 r.delete('/:id', requireSuperAdmin, requireAdmin, async (req, res, next) => {
   try {
-    const id = req.params.id;
+    const id = requiredString(req.params.id);
 
     const used = await prisma.product.count({ where: { brandId: id } });
     if (used > 0) {

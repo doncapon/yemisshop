@@ -69,6 +69,54 @@
   background-image: radial-gradient(1200px 400px at 50% -100px, rgba(59,130,246,0.18), transparent 60%);
 }
 
+/* ===========================
+   Silver-ish fancy borders
+   =========================== */
+
+:root {
+  --silver-border: rgba(203, 213, 225, 0.95);   /* slate-300-ish */
+  --silver-border-soft: rgba(226, 232, 240, 0.9); /* slate-200-ish */
+  --silver-highlight: rgba(255, 255, 255, 0.75);
+
+  /* very subtle shadows */
+  --silver-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  --silver-shadow-hover: 0 2px 6px rgba(15, 23, 42, 0.10);
+}
+
+:root.dark {
+  --silver-border: rgba(148, 163, 184, 0.55);  /* slate-400-ish */
+  --silver-border-soft: rgba(148, 163, 184, 0.35);
+  --silver-highlight: rgba(255, 255, 255, 0.10);
+
+  --silver-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --silver-shadow-hover: 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+
+/* Simple “silver border + tiny shadow” */
+.silver-border {
+  border: 1px solid var(--silver-border);
+  box-shadow: inset 0 1px 0 var(--silver-highlight), var(--silver-shadow);
+}
+
+/* Slightly fancier: silver gradient edge */
+.silver-border-grad {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--color-surface), var(--color-surface)) padding-box,
+    linear-gradient(135deg,
+      rgba(255,255,255,0.90),
+      rgba(148,163,184,0.75),
+      rgba(255,255,255,0.60)
+    ) border-box;
+  box-shadow: inset 0 1px 0 var(--silver-highlight), var(--silver-shadow);
+}
+
+/* Optional gentle hover (use on cards/buttons) */
+.silver-hover:hover {
+  box-shadow: inset 0 1px 0 var(--silver-highlight), var(--silver-shadow-hover);
+}
+
+
 /* ===================== Modal (uses Tailwind v4 @theme tokens) ===================== */
 :root {
   --modal-backdrop: rgba(17, 24, 39, 0.6); /* based on --color-ink */
@@ -200,6 +248,15 @@
 @media (prefers-reduced-motion: reduce) {
   .modal-overlay, .modal-panel {
     animation: none !important;
+  }
+}
+html {
+  font-size: 110%;
+}
+
+@media (max-width: 640px) {
+  html {
+    font-size: 150%;
   }
 }
 

@@ -43,6 +43,11 @@ RUN apk add --no-cache openssl libc6-compat
 
 # Copy runtime deps (with generated Prisma client inside)
 COPY --from=deps /app/node_modules ./node_modules
+# in the final stage (runner)
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/package-lock.json ./package-lock.json
+
+
 
 # Built JS
 COPY --from=build /app/dist ./dist
@@ -60,4 +65,4 @@ ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["node", "dist/server.js"]
+CMD ["node", "dist/src/server.js"]

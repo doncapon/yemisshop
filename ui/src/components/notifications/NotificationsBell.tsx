@@ -386,7 +386,7 @@ export default function NotificationsBell({
         >
           <Bell size={18} className="text-zinc-700" />
           {unreadCount > 0 && (
-            <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+            <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[20px] md:text-[10px] font-semibold text-white flex items-center justify-center">
               {unreadCount > 9 ? "9+" : unreadCount}
             </span>
           )}
@@ -396,7 +396,7 @@ export default function NotificationsBell({
           <div className="absolute right-0 mt-2 w-[min(92vw,360px)] rounded-2xl border border-zinc-200 bg-white/95 backdrop-blur shadow-lg overflow-hidden">
             <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-100">
               <div className="flex items-center gap-2">
-                <div className="text-xs font-semibold text-zinc-700">Notifications</div>
+                <div className="text-[24px] md:text-xs font-semibold text-zinc-700">Notifications</div>
                 {enableRealtime && (
                   <span
                     className={`text-[10px] px-2 py-0.5 rounded-full border ${sseAlive
@@ -413,7 +413,7 @@ export default function NotificationsBell({
                 <button
                   type="button"
                   onClick={handleMarkAllRead}
-                  className="text-[11px] px-2 py-1 rounded-lg border border-zinc-200 bg-white hover:bg-zinc-50"
+                  className="text-[22px] md:text-[11px] px-2 py-1 rounded-lg border border-zinc-200 bg-white hover:bg-zinc-50"
                 >
                   Mark all as read
                 </button>
@@ -422,11 +422,11 @@ export default function NotificationsBell({
 
             <div className="max-h-[360px] overflow-y-auto">
               {isLoading ? (
-                <div className="p-3 text-xs text-zinc-500">Loading…</div>
-              ) : isError ? (
                 <div className="p-3 text-xs text-rose-600">Could not load notifications.</div>
+              ) : isError ? (
+                <div className="p-3 text-[24px] md:text-xs text-rose-600">Could not load notifications.</div>
               ) : !items.length ? (
-                <div className="p-4 text-xs text-zinc-500">No notifications yet.</div>
+                <div className="p-4 text-[24px] md:text-xs text-zinc-500">No notifications yet.</div>
               ) : (
                 <ul className="divide-y divide-zinc-100">
                   {items.map((n) => {
@@ -434,8 +434,8 @@ export default function NotificationsBell({
                     return (
                       <li
                         key={n.id}
-                        className={`px-3 py-2.5 text-xs cursor-pointer hover:bg-zinc-50 ${unread ? "bg-fuchsia-50/60" : "bg-white"
-                          }`}
+                        className={`px-3 py-2.5 text-[24px] md:text-xs cursor-pointer hover:bg-zinc-50 ${unread ? "bg-fuchsia-50/60" : "bg-white"}`}
+
                         onClick={() => handleItemClick(n)}
                       >
                         <div className="flex items-start gap-2">
@@ -445,10 +445,10 @@ export default function NotificationsBell({
                           />
                           <div className="min-w-0 flex-1">
                             <div className="font-semibold text-zinc-800 truncate">{n.title}</div>
-                            <div className="mt-0.5 text-[11px] text-zinc-600 line-clamp-2">
+                            <div className="mt-0.5 text-[22px] md:text-[11px] text-zinc-600 line-clamp-2">
                               {n.body}
                             </div>
-                            <div className="mt-0.5 text-[10px] text-zinc-400">
+                            <div className="mt-0.5 text-[20px] md:text-[10px] text-zinc-400">
                               {formatTime(n.createdAt)}
                             </div>
                           </div>
@@ -475,10 +475,10 @@ export default function NotificationsBell({
               <div className="flex items-start gap-3">
                 <div className="mt-[4px] h-2.5 w-2.5 rounded-full bg-fuchsia-500 flex-shrink-0" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-semibold text-zinc-900 truncate">
+                  <div className="text-[28px] md:text-sm font-semibold text-zinc-900 truncate">
                     {inlineToast.title}
                   </div>
-                  <div className="mt-1 text-[13px] leading-snug text-zinc-800 line-clamp-4">
+                  <div className="mt-1 text-[26px] md:text-[13px] leading-snug text-zinc-800 line-clamp-4">
                     {inlineToast.body}
                   </div>
                 </div>
@@ -488,7 +488,7 @@ export default function NotificationsBell({
                     clearToastTimer();
                     setInlineToast(null);
                   }}
-                  className="ml-2 text-xs text-zinc-400 hover:text-zinc-600"
+                  className="ml-2 text-[24px] md:text-xs text-zinc-400 hover:text-zinc-600"
                   aria-label="Close notification preview"
                 >
                   ×

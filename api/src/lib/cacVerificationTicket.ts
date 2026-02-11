@@ -62,7 +62,7 @@ export async function consumeCacVerificationTicket(args: {
   const tokenHash = sha256Hex(args.token);
   const now = new Date();
 
-  return prisma.$transaction(async (tx: { cacVerificationTicket: { findUnique: (arg0: { where: { tokenHash: string; }; }) => any; update: (arg0: { where: { tokenHash: string; }; data: { usedAt: Date; }; }) => any; }; }) => {
+  return prisma.$transaction(async (tx) => {
     const rec = await tx.cacVerificationTicket.findUnique({
       where: { tokenHash },
     });

@@ -15,6 +15,7 @@ import {
   setCooldown,
   resetDailyWindow,
 } from '../lib/cacThrottle.js';
+import { Prisma } from '@prisma/client';
 
 const router = Router();
 
@@ -99,7 +100,7 @@ try {
       where: { CacLookup_rc_companyType_key: { rcNumber: rc_number, companyType: company_type } },
       update: {
         outcome: 'NOT_FOUND',
-        entity: null,
+        entity: Prisma.JsonNull,
         checkedAt: new Date(),
         retryAt: state?.retryAt ? new Date(state.retryAt) : null,
       },
@@ -107,7 +108,7 @@ try {
         rcNumber: rc_number,
         companyType: company_type,
         outcome: 'NOT_FOUND',
-        entity: null,
+        entity: Prisma.JsonNull,
         checkedAt: new Date(),
         retryAt: state?.retryAt ? new Date(state.retryAt) : null,
       },
@@ -216,7 +217,7 @@ router.post('/admin/supplier/kyc-reset', requireAdmin, async (req, res, next) =>
       where: { rcNumber: body.rcNumber },
       data: {
         kycStatus: 'NONE',
-        kycRawPayload: null,
+        kycRawPayload: Prisma.JsonNull,
         ownerVerified: false,
         kycCheckedAt: null,
         kycApprovedAt: null,

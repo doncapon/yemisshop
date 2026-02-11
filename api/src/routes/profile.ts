@@ -80,7 +80,7 @@ router.post('/address', requireAuth, async (req, res, next) => {
     const userId = req.user!.id;
     const data = addressSchema.parse(req.body);
 
-    const saved = await prisma.$transaction(async (tx: { address: { create: (arg0: { data: { houseNumber: string; streetName: string; postCode: string; town: string; city: string; state: string; country: string; }; }) => any; }; user: { update: (arg0: { where: { id: string; }; data: { addressId: any; }; }) => any; }; }) => {
+    const saved = await prisma.$transaction(async (tx) => {
       // create a new address
       const addr = await tx.address.create({ data });
       // attach to user
@@ -106,7 +106,7 @@ router.post('/shipping', requireAuth, async (req, res, next) => {
     const userId = req.user!.id;
     const data = addressSchema.parse(req.body);
 
-    const saved = await prisma.$transaction(async (tx: { address: { create: (arg0: { data: { houseNumber: string; streetName: string; postCode: string; town: string; city: string; state: string; country: string; }; }) => any; }; user: { update: (arg0: { where: { id: string; }; data: { shippingAddressId: any; }; }) => any; }; }) => {
+    const saved = await prisma.$transaction(async (tx) => {
       const addr = await tx.address.create({ data });
       await tx.user.update({
         where: { id: userId },

@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { getGlobalCommsFee } from '../lib/comms.js';
+import { requiredString } from '../lib/http.js';
 
 const router = Router();
 
@@ -15,7 +16,7 @@ const router = Router();
  * - Returns current total comms logged for the order
  */
 router.post('/:orderId/comms', requireAdmin, async (req, res) => {
-  const { orderId } = req.params;
+  const orderId  = requiredString(req.params.orderId);
   const amountRaw = req.body?.amount;
   const reason = (req.body?.reason ?? '').toString().slice(0, 200);
 
@@ -55,7 +56,7 @@ router.post('/:orderId/comms', requireAdmin, async (req, res) => {
  * Returns list + total
  */
 router.get('/:orderId/comms', requireAdmin, async (req, res) => {
-  const { orderId } = req.params;
+  const orderId = requiredString(req.params.orderId);
   const list = await prisma.orderComms.findMany({
     where: { orderId },
     orderBy: { createdAt: 'desc' },

@@ -52,6 +52,7 @@ import { Toaster } from "react-hot-toast";
 import DataPrivacy from "./pages/DataPrivacy";
 import AuthBootstrap from "./components/AuthBootstrap";
 import AdminOfferChangeRequests from "./pages/admin/AdminOfferChangeRequests";
+import ScrollToTop from "./components/ScrollToTop";
 
 function AdminLayout() {
   return <Outlet />;
@@ -114,7 +115,7 @@ export default function App() {
         <main className="w-full flex-1 bg-slate-50">
           <div className="max-w-7xl mx-auto">
             <Toaster position="top-right" />
-
+            <ScrollToTop />
             <Routes>
               {/* ---------------- Public site ---------------- */}
               <Route path="/" element={<HomeRoute />} />

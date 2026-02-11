@@ -80,8 +80,7 @@ const app = express();
 
 /* 1) CORS first */
 const allowedOrigins = [
-  process.env.APP_URL ?? '',
-  'http://localhost:5173',
+  process.env.APP_URL
 ].filter(Boolean);
 
 app.use(
@@ -215,7 +214,7 @@ app.use((err: any, req: any, res: any, next: any) => {
   res.status(500).json({ error: "Internal server error", message: err?.message ?? String(err) });
 });
 
-const port = Number(process.env.PORT ?? 4000);
+const port = Number(process.env.PORT ?? 8080);
 const host = '0.0.0.0';
 app.listen(port, host, () => {
   console.log(`API on http://${host}:${port}`);

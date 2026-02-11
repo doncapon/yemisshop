@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
 import { requireAdmin, requireAuth } from '../middleware/auth.js';
+import { requiredString } from '../lib/http.js';
 
 const router = Router();
 
@@ -45,7 +46,7 @@ router.put(
   async (req, res, next) => {
     try {
       const data = categorySchema.partial().parse(req.body);
-      const cat = await prisma.category.update({ where: { id: req.params.id }, data });
+      const cat = await prisma.category.update({ where: { id: requiredString(req.params.id) }, data });
       res.json(cat);
     } catch (e) {
       next(e);
@@ -59,7 +60,7 @@ router.delete(
   requireAdmin,
   async (req, res, next) => {
     try {
-      await prisma.category.delete({ where: { id: req.params.id } });
+      await prisma.category.delete({ where: { id: requiredString(req.params.id) } });
       res.status(204).end();
     } catch (e) {
       next(e);

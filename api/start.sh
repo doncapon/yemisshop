@@ -8,7 +8,7 @@ log() {
 }
 
 # 1) Ensure PORT is set (Railway injects it; default for local/Docker)
-export PORT="${PORT:-4000}"
+export PORT="${PORT:-8080}"
 
 log "Starting API on port $PORT"
 
@@ -25,12 +25,12 @@ if [ -d "prisma" ]; then
 fi
 
 # 3) Sanity check for built server
-if [ ! -f "dist/server.js" ]; then
-  log "ERROR: dist/server.js not found. Did you run 'npm run build' during the image build?"
+if [ ! -f "dist/src/server.js" ]; then
+  log "ERROR: dist/src/server.js not found. Did you run 'npm run build' during the image build?"
   ls -R
   exit 1
 fi
 
 # 4) Start the Node server
 log "Launching Node server..."
-exec node dist/server.js
+exec node dist/src/server.js

@@ -63,30 +63,18 @@ r.get('/products', requireAuth, requireAdmin, async (req, res) => {
       id: true,
       title: true,
       status: true,
-      inStock: true,
-      _count: {
-        select: {
-          variants: true,
-          supplierOffers: true,
-        },
-      },
-      variants: {
-        select: {
-          _count: { select: { offers: true } },
-        },
-      },
+      inStock: true
     },
   });
 
-  const data = rows.map((p: { id: any; title: any; status: any; inStock: any; _count: { variants: any; supplierOffers: any; }; variants: any; }) => ({
-    id: p.id,
-    title: p.title,
-    status: p.status,
-    inStock: p.inStock,
-    variantCount: p._count.variants,
-    offerCount: p._count.supplierOffers + (p.variants || []).reduce((n: any, v: { _count: { offers: any; }; }) => n + (v._count?.offers || 0), 0),
-    // no heavy join needed; "activeOfferCount" is optional unless you add a dedicated count query
-  }));
+const data = rows.map((p) => ({
+  id: p.id,
+  title: p.title,
+  status: p.status,
+  inStock: p.inStock,
+  variantCount: 0, // TODO: add groupBy once relation/model name confirmed
+  offerCount: 0,
+}));
 
   res.json({ data });
 });

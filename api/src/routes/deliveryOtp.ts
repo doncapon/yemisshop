@@ -321,7 +321,7 @@ router.post(
 
       if (!supplierId && !isAdmin(role)) return res.status(403).json({ error: "Supplier access required" });
 
-      const result = await prisma.$transaction(async (tx: any) => {
+      const result = await prisma.$transaction(async (tx) => {
         const po = await tx.purchaseOrder.findUnique({
           where: { id: poId },
           select: {

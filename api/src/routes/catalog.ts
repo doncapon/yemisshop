@@ -15,14 +15,14 @@ const MODELS = new Map(
 const hasModel = (name: string) => MODELS.has(name);
 
 const modelFields = (name: string) =>
-  new Set((MODELS.get(name)?.fields ?? []).map((f) => f.name));
+  new Set((MODELS.get(name)?.fields ?? []).map((f:any) => f.name));
 
 const hasField = (modelName: string, field: string) => modelFields(modelName).has(field);
 
 const relationField = (modelName: string, relName: string) => {
   const m = MODELS.get(modelName);
   if (!m) return null;
-  const f = (m.fields ?? []).find((x) => x.name === relName);
+  const f = (m.fields ?? []).find((x:any) => x.name === relName);
   return f && f.kind === "object" ? f : null;
 };
 

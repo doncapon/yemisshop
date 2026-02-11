@@ -39,12 +39,12 @@ const isRider = (role?: string) => normRole(role) === "SUPPLIER_RIDER";
  */
 type SupplierCtx =
   | {
-      ok: true;
-      supplierId: string;
-      supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
-      impersonating: boolean;
-      riderId?: string | null; // ✅ present for rider sessions
-    }
+    ok: true;
+    supplierId: string;
+    supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
+    impersonating: boolean;
+    riderId?: string | null; // ✅ present for rider sessions
+  }
   | { ok: false; status: number; error: string };
 
 async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
@@ -135,7 +135,7 @@ async function ensureRefundRequestedForPOTx(
   if (!Refund) {
     throw new Error(
       "Refund model delegate not found on Prisma client. " +
-        "Your Prisma model is not named 'refund'. Rename calls to your real model (e.g. refundRequest/orderRefund)."
+      "Your Prisma model is not named 'refund'. Rename calls to your real model (e.g. refundRequest/orderRefund)."
     );
   }
 
@@ -601,8 +601,8 @@ router.get("/", requireAuth, async (req: any, res) => {
       view === "delivered"
         ? riderDeliveredStatuses
         : view === "all"
-        ? [...riderActiveStatuses, ...riderDeliveredStatuses]
-        : riderActiveStatuses;
+          ? [...riderActiveStatuses, ...riderDeliveredStatuses]
+          : riderActiveStatuses;
 
     // If your PurchaseOrder has deliveredByUserId, use it to ensure "jobs THEY marked as delivered"
     const poHasDeliveredBy = hasScalarField("PurchaseOrder", "deliveredByUserId");
@@ -674,11 +674,11 @@ router.get("/", requireAuth, async (req: any, res) => {
 
         ...(riderId
           ? {
-              riderId,
-              status: { in: riderStatuses as any },
+            riderId,
+            status: { in: riderStatuses as any },
 
-              ...(view !== "active" && poHasDeliveredBy ? { deliveredByUserId: userId } : {}),
-            }
+            ...(view !== "active" && poHasDeliveredBy ? { deliveredByUserId: userId } : {}),
+          }
           : {}),
       },
       select: {
@@ -770,13 +770,13 @@ router.get("/", requireAuth, async (req: any, res) => {
           ...(riderView
             ? {}
             : {
-                supplierAmount: poByOrder[oid]?.supplierAmount ?? null,
-                poSubtotal: poByOrder[oid]?.subtotal ?? null,
-                payoutStatus: poByOrder[oid]?.payoutStatus ?? null,
-                paidOutAt: poByOrder[oid]?.paidOutAt ?? null,
-                refundId: poByOrder[oid]?.refundId ?? null,
-                refundStatus: poByOrder[oid]?.refundStatus ?? null,
-              }),
+              supplierAmount: poByOrder[oid]?.supplierAmount ?? null,
+              poSubtotal: poByOrder[oid]?.subtotal ?? null,
+              payoutStatus: poByOrder[oid]?.payoutStatus ?? null,
+              paidOutAt: poByOrder[oid]?.paidOutAt ?? null,
+              refundId: poByOrder[oid]?.refundId ?? null,
+              refundStatus: poByOrder[oid]?.refundStatus ?? null,
+            }),
 
           riderId: poByOrder[oid]?.riderId ?? null,
           deliveryOtpVerifiedAt: poByOrder[oid]?.deliveryOtpVerifiedAt ?? null,
@@ -819,7 +819,7 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
     if (!poId) return res.status(400).json({ error: "Missing poId" });
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const out = await prisma.$transaction(async (tx: any) => {
+    const out = await prisma.$transaction(async (tx) => {
       const po = await assertCanDeliverPoTx(tx, {
         poId,
         supplierId: ctx.supplierId,
@@ -835,19 +835,36 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
 
       const userSelect: any = { email: true };
       if (hasScalarField("User", "phone")) userSelect.phone = true;
-
       const order = await tx.order.findUnique({
         where: { id: po.orderId },
-        select: {
-          id: true,
-          userId: true,
-          user: { select: userSelect },
-          shippingAddress: hasScalarField("ShippingAddress", "phone") ? { select: { phone: true } } : undefined,
-        },
+        // ✅ select only scalars to avoid relation typing issues
+        select: { id: true, userId: true, shippingAddressId: true } as any,
       });
 
-      const email = order?.user?.email ?? null;
-      const phone = (order?.shippingAddress as any)?.phone ?? (order?.user as any)?.phone ?? null;
+      if (!order) throw new Error("Order not found");
+
+      // ✅ fetch user contact separately (relation name differences won't break typing)
+      const userRow = await (tx as any).user?.findUnique?.({
+        where: { id: order.userId },
+        select: {
+          email: true,
+          ...(hasScalarField("User", "phone") ? { phone: true } : {}),
+        } as any,
+      });
+
+      let addressPhone: string | null = null;
+
+      // ✅ fetch address phone ONLY if the field exists in your schema
+      if (hasScalarField("ShippingAddress", "phone") && order.shippingAddressId) {
+        const addr = await (tx as any).shippingAddress?.findUnique?.({
+          where: { id: order.shippingAddressId },
+          select: { phone: true } as any,
+        });
+        addressPhone = (addr as any)?.phone ?? null;
+      }
+
+      const email = (userRow as any)?.email ?? null;
+      const phone = addressPhone ?? (userRow as any)?.phone ?? null;
 
       const otp = sixDigitOtp();
       const salt = newSalt();
@@ -880,7 +897,7 @@ router.post("/purchase-orders/:poId/delivery-otp/request", requireAuth, async (r
           data: {
             purchaseOrderId: po.id,
             orderId: po.orderId,
-            customerId: order?.userId ?? null,
+            customerId: String(order.userId),
             codeHash,
             salt,
             expiresAt,
@@ -934,7 +951,7 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
     const rawOtp = String(req.body?.otp ?? req.body?.code ?? "").trim();
     if (!/^\d{6}$/.test(rawOtp)) return res.status(400).json({ error: "OTP must be 6 digits" });
 
-    const result = await prisma.$transaction(async (tx: any) => {
+    const result = await prisma.$transaction(async (tx) => {
       const po = await assertCanDeliverPoTx(tx, {
         poId,
         supplierId: ctx.supplierId,
@@ -1076,7 +1093,7 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         if (allDelivered) {
           await tx.order.update({ where: { id: updatedPo.orderId }, data: { status: "DELIVERED" } });
         }
-      } catch {}
+      } catch { }
 
       return { po: updatedPo, payout };
     });
@@ -1171,7 +1188,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
       return cur === "CONFIRMED" || cur === "PACKED";
     };
 
-    const result = await prisma.$transaction(async (tx: any) => {
+    const result = await prisma.$transaction(async (tx) => {
       const now = new Date();
 
       const statusStamp: any = {};
@@ -1511,7 +1528,7 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
 
     if (!poId) return res.status(400).json({ error: "Missing poId" });
 
-    const out = await prisma.$transaction(async (tx: any) => {
+    const out = await prisma.$transaction(async (tx) => {
       const po = await tx.purchaseOrder.findUnique({
         where: { id: poId },
         select: { id: true, supplierId: true, status: true, riderId: true, orderId: true },
@@ -1531,7 +1548,7 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
         if (!rider.isActive) throw new Error("Rider is inactive");
         if (String(rider.supplierId) !== String(ctx.supplierId)) throw new Error("Rider does not belong to this supplier");
 
-        let nextStatus: string | undefined = "OUT_FOR_DELIVERY";
+        const nextStatus: PurchaseOrderStatus = PurchaseOrderStatus.OUT_FOR_DELIVERY;
 
         const updated = await tx.purchaseOrder.update({
           where: { id: poId },
@@ -1603,8 +1620,8 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
 
         return updated;
       } else {
-        let nextStatus: string | undefined = undefined;
-        if (!riderId && st === "OUT_FOR_DELIVERY") nextStatus = "SHIPPED";
+        let nextStatus: PurchaseOrderStatus | undefined = undefined;
+        if (!riderId && st === "OUT_FOR_DELIVERY") nextStatus = PurchaseOrderStatus.SHIPPED;
 
         const updated = await tx.purchaseOrder.update({
           where: { id: poId },

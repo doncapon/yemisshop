@@ -15,7 +15,7 @@ import { setAccessTokenCookie } from '../lib/authCookies.js';
 
 // ---------------- ENV / constants ----------------
 const APP_URL = process.env.APP_URL || 'http://localhost:5173';
-const API_BASE_URL = process.env.API_URL || 'http://localhost:4000';
+const API_BASE_URL = process.env.API_URL || 'http://localhost:8080';
 const EMAIL_JWT_SECRET = process.env.EMAIL_JWT_SECRET || 'CHANGE_ME_DEV_SECRET';
 
 const EMAIL_RESEND_COOLDOWN_SEC = 60;
@@ -432,6 +432,7 @@ router.get('/verify-email', async (req, res) => {
           role: true,
           emailVerifiedAt: true,
           phoneVerifiedAt: true,
+          status: true,
         },
       });
     }
@@ -489,6 +490,7 @@ router.get('/verify-email', async (req, res) => {
           role: true,
           emailVerifiedAt: true,
           phoneVerifiedAt: true,
+          status: true,
         },
       });
     } else {
@@ -505,6 +507,7 @@ router.get('/verify-email', async (req, res) => {
           role: true,
           emailVerifiedAt: true,
           phoneVerifiedAt: true,
+          status: true,
         },
       });
     }

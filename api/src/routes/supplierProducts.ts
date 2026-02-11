@@ -4,6 +4,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { requireAuth, requireSupplier } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+import { requiredString } from "../lib/http.js";
 
 const router = Router();
 
@@ -236,7 +237,7 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
     const inStock = payload.offer?.inStock ?? payload.inStock ?? qty > 0;
 
-    const created = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const created = await prisma.$transaction(async (tx) => {
       const offerBasePrice = payload.offer?.basePrice ?? payload.basePrice;
 
       const product = await tx.product.create({
@@ -1101,7 +1102,7 @@ router.get("/:id", requireAuth, async (req, res) => {
   if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
 
   const s = ctx.supplier;
-  const { id } = req.params;
+  const id = requiredString(req.params.id);
 
   // Product relations (names vary per schema, so resolve dynamically)
   const productVariantsRel = findRel("Product", "ProductVariant", { isList: true }) ?? "ProductVariant";
@@ -1240,38 +1241,38 @@ router.get("/:id", requireAuth, async (req, res) => {
   const attrSelect =
     attributeModelName
       ? safeSelect(attributeModelName, {
-          id: true,
-          name: true,
-          type: true,
-          isActive: true,
-          // code: true,  // ❌ NOT in your Attribute model
-        })
+        id: true,
+        name: true,
+        type: true,
+        isActive: true,
+        // code: true,  // ❌ NOT in your Attribute model
+      })
       : { id: true, name: true, type: true };
 
   const valSelect =
     attributeValueModelName
       ? safeSelect(attributeValueModelName, {
-          id: true,
-          name: true,
-          code: true,        // ✅ exists on AttributeValue in your schema
-          attributeId: true, // ✅ exists
-          isActive: true,
-          position: true,
-        })
+        id: true,
+        name: true,
+        code: true,        // ✅ exists on AttributeValue in your schema
+        attributeId: true, // ✅ exists
+        isActive: true,
+        position: true,
+      })
       : { id: true, name: true, code: true, attributeId: true };
 
   const [attrs, vals] = await Promise.all([
     attributeClient && attrIds.length
       ? attributeClient.findMany({
-          where: { id: { in: attrIds } },
-          select: attrSelect,
-        })
+        where: { id: { in: attrIds } },
+        select: attrSelect,
+      })
       : Promise.resolve([]),
     attributeValueClient && valIds.length
       ? attributeValueClient.findMany({
-          where: { id: { in: valIds } },
-          select: valSelect,
-        })
+        where: { id: { in: valIds } },
+        select: valSelect,
+      })
       : Promise.resolve([]),
   ]);
 
@@ -1319,30 +1320,30 @@ router.get("/:id", requireAuth, async (req, res) => {
   const variantsRelData = (p as any)[productVariantsRel] ?? [];
   const variants = Array.isArray(variantsRelData)
     ? variantsRelData.map((v: any) => {
-        const vo = v?.[variantSupplierOffersRel]?.[0] ?? null;
-        return {
-          id: v.id,
-          sku: v.sku,
-          unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
-          availableQty: vo?.availableQty ?? v.availableQty ?? 0,
-          inStock: vo?.inStock ?? v.inStock,
-          isActive: vo?.isActive ?? true,
-          supplierVariantOffer: vo
-            ? {
-                id: vo.id,
-                unitPrice: Number(vo.unitPrice ?? 0),
-                availableQty: vo.availableQty ?? 0,
-                inStock: vo.inStock ?? true,
-                isActive: vo.isActive ?? true,
-                leadDays: vo.leadDays ?? null,
-                currency: vo.currency ?? "NGN",
-              }
-            : null,
-          options: Array.isArray(v?.[variantOptionsRel])
-            ? v[variantOptionsRel].map((o: any) => ({ attributeId: o.attributeId, valueId: o.valueId }))
-            : [],
-        };
-      })
+      const vo = v?.[variantSupplierOffersRel]?.[0] ?? null;
+      return {
+        id: v.id,
+        sku: v.sku,
+        unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
+        availableQty: vo?.availableQty ?? v.availableQty ?? 0,
+        inStock: vo?.inStock ?? v.inStock,
+        isActive: vo?.isActive ?? true,
+        supplierVariantOffer: vo
+          ? {
+            id: vo.id,
+            unitPrice: Number(vo.unitPrice ?? 0),
+            availableQty: vo.availableQty ?? 0,
+            inStock: vo.inStock ?? true,
+            isActive: vo.isActive ?? true,
+            leadDays: vo.leadDays ?? null,
+            currency: vo.currency ?? "NGN",
+          }
+          : null,
+        options: Array.isArray(v?.[variantOptionsRel])
+          ? v[variantOptionsRel].map((o: any) => ({ attributeId: o.attributeId, valueId: o.valueId }))
+          : [],
+      };
+    })
     : [];
 
   return res.json({
@@ -1372,14 +1373,14 @@ router.get("/:id", requireAuth, async (req, res) => {
 
       offer: myOffer
         ? {
-            id: myOffer.id,
-            basePrice,
-            currency: myOffer.currency,
-            inStock: myOffer.inStock,
-            isActive: myOffer.isActive,
-            leadDays: myOffer.leadDays ?? null,
-            availableQty: myOffer.availableQty ?? 0,
-          }
+          id: myOffer.id,
+          basePrice,
+          currency: myOffer.currency,
+          inStock: myOffer.inStock,
+          isActive: myOffer.isActive,
+          leadDays: myOffer.leadDays ?? null,
+          availableQty: myOffer.availableQty ?? 0,
+        }
         : null,
 
       variants,
@@ -1457,7 +1458,7 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     const s = await getSupplierForUser(req.user!.id);
     if (!s) return res.status(403).json({ error: "Supplier profile not found for this user" });
 
-    const { id } = req.params;
+    const id = requiredString(req.params.id);
 
     const incoming: any = req.body ?? {};
     const base: any = incoming?.data ?? incoming?.product ?? incoming;
@@ -1572,6 +1573,8 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     });
   }
 });
+
+
 
 
 

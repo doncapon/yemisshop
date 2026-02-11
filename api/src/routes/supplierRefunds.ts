@@ -3,6 +3,7 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { notifyMany, notifyUser } from "../services/notifications.service.js";
+import { requiredString } from "../lib/http.js";
 
 const router = Router();
 
@@ -144,7 +145,7 @@ router.get("/", requireAuth, async (req: any, res) => {
 router.patch("/:id", requireAuth, async (req: any, res) => {
   const userId = req.user?.id;
   const role = req.user?.role;
-  const id = norm(req.params.id);
+  const id = norm(requiredString(req.params.id));
 
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
   if (!isSupplier(role)) return res.status(403).json({ error: "Supplier only" });
@@ -165,7 +166,7 @@ router.patch("/:id", requireAuth, async (req: any, res) => {
   }
 
   try {
-    const out = await prisma.$transaction(async (tx: any) => {
+    const out = await prisma.$transaction(async (tx) => {
       const RefundTx = getRefundDelegate(tx);
       if (!RefundTx) throw new Error("Refund model delegate not found on Prisma tx client.");
 
