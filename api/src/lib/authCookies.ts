@@ -6,12 +6,12 @@ const isProd = process.env.NODE_ENV === "production";
 
 function baseCookieOptions(): CookieOptions {
   return {
+    // sameSite must be "none" if you are NOT proxying and UI/API are different domains
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    secure: process.env.NODE_ENV === "production",
     httpOnly: true,
     path: "/",
-    // ✅ In production, cookies must be Secure when SameSite=None
-    secure: isProd,
-    // ✅ Works for cross-origin XHR when UI/API are on different hosts
-    sameSite: isProd ? "none" : "lax",
+
   };
 }
 
