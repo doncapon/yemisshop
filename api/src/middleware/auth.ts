@@ -222,7 +222,13 @@ async function verifyAndHydrate(token: string): Promise<AuthedUser | null> {
  * Use this first, then add `requireAuth` or `requireAdmin` on routes that need it.
  */
 export const attachUser: RequestHandler = async (req, _res, next) => {
-  const token = getToken(req);
+  const token =
+    req.cookies?.access_token ||
+    (req.headers.authorization?.startsWith("Bearer ")
+      ? req.headers.authorization.slice("Bearer ".length)
+      : null);
+
+
   if (!token) return next();
 
   const user = await verifyAndHydrate(token);
