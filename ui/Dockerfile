@@ -47,5 +47,5 @@ FROM nginx
 COPY --from=build /app/dist /usr/share/nginx/html
 
 # Start the server by default, this can be overwritten at runtime
-EXPOSE 80
+EXPOSE 8080
 CMD [ "/usr/sbin/nginx", "-g", "daemon off;" ]
