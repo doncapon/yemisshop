@@ -89,13 +89,31 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   return config;
 });
 
-// CAC verify special-case stays as-is
 api.interceptors.response.use(
   (r) => r,
   (e: AxiosError) => {
     const url = String((e as any)?.config?.url ?? "");
     const status = (e as any)?.response?.status as number | undefined;
 
+    // ✅ 1) Treat /auth/me 401 as "logged out" (NOT an error)
+    // This prevents "Uncaught (in promise)" noise on /login.
+    const isMe =
+      url.includes("/api/auth/me") ||
+      url.endsWith("/auth/me") ||
+      url.includes("/auth/me?");
+
+    if (status === 401 && isMe && (e as any).response) {
+      // Clear any stale bearer token you might have in localStorage
+      setAccessToken(null);
+
+      // Return a successful-looking response with data=null
+      return Promise.resolve({
+        ...(e as any).response,
+        data: null,
+      });
+    }
+
+    // ✅ 2) Keep your CAC verify special-case
     const isCacVerify =
       url.includes("/api/suppliers/cac-verify") || url.includes("/suppliers/cac-verify");
     const expected = status === 400 || status === 404 || status === 429;
@@ -107,5 +125,6 @@ api.interceptors.response.use(
     return Promise.reject(e);
   }
 );
+
 
 export default api;
