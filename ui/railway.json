@@ -1,18 +1,15 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
-    "builder": "RAILPACK",
-    "buildCommand": "npm run build",
-    "buildEnvironment": "V3"
+    "builder": "RAILPACK"
   },
   "deploy": {
     "runtime": "V2",
     "numReplicas": 1,
-    "startCommand": "npx serve -s dist -l $PORT",
     "sleepApplication": false,
     "useLegacyStacker": false,
     "multiRegionConfig": {
-      "us-east4-eqdc4a": {
+      "us-west2": {
         "numReplicas": 1
       }
     },
