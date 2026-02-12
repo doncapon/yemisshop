@@ -118,75 +118,90 @@ async function createUserSession(req: Request, userId: string, role?: string | n
   return session.id;
 }
 
+router.post(
+  "/login",
+  wrap(async (req, res) => {
+    const { email, password } = (req.body || {}) as {
+      email?: string;
+      password?: string;
+    };
 
+    if (!email?.trim() || !password?.trim()) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
 
-router.post('/login', wrap(async (req, res) => {
-  const { email, password } = (req.body || {}) as { email?: string; password?: string };
-  if (!email?.trim() || !password?.trim()) {
-    return res.status(400).json({ error: 'Email and password are required' });
-  }
+    const emailNorm = String(email).trim();
 
-  const emailNorm = String(email || "").trim();
-
-  const user = await prisma.user.findFirst({
-    where: {
-      email: {
-        equals: emailNorm,
-        mode: "insensitive",
+    const user = await prisma.user.findFirst({
+      where: {
+        email: { equals: emailNorm, mode: "insensitive" },
       },
-    },
-  });
-
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-
-  const ok = await bcrypt.compare(password, user.password || '');
-  if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
-
-  const profile = {
-    id: user.id,
-    email: user.email,
-    role: user.role as any,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    emailVerified: !!user.emailVerifiedAt,
-    phoneVerified: !!user.phoneVerifiedAt,
-  };
-
-  // ✅ BLOCK suppliers until fully verified (server-side)
-  if (user.role === 'SUPPLIER' && !(profile.emailVerified && profile.phoneVerified)) {
-    const verifyToken = signVerifyJwt({ id: user.id, email: user.email, role: user.role });
-
-    return res.status(403).json({
-      error: 'Please verify your email and phone number to continue.',
-      needsVerification: true,
-      profile,
-      verifyToken, // ✅ this is what UI uses to call verify endpoints
     });
-  }
-  const sid = await createUserSession(req, user.id, user.role);
 
-  const roleNorm = String(user.role || "").replace(/[\s-]/g, "").toUpperCase();
-  const ttlDays =
-    roleNorm === "ADMIN" || roleNorm === "SUPER_ADMIN" || roleNorm === "SUPPLIER" || roleNorm === "SUPPLIER_RIDER"
-      ? 7
-      : 30;
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
-  const token = signAccessJwt(
-    { id: user.id, email: user.email, role: user.role, k: "access", sid } as any,
-    `${ttlDays}d`
-  );
+    const ok = await bcrypt.compare(password, user.password || "");
+    if (!ok) return res.status(401).json({ error: "Invalid credentials" });
 
-  // ✅ make cookie match token/session
-  setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
+    const profile = {
+      id: user.id,
+      email: user.email,
+      role: user.role as any,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      emailVerified: !!user.emailVerifiedAt,
+      phoneVerified: !!user.phoneVerifiedAt,
+    };
 
-  return res.json({
-    token,
-    sid,
-    profile,
-    needsVerification: !(profile.emailVerified && profile.phoneVerified),
-  });
+    // ✅ BLOCK suppliers until fully verified (server-side)
+    if (user.role === "SUPPLIER" && !(profile.emailVerified && profile.phoneVerified)) {
+      const verifyToken = signVerifyJwt({
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        k: "verify", // ✅ make kind explicit if your middleware checks it
+      } as any);
 
-}));
+      return res.status(403).json({
+        error: "Please verify your email and phone number to continue.",
+        needsVerification: true,
+        profile,
+        verifyToken, // UI uses this to call verify endpoints
+      });
+    }
+
+    // ✅ Create session id (sid) for access tokens
+    const sid = await createUserSession(req, user.id, user.role);
+
+    const roleNorm = String(user.role || "")
+      .replace(/[\s-]/g, "")
+      .toUpperCase();
+
+    const ttlDays =
+      roleNorm === "ADMIN" ||
+      roleNorm === "SUPER_ADMIN" ||
+      roleNorm === "SUPPLIER" ||
+      roleNorm === "SUPPLIER_RIDER"
+        ? 7
+        : 30;
+
+    // ✅ Access token (what Option A uses)
+    const token = signAccessJwt(
+      { id: user.id, email: user.email, role: user.role, k: "access", sid } as any,
+      `${ttlDays}d`
+    );
+
+    // Optional: set cookie too (doesn't hurt, but Option A will rely on Bearer)
+    setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
+
+    return res.json({
+      token,
+      sid,
+      profile,
+      needsVerification: false, // ✅ IMPORTANT: successful login should not be "needsVerification"
+    });
+  })
+);
 
 
 async function activateSupplierIfFullyVerified(user: {

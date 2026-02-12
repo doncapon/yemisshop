@@ -1,12 +1,10 @@
 // src/pages/Login.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client.js";
 import { useAuthStore, type Role } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout.js";
 import DaySpringLogo from "../components/brand/DayspringLogo.js";
-
-/* ---------------- Types ---------------- */
 
 type MeResponse = {
   id: string;
@@ -19,8 +17,7 @@ type MeResponse = {
 };
 
 type LoginOk = {
-  // token may still be returned by server, but cookie auth should not depend on it
-  token?: string;
+  token: string; // ✅ access token JWT (Option A)
   profile: MeResponse;
   needsVerification?: boolean;
 };
@@ -30,13 +27,6 @@ type LoginBlocked = {
   needsVerification: true;
   profile: any;
   verifyToken?: string;
-};
-
-/* ---------------- Helpers ---------------- */
-
-const looksLikeJwt = (t: any) => {
-  const s = String(t ?? "");
-  return s.split(".").length === 3;
 };
 
 function normalizeProfile(raw: any): MeResponse | null {
@@ -62,15 +52,13 @@ function normalizeProfile(raw: any): MeResponse | null {
 function normRole(r: any): Role {
   const x = String(r || "").trim().toUpperCase();
   return (x === "ADMIN" ||
-    x === "SUPER_ADMIN" ||
-    x === "SHOPPER" ||
-    x === "SUPPLIER" ||
-    x === "SUPPLIER_RIDER"
+  x === "SUPER_ADMIN" ||
+  x === "SHOPPER" ||
+  x === "SUPPLIER" ||
+  x === "SUPPLIER_RIDER"
     ? x
     : "SHOPPER") as Role;
 }
-
-/* ========================================================= */
 
 export default function Login() {
   const hydrated = useAuthStore((s) => s.hydrated);
@@ -131,7 +119,7 @@ export default function Login() {
     return () => clearInterval(t);
   }, [otpCooldown]);
 
-  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!hydrated) return;
     if (loading || cooldown > 0) return;
@@ -150,42 +138,18 @@ export default function Login() {
 
     setLoading(true);
     try {
-      // ✅ cookie-auth: browser will store Set-Cookie if backend sends it correctly
       const res = await api.post("/api/auth/login", { email, password });
 
       const { token, profile, needsVerification } = res.data as LoginOk;
 
-      // Keep verification state if server indicates it (optional)
+      // ✅ Option A: store JWT and let axios attach Bearer automatically
+      setAuth({ token, user: profile });
       setNeedsVerification(needsVerification ?? false);
 
-      // Store verifyEmail for the verify page UX only (harmless)
       try {
         localStorage.setItem("verifyEmail", profile.email);
+        if (needsVerification) localStorage.setItem("verifyToken", token);
       } catch {}
-
-      // If server returns a verify token (rare on 200), keep it ONLY for verification calls (NOT as access_token)
-      if (needsVerification && looksLikeJwt(token)) {
-        setVerifyToken(String(token));
-        try {
-          localStorage.setItem("verify_token", String(token));
-        } catch {}
-      }
-
-      // ✅ Sanity call: confirms cookie works (will be 401 if cookie wasn't stored)
-      let finalProfile: MeResponse = profile;
-      try {
-        const me = await api.get("/api/auth/me");
-        const p = normalizeProfile(me.data);
-        if (p) finalProfile = p;
-      } catch {
-        // ignore: we still have profile from login response
-      }
-
-      // ✅ Cookie-first: don’t rely on token storage.
-      // If your store REQUIRES a token, pass null/undefined; cookie auth doesn’t need it.
-      const storeToken = looksLikeJwt(token) ? String(token) : null;
-
-      setAuth({ token: storeToken as any, user: finalProfile });
 
       const from = (loc.state as any)?.from?.pathname as string | undefined;
 
@@ -197,12 +161,11 @@ export default function Login() {
         SUPPLIER_RIDER: "/supplier/orders",
       };
 
-      const roleKey = normRole(finalProfile.role);
+      const roleKey = normRole(profile.role);
       nav(from || defaultByRole[roleKey] || "/", { replace: true });
     } catch (e: any) {
       const status = e?.response?.status;
 
-      // ✅ Supplier blocked until verified (server 403 with verifyToken)
       if (status === 403 && e?.response?.data?.needsVerification) {
         const data = e.response.data as LoginBlocked;
 
@@ -244,9 +207,7 @@ export default function Login() {
     setEmailMsg(null);
     setEmailBusy(true);
     try {
-      const r = await api.post("/api/auth/resend-verification", {
-        email: blockedProfile.email,
-      });
+      const r = await api.post("/api/auth/resend-verification", { email: blockedProfile.email });
 
       setEmailMsg("Verification email sent. Please check your inbox (and spam).");
       const next = Number(r.data?.nextResendAfterSec ?? 60);
@@ -271,9 +232,7 @@ export default function Login() {
     setEmailMsg(null);
     setEmailBusy(true);
     try {
-      const r = await api.get("/api/auth/email-status", {
-        params: { email: blockedProfile.email },
-      });
+      const r = await api.get("/api/auth/email-status", { params: { email: blockedProfile.email } });
       const emailVerifiedAt = r.data?.emailVerifiedAt;
 
       setBlockedProfile((p) => (p ? { ...p, emailVerified: !!emailVerifiedAt } : p));
@@ -350,9 +309,7 @@ export default function Login() {
 
   return (
     <SiteLayout>
-      {/* Catalog-like background */}
       <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-50 to-white">
-        {/* soft decorative glows (same vibe as ProductDetail/Catalog) */}
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="absolute -top-24 -right-20 w-[26rem] h-[26rem] rounded-full blur-3xl opacity-35 bg-fuchsia-300/50" />
           <div className="absolute -bottom-28 -left-16 w-[28rem] h-[28rem] rounded-full blur-3xl opacity-30 bg-cyan-300/50" />
@@ -360,7 +317,6 @@ export default function Login() {
 
         <div className="relative grid place-items-center min-h-[100dvh] px-4 py-10">
           <div className="w-full max-w-md">
-            {/* Header */}
             <div className="mb-6 text-center">
               <div className="flex justify-center">
                 <div className="inline-flex items-center gap-2 rounded-2xl border bg-white/80 backdrop-blur px-4 py-2 shadow-sm">
@@ -387,7 +343,6 @@ export default function Login() {
                 </div>
               )}
 
-              {/* Supplier verification panel */}
               {blockedProfile?.role === "SUPPLIER" &&
                 (fullyVerified ? (
                   <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 space-y-2">
@@ -477,7 +432,7 @@ export default function Login() {
 
                         {!verifyToken && (
                           <div className="text-xs text-rose-700">
-                            Missing verifyToken from server. Your login (403) should return{" "}
+                            Missing verifyToken from server. Your login(403) should return{" "}
                             <code>verifyToken</code> so OTP endpoints can work.
                           </div>
                         )}

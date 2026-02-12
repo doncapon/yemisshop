@@ -3,8 +3,6 @@ import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import type { ReactNode } from "react";
 import { useAuthStore } from "../store/auth";
-import api from "../api/client";
-import { hardResetApp } from "../utils/resetApp";
 import { performLogout } from "../utils/logout";
 import NotificationsBell from "./notifications/NotificationsBell";
 
@@ -30,17 +28,6 @@ import DaySpringLogo from "./brand/DayspringLogo";
 import { useCartCount } from "../hooks/useCartCount";
 
 type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
-
-type MeResponse = {
-  id: string;
-  email: string;
-  role: Role;
-  status: "PENDING" | "PARTIAL" | "VERIFIED";
-  firstName?: string | null;
-  middleName?: string | null;
-  lastName?: string | null;
-  name?: string | null;
-};
 
 function useClickAway<T extends HTMLElement>(onAway: () => void) {
   const ref = useRef<T | null>(null);
@@ -92,14 +79,12 @@ function IconNavLink({
     >
       <span className="inline-flex items-center justify-center">{icon}</span>
 
-      {/* Badge (top-right) */}
       {count > 0 && (
         <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
           {count > 9 ? "9+" : count}
         </span>
       )}
 
-      {/* Tooltip (desktop hover) */}
       <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 text-white text-[11px] px-2 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
         {label}
       </span>
@@ -107,40 +92,13 @@ function IconNavLink({
   );
 }
 
-function IconButton({
-  icon,
-  label,
-  onClick,
-  className = "",
-}: {
-  icon: ReactNode;
-  label: string;
-  onClick: () => void;
-  className?: string;
-}) {
-  return (
-    <button
-      type="button"
-      className={
-        "group relative inline-flex items-center justify-center rounded-xl border border-zinc-200 bg-white/80 px-2.5 py-2 text-zinc-700 hover:bg-zinc-50 transition " +
-        className
-      }
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-    >
-      {icon}
-      <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 text-white text-[11px] px-2 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
-        {label}
-      </span>
-    </button>
-  );
-}
-
 export default function Navbar() {
   const token = useAuthStore((s) => s.token);
-  const userRole = useAuthStore((s) => s.user?.role ?? null);
-  const userEmail = useAuthStore((s) => s.user?.email ?? null);
+  const user = useAuthStore((s) => s.user);
+
+  const userRole = (user?.role ?? null) as Role | null;
+  const userEmail = user?.email ?? null;
+
   const nav = useNavigate();
   const loc = useLocation();
 
@@ -153,49 +111,12 @@ export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
 
-  const [firstName, setFirstName] = useState<string | null>(null);
-  const [middleName, setMiddleName] = useState<string | null>(null);
-  const [lastName, setLastName] = useState<string | null>(null);
-
   // Cart counts
   const { distinct: cartItemsCount, totalQty: cartTotalQty } = useCartCount();
 
-  // Load /me when token changes
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadMe() {
-      if (!token) {
-        setFirstName(null);
-        setMiddleName(null);
-        setLastName(null);
-        return;
-      }
-      try {
-        const { data } = await api.get<MeResponse>("/api/auth/me", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        if (!cancelled) {
-          setFirstName(data.firstName?.trim() || null);
-          setMiddleName(data.middleName?.trim() || null);
-          setLastName(data.lastName?.trim() || null);
-        }
-      } catch (e: any) {
-        const status = e?.response?.status;
-        if (status === 401 || status === 403) {
-          hardResetApp("/");
-          return;
-        }
-        hardResetApp("/");
-      }
-    }
-
-    loadMe();
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
+  const firstName = user?.firstName?.trim() || null;
+  const middleName = (user as any)?.middleName?.trim?.() || null;
+  const lastName = user?.lastName?.trim() || null;
 
   const displayName = useMemo(() => {
     const f = firstName?.trim();
@@ -221,26 +142,21 @@ export default function Navbar() {
     performLogout("/");
   }, []);
 
-  // Riders should only use supplier orders (and avoid the shop nav clutter)
   const brandHref = isRider ? "/supplier/orders" : "/";
 
-  // Close mobile more when route changes
   useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
 
   const showShopNav = !token || (!isSupplier && !isSuperAdmin && !isRider);
-  const showBuyerNav = token && !isSupplier && !isRider; // shopper/admin can still see cart/wishlist/orders
-  const showSupplierNav = token && isSupplier && !isRider;
-  const showRiderNav = token && isRider;
+  const showBuyerNav = !!token && !isSupplier && !isRider;
+  const showSupplierNav = !!token && isSupplier && !isRider;
+  const showRiderNav = !!token && isRider;
 
-  // Badge standard: show distinct items (Shopify-like)
   const cartBadge = cartItemsCount;
 
   return (
     <>
-      {/* Fixed top header */}
       <header className="fixed top-0 left-0 right-0 z-50 w-full border-b border-zinc-200 bg-white/80 backdrop-blur">
         <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-4 md:px-8 flex items-center gap-3">
-          {/* Brand */}
           <Link
             to={brandHref}
             className="inline-flex items-center hover:opacity-95"
@@ -249,17 +165,11 @@ export default function Navbar() {
             <DaySpringLogo size={28} />
           </Link>
 
-          {/* Desktop icon nav */}
           <nav className="hidden md:flex items-center gap-2 ml-2">
             {showRiderNav ? (
-              <IconNavLink
-                to="/supplier/orders"
-                icon={<Truck size={18} />}
-                label="Orders"
-              />
+              <IconNavLink to="/supplier/orders" icon={<Truck size={18} />} label="Orders" />
             ) : (
               <>
-                {/* Catalogue/Home */}
                 <IconNavLink
                   to="/"
                   end
@@ -267,14 +177,8 @@ export default function Navbar() {
                   label="Catalogue"
                 />
 
-                {/* Dashboards */}
                 {showSupplierNav && (
-                  <IconNavLink
-                    to="/supplier"
-                    end
-                    icon={<Store size={18} />}
-                    label="Supplier dashboard"
-                  />
+                  <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
                 )}
 
                 {token && isSuperAdmin && (
@@ -287,15 +191,9 @@ export default function Navbar() {
                 )}
 
                 {token && !isSupplier && !isSuperAdmin && (
-                  <IconNavLink
-                    to="/dashboard"
-                    end
-                    icon={<User size={18} />}
-                    label="Dashboard"
-                  />
+                  <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
                 )}
 
-                {/* Buyer nav */}
                 {showBuyerNav && (
                   <>
                     <IconNavLink
@@ -304,29 +202,12 @@ export default function Navbar() {
                       label={cartBadge > 0 ? `Cart (${cartBadge})` : "Cart"}
                       badgeCount={cartBadge}
                     />
-                    <IconNavLink
-                      to="/wishlist"
-                      end
-                      icon={<Heart size={18} />}
-                      label="Wishlist"
-                    />
-                    <IconNavLink
-                      to="/orders"
-                      end
-                      icon={<Package size={18} />}
-                      label="Orders"
-                    />
+                    <IconNavLink to="/wishlist" end icon={<Heart size={18} />} label="Wishlist" />
+                    <IconNavLink to="/orders" end icon={<Package size={18} />} label="Orders" />
                   </>
                 )}
 
-                {/* Admin */}
-                {isAdmin && (
-                  <IconNavLink
-                    to="/admin"
-                    icon={<Shield size={18} />}
-                    label="Admin"
-                  />
-                )}
+                {isAdmin && <IconNavLink to="/admin" icon={<Shield size={18} />} label="Admin" />}
                 {isAdmin && (
                   <IconNavLink
                     to="/admin/offer-changes"
@@ -340,14 +221,11 @@ export default function Navbar() {
 
           <div className="ml-auto" />
 
-          {/* Right cluster */}
           <div className="flex items-center gap-2">
-            {/* Desktop bell */}
             <div className="hidden md:block">
               <NotificationsBell placement="navbar" />
             </div>
 
-            {/* Auth buttons (desktop) */}
             <div className="hidden md:flex items-center gap-2">
               {!token ? (
                 <>
@@ -386,7 +264,6 @@ export default function Navbar() {
                 </>
               ) : (
                 <div className="flex items-center gap-2">
-                  {/* avatar menu */}
                   <div className="relative" ref={menuRef}>
                     <button
                       onClick={() => setMenuOpen((v) => !v)}
@@ -408,16 +285,9 @@ export default function Navbar() {
                             {displayName || userEmail || "User"}
                           </div>
                           {userEmail && (
-                            <div className="text-[10px] text-zinc-500 truncate">
-                              {userEmail}
-                            </div>
+                            <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>
                           )}
-                          {isRider && (
-                            <div className="mt-1 text-[10px] text-zinc-500">
-                              Role: Rider
-                            </div>
-                          )}
-                          {/* Optional helper line (nice UX): show both counts */}
+                          {isRider && <div className="mt-1 text-[10px] text-zinc-500">Role: Rider</div>}
                           {showBuyerNav && cartBadge > 0 && (
                             <div className="mt-1 text-[10px] text-zinc-500">
                               Cart: {cartItemsCount} items • {cartTotalQty} units
@@ -521,7 +391,6 @@ export default function Navbar() {
               )}
             </div>
 
-            {/* Mobile: bell + more */}
             <div className="md:hidden flex items-center gap-2">
               <NotificationsBell placement="navbar" />
               <button
@@ -536,13 +405,9 @@ export default function Navbar() {
           </div>
         </div>
 
-        {/* Mobile top drawer ("More") */}
         {mobileMoreOpen && (
           <div className="md:hidden">
-            <div
-              className="fixed inset-0 z-50 bg-black/40"
-              onClick={() => setMobileMoreOpen(false)}
-            />
+            <div className="fixed inset-0 z-50 bg-black/40" onClick={() => setMobileMoreOpen(false)} />
             <div className="fixed z-50 top-0 right-0 left-0 border-b border-zinc-200 bg-white/95 backdrop-blur">
               <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
                 <div className="font-semibold text-zinc-900">Menu</div>
@@ -714,10 +579,8 @@ export default function Navbar() {
         )}
       </header>
 
-      {/* Spacer so fixed header doesn't cover page content */}
       <div className="h-14 md:h-16" />
 
-      {/* Mobile bottom nav */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-200 bg-white/90 backdrop-blur">
         <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-around">
           {showRiderNav ? (
@@ -759,7 +622,6 @@ export default function Navbar() {
 
               {showBuyerNav ? (
                 <>
-                  {/* Cart badge (mobile bottom) */}
                   <NavLink
                     to="/cart"
                     className={({ isActive }) =>
@@ -849,7 +711,6 @@ export default function Navbar() {
         </div>
       </div>
 
-      {/* Spacer so bottom nav doesn't cover content */}
       <div className="md:hidden h-16" />
     </>
   );

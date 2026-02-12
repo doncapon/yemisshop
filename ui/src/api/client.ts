@@ -2,13 +2,18 @@
 import axios, { AxiosError, AxiosHeaders, type InternalAxiosRequestConfig } from "axios";
 
 const V = (import.meta as any)?.env || {};
-const API_BASE = V.VITE_API_URL; // '' => same-origin, so call '/api/...'
+
+// Option A (token auth):
+// - If VITE_API_URL is '', use same-origin '/api/...'
+// - If it's a full domain, requests go there.
+const API_BASE = V.VITE_API_URL;
 
 let accessToken: string | null = null;
 
 const api = axios.create({
   baseURL: API_BASE,
-  withCredentials: true,
+  // ✅ Option A: do NOT rely on cookies
+  withCredentials: false,
   timeout: 20000,
 });
 
@@ -22,11 +27,22 @@ function applyTokenToAxios(token: string | null) {
   }
 }
 
-function readTokenFromStorage(): string | null {
+function getStorage(): Storage | null {
   try {
     if (typeof window === "undefined") return null;
-    const t = window.localStorage.getItem("access_token");
-    return looksLikeJwt(t) ? t : null; // ✅ only trust JWTs
+    // ✅ Option A: use sessionStorage (safer than localStorage)
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readTokenFromStorage(): string | null {
+  try {
+    const st = getStorage();
+    if (!st) return null;
+    const t = st.getItem("access_token");
+    return looksLikeJwt(t) ? t : null;
   } catch {
     return null;
   }
@@ -34,9 +50,11 @@ function readTokenFromStorage(): string | null {
 
 function writeTokenToStorage(token: string | null) {
   try {
-    if (typeof window === "undefined") return;
-    if (token && looksLikeJwt(token)) window.localStorage.setItem("access_token", token);
-    else window.localStorage.removeItem("access_token");
+    const st = getStorage();
+    if (!st) return;
+
+    if (token && looksLikeJwt(token)) st.setItem("access_token", token);
+    else st.removeItem("access_token");
   } catch {
     /* ignore */
   }
@@ -47,6 +65,9 @@ accessToken = readTokenFromStorage();
 applyTokenToAxios(accessToken);
 
 // ---- Keep in sync across tabs ----
+// Note: sessionStorage does NOT propagate across tabs, but storage events
+// can still fire in some browsers if you also write localStorage elsewhere.
+// We keep this listener harmless.
 if (typeof window !== "undefined") {
   const g = window as any;
   if (!g.__access_token_storage_listener__) {
@@ -96,14 +117,14 @@ api.interceptors.response.use(
     const status = (e as any)?.response?.status as number | undefined;
 
     // ✅ 1) Treat /auth/me 401 as "logged out" (NOT an error)
-    // This prevents "Uncaught (in promise)" noise on /login.
+    // Prevents console noise & "uncaught promise" flicker on /login.
     const isMe =
       url.includes("/api/auth/me") ||
       url.endsWith("/auth/me") ||
       url.includes("/auth/me?");
 
     if (status === 401 && isMe && (e as any).response) {
-      // Clear any stale bearer token you might have in localStorage
+      // Clear any stale bearer token
       setAccessToken(null);
 
       // Return a successful-looking response with data=null
@@ -125,6 +146,5 @@ api.interceptors.response.use(
     return Promise.reject(e);
   }
 );
-
 
 export default api;

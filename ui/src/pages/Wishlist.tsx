@@ -26,6 +26,8 @@ import {
 } from "lucide-react";
 
 import { useCartCount } from "../hooks/useCartCount";
+import DaySpringLogo from "../components/brand/DayspringLogo";
+import NotificationsBell from "../components/notifications/NotificationsBell";
 
 type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
@@ -216,7 +218,7 @@ export default function Navbar() {
   const logout = useCallback(() => {
     setMenuOpen(false);
     setMobileMoreOpen(false);
-    performLogout("/");
+    performLogout("/", nav);
   }, []);
 
   // Riders should only use supplier orders (and avoid the shop nav clutter)
@@ -280,7 +282,7 @@ export default function Navbar() {
                       to="/cart"
                       icon={<ShoppingCart size={18} />}
                       label="Cart"
-                      badgeCount={cartCount}
+                      badgeCount={cartCount.distinct}
                     />
                     <IconNavLink to="/wishlist" end icon={<Heart size={18} />} label="Wishlist" />
                     <IconNavLink to="/orders" end icon={<Package size={18} />} label="Orders" />
@@ -536,9 +538,9 @@ export default function Navbar() {
                           Cart
                         </span>
 
-                        {cartCount > 0 && (
+                        {cartCount.totalQty > 0 && (
                           <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                            {cartCount > 9 ? "9+" : cartCount}
+                            {cartCount.totalQty > 9 ? "9+" : cartCount.totalQty}
                           </span>
                         )}
                       </button>
@@ -709,9 +711,9 @@ export default function Navbar() {
                   >
                     <div className="relative">
                       <ShoppingCart size={20} />
-                      {cartCount > 0 && (
+                      {cartCount.totalQty > 0 && (
                         <span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                          {cartCount > 9 ? "9+" : cartCount}
+                          {cartCount.totalQty > 9 ? "9+" : cartCount.totalQty}
                         </span>
                       )}
                     </div>

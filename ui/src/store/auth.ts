@@ -4,9 +4,9 @@ import { persist } from "zustand/middleware";
 import { setAccessToken } from "../api/client";
 
 export type Role =
+  | "SHOPPER"
   | "ADMIN"
   | "SUPER_ADMIN"
-  | "SHOPPER"
   | "SUPPLIER"
   | "SUPPLIER_RIDER";
 
@@ -15,6 +15,7 @@ export type User = {
   email: string;
   role: Role;
   firstName?: string | null;
+  middleName?: string | null;
   lastName?: string | null;
   emailVerified: boolean;
   phoneVerified: boolean;
@@ -28,20 +29,14 @@ type AuthState = {
 
   setHydrated: (v: boolean) => void;
   setAuth: (p: { token: string; user: User }) => void;
-
-  // ✅ NEW: use this when /me succeeded via cookie but we don’t want Bearer
-  setCookieSession: (user: User) => void;
-
+  setUser: (u: User | null) => void;
   setNeedsVerification: (v: boolean) => void;
 
   logout: () => void;
   clear: () => void;
 };
 
-const COOKIE_SESSION_TOKEN = "__cookie__";
-
 function looksLikeJwt(t: string | null) {
-  // JWT has 3 dot-separated parts
   return !!t && t.split(".").length === 3;
 }
 
@@ -53,21 +48,17 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       needsVerification: false,
 
-      setHydrated: (v: any) => set({ hydrated: v }),
+      setHydrated: (v) => set({ hydrated: v }),
 
-      setAuth: ({ token, user }: { token: string; user: User }) => {
-        // Only apply Bearer header if it’s a real JWT
-        setAccessToken(looksLikeJwt(token) ? token : null);
-        set({ token, user });
+      setAuth: ({ token, user }) => {
+        const jwt = looksLikeJwt(token) ? token : null;
+        setAccessToken(jwt);
+        set({ token: jwt, user });
       },
 
-      setCookieSession: (user: User) => {
-        // Cookie auth should NOT set Authorization header
-        setAccessToken(null);
-        set({ token: COOKIE_SESSION_TOKEN, user });
-      },
+      setUser: (u) => set({ user: u }),
 
-      setNeedsVerification: (v: any) => set({ needsVerification: v }),
+      setNeedsVerification: (v) => set({ needsVerification: v }),
 
       logout: () => {
         setAccessToken(null);
@@ -87,18 +78,19 @@ export const useAuthStore = create<AuthState>()(
         needsVerification: s.needsVerification,
       }),
 
-      merge: (persisted: any, current: any) => {
-        const p = persisted ?? {};
-        const c = current ?? {};
-        if (c.token && !p.token) return { ...p, ...c };
-        return { ...c, ...p };
+      // ✅ Persisted state should win on reload.
+      // Also supports both persisted shapes:
+      // - { state: {...}, version: n }
+      // - plain {...}
+      merge: (persisted: unknown, current: AuthState) => {
+        const p = (persisted as any)?.state ?? persisted ?? {};
+        return { ...current, ...(p as Partial<AuthState>) };
       },
 
       onRehydrateStorage: () => (state) => {
         state?.setHydrated(true);
 
         const t = state?.token ?? null;
-        // Don’t ever put "__cookie__" into Authorization header
         setAccessToken(looksLikeJwt(t) ? t : null);
       },
     }

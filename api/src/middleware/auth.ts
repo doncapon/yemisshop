@@ -1,4 +1,4 @@
-// src/middleware/auth.ts (or src/lib/authMiddleware.ts, depending on your setup)
+// src/middleware/auth.ts
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma.js";
@@ -9,6 +9,7 @@ export type Role =
   | "SUPER_ADMIN"
   | "SUPPLIER"
   | "SUPPLIER_RIDER";
+
 export type TokenKind = "access" | "verify";
 
 export type AuthedUser = {
@@ -16,13 +17,13 @@ export type AuthedUser = {
   email: string;
   role: Role;
 
-  // ✅ token kind
+  // token kind
   k?: TokenKind | string;
 
-  // ✅ session id for access tokens
+  // session id (optional)
   sid?: string | null;
 
-  // ✅ optional: supplier context if you later attach it
+  // optional supplier context
   supplierId?: string | null;
 };
 
@@ -34,8 +35,7 @@ declare global {
   }
 }
 
-const AUTH_DEBUG =
-  String(process.env.AUTH_DEBUG || "").toLowerCase() === "true";
+const AUTH_DEBUG = String(process.env.AUTH_DEBUG || "").toLowerCase() === "true";
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 
 const IDLE_MINUTES_DEFAULT = 60; // shopper default
@@ -54,7 +54,7 @@ function idleMinutesForRole(role: string) {
 
 function normalizeRole(r?: string | null): Role | null {
   if (!r) return null;
-  const v = r.replace(/[\s-]/g, "").toUpperCase();
+  const v = String(r).replace(/[\s-]/g, "").toUpperCase();
 
   if (v === "SUPERADMIN" || v === "SUPER_ADMIN") return "SUPER_ADMIN";
   if (v === "ADMIN") return "ADMIN";
@@ -65,20 +65,19 @@ function normalizeRole(r?: string | null): Role | null {
 }
 
 function getToken(req: Request): string | null {
-  // 1) Authorization: Bearer
-  const h = req.headers.authorization;
-  if (h && /^Bearer\s+/i.test(h)) return h.replace(/^Bearer\s+/i, "").trim();
+  // 1) Authorization: Bearer <token>  (preferred)
+  const h = String(req.headers.authorization || "").trim();
+  if (/^bearer\s+/i.test(h)) return h.replace(/^bearer\s+/i, "").trim();
 
-  // 2) cookies (requires app.use(cookieParser()))
+  // 2) cookies (optional fallback — not relied upon for Option A)
   const c1 = (req as any).cookies?.access_token;
   const c2 = (req as any).cookies?.token;
   return c1 || c2 || null;
 }
 
 /**
- * Verify JWT and (optionally) use userSession for analytics/idle tracking.
- * IMPORTANT: Session lookup is **non-fatal**.
- * If anything about sessions is wrong, we still accept the JWT.
+ * Verify JWT and optionally do userSession analytics/idle bump.
+ * Session lookup is best-effort and NON-FATAL.
  */
 async function verifyAndHydrate(token: string): Promise<AuthedUser | null> {
   try {
@@ -90,30 +89,25 @@ async function verifyAndHydrate(token: string): Promise<AuthedUser | null> {
     const k = payload.k; // "access" | "verify" (or undefined)
     const sid = payload.sid ?? null;
 
-    // Refresh from DB to avoid stale role/email
+    // refresh from DB (role/email)
     const db = await prisma.user.findUnique({
-      where: { id },
+      where: { id: String(id) },
       select: { id: true, email: true, role: true },
     });
 
-    const emailFromToken =
-      payload.email ?? payload.upn ?? payload.preferred_username;
-    const email = (db?.email ?? emailFromToken ?? "").toString();
+    const emailFromToken = payload.email ?? payload.upn ?? payload.preferred_username;
+    const email = String(db?.email ?? emailFromToken ?? "");
 
     const roleFromDb = normalizeRole(db?.role);
     const roleFromToken = normalizeRole(payload.role);
     const role: Role = (roleFromDb ?? roleFromToken ?? "SHOPPER") as Role;
 
-    // 🔍 Optional session checks – but **never** reject token because of them
+    // optional session checks (non-fatal)
     if (String(k || "") === "access" && sid) {
       const sessionDelegate = (prisma as any).userSession;
 
       if (!sessionDelegate?.findFirst) {
-        if (AUTH_DEBUG) {
-          console.warn(
-            "[auth] userSession model not found – skipping session checks"
-          );
-        }
+        if (AUTH_DEBUG) console.warn("[auth] userSession model not found – skipping session checks");
       } else {
         try {
           const sess = await sessionDelegate.findFirst({
@@ -131,53 +125,43 @@ async function verifyAndHydrate(token: string): Promise<AuthedUser | null> {
           });
 
           if (!sess) {
-            // ⚠️ Just log for now; DO NOT return null
             if (AUTH_DEBUG) {
-              console.warn(
-                "[auth] no session row for token – allowing token anyway",
-                {
-                  userId: String(id),
-                  sid: String(sid),
-                  role,
-                }
-              );
+              console.warn("[auth] no session row for token – allowing token anyway", {
+                userId: String(id),
+                sid: String(sid),
+                role,
+              });
             }
           } else {
             const now = new Date();
 
-            // Absolute expiry: log if expired, but still allow for now
+            // absolute expiry (log only)
             if (sess.expiresAt && +sess.expiresAt <= +now) {
               if (AUTH_DEBUG) {
-                console.warn(
-                  "[auth] session expired – allowing token anyway (no hard block)",
-                  {
-                    userId: String(id),
-                    sid: String(sid),
-                    role,
-                    expiresAt: sess.expiresAt,
-                  }
-                );
+                console.warn("[auth] session expired – allowing token anyway", {
+                  userId: String(id),
+                  sid: String(sid),
+                  role,
+                  expiresAt: sess.expiresAt,
+                });
               }
             } else {
-              // Idle tracking (best-effort)
+              // idle tracking (log only)
               const idleMs = idleMinutesForRole(role) * 60_000;
               const last = sess.lastSeenAt ? +new Date(sess.lastSeenAt) : 0;
 
               if (last && +now - last > idleMs) {
                 if (AUTH_DEBUG) {
-                  console.warn(
-                    "[auth] session idle timeout would have applied – but not blocking token",
-                    {
-                      userId: String(id),
-                      sid: String(sid),
-                      role,
-                      lastSeenAt: sess.lastSeenAt,
-                    }
-                  );
+                  console.warn("[auth] session idle timeout would apply (not blocking)", {
+                    userId: String(id),
+                    sid: String(sid),
+                    role,
+                    lastSeenAt: sess.lastSeenAt,
+                  });
                 }
               }
 
-              // Update lastSeenAt at most once per minute
+              // bump lastSeenAt at most once per minute
               if (!last || +now - last > 60_000) {
                 try {
                   await sessionDelegate.update({
@@ -186,10 +170,7 @@ async function verifyAndHydrate(token: string): Promise<AuthedUser | null> {
                   });
                 } catch (e) {
                   if (AUTH_DEBUG) {
-                    console.warn(
-                      "[auth] failed to bump lastSeenAt (non-fatal):",
-                      (e as any)?.message
-                    );
+                    console.warn("[auth] failed to bump lastSeenAt (non-fatal):", (e as any)?.message);
                   }
                 }
               }
@@ -197,20 +178,15 @@ async function verifyAndHydrate(token: string): Promise<AuthedUser | null> {
           }
         } catch (e) {
           if (AUTH_DEBUG) {
-            console.warn(
-              "[auth] session lookup threw – allowing token anyway:",
-              (e as any)?.message
-            );
+            console.warn("[auth] session lookup threw – allowing token anyway:", (e as any)?.message);
           }
         }
       }
     }
 
-    // ✅ Final decision: JWT ok → user ok
     return { id: String(id), email, role, k, sid };
   } catch (e) {
-    if (AUTH_DEBUG)
-      console.warn("[auth] jwt verify failed:", (e as any)?.message);
+    if (AUTH_DEBUG) console.warn("[auth] jwt verify failed:", (e as any)?.message);
     return null;
   }
 }
@@ -218,17 +194,10 @@ async function verifyAndHydrate(token: string): Promise<AuthedUser | null> {
 /* ---------- middlewares ---------- */
 
 /**
- * Non-blocking: attach req.user if token present & valid; otherwise continue anonymous.
- * Use this first, then add `requireAuth` or `requireAdmin` on routes that need it.
+ * Non-blocking: attaches req.user if token is present & valid.
  */
 export const attachUser: RequestHandler = async (req, _res, next) => {
-  const token =
-    req.cookies?.access_token ||
-    (req.headers.authorization?.startsWith("Bearer ")
-      ? req.headers.authorization.slice("Bearer ".length)
-      : null);
-
-
+  const token = getToken(req);
   if (!token) return next();
 
   const user = await verifyAndHydrate(token);
@@ -238,27 +207,26 @@ export const attachUser: RequestHandler = async (req, _res, next) => {
   } else if (AUTH_DEBUG) {
     console.log("[auth] token present but invalid");
   }
+
   next();
 };
 
-/** Hard requirement: must be authenticated. */
+/** Must be authenticated with an access token (or token without k). */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const u = req.user as any;
   if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
-  if (u.k && u.k !== "access")
-    return res.status(403).json({ error: "Forbidden" });
+
+  // If token has a kind, enforce it
+  if (u.k && u.k !== "access") return res.status(403).json({ error: "Forbidden" });
+
   next();
 }
 
-export function requireVerifySession(
-  req: Request,
-  res: Response,
-  next: NextFunction
-) {
+/** Used for OTP verify routes — allow verify OR access. */
+export function requireVerifySession(req: Request, res: Response, next: NextFunction) {
   const u = req.user as any;
   if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
 
-  // allow verify token OR full access token (handy if already logged in)
   if (u.k && u.k !== "verify" && u.k !== "access") {
     return res.status(403).json({ error: "Forbidden" });
   }
@@ -266,7 +234,6 @@ export function requireVerifySession(
   next();
 }
 
-/** Admin or Super Admin only. */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
   const role = normalizeRole(req.user.role);
@@ -274,24 +241,14 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   return res.status(403).json({ error: "Forbidden" });
 }
 
-/** Super Admin only. */
-export function requireSuperAdmin(
-  req: Request,
-  res: Response,
-  next: NextFunction
-) {
+export function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
   if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
   const role = normalizeRole(req.user.role);
   if (role === "SUPER_ADMIN") return next();
   return res.status(403).json({ error: "Forbidden" });
 }
 
-/** Supplier only. */
-export function requireSupplier(
-  req: Request,
-  res: Response,
-  next: NextFunction
-) {
+export function requireSupplier(req: Request, res: Response, next: NextFunction) {
   if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
   const role = normalizeRole(req.user.role);
   if (role === "SUPPLIER") return next();
