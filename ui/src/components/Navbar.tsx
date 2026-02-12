@@ -114,6 +114,7 @@ export default function Navbar() {
   // Cart counts
   const { distinct: cartItemsCount, totalQty: cartTotalQty } = useCartCount();
 
+  // Display name from store (Option A token auth: store is the source of truth)
   const firstName = user?.firstName?.trim() || null;
   const middleName = (user as any)?.middleName?.trim?.() || null;
   const lastName = user?.lastName?.trim() || null;
@@ -142,21 +143,27 @@ export default function Navbar() {
     performLogout("/");
   }, []);
 
+  // Riders should land on orders
   const brandHref = isRider ? "/supplier/orders" : "/";
 
+  // Close mobile more when route changes
   useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
 
+  // Nav visibility
   const showShopNav = !token || (!isSupplier && !isSuperAdmin && !isRider);
   const showBuyerNav = !!token && !isSupplier && !isRider;
   const showSupplierNav = !!token && isSupplier && !isRider;
   const showRiderNav = !!token && isRider;
 
+  // Badge standard: show distinct items
   const cartBadge = cartItemsCount;
 
   return (
     <>
+      {/* Fixed top header */}
       <header className="fixed top-0 left-0 right-0 z-50 w-full border-b border-zinc-200 bg-white/80 backdrop-blur">
         <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-4 md:px-8 flex items-center gap-3">
+          {/* Brand */}
           <Link
             to={brandHref}
             className="inline-flex items-center hover:opacity-95"
@@ -165,11 +172,13 @@ export default function Navbar() {
             <DaySpringLogo size={28} />
           </Link>
 
+          {/* Desktop icon nav */}
           <nav className="hidden md:flex items-center gap-2 ml-2">
             {showRiderNav ? (
               <IconNavLink to="/supplier/orders" icon={<Truck size={18} />} label="Orders" />
             ) : (
               <>
+                {/* Catalogue/Home */}
                 <IconNavLink
                   to="/"
                   end
@@ -177,6 +186,7 @@ export default function Navbar() {
                   label="Catalogue"
                 />
 
+                {/* Dashboards */}
                 {showSupplierNav && (
                   <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
                 )}
@@ -194,6 +204,7 @@ export default function Navbar() {
                   <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
                 )}
 
+                {/* Buyer nav */}
                 {showBuyerNav && (
                   <>
                     <IconNavLink
@@ -207,6 +218,7 @@ export default function Navbar() {
                   </>
                 )}
 
+                {/* Admin */}
                 {isAdmin && <IconNavLink to="/admin" icon={<Shield size={18} />} label="Admin" />}
                 {isAdmin && (
                   <IconNavLink
@@ -221,11 +233,14 @@ export default function Navbar() {
 
           <div className="ml-auto" />
 
+          {/* Right cluster */}
           <div className="flex items-center gap-2">
+            {/* Desktop bell */}
             <div className="hidden md:block">
               <NotificationsBell placement="navbar" />
             </div>
 
+            {/* Auth buttons (desktop) */}
             <div className="hidden md:flex items-center gap-2">
               {!token ? (
                 <>
@@ -264,6 +279,7 @@ export default function Navbar() {
                 </>
               ) : (
                 <div className="flex items-center gap-2">
+                  {/* avatar menu */}
                   <div className="relative" ref={menuRef}>
                     <button
                       onClick={() => setMenuOpen((v) => !v)}
@@ -391,6 +407,7 @@ export default function Navbar() {
               )}
             </div>
 
+            {/* Mobile: bell + more */}
             <div className="md:hidden flex items-center gap-2">
               <NotificationsBell placement="navbar" />
               <button
@@ -405,6 +422,7 @@ export default function Navbar() {
           </div>
         </div>
 
+        {/* Mobile top drawer ("More") */}
         {mobileMoreOpen && (
           <div className="md:hidden">
             <div className="fixed inset-0 z-50 bg-black/40" onClick={() => setMobileMoreOpen(false)} />
@@ -579,8 +597,10 @@ export default function Navbar() {
         )}
       </header>
 
+      {/* Spacer so fixed header doesn't cover page content */}
       <div className="h-14 md:h-16" />
 
+      {/* Mobile bottom nav */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-200 bg-white/90 backdrop-blur">
         <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-around">
           {showRiderNav ? (
@@ -711,6 +731,7 @@ export default function Navbar() {
         </div>
       </div>
 
+      {/* Spacer so bottom nav doesn't cover content */}
       <div className="md:hidden h-16" />
     </>
   );
