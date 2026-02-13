@@ -82,7 +82,12 @@ export default function App() {
   const token = useAuthStore((s) => s.token);
   const clear = useAuthStore((s) => s.clear);
   const role = useAuthStore((s) => s.user?.role);
+  const bootstrap = useAuthStore((s) => s.bootstrap);
 
+  useEffect(() => {
+    bootstrap();
+  }, [bootstrap]);
+  
   useEffect(() => {
     scheduleTokenExpiryLogout(token, () => {
       clear();

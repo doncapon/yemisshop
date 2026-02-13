@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import SiteLayout from "../../layouts/SiteLayout";
 import api from "../../api/client";
-import { useAuthStore } from "../../store/auth";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useModal } from "../../components/ModalProvider";
 import { useNavigate } from "react-router-dom";
@@ -15,6 +14,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { performLogout } from "../../utils/logout";
+import { useAuthStore } from "../../store/auth";
 
 type SessionDto = {
   id: string;

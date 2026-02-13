@@ -118,19 +118,12 @@ async function createUserSession(req: Request, userId: string, role?: string | n
   return session.id;
 }
 
-/**
- * ✅ LOGIN
- * - Always returns 200 on success (even if not verified)
- * - Sets needsVerification flag if supplier not fully verified
- * - UI can login and restrict actions (checkout, supplier activation, etc.)
- */
+// api/src/routes/auth.ts (replace ONLY the /login route)
+
 router.post(
   "/login",
   wrap(async (req, res) => {
-    const { email, password } = (req.body || {}) as {
-      email?: string;
-      password?: string;
-    };
+    const { email, password } = (req.body || {}) as { email?: string; password?: string };
 
     if (!email?.trim() || !password?.trim()) {
       return res.status(400).json({ error: "Email and password are required" });
@@ -139,9 +132,7 @@ router.post(
     const emailNorm = String(email).trim();
 
     const user = await prisma.user.findFirst({
-      where: {
-        email: { equals: emailNorm, mode: "insensitive" },
-      },
+      where: { email: { equals: emailNorm, mode: "insensitive" } },
     });
 
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -162,10 +153,7 @@ router.post(
     // ✅ Create session id (sid) for access tokens
     const sid = await createUserSession(req, user.id, user.role);
 
-    const roleNorm = String(user.role || "")
-      .replace(/[\s-]/g, "")
-      .toUpperCase();
-
+    const roleNorm = String(user.role || "").replace(/[\s-]/g, "").toUpperCase();
     const ttlDays =
       roleNorm === "ADMIN" ||
       roleNorm === "SUPER_ADMIN" ||
@@ -174,27 +162,34 @@ router.post(
         ? 7
         : 30;
 
-    // ✅ Access token (Bearer)
+    // ✅ normal access token
     const token = signAccessJwt(
       { id: user.id, email: user.email, role: user.role, k: "access", sid } as any,
       `${ttlDays}d`
     );
 
-    // Optional: cookie too (harmless even if UI uses Bearer)
+    // Optional cookie (not required for Option A)
     setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
 
-    // ✅ DO NOT BLOCK LOGIN
+    // ✅ Allow login even if not verified, but flag it
     const needsVerification =
       String(user.role) === "SUPPLIER" && !(profile.emailVerified && profile.phoneVerified);
+
+    // ✅ provide short verify token for OTP endpoints if you want (optional)
+    const verifyToken = needsVerification
+      ? signAccessJwt({ id: user.id, email: user.email, role: user.role, k: "verify", sid } as any, "30m")
+      : undefined;
 
     return res.json({
       token,
       sid,
       profile,
       needsVerification,
+      verifyToken,
     });
   })
 );
+
 
 async function activateSupplierIfFullyVerified(user: {
   id: string;

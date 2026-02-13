@@ -1,59 +1,38 @@
 // src/store/auth.ts
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { setAccessToken as setAxiosAccessToken } from "../api/client";
+import api from "../api/client";
+import { clearAccessToken, getAccessToken, setAccessToken } from "../api/client";
 
-export type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
+export type Role = "SHOPPER" | "ADMIN" | "SUPER_ADMIN" | "SUPPLIER" | "SUPPLIER_RIDER";
 
-export type AuthedUser = {
+export type AuthUser = {
   id: string;
   email: string;
   role: Role;
   firstName?: string | null;
-  middleName?: string | null;
   lastName?: string | null;
+  middleName?: string | null;
   emailVerified?: boolean;
   phoneVerified?: boolean;
 };
 
 export type AuthState = {
   token: string | null;
-  user: AuthedUser | null;
+  user: AuthUser | null;
   needsVerification: boolean;
 
+  // hydration flag (prevents UI flicker/loops)
   hydrated: boolean;
 
-  setAuth: (payload: { token: string | null; user: AuthedUser | null }) => void;
+  // actions
+  setAuth: (p: { token: string | null; user: AuthUser | null }) => void;
   setNeedsVerification: (v: boolean) => void;
   clear: () => void;
 
-  // ✅ fix TS2339 (Navbar can call bootstrap)
-  bootstrap: () => void;
+  // ✅ you referenced this earlier — now it exists
+  bootstrap: () => Promise<void>;
 };
-
-function looksLikeJwt(t: string | null) {
-  return !!t && t.split(".").length === 3;
-}
-
-function readSessionToken(): string | null {
-  try {
-    if (typeof window === "undefined") return null;
-    const t = window.sessionStorage.getItem("access_token");
-    return looksLikeJwt(t) ? t : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeSessionToken(token: string | null) {
-  try {
-    if (typeof window === "undefined") return;
-    if (token && looksLikeJwt(token)) window.sessionStorage.setItem("access_token", token);
-    else window.sessionStorage.removeItem("access_token");
-  } catch {
-    /* ignore */
-  }
-}
 
 export const useAuthStore = create<AuthState>()(
   persist(
@@ -64,38 +43,79 @@ export const useAuthStore = create<AuthState>()(
       hydrated: false,
 
       setAuth: ({ token, user }) => {
-        const safeToken = looksLikeJwt(token) ? token : null;
+        // ✅ sync axios + sessionStorage
+        setAccessToken(token);
 
-        // keep axios in sync (Bearer)
-        setAxiosAccessToken(safeToken);
-
-        // keep sessionStorage in sync (Option A)
-        writeSessionToken(safeToken);
-
-        // update store (Navbar reacts immediately)
-        set({ token: safeToken, user: user ?? null });
+        set({
+          token,
+          user,
+          needsVerification: false,
+        });
       },
 
       setNeedsVerification: (v) => set({ needsVerification: !!v }),
 
       clear: () => {
-        setAxiosAccessToken(null);
-        writeSessionToken(null);
-        set({ token: null, user: null, needsVerification: false });
+        clearAccessToken();
+        set({
+          token: null,
+          user: null,
+          needsVerification: false,
+        });
       },
 
-      bootstrap: () => {
-        const t = readSessionToken();
-        if (t && !get().token) {
-          setAxiosAccessToken(t);
+      bootstrap: async () => {
+        // 1) Mark hydrated at the end, no matter what
+        try {
+          // 2) Pull token from sessionStorage (NOT localStorage)
+          const t = getAccessToken();
+          if (!t) {
+            set({ hydrated: true, token: null, user: null });
+            return;
+          }
+
+          // ✅ sync token into store so Navbar reacts
           set({ token: t });
+
+          // 3) If we already have a user in persisted store, keep it.
+          // But still verify token by calling /me in the background.
+          try {
+            const r = await api.get("/api/auth/me");
+            const me = r.data;
+
+            if (!me) {
+              // token invalid
+              get().clear();
+              set({ hydrated: true });
+              return;
+            }
+
+            set({
+              user: {
+                id: String(me.id ?? ""),
+                email: String(me.email ?? ""),
+                role: (me.role ?? "SHOPPER") as Role,
+                firstName: me.firstName ?? null,
+                lastName: me.lastName ?? null,
+                middleName: (me as any).middleName ?? null,
+                emailVerified: !!me.emailVerified,
+                phoneVerified: !!me.phoneVerified,
+              },
+              hydrated: true,
+            });
+          } catch {
+            // If /me fails temporarily, still mark hydrated so UI works
+            set({ hydrated: true });
+          }
+        } catch {
+          set({ hydrated: true });
         }
-        set({ hydrated: true });
       },
     }),
     {
       name: "auth_store_v1",
-      // ✅ don't persist token (token lives in sessionStorage)
+      // ✅ Persist only non-sensitive fields in localStorage.
+      // Token stays in sessionStorage via api client.
       partialize: (s) => ({
         user: s.user,
         needsVerification: s.needsVerification,
@@ -103,11 +123,3 @@ export const useAuthStore = create<AuthState>()(
     }
   )
 );
-
-// ✅ auto-bootstrap once on module import
-try {
-  const st = useAuthStore.getState();
-  if (!st.hydrated) st.bootstrap();
-} catch {
-  /* ignore */
-}

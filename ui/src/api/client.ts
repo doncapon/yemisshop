@@ -3,34 +3,22 @@ import axios, { AxiosError, AxiosHeaders, type InternalAxiosRequestConfig } from
 
 const V = (import.meta as any)?.env || {};
 
-// Option A (token auth):
-// - If VITE_API_URL is '', use same-origin '/api/...'
-// - If it's a full domain, requests go there.
-const API_BASE = V.VITE_API_URL;
+// ✅ IMPORTANT: default "" so axios uses same-origin if not set
+const API_BASE: string = String(V.VITE_API_URL ?? "").trim();
 
 let accessToken: string | null = null;
 
 const api = axios.create({
   baseURL: API_BASE,
-  // ✅ Also allow cookies to work if set (doesn't break bearer)
-  withCredentials: true,
+  withCredentials: false, // ✅ Bearer token auth (NOT cookies)
   timeout: 20000,
 });
 
 const looksLikeJwt = (t: string | null) => !!t && t.split(".").length === 3;
 
-function applyTokenToAxios(token: string | null) {
-  if (token && looksLikeJwt(token)) {
-    api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-  } else {
-    delete api.defaults.headers.common["Authorization"];
-  }
-}
-
 function getStorage(): Storage | null {
   try {
     if (typeof window === "undefined") return null;
-    // ✅ Option A: use sessionStorage (safer than localStorage)
     return window.sessionStorage;
   } catch {
     return null;
@@ -60,33 +48,47 @@ function writeTokenToStorage(token: string | null) {
   }
 }
 
-// ---- Initial rehydrate at module load ----
-accessToken = readTokenFromStorage();
-applyTokenToAxios(accessToken);
-
-// ---- Keep in sync across tabs ----
-// Note: sessionStorage does NOT propagate across tabs, but storage events
-// can still fire in some browsers if you also write localStorage elsewhere.
-// We keep this listener harmless.
-if (typeof window !== "undefined") {
-  const g = window as any;
-  if (!g.__access_token_storage_listener__) {
-    g.__access_token_storage_listener__ = true;
-
-    window.addEventListener("storage", (e) => {
-      if (e.key === "access_token") {
-        accessToken = looksLikeJwt(e.newValue) ? e.newValue : null;
-        applyTokenToAxios(accessToken);
-      }
-    });
+function applyTokenToAxios(token: string | null) {
+  if (token && looksLikeJwt(token)) {
+    api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+  } else {
+    delete api.defaults.headers.common["Authorization"];
   }
 }
 
+/* ---------------- Public helpers (these are the “missing methods”) ---------------- */
+
+export function getAccessToken(): string | null {
+  if (accessToken && looksLikeJwt(accessToken)) return accessToken;
+  accessToken = readTokenFromStorage();
+  return accessToken;
+}
+
+export function hasAccessToken(): boolean {
+  return !!getAccessToken();
+}
+
+export function clearAccessToken() {
+  accessToken = null;
+  writeTokenToStorage(null);
+  applyTokenToAxios(null);
+}
+
+/**
+ * Sets token in memory + sessionStorage + axios header.
+ * Call this when login succeeds, and when rehydrating auth.
+ */
 export function setAccessToken(token: string | null) {
   accessToken = looksLikeJwt(token) ? token : null;
   writeTokenToStorage(accessToken);
   applyTokenToAxios(accessToken);
 }
+
+/* ---------------- Initial rehydrate at module load ---------------- */
+accessToken = readTokenFromStorage();
+applyTokenToAxios(accessToken);
+
+/* ---------------- Interceptors ---------------- */
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const headers = AxiosHeaders.from(config.headers);
@@ -116,29 +118,20 @@ api.interceptors.response.use(
     const url = String((e as any)?.config?.url ?? "");
     const status = (e as any)?.response?.status as number | undefined;
 
-    // ✅ 1) Treat /auth/me 401 as "logged out" (NOT an error)
-    // Prevents console noise & "uncaught promise" flicker on /login.
-    const isMe =
-      url.includes("/api/auth/me") ||
-      url.endsWith("/auth/me") ||
-      url.includes("/auth/me?");
-
+    // ✅ treat /auth/me 401 as logged out without throwing
+    const isMe = url.includes("/api/auth/me") || url.includes("/auth/me");
     if (status === 401 && isMe && (e as any).response) {
-      // Clear any stale bearer token
-      setAccessToken(null);
-
-      // Return a successful-looking response with data=null
+      clearAccessToken();
       return Promise.resolve({
         ...(e as any).response,
         data: null,
       });
     }
 
-    // ✅ 2) Keep your CAC verify special-case
+    // ✅ CAC verify special-case
     const isCacVerify =
       url.includes("/api/suppliers/cac-verify") || url.includes("/suppliers/cac-verify");
     const expected = status === 400 || status === 404 || status === 429;
-
     if (isCacVerify && expected && (e as any).response) {
       return Promise.resolve((e as any).response);
     }
