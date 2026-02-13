@@ -61,5 +61,5 @@ jobs:
       - name: Build
         env:
           # Use your real API URL if you want a stronger build check
-          VITE_API_URL: https://dayspring.up.railway.up
+          VITE_API_URL: https://daysping-api-production.up.railway.app
         run: npm run build
