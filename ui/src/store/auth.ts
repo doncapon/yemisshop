@@ -1,7 +1,7 @@
 // src/store/auth.ts
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import api, { getAccessToken, setAccessToken, clearAccessToken } from "../api/client";
+import api, { getAccessToken, setAccessToken, clearAccessToken } from "../api/client.js";
 
 export type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
@@ -44,20 +44,20 @@ function safeLocalStorage() {
 export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
-      token: getAccessToken(), // token comes from sessionStorage
+      token: getAccessToken(),
       user: null,
 
       needsVerification: false,
       hydrated: false,
 
       setAuth: ({ token, user }) => {
-        // 1) sync axios + sessionStorage
+        // ✅ sync token everywhere (axios + session/local storage)
         setAccessToken(token);
 
-        // 2) update zustand state immediately (Navbar reacts)
         set({
           token: token ?? null,
           user: user ?? null,
+          hydrated: true,
         });
       },
 
@@ -65,28 +65,28 @@ export const useAuthStore = create<AuthState>()(
 
       clear: () => {
         clearAccessToken();
-        set({ token: null, user: null, needsVerification: false });
+        set({ token: null, user: null, needsVerification: false, hydrated: true });
       },
 
       bootstrap: async () => {
-        // always mark hydrated
+        // ✅ mark hydrated even if nothing else happens
         if (!get().hydrated) set({ hydrated: true });
 
-        // re-check token from sessionStorage
         const t = getAccessToken();
 
+        // no token => logged out
         if (!t) {
           if (get().token || get().user) set({ token: null, user: null });
           return;
         }
 
-        // keep zustand token synced with sessionStorage token
+        // ensure store token matches
         if (get().token !== t) set({ token: t });
 
-        // if user exists already, done
+        // if we already have user, done
         if (get().user?.id) return;
 
-        // token exists but user missing -> fetch /auth/me
+        // fetch /auth/me to populate user
         try {
           const r = await api.get("/api/auth/me");
           const me = r.data ?? null;
@@ -97,7 +97,7 @@ export const useAuthStore = create<AuthState>()(
             get().clear();
           }
         } catch {
-          // /auth/me 401 is handled by axios interceptor -> token cleared
+          // axios interceptor clears token on /auth/me 401
           const still = getAccessToken();
           if (!still) set({ token: null, user: null });
         }
@@ -106,14 +106,21 @@ export const useAuthStore = create<AuthState>()(
     {
       name: "auth_store_v1",
       storage: createJSONStorage(() => safeLocalStorage()),
-      // do NOT persist token (token is sessionStorage)
+
+      // ✅ IMPORTANT: persist token + user so Navbar can reflect login after refresh
       partialize: (s) => ({
+        token: s.token,
         user: s.user,
         needsVerification: s.needsVerification,
       }),
+
       onRehydrateStorage: () => (state) => {
         if (!state) return;
-        state.token = getAccessToken();
+
+        // ✅ ensure axios header + sessionStorage/localStorage token match persisted token
+        setAccessToken(state.token ?? null);
+
+        // ✅ mark hydrated
         state.hydrated = true;
       },
     }

@@ -96,15 +96,10 @@ export default function Navbar() {
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
 
-  // bootstrap once
+  // ✅ bootstrap once (so refresh restores auth)
   useEffect(() => {
-    if (!hydrated) {
-      useAuthStore.getState().bootstrap();
-    }
+    if (!hydrated) useAuthStore.getState().bootstrap();
   }, [hydrated]);
-
-  // ✅ treat token as logged-in (user may load slightly later)
-  const isLoggedIn = !!token;
 
   const userRole = (user?.role ?? null) as Role | null;
   const userEmail = user?.email ?? null;
@@ -121,7 +116,7 @@ export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
 
-  const cartCount = useCartCount();
+  const cartCount = useCartCount(); // { distinct, totalQty }
 
   const firstName = user?.firstName?.trim() || null;
   const middleName = (user as any)?.middleName?.trim?.() || null;
@@ -155,6 +150,10 @@ export default function Navbar() {
 
   useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
 
+  // ✅ Only treat as logged in when token exists + user exists
+  // (bootstrap will fill user after refresh)
+  const isLoggedIn = !!token && !!user?.id;
+
   const showShopNav = !isLoggedIn || (!isSupplier && !isSuperAdmin && !isRider);
   const showBuyerNav = isLoggedIn && !isSupplier && !isRider;
   const showSupplierNav = isLoggedIn && isSupplier && !isRider;
@@ -164,7 +163,11 @@ export default function Navbar() {
     <>
       <header className="fixed top-0 left-0 right-0 z-50 w-full border-b border-zinc-200 bg-white/80 backdrop-blur">
         <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-4 md:px-8 flex items-center gap-3">
-          <Link to={brandHref} className="inline-flex items-center hover:opacity-95" aria-label="DaySpring home">
+          <Link
+            to={brandHref}
+            className="inline-flex items-center hover:opacity-95"
+            aria-label="DaySpring home"
+          >
             <DaySpringLogo size={28} />
           </Link>
 
@@ -185,7 +188,12 @@ export default function Navbar() {
                 )}
 
                 {isLoggedIn && isSuperAdmin && (
-                  <IconNavLink to="/supplier" end icon={<CheckCircle2 size={18} />} label="Supplier dashboard" />
+                  <IconNavLink
+                    to="/supplier"
+                    end
+                    icon={<CheckCircle2 size={18} />}
+                    label="Supplier dashboard"
+                  />
                 )}
 
                 {isLoggedIn && !isSupplier && !isSuperAdmin && (
@@ -273,7 +281,10 @@ export default function Navbar() {
                     </button>
 
                     {menuOpen && (
-                      <div className="absolute right-0 mt-2 w-64 rounded-2xl border border-zinc-200 bg-white shadow-xl overflow-hidden" role="menu">
+                      <div
+                        className="absolute right-0 mt-2 w-64 rounded-2xl border border-zinc-200 bg-white shadow-xl overflow-hidden"
+                        role="menu"
+                      >
                         <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
                           <div className="text-xs text-zinc-500">Signed in as</div>
                           <div className="text-sm font-semibold truncate text-zinc-900">
@@ -464,7 +475,7 @@ export default function Navbar() {
                       </button>
                     )}
 
-                    {isLoggedIn && !isSupplier && !isSuperAdmin && (
+                    {isLoggedIn && !isSupplier && !isSuperAdmin && !isRider && (
                       <button
                         className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
                         onClick={() => nav("/dashboard")}
@@ -567,6 +578,137 @@ export default function Navbar() {
       </header>
 
       <div className="h-14 md:h-16" />
+
+      <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-200 bg-white/90 backdrop-blur">
+        <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-around">
+          {showRiderNav ? (
+            <>
+              <NavLink
+                to="/supplier/orders"
+                className={({ isActive }) =>
+                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                    isActive ? "text-zinc-900" : "text-zinc-500"
+                  }`
+                }
+              >
+                <Truck size={20} />
+                <span className="text-[10px]">Orders</span>
+              </NavLink>
+
+              <button
+                className="flex flex-col items-center gap-1 px-3 py-1 rounded-xl text-zinc-500"
+                onClick={() => setMobileMoreOpen(true)}
+              >
+                <Menu size={20} />
+                <span className="text-[10px]">More</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <NavLink
+                to="/"
+                end
+                className={({ isActive }) =>
+                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                    isActive ? "text-zinc-900" : "text-zinc-500"
+                  }`
+                }
+              >
+                <LayoutGrid size={20} />
+                <span className="text-[10px]">Shop</span>
+              </NavLink>
+
+              {showBuyerNav ? (
+                <>
+                  <NavLink
+                    to="/cart"
+                    className={({ isActive }) =>
+                      `relative flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                        isActive ? "text-zinc-900" : "text-zinc-500"
+                      }`
+                    }
+                    aria-label={cartCount.distinct > 0 ? `Cart (${cartCount.distinct})` : "Cart"}
+                  >
+                    <div className="relative">
+                      <ShoppingCart size={20} />
+                      {cartCount.distinct > 0 && (
+                        <span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+                          {cartCount.distinct > 9 ? "9+" : cartCount.distinct}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px]">Cart</span>
+                  </NavLink>
+
+                  <NavLink
+                    to="/wishlist"
+                    className={({ isActive }) =>
+                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                        isActive ? "text-zinc-900" : "text-zinc-500"
+                      }`
+                    }
+                  >
+                    <Heart size={20} />
+                    <span className="text-[10px]">Wish</span>
+                  </NavLink>
+
+                  <NavLink
+                    to="/orders"
+                    className={({ isActive }) =>
+                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                        isActive ? "text-zinc-900" : "text-zinc-500"
+                      }`
+                    }
+                  >
+                    <Package size={20} />
+                    <span className="text-[10px]">Orders</span>
+                  </NavLink>
+                </>
+              ) : (
+                <>
+                  {isLoggedIn && isSupplier && (
+                    <NavLink
+                      to="/supplier"
+                      end
+                      className={({ isActive }) =>
+                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                          isActive ? "text-zinc-900" : "text-zinc-500"
+                        }`
+                      }
+                    >
+                      <Store size={20} />
+                      <span className="text-[10px]">Supplier</span>
+                    </NavLink>
+                  )}
+
+                  {isAdmin && (
+                    <NavLink
+                      to="/admin"
+                      className={({ isActive }) =>
+                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                          isActive ? "text-zinc-900" : "text-zinc-500"
+                        }`
+                      }
+                    >
+                      <Shield size={20} />
+                      <span className="text-[10px]">Admin</span>
+                    </NavLink>
+                  )}
+                </>
+              )}
+
+              <button
+                className="flex flex-col items-center gap-1 px-3 py-1 rounded-xl text-zinc-500"
+                onClick={() => setMobileMoreOpen(true)}
+              >
+                <Menu size={20} />
+                <span className="text-[10px]">More</span>
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
       <div className="md:hidden h-16" />
     </>
   );
