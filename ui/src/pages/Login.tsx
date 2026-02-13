@@ -1,7 +1,7 @@
 // src/pages/Login.tsx
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import api from "../api/client.js";
+import api, { setAccessToken } from "../api/client.js";
 import { useAuthStore, type Role } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout.js";
 import DaySpringLogo from "../components/brand/DayspringLogo.js";
@@ -69,7 +69,7 @@ function normRole(r: any): Role {
 }
 
 export default function Login() {
-  const hydrated = useAuthStore((s:any) => s.hydrated);
+  const hydrated = useAuthStore((s: any) => s.hydrated);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -154,11 +154,14 @@ export default function Login() {
       const needsVerification = !!data?.needsVerification;
       const vt = data?.verifyToken ?? null;
 
-      if (!token || !profile?.id) {
+      if (!token || typeof token !== "string" || token.split(".").length !== 3 || !profile?.id) {
         throw new Error("Login response missing token/profile");
       }
 
-      // ✅ store token + user (store syncs axios + sessionStorage)
+      // ✅ CRITICAL: persist token to sessionStorage + axios header
+      setAccessToken(token);
+
+      // ✅ store token + user for Navbar reactivity
       setAuth({ token, user: profile });
       setNeedsVerification(needsVerification);
 

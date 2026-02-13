@@ -4,13 +4,13 @@ import axios, { AxiosError, AxiosHeaders, type InternalAxiosRequestConfig } from
 const V = (import.meta as any)?.env || {};
 
 // ✅ IMPORTANT: default "" so axios uses same-origin if not set
-const API_BASE: string = String(V.VITE_API_URL ?? "").trim();
+const API_BASE: string = (V.VITE_API_URL ?? "").trim();
 
 let accessToken: string | null = null;
 
 const api = axios.create({
   baseURL: API_BASE,
-  withCredentials: false, // ✅ Bearer token auth (NOT cookies)
+  withCredentials: false, // ✅ Bearer token auth
   timeout: 20000,
 });
 
@@ -40,7 +40,6 @@ function writeTokenToStorage(token: string | null) {
   try {
     const st = getStorage();
     if (!st) return;
-
     if (token && looksLikeJwt(token)) st.setItem("access_token", token);
     else st.removeItem("access_token");
   } catch {
@@ -56,47 +55,31 @@ function applyTokenToAxios(token: string | null) {
   }
 }
 
-/* ---------------- Public helpers (these are the “missing methods”) ---------------- */
+// ---- Initial rehydrate at module load ----
+accessToken = readTokenFromStorage();
+applyTokenToAxios(accessToken);
 
+// ✅ Useful for other modules (store/bootstrap)
 export function getAccessToken(): string | null {
-  if (accessToken && looksLikeJwt(accessToken)) return accessToken;
-  accessToken = readTokenFromStorage();
-  return accessToken;
+  if (!accessToken) accessToken = readTokenFromStorage();
+  return looksLikeJwt(accessToken) ? accessToken : null;
 }
 
-export function hasAccessToken(): boolean {
-  return !!getAccessToken();
-}
-
-export function clearAccessToken() {
-  accessToken = null;
-  writeTokenToStorage(null);
-  applyTokenToAxios(null);
-}
-
-/**
- * Sets token in memory + sessionStorage + axios header.
- * Call this when login succeeds, and when rehydrating auth.
- */
 export function setAccessToken(token: string | null) {
   accessToken = looksLikeJwt(token) ? token : null;
   writeTokenToStorage(accessToken);
   applyTokenToAxios(accessToken);
 }
 
-/* ---------------- Initial rehydrate at module load ---------------- */
-accessToken = readTokenFromStorage();
-applyTokenToAxios(accessToken);
-
-/* ---------------- Interceptors ---------------- */
+export function clearAccessToken() {
+  setAccessToken(null);
+}
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const headers = AxiosHeaders.from(config.headers);
 
-  // If memory token is missing, fall back to storage (JWT-only)
   if (!accessToken) accessToken = readTokenFromStorage();
 
-  // ✅ only attach bearer for real JWTs
   if (accessToken && looksLikeJwt(accessToken)) {
     headers.set("Authorization", `Bearer ${accessToken}`);
   } else {
@@ -128,7 +111,7 @@ api.interceptors.response.use(
       });
     }
 
-    // ✅ CAC verify special-case
+    // ✅ your CAC verify special-case
     const isCacVerify =
       url.includes("/api/suppliers/cac-verify") || url.includes("/suppliers/cac-verify");
     const expected = status === 400 || status === 404 || status === 429;
