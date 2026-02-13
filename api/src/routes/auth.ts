@@ -79,7 +79,7 @@ function toE164(dialCode?: string, local?: string): string | null {
 
 function signVerifyJwt(payload: { id: string; email: string; role: string }, expiresIn = '15m') {
   // IMPORTANT: include a "kind" / "k" claim so middleware can restrict permissions
-  return signAccessJwt({ ...payload, k: 'verify' } as any, expiresIn);
+  return signAccessJwt({ ...payload, k: 'access' } as any, expiresIn);
 }
 
 async function createUserSession(req: Request, userId: string, role?: string | null) {
