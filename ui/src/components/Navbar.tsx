@@ -94,22 +94,20 @@ function IconNavLink({
 export default function Navbar() {
   const token = useAuthStore((s) => s.token);
   const user = useAuthStore((s) => s.user);
-  const bootstrap = useAuthStore((s) => s.bootstrap);
   const hydrated = useAuthStore((s) => s.hydrated);
 
-  const nav = useNavigate();
-  const loc = useLocation();
-
-  // ✅ Ensure store token rehydrates from sessionStorage
+  // ✅ Bootstrap once so refresh restores auth state
   useEffect(() => {
-    if (!hydrated) bootstrap();
-  }, [hydrated, bootstrap]);
-
-  // ✅ "Logged in" should be based on store state (token OR user)
-  const isAuthed = !!token || !!user?.id;
+    if (!hydrated) {
+      useAuthStore.getState().bootstrap();
+    }
+  }, [hydrated]);
 
   const userRole = (user?.role ?? null) as Role | null;
   const userEmail = user?.email ?? null;
+
+  const nav = useNavigate();
+  const loc = useLocation();
 
   const isSupplier = userRole === "SUPPLIER";
   const isSuperAdmin = userRole === "SUPER_ADMIN";
@@ -120,7 +118,7 @@ export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
 
-  const cartCount = useCartCount(); // { distinct, totalQty }
+  const cartCount = useCartCount();
 
   const firstName = user?.firstName?.trim() || null;
   const middleName = (user as any)?.middleName?.trim?.() || null;
@@ -154,6 +152,14 @@ export default function Navbar() {
 
   useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
 
+  /**
+   * ✅ Single source of truth used everywhere (desktop + mobile)
+   * If your store sometimes sets token before user, you can relax to:
+   *   const isAuthed = !!token;
+   * but safest is token + user.id.
+   */
+  const isAuthed = !!token && !!user?.id;
+
   const showShopNav = !isAuthed || (!isSupplier && !isSuperAdmin && !isRider);
   const showBuyerNav = isAuthed && !isSupplier && !isRider;
   const showSupplierNav = isAuthed && isSupplier && !isRider;
@@ -184,7 +190,12 @@ export default function Navbar() {
                 />
 
                 {showSupplierNav && (
-                  <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
+                  <IconNavLink
+                    to="/supplier"
+                    end
+                    icon={<Store size={18} />}
+                    label="Supplier dashboard"
+                  />
                 )}
 
                 {isAuthed && isSuperAdmin && (
@@ -247,9 +258,10 @@ export default function Navbar() {
                   <NavLink
                     to="/login"
                     className={({ isActive }) =>
-                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isActive
-                        ? "bg-zinc-900 text-white border-zinc-900"
-                        : "bg-white/80 text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${
+                        isActive
+                          ? "bg-zinc-900 text-white border-zinc-900"
+                          : "bg-white/80 text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`
                     }
                     title="Login"
@@ -289,7 +301,9 @@ export default function Navbar() {
                           <div className="text-sm font-semibold truncate text-zinc-900">
                             {displayName || userEmail || "User"}
                           </div>
-                          {userEmail && <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>}
+                          {userEmail && (
+                            <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>
+                          )}
                         </div>
 
                         {isRider ? (
@@ -585,7 +599,8 @@ export default function Navbar() {
               <NavLink
                 to="/supplier/orders"
                 className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
+                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                    isActive ? "text-zinc-900" : "text-zinc-500"
                   }`
                 }
               >
@@ -607,7 +622,8 @@ export default function Navbar() {
                 to="/"
                 end
                 className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
+                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                    isActive ? "text-zinc-900" : "text-zinc-500"
                   }`
                 }
               >
@@ -620,7 +636,8 @@ export default function Navbar() {
                   <NavLink
                     to="/cart"
                     className={({ isActive }) =>
-                      `relative flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
+                      `relative flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                        isActive ? "text-zinc-900" : "text-zinc-500"
                       }`
                     }
                     aria-label={cartCount.distinct > 0 ? `Cart (${cartCount.distinct})` : "Cart"}
@@ -639,7 +656,8 @@ export default function Navbar() {
                   <NavLink
                     to="/wishlist"
                     className={({ isActive }) =>
-                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
+                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                        isActive ? "text-zinc-900" : "text-zinc-500"
                       }`
                     }
                   >
@@ -650,7 +668,8 @@ export default function Navbar() {
                   <NavLink
                     to="/orders"
                     className={({ isActive }) =>
-                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
+                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                        isActive ? "text-zinc-900" : "text-zinc-500"
                       }`
                     }
                   >
@@ -665,7 +684,8 @@ export default function Navbar() {
                       to="/supplier"
                       end
                       className={({ isActive }) =>
-                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
+                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                          isActive ? "text-zinc-900" : "text-zinc-500"
                         }`
                       }
                     >
@@ -678,7 +698,8 @@ export default function Navbar() {
                     <NavLink
                       to="/admin"
                       className={({ isActive }) =>
-                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
+                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
+                          isActive ? "text-zinc-900" : "text-zinc-500"
                         }`
                       }
                     >

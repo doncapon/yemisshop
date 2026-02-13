@@ -3,8 +3,8 @@ import axios, { AxiosError, AxiosHeaders, type InternalAxiosRequestConfig } from
 
 const V = (import.meta as any)?.env || {};
 
-// ✅ IMPORTANT: default "" so axios uses same-origin if not set
-const API_BASE: string = (V.VITE_API_URL ?? "").trim();
+// ✅ make default "" so axios uses same-origin if not set
+const API_BASE: string = String(V.VITE_API_URL ?? "").trim();
 
 let accessToken: string | null = null;
 
@@ -40,6 +40,7 @@ function writeTokenToStorage(token: string | null) {
   try {
     const st = getStorage();
     if (!st) return;
+
     if (token && looksLikeJwt(token)) st.setItem("access_token", token);
     else st.removeItem("access_token");
   } catch {
@@ -59,18 +60,20 @@ function applyTokenToAxios(token: string | null) {
 accessToken = readTokenFromStorage();
 applyTokenToAxios(accessToken);
 
-// ✅ Useful for other modules (store/bootstrap)
+/** ✅ Used by zustand store + guards */
 export function getAccessToken(): string | null {
   if (!accessToken) accessToken = readTokenFromStorage();
-  return looksLikeJwt(accessToken) ? accessToken : null;
+  return accessToken;
 }
 
+/** ✅ Used by login */
 export function setAccessToken(token: string | null) {
   accessToken = looksLikeJwt(token) ? token : null;
   writeTokenToStorage(accessToken);
   applyTokenToAxios(accessToken);
 }
 
+/** ✅ Used by logout */
 export function clearAccessToken() {
   setAccessToken(null);
 }
@@ -111,7 +114,7 @@ api.interceptors.response.use(
       });
     }
 
-    // ✅ your CAC verify special-case
+    // ✅ CAC verify special-case
     const isCacVerify =
       url.includes("/api/suppliers/cac-verify") || url.includes("/suppliers/cac-verify");
     const expected = status === 400 || status === 404 || status === 429;

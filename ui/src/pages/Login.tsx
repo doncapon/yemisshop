@@ -1,10 +1,10 @@
 // src/pages/Login.tsx
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import api, { setAccessToken } from "../api/client.js";
+import api from "../api/client";
 import { useAuthStore, type Role } from "../store/auth";
-import SiteLayout from "../layouts/SiteLayout.js";
-import DaySpringLogo from "../components/brand/DayspringLogo.js";
+import SiteLayout from "../layouts/SiteLayout";
+import DaySpringLogo from "../components/brand/DayspringLogo";
 
 type MeResponse = {
   id: string;
@@ -21,7 +21,7 @@ type LoginOk = {
   token: string;
   profile: MeResponse;
   needsVerification?: boolean;
-  verifyToken?: string; // optional
+  verifyToken?: string;
 };
 
 type LoginBlocked = {
@@ -69,7 +69,7 @@ function normRole(r: any): Role {
 }
 
 export default function Login() {
-  const hydrated = useAuthStore((s: any) => s.hydrated);
+  const hydrated = useAuthStore((s) => s.hydrated);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -93,9 +93,9 @@ export default function Login() {
   const nav = useNavigate();
   const loc = useLocation();
 
-  const setAuth = useAuthStore((s: any) => s.setAuth);
-  const setNeedsVerification = useAuthStore((s: any) => s.setNeedsVerification);
-  const clear = useAuthStore((s: any) => s.clear);
+  const setAuth = useAuthStore((s) => s.setAuth);
+  const setNeedsVerification = useAuthStore((s) => s.setNeedsVerification);
+  const clear = useAuthStore((s) => s.clear);
 
   const fullyVerified = useMemo(() => {
     if (!blockedProfile) return false;
@@ -154,18 +154,14 @@ export default function Login() {
       const needsVerification = !!data?.needsVerification;
       const vt = data?.verifyToken ?? null;
 
-      if (!token || typeof token !== "string" || token.split(".").length !== 3 || !profile?.id) {
+      if (!token || !profile?.id) {
         throw new Error("Login response missing token/profile");
       }
 
-      // ✅ CRITICAL: persist token to sessionStorage + axios header
-      setAccessToken(token);
-
-      // ✅ store token + user for Navbar reactivity
+      // ✅ store token + user (store syncs axios + sessionStorage)
       setAuth({ token, user: profile });
       setNeedsVerification(needsVerification);
 
-      // optional helpers for your verify page
       try {
         localStorage.setItem("verifyEmail", profile.email);
         if (vt) localStorage.setItem("verify_token", vt);
@@ -186,7 +182,7 @@ export default function Login() {
     } catch (e: any) {
       const status = e?.response?.status;
 
-      // ✅ Backward compatible: if server still uses old 403 verify-block
+      // Backward compatible verify-block
       if (status === 403 && e?.response?.data?.needsVerification) {
         const data = e.response.data as LoginBlocked;
 
@@ -330,6 +326,7 @@ export default function Login() {
 
   return (
     <SiteLayout>
+      {/* your full JSX unchanged below */}
       <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-50 to-white">
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="absolute -top-24 -right-20 w-[26rem] h-[26rem] rounded-full blur-3xl opacity-35 bg-fuchsia-300/50" />
@@ -450,12 +447,6 @@ export default function Login() {
                             {otpBusy ? "Verifying…" : "Verify OTP"}
                           </button>
                         </div>
-
-                        {!verifyToken && (
-                          <div className="text-xs text-rose-700">
-                            If your server returns <code>verifyToken</code>, OTP endpoints can use it.
-                          </div>
-                        )}
 
                         {otpMsg && <div className="text-xs text-slate-700">{otpMsg}</div>}
                       </div>
