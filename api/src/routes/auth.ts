@@ -164,7 +164,7 @@ router.post(
         : 30;
 
     const token = signAccessJwt(
-      { id: user.id, email: user.email, role: user.role, k: "access", sid } as any,
+      { id: user.id, email: user.email, role: user.role, k: "verify", sid } as any,
       `${ttlDays}d`
     );
 

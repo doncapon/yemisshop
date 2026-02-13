@@ -13,7 +13,7 @@ let accessToken: string | null = null;
 const api = axios.create({
   baseURL: API_BASE,
   // ✅ Option A: do NOT rely on cookies
-  withCredentials: false,
+  withCredentials: true,
   timeout: 20000,
 });
 

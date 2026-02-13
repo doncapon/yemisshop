@@ -1,10 +1,10 @@
 // src/pages/Login.tsx
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import api from "../api/client.js";
 import { useAuthStore, type Role } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout.js";
 import DaySpringLogo from "../components/brand/DayspringLogo.js";
+import api, { setAccessToken } from "../api/client.js";
 
 type MeResponse = {
   id: string;
@@ -161,7 +161,7 @@ export default function Login() {
       // ✅ ensure axios can auth even if cookie isn't sent (cross-site SameSite issues)
       api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
 
-      setAuth({ token, user: profile });
+      setAccessToken(token);
 
       const roleKey = normRole(profile.role);
 
@@ -173,14 +173,13 @@ export default function Login() {
 
       // store verify helpers
       try {
-        localStorage.setItem("verifyEmail", profile.email);
-        if (needsVerification && data.verifyToken) {
-          localStorage.setItem("verifyToken", data.verifyToken);
-          setVerifyToken(data.verifyToken);
-        } else {
-          localStorage.removeItem("verifyToken");
+        if (needsVerification) {
+          // prefer verifyToken from server if present, else fall back to access token (since requireVerifySession allows access)
+          const vt = (res.data as any).verifyToken || token;
+          localStorage.setItem("verifyToken", vt);
+          setVerifyToken(vt);
         }
-      } catch {}
+      } catch { }
 
       // show inline verify panel (but DO NOT block login)
       if (needsVerification) {
@@ -216,7 +215,7 @@ export default function Login() {
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
           if (vt) localStorage.setItem("verifyToken", vt);
-        } catch {}
+        } catch { }
 
         setCooldown(1);
         return;
@@ -232,7 +231,7 @@ export default function Login() {
       // clear auth + axios header
       try {
         delete api.defaults.headers.common["Authorization"];
-      } catch {}
+      } catch { }
       clear();
 
       setCooldown(2);
