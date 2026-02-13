@@ -76,11 +76,11 @@ function toE164(dialCode?: string, local?: string): string | null {
   const dc = dialCode.startsWith('+') ? dialCode : `+${dialCode}`;
   return `${dc}${local}`.replace(/\s+/g, '');
 }
-function signVerifyJwt(payload: { id: string; email: string; role: string }, expiresIn = "15m") {
-  // ✅ verify-session token used ONLY for verification endpoints
-  return signAccessJwt({ ...payload, k: "verify" } as any, expiresIn);
-}
 
+function signVerifyJwt(payload: { id: string; email: string; role: string }, expiresIn = '15m') {
+  // ✅ kind "verify" so middleware can restrict permissions if needed
+  return signAccessJwt({ ...payload, k: 'verify' } as any, expiresIn);
+}
 
 async function createUserSession(req: Request, userId: string, role?: string | null) {
   const ua = String(req.headers["user-agent"] ?? "").slice(0, 500) || null;
@@ -117,10 +117,14 @@ async function createUserSession(req: Request, userId: string, role?: string | n
 
   return session.id;
 }
+
 router.post(
   "/login",
   wrap(async (req, res) => {
-    const { email, password } = (req.body || {}) as { email?: string; password?: string };
+    const { email, password } = (req.body || {}) as {
+      email?: string;
+      password?: string;
+    };
 
     if (!email?.trim() || !password?.trim()) {
       return res.status(400).json({ error: "Email and password are required" });
@@ -129,7 +133,9 @@ router.post(
     const emailNorm = String(email).trim().toLowerCase();
 
     const user = await prisma.user.findFirst({
-      where: { email: { equals: emailNorm, mode: "insensitive" } },
+      where: {
+        email: { equals: emailNorm, mode: "insensitive" },
+      },
     });
 
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -145,16 +151,20 @@ router.post(
       lastName: user.lastName,
       emailVerified: !!user.emailVerifiedAt,
       phoneVerified: !!user.phoneVerifiedAt,
-      status: user.status ?? "PENDING",
+      status: (user as any).status ?? "PENDING",
     };
 
+    // ✅ DO NOT block unverified suppliers. Allow login but flag.
     const isSupplier = String(user.role) === "SUPPLIER";
     const needsVerification = isSupplier && !(profile.emailVerified && profile.phoneVerified);
 
     // ✅ Create session id (sid) for access tokens
     const sid = await createUserSession(req, user.id, user.role);
 
-    const roleNorm = String(user.role || "").replace(/[\s-]/g, "").toUpperCase();
+    const roleNorm = String(user.role || "")
+      .replace(/[\s-]/g, "")
+      .toUpperCase();
+
     const ttlDays =
       roleNorm === "ADMIN" ||
       roleNorm === "SUPER_ADMIN" ||
@@ -163,15 +173,15 @@ router.post(
         ? 7
         : 30;
 
+    // ✅ Access token
     const token = signAccessJwt(
-      { id: user.id, email: user.email, role: user.role, k: "verify", sid } as any,
+      { id: user.id, email: user.email, role: user.role, k: "access", sid } as any,
       `${ttlDays}d`
     );
 
-    // ✅ Cookie (must be SameSite=None in prod for cross-site)
+    // set cookie too (works with withCredentials + SameSite=None in prod)
     setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
 
-    // ✅ Short-lived verify token for OTP endpoints (optional but helpful)
     const verifyToken = needsVerification
       ? signVerifyJwt({ id: user.id, email: user.email, role: String(user.role) }, "30m")
       : undefined;
@@ -185,7 +195,6 @@ router.post(
     });
   })
 );
-
 
 async function activateSupplierIfFullyVerified(user: {
   id: string;
@@ -204,8 +213,6 @@ async function activateSupplierIfFullyVerified(user: {
     data: { status: 'ACTIVE' as any },
   });
 }
-
-
 
 // ---------------- ME ----------------
 router.get('/me', requireAuth, wrap(async (req, res) => {
@@ -313,7 +320,6 @@ router.post('/resend-verification', wrap(async (req, res) => {
   }
 }));
 
-
 // ---------------- REGISTER ----------------
 router.post(
   '/register',
@@ -366,7 +372,7 @@ router.post(
       // Phone OTP via WhatsApp (if we have a valid E.164)
       if (phone && phone.startsWith('+')) {
         const r = await issueOtp({
-          identifier: user.id,  // ⭐ keep consistent with /verify-otp
+          identifier: user.id,
           userId: user.id,
           phoneE164: phone,
           channelPref: 'whatsapp',
@@ -523,8 +529,6 @@ router.get('/verify-email', async (req, res) => {
   }
 });
 
-
-
 // ---------------- AUTHED resend-email (issues JWT link) ----------------
 router.post(
   '/resend-email',
@@ -639,13 +643,11 @@ router.post('/verify-otp', requireVerifySession, async (req, res) => {
   if (!code) return res.status(400).json({ error: 'OTP is required' });
 
   try {
-    // Verify against OTP table by SAME identifier used at send time (userId)
     const out = await verifyOtp({ identifier: userId, code });
     if (!out.ok) {
       return res.status(400).json({ error: out.error || 'Invalid OTP. Please try again.' });
     }
 
-    // Mark user phone verified (status upgrade)
     const existing = await prisma.user.findUnique({
       where: { id: userId },
       select: { emailVerifiedAt: true, role: true },
@@ -672,7 +674,6 @@ router.post('/verify-otp', requireVerifySession, async (req, res) => {
       },
     });
 
-    // ✅ activate supplier if now fully verified
     await activateSupplierIfFullyVerified(updated);
 
     return res.json({
@@ -693,6 +694,74 @@ router.post('/verify-otp', requireVerifySession, async (req, res) => {
     return res.status(500).json({ error: 'Could not verify OTP' });
   }
 });
+
+// ---------------- Resend OTP (phone) — WhatsApp by default ----------------
+router.post('/resend-otp', requireVerifySession, wrap(async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        phone: true,
+        phoneVerifiedAt: true,
+        phoneOtpLastSentAt: true,
+        phoneOtpSendCountDay: true,
+      },
+    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.phoneVerifiedAt) return res.status(400).json({ error: 'Phone already verified' });
+
+    const phoneE164 = String(user.phone || '').trim();
+    if (!phoneE164.startsWith('+')) {
+      return res.status(400).json({ error: 'No phone on file for WhatsApp (e.g., +2348…)' });
+    }
+
+    const now = new Date();
+    const last = user.phoneOtpLastSentAt ? +user.phoneOtpLastSentAt : 0;
+    const since = Math.floor((+now - last) / 1000);
+    if (since < RESEND_COOLDOWN_SEC) {
+      return res.status(429).json({ error: 'Please wait before resending', retryAfterSec: RESEND_COOLDOWN_SEC - since });
+    }
+    if ((user.phoneOtpSendCountDay ?? 0) >= DAILY_CAP) {
+      return res.status(429).json({ error: 'Daily resend limit reached' });
+    }
+
+    await prisma.otp.updateMany({
+      where: { identifier: userId, consumedAt: null, expiresAt: { gt: now } },
+      data: { consumedAt: now },
+    });
+
+    const r = await issueOtp({
+      identifier: userId,
+      userId,
+      phoneE164,
+      channelPref: 'whatsapp',
+    });
+
+    if (!r.ok) {
+      return res.status(500).json({ error: r.error || 'Could not send OTP' });
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        phoneOtpLastSentAt: now,
+        phoneOtpSendCountDay: (user.phoneOtpSendCountDay ?? 0) + 1,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      nextResendAfterSec: RESEND_COOLDOWN_SEC,
+      expiresInSec: r.ttlMin * 60,
+    });
+  } catch (e: any) {
+    console.error('issueOtp error:', e?.message, e?.stack);
+    res.status(500).json({ error: 'Internal error' });
+  }
+}));
 
 
 // ---------------- Resend OTP (phone) — WhatsApp by default ----------------

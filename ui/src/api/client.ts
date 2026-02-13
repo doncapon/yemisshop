@@ -12,7 +12,7 @@ let accessToken: string | null = null;
 
 const api = axios.create({
   baseURL: API_BASE,
-  // ✅ Option A: do NOT rely on cookies
+  // ✅ Also allow cookies to work if set (doesn't break bearer)
   withCredentials: true,
   timeout: 20000,
 });

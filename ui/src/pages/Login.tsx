@@ -1,10 +1,10 @@
 // src/pages/Login.tsx
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import api, { setAccessToken } from "../api/client.js";
 import { useAuthStore, type Role } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout.js";
 import DaySpringLogo from "../components/brand/DayspringLogo.js";
-import api, { setAccessToken } from "../api/client.js";
 
 type MeResponse = {
   id: string;
@@ -17,10 +17,10 @@ type MeResponse = {
 };
 
 type LoginOk = {
-  token: string;
+  token: string; // access token JWT
   profile: MeResponse;
   needsVerification?: boolean;
-  verifyToken?: string;
+  verifyToken?: string; // short-lived token for OTP endpoints (optional)
 };
 
 type LoginBlocked = {
@@ -76,7 +76,6 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);
 
-  // used to show verification UI (only for SUPPLIER)
   const [blockedProfile, setBlockedProfile] = useState<MeResponse | null>(null);
   const [verifyToken, setVerifyToken] = useState<string | null>(null);
 
@@ -150,39 +149,39 @@ export default function Login() {
     try {
       const res = await api.post("/api/auth/login", { email: em, password: pw });
 
-      const data = res.data as LoginOk;
-      const token = String(data.token || "");
-      const profile = normalizeProfile(data.profile);
+      const { token, profile, needsVerification, verifyToken: vtFromServer } = res.data as LoginOk;
 
-      if (!token || !profile) {
-        throw new Error("Malformed login response");
-      }
-
-      // ✅ ensure axios can auth even if cookie isn't sent (cross-site SameSite issues)
-      api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-
+      // ✅ IMPORTANT FIX: persist token where axios expects it (sessionStorage + default header)
       setAccessToken(token);
 
+      // keep your store in sync too
+      setAuth({ token, user: profile });
+
+      // compute verification state (only meaningful for suppliers)
       const roleKey = normRole(profile.role);
+      const isSupplier = roleKey === "SUPPLIER";
+      const supplierNeedsVerification =
+        isSupplier && !(profile.emailVerified && profile.phoneVerified);
 
-      // needsVerification only meaningful for suppliers
-      const needsVerification =
-        roleKey === "SUPPLIER" && !(profile.emailVerified && profile.phoneVerified);
+      setNeedsVerification(supplierNeedsVerification || (needsVerification ?? false));
 
-      setNeedsVerification(needsVerification);
-
-      // store verify helpers
+      // store verify helpers for verification panel (do NOT store access token as verifyToken)
       try {
-        if (needsVerification) {
-          // prefer verifyToken from server if present, else fall back to access token (since requireVerifySession allows access)
-          const vt = (res.data as any).verifyToken || token;
+        localStorage.setItem("verifyEmail", profile.email);
+
+        if (supplierNeedsVerification || needsVerification) {
+          // If server provides a short-lived verifyToken use it; otherwise access token is acceptable
+          // because requireVerifySession allows access tokens too.
+          const vt = vtFromServer || token;
           localStorage.setItem("verifyToken", vt);
           setVerifyToken(vt);
+        } else {
+          localStorage.removeItem("verifyToken");
         }
-      } catch { }
+      } catch {}
 
-      // show inline verify panel (but DO NOT block login)
-      if (needsVerification) {
+      // show inline verification panel for suppliers who are not fully verified
+      if (supplierNeedsVerification) {
         setBlockedProfile(profile);
       }
 
@@ -200,22 +199,23 @@ export default function Login() {
     } catch (e: any) {
       const status = e?.response?.status;
 
-      // Backwards-compat: if server still returns 403 for suppliers, keep handling it
+      // Backwards-compat: if server still returns 403 for verification, handle it
       if (status === 403 && e?.response?.data?.needsVerification) {
         const data = e.response.data as LoginBlocked;
-        setErr(data.error || "Please verify your email and phone number.");
+
+        setErr(data.error || "Please verify your email and phone number to continue.");
         setNeedsVerification(true);
 
         const p = normalizeProfile(data.profile);
-        if (p) setBlockedProfile(p);
+        setBlockedProfile(p);
 
         const vt = data.verifyToken || null;
         setVerifyToken(vt);
 
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
-          if (vt) localStorage.setItem("verifyToken", vt);
-        } catch { }
+          if (vt) localStorage.setItem("verifyToken", vt); // ✅ fixed key
+        } catch {}
 
         setCooldown(1);
         return;
@@ -228,12 +228,9 @@ export default function Login() {
 
       setErr(msg);
 
-      // clear auth + axios header
-      try {
-        delete api.defaults.headers.common["Authorization"];
-      } catch { }
+      // clear bearer + store
+      setAccessToken(null);
       clear();
-
       setCooldown(2);
     } finally {
       setLoading(false);
@@ -248,6 +245,7 @@ export default function Login() {
     setEmailBusy(true);
     try {
       const r = await api.post("/api/auth/resend-verification", { email: blockedProfile.email });
+
       setEmailMsg("Verification email sent. Please check your inbox (and spam).");
       const next = Number(r.data?.nextResendAfterSec ?? 60);
       setEmailCooldown(Math.max(1, next));
@@ -273,6 +271,7 @@ export default function Login() {
     try {
       const r = await api.get("/api/auth/email-status", { params: { email: blockedProfile.email } });
       const emailVerifiedAt = r.data?.emailVerifiedAt;
+
       setBlockedProfile((p) => (p ? { ...p, emailVerified: !!emailVerifiedAt } : p));
       setEmailMsg(emailVerifiedAt ? "Email verified ✅" : "Email not verified yet. Check your inbox.");
     } catch (e: any) {
@@ -298,11 +297,14 @@ export default function Login() {
       const status = e?.response?.status;
       const retry = Number(e?.response?.data?.retryAfterSec ?? 0);
 
-      if (status === 401) setOtpMsg("Verification session expired. Please login again to request OTP.");
-      else if (status === 429 && retry > 0) {
+      if (status === 401) {
+        setOtpMsg("Verification session expired. Please login again to request OTP.");
+      } else if (status === 429 && retry > 0) {
         setOtpMsg(`Please wait ${retry}s before resending OTP.`);
         setOtpCooldown(retry);
-      } else setOtpMsg(e?.response?.data?.error || "Could not send OTP.");
+      } else {
+        setOtpMsg(e?.response?.data?.error || "Could not send OTP.");
+      }
     } finally {
       setOtpBusy(false);
     }
@@ -341,7 +343,6 @@ export default function Login() {
       setOtpBusy(false);
     }
   };
-
 
   return (
     <SiteLayout>
@@ -384,7 +385,7 @@ export default function Login() {
                   <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 space-y-2">
                     <div className="font-semibold text-emerald-900">Verification complete ✅</div>
                     <div className="text-xs text-emerald-800">
-                      Your supplier account is fully verified. Please login again to continue.
+                      Your supplier account is fully verified.
                     </div>
                   </div>
                 ) : (
@@ -410,8 +411,8 @@ export default function Login() {
                             {emailBusy
                               ? "Sending…"
                               : emailCooldown > 0
-                                ? `Resend in ${emailCooldown}s`
-                                : "Resend verification email"}
+                              ? `Resend in ${emailCooldown}s`
+                              : "Resend verification email"}
                           </button>
                           <button
                             type="button"
@@ -445,8 +446,8 @@ export default function Login() {
                             {otpBusy
                               ? "Sending…"
                               : otpCooldown > 0
-                                ? `Send again in ${otpCooldown}s`
-                                : "Send OTP"}
+                              ? `Send again in ${otpCooldown}s`
+                              : "Send OTP"}
                           </button>
 
                           <input
@@ -468,8 +469,8 @@ export default function Login() {
 
                         {!verifyToken && (
                           <div className="text-xs text-rose-700">
-                            Missing verifyToken from server. Your login(403) should return{" "}
-                            <code>verifyToken</code> so OTP endpoints can work.
+                            Missing verifyToken in client. It is stored in localStorage key{" "}
+                            <code>verifyToken</code> after login.
                           </div>
                         )}
 
@@ -525,10 +526,10 @@ export default function Login() {
                 {!hydrated
                   ? "Preparing…"
                   : loading
-                    ? "Logging in…"
-                    : cooldown > 0
-                      ? `Try again in ${cooldown}s`
-                      : "Login"}
+                  ? "Logging in…"
+                  : cooldown > 0
+                  ? `Try again in ${cooldown}s`
+                  : "Login"}
               </button>
 
               <div className="pt-1 text-center text-sm text-zinc-700">

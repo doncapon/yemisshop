@@ -9,40 +9,39 @@ const isProd = process.env.NODE_ENV === "production";
 function baseCookieOptions(): CookieOptions {
   const sameSiteEnv = String(process.env.COOKIE_SAMESITE || "").toLowerCase(); // lax|strict|none
   const sameSite: CookieOptions["sameSite"] =
-    sameSiteEnv === "none" ? "none" : sameSiteEnv === "strict" ? "strict" : "lax";
+    sameSiteEnv === "none" ? "none" : sameSiteEnv === "strict" ? "strict" : undefined;
 
   // If SameSite=None, Secure MUST be true
   const secureEnv = String(process.env.COOKIE_SECURE || "").toLowerCase();
-  const secure = secureEnv ? secureEnv === "true" : isProd || sameSite === "none";
+  const secure =
+    secureEnv ? secureEnv === "true" : isProd || sameSite === "none";
 
   const domain = process.env.COOKIE_DOMAIN ? String(process.env.COOKIE_DOMAIN) : undefined;
 
+  // ✅ Default behavior:
+  // - In production, if not explicitly overridden, prefer SameSite=None for cross-site UI/API deployments
+  // - In dev, use Lax unless explicitly overridden
+  const finalSameSite =
+    sameSite ?? (isProd ? "none" : "lax");
+
   return {
     httpOnly: true,
-    sameSite,
-    secure,
+    sameSite: finalSameSite,
+    secure: finalSameSite === "none" ? true : secure,
     path: "/",
     ...(domain ? { domain } : {}),
   };
 }
 
-export function setAccessTokenCookie(
-  res: Response,
-  token: string,
-  opts?: { maxAgeDays?: number }
-) {
+export function setAccessTokenCookie(res: Response, token: string, opts?: { maxAgeDays?: number }) {
   const days = Math.max(1, Number(opts?.maxAgeDays ?? 7));
-  const isProd = process.env.NODE_ENV === "production";
+  const base = baseCookieOptions();
 
-  res.cookie("access_token", token, {
-    httpOnly: true,
-    secure: isProd,                  // ✅ required for SameSite=None
-    sameSite: isProd ? "none" : "lax",// ✅ cross-site in prod
-    path: "/",
+  res.cookie(COOKIE_NAME, token, {
+    ...base,
     maxAge: days * 24 * 60 * 60 * 1000,
   });
 }
-
 
 export function clearAccessTokenCookie(res: Response) {
   // ✅ Must match options used to set cookie (path/domain/samesite/secure)
