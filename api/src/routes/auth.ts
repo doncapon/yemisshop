@@ -159,7 +159,7 @@ router.post(
         id: user.id,
         email: user.email,
         role: user.role,
-        k: "verify", // ✅ make kind explicit if your middleware checks it
+        k: "access", // ✅ make kind explicit if your middleware checks it
       } as any);
 
       return res.status(403).json({
