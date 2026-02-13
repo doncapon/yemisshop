@@ -1,98 +1,116 @@
 // src/store/auth.ts
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { setAccessToken } from "../api/client";
+import { setAccessToken as setAxiosAccessToken } from "../api/client";
 
-export type Role =
-  | "SHOPPER"
-  | "ADMIN"
-  | "SUPER_ADMIN"
-  | "SUPPLIER"
-  | "SUPPLIER_RIDER";
+export type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
-export type User = {
+export type AuthedUser = {
   id: string;
   email: string;
   role: Role;
   firstName?: string | null;
   middleName?: string | null;
   lastName?: string | null;
-  emailVerified: boolean;
-  phoneVerified: boolean;
+  emailVerified?: boolean;
+  phoneVerified?: boolean;
 };
 
-type AuthState = {
-  hydrated: boolean;
+export type AuthState = {
   token: string | null;
-  user: User | null;
+  user: AuthedUser | null;
   needsVerification: boolean;
 
-  setHydrated: (v: boolean) => void;
-  setAuth: (p: { token: string; user: User }) => void;
-  setUser: (u: User | null) => void;
-  setNeedsVerification: (v: boolean) => void;
+  // used in your Login.tsx already
+  hydrated: boolean;
 
-  logout: () => void;
+  // actions
+  setAuth: (payload: { token: string | null; user: AuthedUser | null }) => void;
+  setNeedsVerification: (v: boolean) => void;
   clear: () => void;
+
+  // ✅ add this so Navbar can call it
+  bootstrap: () => void;
 };
 
 function looksLikeJwt(t: string | null) {
   return !!t && t.split(".").length === 3;
 }
 
+function readSessionToken(): string | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const t = window.sessionStorage.getItem("access_token");
+    return looksLikeJwt(t) ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionToken(token: string | null) {
+  try {
+    if (typeof window === "undefined") return;
+    if (token && looksLikeJwt(token)) window.sessionStorage.setItem("access_token", token);
+    else window.sessionStorage.removeItem("access_token");
+  } catch {
+    /* ignore */
+  }
+}
+
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
-      hydrated: false,
+    (set, get) => ({
       token: null,
       user: null,
       needsVerification: false,
-
-      setHydrated: (v) => set({ hydrated: v }),
+      hydrated: false,
 
       setAuth: ({ token, user }) => {
-        const jwt = looksLikeJwt(token) ? token : null;
-        setAccessToken(jwt);
-        set({ token: jwt, user });
+        const safeToken = looksLikeJwt(token) ? token : null;
+
+        // keep axios in sync (Bearer)
+        setAxiosAccessToken(safeToken);
+
+        // keep sessionStorage in sync (Option A)
+        writeSessionToken(safeToken);
+
+        // update store (Navbar reacts immediately)
+        set({ token: safeToken, user: user ?? null });
       },
 
-      setUser: (u) => set({ user: u }),
-
-      setNeedsVerification: (v) => set({ needsVerification: v }),
-
-      logout: () => {
-        setAccessToken(null);
-        set({ token: null, user: null, needsVerification: false });
-      },
+      setNeedsVerification: (v) => set({ needsVerification: !!v }),
 
       clear: () => {
-        setAccessToken(null);
+        setAxiosAccessToken(null);
+        writeSessionToken(null);
         set({ token: null, user: null, needsVerification: false });
+      },
+
+      // ✅ Rehydrate token from sessionStorage once
+      bootstrap: () => {
+        const t = readSessionToken();
+        if (t && !get().token) {
+          setAxiosAccessToken(t);
+          set({ token: t });
+        }
+        set({ hydrated: true });
       },
     }),
     {
-      name: "auth",
+      name: "auth_store_v1",
+      // ✅ don't persist token (token lives in sessionStorage)
       partialize: (s) => ({
-        token: s.token,
         user: s.user,
         needsVerification: s.needsVerification,
       }),
-
-      // ✅ Persisted state should win on reload.
-      // Also supports both persisted shapes:
-      // - { state: {...}, version: n }
-      // - plain {...}
-      merge: (persisted: unknown, current: AuthState) => {
-        const p = (persisted as any)?.state ?? persisted ?? {};
-        return { ...current, ...(p as Partial<AuthState>) };
-      },
-
-      onRehydrateStorage: () => (state) => {
-        state?.setHydrated(true);
-
-        const t = state?.token ?? null;
-        setAccessToken(looksLikeJwt(t) ? t : null);
-      },
     }
   )
 );
+
+// ✅ auto-bootstrap once on module import
+try {
+  const st = useAuthStore.getState();
+  if (!st.hydrated) st.bootstrap();
+} catch {
+  /* ignore */
+}

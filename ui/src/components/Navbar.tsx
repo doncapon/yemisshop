@@ -94,12 +94,22 @@ function IconNavLink({
 export default function Navbar() {
   const token = useAuthStore((s) => s.token);
   const user = useAuthStore((s) => s.user);
-
-  const userRole = (user?.role ?? null) as Role | null;
-  const userEmail = user?.email ?? null;
+  const bootstrap = useAuthStore((s) => s.bootstrap);
+  const hydrated = useAuthStore((s) => s.hydrated);
 
   const nav = useNavigate();
   const loc = useLocation();
+
+  // ✅ Ensure store token rehydrates from sessionStorage
+  useEffect(() => {
+    if (!hydrated) bootstrap();
+  }, [hydrated, bootstrap]);
+
+  // ✅ "Logged in" should be based on store state (token OR user)
+  const isAuthed = !!token || !!user?.id;
+
+  const userRole = (user?.role ?? null) as Role | null;
+  const userEmail = user?.email ?? null;
 
   const isSupplier = userRole === "SUPPLIER";
   const isSuperAdmin = userRole === "SUPER_ADMIN";
@@ -137,7 +147,6 @@ export default function Navbar() {
   const logout = useCallback(() => {
     setMenuOpen(false);
     setMobileMoreOpen(false);
-    // ✅ SPA logout (no hard reset, no refresh loop)
     performLogout("/", nav);
   }, [nav]);
 
@@ -145,10 +154,10 @@ export default function Navbar() {
 
   useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
 
-  const showShopNav = !token || (!isSupplier && !isSuperAdmin && !isRider);
-  const showBuyerNav = !!token && !isSupplier && !isRider;
-  const showSupplierNav = !!token && isSupplier && !isRider;
-  const showRiderNav = !!token && isRider;
+  const showShopNav = !isAuthed || (!isSupplier && !isSuperAdmin && !isRider);
+  const showBuyerNav = isAuthed && !isSupplier && !isRider;
+  const showSupplierNav = isAuthed && isSupplier && !isRider;
+  const showRiderNav = isAuthed && isRider;
 
   return (
     <>
@@ -178,7 +187,7 @@ export default function Navbar() {
                   <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
                 )}
 
-                {token && isSuperAdmin && (
+                {isAuthed && isSuperAdmin && (
                   <IconNavLink
                     to="/supplier"
                     end
@@ -187,7 +196,7 @@ export default function Navbar() {
                   />
                 )}
 
-                {token && !isSupplier && !isSuperAdmin && (
+                {isAuthed && !isSupplier && !isSuperAdmin && (
                   <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
                 )}
 
@@ -224,7 +233,7 @@ export default function Navbar() {
             </div>
 
             <div className="hidden md:flex items-center gap-2">
-              {!token ? (
+              {!isAuthed ? (
                 <>
                   <NavLink
                     to="/register-supplier"
@@ -238,10 +247,9 @@ export default function Navbar() {
                   <NavLink
                     to="/login"
                     className={({ isActive }) =>
-                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${
-                        isActive
-                          ? "bg-zinc-900 text-white border-zinc-900"
-                          : "bg-white/80 text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isActive
+                        ? "bg-zinc-900 text-white border-zinc-900"
+                        : "bg-white/80 text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`
                     }
                     title="Login"
@@ -466,7 +474,7 @@ export default function Navbar() {
                       </button>
                     )}
 
-                    {token && !isSupplier && !isSuperAdmin && (
+                    {isAuthed && !isSupplier && !isSuperAdmin && (
                       <button
                         className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
                         onClick={() => nav("/dashboard")}
@@ -497,7 +505,7 @@ export default function Navbar() {
 
                     <div className="h-px bg-zinc-100 my-2" />
 
-                    {!token ? (
+                    {!isAuthed ? (
                       <div className="grid gap-2">
                         <button
                           className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
@@ -577,8 +585,7 @@ export default function Navbar() {
               <NavLink
                 to="/supplier/orders"
                 className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                    isActive ? "text-zinc-900" : "text-zinc-500"
+                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
                   }`
                 }
               >
@@ -600,8 +607,7 @@ export default function Navbar() {
                 to="/"
                 end
                 className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                    isActive ? "text-zinc-900" : "text-zinc-500"
+                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
                   }`
                 }
               >
@@ -614,8 +620,7 @@ export default function Navbar() {
                   <NavLink
                     to="/cart"
                     className={({ isActive }) =>
-                      `relative flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
+                      `relative flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
                       }`
                     }
                     aria-label={cartCount.distinct > 0 ? `Cart (${cartCount.distinct})` : "Cart"}
@@ -634,8 +639,7 @@ export default function Navbar() {
                   <NavLink
                     to="/wishlist"
                     className={({ isActive }) =>
-                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
+                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
                       }`
                     }
                   >
@@ -646,8 +650,7 @@ export default function Navbar() {
                   <NavLink
                     to="/orders"
                     className={({ isActive }) =>
-                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
+                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
                       }`
                     }
                   >
@@ -657,13 +660,12 @@ export default function Navbar() {
                 </>
               ) : (
                 <>
-                  {token && isSupplier && (
+                  {isAuthed && isSupplier && (
                     <NavLink
                       to="/supplier"
                       end
                       className={({ isActive }) =>
-                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                          isActive ? "text-zinc-900" : "text-zinc-500"
+                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
                         }`
                       }
                     >
@@ -676,8 +678,7 @@ export default function Navbar() {
                     <NavLink
                       to="/admin"
                       className={({ isActive }) =>
-                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                          isActive ? "text-zinc-900" : "text-zinc-500"
+                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"
                         }`
                       }
                     >
