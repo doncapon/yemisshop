@@ -83,18 +83,22 @@ const allowedOrigins = [
   process.env.APP_URL
 ].filter(Boolean);
 
+
 app.use(
   cors({
-    origin: (origin, cb) => {
-      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-      cb(new Error('Not allowed by CORS'));
-    },
+    origin: [
+      "https://dayspring-a.up.railway.app",
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+    ],
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-app.options('*', cors());
+
+app.options("*", cors());
+
 
 /* 2) Common middleware */
 app.use(cookieParser());
