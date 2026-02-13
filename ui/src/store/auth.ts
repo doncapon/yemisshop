@@ -21,15 +21,13 @@ export type AuthState = {
   user: AuthedUser | null;
   needsVerification: boolean;
 
-  // used in your Login.tsx already
   hydrated: boolean;
 
-  // actions
   setAuth: (payload: { token: string | null; user: AuthedUser | null }) => void;
   setNeedsVerification: (v: boolean) => void;
   clear: () => void;
 
-  // ✅ add this so Navbar can call it
+  // ✅ fix TS2339 (Navbar can call bootstrap)
   bootstrap: () => void;
 };
 
@@ -86,7 +84,6 @@ export const useAuthStore = create<AuthState>()(
         set({ token: null, user: null, needsVerification: false });
       },
 
-      // ✅ Rehydrate token from sessionStorage once
       bootstrap: () => {
         const t = readSessionToken();
         if (t && !get().token) {

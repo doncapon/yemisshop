@@ -1,7 +1,7 @@
 // src/pages/Login.tsx
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import api, { setAccessToken } from "../api/client.js";
+import api from "../api/client.js";
 import { useAuthStore, type Role } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout.js";
 import DaySpringLogo from "../components/brand/DayspringLogo.js";
@@ -17,10 +17,9 @@ type MeResponse = {
 };
 
 type LoginOk = {
-  token: string; // access token JWT
+  token: string;
   profile: MeResponse;
   needsVerification?: boolean;
-  verifyToken?: string; // short-lived token for OTP endpoints (optional)
 };
 
 type LoginBlocked = {
@@ -137,52 +136,36 @@ export default function Login() {
     setBlockedProfile(null);
     setVerifyToken(null);
 
-    const em = email.trim().toLowerCase();
-    const pw = password.trim();
-
-    if (!em || !pw) {
+    if (!email.trim() || !password.trim()) {
       setErr("Email and password are required");
       return;
     }
 
     setLoading(true);
     try {
-      const res = await api.post("/api/auth/login", { email: em, password: pw });
+      const res = await api.post("/api/auth/login", { email, password });
+      const { token, profile, needsVerification } = res.data as LoginOk;
 
-      const { token, profile, needsVerification, verifyToken: vtFromServer } = res.data as LoginOk;
-
-      // ✅ IMPORTANT FIX: persist token where axios expects it (sessionStorage + default header)
-      setAccessToken(token);
-
-      // keep your store in sync too
+      // ✅ ALWAYS login on success
       setAuth({ token, user: profile });
+      setNeedsVerification(!!needsVerification);
 
-      // compute verification state (only meaningful for suppliers)
-      const roleKey = normRole(profile.role);
-      const isSupplier = roleKey === "SUPPLIER";
-      const supplierNeedsVerification =
-        isSupplier && !(profile.emailVerified && profile.phoneVerified);
-
-      setNeedsVerification(supplierNeedsVerification || (needsVerification ?? false));
-
-      // store verify helpers for verification panel (do NOT store access token as verifyToken)
+      // helpful for verify pages
       try {
         localStorage.setItem("verifyEmail", profile.email);
-
-        if (supplierNeedsVerification || needsVerification) {
-          // If server provides a short-lived verifyToken use it; otherwise access token is acceptable
-          // because requireVerifySession allows access tokens too.
-          const vt = vtFromServer || token;
-          localStorage.setItem("verifyToken", vt);
-          setVerifyToken(vt);
-        } else {
-          localStorage.removeItem("verifyToken");
-        }
+        localStorage.setItem("verify_token", token); // use access token for verify routes too
       } catch {}
 
-      // show inline verification panel for suppliers who are not fully verified
-      if (supplierNeedsVerification) {
+      const roleKey = normRole(profile.role);
+
+      // ✅ If supplier needs verification, do NOT block login.
+      // Show verification panel; user can still navigate anywhere (navbar will update).
+      if (roleKey === "SUPPLIER" && needsVerification) {
+        setErr("Your supplier account is not fully verified yet. You can continue, but some actions will be restricted.");
         setBlockedProfile(profile);
+        setVerifyToken(token);
+        setCooldown(1);
+        return;
       }
 
       const from = (loc.state as any)?.from?.pathname as string | undefined;
@@ -199,11 +182,10 @@ export default function Login() {
     } catch (e: any) {
       const status = e?.response?.status;
 
-      // Backwards-compat: if server still returns 403 for verification, handle it
+      // legacy fallback (should stop happening after backend change)
       if (status === 403 && e?.response?.data?.needsVerification) {
         const data = e.response.data as LoginBlocked;
 
-        setErr(data.error || "Please verify your email and phone number to continue.");
         setNeedsVerification(true);
 
         const p = normalizeProfile(data.profile);
@@ -212,11 +194,18 @@ export default function Login() {
         const vt = data.verifyToken || null;
         setVerifyToken(vt);
 
+        // ❗️Still setAuth if server returned a verifyToken (optional legacy)
+        // But if no token, user stays logged out
+        if (vt) {
+          setAuth({ token: vt, user: p });
+        }
+
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
-          if (vt) localStorage.setItem("verifyToken", vt); // ✅ fixed key
+          if (vt) localStorage.setItem("verify_token", vt);
         } catch {}
 
+        setErr(data.error || "Verification needed.");
         setCooldown(1);
         return;
       }
@@ -227,9 +216,6 @@ export default function Login() {
         "Login failed";
 
       setErr(msg);
-
-      // clear bearer + store
-      setAccessToken(null);
       clear();
       setCooldown(2);
     } finally {
@@ -298,7 +284,7 @@ export default function Login() {
       const retry = Number(e?.response?.data?.retryAfterSec ?? 0);
 
       if (status === 401) {
-        setOtpMsg("Verification session expired. Please login again to request OTP.");
+        setOtpMsg("Session expired. Please login again to request OTP.");
       } else if (status === 429 && retry > 0) {
         setOtpMsg(`Please wait ${retry}s before resending OTP.`);
         setOtpCooldown(retry);
@@ -310,7 +296,7 @@ export default function Login() {
     }
   };
 
-  const verifyOtp = async () => {
+  const verifyOtpFn = async () => {
     const code = otp.trim();
     if (!code) {
       setOtpMsg("Enter the OTP code.");
@@ -329,7 +315,7 @@ export default function Login() {
 
         if (p?.emailVerified && p?.phoneVerified) {
           setOtp("");
-          setOtpMsg("All set ✅ You can continue using the app.");
+          setOtpMsg("All set ✅ You’re verified.");
           setErr(null);
         } else {
           setOtpMsg("Phone verified ✅");
@@ -380,105 +366,90 @@ export default function Login() {
                 </div>
               )}
 
-              {blockedProfile?.role === "SUPPLIER" &&
-                (fullyVerified ? (
-                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 space-y-2">
-                    <div className="font-semibold text-emerald-900">Verification complete ✅</div>
-                    <div className="text-xs text-emerald-800">
-                      Your supplier account is fully verified.
-                    </div>
+              {blockedProfile?.role === "SUPPLIER" && !fullyVerified && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-slate-800 space-y-3">
+                  <div className="text-xs text-slate-700">
+                    Supplier account is pending verification:
+                    <span className="ml-2 font-medium text-slate-900">{blockedProfile.email}</span>
                   </div>
-                ) : (
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-slate-800 space-y-3">
-                    <div className="text-xs text-slate-700">
-                      Supplier account is pending verification:
-                      <span className="ml-2 font-medium text-slate-900">{blockedProfile.email}</span>
+
+                  {!blockedProfile.emailVerified && (
+                    <div className="space-y-2">
+                      <div className="text-sm font-semibold text-slate-900">Verify your email</div>
+                      <div className="text-xs text-slate-600">
+                        Click the link we sent to your email. You can resend it below.
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={resendEmail}
+                          disabled={emailBusy || emailCooldown > 0}
+                          className="inline-flex items-center justify-center rounded-xl bg-zinc-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                        >
+                          {emailBusy
+                            ? "Sending…"
+                            : emailCooldown > 0
+                            ? `Resend in ${emailCooldown}s`
+                            : "Resend verification email"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={checkEmailStatus}
+                          disabled={emailBusy}
+                          className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
+                        >
+                          {emailBusy ? "Checking…" : "I verified email (check)"}
+                        </button>
+                      </div>
+                      {emailMsg && <div className="text-xs text-slate-700">{emailMsg}</div>}
                     </div>
+                  )}
 
-                    {!blockedProfile.emailVerified && (
-                      <div className="space-y-2">
-                        <div className="text-sm font-semibold text-slate-900">Verify your email</div>
-                        <div className="text-xs text-slate-600">
-                          Click the link we sent to your email. You can resend it below.
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={resendEmail}
-                            disabled={emailBusy || emailCooldown > 0}
-                            className="inline-flex items-center justify-center rounded-xl bg-zinc-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
-                          >
-                            {emailBusy
-                              ? "Sending…"
-                              : emailCooldown > 0
-                              ? `Resend in ${emailCooldown}s`
-                              : "Resend verification email"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={checkEmailStatus}
-                            disabled={emailBusy}
-                            className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
-                          >
-                            {emailBusy ? "Checking…" : "I verified email (check)"}
-                          </button>
-                        </div>
-                        {emailMsg && <div className="text-xs text-slate-700">{emailMsg}</div>}
+                  {!blockedProfile.phoneVerified && (
+                    <div className="space-y-2">
+                      <div className="text-sm font-semibold text-slate-900">
+                        Verify your phone (WhatsApp OTP)
                       </div>
-                    )}
-
-                    {!blockedProfile.phoneVerified && (
-                      <div className="space-y-2">
-                        <div className="text-sm font-semibold text-slate-900">
-                          Verify your phone (WhatsApp OTP)
-                        </div>
-                        <div className="text-xs text-slate-600">
-                          We’ll send a one-time code to your WhatsApp number on file.
-                        </div>
-
-                        <div className="flex flex-wrap gap-2 items-center">
-                          <button
-                            type="button"
-                            onClick={sendOtp}
-                            disabled={otpBusy || otpCooldown > 0}
-                            className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
-                          >
-                            {otpBusy
-                              ? "Sending…"
-                              : otpCooldown > 0
-                              ? `Send again in ${otpCooldown}s`
-                              : "Send OTP"}
-                          </button>
-
-                          <input
-                            value={otp}
-                            onChange={(e) => setOtp(e.target.value)}
-                            placeholder="Enter OTP"
-                            className="w-32 rounded-xl border bg-white px-3 py-2 text-xs text-slate-900 outline-none focus:ring-4 focus:ring-fuchsia-200"
-                          />
-
-                          <button
-                            type="button"
-                            onClick={verifyOtp}
-                            disabled={otpBusy}
-                            className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
-                          >
-                            {otpBusy ? "Verifying…" : "Verify OTP"}
-                          </button>
-                        </div>
-
-                        {!verifyToken && (
-                          <div className="text-xs text-rose-700">
-                            Missing verifyToken in client. It is stored in localStorage key{" "}
-                            <code>verifyToken</code> after login.
-                          </div>
-                        )}
-
-                        {otpMsg && <div className="text-xs text-slate-700">{otpMsg}</div>}
+                      <div className="text-xs text-slate-600">
+                        We’ll send a one-time code to your WhatsApp number on file.
                       </div>
-                    )}
-                  </div>
-                ))}
+
+                      <div className="flex flex-wrap gap-2 items-center">
+                        <button
+                          type="button"
+                          onClick={sendOtp}
+                          disabled={otpBusy || otpCooldown > 0}
+                          className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                        >
+                          {otpBusy
+                            ? "Sending…"
+                            : otpCooldown > 0
+                            ? `Send again in ${otpCooldown}s`
+                            : "Send OTP"}
+                        </button>
+
+                        <input
+                          value={otp}
+                          onChange={(e) => setOtp(e.target.value)}
+                          placeholder="Enter OTP"
+                          className="w-32 rounded-xl border bg-white px-3 py-2 text-xs text-slate-900 outline-none focus:ring-4 focus:ring-fuchsia-200"
+                        />
+
+                        <button
+                          type="button"
+                          onClick={verifyOtpFn}
+                          disabled={otpBusy}
+                          className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
+                        >
+                          {otpBusy ? "Verifying…" : "Verify OTP"}
+                        </button>
+                      </div>
+
+                      {otpMsg && <div className="text-xs text-slate-700">{otpMsg}</div>}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="space-y-1">
                 <label className="block text-sm font-medium text-zinc-800">Email</label>

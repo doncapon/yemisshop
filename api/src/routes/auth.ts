@@ -78,7 +78,7 @@ function toE164(dialCode?: string, local?: string): string | null {
 }
 
 function signVerifyJwt(payload: { id: string; email: string; role: string }, expiresIn = '15m') {
-  // ✅ kind "verify" so middleware can restrict permissions if needed
+  // IMPORTANT: include a "kind" / "k" claim so middleware can restrict permissions
   return signAccessJwt({ ...payload, k: 'verify' } as any, expiresIn);
 }
 
@@ -118,6 +118,12 @@ async function createUserSession(req: Request, userId: string, role?: string | n
   return session.id;
 }
 
+/**
+ * ✅ LOGIN
+ * - Always returns 200 on success (even if not verified)
+ * - Sets needsVerification flag if supplier not fully verified
+ * - UI can login and restrict actions (checkout, supplier activation, etc.)
+ */
 router.post(
   "/login",
   wrap(async (req, res) => {
@@ -130,7 +136,7 @@ router.post(
       return res.status(400).json({ error: "Email and password are required" });
     }
 
-    const emailNorm = String(email).trim().toLowerCase();
+    const emailNorm = String(email).trim();
 
     const user = await prisma.user.findFirst({
       where: {
@@ -151,12 +157,7 @@ router.post(
       lastName: user.lastName,
       emailVerified: !!user.emailVerifiedAt,
       phoneVerified: !!user.phoneVerifiedAt,
-      status: (user as any).status ?? "PENDING",
     };
-
-    // ✅ DO NOT block unverified suppliers. Allow login but flag.
-    const isSupplier = String(user.role) === "SUPPLIER";
-    const needsVerification = isSupplier && !(profile.emailVerified && profile.phoneVerified);
 
     // ✅ Create session id (sid) for access tokens
     const sid = await createUserSession(req, user.id, user.role);
@@ -173,25 +174,24 @@ router.post(
         ? 7
         : 30;
 
-    // ✅ Access token
+    // ✅ Access token (Bearer)
     const token = signAccessJwt(
       { id: user.id, email: user.email, role: user.role, k: "access", sid } as any,
       `${ttlDays}d`
     );
 
-    // set cookie too (works with withCredentials + SameSite=None in prod)
+    // Optional: cookie too (harmless even if UI uses Bearer)
     setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
 
-    const verifyToken = needsVerification
-      ? signVerifyJwt({ id: user.id, email: user.email, role: String(user.role) }, "30m")
-      : undefined;
+    // ✅ DO NOT BLOCK LOGIN
+    const needsVerification =
+      String(user.role) === "SUPPLIER" && !(profile.emailVerified && profile.phoneVerified);
 
     return res.json({
       token,
       sid,
       profile,
       needsVerification,
-      verifyToken,
     });
   })
 );
@@ -272,14 +272,12 @@ router.get('/email-status', async (req, res) => {
 });
 
 // ---------------- PUBLIC resend verification email (JWT link) ----------------
-// put this near the top of the file
 const fmtErr = (e: any) => {
   if (!e) return 'Unknown error';
   if (e instanceof Error) return e.message;
   try { return JSON.stringify(e); } catch { return String(e); }
 };
 
-// ============ PUBLIC resend (email in body). Uses JWT links. ============
 router.post('/resend-verification', wrap(async (req, res) => {
   const email = String(req.body?.email ?? '').trim().toLowerCase();
   if (!email) return res.status(400).json({ error: 'email is required' });
@@ -332,7 +330,6 @@ router.post(
     const passwordHash = await bcrypt.hash(body.password, 10);
     const phone = toE164(body.dialCode, body.localPhone);
 
-    // 1) Create the user first
     const user = await prisma.user.create({
       data: {
         email: body.email.toLowerCase(),
@@ -355,9 +352,7 @@ router.post(
       smsSent: false,
     };
 
-    // 2) Side-effects (don’t fail signup on these)
     try {
-      // Email verification (JWT link)
       try {
         await issueAndEmailEmailVerification(user.id, user.email);
         await prisma.user.update({
@@ -369,7 +364,6 @@ router.post(
         console.warn('send email verification failed:', (e as any)?.message);
       }
 
-      // Phone OTP via WhatsApp (if we have a valid E.164)
       if (phone && phone.startsWith('+')) {
         const r = await issueOtp({
           identifier: user.id,
@@ -383,12 +377,11 @@ router.post(
       console.warn('post-register side-effects failed (continuing):', (e as any)?.message);
     }
 
-    // 3) Success response
     return res.status(201).json(result);
   })
 );
 
-// ---------------- VERIFY EMAIL CALLBACK (JWT + legacy DB tokens) ----------------
+// ---------------- VERIFY EMAIL CALLBACK ----------------
 router.get('/verify-email', async (req, res) => {
   const raw = String(req.query.token ?? '');
   if (!raw) return res.status(400).send('Missing token');
@@ -401,7 +394,6 @@ router.get('/verify-email', async (req, res) => {
     return res.redirect(ui);
   };
 
-  // 1) Try JWT
   try {
     const decoded = jwt.verify(raw, EMAIL_JWT_SECRET) as { sub: string; email: string; k: string };
     if (decoded.k !== 'email-verify') throw new Error('invalid-kind');
@@ -421,7 +413,6 @@ router.get('/verify-email', async (req, res) => {
 
     const email = (decoded.email || user.email || '').toLowerCase();
 
-    // mark email verified if not already
     let nextUser = user;
     if (!user.emailVerifiedAt) {
       const phoneOk = !!user.phoneVerifiedAt;
@@ -441,7 +432,6 @@ router.get('/verify-email', async (req, res) => {
       });
     }
 
-    // ✅ activate supplier if now fully verified
     await activateSupplierIfFullyVerified(nextUser);
 
     return redirectUi({
@@ -452,7 +442,6 @@ router.get('/verify-email', async (req, res) => {
       phoneOk: nextUser.phoneVerifiedAt ? '1' : '0',
     });
   } catch {
-    // 2) Fallback to legacy DB tokens
     const legacy = await prisma.user.findFirst({
       where: {
         emailVerifyToken: raw,
@@ -498,7 +487,6 @@ router.get('/verify-email', async (req, res) => {
         },
       });
     } else {
-      // clear any lingering legacy token
       nextUser = await prisma.user.update({
         where: { id: legacy.id },
         data: {
@@ -516,7 +504,6 @@ router.get('/verify-email', async (req, res) => {
       });
     }
 
-    // ✅ activate supplier if now fully verified
     await activateSupplierIfFullyVerified(nextUser);
 
     return redirectUi({
@@ -529,7 +516,7 @@ router.get('/verify-email', async (req, res) => {
   }
 });
 
-// ---------------- AUTHED resend-email (issues JWT link) ----------------
+// ---------------- AUTHED resend-email ----------------
 router.post(
   '/resend-email',
   requireAuth,
@@ -576,7 +563,7 @@ router.post('/forgot-password', async (req, res, next) => {
   try {
     const { email } = ForgotSchema.parse(req.body);
     const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
-    if (!user) return res.json({ ok: true }); // do not leak
+    if (!user) return res.json({ ok: true });
 
     const token = crypto.randomBytes(24).toString('hex');
     const expires = new Date(Date.now() + 60 * 60 * 1000);
@@ -695,7 +682,7 @@ router.post('/verify-otp', requireVerifySession, async (req, res) => {
   }
 });
 
-// ---------------- Resend OTP (phone) — WhatsApp by default ----------------
+// ---------------- Resend OTP (phone) ----------------
 router.post('/resend-otp', requireVerifySession, wrap(async (req, res) => {
   try {
     const userId = req.user?.id;
@@ -744,78 +731,6 @@ router.post('/resend-otp', requireVerifySession, wrap(async (req, res) => {
       return res.status(500).json({ error: r.error || 'Could not send OTP' });
     }
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        phoneOtpLastSentAt: now,
-        phoneOtpSendCountDay: (user.phoneOtpSendCountDay ?? 0) + 1,
-      },
-    });
-
-    return res.json({
-      ok: true,
-      nextResendAfterSec: RESEND_COOLDOWN_SEC,
-      expiresInSec: r.ttlMin * 60,
-    });
-  } catch (e: any) {
-    console.error('issueOtp error:', e?.message, e?.stack);
-    res.status(500).json({ error: 'Internal error' });
-  }
-}));
-
-
-// ---------------- Resend OTP (phone) — WhatsApp by default ----------------
-router.post('/resend-otp', requireVerifySession, wrap(async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        phone: true,
-        phoneVerifiedAt: true,
-        phoneOtpLastSentAt: true,
-        phoneOtpSendCountDay: true,
-      },
-    });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (user.phoneVerifiedAt) return res.status(400).json({ error: 'Phone already verified' });
-
-    const phoneE164 = String(user.phone || '').trim();
-    if (!phoneE164.startsWith('+')) {
-      return res.status(400).json({ error: 'No phone on file for WhatsApp (e.g., +2348…)' });
-    }
-
-    const now = new Date();
-    const last = user.phoneOtpLastSentAt ? +user.phoneOtpLastSentAt : 0;
-    const since = Math.floor((+now - last) / 1000);
-    if (since < RESEND_COOLDOWN_SEC) {
-      return res.status(429).json({ error: 'Please wait before resending', retryAfterSec: RESEND_COOLDOWN_SEC - since });
-    }
-    if ((user.phoneOtpSendCountDay ?? 0) >= DAILY_CAP) {
-      return res.status(429).json({ error: 'Daily resend limit reached' });
-    }
-
-    // Invalidate any active OTPs before issuing a new one
-    await prisma.otp.updateMany({
-      where: { identifier: userId, consumedAt: null, expiresAt: { gt: now } },
-      data: { consumedAt: now },
-    });
-
-    // Send via WhatsApp using SAME identifier (userId)
-    const r = await issueOtp({
-      identifier: userId,
-      userId,
-      phoneE164,
-      channelPref: 'whatsapp',
-    });
-
-    if (!r.ok) {
-      return res.status(500).json({ error: r.error || 'Could not send OTP' });
-    }
-
-    // Track rate-limit counters on the user row
     await prisma.user.update({
       where: { id: userId },
       data: {
