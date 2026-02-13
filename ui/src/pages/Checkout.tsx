@@ -502,7 +502,12 @@ const normalizeStampPresent = (v: unknown) => {
 
 function computeVerificationFlags(p?: ProfileMe) {
   const emailOk = normalizeStampPresent(p?.emailVerifiedAt);
-  const phoneOk = normalizeStampPresent(p?.phoneVerifiedAt);
+   let phoneOk ;
+  if((import.meta as any)?.env?.PHONE_VERIFY=== 'set'){
+  phoneOk = normalizeStampPresent(p?.phoneVerifiedAt);
+  }else{
+    phoneOk = true;
+  }
   return { emailOk, phoneOk };
 }
 
