@@ -35,9 +35,13 @@ function normalizeProfile(raw: any): MeResponse | null {
   const emailVerified =
     raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1;
 
-  const phoneVerified =
-    raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
-
+  let phoneVerified ;
+  if ((import.meta as any)?.env?.PHONE_VERIFY === 'set') {
+    phoneVerified =
+      raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
+  } else {
+    phoneVerified =true;
+  }
   return {
     id: String(raw.id ?? ""),
     email: String(raw.email ?? ""),
@@ -52,10 +56,10 @@ function normalizeProfile(raw: any): MeResponse | null {
 function normRole(r: any): Role {
   const x = String(r || "").trim().toUpperCase();
   return (x === "ADMIN" ||
-  x === "SUPER_ADMIN" ||
-  x === "SHOPPER" ||
-  x === "SUPPLIER" ||
-  x === "SUPPLIER_RIDER"
+    x === "SUPER_ADMIN" ||
+    x === "SHOPPER" ||
+    x === "SUPPLIER" ||
+    x === "SUPPLIER_RIDER"
     ? x
     : "SHOPPER") as Role;
 }
@@ -149,7 +153,7 @@ export default function Login() {
       try {
         localStorage.setItem("verifyEmail", profile.email);
         if (needsVerification) localStorage.setItem("verifyToken", token);
-      } catch {}
+      } catch { }
 
       const from = (loc.state as any)?.from?.pathname as string | undefined;
 
@@ -181,7 +185,7 @@ export default function Login() {
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
           if (vt) localStorage.setItem("verify_token", vt);
-        } catch {}
+        } catch { }
 
         setCooldown(1);
         return;
@@ -374,8 +378,8 @@ export default function Login() {
                             {emailBusy
                               ? "Sending…"
                               : emailCooldown > 0
-                              ? `Resend in ${emailCooldown}s`
-                              : "Resend verification email"}
+                                ? `Resend in ${emailCooldown}s`
+                                : "Resend verification email"}
                           </button>
                           <button
                             type="button"
@@ -409,8 +413,8 @@ export default function Login() {
                             {otpBusy
                               ? "Sending…"
                               : otpCooldown > 0
-                              ? `Send again in ${otpCooldown}s`
-                              : "Send OTP"}
+                                ? `Send again in ${otpCooldown}s`
+                                : "Send OTP"}
                           </button>
 
                           <input
@@ -489,10 +493,10 @@ export default function Login() {
                 {!hydrated
                   ? "Preparing…"
                   : loading
-                  ? "Logging in…"
-                  : cooldown > 0
-                  ? `Try again in ${cooldown}s`
-                  : "Login"}
+                    ? "Logging in…"
+                    : cooldown > 0
+                      ? `Try again in ${cooldown}s`
+                      : "Login"}
               </button>
 
               <div className="pt-1 text-center text-sm text-zinc-700">

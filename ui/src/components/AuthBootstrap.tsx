@@ -5,7 +5,12 @@ import { useAuthStore } from "../store/auth";
 
 function normalizeMe(raw: any) {
   if (!raw) return null;
-
+  if ((import.meta as any)?.env?.PHONE_VERIFY === 'set') {
+    raw.phoneVerified =
+      raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
+  } else {
+    raw.phoneVerified =true;
+  }
   return {
     id: String(raw.id ?? ""),
     email: String(raw.email ?? ""),
@@ -17,7 +22,7 @@ function normalizeMe(raw: any) {
     emailVerified:
       raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1,
     phoneVerified:
-      raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1,
+      raw.phoneVerified
   };
 }
 
