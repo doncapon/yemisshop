@@ -17,9 +17,10 @@ type MeResponse = {
 };
 
 type LoginOk = {
-  token: string; // ✅ access token JWT (Option A)
+  token: string;
   profile: MeResponse;
   needsVerification?: boolean;
+  verifyToken?: string;
 };
 
 type LoginBlocked = {
@@ -35,13 +36,14 @@ function normalizeProfile(raw: any): MeResponse | null {
   const emailVerified =
     raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1;
 
-  let phoneVerified ;
-  if ((import.meta as any)?.env?.PHONE_VERIFY === 'set') {
+  let phoneVerified: boolean;
+  if ((import.meta as any)?.env?.PHONE_VERIFY === "set") {
     phoneVerified =
       raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
   } else {
-    phoneVerified =true;
+    phoneVerified = true;
   }
+
   return {
     id: String(raw.id ?? ""),
     email: String(raw.email ?? ""),
@@ -74,6 +76,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [cooldown, setCooldown] = useState(0);
 
+  // used to show verification UI (only for SUPPLIER)
   const [blockedProfile, setBlockedProfile] = useState<MeResponse | null>(null);
   const [verifyToken, setVerifyToken] = useState<string | null>(null);
 
@@ -135,25 +138,54 @@ export default function Login() {
     setBlockedProfile(null);
     setVerifyToken(null);
 
-    if (!email.trim() || !password.trim()) {
+    const em = email.trim().toLowerCase();
+    const pw = password.trim();
+
+    if (!em || !pw) {
       setErr("Email and password are required");
       return;
     }
 
     setLoading(true);
     try {
-      const res = await api.post("/api/auth/login", { email, password });
+      const res = await api.post("/api/auth/login", { email: em, password: pw });
 
-      const { token, profile, needsVerification } = res.data as LoginOk;
+      const data = res.data as LoginOk;
+      const token = String(data.token || "");
+      const profile = normalizeProfile(data.profile);
 
-      // ✅ Option A: store JWT and let axios attach Bearer automatically
+      if (!token || !profile) {
+        throw new Error("Malformed login response");
+      }
+
+      // ✅ ensure axios can auth even if cookie isn't sent (cross-site SameSite issues)
+      api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+
       setAuth({ token, user: profile });
-      setNeedsVerification(needsVerification ?? false);
 
+      const roleKey = normRole(profile.role);
+
+      // needsVerification only meaningful for suppliers
+      const needsVerification =
+        roleKey === "SUPPLIER" && !(profile.emailVerified && profile.phoneVerified);
+
+      setNeedsVerification(needsVerification);
+
+      // store verify helpers
       try {
         localStorage.setItem("verifyEmail", profile.email);
-        if (needsVerification) localStorage.setItem("verifyToken", token);
-      } catch { }
+        if (needsVerification && data.verifyToken) {
+          localStorage.setItem("verifyToken", data.verifyToken);
+          setVerifyToken(data.verifyToken);
+        } else {
+          localStorage.removeItem("verifyToken");
+        }
+      } catch {}
+
+      // show inline verify panel (but DO NOT block login)
+      if (needsVerification) {
+        setBlockedProfile(profile);
+      }
 
       const from = (loc.state as any)?.from?.pathname as string | undefined;
 
@@ -165,27 +197,26 @@ export default function Login() {
         SUPPLIER_RIDER: "/supplier/orders",
       };
 
-      const roleKey = normRole(profile.role);
       nav(from || defaultByRole[roleKey] || "/", { replace: true });
     } catch (e: any) {
       const status = e?.response?.status;
 
+      // Backwards-compat: if server still returns 403 for suppliers, keep handling it
       if (status === 403 && e?.response?.data?.needsVerification) {
         const data = e.response.data as LoginBlocked;
-
-        setErr(data.error || "Please verify your email and phone number to continue.");
+        setErr(data.error || "Please verify your email and phone number.");
         setNeedsVerification(true);
 
         const p = normalizeProfile(data.profile);
-        setBlockedProfile(p);
+        if (p) setBlockedProfile(p);
 
         const vt = data.verifyToken || null;
         setVerifyToken(vt);
 
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
-          if (vt) localStorage.setItem("verify_token", vt);
-        } catch { }
+          if (vt) localStorage.setItem("verifyToken", vt);
+        } catch {}
 
         setCooldown(1);
         return;
@@ -197,7 +228,13 @@ export default function Login() {
         "Login failed";
 
       setErr(msg);
+
+      // clear auth + axios header
+      try {
+        delete api.defaults.headers.common["Authorization"];
+      } catch {}
       clear();
+
       setCooldown(2);
     } finally {
       setLoading(false);
@@ -212,7 +249,6 @@ export default function Login() {
     setEmailBusy(true);
     try {
       const r = await api.post("/api/auth/resend-verification", { email: blockedProfile.email });
-
       setEmailMsg("Verification email sent. Please check your inbox (and spam).");
       const next = Number(r.data?.nextResendAfterSec ?? 60);
       setEmailCooldown(Math.max(1, next));
@@ -238,7 +274,6 @@ export default function Login() {
     try {
       const r = await api.get("/api/auth/email-status", { params: { email: blockedProfile.email } });
       const emailVerifiedAt = r.data?.emailVerifiedAt;
-
       setBlockedProfile((p) => (p ? { ...p, emailVerified: !!emailVerifiedAt } : p));
       setEmailMsg(emailVerifiedAt ? "Email verified ✅" : "Email not verified yet. Check your inbox.");
     } catch (e: any) {
@@ -264,14 +299,11 @@ export default function Login() {
       const status = e?.response?.status;
       const retry = Number(e?.response?.data?.retryAfterSec ?? 0);
 
-      if (status === 401) {
-        setOtpMsg("Verification session expired. Please login again to request OTP.");
-      } else if (status === 429 && retry > 0) {
+      if (status === 401) setOtpMsg("Verification session expired. Please login again to request OTP.");
+      else if (status === 429 && retry > 0) {
         setOtpMsg(`Please wait ${retry}s before resending OTP.`);
         setOtpCooldown(retry);
-      } else {
-        setOtpMsg(e?.response?.data?.error || "Could not send OTP.");
-      }
+      } else setOtpMsg(e?.response?.data?.error || "Could not send OTP.");
     } finally {
       setOtpBusy(false);
     }
@@ -296,7 +328,7 @@ export default function Login() {
 
         if (p?.emailVerified && p?.phoneVerified) {
           setOtp("");
-          setOtpMsg("All set ✅ Please login again.");
+          setOtpMsg("All set ✅ You can continue using the app.");
           setErr(null);
         } else {
           setOtpMsg("Phone verified ✅");
@@ -310,6 +342,7 @@ export default function Login() {
       setOtpBusy(false);
     }
   };
+
 
   return (
     <SiteLayout>

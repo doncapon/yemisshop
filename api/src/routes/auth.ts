@@ -76,11 +76,11 @@ function toE164(dialCode?: string, local?: string): string | null {
   const dc = dialCode.startsWith('+') ? dialCode : `+${dialCode}`;
   return `${dc}${local}`.replace(/\s+/g, '');
 }
-
-function signVerifyJwt(payload: { id: string; email: string; role: string }, expiresIn = '15m') {
-  // IMPORTANT: include a "kind" / "k" claim so middleware can restrict permissions
-  return signAccessJwt({ ...payload, k: 'access' } as any, expiresIn);
+function signVerifyJwt(payload: { id: string; email: string; role: string }, expiresIn = "15m") {
+  // ✅ verify-session token used ONLY for verification endpoints
+  return signAccessJwt({ ...payload, k: "verify" } as any, expiresIn);
 }
+
 
 async function createUserSession(req: Request, userId: string, role?: string | null) {
   const ua = String(req.headers["user-agent"] ?? "").slice(0, 500) || null;
@@ -117,25 +117,19 @@ async function createUserSession(req: Request, userId: string, role?: string | n
 
   return session.id;
 }
-
 router.post(
   "/login",
   wrap(async (req, res) => {
-    const { email, password } = (req.body || {}) as {
-      email?: string;
-      password?: string;
-    };
+    const { email, password } = (req.body || {}) as { email?: string; password?: string };
 
     if (!email?.trim() || !password?.trim()) {
       return res.status(400).json({ error: "Email and password are required" });
     }
 
-    const emailNorm = String(email).trim();
+    const emailNorm = String(email).trim().toLowerCase();
 
     const user = await prisma.user.findFirst({
-      where: {
-        email: { equals: emailNorm, mode: "insensitive" },
-      },
+      where: { email: { equals: emailNorm, mode: "insensitive" } },
     });
 
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
@@ -151,32 +145,16 @@ router.post(
       lastName: user.lastName,
       emailVerified: !!user.emailVerifiedAt,
       phoneVerified: !!user.phoneVerifiedAt,
+      status: user.status ?? "PENDING",
     };
 
-    // ✅ BLOCK suppliers until fully verified (server-side)
-    if (user.role === "SUPPLIER" && !(profile.emailVerified && profile.phoneVerified)) {
-      const verifyToken = signVerifyJwt({
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        k: "access", // ✅ make kind explicit if your middleware checks it
-      } as any);
-
-      return res.status(403).json({
-        error: "Please verify your email and phone number to continue.",
-        needsVerification: true,
-        profile,
-        verifyToken, // UI uses this to call verify endpoints
-      });
-    }
+    const isSupplier = String(user.role) === "SUPPLIER";
+    const needsVerification = isSupplier && !(profile.emailVerified && profile.phoneVerified);
 
     // ✅ Create session id (sid) for access tokens
     const sid = await createUserSession(req, user.id, user.role);
 
-    const roleNorm = String(user.role || "")
-      .replace(/[\s-]/g, "")
-      .toUpperCase();
-
+    const roleNorm = String(user.role || "").replace(/[\s-]/g, "").toUpperCase();
     const ttlDays =
       roleNorm === "ADMIN" ||
       roleNorm === "SUPER_ADMIN" ||
@@ -185,20 +163,25 @@ router.post(
         ? 7
         : 30;
 
-    // ✅ Access token (what Option A uses)
     const token = signAccessJwt(
       { id: user.id, email: user.email, role: user.role, k: "access", sid } as any,
       `${ttlDays}d`
     );
 
-    // Optional: set cookie too (doesn't hurt, but Option A will rely on Bearer)
+    // ✅ Cookie (must be SameSite=None in prod for cross-site)
     setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
+
+    // ✅ Short-lived verify token for OTP endpoints (optional but helpful)
+    const verifyToken = needsVerification
+      ? signVerifyJwt({ id: user.id, email: user.email, role: String(user.role) }, "30m")
+      : undefined;
 
     return res.json({
       token,
       sid,
       profile,
-      needsVerification: false, // ✅ IMPORTANT: successful login should not be "needsVerification"
+      needsVerification,
+      verifyToken,
     });
   })
 );

@@ -26,15 +26,23 @@ function baseCookieOptions(): CookieOptions {
   };
 }
 
-export function setAccessTokenCookie(res: Response, token: string, opts?: { maxAgeDays?: number }) {
-  const days = opts?.maxAgeDays ?? 7;
-  const maxAgeMs = days * 24 * 60 * 60 * 1000;
+export function setAccessTokenCookie(
+  res: Response,
+  token: string,
+  opts?: { maxAgeDays?: number }
+) {
+  const days = Math.max(1, Number(opts?.maxAgeDays ?? 7));
+  const isProd = process.env.NODE_ENV === "production";
 
-  res.cookie(COOKIE_NAME, token, {
-    ...baseCookieOptions(),
-    maxAge: maxAgeMs,
+  res.cookie("access_token", token, {
+    httpOnly: true,
+    secure: isProd,                  // ✅ required for SameSite=None
+    sameSite: isProd ? "none" : "lax",// ✅ cross-site in prod
+    path: "/",
+    maxAge: days * 24 * 60 * 60 * 1000,
   });
 }
+
 
 export function clearAccessTokenCookie(res: Response) {
   // ✅ Must match options used to set cookie (path/domain/samesite/secure)
