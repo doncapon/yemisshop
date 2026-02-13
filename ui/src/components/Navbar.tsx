@@ -110,11 +110,11 @@ export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
 
-  const { distinct: cartItemsCount, totalQty: cartTotalQty } = useCartCount();
+  const cartCount = useCartCount(); // { distinct, totalQty }
 
-  const firstName = user?.firstName?.trim?.() || null;
+  const firstName = user?.firstName?.trim() || null;
   const middleName = (user as any)?.middleName?.trim?.() || null;
-  const lastName = user?.lastName?.trim?.() || null;
+  const lastName = user?.lastName?.trim() || null;
 
   const displayName = useMemo(() => {
     const f = firstName?.trim();
@@ -137,6 +137,7 @@ export default function Navbar() {
   const logout = useCallback(() => {
     setMenuOpen(false);
     setMobileMoreOpen(false);
+    // ✅ SPA logout (no hard reset, no refresh loop)
     performLogout("/", nav);
   }, [nav]);
 
@@ -148,8 +149,6 @@ export default function Navbar() {
   const showBuyerNav = !!token && !isSupplier && !isRider;
   const showSupplierNav = !!token && isSupplier && !isRider;
   const showRiderNav = !!token && isRider;
-
-  const cartBadge = cartItemsCount;
 
   return (
     <>
@@ -180,7 +179,12 @@ export default function Navbar() {
                 )}
 
                 {token && isSuperAdmin && (
-                  <IconNavLink to="/supplier" end icon={<CheckCircle2 size={18} />} label="Supplier dashboard" />
+                  <IconNavLink
+                    to="/supplier"
+                    end
+                    icon={<CheckCircle2 size={18} />}
+                    label="Supplier dashboard"
+                  />
                 )}
 
                 {token && !isSupplier && !isSuperAdmin && (
@@ -192,8 +196,8 @@ export default function Navbar() {
                     <IconNavLink
                       to="/cart"
                       icon={<ShoppingCart size={18} />}
-                      label={cartBadge > 0 ? `Cart (${cartBadge})` : "Cart"}
-                      badgeCount={cartBadge}
+                      label="Cart"
+                      badgeCount={cartCount.distinct}
                     />
                     <IconNavLink to="/wishlist" end icon={<Heart size={18} />} label="Wishlist" />
                     <IconNavLink to="/orders" end icon={<Package size={18} />} label="Orders" />
@@ -278,12 +282,6 @@ export default function Navbar() {
                             {displayName || userEmail || "User"}
                           </div>
                           {userEmail && <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>}
-                          {isRider && <div className="mt-1 text-[10px] text-zinc-500">Role: Rider</div>}
-                          {showBuyerNav && cartBadge > 0 && (
-                            <div className="mt-1 text-[10px] text-zinc-500">
-                              Cart: {cartItemsCount} items • {cartTotalQty} units
-                            </div>
-                          )}
                         </div>
 
                         {isRider ? (
@@ -450,9 +448,9 @@ export default function Navbar() {
                           Cart
                         </span>
 
-                        {cartBadge > 0 && (
+                        {cartCount.totalQty > 0 && (
                           <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                            {cartBadge > 9 ? "9+" : cartBadge}
+                            {cartCount.totalQty > 9 ? "9+" : cartCount.totalQty}
                           </span>
                         )}
                       </button>
@@ -620,13 +618,13 @@ export default function Navbar() {
                         isActive ? "text-zinc-900" : "text-zinc-500"
                       }`
                     }
-                    aria-label={cartBadge > 0 ? `Cart (${cartBadge})` : "Cart"}
+                    aria-label={cartCount.distinct > 0 ? `Cart (${cartCount.distinct})` : "Cart"}
                   >
                     <div className="relative">
                       <ShoppingCart size={20} />
-                      {cartBadge > 0 && (
+                      {cartCount.distinct > 0 && (
                         <span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                          {cartBadge > 9 ? "9+" : cartBadge}
+                          {cartCount.distinct > 9 ? "9+" : cartCount.distinct}
                         </span>
                       )}
                     </div>
