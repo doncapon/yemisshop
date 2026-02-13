@@ -3,8 +3,7 @@ import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import type { ReactNode } from "react";
 import { useAuthStore } from "../store/auth";
-import api from "../api/client";
-import { hardResetApp } from "../utils/resetApp";
+import api, { setAccessToken } from "../api/client";
 import { performLogout } from "../utils/logout";
 
 import {
@@ -92,14 +91,12 @@ function IconNavLink({
     >
       <span className="inline-flex items-center justify-center">{icon}</span>
 
-      {/* ✅ Badge (top-right) */}
       {count > 0 && (
         <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
           {count > 9 ? "9+" : count}
         </span>
       )}
 
-      {/* Tooltip (desktop hover) */}
       <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 text-white text-[11px] px-2 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
         {label}
       </span>
@@ -141,6 +138,7 @@ export default function Navbar() {
   const token = useAuthStore((s) => s.token);
   const userRole = useAuthStore((s) => s.user?.role ?? null);
   const userEmail = useAuthStore((s) => s.user?.email ?? null);
+
   const nav = useNavigate();
   const loc = useLocation();
 
@@ -157,10 +155,22 @@ export default function Navbar() {
   const [middleName, setMiddleName] = useState<string | null>(null);
   const [lastName, setLastName] = useState<string | null>(null);
 
-  // ✅ badge count for cart
+  // Cart counts
   const cartCount = useCartCount();
 
-  // Load /me when token changes
+  // ✅ Soft logout (NO hard refresh)
+  const softLogout = useCallback(
+    (redirectTo: string) => {
+      try {
+        setAccessToken(null);
+        useAuthStore.getState().clear?.();
+      } catch {}
+      nav(redirectTo, { replace: true });
+    },
+    [nav]
+  );
+
+  // Load /me when token changes (used only for name display)
   useEffect(() => {
     let cancelled = false;
 
@@ -171,10 +181,11 @@ export default function Navbar() {
         setLastName(null);
         return;
       }
+
       try {
-        const { data } = await api.get<MeResponse>("/api/auth/me", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        // ✅ DO NOT override Authorization manually.
+        // axios interceptor already attaches it when token is a real JWT.
+        const { data } = await api.get<MeResponse>("/api/auth/me");
 
         if (!cancelled) {
           setFirstName(data.firstName?.trim() || null);
@@ -183,11 +194,20 @@ export default function Navbar() {
         }
       } catch (e: any) {
         const status = e?.response?.status;
+
+        // ✅ This is the critical fix:
+        // Never hard refresh here. If /me fails, just clear local auth and go to login.
         if (status === 401 || status === 403) {
-          hardResetApp("/");
+          softLogout("/login");
           return;
         }
-        hardResetApp("/");
+
+        // Any other unexpected errors: don’t nuke the app; just leave name blank.
+        if (!cancelled) {
+          setFirstName(null);
+          setMiddleName(null);
+          setLastName(null);
+        }
       }
     }
 
@@ -195,7 +215,7 @@ export default function Navbar() {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, softLogout]);
 
   const displayName = useMemo(() => {
     const f = firstName?.trim();
@@ -218,26 +238,32 @@ export default function Navbar() {
   const logout = useCallback(() => {
     setMenuOpen(false);
     setMobileMoreOpen(false);
-    performLogout("/", nav);
-  }, []);
 
-  // Riders should only use supplier orders (and avoid the shop nav clutter)
+    // ✅ Your util already clears cookie + local storage etc.
+    // If your performLogout only accepts (redirectTo="/"), keep it as performLogout("/")
+    // If it accepts nav, leave as below. This variant keeps SPA navigation.
+    try {
+      // @ts-ignore - support both signatures safely
+      performLogout("/", nav);
+    } catch {
+      // fallback
+      softLogout("/");
+    }
+  }, [nav, softLogout]);
+
   const brandHref = isRider ? "/supplier/orders" : "/";
 
-  // Close mobile more when route changes
   useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
 
   const showShopNav = !token || (!isSupplier && !isSuperAdmin && !isRider);
-  const showBuyerNav = token && !isSupplier && !isRider; // shopper/admin can still see cart/wishlist/orders
-  const showSupplierNav = token && isSupplier && !isRider;
-  const showRiderNav = token && isRider;
+  const showBuyerNav = !!token && !isSupplier && !isRider;
+  const showSupplierNav = !!token && isSupplier && !isRider;
+  const showRiderNav = !!token && isRider;
 
   return (
     <>
-      {/* Top Shopify-like header */}
       <header className="sticky top-0 z-40 w-full border-b border-zinc-200 bg-white/80 backdrop-blur">
         <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-4 md:px-8 flex items-center gap-3">
-          {/* Brand */}
           <Link
             to={brandHref}
             className="inline-flex items-center hover:opacity-95"
@@ -246,14 +272,11 @@ export default function Navbar() {
             <DaySpringLogo size={28} />
           </Link>
 
-          {/* Desktop icon nav */}
           <nav className="hidden md:flex items-center gap-2 ml-2">
-            {/* Rider: ONLY supplier orders */}
             {showRiderNav ? (
               <IconNavLink to="/supplier/orders" icon={<Truck size={18} />} label="Orders" />
             ) : (
               <>
-                {/* Catalogue/Home */}
                 <IconNavLink
                   to="/"
                   end
@@ -261,7 +284,6 @@ export default function Navbar() {
                   label="Catalogue"
                 />
 
-                {/* Dashboards */}
                 {showSupplierNav && (
                   <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
                 )}
@@ -274,10 +296,8 @@ export default function Navbar() {
                   <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
                 )}
 
-                {/* Buyer nav (icons) */}
                 {showBuyerNav && (
                   <>
-                    {/* ✅ Cart badge here */}
                     <IconNavLink
                       to="/cart"
                       icon={<ShoppingCart size={18} />}
@@ -289,10 +309,13 @@ export default function Navbar() {
                   </>
                 )}
 
-                {/* Admin */}
                 {isAdmin && <IconNavLink to="/admin" icon={<Shield size={18} />} label="Admin" />}
                 {isAdmin && (
-                  <IconNavLink to="/admin/offer-changes" icon={<ClipboardList size={18} />} label="Offer approvals" />
+                  <IconNavLink
+                    to="/admin/offer-changes"
+                    icon={<ClipboardList size={18} />}
+                    label="Offer approvals"
+                  />
                 )}
               </>
             )}
@@ -300,14 +323,11 @@ export default function Navbar() {
 
           <div className="ml-auto" />
 
-          {/* Right cluster */}
           <div className="flex items-center gap-2">
-            {/* Desktop bell */}
             <div className="hidden md:block">
               <NotificationsBell placement="navbar" />
             </div>
 
-            {/* Auth buttons (desktop) */}
             <div className="hidden md:flex items-center gap-2">
               {!token ? (
                 <>
@@ -346,7 +366,6 @@ export default function Navbar() {
                 </>
               ) : (
                 <div className="flex items-center gap-2">
-                  {/* avatar menu */}
                   <div className="relative" ref={menuRef}>
                     <button
                       onClick={() => setMenuOpen((v) => !v)}
@@ -367,11 +386,12 @@ export default function Navbar() {
                           <div className="text-sm font-semibold truncate text-zinc-900">
                             {displayName || userEmail || "User"}
                           </div>
-                          {userEmail && <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>}
+                          {userEmail && (
+                            <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>
+                          )}
                           {isRider && <div className="mt-1 text-[10px] text-zinc-500">Role: Rider</div>}
                         </div>
 
-                        {/* Rider menu */}
                         {isRider ? (
                           <nav className="py-1 text-sm">
                             <button
@@ -468,7 +488,6 @@ export default function Navbar() {
               )}
             </div>
 
-            {/* Mobile: bell + more */}
             <div className="md:hidden flex items-center gap-2">
               <NotificationsBell placement="navbar" />
               <button
@@ -483,7 +502,6 @@ export default function Navbar() {
           </div>
         </div>
 
-        {/* Mobile top drawer ("More") */}
         {mobileMoreOpen && (
           <div className="md:hidden">
             <div className="fixed inset-0 z-50 bg-black/40" onClick={() => setMobileMoreOpen(false)} />
@@ -658,7 +676,6 @@ export default function Navbar() {
         )}
       </header>
 
-      {/* Mobile bottom nav (Shopify-like) */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-200 bg-white/90 backdrop-blur">
         <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-around">
           {showRiderNav ? (
@@ -700,7 +717,6 @@ export default function Navbar() {
 
               {showBuyerNav ? (
                 <>
-                  {/* ✅ Cart badge on mobile bottom icon */}
                   <NavLink
                     to="/cart"
                     className={({ isActive }) =>
@@ -789,7 +805,6 @@ export default function Navbar() {
         </div>
       </div>
 
-      {/* Spacer so bottom nav doesn't cover content */}
       <div className="md:hidden h-16" />
     </>
   );

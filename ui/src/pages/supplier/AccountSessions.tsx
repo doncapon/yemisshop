@@ -167,7 +167,7 @@ export default function AccountSessions() {
         title: "Logged out",
         message: "This device session was revoked. Please log in again.",
       });
-      await performLogout("/login"); // ✅ clears cookie + clears state
+      await performLogout("/login",navigate); // ✅ clears cookie + clears state
 
       navigate("/login");
     }

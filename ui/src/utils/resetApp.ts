@@ -62,6 +62,7 @@ function restoreSelectedKeys(preserved: Record<string, string>) {
  */
 export function hardResetApp(redirectTo: string = "/", opts?: { mode?: ResetMode }) {
   const mode: ResetMode = opts?.mode ?? "hard";
+    console.trace("hardResetApp CALLED"); // ✅ tells you EXACTLY who triggered it
 
   // 1) preserve consent (and anything else you add)
   const preserved = preserveSelectedKeys();

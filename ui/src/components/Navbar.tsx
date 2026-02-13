@@ -140,7 +140,7 @@ export default function Navbar() {
   const logout = useCallback(() => {
     setMenuOpen(false);
     setMobileMoreOpen(false);
-    performLogout("/");
+    performLogout("/", nav);
   }, []);
 
   // Riders should land on orders
