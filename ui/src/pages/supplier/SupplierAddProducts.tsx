@@ -8,7 +8,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import SiteLayout from "../../layouts/SiteLayout";
 import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
-import { useAuthStore } from "../../store/auth";
 import { useCatalogMeta, type CatalogAttribute } from "../../hooks/useCatalogMeta";
 
 /* =========================
@@ -78,14 +77,15 @@ function comboKeyFromSelections(selections: Record<string, string>, attrOrder: s
   return attrOrder.map((aid) => `${aid}=${String(selections?.[aid] || "")}`).join("|");
 }
 
+// ✅ Cookie calls helper (always send cookies)
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
 /* =========================
    Component
 ========================= */
 
 export default function SupplierAddProduct() {
   const nav = useNavigate();
-  const token = useAuthStore((s) => s.token);
-  const role = useAuthStore((s) => s.user?.role);
 
   const [err, setErr] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
@@ -126,27 +126,20 @@ export default function SupplierAddProduct() {
     []
   );
 
-  // quick guard (optional)
-  useEffect(() => {
-    if (role && role !== "SUPPLIER") {
-      setErr("This page is for suppliers only.");
-    }
-  }, [role]);
-
   /* =========================
      Supplier identity (display-only)
   ========================= */
 
   const supplierMeQ = useQuery<SupplierMe>({
     queryKey: ["supplier", "me"],
-    enabled: !!token,
+    // ✅ cookie auth means this can be enabled always (or keep enabled: true)
+    enabled: true,
     queryFn: async () => {
-      const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
       const attempts = ["/api/supplier/me", "/api/supplier/profile", "/api/supplier/dashboard"];
       for (const url of attempts) {
         try {
-          const { data } = await api.get(url, { headers: hdr });
-          const d = data?.data ?? data ?? {};
+          const { data } = await api.get(url, AXIOS_COOKIE_CFG);
+          const d = (data as any)?.data ?? data ?? {};
           const supplierId = d.supplierId || d.supplier?.id || d.id || null;
           if (supplierId) {
             return {
@@ -169,8 +162,10 @@ export default function SupplierAddProduct() {
      Lookups: categories, brands, attributes
   ========================= */
 
+  // ✅ Your hook probably used token-enabled before.
+  // With cookie auth, we can enable always.
   const { categories, brands, attributes, attributesQ, categoriesQ, brandsQ } = useCatalogMeta({
-    enabled: !!token,
+    enabled: true,
   });
 
   const activeAttrs = useMemo(() => attributes, [attributes]);
@@ -210,8 +205,8 @@ export default function SupplierAddProduct() {
     try {
       setUploading(true);
       const res = await api.post(UPLOAD_ENDPOINT, fd, {
+        ...AXIOS_COOKIE_CFG,
         headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           "Content-Type": "multipart/form-data",
         },
       });
@@ -323,13 +318,6 @@ export default function SupplierAddProduct() {
 
   /* =========================
      Build payload (schema-conformant)
-     Product:
-       - retailPrice, availableQty, inStock, imagesJson, sku, etc.
-     Variants:
-       - availableQty, inStock, options
-       - retailPrice optional (we set it to product retailPrice for simplicity)
-     Variant options:
-       - attributeId, valueId (unitPrice remains null unless you later support it)
   ========================= */
 
   function buildPayload(imagesJson: string[]) {
@@ -402,7 +390,7 @@ export default function SupplierAddProduct() {
 
         variants.push({
           sku: variantSku,
-          retailPrice: basePriceNum || null, // optional field in schema
+          retailPrice: basePriceNum || null,
           availableQty: rowQty,
           inStock: rowQty > 0,
           imagesJson: [],
@@ -414,10 +402,10 @@ export default function SupplierAddProduct() {
     return {
       title: title.trim(),
       description: description?.trim() || "",
-      sku: baseSku || slugifySku(title), // Product.sku is required in schema
-      retailPrice: basePriceNum, // Product.retailPrice (@map("price"))
-      availableQty: totalQty, // Product.availableQty
-      inStock: totalQty > 0, // Product.inStock
+      sku: baseSku || slugifySku(title),
+      retailPrice: basePriceNum,
+      availableQty: totalQty,
+      inStock: totalQty > 0,
 
       categoryId: categoryId || undefined,
       brandId: brandId || undefined,
@@ -429,7 +417,7 @@ export default function SupplierAddProduct() {
   }
 
   /* =========================
-     Create mutation
+     Create mutation (cookie auth)
   ========================= */
 
   const createM = useMutation({
@@ -437,7 +425,6 @@ export default function SupplierAddProduct() {
       setErr(null);
       setOkMsg(null);
 
-      if (!token) throw new Error("Not authenticated");
       if (!title.trim()) throw new Error("Title is required");
 
       const p = toMoneyNumber(retailPrice);
@@ -453,22 +440,15 @@ export default function SupplierAddProduct() {
 
       const payload = buildPayload(imagesJson);
 
-      const { data } = await api.post("/api/supplier/products", payload, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      return data?.data ?? data;
+      const { data } = await api.post("/api/supplier/products", payload, AXIOS_COOKIE_CFG);
+      return (data as any)?.data ?? data;
     },
     onSuccess: () => {
       setOkMsg("Product submitted ✅ It will appear once reviewed.");
       setTimeout(() => nav("/supplier/products", { replace: true }), 600);
     },
     onError: (e: any) => {
-      const msg =
-        e?.response?.data?.detail ||
-        e?.response?.data?.error ||
-        e?.message ||
-        "Could not create product";
+      const msg = e?.response?.data?.detail || e?.response?.data?.error || e?.message || "Could not create product";
       setErr(msg);
     },
   });
@@ -553,9 +533,7 @@ export default function SupplierAddProduct() {
 
           {/* Alerts */}
           {err && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              {err}
-            </div>
+            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">{err}</div>
           )}
           {okMsg && (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
@@ -609,9 +587,7 @@ export default function SupplierAddProduct() {
                         Reset to auto SKU
                       </button>
 
-                      <div className="text-[11px] text-zinc-500 mt-1">
-                        We auto-generate from title if you don’t type it.
-                      </div>
+                      <div className="text-[11px] text-zinc-500 mt-1">We auto-generate from title if you don’t type it.</div>
                     </div>
                   </div>
 

@@ -175,9 +175,6 @@ export default function NotificationsBell({
       scheduleToastHide();
     }
 
-    console.log("notif items:", data.items.map(n => ({ id: n.id, readAt: n.readAt, createdAt: n.createdAt })));
-    console.log("baseline size:", prevIdsRef.current.size);
-
     prevIdsRef.current = new Set(items.map((n) => n.id));
     saveSeenIdsToSession(prevIdsRef.current);
   }, [data?.items, userId, loginSessionKey, scheduleToastHide, saveSeenIdsToSession]);

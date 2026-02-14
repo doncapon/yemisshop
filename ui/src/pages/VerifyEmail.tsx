@@ -1,7 +1,7 @@
 // src/pages/VerifyEmail.tsx
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { motion } from "framer-motion";
 import {
   Mail,
   MailCheck,
@@ -15,11 +15,19 @@ import {
   UserCog,
   Smartphone,
   CheckCircle2,
-} from 'lucide-react';
-import api from '../api/client';
-import { useAuthStore } from '../store/auth';
-import SiteLayout from '../layouts/SiteLayout';
+} from "lucide-react";
+import api from "../api/client";
+import SiteLayout from "../layouts/SiteLayout";
 
+/* ---------------------- Cookie auth helpers ---------------------- */
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
+function isAuthError(e: any) {
+  const s = e?.response?.status;
+  return s === 401 || s === 403;
+}
+
+/* ---------------------- Types ---------------------- */
 type ResendResp = { ok: boolean; nextResendAfterSec: number; expiresInSec: number };
 
 type MeResponse = {
@@ -32,16 +40,16 @@ type MeResponse = {
 };
 
 function StatChip({
-  tone = 'amber',
+  tone = "amber",
   children,
 }: {
-  tone?: 'amber' | 'green' | 'zinc';
+  tone?: "amber" | "green" | "zinc";
   children: React.ReactNode;
 }) {
   const tones = {
-    amber: 'bg-amber-50 text-amber-700 border-amber-200',
-    green: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    zinc: 'bg-zinc-50 text-zinc-700 border-zinc-200',
+    amber: "bg-amber-50 text-amber-700 border-amber-200",
+    green: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    zinc: "bg-zinc-50 text-zinc-700 border-zinc-200",
   } as const;
   return (
     <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 border rounded-full ${tones[tone]}`}>
@@ -50,7 +58,7 @@ function StatChip({
   );
 }
 
-function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`rounded-2xl border border-border bg-white shadow-sm overflow-hidden ${className}`}>{children}</div>;
 }
 
@@ -81,18 +89,16 @@ function CardHeader({
 
 export default function VerifyEmail() {
   const location = useLocation();
-  const { token } = useAuthStore();
-  const setAuthUser = useAuthStore((s) => s.setAuth); // if your store has a helper to update user snapshot (optional)
-  const storeUser = useAuthStore((s) => s.user);
+  const nav = useNavigate();
 
   const qs = new URLSearchParams(location.search);
-  const eParam = (qs.get('e') || '').toLowerCase();
-  const okParam = qs.get('ok'); // "1" if server confirmed success
-  const errParam = qs.get('err'); // e.g., "token" when invalid/expired
+  const eParam = (qs.get("e") || "").toLowerCase();
+  const okParam = qs.get("ok"); // "1" if server confirmed success
+  const errParam = qs.get("err"); // e.g., "token" when invalid/expired
 
   // ---------- State ----------
-  const [me, setMe] = useState<MeResponse | null>(storeUser ?? null);
-  const [targetEmail, setTargetEmail] = useState<string>('');
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [targetEmail, setTargetEmail] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
   const [banner, setBanner] = useState<string | null>(null);
@@ -103,55 +109,73 @@ export default function VerifyEmail() {
   const emailTimerRef = useRef<number | null>(null);
 
   // OTP
-  const [otp, setOtp] = useState('');
+  const [otp, setOtp] = useState("");
   const [verifyingOtp, setVerifyingOtp] = useState(false);
   const [otpMsg, setOtpMsg] = useState<string | null>(null);
   const [otpErr, setOtpErr] = useState<string | null>(null);
   const [otpCooldown, setOtpCooldown] = useState(0);
   const otpTimerRef = useRef<number | null>(null);
+
   const phoneVerified = !!me?.phoneVerifiedAt;
 
   // ---------- Derivations ----------
-  const headerTitle = useMemo(() => (me?.emailVerifiedAt ? 'Email verified' : 'Verify your email'), [me?.emailVerifiedAt]);
-  const showOtpBlock = !!token && !phoneVerified; // Only show OTP when logged-in and phone not yet verified
+  const headerTitle = useMemo(() => (me?.emailVerifiedAt ? "Email verified" : "Verify your email"), [me?.emailVerifiedAt]);
+
+  // ✅ Cookie auth: we consider "logged in" if /api/auth/me succeeds.
+  const isLoggedIn = !!me?.id;
+  const showOtpBlock = isLoggedIn && !phoneVerified;
 
   // ---------- Prime targetEmail (param -> localStorage -> profile) ----------
   useEffect(() => {
-    const stored = (localStorage.getItem('verifyEmail') || '').toLowerCase();
+    const stored = (localStorage.getItem("verifyEmail") || "").toLowerCase();
     const fromParam = eParam || stored;
     setTargetEmail(fromParam);
   }, [eParam]);
 
   // ---------- Banner from redirect params ----------
   useEffect(() => {
-    if (okParam === '1') {
-      setBanner('Your email is now verified. You can continue.');
+    if (okParam === "1") {
+      setBanner("Your email is now verified. You can continue.");
       setErr(null);
-      setMe((m) => ({ ...(m || ({} as any)), email: (m?.email || targetEmail), emailVerifiedAt: new Date().toISOString() }));
+      setMe((m) => ({
+        ...(m || ({} as any)),
+        email: m?.email || targetEmail,
+        emailVerifiedAt: new Date().toISOString(),
+      }));
     } else if (errParam) {
-      setErr('That verification link could not be validated. Please resend a new one below.');
+      setErr("That verification link could not be validated. Please resend a new one below.");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [okParam, errParam]);
 
-  // ---------- Load profile when auth token exists ----------
+  // ---------- Load profile via cookie session ----------
   useEffect(() => {
     let alive = true;
     (async () => {
-      if (!token) {
-        setLoading(false);
-        return;
-      }
       try {
         setLoading(true);
-        const { data } = await api.get<MeResponse>('/api/profile/me', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+
+        // Prefer /api/profile/me if you have it; fallback to /api/auth/me
+        try {
+          const { data } = await api.get<MeResponse>("/api/profile/me", AXIOS_COOKIE_CFG);
+          if (!alive) return;
+          setMe(data);
+          if (!targetEmail) setTargetEmail((data?.email || "").toLowerCase());
+          return;
+        } catch (e: any) {
+          // If /api/profile/me doesn't exist or requires email verified, fallback
+          if (!isAuthError(e)) {
+            // continue fallback
+          }
+        }
+
+        const { data } = await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG);
         if (!alive) return;
         setMe(data);
-        if (!targetEmail) setTargetEmail((data?.email || '').toLowerCase());
+        if (!targetEmail) setTargetEmail((data?.email || "").toLowerCase());
       } catch {
-        // ignore
+        // Not logged in (cookie missing/expired) -> keep page usable as "public" verify checker
+        if (alive) setMe(null);
       } finally {
         if (alive) setLoading(false);
       }
@@ -160,7 +184,7 @@ export default function VerifyEmail() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [location.key]);
 
   // ---------- One-time public email status check ----------
   const [statusChecked, setStatusChecked] = useState(false);
@@ -169,7 +193,7 @@ export default function VerifyEmail() {
     let alive = true;
     (async () => {
       try {
-        const { data } = await api.get('/api/auth/email-status', { params: { email: targetEmail } });
+        const { data } = await api.get("/api/auth/email-status", { params: { email: targetEmail } });
         if (!alive) return;
         if (data?.emailVerifiedAt) {
           setMe((m) => ({ ...(m || ({} as any)), email: targetEmail, emailVerifiedAt: data.emailVerifiedAt }));
@@ -188,10 +212,7 @@ export default function VerifyEmail() {
   // ---------- Cooldown tickers ----------
   useEffect(() => {
     if (emailCooldown <= 0) return;
-    emailTimerRef.current = window.setTimeout(
-      () => setEmailCooldown((s) => Math.max(0, s - 1)),
-      1000,
-    ) as unknown as number;
+    emailTimerRef.current = window.setTimeout(() => setEmailCooldown((s) => Math.max(0, s - 1)), 1000) as unknown as number;
     return () => {
       if (emailTimerRef.current) window.clearTimeout(emailTimerRef.current);
       emailTimerRef.current = null;
@@ -200,10 +221,7 @@ export default function VerifyEmail() {
 
   useEffect(() => {
     if (otpCooldown <= 0) return;
-    otpTimerRef.current = window.setTimeout(
-      () => setOtpCooldown((s) => Math.max(0, s - 1)),
-      1000,
-    ) as unknown as number;
+    otpTimerRef.current = window.setTimeout(() => setOtpCooldown((s) => Math.max(0, s - 1)), 1000) as unknown as number;
     return () => {
       if (otpTimerRef.current) window.clearTimeout(otpTimerRef.current);
       otpTimerRef.current = null;
@@ -215,26 +233,36 @@ export default function VerifyEmail() {
     setErr(null);
     setBanner(null);
     try {
+      // public status check (works even if logged out)
       if (targetEmail) {
-        const { data } = await api.get('/api/auth/email-status', { params: { email: targetEmail } });
+        const { data } = await api.get("/api/auth/email-status", { params: { email: targetEmail } });
         if (data?.emailVerifiedAt) {
           setMe((m) => ({ ...(m || ({} as any)), email: targetEmail, emailVerifiedAt: data.emailVerifiedAt }));
-          setBanner('Your email is verified. You can continue.');
+          setBanner("Your email is verified. You can continue.");
         } else {
-          setBanner('Still waiting for confirmation. Check your inbox or resend below.');
+          setBanner("Still waiting for confirmation. Check your inbox or resend below.");
         }
       }
-      if (token) {
-        const { data } = await api.get<MeResponse>('/api/profile/me', { headers: { Authorization: `Bearer ${token}` } });
-        setMe(data);
-        if (data?.emailVerifiedAt && !banner) setBanner('Your email is verified. You can continue.');
-        // Optionally update the central store user snapshot if you keep one
-        try {
-          setAuthUser?.(data as any);
-        } catch { }
+
+      // cookie-auth status refresh (if logged in)
+      try {
+        const r = await api.get<MeResponse>("/api/profile/me", AXIOS_COOKIE_CFG);
+        setMe(r.data);
+        if (r.data?.emailVerifiedAt) setBanner("Your email is verified. You can continue.");
+      } catch (e: any) {
+        // fallback to /api/auth/me
+        if (!isAuthError(e)) {
+          try {
+            const r2 = await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG);
+            setMe(r2.data);
+            if (r2.data?.emailVerifiedAt) setBanner("Your email is verified. You can continue.");
+          } catch {
+            /* ignore */
+          }
+        }
       }
     } catch (e: any) {
-      setErr(e?.response?.data?.error || 'Failed to refresh status');
+      setErr(e?.response?.data?.error || "Failed to refresh status");
     }
   };
 
@@ -245,102 +273,109 @@ export default function VerifyEmail() {
     setErr(null);
     setBanner(null);
     try {
-      const { data } = await api.post<ResendResp>('/api/auth/resend-verification', { email: targetEmail });
+      const { data } = await api.post<ResendResp>("/api/auth/resend-verification", { email: targetEmail });
       setEmailCooldown(Math.max(0, Number(data?.nextResendAfterSec ?? 60)));
-      setBanner('Verification email sent. Please check your inbox.');
+      setBanner("Verification email sent. Please check your inbox.");
     } catch (e: any) {
       const retryAfter = e?.response?.data?.retryAfterSec;
       if (retryAfter) setEmailCooldown(retryAfter);
-      setErr(e?.response?.data?.error || 'Could not resend verification email');
+      setErr(e?.response?.data?.error || "Could not resend verification email");
     } finally {
       setSendingEmail(false);
     }
   };
 
-  // Email resend (authed)
+  // Email resend (authed via cookie)
   const resendAuthed = async () => {
-    if (!token || sendingEmail || emailCooldown > 0) return;
+    if (!isLoggedIn || sendingEmail || emailCooldown > 0) return;
     setSendingEmail(true);
     setErr(null);
     setBanner(null);
     try {
-      const { data } = await api.post<ResendResp>(
-        '/api/auth/resend-email',
-        {},
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
+      const { data } = await api.post<ResendResp>("/api/auth/resend-email", {}, AXIOS_COOKIE_CFG);
       setEmailCooldown(Math.max(0, Number(data?.nextResendAfterSec ?? 60)));
-      setBanner('Verification email sent. Please check your inbox.');
+      setBanner("Verification email sent. Please check your inbox.");
     } catch (e: any) {
+      if (isAuthError(e)) {
+        setErr("Your session expired. Please sign in again.");
+        nav("/login", { state: { from: location.pathname + location.search } });
+        return;
+      }
       const retryAfter = e?.response?.data?.retryAfterSec;
       if (retryAfter) setEmailCooldown(retryAfter);
-      setErr(e?.response?.data?.error || 'Could not resend verification email');
+      setErr(e?.response?.data?.error || "Could not resend verification email");
     } finally {
       setSendingEmail(false);
     }
   };
 
-  // OTP: verify
+  // OTP: verify (authed via cookie)
   const submitOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setOtpErr(null);
     setOtpMsg(null);
-    if (!token) {
-      setOtpErr('Please sign in first.');
+
+    if (!isLoggedIn) {
+      setOtpErr("Please sign in first.");
+      nav("/login", { state: { from: location.pathname + location.search } });
       return;
     }
     if (!otp.trim()) {
-      setOtpErr('Enter the code we sent to your phone.');
+      setOtpErr("Enter the code we sent to your phone.");
       return;
     }
+
     try {
       setVerifyingOtp(true);
-      const { data } = await api.post(
-        '/api/auth/verify-otp',
-        { otp: otp.trim() },
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
+      await api.post("/api/auth/verify-otp", { otp: otp.trim() }, AXIOS_COOKIE_CFG);
 
-      // Success UI
-      setOtp('');
-      setOtpMsg('Phone verified!');
+      setOtp("");
+      setOtpMsg("Phone verified!");
       setOtpErr(null);
 
-      // Replace local/me flags
       await refreshStatus();
     } catch (e: any) {
-      setOtpErr(e?.response?.data?.error || 'Could not verify the code');
+      if (isAuthError(e)) {
+        setOtpErr("Your session expired. Please sign in again.");
+        nav("/login", { state: { from: location.pathname + location.search } });
+        return;
+      }
+      setOtpErr(e?.response?.data?.error || "Could not verify the code");
       setOtpMsg(null);
     } finally {
       setVerifyingOtp(false);
     }
   };
 
-  // OTP: resend (authed)
+  // OTP: resend (authed via cookie)
   const resendOtp = async () => {
     setOtpErr(null);
     setOtpMsg(null);
-    if (!token) {
-      setOtpErr('Please sign in first.');
+
+    if (!isLoggedIn) {
+      setOtpErr("Please sign in first.");
+      nav("/login", { state: { from: location.pathname + location.search } });
       return;
     }
     if (otpCooldown > 0) return;
+
     try {
-      const { data } = await api.post(
-        '/api/auth/resend-otp',
-        {},
-        { headers: { Authorization: `Bearer ${token}` } },
-      );
+      const { data } = await api.post("/api/auth/resend-otp", {}, AXIOS_COOKIE_CFG);
       setOtpCooldown(Math.max(0, Number(data?.nextResendAfterSec ?? 60)));
-      setOtpMsg('A new verification code was sent to your phone.');
+      setOtpMsg("A new verification code was sent to your phone.");
     } catch (e: any) {
+      if (isAuthError(e)) {
+        setOtpErr("Your session expired. Please sign in again.");
+        nav("/login", { state: { from: location.pathname + location.search } });
+        return;
+      }
       const retry = e?.response?.data?.retryAfterSec;
       if (retry) setOtpCooldown(retry);
-      setOtpErr(e?.response?.data?.error || 'Could not resend the code');
+      setOtpErr(e?.response?.data?.error || "Could not resend the code");
     }
   };
 
-  const nextStepPath = '/dashboard';
+  const nextStepPath = "/dashboard";
 
   return (
     <SiteLayout>
@@ -349,12 +384,14 @@ export default function VerifyEmail() {
         <div className="relative overflow-hidden border-b">
           <div className="bg-gradient-to-br from-primary-700 via-primary-600 to-indigo-700 text-white">
             <div className="max-w-5xl mx-auto px-4 md:px-8 py-8">
-              <motion.h1 initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="text-2xl md:text-3xl font-bold tracking-tight">
+              <motion.h1
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-2xl md:text-3xl font-bold tracking-tight"
+              >
                 {headerTitle}
               </motion.h1>
-              <p className="mt-1 text-white/85 text-sm">
-                We sent a confirmation link to your email. Please click it to continue.
-              </p>
+              <p className="mt-1 text-white/85 text-sm">We sent a confirmation link to your email. Please click it to continue.</p>
               {!me?.emailVerifiedAt && (
                 <div className="mt-3">
                   <StatChip tone="amber">
@@ -372,7 +409,7 @@ export default function VerifyEmail() {
           <Card>
             <CardHeader
               title="Verification status"
-              subtitle={me?.emailVerifiedAt ? 'Your email is verified—nice!' : 'Awaiting verification'}
+              subtitle={me?.emailVerifiedAt ? "Your email is verified—nice!" : "Awaiting verification"}
               icon={me?.emailVerifiedAt ? <MailCheck size={18} /> : <MailWarning size={18} />}
               right={
                 <div className="hidden sm:flex items-center gap-2">
@@ -407,16 +444,14 @@ export default function VerifyEmail() {
                     </div>
                   )}
                   {err && (
-                    <div className="mb-3 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
-                      {err}
-                    </div>
+                    <div className="mb-3 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">{err}</div>
                   )}
 
                   {/* Email chip + status */}
                   <div className="flex flex-wrap items-center gap-3">
                     <span className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-xl border bg-surface">
                       <Mail size={16} className="text-primary-700" />
-                      <span className="font-medium text-ink">{targetEmail || me?.email || '—'}</span>
+                      <span className="font-medium text-ink">{targetEmail || me?.email || "—"}</span>
                     </span>
 
                     {me?.emailVerifiedAt ? (
@@ -458,7 +493,8 @@ export default function VerifyEmail() {
                         )}
                       </button>
 
-                      {token && (
+                      {/* Logged-in resend uses cookie session */}
+                      {isLoggedIn && (
                         <button
                           onClick={resendAuthed}
                           disabled={sendingEmail || emailCooldown > 0}
@@ -488,7 +524,7 @@ export default function VerifyEmail() {
                     </div>
                   )}
 
-                  {/* Phone OTP block (auth only, when not verified) */}
+                  {/* Phone OTP block (cookie auth only, when not verified) */}
                   {showOtpBlock && (
                     <div className="mt-6 rounded-xl border bg-white p-4">
                       <div className="flex items-center gap-2 mb-2">
@@ -515,7 +551,7 @@ export default function VerifyEmail() {
                       <form onSubmit={submitOtp} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                         <input
                           value={otp}
-                          onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                          onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
                           inputMode="numeric"
                           pattern="\d*"
                           placeholder="Enter the 6-digit code"
@@ -526,7 +562,7 @@ export default function VerifyEmail() {
                           disabled={verifyingOtp || !otp.trim()}
                           className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary-600 text-white px-4 py-2 hover:bg-primary-700 disabled:opacity-50"
                         >
-                          {verifyingOtp ? 'Verifying…' : 'Verify code'}
+                          {verifyingOtp ? "Verifying…" : "Verify code"}
                         </button>
                         <button
                           type="button"
@@ -535,8 +571,8 @@ export default function VerifyEmail() {
                           className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-4 py-2 hover:bg-black/5 disabled:opacity-50"
                           title="Resend verification code"
                         >
-                          <RefreshCcw size={16} className={otpCooldown > 0 ? 'opacity-70' : ''} />
-                          {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : 'Resend code'}
+                          <RefreshCcw size={16} className={otpCooldown > 0 ? "opacity-70" : ""} />
+                          {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : "Resend code"}
                         </button>
                       </form>
                       <p className="mt-1 text-[11px] text-ink-soft">
@@ -556,9 +592,9 @@ export default function VerifyEmail() {
                 <CardHeader title="Open your inbox" subtitle="Jump straight to your provider" icon={<Mail size={18} />} />
                 <div className="p-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {[
-                    { name: 'Gmail', href: 'https://mail.google.com/', color: 'text-rose-600' },
-                    { name: 'Outlook', href: 'https://outlook.live.com/mail/', color: 'text-sky-700' },
-                    { name: 'Yahoo Mail', href: 'https://mail.yahoo.com/', color: 'text-violet-700' },
+                    { name: "Gmail", href: "https://mail.google.com/", color: "text-rose-600" },
+                    { name: "Outlook", href: "https://outlook.live.com/mail/", color: "text-sky-700" },
+                    { name: "Yahoo Mail", href: "https://mail.yahoo.com/", color: "text-violet-700" },
                   ].map((x) => (
                     <a
                       key={x.name}
@@ -589,7 +625,11 @@ export default function VerifyEmail() {
                       Use the <b>Resend email</b> button above (cooldown applies).
                     </li>
                     <li>
-                      Still stuck? <Link to="/contact" className="text-primary-700 underline">Contact support</Link>.
+                      Still stuck?{" "}
+                      <Link to="/contact" className="text-primary-700 underline">
+                        Contact support
+                      </Link>
+                      .
                     </li>
                   </ul>
                 </div>
@@ -600,7 +640,10 @@ export default function VerifyEmail() {
           {/* Footer CTA when fully verified */}
           {me?.emailVerifiedAt && (
             <div className="flex flex-wrap items-center gap-3">
-              <Link to={nextStepPath} className="inline-flex items-center gap-2 rounded-xl bg-primary-600 text-white px-4 py-2 hover:bg-primary-700">
+              <Link
+                to={nextStepPath}
+                className="inline-flex items-center gap-2 rounded-xl bg-primary-600 text-white px-4 py-2 hover:bg-primary-700"
+              >
                 Continue <ChevronRight size={16} />
               </Link>
               <Link to="/" className="inline-flex items-center gap-2 rounded-xl border bg-white px-4 py-2 hover:bg-black/5">

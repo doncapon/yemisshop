@@ -1,22 +1,22 @@
 // api/src/routes/auth.ts
-import { Router, type Request, type Response, type NextFunction, type RequestHandler } from 'express';
-import { z } from 'zod';
-import bcrypt from 'bcryptjs';
-import crypto from 'crypto';
-import jwt from 'jsonwebtoken';
+import { Router, type Request, type Response, type NextFunction, type RequestHandler } from "express";
+import { z } from "zod";
+import bcrypt from "bcryptjs";
+import crypto from "crypto";
+import jwt from "jsonwebtoken";
 
-import { prisma } from '../lib/prisma.js';
-import { sendVerifyEmail, sendResetorForgotPasswordEmail } from '../lib/email.js';
-import { signJwt, signAccessJwt } from '../lib/jwt.js';
-import { requireAuth, requireVerifySession } from '../middleware/auth.js';
-import { issueOtp, verifyOtp } from '../lib/otp.js';
-import { Prisma, SupplierType } from '@prisma/client'
-import { setAccessTokenCookie } from '../lib/authCookies.js';
+import { prisma } from "../lib/prisma.js";
+import { sendVerifyEmail, sendResetorForgotPasswordEmail } from "../lib/email.js";
+import { signJwt, signAccessJwt } from "../lib/jwt.js";
+import { requireAuth, requireVerifySession } from "../middleware/auth.js";
+import { issueOtp, verifyOtp } from "../lib/otp.js";
+import { Prisma, SupplierType } from "@prisma/client";
+import { setAccessTokenCookie, clearAccessTokenCookie } from "../lib/authCookies.js";
 
 // ---------------- ENV / constants ----------------
-const APP_URL = process.env.APP_URL || 'http://localhost:5173';
-const API_BASE_URL = process.env.API_URL || 'http://localhost:8080';
-const EMAIL_JWT_SECRET = process.env.EMAIL_JWT_SECRET || 'CHANGE_ME_DEV_SECRET';
+const APP_URL = process.env.APP_URL || "http://localhost:5173";
+const API_BASE_URL = process.env.API_URL || "http://localhost:8080";
+const EMAIL_JWT_SECRET = process.env.EMAIL_JWT_SECRET || "CHANGE_ME_DEV_SECRET";
 
 const EMAIL_RESEND_COOLDOWN_SEC = 60;
 const EMAIL_DAILY_CAP = 5;
@@ -32,18 +32,18 @@ const RegisterSchema = z.object({
   firstName: z.string().min(1),
   middleName: z.string().optional(),
   lastName: z.string().min(1),
-  role: z.string().default('SHOPPER'),
-  dialCode: z.string().optional(),   // e.g. "+234" or "234"
-  localPhone: z.string().optional(), // e.g. "8012345678"
+  role: z.string().default("SHOPPER"),
+  dialCode: z.string().optional(),
+  localPhone: z.string().optional(),
   dateOfBirth: z
     .string()
     .transform((s) => new Date(s))
-    .refine((d) => !Number.isNaN(+d), { message: 'Invalid date of birth' })
+    .refine((d) => !Number.isNaN(+d), { message: "Invalid date of birth" })
     .refine((d) => {
       const today = new Date();
       const years = (today.getTime() - d.getTime()) / (365.25 * 24 * 3600 * 1000);
       return years >= 18;
-    }, { message: 'You must be at least 18 years old' }),
+    }, { message: "You must be at least 18 years old" }),
 });
 
 const VerifyPhoneSchema = z.object({
@@ -61,31 +61,32 @@ const router = Router();
 
 /** Issue a JWT email-verify link and send it via the central mail helper */
 async function issueAndEmailEmailVerification(userId: string, email: string) {
-  const token = jwt.sign({ sub: userId, email, k: 'email-verify' }, EMAIL_JWT_SECRET, { expiresIn: '60m' });
+  const token = jwt.sign({ sub: userId, email, k: "email-verify" }, EMAIL_JWT_SECRET, {
+    expiresIn: "60m",
+  });
+
+  // ✅ MUST hit API route (this router), not UI.
   const verifyUrl = `${API_BASE_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+
   await sendVerifyEmail(email, verifyUrl);
 }
 
 // ---------------- helpers ----------------
 const wrap =
   (fn: (req: Request, res: Response, next: NextFunction) => Promise<any>): RequestHandler =>
-    (req, res, next) => { fn(req, res, next).catch(next); };
+    (req, res, next) => {
+      fn(req, res, next).catch(next);
+    };
 
 function toE164(dialCode?: string, local?: string): string | null {
   if (!dialCode || !local) return null;
-  const dc = dialCode.startsWith('+') ? dialCode : `+${dialCode}`;
-  return `${dc}${local}`.replace(/\s+/g, '');
-}
-
-function signVerifyJwt(payload: { id: string; email: string; role: string }, expiresIn = '15m') {
-  // IMPORTANT: include a "kind" / "k" claim so middleware can restrict permissions
-  return signAccessJwt({ ...payload, k: 'verify' } as any, expiresIn);
+  const dc = dialCode.startsWith("+") ? dialCode : `+${dialCode}`;
+  return `${dc}${local}`.replace(/\s+/g, "");
 }
 
 async function createUserSession(req: Request, userId: string, role?: string | null) {
   const ua = String(req.headers["user-agent"] ?? "").slice(0, 500) || null;
 
-  // best-effort IP (works behind proxies too if you trust x-forwarded-for)
   const xff = String(req.headers["x-forwarded-for"] ?? "");
   const ip =
     (xff.split(",")[0]?.trim() || "").slice(0, 80) ||
@@ -95,9 +96,6 @@ async function createUserSession(req: Request, userId: string, role?: string | n
 
   const r = String(role || "").replace(/[\s-]/g, "").toUpperCase();
 
-  // ✅ role-based absolute session lifetime
-  // - shoppers: 30 days
-  // - admins/suppliers/riders: 7 days (tighter security)
   const ABSOLUTE_DAYS =
     r === "ADMIN" || r === "SUPER_ADMIN" || r === "SUPPLIER" || r === "SUPPLIER_RIDER" ? 7 : 30;
 
@@ -118,8 +116,26 @@ async function createUserSession(req: Request, userId: string, role?: string | n
   return session.id;
 }
 
-// api/src/routes/auth.ts (replace ONLY the /login route)
+async function activateSupplierIfFullyVerified(user: {
+  id: string;
+  role: any;
+  emailVerifiedAt?: Date | string | null;
+  phoneVerifiedAt?: Date | string | null;
+}) {
+  const isSupplier = String(user.role) === "SUPPLIER";
+  const fullyVerified = !!user.emailVerifiedAt && !!user.phoneVerifiedAt;
 
+  if (!isSupplier || !fullyVerified) return;
+
+  await prisma.supplier.updateMany({
+    where: { userId: user.id },
+    data: { status: "ACTIVE" as any },
+  });
+}
+
+// ---------------- LOGIN ----------------
+// ✅ Sets HttpOnly cookie + returns profile.
+// UI does NOT need to store token.
 router.post(
   "/login",
   wrap(async (req, res) => {
@@ -145,12 +161,14 @@ router.post(
       email: user.email,
       role: user.role as any,
       firstName: user.firstName,
+      middleName: (user as any).middleName ?? null,
       lastName: user.lastName,
       emailVerified: !!user.emailVerifiedAt,
       phoneVerified: !!user.phoneVerifiedAt,
+      status: (user as any).status ?? null,
     };
 
-    // ✅ Create session id (sid) for access tokens
+    // ✅ Create session id (sid) (server-side)
     const sid = await createUserSession(req, user.id, user.role);
 
     const roleNorm = String(user.role || "").replace(/[\s-]/g, "").toUpperCase();
@@ -162,100 +180,97 @@ router.post(
         ? 7
         : 30;
 
-    // ✅ normal access token
+    // ✅ Sign JWT and set HttpOnly cookie (DO NOT return token)
     const token = signAccessJwt(
       { id: user.id, email: user.email, role: user.role, k: "access", sid } as any,
       `${ttlDays}d`
     );
 
-    // Optional cookie (not required for Option A)
     setAccessTokenCookie(res, token, { maxAgeDays: ttlDays });
 
-    // ✅ Allow login even if not verified, but flag it
+    // ✅ Optional: prevent caches storing auth responses
+    res.setHeader("Cache-Control", "no-store");
+
+    // ✅ Allow login even if supplier not verified, but flag it
     const needsVerification =
       String(user.role) === "SUPPLIER" && !(profile.emailVerified && profile.phoneVerified);
 
-    // ✅ provide short verify token for OTP endpoints if you want (optional)
-    const verifyToken = needsVerification
-      ? signAccessJwt({ id: user.id, email: user.email, role: user.role, k: "verify", sid } as any, "30m")
-      : undefined;
-
+    // ✅ Cookie-mode response: NO token / sid / verifyToken
     return res.json({
-      token,
-      sid,
       profile,
       needsVerification,
-      verifyToken,
     });
   })
 );
 
 
-async function activateSupplierIfFullyVerified(user: {
-  id: string;
-  role: any;
-  emailVerifiedAt?: Date | string | null;
-  phoneVerifiedAt?: Date | string | null;
-}) {
-  const isSupplier = String(user.role) === 'SUPPLIER';
-  const fullyVerified = !!user.emailVerifiedAt && !!user.phoneVerifiedAt;
-
-  if (!isSupplier || !fullyVerified) return;
-
-  // Activate supplier record (if exists) once fully verified
-  await prisma.supplier.updateMany({
-    where: { userId: user.id },
-    data: { status: 'ACTIVE' as any },
-  });
-}
+// ---------------- LOGOUT ----------------
+router.post(
+  "/logout",
+  wrap(async (_req, res) => {
+    clearAccessTokenCookie(res);
+    return res.json({ ok: true });
+  })
+);
 
 // ---------------- ME ----------------
-router.get('/me', requireAuth, wrap(async (req, res) => {
-  const userId = req.user?.id;
-  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+router.get(
+  "/me",
+  requireAuth,
+  wrap(async (req, res) => {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-  const u = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true, email: true, role: true,
-      firstName: true, middleName: true, lastName: true,
-      status: true, phone: true,
-      emailVerifiedAt: true, phoneVerifiedAt: true,
-      joinedAt: true,
-      address: true, shippingAddress: true,
-    },
-  });
+    const u = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        firstName: true,
+        middleName: true,
+        lastName: true,
+        status: true,
+        phone: true,
+        emailVerifiedAt: true,
+        phoneVerifiedAt: true,
+        joinedAt: true,
+        address: true,
+        shippingAddress: true,
+      } as any,
+    });
 
-  if (!u) return res.status(404).json({ error: 'User not found' });
+    if (!u) return res.status(404).json({ error: "User not found" });
 
-  res.json({
-    id: u.id,
-    email: u.email,
-    role: u.role,
-    status: u.status ?? 'PENDING',
-    firstName: u.firstName,
-    middleName: u.middleName,
-    lastName: u.lastName,
-    phone: u.phone,
-    joinedAt: u.joinedAt,
-    emailVerified: Boolean(u.emailVerifiedAt),
-    phoneVerified: Boolean(u.phoneVerifiedAt),
-    address: u.address,
-    shippingAddress: (u as any).shippingAddress ?? null,
-  });
-}));
+    res.json({
+      id: u.id,
+      email: u.email,
+      role: u.role,
+      status: (u as any).status ?? "PENDING",
+      firstName: u.firstName,
+      middleName: (u as any).middleName ?? null,
+      lastName: u.lastName,
+      phone: (u as any).phone ?? null,
+      joinedAt: (u as any).joinedAt ?? null,
+      emailVerified: Boolean((u as any).emailVerifiedAt),
+      phoneVerified: Boolean((u as any).phoneVerifiedAt),
+      address: (u as any).address ?? null,
+      shippingAddress: (u as any).shippingAddress ?? null,
+    });
+  })
+);
 
 // ---------------- PUBLIC helpers for VerifyEmail page ----------------
-router.get('/email-status', async (req, res) => {
-  const email = String(req.query.email ?? '').trim().toLowerCase();
-  if (!email) return res.status(400).json({ error: 'email is required' });
+router.get("/email-status", async (req, res) => {
+  const email = String(req.query.email ?? "").trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: "email is required" });
 
   const user = await prisma.user.findUnique({
     where: { email },
     select: { id: true, emailVerifiedAt: true, firstName: true, lastName: true },
   });
 
-  if (!user) return res.status(404).json({ error: 'No account for this email' });
+  if (!user) return res.status(404).json({ error: "No account for this email" });
 
   return res.json({
     id: user.id,
@@ -268,59 +283,85 @@ router.get('/email-status', async (req, res) => {
 
 // ---------------- PUBLIC resend verification email (JWT link) ----------------
 const fmtErr = (e: any) => {
-  if (!e) return 'Unknown error';
+  if (!e) return "Unknown error";
   if (e instanceof Error) return e.message;
-  try { return JSON.stringify(e); } catch { return String(e); }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
 };
 
-router.post('/resend-verification', wrap(async (req, res) => {
-  const email = String(req.body?.email ?? '').trim().toLowerCase();
-  if (!email) return res.status(400).json({ error: 'email is required' });
+router.post(
+  "/resend-verification",
+  wrap(async (req, res) => {
+    const email = String(req.body?.email ?? "").trim().toLowerCase();
+    if (!email) return res.status(400).json({ error: "email is required" });
 
-  const user = await prisma.user.findUnique({
-    where: { email },
-    select: { id: true, emailVerifiedAt: true, emailVerifyLastSentAt: true, emailVerifySendCountDay: true },
-  });
-  if (!user) return res.status(404).json({ error: 'No account for this email' });
-  if (user.emailVerifiedAt) {
-    return res.json({ ok: true, nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC, expiresInSec: 0 });
-  }
-
-  const now = new Date();
-  const last = user.emailVerifyLastSentAt ? +user.emailVerifyLastSentAt : 0;
-  const since = Math.floor((+now - last) / 1000);
-  if (since < EMAIL_RESEND_COOLDOWN_SEC) {
-    return res.status(429).json({ error: 'Please wait before resending', retryAfterSec: EMAIL_RESEND_COOLDOWN_SEC - since });
-  }
-  if ((user.emailVerifySendCountDay ?? 0) >= EMAIL_DAILY_CAP) {
-    return res.status(429).json({ error: 'Daily resend limit reached' });
-  }
-
-  try {
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        emailVerifyLastSentAt: now,
-        emailVerifySendCountDay: (user.emailVerifySendCountDay ?? 0) + 1,
+    // ✅ Force the type to be the exact shape we need (includes id:string)
+    const u = await prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        emailVerifiedAt: true,
+        emailVerifyLastSentAt: true,
+        emailVerifySendCountDay: true,
       },
     });
 
-    await issueAndEmailEmailVerification(user.id, email);
-    return res.json({ ok: true, nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC, expiresInSec: EMAIL_TTL_MIN * 60 });
-  } catch (e) {
-    console.error('[resend-verification] send failed:', fmtErr(e));
-    return res.status(502).json({ error: 'Mail send failed', detail: fmtErr(e) });
-  }
-}));
+    if (!u) return res.status(404).json({ error: "No account for this email" });
+
+    if (u.emailVerifiedAt) {
+      return res.json({ ok: true, nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC, expiresInSec: 0 });
+    }
+
+    const now = new Date();
+    const last = u.emailVerifyLastSentAt ? +u.emailVerifyLastSentAt : 0;
+    const since = Math.floor((+now - last) / 1000);
+
+    if (since < EMAIL_RESEND_COOLDOWN_SEC) {
+      return res.status(429).json({
+        error: "Please wait before resending",
+        retryAfterSec: EMAIL_RESEND_COOLDOWN_SEC - since,
+      });
+    }
+
+    if ((u.emailVerifySendCountDay ?? 0) >= EMAIL_DAILY_CAP) {
+      return res.status(429).json({ error: "Daily resend limit reached" });
+    }
+
+    try {
+      await prisma.user.update({
+        where: { id: u.id }, // ✅ now definitely string
+        data: {
+          emailVerifyLastSentAt: now,
+          emailVerifySendCountDay: (u.emailVerifySendCountDay ?? 0) + 1,
+        },
+      });
+
+      await issueAndEmailEmailVerification(u.id, email);
+
+      return res.json({
+        ok: true,
+        nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC,
+        expiresInSec: EMAIL_TTL_MIN * 60,
+      });
+    } catch (e) {
+      console.error("[resend-verification] send failed:", fmtErr(e));
+      return res.status(502).json({ error: "Mail send failed", detail: fmtErr(e) });
+    }
+  })
+);
+
 
 // ---------------- REGISTER ----------------
 router.post(
-  '/register',
+  "/register",
   wrap(async (req, res) => {
     const body = RegisterSchema.parse(req.body);
 
     const existing = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
-    if (existing) return res.status(409).json({ error: 'Email already registered' });
+    if (existing) return res.status(409).json({ error: "Email already registered" });
 
     const passwordHash = await bcrypt.hash(body.password, 10);
     const phone = toE164(body.dialCode, body.localPhone);
@@ -329,19 +370,19 @@ router.post(
       data: {
         email: body.email.toLowerCase(),
         password: passwordHash,
-        role: 'SHOPPER',
+        role: "SHOPPER",
         firstName: body.firstName,
         middleName: body.middleName,
         lastName: body.lastName,
         phone,
-        status: 'PENDING',
+        status: "PENDING",
         dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : null,
-      },
+      } as any,
     });
 
     const result = {
-      message: 'Registered. Verify email and (optionally) enter the WhatsApp code.',
-      tempToken: signJwt({ id: user.id, role: user.role, email: user.email }, '1h'),
+      message: "Registered. Verify email and (optionally) enter the WhatsApp code.",
+      tempToken: signJwt({ id: user.id, role: user.role, email: user.email }, "1h"),
       phoneOtpSent: Boolean(phone),
       emailSent: false,
       smsSent: false,
@@ -352,24 +393,24 @@ router.post(
         await issueAndEmailEmailVerification(user.id, user.email);
         await prisma.user.update({
           where: { id: user.id },
-          data: { emailVerifyLastSentAt: new Date(), emailVerifySendCountDay: 1 },
+          data: { emailVerifyLastSentAt: new Date(), emailVerifySendCountDay: 1 } as any,
         });
         result.emailSent = true;
       } catch (e) {
-        console.warn('send email verification failed:', (e as any)?.message);
+        console.warn("send email verification failed:", (e as any)?.message);
       }
 
-      if (phone && phone.startsWith('+')) {
+      if (phone && phone.startsWith("+")) {
         const r = await issueOtp({
           identifier: user.id,
           userId: user.id,
           phoneE164: phone,
-          channelPref: 'whatsapp',
+          channelPref: "whatsapp",
         });
         result.phoneOtpSent = r.ok;
       }
     } catch (e) {
-      console.warn('post-register side-effects failed (continuing):', (e as any)?.message);
+      console.warn("post-register side-effects failed (continuing):", (e as any)?.message);
     }
 
     return res.status(201).json(result);
@@ -377,9 +418,9 @@ router.post(
 );
 
 // ---------------- VERIFY EMAIL CALLBACK ----------------
-router.get('/verify-email', async (req, res) => {
-  const raw = String(req.query.token ?? '');
-  if (!raw) return res.status(400).send('Missing token');
+router.get("/verify-email", async (req, res) => {
+  const raw = String(req.query.token ?? "");
+  if (!raw) return res.status(400).send("Missing token");
 
   const now = new Date();
 
@@ -391,7 +432,7 @@ router.get('/verify-email', async (req, res) => {
 
   try {
     const decoded = jwt.verify(raw, EMAIL_JWT_SECRET) as { sub: string; email: string; k: string };
-    if (decoded.k !== 'email-verify') throw new Error('invalid-kind');
+    if (decoded.k !== "email-verify") throw new Error("invalid-kind");
 
     const user = await prisma.user.findUnique({
       where: { id: decoded.sub },
@@ -402,20 +443,20 @@ router.get('/verify-email', async (req, res) => {
         emailVerifiedAt: true,
         phoneVerifiedAt: true,
         status: true,
-      },
+      } as any,
     });
-    if (!user) return res.status(404).send('Account not found');
+    if (!user) return res.status(404).send("Account not found");
 
-    const email = (decoded.email || user.email || '').toLowerCase();
+    const email = (decoded.email || (user as any).email || "").toLowerCase();
 
-    let nextUser = user;
-    if (!user.emailVerifiedAt) {
-      const phoneOk = !!user.phoneVerifiedAt;
-      const newStatus = phoneOk ? 'VERIFIED' : 'PARTIAL';
+    let nextUser = user as any;
+    if (!(user as any).emailVerifiedAt) {
+      const phoneOk = !!(user as any).phoneVerifiedAt;
+      const newStatus = phoneOk ? "VERIFIED" : "PARTIAL";
 
       nextUser = await prisma.user.update({
-        where: { id: user.id },
-        data: { emailVerifiedAt: now, status: newStatus as any },
+        where: { id: (user as any).id },
+        data: { emailVerifiedAt: now, status: newStatus as any } as any,
         select: {
           id: true,
           email: true,
@@ -423,7 +464,7 @@ router.get('/verify-email', async (req, res) => {
           emailVerifiedAt: true,
           phoneVerifiedAt: true,
           status: true,
-        },
+        } as any,
       });
     }
 
@@ -432,16 +473,17 @@ router.get('/verify-email', async (req, res) => {
     return redirectUi({
       token: raw,
       e: email,
-      ok: '1',
-      role: String(user.role || ''),
-      phoneOk: nextUser.phoneVerifiedAt ? '1' : '0',
+      ok: "1",
+      role: String((user as any).role || ""),
+      phoneOk: nextUser.phoneVerifiedAt ? "1" : "0",
     });
   } catch {
+    // legacy fallback (kept from your code)
     const legacy = await prisma.user.findFirst({
       where: {
         emailVerifyToken: raw,
         emailVerifyTokenExpiresAt: { gt: now },
-      },
+      } as any,
       select: {
         id: true,
         email: true,
@@ -449,29 +491,29 @@ router.get('/verify-email', async (req, res) => {
         emailVerifiedAt: true,
         phoneVerifiedAt: true,
         status: true,
-      },
+      } as any,
     });
 
     if (!legacy) {
-      return redirectUi({ token: raw, e: '', err: 'token' });
+      return redirectUi({ token: raw, e: "", err: "token" });
     }
 
-    const email = (legacy.email || '').toLowerCase();
+    const email = String((legacy as any).email || "").toLowerCase();
 
-    let nextUser = legacy;
+    let nextUser = legacy as any;
 
-    if (!legacy.emailVerifiedAt) {
-      const phoneOk = !!legacy.phoneVerifiedAt;
-      const newStatus = phoneOk ? 'VERIFIED' : 'PARTIAL';
+    if (!(legacy as any).emailVerifiedAt) {
+      const phoneOk = !!(legacy as any).phoneVerifiedAt;
+      const newStatus = phoneOk ? "VERIFIED" : "PARTIAL";
 
       nextUser = await prisma.user.update({
-        where: { id: legacy.id },
+        where: { id: (legacy as any).id },
         data: {
           emailVerifiedAt: now,
           status: newStatus as any,
           emailVerifyToken: null,
           emailVerifyTokenExpiresAt: null,
-        },
+        } as any,
         select: {
           id: true,
           email: true,
@@ -479,15 +521,15 @@ router.get('/verify-email', async (req, res) => {
           emailVerifiedAt: true,
           phoneVerifiedAt: true,
           status: true,
-        },
+        } as any,
       });
     } else {
       nextUser = await prisma.user.update({
-        where: { id: legacy.id },
+        where: { id: (legacy as any).id },
         data: {
           emailVerifyToken: null,
           emailVerifyTokenExpiresAt: null,
-        },
+        } as any,
         select: {
           id: true,
           email: true,
@@ -495,7 +537,7 @@ router.get('/verify-email', async (req, res) => {
           emailVerifiedAt: true,
           phoneVerifiedAt: true,
           status: true,
-        },
+        } as any,
       });
     }
 
@@ -504,72 +546,35 @@ router.get('/verify-email', async (req, res) => {
     return redirectUi({
       token: raw,
       e: email,
-      ok: '1',
-      role: String(legacy.role || ''),
-      phoneOk: nextUser.phoneVerifiedAt ? '1' : '0',
+      ok: "1",
+      role: String((legacy as any).role || ""),
+      phoneOk: nextUser.phoneVerifiedAt ? "1" : "0",
     });
   }
 });
 
-// ---------------- AUTHED resend-email ----------------
-router.post(
-  '/resend-email',
-  requireAuth,
-  wrap(async (req, res) => {
-    const userId = (req as any).user?.id as string | undefined;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (user.emailVerifiedAt) {
-      return res.status(400).json({ error: 'Email already verified' });
-    }
-
-    const now = new Date();
-    const last = user.emailVerifyLastSentAt ? +user.emailVerifyLastSentAt : 0;
-    const since = Math.floor((+now - last) / 1000);
-    if (since < EMAIL_RESEND_COOLDOWN_SEC) {
-      return res.status(429).json({ error: 'Please wait before resending', retryAfterSec: EMAIL_RESEND_COOLDOWN_SEC - since });
-    }
-    if ((user.emailVerifySendCountDay ?? 0) >= EMAIL_DAILY_CAP) {
-      return res.status(429).json({ error: 'Daily resend limit reached' });
-    }
-
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        emailVerifyLastSentAt: now,
-        emailVerifySendCountDay: (user.emailVerifySendCountDay ?? 0) + 1,
-      },
-    });
-
-    await issueAndEmailEmailVerification(user.id, user.email);
-
-    res.json({
-      ok: true,
-      nextResendAfterSec: EMAIL_RESEND_COOLDOWN_SEC,
-      expiresInSec: EMAIL_TTL_MIN * 60,
-    });
-  })
-);
-
 // ---------------- Forgot / Reset password ----------------
-router.post('/forgot-password', async (req, res, next) => {
+router.post("/forgot-password", async (req, res, next) => {
   try {
     const { email } = ForgotSchema.parse(req.body);
     const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
     if (!user) return res.json({ ok: true });
 
-    const token = crypto.randomBytes(24).toString('hex');
+    const token = crypto.randomBytes(24).toString("hex");
     const expires = new Date(Date.now() + 60 * 60 * 1000);
 
     await prisma.user.update({
       where: { id: user.id },
-      data: { resetPasswordToken: token, resetPasswordExpiresAt: expires },
+      data: { resetPasswordToken: token, resetPasswordExpiresAt: expires } as any,
     });
 
     const resetUrl = `${APP_URL}/reset-password?token=${encodeURIComponent(token)}`;
-    await sendResetorForgotPasswordEmail(user.email, resetUrl, 'Reset your DaySpring password', 'Click the link to reset your password:');
+    await sendResetorForgotPasswordEmail(
+      user.email,
+      resetUrl,
+      "Reset your DaySpring password",
+      "Click the link to reset your password:"
+    );
 
     res.json({ ok: true });
   } catch (e) {
@@ -577,13 +582,13 @@ router.post('/forgot-password', async (req, res, next) => {
   }
 });
 
-router.post('/reset-password', async (req, res, next) => {
+router.post("/reset-password", async (req, res, next) => {
   try {
     const { token, password } = ResetSchema.parse(req.body);
     const user = await prisma.user.findFirst({
-      where: { resetPasswordToken: token, resetPasswordExpiresAt: { gt: new Date() } },
+      where: { resetPasswordToken: token, resetPasswordExpiresAt: { gt: new Date() } } as any,
     });
-    if (!user) return res.status(400).json({ error: 'Invalid or expired token' });
+    if (!user) return res.status(400).json({ error: "Invalid or expired token" });
 
     const hashed = await bcrypt.hash(password, 10);
     await prisma.user.update({
@@ -592,22 +597,22 @@ router.post('/reset-password', async (req, res, next) => {
         password: hashed,
         resetPasswordToken: null,
         resetPasswordExpiresAt: null,
-      },
+      } as any,
     });
 
-    res.json({ ok: true, message: 'Password updated' });
+    res.json({ ok: true, message: "Password updated" });
   } catch (e) {
     next(e);
   }
 });
 
-router.get('/reset-token/validate', async (req, res, next) => {
+router.get("/reset-token/validate", async (req, res, next) => {
   try {
-    const token = String(req.query.token || '');
+    const token = String(req.query.token || "");
     if (!token) return res.json({ ok: false });
 
     const user = await prisma.user.findFirst({
-      where: { resetPasswordToken: token, resetPasswordExpiresAt: { gt: new Date() } },
+      where: { resetPasswordToken: token, resetPasswordExpiresAt: { gt: new Date() } } as any,
       select: { id: true },
     });
 
@@ -618,21 +623,21 @@ router.get('/reset-token/validate', async (req, res, next) => {
 });
 
 // ---------------- OTP Verification (phone) ----------------
-router.post('/verify-otp', requireVerifySession, async (req, res) => {
+router.post("/verify-otp", requireVerifySession, async (req, res) => {
   const userId = req.user?.id;
-  const code = String(req.body?.otp ?? '').trim();
-  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-  if (!code) return res.status(400).json({ error: 'OTP is required' });
+  const code = String(req.body?.otp ?? "").trim();
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+  if (!code) return res.status(400).json({ error: "OTP is required" });
 
   try {
     const out = await verifyOtp({ identifier: userId, code });
     if (!out.ok) {
-      return res.status(400).json({ error: out.error || 'Invalid OTP. Please try again.' });
+      return res.status(400).json({ error: out.error || "Invalid OTP. Please try again." });
     }
 
     const existing = await prisma.user.findUnique({
       where: { id: userId },
-      select: { emailVerifiedAt: true, role: true },
+      select: { emailVerifiedAt: true, role: true } as any,
     });
 
     const now = new Date();
@@ -641,8 +646,8 @@ router.post('/verify-otp', requireVerifySession, async (req, res) => {
       where: { id: userId },
       data: {
         phoneVerifiedAt: now,
-        status: existing?.emailVerifiedAt ? 'VERIFIED' : 'PARTIAL',
-      },
+        status: (existing as any)?.emailVerifiedAt ? "VERIFIED" : "PARTIAL",
+      } as any,
       select: {
         id: true,
         email: true,
@@ -653,97 +658,104 @@ router.post('/verify-otp', requireVerifySession, async (req, res) => {
         phone: true,
         emailVerifiedAt: true,
         phoneVerifiedAt: true,
-      },
+      } as any,
     });
 
-    await activateSupplierIfFullyVerified(updated);
+    await activateSupplierIfFullyVerified(updated as any);
 
     return res.json({
       ok: true,
       profile: {
-        id: updated.id,
-        email: updated.email,
-        role: updated.role as any,
-        firstName: updated.firstName,
-        lastName: updated.lastName,
-        emailVerified: !!updated.emailVerifiedAt,
-        phoneVerified: !!updated.phoneVerifiedAt,
-        status: updated.status,
+        id: (updated as any).id,
+        email: (updated as any).email,
+        role: (updated as any).role as any,
+        firstName: (updated as any).firstName,
+        lastName: (updated as any).lastName,
+        emailVerified: !!(updated as any).emailVerifiedAt,
+        phoneVerified: !!(updated as any).phoneVerifiedAt,
+        status: (updated as any).status,
       },
     });
   } catch (err: any) {
-    console.error('verify-otp error:', { message: err?.message, stack: err?.stack, userId });
-    return res.status(500).json({ error: 'Could not verify OTP' });
+    console.error("verify-otp error:", { message: err?.message, stack: err?.stack, userId });
+    return res.status(500).json({ error: "Could not verify OTP" });
   }
 });
 
 // ---------------- Resend OTP (phone) ----------------
-router.post('/resend-otp', requireVerifySession, wrap(async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+router.post(
+  "/resend-otp",
+  requireVerifySession,
+  wrap(async (req, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        phone: true,
-        phoneVerifiedAt: true,
-        phoneOtpLastSentAt: true,
-        phoneOtpSendCountDay: true,
-      },
-    });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (user.phoneVerifiedAt) return res.status(400).json({ error: 'Phone already verified' });
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          phone: true,
+          phoneVerifiedAt: true,
+          phoneOtpLastSentAt: true,
+          phoneOtpSendCountDay: true,
+        } as any,
+      });
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if ((user as any).phoneVerifiedAt) return res.status(400).json({ error: "Phone already verified" });
 
-    const phoneE164 = String(user.phone || '').trim();
-    if (!phoneE164.startsWith('+')) {
-      return res.status(400).json({ error: 'No phone on file for WhatsApp (e.g., +2348…)' });
+      const phoneE164 = String((user as any).phone || "").trim();
+      if (!phoneE164.startsWith("+")) {
+        return res.status(400).json({ error: "No phone on file for WhatsApp (e.g., +2348…)" });
+      }
+
+      const now = new Date();
+      const last = (user as any).phoneOtpLastSentAt ? +(user as any).phoneOtpLastSentAt : 0;
+      const since = Math.floor((+now - last) / 1000);
+      if (since < RESEND_COOLDOWN_SEC) {
+        return res.status(429).json({
+          error: "Please wait before resending",
+          retryAfterSec: RESEND_COOLDOWN_SEC - since,
+        });
+      }
+      if (((user as any).phoneOtpSendCountDay ?? 0) >= DAILY_CAP) {
+        return res.status(429).json({ error: "Daily resend limit reached" });
+      }
+
+      await prisma.otp.updateMany({
+        where: { identifier: userId, consumedAt: null, expiresAt: { gt: now } } as any,
+        data: { consumedAt: now } as any,
+      });
+
+      const r = await issueOtp({
+        identifier: userId,
+        userId,
+        phoneE164,
+        channelPref: "whatsapp",
+      });
+
+      if (!r.ok) {
+        return res.status(500).json({ error: r.error || "Could not send OTP" });
+      }
+
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          phoneOtpLastSentAt: now,
+          phoneOtpSendCountDay: ((user as any).phoneOtpSendCountDay ?? 0) + 1,
+        } as any,
+      });
+
+      return res.json({
+        ok: true,
+        nextResendAfterSec: RESEND_COOLDOWN_SEC,
+        expiresInSec: r.ttlMin * 60,
+      });
+    } catch (e: any) {
+      console.error("issueOtp error:", e?.message, e?.stack);
+      res.status(500).json({ error: "Internal error" });
     }
-
-    const now = new Date();
-    const last = user.phoneOtpLastSentAt ? +user.phoneOtpLastSentAt : 0;
-    const since = Math.floor((+now - last) / 1000);
-    if (since < RESEND_COOLDOWN_SEC) {
-      return res.status(429).json({ error: 'Please wait before resending', retryAfterSec: RESEND_COOLDOWN_SEC - since });
-    }
-    if ((user.phoneOtpSendCountDay ?? 0) >= DAILY_CAP) {
-      return res.status(429).json({ error: 'Daily resend limit reached' });
-    }
-
-    await prisma.otp.updateMany({
-      where: { identifier: userId, consumedAt: null, expiresAt: { gt: now } },
-      data: { consumedAt: now },
-    });
-
-    const r = await issueOtp({
-      identifier: userId,
-      userId,
-      phoneE164,
-      channelPref: 'whatsapp',
-    });
-
-    if (!r.ok) {
-      return res.status(500).json({ error: r.error || 'Could not send OTP' });
-    }
-
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        phoneOtpLastSentAt: now,
-        phoneOtpSendCountDay: (user.phoneOtpSendCountDay ?? 0) + 1,
-      },
-    });
-
-    return res.json({
-      ok: true,
-      nextResendAfterSec: RESEND_COOLDOWN_SEC,
-      expiresInSec: r.ttlMin * 60,
-    });
-  } catch (e: any) {
-    console.error('issueOtp error:', e?.message, e?.stack);
-    res.status(500).json({ error: 'Internal error' });
-  }
-}));
+  })
+);
 
 const KYC_TICKET_SECRET = process.env.KYC_TICKET_SECRET || 'CHANGE_ME_KYC_TICKET_SECRET';
 

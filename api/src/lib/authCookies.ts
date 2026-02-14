@@ -1,42 +1,66 @@
 // api/src/lib/authCookies.ts
-import type { Response, CookieOptions } from "express";
+import type { Response } from "express";
 
-const COOKIE_NAME = process.env.AUTH_COOKIE_NAME || "access_token";
-const LEGACY_COOKIE_NAMES = ["token"];
+type SameSite = "lax" | "strict" | "none";
 
-const isProd = process.env.NODE_ENV === "production";
+function inferSecureFromEnv(): boolean {
+  const s = String(process.env.COOKIE_SECURE ?? "").trim().toLowerCase();
+  if (s === "true" || s === "1" || s === "yes") return true;
+  if (s === "false" || s === "0" || s === "no") return false;
 
-function computeCookieOptions(): CookieOptions {
-  const sameSiteEnv = String(process.env.COOKIE_SAMESITE || "").toLowerCase(); // lax|strict|none
-  const sameSite: CookieOptions["sameSite"] =
-    sameSiteEnv === "none" ? "none" : sameSiteEnv === "strict" ? "strict" : "lax";
-
-  const secureEnv = String(process.env.COOKIE_SECURE || "").toLowerCase();
-  const secure = secureEnv ? secureEnv === "true" : isProd || sameSite === "none";
-
-  const domain = process.env.COOKIE_DOMAIN ? String(process.env.COOKIE_DOMAIN) : undefined;
-
-  return {
-    httpOnly: true,
-    sameSite,
-    secure,
-    path: "/",
-    ...(domain ? { domain } : {}),
-  };
+  // fallback: if APP_URL/API_URL are https, prefer secure cookies
+  const app = String(process.env.APP_URL ?? "");
+  const api = String(process.env.API_URL ?? "");
+  return app.startsWith("https://") || api.startsWith("https://");
 }
 
-export function setAccessTokenCookie(res: Response, token: string, opts?: { maxAgeDays?: number }) {
-  const days = Math.max(1, Number(opts?.maxAgeDays ?? 7));
-  const base = computeCookieOptions();
+function inferSameSite(): SameSite {
+  const v = String(process.env.COOKIE_SAMESITE ?? "").trim().toLowerCase();
+  if (v === "none" || v === "lax" || v === "strict") return v as SameSite;
+
+  // If you host UI+API on same origin: lax is best
+  return "lax";
+}
+
+const COOKIE_NAME = process.env.ACCESS_COOKIE_NAME || "access_token";
+
+export function setAccessTokenCookie(
+  res: Response,
+  token: string,
+  opts?: { maxAgeDays?: number }
+) {
+  const secure = inferSecureFromEnv();
+  const sameSite = inferSameSite();
+
+  // If SameSite=None, secure must be true (Chrome requirement)
+  const finalSecure = sameSite === "none" ? true : secure;
+
+  const maxAgeDays = Number(opts?.maxAgeDays ?? 30);
+  const maxAgeMs = Math.max(1, maxAgeDays) * 24 * 60 * 60 * 1000;
 
   res.cookie(COOKIE_NAME, token, {
-    ...base,
-    maxAge: days * 24 * 60 * 60 * 1000,
+    httpOnly: true,
+    secure: finalSecure,
+    sameSite,
+    path: "/",
+    maxAge: maxAgeMs,
   });
 }
 
 export function clearAccessTokenCookie(res: Response) {
-  const base = computeCookieOptions();
-  res.clearCookie(COOKIE_NAME, base);
-  for (const n of LEGACY_COOKIE_NAMES) res.clearCookie(n, base);
+  const secure = inferSecureFromEnv();
+  const sameSite = inferSameSite();
+
+  const finalSecure = sameSite === "none" ? true : secure;
+
+  res.clearCookie(COOKIE_NAME, {
+    httpOnly: true,
+    secure: finalSecure,
+    sameSite,
+    path: "/",
+  });
+}
+
+export function getAccessTokenCookieName() {
+  return COOKIE_NAME;
 }

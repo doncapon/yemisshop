@@ -1,5 +1,5 @@
 // src/utils/logout.ts
-import api, { clearAccessToken } from "../api/client.js";
+import api from "../api/client.js";
 import { useAuthStore } from "../store/auth";
 
 type NavigateFn = (to: string, opts?: { replace?: boolean }) => void;
@@ -7,27 +7,26 @@ type NavigateFn = (to: string, opts?: { replace?: boolean }) => void;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export async function performLogout(redirectTo = "/", navigate?: NavigateFn) {
-  // 1) best-effort server logout
-  const serverLogoutPromise = api.post("/api/auth/logout", {}).catch(() => null);
+  // ✅ Cookie-auth logout: ensure cookies are sent so server can clear them
+  const serverLogoutPromise = api
+    .post("/api/auth/logout", {}, { withCredentials: true })
+    .catch(() => null);
 
-  // 2) clear client storage
+  // ✅ Clear client auth store (you likely still keep a user snapshot/flags)
   try {
-    localStorage.removeItem("access_token");
-    sessionStorage.removeItem("access_token");
+    useAuthStore.getState().clear?.();
+  } catch {}
+
+  // ✅ If you still cache any auth-related bits, clear them (optional)
+  try {
     localStorage.removeItem("auth_store_v1");
     sessionStorage.removeItem("auth_store_v1");
   } catch {}
 
-  // 3) clear axios bearer + store
-  clearAccessToken();
-  try {
-    useAuthStore.getState().clear();
-  } catch {}
-
-  // 4) short wait (don’t block UX)
+  // ✅ Short wait (don’t block UX)
   await Promise.race([serverLogoutPromise, sleep(800)]);
 
-  // 5) redirect
+  // ✅ Redirect
   if (navigate) {
     navigate(redirectTo, { replace: true });
     return;

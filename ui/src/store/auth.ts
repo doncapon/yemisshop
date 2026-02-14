@@ -1,11 +1,11 @@
 // src/store/auth.ts
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import api, { getAccessToken, setAccessToken, clearAccessToken } from "../api/client.js";
+import api from "../api/client";
 
 export type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
-export type UserShape = {
+export type AuthUser = {
   id: string;
   email: string;
   role: Role;
@@ -14,114 +14,60 @@ export type UserShape = {
   lastName?: string | null;
   emailVerified?: boolean;
   phoneVerified?: boolean;
+  status?: string | null;
 };
 
-type AuthPayload = { token: string | null; user: UserShape | null };
-
-export type AuthState = {
-  token: string | null;
-  user: UserShape | null;
-
-  needsVerification: boolean;
+type AuthState = {
   hydrated: boolean;
+  bootstrapping: boolean;
 
-  setAuth: (p: AuthPayload) => void;
+  user: AuthUser | null;
+  needsVerification: boolean;
+
+  setUser: (u: AuthUser | null) => void;
   setNeedsVerification: (v: boolean) => void;
   clear: () => void;
 
   bootstrap: () => Promise<void>;
 };
 
-function safeLocalStorage() {
-  try {
-    if (typeof window === "undefined") return undefined as any;
-    return window.localStorage;
-  } catch {
-    return undefined as any;
-  }
-}
-
 export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
-      token: getAccessToken(),
-      user: null,
-
-      needsVerification: false,
       hydrated: false,
+      bootstrapping: false,
 
-      setAuth: ({ token, user }) => {
-        // ✅ sync token everywhere (axios + session/local storage)
-        setAccessToken(token);
+      user: null,
+      needsVerification: false,
 
-        set({
-          token: token ?? null,
-          user: user ?? null,
-          hydrated: true,
-        });
-      },
-
+      setUser: (u) => set({ user: u }),
       setNeedsVerification: (v) => set({ needsVerification: !!v }),
 
-      clear: () => {
-        clearAccessToken();
-        set({ token: null, user: null, needsVerification: false, hydrated: true });
-      },
+      clear: () => set({ user: null, needsVerification: false }),
 
       bootstrap: async () => {
-        // ✅ mark hydrated even if nothing else happens
-        if (!get().hydrated) set({ hydrated: true });
+        if (get().bootstrapping) return;
+        set({ bootstrapping: true });
 
-        const t = getAccessToken();
-
-        // no token => logged out
-        if (!t) {
-          if (get().token || get().user) set({ token: null, user: null });
-          return;
-        }
-
-        // ensure store token matches
-        if (get().token !== t) set({ token: t });
-
-        // if we already have user, done
-        if (get().user?.id) return;
-
-        // fetch /auth/me to populate user
         try {
-          const r = await api.get("/api/auth/me");
-          const me = r.data ?? null;
+          const r = await api.get("/api/auth/me"); // ✅ cookie auth
+          const me = r.data as AuthUser | null;
 
-          if (me?.id) {
-            set({ token: t, user: me });
-          } else {
-            get().clear();
-          }
+          if (me?.id) set({ user: me });
+          else set({ user: null });
         } catch {
-          // axios interceptor clears token on /auth/me 401
-          const still = getAccessToken();
-          if (!still) set({ token: null, user: null });
+          // If API unreachable, don't hard-fail; just mark hydrated.
+        } finally {
+          set({ hydrated: true, bootstrapping: false });
         }
       },
     }),
     {
       name: "auth_store_v1",
-      storage: createJSONStorage(() => safeLocalStorage()),
-
-      // ✅ IMPORTANT: persist token + user so Navbar can reflect login after refresh
-      partialize: (s) => ({
-        token: s.token,
-        user: s.user,
-        needsVerification: s.needsVerification,
-      }),
-
+      storage: createJSONStorage(() => window.sessionStorage), // same-tab persistence
+      partialize: (s) => ({ user: s.user, needsVerification: s.needsVerification }),
       onRehydrateStorage: () => (state) => {
-        if (!state) return;
-
-        // ✅ ensure axios header + sessionStorage/localStorage token match persisted token
-        setAccessToken(state.token ?? null);
-
-        // ✅ mark hydrated
-        state.hydrated = true;
+        if (state) state.hydrated = true;
       },
     }
   )

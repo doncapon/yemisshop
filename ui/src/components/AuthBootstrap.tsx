@@ -5,12 +5,14 @@ import { useAuthStore } from "../store/auth";
 
 function normalizeMe(raw: any) {
   if (!raw) return null;
-  if ((import.meta as any)?.env?.PHONE_VERIFY === 'set') {
+
+  if ((import.meta as any)?.env?.PHONE_VERIFY === "set") {
     raw.phoneVerified =
       raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
   } else {
-    raw.phoneVerified =true;
+    raw.phoneVerified = true;
   }
+
   return {
     id: String(raw.id ?? ""),
     email: String(raw.email ?? ""),
@@ -18,35 +20,28 @@ function normalizeMe(raw: any) {
     firstName: raw.firstName ?? null,
     lastName: raw.lastName ?? null,
 
-    // backend may return either booleans or timestamps depending on route/version
     emailVerified:
       raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1,
-    phoneVerified:
-      raw.phoneVerified
+    phoneVerified: raw.phoneVerified,
   };
 }
 
-function looksLikeJwt(t: string | null) {
-  return !!t && t.split(".").length === 3;
-}
-
 /**
- * Option A (token-based):
- * - If we have a JWT but `user` is missing (e.g. after refresh), call /api/auth/me
- *   to hydrate the user using Bearer auth.
- * - If no JWT, do nothing (anonymous).
- * - If /me returns 401, api client will resolve with data=null (per your interceptor),
- *   so we clear auth and move on.
+ * Cookie-based bootstrap:
+ * - Once the store is hydrated, if user is missing, call /api/auth/me using cookies
+ *   (withCredentials) to hydrate the session user.
+ * - If /me returns 401/403 (or null user), clear auth and move on as anonymous.
+ *
+ * ✅ No token usage
+ * ✅ No setAuth usage
  */
 export default function AuthBootstrap() {
-  const hydrated = useAuthStore((s) => s.hydrated);
-  const token = useAuthStore((s) => s.token);
-  const user = useAuthStore((s) => s.user);
+  const hydrated = useAuthStore((s) => (s as any).hydrated);
+  const user = useAuthStore((s) => (s as any).user);
 
-  const setAuth = useAuthStore((s) => s.setAuth);
-  const clear = useAuthStore((s) => s.clear);
+  const clear = useAuthStore((s) => (s as any).clear);
 
-  // optional flag you mentioned
+  // optional flag you mentioned (safe if missing)
   const setBootstrapped = useAuthStore((s: any) => s.setBootstrapped);
 
   useEffect(() => {
@@ -58,33 +53,33 @@ export default function AuthBootstrap() {
       return;
     }
 
-    // No JWT → anonymous session, don't call /me
-    if (!looksLikeJwt(token)) {
-      setBootstrapped?.(true);
-      return;
-    }
-
     let cancelled = false;
 
     api
-      .get("/api/auth/me")
+      .get("/api/auth/me", { withCredentials: true })
       .then((r) => {
         if (cancelled) return;
 
-        // With your interceptor: 401 => data=null (not throw)
         const u = normalizeMe(r.data);
 
         if (u?.id) {
-          // keep same token, just hydrate user
-          setAuth({ token: token as string, user: u });
+          // ✅ Hydrate store directly (cookie session => no token needed)
+          try {
+            (useAuthStore as any).setState?.((prev: any) => ({
+              ...prev,
+              user: u,
+              token: null, // harmless even if your store ignores it
+            }));
+          } catch {
+            // if setState isn't exposed for some reason, fail-safe clear
+            clear?.();
+          }
         } else {
-          // token invalid/expired (or /me says no) → clear
-          clear();
+          clear?.();
         }
       })
       .catch(() => {
-        // If anything unexpected throws, fail-safe clear
-        if (!cancelled) clear();
+        if (!cancelled) clear?.();
       })
       .finally(() => {
         if (!cancelled) setBootstrapped?.(true);
@@ -93,7 +88,7 @@ export default function AuthBootstrap() {
     return () => {
       cancelled = true;
     };
-  }, [hydrated, token, user, setAuth, clear, setBootstrapped]);
+  }, [hydrated, user, clear, setBootstrapped]);
 
   return null;
 }

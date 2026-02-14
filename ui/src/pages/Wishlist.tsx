@@ -1,9 +1,8 @@
 // src/components/Navbar.tsx
 import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
-import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import type { ReactNode } from "react";
-import { useAuthStore } from "../store/auth";
-import api, { setAccessToken } from "../api/client";
+import api from "../api/client";
 import { performLogout } from "../utils/logout";
 
 import {
@@ -40,6 +39,13 @@ type MeResponse = {
   lastName?: string | null;
   name?: string | null;
 };
+
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
+function isAuthError(e: any) {
+  const s = e?.response?.status;
+  return s === 401 || s === 403;
+}
 
 function useClickAway<T extends HTMLElement>(onAway: () => void) {
   const ref = useRef<T | null>(null);
@@ -135,12 +141,15 @@ function IconButton({
 }
 
 export default function Navbar() {
-  const token = useAuthStore((s) => s.token);
-  const userRole = useAuthStore((s) => s.user?.role ?? null);
-  const userEmail = useAuthStore((s) => s.user?.email ?? null);
-
   const nav = useNavigate();
   const loc = useLocation();
+
+  // ✅ Cookie-auth user snapshot (derived from /api/auth/me)
+  const [me, setMe] = useState<MeResponse | null>(null);
+
+  const userRole = me?.role ?? null;
+  const userEmail = me?.email ?? null;
+  const isAuthed = !!me?.id;
 
   const isSupplier = userRole === "SUPPLIER";
   const isSuperAdmin = userRole === "SUPER_ADMIN";
@@ -151,10 +160,6 @@ export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
 
-  const [firstName, setFirstName] = useState<string | null>(null);
-  const [middleName, setMiddleName] = useState<string | null>(null);
-  const [lastName, setLastName] = useState<string | null>(null);
-
   // Cart counts
   const cartCount = useCartCount();
 
@@ -162,51 +167,29 @@ export default function Navbar() {
   const softLogout = useCallback(
     (redirectTo: string) => {
       try {
-        setAccessToken(null);
-        useAuthStore.getState().clear?.();
+        // clear local snapshot only (cookie is cleared by performLogout / server)
+        setMe(null);
       } catch {}
       nav(redirectTo, { replace: true });
     },
     [nav]
   );
 
-  // Load /me when token changes (used only for name display)
+  // ✅ Load /me via cookie (no token)
   useEffect(() => {
     let cancelled = false;
 
     async function loadMe() {
-      if (!token) {
-        setFirstName(null);
-        setMiddleName(null);
-        setLastName(null);
-        return;
-      }
-
       try {
-        // ✅ DO NOT override Authorization manually.
-        // axios interceptor already attaches it when token is a real JWT.
-        const { data } = await api.get<MeResponse>("/api/auth/me");
-
-        if (!cancelled) {
-          setFirstName(data.firstName?.trim() || null);
-          setMiddleName(data.middleName?.trim() || null);
-          setLastName(data.lastName?.trim() || null);
-        }
+        const { data } = await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG);
+        if (!cancelled) setMe(data);
       } catch (e: any) {
-        const status = e?.response?.status;
+        // Not logged in / expired cookie => treat as logged out
+        if (!cancelled) setMe(null);
 
-        // ✅ This is the critical fix:
-        // Never hard refresh here. If /me fails, just clear local auth and go to login.
-        if (status === 401 || status === 403) {
-          softLogout("/login");
-          return;
-        }
-
-        // Any other unexpected errors: don’t nuke the app; just leave name blank.
-        if (!cancelled) {
-          setFirstName(null);
-          setMiddleName(null);
-          setLastName(null);
+        // if you want: on auth errors, stay quiet; no redirect needed from navbar
+        if (!isAuthError(e)) {
+          // ignore unexpected errors; keep nav usable
         }
       }
     }
@@ -215,38 +198,36 @@ export default function Navbar() {
     return () => {
       cancelled = true;
     };
-  }, [token, softLogout]);
+  }, [loc.key]); // refresh when route changes (keeps navbar in sync after login/logout)
 
   const displayName = useMemo(() => {
-    const f = firstName?.trim();
-    const l = lastName?.trim();
-    const m = middleName?.trim();
+    const f = me?.firstName?.trim();
+    const l = me?.lastName?.trim();
+    const m = me?.middleName?.trim();
     if (f && l) {
       const mid = m ? ` ${m[0].toUpperCase()}.` : "";
       return `${f}${mid} ${l}`;
     }
-    return null;
-  }, [firstName, middleName, lastName]);
+    return me?.name?.trim() || null;
+  }, [me]);
 
   const initials = useMemo(() => {
-    const f = (firstName?.trim()?.[0] || "").toUpperCase();
-    const l = (lastName?.trim()?.[0] || "").toUpperCase();
+    const f = (me?.firstName?.trim()?.[0] || "").toUpperCase();
+    const l = (me?.lastName?.trim()?.[0] || "").toUpperCase();
     const init = `${f}${l}`.trim();
-    return init || "U";
-  }, [firstName, lastName]);
+    return init || (me?.email?.[0] || "U").toUpperCase();
+  }, [me]);
 
   const logout = useCallback(() => {
     setMenuOpen(false);
     setMobileMoreOpen(false);
 
-    // ✅ Your util already clears cookie + local storage etc.
-    // If your performLogout only accepts (redirectTo="/"), keep it as performLogout("/")
-    // If it accepts nav, leave as below. This variant keeps SPA navigation.
+    // ✅ Cookie-based logout: your util should call the server to clear cookie
     try {
-      // @ts-ignore - support both signatures safely
+      // supports both signatures: performLogout("/") or performLogout("/", nav)
+      // @ts-ignore
       performLogout("/", nav);
     } catch {
-      // fallback
       softLogout("/");
     }
   }, [nav, softLogout]);
@@ -255,20 +236,17 @@ export default function Navbar() {
 
   useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
 
-  const showShopNav = !token || (!isSupplier && !isSuperAdmin && !isRider);
-  const showBuyerNav = !!token && !isSupplier && !isRider;
-  const showSupplierNav = !!token && isSupplier && !isRider;
-  const showRiderNav = !!token && isRider;
+  // ✅ Replace token checks with isAuthed
+  const showShopNav = !isAuthed || (!isSupplier && !isSuperAdmin && !isRider);
+  const showBuyerNav = isAuthed && !isSupplier && !isRider;
+  const showSupplierNav = isAuthed && isSupplier && !isRider;
+  const showRiderNav = isAuthed && isRider;
 
   return (
     <>
       <header className="sticky top-0 z-40 w-full border-b border-zinc-200 bg-white/80 backdrop-blur">
         <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-4 md:px-8 flex items-center gap-3">
-          <Link
-            to={brandHref}
-            className="inline-flex items-center hover:opacity-95"
-            aria-label="DaySpring home"
-          >
+          <Link to={brandHref} className="inline-flex items-center hover:opacity-95" aria-label="DaySpring home">
             <DaySpringLogo size={28} />
           </Link>
 
@@ -277,46 +255,28 @@ export default function Navbar() {
               <IconNavLink to="/supplier/orders" icon={<Truck size={18} />} label="Orders" />
             ) : (
               <>
-                <IconNavLink
-                  to="/"
-                  end
-                  icon={showShopNav ? <LayoutGrid size={18} /> : <Home size={18} />}
-                  label="Catalogue"
-                />
+                <IconNavLink to="/" end icon={showShopNav ? <LayoutGrid size={18} /> : <Home size={18} />} label="Catalogue" />
 
-                {showSupplierNav && (
-                  <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
-                )}
+                {showSupplierNav && <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />}
 
-                {token && isSuperAdmin && (
+                {isAuthed && isSuperAdmin && (
                   <IconNavLink to="/supplier" end icon={<CheckCircle2 size={18} />} label="Supplier dashboard" />
                 )}
 
-                {token && !isSupplier && !isSuperAdmin && (
+                {isAuthed && !isSupplier && !isSuperAdmin && (
                   <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
                 )}
 
                 {showBuyerNav && (
                   <>
-                    <IconNavLink
-                      to="/cart"
-                      icon={<ShoppingCart size={18} />}
-                      label="Cart"
-                      badgeCount={cartCount.distinct}
-                    />
+                    <IconNavLink to="/cart" icon={<ShoppingCart size={18} />} label="Cart" badgeCount={cartCount.distinct} />
                     <IconNavLink to="/wishlist" end icon={<Heart size={18} />} label="Wishlist" />
                     <IconNavLink to="/orders" end icon={<Package size={18} />} label="Orders" />
                   </>
                 )}
 
                 {isAdmin && <IconNavLink to="/admin" icon={<Shield size={18} />} label="Admin" />}
-                {isAdmin && (
-                  <IconNavLink
-                    to="/admin/offer-changes"
-                    icon={<ClipboardList size={18} />}
-                    label="Offer approvals"
-                  />
-                )}
+                {isAdmin && <IconNavLink to="/admin/offer-changes" icon={<ClipboardList size={18} />} label="Offer approvals" />}
               </>
             )}
           </nav>
@@ -329,7 +289,7 @@ export default function Navbar() {
             </div>
 
             <div className="hidden md:flex items-center gap-2">
-              {!token ? (
+              {!isAuthed ? (
                 <>
                   <NavLink
                     to="/register-supplier"
@@ -386,9 +346,7 @@ export default function Navbar() {
                           <div className="text-sm font-semibold truncate text-zinc-900">
                             {displayName || userEmail || "User"}
                           </div>
-                          {userEmail && (
-                            <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>
-                          )}
+                          {userEmail && <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>}
                           {isRider && <div className="mt-1 text-[10px] text-zinc-500">Role: Rider</div>}
                         </div>
 
@@ -574,7 +532,7 @@ export default function Navbar() {
                       </button>
                     )}
 
-                    {token && !isSupplier && !isSuperAdmin && (
+                    {isAuthed && !isSupplier && !isSuperAdmin && (
                       <button
                         className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
                         onClick={() => nav("/dashboard")}
@@ -605,7 +563,7 @@ export default function Navbar() {
 
                     <div className="h-px bg-zinc-100 my-2" />
 
-                    {!token ? (
+                    {!isAuthed ? (
                       <div className="grid gap-2">
                         <button
                           className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
@@ -682,11 +640,7 @@ export default function Navbar() {
             <>
               <NavLink
                 to="/supplier/orders"
-                className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                    isActive ? "text-zinc-900" : "text-zinc-500"
-                  }`
-                }
+                className={({ isActive }) => `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"}`}
               >
                 <Truck size={20} />
                 <span className="text-[10px]">Orders</span>
@@ -705,11 +659,7 @@ export default function Navbar() {
               <NavLink
                 to="/"
                 end
-                className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                    isActive ? "text-zinc-900" : "text-zinc-500"
-                  }`
-                }
+                className={({ isActive }) => `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"}`}
               >
                 <LayoutGrid size={20} />
                 <span className="text-[10px]">Shop</span>
@@ -720,9 +670,7 @@ export default function Navbar() {
                   <NavLink
                     to="/cart"
                     className={({ isActive }) =>
-                      `relative flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
-                      }`
+                      `relative flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"}`
                     }
                   >
                     <div className="relative">
@@ -738,11 +686,7 @@ export default function Navbar() {
 
                   <NavLink
                     to="/wishlist"
-                    className={({ isActive }) =>
-                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
-                      }`
-                    }
+                    className={({ isActive }) => `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"}`}
                   >
                     <Heart size={20} />
                     <span className="text-[10px]">Wish</span>
@@ -750,11 +694,7 @@ export default function Navbar() {
 
                   <NavLink
                     to="/orders"
-                    className={({ isActive }) =>
-                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
-                      }`
-                    }
+                    className={({ isActive }) => `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"}`}
                   >
                     <Package size={20} />
                     <span className="text-[10px]">Orders</span>
@@ -762,15 +702,11 @@ export default function Navbar() {
                 </>
               ) : (
                 <>
-                  {token && isSupplier && (
+                  {isAuthed && isSupplier && (
                     <NavLink
                       to="/supplier"
                       end
-                      className={({ isActive }) =>
-                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                          isActive ? "text-zinc-900" : "text-zinc-500"
-                        }`
-                      }
+                      className={({ isActive }) => `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"}`}
                     >
                       <Store size={20} />
                       <span className="text-[10px]">Supplier</span>
@@ -780,11 +716,7 @@ export default function Navbar() {
                   {isAdmin && (
                     <NavLink
                       to="/admin"
-                      className={({ isActive }) =>
-                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                          isActive ? "text-zinc-900" : "text-zinc-500"
-                        }`
-                      }
+                      className={({ isActive }) => `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${isActive ? "text-zinc-900" : "text-zinc-500"}`}
                     >
                       <Shield size={20} />
                       <span className="text-[10px]">Admin</span>

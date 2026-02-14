@@ -1,10 +1,9 @@
 // src/pages/UserDashboard.tsx
-import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import api from '../api/client';
-import { useAuthStore } from '../store/auth';
-import { useModal } from '../components/ModalProvider';
+import React, { useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import api from "../api/client";
+import { useModal } from "../components/ModalProvider";
 import {
   Sparkles,
   CheckCircle2,
@@ -20,12 +19,22 @@ import {
   RefreshCcw,
   MailCheck,
   Phone,
-} from 'lucide-react';
-import { motion } from 'framer-motion';
-import SiteLayout from '../layouts/SiteLayout';
+} from "lucide-react";
+import { motion } from "framer-motion";
+import SiteLayout from "../layouts/SiteLayout";
 
 /* ---------------------- Types ---------------------- */
-type Role = 'ADMIN' | 'SUPER_ADMIN' | 'SUPER_USER' | 'SHOPPER' | 'SUPPLIER_RIDER';
+type Role = "ADMIN" | "SUPER_ADMIN" | "SUPER_USER" | "SHOPPER" | "SUPPLIER_RIDER";
+
+type Address = {
+  houseNumber?: string | null;
+  streetName?: string | null;
+  postCode?: string | null;
+  town?: string | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+};
 
 type MeResponse = {
   id: string;
@@ -36,7 +45,7 @@ type MeResponse = {
   displayName?: string | null;
   phone?: string | null;
   joinedAt?: string | null;
-  status?: 'PENDING' | 'PARTIAL' | 'VERIFIED';
+  status?: "PENDING" | "PARTIAL" | "VERIFIED";
   emailVerified?: boolean;
   phoneVerified?: boolean;
   dob?: string | null;
@@ -45,7 +54,7 @@ type MeResponse = {
   shippingAddress?: Address | null;
 
   language?: string | null;
-  theme?: 'light' | 'dark' | 'system';
+  theme?: "light" | "dark" | "system";
   currency?: string | null;
   productInterests?: string[];
   notificationPrefs?: {
@@ -53,16 +62,6 @@ type MeResponse = {
     sms?: boolean;
     push?: boolean;
   } | null;
-};
-
-type Address = {
-  houseNumber?: string | null;
-  streetName?: string | null;
-  postCode?: string | null;
-  town?: string | null;
-  city?: string | null;
-  state?: string | null;
-  country?: string | null;
 };
 
 type OrderLiteItem = {
@@ -76,13 +75,13 @@ type OrderLite = {
   id: string;
   createdAt: string;
   status:
-    | 'PENDING'
-    | 'PAID'
-    | 'SHIPPED'
-    | 'DELIVERED'
-    | 'CANCELLED'
-    | 'FAILED'
-    | 'PROCESSING'
+    | "PENDING"
+    | "PAID"
+    | "SHIPPED"
+    | "DELIVERED"
+    | "CANCELLED"
+    | "FAILED"
+    | "PROCESSING"
     | string;
   total: number;
   items: OrderLiteItem[];
@@ -119,11 +118,19 @@ type RecentTransaction = {
 
 type LocalCartItem = { productId: string; qty: number };
 
+/* ---------------------- Cookie auth helpers ---------------------- */
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
+function isAuthError(e: any) {
+  const s = e?.response?.status;
+  return s === 401 || s === 403;
+}
+
 /* ---------------------- Local cart merge ---------------------- */
 function mergeIntoLocalCart(items: LocalCartItem[]) {
   try {
-    const key = 'cart';
-    const curr: LocalCartItem[] = JSON.parse(localStorage.getItem(key) || '[]');
+    const key = "cart";
+    const curr: LocalCartItem[] = JSON.parse(localStorage.getItem(key) || "[]");
     const byId = new Map<string, number>();
     for (const it of curr) byId.set(it.productId, (byId.get(it.productId) || 0) + (it.qty || 0));
     for (const it of items) byId.set(it.productId, (byId.get(it.productId) || 0) + (it.qty || 0));
@@ -135,24 +142,24 @@ function mergeIntoLocalCart(items: LocalCartItem[]) {
 }
 
 /* ---------------------- Utils ---------------------- */
-const ngn = new Intl.NumberFormat('en-NG', {
-  style: 'currency',
-  currency: 'NGN',
+const ngn = new Intl.NumberFormat("en-NG", {
+  style: "currency",
+  currency: "NGN",
   maximumFractionDigits: 2,
 });
-const dateFmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString() : '—');
+const dateFmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString() : "—");
 
 function dateTimeFmt(iso?: string | null) {
-  if (!iso) return '—';
+  if (!iso) return "—";
   const d = new Date(iso);
-  if (Number.isNaN(+d)) return '—';
+  if (Number.isNaN(+d)) return "—";
   return d.toLocaleString();
 }
 
 function sinceJoined(iso?: string | null) {
-  if (!iso) return '';
+  if (!iso) return "";
   const start = new Date(iso);
-  if (Number.isNaN(+start)) return '';
+  if (Number.isNaN(+start)) return "";
   const now = new Date();
 
   let years = now.getFullYear() - start.getFullYear();
@@ -176,102 +183,106 @@ function sinceJoined(iso?: string | null) {
     const diffDays = Math.max(1, Math.floor((now.getTime() - start.getTime()) / (24 * 3600 * 1000)));
     parts.push(`${diffDays}d`);
   }
-  return parts.join(' ');
+  return parts.join(" ");
 }
 
 function initialsFrom(first?: string | null, last?: string | null, fallback?: string) {
-  const a = (first || '').trim();
-  const b = (last || '').trim();
-  if (a || b) return `${a?.[0] ?? ''}${b?.[0] ?? ''}`.toUpperCase() || 'U';
-  return (fallback?.[0] || 'U').toUpperCase();
+  const a = (first || "").trim();
+  const b = (last || "").trim();
+  if (a || b) return `${a?.[0] ?? ""}${b?.[0] ?? ""}`.toUpperCase() || "U";
+  return (fallback?.[0] || "U").toUpperCase();
 }
 
-/* ---------------------- Data hooks ---------------------- */
-function useMe() {
-  const token = useAuthStore((s) => s.token);
+/* ---------------------- Data hooks (cookie session) ---------------------- */
+function useMe(onAuthError?: () => void) {
   return useQuery({
-    queryKey: ['me'],
-    queryFn: async () =>
-      (await api.get<MeResponse>('/api/auth/me', { headers: token ? { Authorization: `Bearer ${token}` } : undefined }))
-        .data,
-    enabled: !!token,
-  });
-}
-
-function useRecentOrders(limit = 5) {
-  const token = useAuthStore((s) => s.token);
-  return useQuery({
-    queryKey: ['orders', 'recent', limit],
-    queryFn: async (): Promise<OrderLite[]> => {
-      const res = await api.get<{ data: any[] }>(`/api/orders/mine?limit=${limit}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      });
-      const raw = Array.isArray(res.data?.data) ? res.data.data : [];
-      return raw.map((o) => ({
-        id: o.id,
-        createdAt: o.createdAt,
-        status: o.status,
-        total: Number(o.total ?? 0),
-        items: (Array.isArray(o.items) ? o.items : []).map((it: any) => ({
-          id: it.id,
-          productId: it.productId,
-          title: it.title ?? '—',
-          quantity: Number(it.quantity ?? 1),
-        })),
-        trackingUrl: null,
-      }));
-    },
-    enabled: !!token,
-    retry: 1,
-  });
-}
-
-function useOrdersSummary() {
-  const token = useAuthStore((s) => s.token);
-  return useQuery({
-    queryKey: ['orders', 'summary'],
-    queryFn: async (): Promise<OrdersSummary> => {
-      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-
+    queryKey: ["me"],
+    queryFn: async () => {
       try {
-        const [summaryRes, mineRes] = await Promise.all([
-          api.get<{
-            ordersCount: number;
-            totalSpent: number;
-            recent: Array<{ id: string; status: string; total: number; createdAt: string }>;
-          }>('/api/orders/summary', { headers }),
-          api.get<{ data: any[] }>('/api/orders/mine?limit=1000', { headers }),
-        ]);
+        return (await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG)).data;
+      } catch (e: any) {
+        if (isAuthError(e)) onAuthError?.();
+        throw e;
+      }
+    },
+    staleTime: 30_000,
+    retry: (count, e: any) => (isAuthError(e) ? false : count < 1),
+  });
+}
 
-        const list = Array.isArray(mineRes.data?.data) ? mineRes.data.data : [];
-        const byStatus: Record<string, number> = {};
-        for (const o of list) {
-          const s = String(o.status || 'UNKNOWN').toUpperCase();
-          byStatus[s] = (byStatus[s] || 0) + 1;
-        }
-
-        return {
-          ordersCount: summaryRes.data.ordersCount ?? list.length,
-          totalSpent: Number(summaryRes.data.totalSpent ?? 0),
-          recent: (summaryRes.data.recent || []).map((o) => ({
-            id: o.id,
-            status: o.status,
-            total: Number(o.total ?? 0),
-            createdAt: o.createdAt,
+function useRecentOrders(limit = 5, onAuthError?: () => void) {
+  return useQuery({
+    queryKey: ["orders", "recent", limit],
+    queryFn: async (): Promise<OrderLite[]> => {
+      try {
+        const res = await api.get<{ data: any[] }>(`/api/orders/mine?limit=${limit}`, AXIOS_COOKIE_CFG);
+        const raw = Array.isArray(res.data?.data) ? res.data.data : [];
+        return raw.map((o) => ({
+          id: o.id,
+          createdAt: o.createdAt,
+          status: o.status,
+          total: Number(o.total ?? 0),
+          items: (Array.isArray(o.items) ? o.items : []).map((it: any) => ({
+            id: it.id,
+            productId: it.productId,
+            title: it.title ?? "—",
+            quantity: Number(it.quantity ?? 1),
           })),
-          byStatus,
-        };
-      } catch {
-        // Fallback: derive everything from /mine
+          trackingUrl: null,
+        }));
+      } catch (e: any) {
+        if (isAuthError(e)) onAuthError?.();
+        throw e;
+      }
+    },
+    staleTime: 20_000,
+    retry: (count, e: any) => (isAuthError(e) ? false : count < 1),
+  });
+}
+
+function useOrdersSummary(onAuthError?: () => void) {
+  return useQuery({
+    queryKey: ["orders", "summary"],
+    queryFn: async (): Promise<OrdersSummary> => {
+      try {
         try {
-          const mineRes = await api.get<{ data: any[] }>('/api/orders/mine?limit=1000', { headers });
+          const [summaryRes, mineRes] = await Promise.all([
+            api.get<{
+              ordersCount: number;
+              totalSpent: number;
+              recent: Array<{ id: string; status: string; total: number; createdAt: string }>;
+            }>("/api/orders/summary", AXIOS_COOKIE_CFG),
+            api.get<{ data: any[] }>("/api/orders/mine?limit=1000", AXIOS_COOKIE_CFG),
+          ]);
+
+          const list = Array.isArray(mineRes.data?.data) ? mineRes.data.data : [];
+          const byStatus: Record<string, number> = {};
+          for (const o of list) {
+            const s = String(o.status || "UNKNOWN").toUpperCase();
+            byStatus[s] = (byStatus[s] || 0) + 1;
+          }
+
+          return {
+            ordersCount: summaryRes.data.ordersCount ?? list.length,
+            totalSpent: Number(summaryRes.data.totalSpent ?? 0),
+            recent: (summaryRes.data.recent || []).map((o) => ({
+              id: o.id,
+              status: o.status,
+              total: Number(o.total ?? 0),
+              createdAt: o.createdAt,
+            })),
+            byStatus,
+          };
+        } catch {
+          // Fallback: derive everything from /mine
+          const mineRes = await api.get<{ data: any[] }>("/api/orders/mine?limit=1000", AXIOS_COOKIE_CFG);
           const list = Array.isArray(mineRes.data?.data) ? mineRes.data.data : [];
           const byStatus: Record<string, number> = {};
           let totalSpent = 0;
           for (const o of list) {
-            const s = String(o.status || 'UNKNOWN').toUpperCase();
+            const s = String(o.status || "UNKNOWN").toUpperCase();
             byStatus[s] = (byStatus[s] || 0) + 1;
-            if (s === 'PAID' || s === 'COMPLETED') {
+            if (s === "PAID" || s === "COMPLETED") {
               totalSpent += Number(o.total ?? 0);
             }
           }
@@ -286,167 +297,160 @@ function useOrdersSummary() {
             })),
             byStatus,
           };
-        } catch {
-          return { ordersCount: 0, totalSpent: 0, recent: [], byStatus: {} };
         }
+      } catch (e: any) {
+        if (isAuthError(e)) onAuthError?.();
+        // keep the dashboard stable even if endpoints fail
+        return { ordersCount: 0, totalSpent: 0, recent: [], byStatus: {} };
       }
     },
-    enabled: !!token,
     staleTime: 30_000,
   });
 }
 
-function useRecentTransactions(limit = 5) {
-  const token = useAuthStore((s) => s.token);
-
+function useRecentTransactions(limit = 5, onAuthError?: () => void) {
   return useQuery({
-    queryKey: ['payments', 'recent-orders', limit],
+    queryKey: ["payments", "recent-orders", limit],
     queryFn: async (): Promise<RecentTransaction[]> => {
-      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+      try {
+        const res = await api.get<{ data: any[] }>(`/api/payments/recent?limit=${limit}`, AXIOS_COOKIE_CFG);
+        const orders = Array.isArray(res.data?.data) ? res.data.data : [];
 
-      const res = await api.get<{ data: any[] }>(`/api/payments/recent?limit=${limit}`, { headers });
+        const txs: RecentTransaction[] = orders.map((o: any) => {
+          const p = o.latestPayment || null;
+          const createdAt = p?.paidAt || p?.createdAt || o.createdAt || new Date().toISOString();
+          const total = Number(o.total ?? p?.amount ?? 0);
+          const orderStatus = String(p?.status || "PENDING");
 
-      const orders = Array.isArray(res.data?.data) ? res.data.data : [];
+          const payment = p
+            ? {
+                id: String(p.id),
+                reference: p.reference ?? null,
+                status: String(p.status),
+                channel: p.channel ?? null,
+                provider: p.provider ?? null,
+                createdAt: String(p.createdAt || createdAt),
+              }
+            : undefined;
 
-      const txs: RecentTransaction[] = orders.map((o: any) => {
-        const p = o.latestPayment || null;
+          return {
+            orderId: String(o.id),
+            createdAt: String(createdAt),
+            total,
+            orderStatus,
+            payment,
+          };
+        });
 
-        const createdAt = p?.paidAt || p?.createdAt || o.createdAt || new Date().toISOString();
-
-        const total = Number(o.total ?? p?.amount ?? 0);
-
-        const orderStatus = String(p?.status || 'PENDING');
-
-        const payment = p
-          ? {
-              id: String(p.id),
-              reference: p.reference ?? null,
-              status: String(p.status),
-              channel: p.channel ?? null,
-              provider: p.provider ?? null,
-              createdAt: String(p.createdAt || createdAt),
-            }
-          : undefined;
-
-        return {
-          orderId: String(o.id),
-          createdAt: String(createdAt),
-          total,
-          orderStatus,
-          payment,
-        };
-      });
-
-      return txs;
+        return txs;
+      } catch (e: any) {
+        if (isAuthError(e)) onAuthError?.();
+        throw e;
+      }
     },
-    enabled: !!token,
-    retry: 1,
+    staleTime: 20_000,
+    retry: (count, e: any) => (isAuthError(e) ? false : count < 1),
   });
 }
 
 /** Sum of successful payments; tries /api/payments/summary then falls back to orders summary, then /orders/mine */
-function useTotalSpent() {
-  const token = useAuthStore((s) => s.token);
+function useTotalSpent(onAuthError?: () => void) {
   return useQuery({
-    queryKey: ['payments', 'totalSpent'],
+    queryKey: ["payments", "totalSpent"],
     queryFn: async () => {
-      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-
       // 1) payments summary (if you have it)
       try {
-        const r = await api.get<{ totalPaid?: number; totalPaidNgn?: number }>('/api/payments/summary', { headers });
+        const r = await api.get<{ totalPaid?: number; totalPaidNgn?: number }>("/api/payments/summary", AXIOS_COOKIE_CFG);
         const v = r.data?.totalPaid ?? r.data?.totalPaidNgn;
-        if (typeof v === 'number' && Number.isFinite(v)) return v;
-      } catch {
-        /* noop */
+        if (typeof v === "number" && Number.isFinite(v)) return v;
+      } catch (e: any) {
+        if (isAuthError(e)) {
+          onAuthError?.();
+          return 0;
+        }
       }
 
       // 2) orders summary
       try {
-        const s = await api.get<{ ordersCount: number; totalSpent: number }>('/api/orders/summary', { headers });
-        if (typeof s.data?.totalSpent === 'number') return s.data.totalSpent;
-      } catch {
-        /* noop */
+        const s = await api.get<{ ordersCount: number; totalSpent: number }>("/api/orders/summary", AXIOS_COOKIE_CFG);
+        if (typeof s.data?.totalSpent === "number") return s.data.totalSpent;
+      } catch (e: any) {
+        if (isAuthError(e)) {
+          onAuthError?.();
+          return 0;
+        }
       }
 
       // 3) derive from /orders/mine
       try {
-        const res = await api.get<{ data: any[] }>('/api/orders/mine?limit=1000', { headers });
+        const res = await api.get<{ data: any[] }>("/api/orders/mine?limit=1000", AXIOS_COOKIE_CFG);
         const list = Array.isArray(res.data?.data) ? res.data.data : [];
         const total = list
-          .filter((o) => ['PAID', 'COMPLETED'].includes(String(o.status || '').toUpperCase()))
+          .filter((o) => ["PAID", "COMPLETED"].includes(String(o.status || "").toUpperCase()))
           .reduce((s, o) => s + (Number(o.total ?? 0) || 0), 0);
         return total;
-      } catch {
+      } catch (e: any) {
+        if (isAuthError(e)) onAuthError?.();
         return 0;
       }
     },
-    enabled: !!token,
     staleTime: 30_000,
   });
 }
 
-function useResendEmail() {
-  const token = useAuthStore((s) => s.token);
+function useResendEmail(onAuthError?: () => void) {
   return useMutation({
-    mutationFn: async () =>
-      (await api.post('/api/auth/resend-email', {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined }))
-        .data,
+    mutationFn: async () => {
+      try {
+        return (await api.post("/api/auth/resend-email", {}, AXIOS_COOKIE_CFG)).data;
+      } catch (e: any) {
+        if (isAuthError(e)) onAuthError?.();
+        throw e;
+      }
+    },
   });
 }
 
-function useResendOtp() {
-  const token = useAuthStore((s) => s.token);
+function useResendOtp(onAuthError?: () => void) {
   return useMutation({
-    mutationFn: async () =>
-      (
-        await api.post(
-          '/api/auth/resend-otp',
-          {},
-          {
-            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-          }
-        )
-      ).data as { nextResendAfterSec?: number },
+    mutationFn: async () => {
+      try {
+        return (await api.post("/api/auth/resend-otp", {}, AXIOS_COOKIE_CFG)).data as { nextResendAfterSec?: number };
+      } catch (e: any) {
+        if (isAuthError(e)) onAuthError?.();
+        throw e;
+      }
+    },
   });
 }
 
 /**
  * Verify phone OTP
  * - tries a few common endpoints (your backend may name it differently)
- * - expects either { ok: true } or a successful 2xx with no error
  */
-function useVerifyOtp() {
-  const token = useAuthStore((s) => s.token);
-
+function useVerifyOtp(onAuthError?: () => void) {
   return useMutation({
     mutationFn: async (code: string) => {
-      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
       const payload = { otp: code };
 
-      const endpoints = [
-        '/api/auth/verify-otp',
-        '/api/auth/otp/verify',
-        '/api/auth/phone/verify',
-        '/api/auth/verify-phone',
-      ];
+      const endpoints = ["/api/auth/verify-otp", "/api/auth/otp/verify", "/api/auth/phone/verify", "/api/auth/verify-phone"];
 
       let lastErr: any = null;
 
       for (const url of endpoints) {
         try {
-          const r = await api.post(url, payload, { headers });
+          const r = await api.post(url, payload, AXIOS_COOKIE_CFG);
 
-          // If your API returns { ok: false, ... } on 200, handle that too
-          if (r?.data && typeof r.data === 'object' && r.data.ok === false) {
-            const msg = (r.data.message || r.data.error || 'Invalid OTP') as string;
+          // If your API returns { ok: false, ... } on 200
+          if (r?.data && typeof r.data === "object" && r.data.ok === false) {
+            const msg = (r.data.message || r.data.error || "Invalid OTP") as string;
             throw new Error(msg);
           }
 
           return r.data;
         } catch (e: any) {
+          if (isAuthError(e)) onAuthError?.();
           lastErr = e;
-          // keep trying next endpoint
         }
       }
 
@@ -454,8 +458,30 @@ function useVerifyOtp() {
         lastErr?.response?.data?.error ||
         lastErr?.response?.data?.message ||
         lastErr?.message ||
-        'Could not verify OTP';
+        "Could not verify OTP";
       throw new Error(msg);
+    },
+  });
+}
+
+function useLogout(onAuthError?: () => void) {
+  return useMutation({
+    mutationFn: async () => {
+      // Try common logout endpoints; ignore if one fails and try next.
+      const endpoints = ["/api/auth/logout", "/api/auth/signout", "/api/logout"];
+      let lastErr: any = null;
+      for (const url of endpoints) {
+        try {
+          const r = await api.post(url, {}, AXIOS_COOKIE_CFG);
+          return r.data;
+        } catch (e: any) {
+          lastErr = e;
+        }
+      }
+      // If logout endpoint doesn't exist, still "log out" client-side.
+      // Don't treat this as fatal.
+      if (lastErr && isAuthError(lastErr)) onAuthError?.();
+      return { ok: true };
     },
   });
 }
@@ -474,7 +500,7 @@ function GlassCard(props: {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35 }}
       className={`rounded-2xl border border-white/40 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-5 ${
-        props.className || ''
+        props.className || ""
       }`}
     >
       <div className="flex items-center justify-between mb-3">
@@ -491,28 +517,25 @@ function GlassCard(props: {
   );
 }
 
-function Stat(props: { label: string; value: string; icon?: React.ReactNode; accent?: 'emerald' | 'cyan' | 'violet' }) {
+function Stat(props: { label: string; value: string; icon?: React.ReactNode; accent?: "emerald" | "cyan" | "violet" }) {
   const ring =
-    props.accent === 'emerald'
-      ? 'ring-emerald-400/25 text-emerald-700'
-      : props.accent === 'cyan'
-      ? 'ring-cyan-400/25 text-cyan-700'
-      : 'ring-violet-400/25 text-violet-700';
+    props.accent === "emerald"
+      ? "ring-emerald-400/25 text-emerald-700"
+      : props.accent === "cyan"
+      ? "ring-cyan-400/25 text-cyan-700"
+      : "ring-violet-400/25 text-violet-700";
   const iconBg =
-    props.accent === 'emerald'
-      ? 'from-emerald-400/20 to-emerald-500/20 text-emerald-600'
-      : props.accent === 'cyan'
-      ? 'from-cyan-400/20 to-cyan-500/20 text-cyan-600'
-      : 'from-violet-400/20 to-violet-500/20 text-violet-600';
+    props.accent === "emerald"
+      ? "from-emerald-400/20 to-emerald-500/20 text-emerald-600"
+      : props.accent === "cyan"
+      ? "from-cyan-400/20 to-cyan-500/20 text-cyan-600"
+      : "from-violet-400/20 to-violet-500/20 text-violet-600";
 
   return (
     <motion.div whileHover={{ y: -2 }} className={`p-4 rounded-2xl border bg-white ring-1 ${ring} shadow-sm`}>
       <div className="flex items-center gap-3">
-        <span className={`inline-grid place-items-center w-10 h-10 rounded-xl bg-gradient-to-br ${iconBg}`}>
-          {props.icon}
-        </span>
+        <span className={`inline-grid place-items-center w-10 h-10 rounded-xl bg-gradient-to-br ${iconBg}`}>{props.icon}</span>
 
-        {/* FIX: prevent ugly wrapping in narrow cards */}
         <div className="min-w-0">
           <div className="text-[11px] uppercase tracking-wide text-zinc-500 truncate">{props.label}</div>
           <div className="mt-0.5 text-xl font-semibold">{props.value}</div>
@@ -524,15 +547,15 @@ function Stat(props: { label: string; value: string; icon?: React.ReactNode; acc
 
 function StatusPill({ label, count }: { label: string; count: number }) {
   const tone =
-    label === 'PAID'
-      ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-      : label === 'PENDING'
-      ? 'bg-amber-100 text-amber-700 border-amber-200'
-      : label === 'SHIPPED' || label === 'DELIVERED' || label === 'PROCESSING'
-      ? 'bg-cyan-100 text-cyan-700 border-cyan-200'
-      : label === 'FAILED' || label === 'CANCELLED'
-      ? 'bg-rose-100 text-rose-700 border-rose-200'
-      : 'bg-zinc-100 text-zinc-700 border-zinc-200';
+    label === "PAID"
+      ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+      : label === "PENDING"
+      ? "bg-amber-100 text-amber-700 border-amber-200"
+      : label === "SHIPPED" || label === "DELIVERED" || label === "PROCESSING"
+      ? "bg-cyan-100 text-cyan-700 border-cyan-200"
+      : label === "FAILED" || label === "CANCELLED"
+      ? "bg-rose-100 text-rose-700 border-rose-200"
+      : "bg-zinc-100 text-zinc-700 border-zinc-200";
   return (
     <span className={`inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-full border ${tone}`}>
       <b className="font-semibold">{label}</b>
@@ -542,56 +565,64 @@ function StatusPill({ label, count }: { label: string; count: number }) {
 }
 
 function PaymentBadgeInline({ status }: { status: string | undefined }) {
-  const s = (status || 'PENDING').toUpperCase();
+  const s = (status || "PENDING").toUpperCase();
   const tone =
-    s === 'PAID'
-      ? 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20'
-      : s === 'FAILED' || s === 'CANCELLED'
-      ? 'bg-rose-500/10 text-rose-700 border-rose-600/20'
-      : 'bg-amber-500/10 text-amber-700 border-amber-600/20';
+    s === "PAID"
+      ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
+      : s === "FAILED" || s === "CANCELLED"
+      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+      : "bg-amber-500/10 text-amber-700 border-amber-600/20";
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${tone}`}>{s}</span>;
 }
 
 /* ---------------------- Page ---------------------- */
 export default function UserDashboard() {
   const nav = useNavigate();
-  const { token, clear } = useAuthStore();
+  const location = useLocation();
   const qc = useQueryClient();
-
-  const meQ = useMe();
-  const ordersQ = useRecentOrders(5);
-  const ordersSummaryQ = useOrdersSummary();
-  const transactionsQ = useRecentTransactions(5);
-  const totalSpentQ = useTotalSpent();
-
-  const resendEmail = useResendEmail();
-  const resendOtp = useResendOtp();
-  const verifyOtp = useVerifyOtp();
   const { openModal } = useModal();
 
+  const redirectToLogin = () => {
+    nav("/login", { replace: true, state: { from: location.pathname + location.search } });
+  };
+
+  const meQ = useMe(redirectToLogin);
+  const ordersQ = useRecentOrders(5, redirectToLogin);
+  const ordersSummaryQ = useOrdersSummary(redirectToLogin);
+  const transactionsQ = useRecentTransactions(5, redirectToLogin);
+  const totalSpentQ = useTotalSpent(redirectToLogin);
+
+  const resendEmail = useResendEmail(redirectToLogin);
+  const resendOtp = useResendOtp(redirectToLogin);
+  const verifyOtp = useVerifyOtp(redirectToLogin);
+  const logoutM = useLogout();
+
   const [otpCooldown, setOtpCooldown] = useState(0);
-  const [otpCode, setOtpCode] = useState('');
+  const [otpCode, setOtpCode] = useState("");
   const [rebuyingId, setRebuyingId] = useState<string | null>(null);
 
   async function buyAgain(orderId: string) {
     try {
       setRebuyingId(orderId);
-      const res = await api.get(`/api/orders/${orderId}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      });
+
+      const res = await api.get(`/api/orders/${orderId}`, AXIOS_COOKIE_CFG);
+
       const items = Array.isArray(res.data?.data?.items)
         ? res.data.data.items
         : Array.isArray(res.data?.items)
         ? res.data.items
         : [];
+
       const toCart = items.map((it: any) => ({
         productId: it.productId ?? it.product?.id ?? it.id,
         qty: it.qty ?? it.quantity ?? 1,
       }));
+
       if (toCart.length > 0) mergeIntoLocalCart(toCart);
-      nav('/cart');
+      nav("/cart");
     } catch (e: any) {
-      alert(e?.response?.data?.error || 'Could not add items to cart');
+      if (isAuthError(e)) return redirectToLogin();
+      alert(e?.response?.data?.error || "Could not add items to cart");
     } finally {
       setRebuyingId(null);
     }
@@ -607,7 +638,7 @@ export default function UserDashboard() {
   const me = meQ.data;
   const initials = initialsFrom(me?.firstName, me?.lastName, me?.email);
 
-  const statusOrder = ['PENDING', 'PROCESSING', 'PAID', 'SHIPPED', 'DELIVERED', 'FAILED', 'CANCELLED'];
+  const statusOrder = ["PENDING", "PROCESSING", "PAID", "SHIPPED", "DELIVERED", "FAILED", "CANCELLED"];
   const byStatusEntries = useMemo(() => {
     const map = ordersSummaryQ.data?.byStatus || {};
     const known = statusOrder.filter((k) => map[k] > 0).map((k) => [k, map[k]] as const);
@@ -622,25 +653,24 @@ export default function UserDashboard() {
     <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />
   );
 
-  // FIX: cards never shrink into skinny pills on the right rail
   const statsGridClass =
-    'grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))] sm:[grid-template-columns:repeat(auto-fit,minmax(200px,1fr))]';
+    "grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))] sm:[grid-template-columns:repeat(auto-fit,minmax(200px,1fr))]";
 
   async function handleVerifyOtp() {
-    const code = String(otpCode || '').trim();
+    const code = String(otpCode || "").trim();
     if (!/^\d{6}$/.test(code)) {
-      openModal({ title: 'Invalid code', message: 'OTP must be 6 digits.' });
+      openModal({ title: "Invalid code", message: "OTP must be 6 digits." });
       return;
     }
 
     try {
       await verifyOtp.mutateAsync(code);
-      setOtpCode('');
+      setOtpCode("");
       setOtpCooldown(0);
-      await qc.invalidateQueries({ queryKey: ['me'] });
-      openModal({ title: 'Verified', message: 'Your phone number has been verified.' });
+      await qc.invalidateQueries({ queryKey: ["me"] });
+      openModal({ title: "Verified", message: "Your phone number has been verified." });
     } catch (e: any) {
-      openModal({ title: 'Could not verify', message: e?.message || 'Please try again.' });
+      openModal({ title: "Could not verify", message: e?.message || "Please try again." });
     }
   }
 
@@ -658,14 +688,12 @@ export default function UserDashboard() {
                   animate={{ opacity: 1, y: 0 }}
                   className="text-2xl md:text-3xl font-bold tracking-tight text-zinc-900"
                 >
-                  {me ? `Hey ${me.firstName || me.displayName || me.email.split('@')[0]}!` : 'Welcome!'}{' '}
+                  {me ? `Hey ${me.firstName || me.displayName || me.email.split("@")[0]}!` : "Welcome!"}{" "}
                   <span className="inline-block align-middle">
                     <Sparkles className="inline text-fuchsia-600" size={22} />
                   </span>
                 </motion.h1>
-                <p className="text-sm text-zinc-600">
-                  Your vibe, your orders, your payments—everything in one electric dashboard ⚡
-                </p>
+                <p className="text-sm text-zinc-600">Your vibe, your orders, your payments—everything in one electric dashboard ⚡</p>
               </div>
             </div>
           </div>
@@ -681,7 +709,7 @@ export default function UserDashboard() {
               right={
                 <button
                   className="text-sm text-fuchsia-600 hover:underline"
-                  onClick={() => nav('/profile')}
+                  onClick={() => nav("/profile")}
                   aria-label="Edit profile"
                 >
                   Edit
@@ -701,16 +729,14 @@ export default function UserDashboard() {
 
                 <div className="min-w-0">
                   <div className="font-semibold truncate">
-                    {me ? `${me.firstName ?? ''} ${me?.lastName ?? ''}`.trim() || me.email : <Shimmer />}
+                    {me ? `${me.firstName ?? ""} ${me?.lastName ?? ""}`.trim() || me.email : <Shimmer />}
                   </div>
-                  <div className="text-sm text-zinc-600 truncate">
-                    {me?.email || (meQ.isLoading ? <Shimmer /> : '—')}
-                  </div>
+                  <div className="text-sm text-zinc-600 truncate">{me?.email || (meQ.isLoading ? <Shimmer /> : "—")}</div>
                   <div className="text-xs text-zinc-600 mt-1 flex items-center gap-2">
                     <Clock3 size={14} className="text-cyan-600" />
-                    Joined {dateFmt(me?.joinedAt)}{' '}
+                    Joined {dateFmt(me?.joinedAt)}{" "}
                     {me ? (
-                      me?.status === 'VERIFIED' ? (
+                      me?.status === "VERIFIED" ? (
                         <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700">
                           <CheckCircle2 size={14} /> Verified
                         </span>
@@ -738,8 +764,7 @@ export default function UserDashboard() {
               <div className="space-y-3 text-sm">
                 <div className="flex items-center justify-between gap-3">
                   <span className="inline-flex items-center gap-2">
-                    <MailCheck size={16} className="text-emerald-600" /> Email{' '}
-                    {me?.emailVerified ? 'verified' : 'pending'}
+                    <MailCheck size={16} className="text-emerald-600" /> Email {me?.emailVerified ? "verified" : "pending"}
                   </span>
                   {!me?.emailVerified && (
                     <motion.button
@@ -749,10 +774,11 @@ export default function UserDashboard() {
                       onClick={async () => {
                         try {
                           await resendEmail.mutateAsync();
-                          qc.invalidateQueries({ queryKey: ['me'] });
-                          openModal({ title: 'Verification', message: 'Verification email sent.' });
+                          qc.invalidateQueries({ queryKey: ["me"] });
+                          openModal({ title: "Verification", message: "Verification email sent." });
                         } catch (e: any) {
-                          alert(e?.response?.data?.error || 'Failed to resend email');
+                          if (isAuthError(e)) return redirectToLogin();
+                          alert(e?.response?.data?.error || "Failed to resend email");
                         }
                       }}
                     >
@@ -764,42 +790,40 @@ export default function UserDashboard() {
                 {/* PHONE VERIFICATION (send + verify) */}
                 <div className="flex items-center justify-between gap-3">
                   <span className="inline-flex items-center gap-2">
-                    <Phone size={16} className="text-cyan-600" /> Phone{' '}
-                    {me?.phoneVerified ? 'verified' : 'pending'}
+                    <Phone size={16} className="text-cyan-600" /> Phone {me?.phoneVerified ? "verified" : "pending"}
                   </span>
 
-                  {/* Once verified, remove resend + inputs */}
                   {!me?.phoneVerified && (
                     <motion.button
                       whileHover={{ y: -1 }}
                       className="rounded-full border px-3 py-1 bg-white hover:bg-zinc-50 transition disabled:opacity-50"
                       disabled={resendOtp.isPending || otpCooldown > 0}
-                      title={otpCooldown > 0 ? `Retry in ${otpCooldown}s` : 'Resend OTP'}
+                      title={otpCooldown > 0 ? `Retry in ${otpCooldown}s` : "Resend OTP"}
                       onClick={async () => {
                         try {
                           const resp = await resendOtp.mutateAsync();
                           setOtpCooldown(resp?.nextResendAfterSec ?? 60);
-                          openModal({ title: 'OTP sent', message: 'OTP sent to your phone.' });
+                          openModal({ title: "OTP sent", message: "OTP sent to your phone." });
                         } catch (e: any) {
+                          if (isAuthError(e)) return redirectToLogin();
                           const retryAfter = e?.response?.data?.retryAfterSec;
                           if (retryAfter) setOtpCooldown(retryAfter);
-                          openModal({ title: 'Failed', message: e?.response?.data?.error || 'Failed to resend OTP' });
+                          openModal({ title: "Failed", message: e?.response?.data?.error || "Failed to resend OTP" });
                         }
                       }}
                     >
-                      {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : 'Resend OTP'}
+                      {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : "Resend OTP"}
                     </motion.button>
                   )}
                 </div>
 
-                {/* Verify input row (only when not verified) */}
                 {!me?.phoneVerified && (
                   <div className="flex items-center gap-2">
                     <input
                       value={otpCode}
-                      onChange={(e) => setOtpCode(e.target.value.replace(/[^\d]/g, '').slice(0, 6))}
+                      onChange={(e) => setOtpCode(e.target.value.replace(/[^\d]/g, "").slice(0, 6))}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleVerifyOtp();
+                        if (e.key === "Enter") handleVerifyOtp();
                       }}
                       inputMode="numeric"
                       placeholder="Enter 6-digit OTP"
@@ -812,7 +836,7 @@ export default function UserDashboard() {
                       onClick={handleVerifyOtp}
                       title="Verify phone OTP"
                     >
-                      {verifyOtp.isPending ? 'Verifying…' : 'Verify'}
+                      {verifyOtp.isPending ? "Verifying…" : "Verify"}
                     </motion.button>
                   </div>
                 )}
@@ -837,9 +861,16 @@ export default function UserDashboard() {
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               className="w-full text-sm rounded-full border px-4 py-2 bg-white hover:bg-zinc-50 transition inline-flex items-center justify-center gap-2"
-              onClick={() => {
-                clear();
-                nav('/login');
+              onClick={async () => {
+                // cookie-session logout + clear caches
+                try {
+                  await logoutM.mutateAsync();
+                } catch {
+                  /* ignore */
+                } finally {
+                  qc.clear();
+                  nav("/login");
+                }
               }}
             >
               <LogOut size={16} /> Logout
@@ -876,27 +907,22 @@ export default function UserDashboard() {
               ) : (
                 <>
                   <div className={statsGridClass}>
-                    <Stat
-                      label="Total orders"
-                      value={String(ordersSummaryQ.data?.ordersCount ?? 0)}
-                      icon={<RefreshCcw size={18} />}
-                      accent="violet"
-                    />
+                    <Stat label="Total orders" value={String(ordersSummaryQ.data?.ordersCount ?? 0)} icon={<RefreshCcw size={18} />} accent="violet" />
                     {byStatusEntries.slice(0, 5).map(([k, v]) => (
                       <Stat
                         key={k}
                         label={k}
                         value={String(v)}
                         icon={
-                          k === 'PAID' ? (
+                          k === "PAID" ? (
                             <CheckCircle2 size={18} />
-                          ) : k === 'SHIPPED' || k === 'DELIVERED' || k === 'PROCESSING' ? (
+                          ) : k === "SHIPPED" || k === "DELIVERED" || k === "PROCESSING" ? (
                             <Truck size={18} />
                           ) : (
                             <Clock3 size={18} />
                           )
                         }
-                        accent={k === 'PAID' ? 'emerald' : k === 'PENDING' ? 'cyan' : 'violet'}
+                        accent={k === "PAID" ? "emerald" : k === "PENDING" ? "cyan" : "violet"}
                       />
                     ))}
                   </div>
@@ -951,7 +977,7 @@ export default function UserDashboard() {
                         <div className="font-semibold">{ngn.format(o.total)}</div>
                         <div className="text-zinc-500 mt-1">
                           {o.items.length === 0
-                            ? 'No items'
+                            ? "No items"
                             : o.items.length === 1
                             ? o.items[0].title
                             : `${o.items[0].title} + ${o.items.length - 1} more`}
@@ -968,7 +994,7 @@ export default function UserDashboard() {
                           disabled={rebuyingId === o.id}
                           title="Re-add all items from this order to your cart"
                         >
-                          {rebuyingId === o.id ? 'Adding…' : 'Buy again'}
+                          {rebuyingId === o.id ? "Adding…" : "Buy again"}
                         </motion.button>
                       </div>
                     </motion.div>
@@ -1019,12 +1045,11 @@ export default function UserDashboard() {
                         <div className="text-xs text-zinc-600 mt-1">
                           {t.payment ? (
                             <>
-                              <PaymentBadgeInline status={t.payment.status} /> {t.payment.provider || '—'} •{' '}
-                              {t.payment.channel || '—'} • Ref:{' '}
-                              <span className="font-mono">{t.payment.reference || '—'}</span>
+                              <PaymentBadgeInline status={t.payment.status} /> {t.payment.provider || "—"} •{" "}
+                              {t.payment.channel || "—"} • Ref: <span className="font-mono">{t.payment.reference || "—"}</span>
                             </>
                           ) : (
-                            'No payment attempts yet'
+                            "No payment attempts yet"
                           )}
                         </div>
                       </div>
@@ -1032,7 +1057,7 @@ export default function UserDashboard() {
                         <Link to={`/orders?open=${t.orderId}`} className="text-sm text-fuchsia-700 hover:underline">
                           Details
                         </Link>
-                        {t.orderStatus !== 'PAID' && (
+                        {t.orderStatus !== "PAID" && (
                           <motion.div whileHover={{ y: -1 }}>
                             <Link
                               to={`/payment?orderId=${t.orderId}`}
@@ -1056,7 +1081,7 @@ export default function UserDashboard() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <Stat
                   label="Total spent"
-                  value={totalSpentQ.isLoading ? '…' : ngn.format(totalSpentQ.data ?? 0)}
+                  value={totalSpentQ.isLoading ? "…" : ngn.format(totalSpentQ.data ?? 0)}
                   icon={<CreditCard size={18} />}
                   accent="emerald"
                 />
@@ -1066,11 +1091,9 @@ export default function UserDashboard() {
                   icon={<ShoppingBag size={18} />}
                   accent="cyan"
                 />
-                <Stat label="Member since" value={me?.joinedAt ? `${dateFmt(me.joinedAt)} • ${sinceJoined(me.joinedAt)} ago` : '—'} />
+                <Stat label="Member since" value={me?.joinedAt ? `${dateFmt(me.joinedAt)} • ${sinceJoined(me.joinedAt)} ago` : "—"} />
               </div>
-              <p className="text-xs text-zinc-600 mt-3">
-                Tip: Turn on personalised recommendations in Preferences to see smarter picks here.
-              </p>
+              <p className="text-xs text-zinc-600 mt-3">Tip: Turn on personalised recommendations in Preferences to see smarter picks here.</p>
             </GlassCard>
           </div>
         </div>

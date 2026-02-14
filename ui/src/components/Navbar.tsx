@@ -92,14 +92,13 @@ function IconNavLink({
 }
 
 export default function Navbar() {
-  const token = useAuthStore((s) => s.token);
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
 
-  // ✅ bootstrap once (so refresh restores auth)
+  // ✅ bootstrap once on mount
   useEffect(() => {
-    if (!hydrated) useAuthStore.getState().bootstrap();
-  }, [hydrated]);
+    useAuthStore.getState().bootstrap().catch(() => null);
+  }, []);
 
   const userRole = (user?.role ?? null) as Role | null;
   const userEmail = user?.email ?? null;
@@ -116,7 +115,7 @@ export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
 
-  const cartCount = useCartCount(); // { distinct, totalQty }
+  const cartCount = useCartCount();
 
   const firstName = user?.firstName?.trim() || null;
   const middleName = (user as any)?.middleName?.trim?.() || null;
@@ -150,9 +149,8 @@ export default function Navbar() {
 
   useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
 
-  // ✅ Only treat as logged in when token exists + user exists
-  // (bootstrap will fill user after refresh)
-  const isLoggedIn = !!token && !!user?.id;
+  // ✅ Cookie-mode: logged in = we have a user in store (bootstrap will fill it)
+  const isLoggedIn = !!user?.id;
 
   const showShopNav = !isLoggedIn || (!isSupplier && !isSuperAdmin && !isRider);
   const showBuyerNav = isLoggedIn && !isSupplier && !isRider;
@@ -290,7 +288,9 @@ export default function Navbar() {
                           <div className="text-sm font-semibold truncate text-zinc-900">
                             {displayName || userEmail || "User"}
                           </div>
-                          {userEmail && <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>}
+                          {userEmail && (
+                            <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>
+                          )}
                         </div>
 
                         {isRider ? (
@@ -578,138 +578,8 @@ export default function Navbar() {
       </header>
 
       <div className="h-14 md:h-16" />
-
-      <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-200 bg-white/90 backdrop-blur">
-        <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-around">
-          {showRiderNav ? (
-            <>
-              <NavLink
-                to="/supplier/orders"
-                className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                    isActive ? "text-zinc-900" : "text-zinc-500"
-                  }`
-                }
-              >
-                <Truck size={20} />
-                <span className="text-[10px]">Orders</span>
-              </NavLink>
-
-              <button
-                className="flex flex-col items-center gap-1 px-3 py-1 rounded-xl text-zinc-500"
-                onClick={() => setMobileMoreOpen(true)}
-              >
-                <Menu size={20} />
-                <span className="text-[10px]">More</span>
-              </button>
-            </>
-          ) : (
-            <>
-              <NavLink
-                to="/"
-                end
-                className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                    isActive ? "text-zinc-900" : "text-zinc-500"
-                  }`
-                }
-              >
-                <LayoutGrid size={20} />
-                <span className="text-[10px]">Shop</span>
-              </NavLink>
-
-              {showBuyerNav ? (
-                <>
-                  <NavLink
-                    to="/cart"
-                    className={({ isActive }) =>
-                      `relative flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
-                      }`
-                    }
-                    aria-label={cartCount.distinct > 0 ? `Cart (${cartCount.distinct})` : "Cart"}
-                  >
-                    <div className="relative">
-                      <ShoppingCart size={20} />
-                      {cartCount.distinct > 0 && (
-                        <span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                          {cartCount.distinct > 9 ? "9+" : cartCount.distinct}
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-[10px]">Cart</span>
-                  </NavLink>
-
-                  <NavLink
-                    to="/wishlist"
-                    className={({ isActive }) =>
-                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
-                      }`
-                    }
-                  >
-                    <Heart size={20} />
-                    <span className="text-[10px]">Wish</span>
-                  </NavLink>
-
-                  <NavLink
-                    to="/orders"
-                    className={({ isActive }) =>
-                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
-                      }`
-                    }
-                  >
-                    <Package size={20} />
-                    <span className="text-[10px]">Orders</span>
-                  </NavLink>
-                </>
-              ) : (
-                <>
-                  {isLoggedIn && isSupplier && (
-                    <NavLink
-                      to="/supplier"
-                      end
-                      className={({ isActive }) =>
-                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                          isActive ? "text-zinc-900" : "text-zinc-500"
-                        }`
-                      }
-                    >
-                      <Store size={20} />
-                      <span className="text-[10px]">Supplier</span>
-                    </NavLink>
-                  )}
-
-                  {isAdmin && (
-                    <NavLink
-                      to="/admin"
-                      className={({ isActive }) =>
-                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                          isActive ? "text-zinc-900" : "text-zinc-500"
-                        }`
-                      }
-                    >
-                      <Shield size={20} />
-                      <span className="text-[10px]">Admin</span>
-                    </NavLink>
-                  )}
-                </>
-              )}
-
-              <button
-                className="flex flex-col items-center gap-1 px-3 py-1 rounded-xl text-zinc-500"
-                onClick={() => setMobileMoreOpen(true)}
-              >
-                <Menu size={20} />
-                <span className="text-[10px]">More</span>
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
       <div className="md:hidden h-16" />
+      {!hydrated && <div className="sr-only">Loading session…</div>}
     </>
   );
 }

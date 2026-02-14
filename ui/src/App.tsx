@@ -29,7 +29,6 @@ import UserDashboard from "./pages/UserDashboard";
 import SupplierRegister from "./pages/supplier/SupplierRegister";
 
 import { useAuthStore } from "./store/auth";
-import { scheduleTokenExpiryLogout } from "./utils/tokenWatcher";
 import { useIdleLogout } from "./hooks/useIdleLogout";
 
 import SupplierDashboard from "./pages/supplier/SupplierDashboard";
@@ -62,43 +61,34 @@ function SupplierLayoutShell() {
   return <Outlet />;
 }
 
-/** ✅ Role-aware landing page */
+/** ✅ Role-aware landing page (cookie auth: user in store means authed) */
 function HomeRoute() {
-  const token = useAuthStore((s) => s.token);
-  const role = useAuthStore((s) => s.user?.role);
-
-  const r = String(role || "").toUpperCase();
+  const user = useAuthStore((s) => s.user);
+  const isAuthed = !!user;
+  const r = String(user?.role || "").toUpperCase();
 
   // If logged-in supplier, land them on supplier catalog offers
-  if (token && r === "SUPPLIER") return <Navigate to="/supplier/catalog-offers" replace />;
+  if (isAuthed && r === "SUPPLIER") return <Navigate to="/supplier/catalog-offers" replace />;
 
   // Keep riders off public catalog after login
-  if (token && r === "SUPPLIER_RIDER") return <Navigate to="/supplier/orders" replace />;
+  if (isAuthed && r === "SUPPLIER_RIDER") return <Navigate to="/supplier/orders" replace />;
 
   return <Catalog />;
 }
 
 export default function App() {
-  const token = useAuthStore((s) => s.token);
-  const clear = useAuthStore((s) => s.clear);
-  const role = useAuthStore((s) => s.user?.role);
   const bootstrap = useAuthStore((s) => s.bootstrap);
 
+  const user = useAuthStore((s) => s.user);
+  const role = user?.role;
+  const isAuthed = !!user;
+
+  // ✅ Cookie-auth bootstrap: should call /api/auth/me (withCredentials) and set user
   useEffect(() => {
     bootstrap();
   }, [bootstrap]);
-  
-  useEffect(() => {
-    scheduleTokenExpiryLogout(token, () => {
-      clear();
-      try {        // or whatever you store
-        localStorage.removeItem("access_token");
-      } catch {
-        /* no-op */
-      }
-      window.location.replace("/login");
-    });
-  }, [token, clear]);
+
+  // ❌ Removed token expiry watcher: cookie sessions don’t have client JWT expiry to watch
 
   // ✅ riders can ONLY access supplier orders routes inside /supplier
   const riderAllowPrefixes = useMemo(() => ["/supplier/orders"], []);
@@ -136,9 +126,9 @@ export default function App() {
               <Route path="/rider/accept" element={<RiderAcceptInvite />} />
 
               {/* ---------------- Auth ---------------- */}
-              <Route path="/login" element={token ? <Navigate to="/" replace /> : <Login />} />
-              <Route path="/register" element={token ? <Navigate to="/" replace /> : <Register />} />
-              <Route path="/register-supplier" element={token ? <Navigate to="/" replace /> : <SupplierRegister />} />
+              <Route path="/login" element={isAuthed ? <Navigate to="/" replace /> : <Login />} />
+              <Route path="/register" element={isAuthed ? <Navigate to="/" replace /> : <Register />} />
+              <Route path="/register-supplier" element={isAuthed ? <Navigate to="/" replace /> : <SupplierRegister />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route
                 path="/reset-password"

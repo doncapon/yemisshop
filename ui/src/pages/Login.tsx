@@ -15,10 +15,13 @@ type MeResponse = {
   lastName?: string | null;
   emailVerified: boolean;
   phoneVerified: boolean;
+  status?: string | null;
 };
 
 type LoginOk = {
-  token: string;
+  // cookie-mode: token may exist but UI does not need it
+  token?: string;
+  sid?: string;
   profile: MeResponse;
   needsVerification?: boolean;
   verifyToken?: string;
@@ -54,6 +57,7 @@ function normalizeProfile(raw: any): MeResponse | null {
     lastName: raw.lastName ?? null,
     emailVerified,
     phoneVerified,
+    status: raw.status ?? null,
   };
 }
 
@@ -70,6 +74,12 @@ function normRole(r: any): Role {
 
 export default function Login() {
   const hydrated = useAuthStore((s) => s.hydrated);
+  const user = useAuthStore((s) => s.user);
+  const bootstrap = useAuthStore((s) => s.bootstrap);
+
+  const setUser = useAuthStore((s) => s.setUser);
+  const setNeedsVerification = useAuthStore((s) => s.setNeedsVerification);
+  const clearAuth = useAuthStore((s) => s.clear);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -93,14 +103,34 @@ export default function Login() {
   const nav = useNavigate();
   const loc = useLocation();
 
-  const setAuth = useAuthStore((s) => s.setAuth);
-  const setNeedsVerification = useAuthStore((s) => s.setNeedsVerification);
-  const clear = useAuthStore((s) => s.clear);
-
   const fullyVerified = useMemo(() => {
     if (!blockedProfile) return false;
     return !!blockedProfile.emailVerified && !!blockedProfile.phoneVerified;
   }, [blockedProfile]);
+
+  // ✅ Ensure store hydrates (in case root doesn't call bootstrap)
+  useEffect(() => {
+    if (!hydrated) {
+      bootstrap().catch(() => null);
+    }
+  }, [hydrated, bootstrap]);
+
+  // ✅ If already logged in (cookie session restored), bounce away
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!user?.id) return;
+
+    const defaultByRole: Record<Role, string> = {
+      ADMIN: "/admin",
+      SUPER_ADMIN: "/admin",
+      SHOPPER: "/",
+      SUPPLIER: "/supplier",
+      SUPPLIER_RIDER: "/supplier/orders",
+    };
+
+    nav(defaultByRole[normRole(user.role)] || "/", { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, user?.id]);
 
   useEffect(() => {
     if (fullyVerified) {
@@ -129,7 +159,6 @@ export default function Login() {
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!hydrated) return;
     if (loading || cooldown > 0) return;
 
     setErr(null);
@@ -146,25 +175,31 @@ export default function Login() {
 
     setLoading(true);
     try {
-      const res = await api.post("/api/auth/login", { email, password });
+      // Start clean
+      clearAuth();
+
+      const res = await api.post<LoginOk>("/api/auth/login", {
+        email: email.trim(),
+        password: password.trim(),
+      });
 
       const data = res.data as LoginOk;
-      const token = data?.token;
-      const profile = data?.profile;
-      const needsVerification = !!data?.needsVerification;
+      const profile = data?.profile ?? null;
+
+      if (!profile?.id) throw new Error("Login response missing profile");
+
+      const needsVer = !!data?.needsVerification;
       const vt = data?.verifyToken ?? null;
 
-      if (!token || !profile?.id) {
-        throw new Error("Login response missing token/profile");
-      }
+      // ✅ Cookie is already set by backend. We only store profile for UI.
+      setUser(profile);
+      setNeedsVerification(needsVer);
 
-      // ✅ store token + user (store syncs axios + sessionStorage)
-      setAuth({ token, user: profile });
-      setNeedsVerification(needsVerification);
-
+      // Keep verify session token for OTP endpoints (only needed for suppliers)
       try {
         localStorage.setItem("verifyEmail", profile.email);
-        if (vt) localStorage.setItem("verify_token", vt);
+        if (vt) localStorage.setItem("verifyToken", vt);
+        else localStorage.removeItem("verifyToken");
       } catch {}
 
       const from = (loc.state as any)?.from?.pathname as string | undefined;
@@ -197,7 +232,7 @@ export default function Login() {
 
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
-          if (vt) localStorage.setItem("verify_token", vt);
+          if (vt) localStorage.setItem("verifyToken", vt);
         } catch {}
 
         setCooldown(1);
@@ -210,7 +245,7 @@ export default function Login() {
         "Login failed";
 
       setErr(msg);
-      clear();
+      clearAuth();
       setCooldown(2);
     } finally {
       setLoading(false);
@@ -227,7 +262,7 @@ export default function Login() {
       const r = await api.post("/api/auth/resend-verification", { email: blockedProfile.email });
 
       setEmailMsg("Verification email sent. Please check your inbox (and spam).");
-      const next = Number(r.data?.nextResendAfterSec ?? 60);
+      const next = Number((r as any).data?.nextResendAfterSec ?? 60);
       setEmailCooldown(Math.max(1, next));
     } catch (e: any) {
       const status = e?.response?.status;
@@ -250,7 +285,7 @@ export default function Login() {
     setEmailBusy(true);
     try {
       const r = await api.get("/api/auth/email-status", { params: { email: blockedProfile.email } });
-      const emailVerifiedAt = r.data?.emailVerifiedAt;
+      const emailVerifiedAt = (r as any).data?.emailVerifiedAt;
 
       setBlockedProfile((p) => (p ? { ...p, emailVerified: !!emailVerifiedAt } : p));
       setEmailMsg(emailVerifiedAt ? "Email verified ✅" : "Email not verified yet. Check your inbox.");
@@ -271,7 +306,7 @@ export default function Login() {
       const r = await api.post("/api/auth/resend-otp", {}, { headers });
 
       setOtpMsg("OTP sent via WhatsApp. Enter the code to verify your phone.");
-      const next = Number(r.data?.nextResendAfterSec ?? 60);
+      const next = Number((r as any).data?.nextResendAfterSec ?? 60);
       setOtpCooldown(Math.max(1, next));
     } catch (e: any) {
       const status = e?.response?.status;
@@ -290,7 +325,7 @@ export default function Login() {
     }
   };
 
-  const verifyOtp = async () => {
+  const verifyOtpNow = async () => {
     const code = otp.trim();
     if (!code) {
       setOtpMsg("Enter the OTP code.");
@@ -303,8 +338,8 @@ export default function Login() {
       const headers = verifyToken ? { Authorization: `Bearer ${verifyToken}` } : undefined;
       const r = await api.post("/api/auth/verify-otp", { otp: code }, { headers });
 
-      if (r.data?.ok && r.data?.profile) {
-        const p = normalizeProfile(r.data.profile);
+      if ((r as any).data?.ok && (r as any).data?.profile) {
+        const p = normalizeProfile((r as any).data.profile);
         if (p) setBlockedProfile(p);
 
         if (p?.emailVerified && p?.phoneVerified) {
@@ -326,7 +361,6 @@ export default function Login() {
 
   return (
     <SiteLayout>
-      {/* your full JSX unchanged below */}
       <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-50 to-white">
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="absolute -top-24 -right-20 w-[26rem] h-[26rem] rounded-full blur-3xl opacity-35 bg-fuchsia-300/50" />
@@ -440,7 +474,7 @@ export default function Login() {
 
                           <button
                             type="button"
-                            onClick={verifyOtp}
+                            onClick={verifyOtpNow}
                             disabled={otpBusy}
                             className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
                           >
