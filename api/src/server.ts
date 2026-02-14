@@ -77,18 +77,38 @@ const app = express();
 app.set("trust proxy", 1);
 
 /* -------------------- CORS (MUST match preflight + request) -------------------- */
+
+const normalizeOrigin = (s: string) => s.replace(/\/$/, ""); // remove trailing slash
+
 const allowedOrigins = [
-  process.env.APP_URL,
+  process.env.APP_URL,                // should be your FRONTEND origin (no path)
+  process.env.FRONTEND_URL,           // add this if you can
   "https://dayspringhouse.com",
+  "https://www.dayspringhouse.com",
   "http://localhost:5173",
   "http://127.0.0.1:5173",
-].filter(Boolean) as string[];
+]
+  .filter(Boolean)
+  .map((x) => normalizeOrigin(String(x)));
+
+const isAllowed = (origin: string) => {
+  const o = normalizeOrigin(origin);
+
+  // exact allowlist
+  if (allowedOrigins.includes(o)) return true;
+
+  // comment these out if you don't want previews
+  if (/^https:\/\/.+\.pages\.dev$/.test(o)) return true;
+  if (/^https:\/\/.+\.netlify\.app$/.test(o)) return true;
+
+  return false;
+};
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, cb) => {
-    // allow non-browser requests (no Origin header)
     if (!origin) return cb(null, true);
-    if (allowedOrigins.includes(origin)) return cb(null, true);
+    if (isAllowed(origin)) return cb(null, true);
+    console.error("CORS blocked:", origin, "allowed:", allowedOrigins);
     return cb(new Error(`CORS blocked for origin: ${origin}`));
   },
   credentials: true,
@@ -97,7 +117,6 @@ const corsOptions: cors.CorsOptions = {
 };
 
 app.use(cors(corsOptions));
-// ✅ IMPORTANT: preflight must use same options
 app.options("*", cors(corsOptions));
 
 /* ------------------------------ Common middleware ------------------------------ */

@@ -66,7 +66,7 @@ async function issueAndEmailEmailVerification(userId: string, email: string) {
   });
 
   // ✅ MUST hit API route (this router), not UI.
-  const verifyUrl = `${API_BASE_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+  const verifyUrl = `${APP_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
 
   await sendVerifyEmail(email, verifyUrl);
 }
