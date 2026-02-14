@@ -1,3 +1,4 @@
+// src/components/ProtectedRoute.tsx
 import { Navigate, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useAuthStore } from "../store/auth";
@@ -28,7 +29,6 @@ function normRole(role: any): Role | null {
 
 export default function ProtectedRoute({ roles, children, riderAllowPrefixes }: Props) {
   const hydrated = useAuthStore((s) => s.hydrated);
-  const token = useAuthStore((s) => s.token);
   const user = useAuthStore((s) => s.user);
 
   const role = normRole(user?.role ?? null);
@@ -36,24 +36,24 @@ export default function ProtectedRoute({ roles, children, riderAllowPrefixes }: 
   const loc = useLocation();
   const path = loc.pathname || "/";
 
+  // ✅ Wait for bootstrap to finish so we don't redirect during hydration
   if (!hydrated) {
     return <div className="min-h-[60vh] grid place-items-center text-slate-500">Loading…</div>;
   }
 
-  if (!token) {
+  // ✅ Cookie-auth: logged-in means we have a real user id
+  const isAuthed = !!user?.id;
+
+  if (!isAuthed) {
     return <Navigate to="/login" state={{ from: loc }} replace />;
   }
 
-  // token exists but user not loaded yet → wait (prevents wrong redirects)
-  if (!user) {
-    return <div className="min-h-[60vh] grid place-items-center text-slate-500">Loading…</div>;
-  }
-
+  // ✅ Role guard
   if (roles && (!role || !roles.includes(role))) {
     return <Navigate to="/" replace />;
   }
 
-  // Riders: allow only specific sub-routes (exact match or under prefix/)
+  // ✅ Riders: allow only specific sub-routes (exact match or under prefix/)
   if (role === "SUPPLIER_RIDER" && riderAllowPrefixes?.length) {
     const allowed = riderAllowPrefixes.some((p) => path === p || path.startsWith(p + "/"));
     if (!allowed) return <Navigate to="/supplier/orders" replace />;

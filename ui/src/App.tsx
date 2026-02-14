@@ -56,21 +56,22 @@ import ScrollToTop from "./components/ScrollToTop";
 function AdminLayout() {
   return <Outlet />;
 }
-
 function SupplierLayoutShell() {
   return <Outlet />;
 }
 
-/** ✅ Role-aware landing page (cookie auth: user in store means authed) */
+/** ✅ Role-aware landing page */
 function HomeRoute() {
   const user = useAuthStore((s) => s.user);
-  const isAuthed = !!user;
+  const hydrated = useAuthStore((s) => s.hydrated);
+
+  // ✅ don’t “guess” before bootstrap finishes
+  if (!hydrated) return <Catalog />;
+
+  const isAuthed = !!user?.id;
   const r = String(user?.role || "").toUpperCase();
 
-  // If logged-in supplier, land them on supplier catalog offers
   if (isAuthed && r === "SUPPLIER") return <Navigate to="/supplier/catalog-offers" replace />;
-
-  // Keep riders off public catalog after login
   if (isAuthed && r === "SUPPLIER_RIDER") return <Navigate to="/supplier/orders" replace />;
 
   return <Catalog />;
@@ -78,19 +79,17 @@ function HomeRoute() {
 
 export default function App() {
   const bootstrap = useAuthStore((s) => s.bootstrap);
-
   const user = useAuthStore((s) => s.user);
-  const role = user?.role;
-  const isAuthed = !!user;
+  const hydrated = useAuthStore((s) => s.hydrated);
 
-  // ✅ Cookie-auth bootstrap: should call /api/auth/me (withCredentials) and set user
+  // ✅ IMPORTANT: logged-in means “has an id”
+  const isAuthed = !!user?.id;
+  const role = user?.role;
+
   useEffect(() => {
     bootstrap();
   }, [bootstrap]);
 
-  // ❌ Removed token expiry watcher: cookie sessions don’t have client JWT expiry to watch
-
-  // ✅ riders can ONLY access supplier orders routes inside /supplier
   const riderAllowPrefixes = useMemo(() => ["/supplier/orders"], []);
 
   const RoleDashboard = useMemo(() => {
@@ -98,7 +97,7 @@ export default function App() {
     if (r === "ADMIN" || r === "SUPER_ADMIN") return AdminDashboard;
     if (r === "SUPPLIER") return SupplierDashboard;
     if (r === "SUPPLIER_RIDER") return () => <Navigate to="/supplier/orders" replace />;
-    return UserDashboard;
+    return UserDashboard; // SHOPPER + others
   }, [role]);
 
   useIdleLogout();
@@ -111,6 +110,7 @@ export default function App() {
           <div className="max-w-7xl mx-auto">
             <Toaster position="top-right" />
             <ScrollToTop />
+
             <Routes>
               {/* ---------------- Public site ---------------- */}
               <Route path="/" element={<HomeRoute />} />
@@ -122,13 +122,27 @@ export default function App() {
               <Route path="/payment-callback" element={<PaymentCallback />} />
               <Route path="/receipt/:paymentId" element={<ReceiptPage />} />
 
-              {/* Public rider invite accept (MUST be top-level) */}
               <Route path="/rider/accept" element={<RiderAcceptInvite />} />
 
               {/* ---------------- Auth ---------------- */}
-              <Route path="/login" element={isAuthed ? <Navigate to="/" replace /> : <Login />} />
-              <Route path="/register" element={isAuthed ? <Navigate to="/" replace /> : <Register />} />
-              <Route path="/register-supplier" element={isAuthed ? <Navigate to="/" replace /> : <SupplierRegister />} />
+              <Route
+                path="/login"
+                element={
+                  hydrated && isAuthed ? <Navigate to="/" replace /> : <Login />
+                }
+              />
+              <Route
+                path="/register"
+                element={
+                  hydrated && isAuthed ? <Navigate to="/" replace /> : <Register />
+                }
+              />
+              <Route
+                path="/register-supplier"
+                element={
+                  hydrated && isAuthed ? <Navigate to="/" replace /> : <SupplierRegister />
+                }
+              />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route
                 path="/reset-password"
@@ -185,7 +199,6 @@ export default function App() {
                 }
               />
 
-              {/* Role-based “/dashboard” */}
               <Route
                 path="/dashboard"
                 element={
@@ -195,7 +208,6 @@ export default function App() {
                 }
               />
 
-              {/* Optional rider entry point (after login) */}
               <Route
                 path="/rider"
                 element={
@@ -219,7 +231,6 @@ export default function App() {
               >
                 <Route index element={<SupplierDashboard />} />
 
-                {/* ✅ Catalog Offers now lives inside supplier area */}
                 <Route
                   path="catalog-offers"
                   element={
@@ -235,7 +246,6 @@ export default function App() {
                   <Route path=":id/edit" element={<SupplierEditProduct />} />
                 </Route>
 
-                {/* ✅ Riders allowed here via riderAllowPrefixes */}
                 <Route path="orders" element={<SupplierOrdersPage />} />
                 <Route path="orders/:orderId" element={<SupplierOrdersPage />} />
 

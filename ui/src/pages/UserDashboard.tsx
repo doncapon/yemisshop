@@ -75,14 +75,14 @@ type OrderLite = {
   id: string;
   createdAt: string;
   status:
-    | "PENDING"
-    | "PAID"
-    | "SHIPPED"
-    | "DELIVERED"
-    | "CANCELLED"
-    | "FAILED"
-    | "PROCESSING"
-    | string;
+  | "PENDING"
+  | "PAID"
+  | "SHIPPED"
+  | "DELIVERED"
+  | "CANCELLED"
+  | "FAILED"
+  | "PROCESSING"
+  | string;
   total: number;
   items: OrderLiteItem[];
   trackingUrl?: string | null;
@@ -282,9 +282,7 @@ function useOrdersSummary(onAuthError?: () => void) {
           for (const o of list) {
             const s = String(o.status || "UNKNOWN").toUpperCase();
             byStatus[s] = (byStatus[s] || 0) + 1;
-            if (s === "PAID" || s === "COMPLETED") {
-              totalSpent += Number(o.total ?? 0);
-            }
+            if (s === "PAID" || s === "COMPLETED") totalSpent += Number(o.total ?? 0);
           }
           return {
             ordersCount: list.length,
@@ -324,13 +322,13 @@ function useRecentTransactions(limit = 5, onAuthError?: () => void) {
 
           const payment = p
             ? {
-                id: String(p.id),
-                reference: p.reference ?? null,
-                status: String(p.status),
-                channel: p.channel ?? null,
-                provider: p.provider ?? null,
-                createdAt: String(p.createdAt || createdAt),
-              }
+              id: String(p.id),
+              reference: p.reference ?? null,
+              status: String(p.status),
+              channel: p.channel ?? null,
+              provider: p.provider ?? null,
+              createdAt: String(p.createdAt || createdAt),
+            }
             : undefined;
 
           return {
@@ -432,7 +430,6 @@ function useVerifyOtp(onAuthError?: () => void) {
   return useMutation({
     mutationFn: async (code: string) => {
       const payload = { otp: code };
-
       const endpoints = ["/api/auth/verify-otp", "/api/auth/otp/verify", "/api/auth/phone/verify", "/api/auth/verify-phone"];
 
       let lastErr: any = null;
@@ -442,8 +439,8 @@ function useVerifyOtp(onAuthError?: () => void) {
           const r = await api.post(url, payload, AXIOS_COOKIE_CFG);
 
           // If your API returns { ok: false, ... } on 200
-          if (r?.data && typeof r.data === "object" && r.data.ok === false) {
-            const msg = (r.data.message || r.data.error || "Invalid OTP") as string;
+          if (r?.data && typeof r.data === "object" && (r.data as any).ok === false) {
+            const msg = ((r.data as any).message || (r.data as any).error || "Invalid OTP") as string;
             throw new Error(msg);
           }
 
@@ -479,7 +476,6 @@ function useLogout(onAuthError?: () => void) {
         }
       }
       // If logout endpoint doesn't exist, still "log out" client-side.
-      // Don't treat this as fatal.
       if (lastErr && isAuthError(lastErr)) onAuthError?.();
       return { ok: true };
     },
@@ -499,19 +495,22 @@ function GlassCard(props: {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35 }}
-      className={`rounded-2xl border border-white/40 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-5 ${
-        props.className || ""
-      }`}
+      // ✅ FIX: overflow-visible + more neutral border so card edges are real on white backgrounds
+      className={`overflow-visible rounded-2xl border border-zinc-200/60 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-4 sm:p-5 ${props.className || ""
+        }`}
     >
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <span className="inline-flex items-center justify-center w-8 h-8 rounded-xl bg-gradient-to-br from-fuchsia-500/15 to-cyan-500/15 text-fuchsia-600">
-            {props.icon ?? <Sparkles size={18} />}
+      {/* ✅ mobile-friendly header: stacks & prevents "E" clipping */}
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="inline-flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-xl bg-gradient-to-br from-fuchsia-500/15 to-cyan-500/15 text-fuchsia-600 shrink-0">
+            {props.icon ?? <Sparkles size={16} />}
           </span>
-          <h2 className="text-lg font-semibold tracking-tight">{props.title}</h2>
+          <h2 className="text-sm sm:text-base font-semibold tracking-tight min-w-0 truncate">{props.title}</h2>
         </div>
-        {props.right}
+
+        {props.right ? <div className="self-start sm:self-auto shrink-0">{props.right}</div> : null}
       </div>
+
       {props.children}
     </motion.section>
   );
@@ -522,23 +521,25 @@ function Stat(props: { label: string; value: string; icon?: React.ReactNode; acc
     props.accent === "emerald"
       ? "ring-emerald-400/25 text-emerald-700"
       : props.accent === "cyan"
-      ? "ring-cyan-400/25 text-cyan-700"
-      : "ring-violet-400/25 text-violet-700";
+        ? "ring-cyan-400/25 text-cyan-700"
+        : "ring-violet-400/25 text-violet-700";
   const iconBg =
     props.accent === "emerald"
       ? "from-emerald-400/20 to-emerald-500/20 text-emerald-600"
       : props.accent === "cyan"
-      ? "from-cyan-400/20 to-cyan-500/20 text-cyan-600"
-      : "from-violet-400/20 to-violet-500/20 text-violet-600";
+        ? "from-cyan-400/20 to-cyan-500/20 text-cyan-600"
+        : "from-violet-400/20 to-violet-500/20 text-violet-600";
 
   return (
-    <motion.div whileHover={{ y: -2 }} className={`p-4 rounded-2xl border bg-white ring-1 ${ring} shadow-sm`}>
+    <motion.div whileHover={{ y: -2 }} className={`p-3 sm:p-4 rounded-2xl border bg-white ring-1 ${ring} shadow-sm`}>
       <div className="flex items-center gap-3">
-        <span className={`inline-grid place-items-center w-10 h-10 rounded-xl bg-gradient-to-br ${iconBg}`}>{props.icon}</span>
+        <span className={`inline-grid place-items-center w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br ${iconBg}`}>
+          {props.icon}
+        </span>
 
         <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-wide text-zinc-500 truncate">{props.label}</div>
-          <div className="mt-0.5 text-xl font-semibold">{props.value}</div>
+          <div className="text-[10px] sm:text-[11px] uppercase tracking-wide text-zinc-500 truncate">{props.label}</div>
+          <div className="mt-0.5 text-lg sm:text-xl font-semibold">{props.value}</div>
         </div>
       </div>
     </motion.div>
@@ -550,16 +551,16 @@ function StatusPill({ label, count }: { label: string; count: number }) {
     label === "PAID"
       ? "bg-emerald-100 text-emerald-700 border-emerald-200"
       : label === "PENDING"
-      ? "bg-amber-100 text-amber-700 border-amber-200"
-      : label === "SHIPPED" || label === "DELIVERED" || label === "PROCESSING"
-      ? "bg-cyan-100 text-cyan-700 border-cyan-200"
-      : label === "FAILED" || label === "CANCELLED"
-      ? "bg-rose-100 text-rose-700 border-rose-200"
-      : "bg-zinc-100 text-zinc-700 border-zinc-200";
+        ? "bg-amber-100 text-amber-700 border-amber-200"
+        : label === "SHIPPED" || label === "DELIVERED" || label === "PROCESSING"
+          ? "bg-cyan-100 text-cyan-700 border-cyan-200"
+          : label === "FAILED" || label === "CANCELLED"
+            ? "bg-rose-100 text-rose-700 border-rose-200"
+            : "bg-zinc-100 text-zinc-700 border-zinc-200";
   return (
-    <span className={`inline-flex items-center gap-2 text-xs px-2.5 py-1 rounded-full border ${tone}`}>
+    <span className={`inline-flex items-center gap-2 text-[11px] sm:text-xs px-2.5 py-1 rounded-full border ${tone}`}>
       <b className="font-semibold">{label}</b>
-      <span className="text-[11px] opacity-70">({count})</span>
+      <span className="text-[10px] opacity-70">({count})</span>
     </span>
   );
 }
@@ -570,9 +571,9 @@ function PaymentBadgeInline({ status }: { status: string | undefined }) {
     s === "PAID"
       ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
       : s === "FAILED" || s === "CANCELLED"
-      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
-      : "bg-amber-500/10 text-amber-700 border-amber-600/20";
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${tone}`}>{s}</span>;
+        ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+        : "bg-amber-500/10 text-amber-700 border-amber-600/20";
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] sm:text-xs border ${tone}`}>{s}</span>;
 }
 
 /* ---------------------- Page ---------------------- */
@@ -610,8 +611,8 @@ export default function UserDashboard() {
       const items = Array.isArray(res.data?.data?.items)
         ? res.data.data.items
         : Array.isArray(res.data?.items)
-        ? res.data.items
-        : [];
+          ? res.data.items
+          : [];
 
       const toCart = items.map((it: any) => ({
         productId: it.productId ?? it.product?.id ?? it.id,
@@ -653,8 +654,9 @@ export default function UserDashboard() {
     <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />
   );
 
+  // ✅ slightly denser on mobile
   const statsGridClass =
-    "grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))] sm:[grid-template-columns:repeat(auto-fit,minmax(200px,1fr))]";
+    "grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(160px,1fr))] sm:[grid-template-columns:repeat(auto-fit,minmax(200px,1fr))]";
 
   async function handleVerifyOtp() {
     const code = String(otpCode || "").trim();
@@ -676,39 +678,45 @@ export default function UserDashboard() {
 
   return (
     <SiteLayout>
-      <div className="max-w-screen-2xl mx-auto">
+      {/* ✅ subtle overall font scale on mobile */}
+      <div className="max-w-screen-2xl mx-auto text-[13px] sm:text-[14px]">
         {/* Neon gradient hero */}
         <div className="relative overflow-hidden">
           <div className="absolute inset-0 bg-[radial-gradient(closest-side,rgba(255,0,167,0.08),transparent_70%),radial-gradient(closest-side,rgba(0,204,255,0.10),transparent_70%)]" />
-          <div className="relative px-4 md:px-8 pt-8 pb-4">
+          <div className="relative px-4 md:px-8 pt-5 sm:pt-7 pb-3 sm:pb-4">
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-1">
                 <motion.h1
                   initial={{ opacity: 0, y: 6 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="text-2xl md:text-3xl font-bold tracking-tight text-zinc-900"
+                  className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight text-zinc-900"
                 >
                   {me ? `Hey ${me.firstName || me.displayName || me.email.split("@")[0]}!` : "Welcome!"}{" "}
                   <span className="inline-block align-middle">
-                    <Sparkles className="inline text-fuchsia-600" size={22} />
+                    <Sparkles className="inline text-fuchsia-600" size={20} />
                   </span>
                 </motion.h1>
-                <p className="text-sm text-zinc-600">Your vibe, your orders, your payments—everything in one electric dashboard ⚡</p>
+                <p className="text-[12px] sm:text-sm text-zinc-600 leading-5 sm:leading-6">
+                  Your vibe, your orders, your payments—everything in one electric dashboard ⚡
+                </p>
               </div>
             </div>
           </div>
         </div>
 
         {/* Content grid */}
-        <div className="px-4 md:px-8 pb-10 grid gap-6 lg:grid-cols-[320px_1fr]">
-          {/* Left rail (sticky) */}
-          <div className="space-y-6 lg:sticky lg:top-6 lg:self-start">
+        {/* ✅ FIX: items-start prevents the “left column stretches to match right column” blank space */}
+        {/* ✅ FIX: min-[1024px] ensures true desktop breakpoint even if Tailwind breakpoints were customized */}
+        <div className="px-4 md:px-8 pb-10 grid items-start gap-5 sm:gap-6 min-[1024px]:grid-cols-[320px_1fr]">
+          {/* Left rail (sticky on desktop only) */}
+          {/* ✅ FIX: apply sticky only at true desktop width */}
+          <div className="min-w-0 space-y-5 sm:space-y-6 min-[1024px]:sticky min-[1024px]:top-6 min-[1024px]:self-start">
             <GlassCard
               title="Profile"
-              icon={<ShoppingBag size={18} />}
+              icon={<ShoppingBag size={16} />}
               right={
                 <button
-                  className="text-sm text-fuchsia-600 hover:underline"
+                  className="text-[12px] sm:text-sm text-fuchsia-600 hover:underline"
                   onClick={() => nav("/profile")}
                   aria-label="Edit profile"
                 >
@@ -716,33 +724,37 @@ export default function UserDashboard() {
                 </button>
               }
             >
-              <div className="flex items-center gap-4">
+              <div className="flex items-start gap-3 sm:gap-4">
                 {me ? (
                   <motion.div whileHover={{ rotate: -2 }}>
-                    <div className="w-14 h-14 rounded-2xl grid place-items-center border bg-gradient-to-br from-zinc-900 to-zinc-700 text-white font-semibold shadow">
+                    <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl grid place-items-center border bg-gradient-to-br from-zinc-900 to-zinc-700 text-white font-semibold shadow text-sm sm:text-base">
                       {initials}
                     </div>
                   </motion.div>
                 ) : (
-                  <div className="w-14 h-14 rounded-2xl bg-zinc-200 animate-pulse" />
+                  <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-zinc-200 animate-pulse" />
                 )}
 
-                <div className="min-w-0">
-                  <div className="font-semibold truncate">
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold truncate text-sm sm:text-base">
                     {me ? `${me.firstName ?? ""} ${me?.lastName ?? ""}`.trim() || me.email : <Shimmer />}
                   </div>
-                  <div className="text-sm text-zinc-600 truncate">{me?.email || (meQ.isLoading ? <Shimmer /> : "—")}</div>
-                  <div className="text-xs text-zinc-600 mt-1 flex items-center gap-2">
-                    <Clock3 size={14} className="text-cyan-600" />
-                    Joined {dateFmt(me?.joinedAt)}{" "}
+
+                  <div className="text-[12px] sm:text-sm text-zinc-600 truncate">
+                    {me?.email || (meQ.isLoading ? <Shimmer /> : "—")}
+                  </div>
+
+                  <div className="text-[11px] sm:text-xs text-zinc-600 mt-1 flex flex-wrap items-center gap-2">
+                    <Clock3 size={13} className="text-cyan-600" />
+                    <span className="truncate">Joined {dateFmt(me?.joinedAt)}</span>{" "}
                     {me ? (
                       me?.status === "VERIFIED" ? (
-                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700">
-                          <CheckCircle2 size={14} /> Verified
+                        <span className="inline-flex items-center gap-1 text-[11px] sm:text-xs px-2 py-0.5 rounded-full border bg-emerald-50 text-emerald-700">
+                          <CheckCircle2 size={13} /> Verified
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700">
-                          <AlertCircle size={14} /> Not verified
+                        <span className="inline-flex items-center gap-1 text-[11px] sm:text-xs px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700">
+                          <AlertCircle size={13} /> Not verified
                         </span>
                       )
                     ) : null}
@@ -750,26 +762,29 @@ export default function UserDashboard() {
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+              {/* ✅ 2 columns (not 3) */}
+              <div className="mt-4 grid grid-cols-2 gap-3 text-[12px] sm:text-sm">
                 <Link className="group inline-flex items-center gap-1.5 text-cyan-700 hover:underline" to="/profile">
                   Manage <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
                 </Link>
-                <Link className="group inline-flex items-center gap-1.5 text-cyan-700 hover:underline" to="/orders">
+                <Link className="group inline-flex items-center gap-1.5 text-cyan-700 hover:underline justify-self-end" to="/orders">
                   Orders <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
                 </Link>
               </div>
             </GlassCard>
 
-            <GlassCard title="Verification" icon={<ShieldCheck size={18} />}>
-              <div className="space-y-3 text-sm">
+            <GlassCard title="Verification" icon={<ShieldCheck size={16} />}>
+              <div className="space-y-3 text-[12px] sm:text-sm">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <MailCheck size={16} className="text-emerald-600" /> Email {me?.emailVerified ? "verified" : "pending"}
+                  <span className="inline-flex items-center gap-2 min-w-0">
+                    <MailCheck size={15} className="text-emerald-600" />{" "}
+                    <span className="truncate">Email {me?.emailVerified ? "verified" : "pending"}</span>
                   </span>
+
                   {!me?.emailVerified && (
                     <motion.button
                       whileHover={{ y: -1 }}
-                      className="rounded-full border px-3 py-1 bg-white hover:bg-zinc-50 transition"
+                      className="rounded-full border px-3 py-1 bg-white hover:bg-zinc-50 transition text-[12px] sm:text-sm"
                       disabled={resendEmail.isPending}
                       onClick={async () => {
                         try {
@@ -788,15 +803,16 @@ export default function UserDashboard() {
                 </div>
 
                 {/* PHONE VERIFICATION (send + verify) */}
-                <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <Phone size={16} className="text-cyan-600" /> Phone {me?.phoneVerified ? "verified" : "pending"}
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
+                  <span className="inline-flex items-center gap-2 min-w-0">
+                    <Phone size={15} className="text-cyan-600 shrink-0" />
+                    <span className="truncate">Phone {me?.phoneVerified ? "verified" : "pending"}</span>
                   </span>
 
                   {!me?.phoneVerified && (
                     <motion.button
                       whileHover={{ y: -1 }}
-                      className="rounded-full border px-3 py-1 bg-white hover:bg-zinc-50 transition disabled:opacity-50"
+                      className="rounded-full border px-3 py-2 sm:py-1 bg-white hover:bg-zinc-50 transition disabled:opacity-50 text-[12px] sm:text-sm w-full sm:w-auto"
                       disabled={resendOtp.isPending || otpCooldown > 0}
                       title={otpCooldown > 0 ? `Retry in ${otpCooldown}s` : "Resend OTP"}
                       onClick={async () => {
@@ -817,8 +833,9 @@ export default function UserDashboard() {
                   )}
                 </div>
 
+
                 {!me?.phoneVerified && (
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                     <input
                       value={otpCode}
                       onChange={(e) => setOtpCode(e.target.value.replace(/[^\d]/g, "").slice(0, 6))}
@@ -827,11 +844,12 @@ export default function UserDashboard() {
                       }}
                       inputMode="numeric"
                       placeholder="Enter 6-digit OTP"
-                      className="flex-1 rounded-full border bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-fuchsia-200"
+                      className="w-full sm:flex-1 rounded-full border bg-white px-3 py-2 text-[12px] sm:text-sm outline-none focus:ring-2 focus:ring-fuchsia-200"
                     />
+
                     <motion.button
                       whileHover={{ y: -1 }}
-                      className="rounded-full border px-4 py-2 bg-white hover:bg-zinc-50 transition disabled:opacity-50 text-sm font-semibold"
+                      className="w-full sm:w-auto rounded-full border px-4 py-2 bg-white hover:bg-zinc-50 transition disabled:opacity-50 text-[12px] sm:text-sm font-semibold"
                       disabled={verifyOtp.isPending || otpCode.trim().length !== 6}
                       onClick={handleVerifyOtp}
                       title="Verify phone OTP"
@@ -840,11 +858,12 @@ export default function UserDashboard() {
                     </motion.button>
                   </div>
                 )}
+
               </div>
             </GlassCard>
 
-            <GlassCard title="Security & Privacy" icon={<ShieldCheck size={18} />}>
-              <div className="grid gap-2 text-sm">
+            <GlassCard title="Security & Privacy" icon={<ShieldCheck size={16} />}>
+              <div className="grid gap-2 text-[12px] sm:text-sm">
                 <Link to="/forgot-password" className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline">
                   Change password <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
                 </Link>
@@ -860,9 +879,8 @@ export default function UserDashboard() {
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              className="w-full text-sm rounded-full border px-4 py-2 bg-white hover:bg-zinc-50 transition inline-flex items-center justify-center gap-2"
+              className="w-full text-[12px] sm:text-sm rounded-full border px-4 py-2 bg-white hover:bg-zinc-50 transition inline-flex items-center justify-center gap-2"
               onClick={async () => {
-                // cookie-session logout + clear caches
                 try {
                   await logoutM.mutateAsync();
                 } catch {
@@ -873,18 +891,18 @@ export default function UserDashboard() {
                 }
               }}
             >
-              <LogOut size={16} /> Logout
+              <LogOut size={15} /> Logout
             </motion.button>
           </div>
 
           {/* Right rail */}
-          <div className="space-y-6">
+          <div className="min-w-0 space-y-5 sm:space-y-6">
             {/* Orders summary */}
             <GlassCard
               title="Your orders at a glance"
-              icon={<ShoppingBag size={18} />}
+              icon={<ShoppingBag size={16} />}
               right={
-                <Link className="text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
+                <Link className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
                   View all <ChevronRight size={14} />
                 </Link>
               }
@@ -892,7 +910,7 @@ export default function UserDashboard() {
               {ordersSummaryQ.isLoading ? (
                 <div className={statsGridClass}>
                   {Array.from({ length: 6 }).map((_, i) => (
-                    <div key={i} className="p-4 rounded-2xl border bg-white">
+                    <div key={i} className="p-3 sm:p-4 rounded-2xl border bg-white">
                       <Shimmer />
                       <div className="mt-2">
                         <Shimmer />
@@ -901,13 +919,18 @@ export default function UserDashboard() {
                   ))}
                 </div>
               ) : ordersSummaryQ.isError ? (
-                <div className="text-sm text-rose-600 inline-flex items-center gap-2">
+                <div className="text-[12px] sm:text-sm text-rose-600 inline-flex items-center gap-2">
                   <Info size={16} /> Couldn’t load order summary.
                 </div>
               ) : (
                 <>
                   <div className={statsGridClass}>
-                    <Stat label="Total orders" value={String(ordersSummaryQ.data?.ordersCount ?? 0)} icon={<RefreshCcw size={18} />} accent="violet" />
+                    <Stat
+                      label="Total orders"
+                      value={String(ordersSummaryQ.data?.ordersCount ?? 0)}
+                      icon={<RefreshCcw size={16} />}
+                      accent="violet"
+                    />
                     {byStatusEntries.slice(0, 5).map(([k, v]) => (
                       <Stat
                         key={k}
@@ -915,11 +938,11 @@ export default function UserDashboard() {
                         value={String(v)}
                         icon={
                           k === "PAID" ? (
-                            <CheckCircle2 size={18} />
+                            <CheckCircle2 size={16} />
                           ) : k === "SHIPPED" || k === "DELIVERED" || k === "PROCESSING" ? (
-                            <Truck size={18} />
+                            <Truck size={16} />
                           ) : (
-                            <Clock3 size={18} />
+                            <Clock3 size={16} />
                           )
                         }
                         accent={k === "PAID" ? "emerald" : k === "PENDING" ? "cyan" : "violet"}
@@ -941,9 +964,9 @@ export default function UserDashboard() {
             {/* Recent orders */}
             <GlassCard
               title="Recent orders"
-              icon={<Truck size={18} />}
+              icon={<Truck size={16} />}
               right={
-                <Link className="text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
+                <Link className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
                   View all <ChevronRight size={14} />
                 </Link>
               }
@@ -951,14 +974,14 @@ export default function UserDashboard() {
               {ordersQ.isLoading ? (
                 <div className="grid gap-3">
                   {Array.from({ length: 3 }).map((_, i) => (
-                    <div key={i} className="border rounded-2xl p-4 bg-white grid gap-2">
+                    <div key={i} className="border rounded-2xl p-3 sm:p-4 bg-white grid gap-2">
                       <Shimmer />
                       <Shimmer />
                     </div>
                   ))}
                 </div>
               ) : ordersQ.isError ? (
-                <div className="text-sm text-rose-600 inline-flex items-center gap-2">
+                <div className="text-[12px] sm:text-sm text-rose-600 inline-flex items-center gap-2">
                   <Info size={16} /> Couldn’t load orders.
                 </div>
               ) : ordersQ.data && ordersQ.data.length > 0 ? (
@@ -967,29 +990,32 @@ export default function UserDashboard() {
                     <motion.div
                       key={o.id}
                       whileHover={{ scale: 1.005 }}
-                      className="border rounded-2xl p-4 bg-white flex flex-col sm:flex-row sm:items-center gap-4"
+                      className="border rounded-2xl p-3 sm:p-4 bg-white flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4"
                     >
-                      <div className="text-xs w-28 shrink-0">
+                      <div className="text-[11px] sm:text-xs sm:w-28 shrink-0 flex items-center justify-between sm:block">
                         <div className="text-zinc-500">{dateFmt(o.createdAt)}</div>
-                        <div className="font-medium mt-1">{o.status}</div>
+                        <div className="font-medium sm:mt-1">{o.status}</div>
                       </div>
-                      <div className="flex-1 text-sm">
+
+                      <div className="flex-1 text-[12px] sm:text-sm min-w-0">
                         <div className="font-semibold">{ngn.format(o.total)}</div>
-                        <div className="text-zinc-500 mt-1">
+                        <div className="text-zinc-500 mt-1 truncate">
                           {o.items.length === 0
                             ? "No items"
                             : o.items.length === 1
-                            ? o.items[0].title
-                            : `${o.items[0].title} + ${o.items.length - 1} more`}
+                              ? o.items[0].title
+                              : `${o.items[0].title} + ${o.items.length - 1} more`}
                         </div>
                       </div>
-                      <div className="ml-auto flex items-center gap-2">
-                        <Link to={`/orders?open=${o.id}`} className="text-sm text-fuchsia-700 hover:underline">
+
+                      <div className="sm:ml-auto flex items-center justify-between sm:justify-end gap-3">
+                        <Link to={`/orders?open=${o.id}`} className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline">
                           Details
                         </Link>
+
                         <motion.button
                           whileHover={{ y: -1 }}
-                          className="text-sm rounded-full border px-3 py-1.5 bg-white hover:bg-zinc-50 transition disabled:opacity-50"
+                          className="text-[12px] sm:text-sm rounded-full border px-3 py-1.5 bg-white hover:bg-zinc-50 transition disabled:opacity-50"
                           onClick={() => buyAgain(o.id)}
                           disabled={rebuyingId === o.id}
                           title="Re-add all items from this order to your cart"
@@ -1001,16 +1027,16 @@ export default function UserDashboard() {
                   ))}
                 </div>
               ) : (
-                <div className="text-sm text-zinc-600">No recent orders yet.</div>
+                <div className="text-[12px] sm:text-sm text-zinc-600">No recent orders yet.</div>
               )}
             </GlassCard>
 
             {/* Recent transactions */}
             <GlassCard
               title="Recent transactions"
-              icon={<CreditCard size={18} />}
+              icon={<CreditCard size={16} />}
               right={
-                <Link className="text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
+                <Link className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline inline-flex items-center gap-1" to="/orders">
                   All orders <ChevronRight size={14} />
                 </Link>
               }
@@ -1018,14 +1044,14 @@ export default function UserDashboard() {
               {transactionsQ.isLoading ? (
                 <div className="grid gap-3">
                   {Array.from({ length: 3 }).map((_, i) => (
-                    <div key={i} className="border rounded-2xl p-4 bg-white grid gap-2">
+                    <div key={i} className="border rounded-2xl p-3 sm:p-4 bg-white grid gap-2">
                       <Shimmer />
                       <Shimmer />
                     </div>
                   ))}
                 </div>
               ) : transactionsQ.isError ? (
-                <div className="text-sm text-rose-600 inline-flex items-center gap-2">
+                <div className="text-[12px] sm:text-sm text-rose-600 inline-flex items-center gap-2">
                   <Info size={16} /> Couldn’t load transactions.
                 </div>
               ) : transactionsQ.data && transactionsQ.data.length > 0 ? (
@@ -1034,15 +1060,16 @@ export default function UserDashboard() {
                     <motion.div
                       key={t.orderId}
                       whileHover={{ scale: 1.005 }}
-                      className="border rounded-2xl p-4 bg-white flex items-center gap-4"
+                      className="border rounded-2xl p-3 sm:p-4 bg-white flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4"
                     >
-                      <div className="text-xs w-44">
+                      <div className="text-[11px] sm:text-xs sm:w-44 flex items-center justify-between sm:block">
                         <div className="text-zinc-500">{dateTimeFmt(t.createdAt)}</div>
-                        <div className="font-medium mt-1">{t.orderStatus}</div>
+                        <div className="font-medium sm:mt-1">{t.orderStatus}</div>
                       </div>
-                      <div className="flex-1">
-                        <div className="text-sm font-semibold">{ngn.format(t.total)}</div>
-                        <div className="text-xs text-zinc-600 mt-1">
+
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[12px] sm:text-sm font-semibold">{ngn.format(t.total)}</div>
+                        <div className="text-[11px] sm:text-xs text-zinc-600 mt-1 break-words">
                           {t.payment ? (
                             <>
                               <PaymentBadgeInline status={t.payment.status} /> {t.payment.provider || "—"} •{" "}
@@ -1053,15 +1080,16 @@ export default function UserDashboard() {
                           )}
                         </div>
                       </div>
-                      <div className="ml-auto flex items-center gap-2">
-                        <Link to={`/orders?open=${t.orderId}`} className="text-sm text-fuchsia-700 hover:underline">
+
+                      <div className="sm:ml-auto flex items-center justify-between sm:justify-end gap-3">
+                        <Link to={`/orders?open=${t.orderId}`} className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline">
                           Details
                         </Link>
                         {t.orderStatus !== "PAID" && (
                           <motion.div whileHover={{ y: -1 }}>
                             <Link
                               to={`/payment?orderId=${t.orderId}`}
-                              className="text-sm rounded-full border px-3 py-1.5 bg-white hover:bg-zinc-50 transition"
+                              className="text-[12px] sm:text-sm rounded-full border px-3 py-1.5 bg-white hover:bg-zinc-50 transition"
                             >
                               Pay now
                             </Link>
@@ -1072,28 +1100,33 @@ export default function UserDashboard() {
                   ))}
                 </div>
               ) : (
-                <div className="text-sm text-zinc-600">No recent transactions.</div>
+                <div className="text-[12px] sm:text-sm text-zinc-600">No recent transactions.</div>
               )}
             </GlassCard>
 
             {/* Insights */}
-            <GlassCard title="Your insights" icon={<Sparkles size={18} />}>
+            <GlassCard title="Your insights" icon={<Sparkles size={16} />}>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <Stat
                   label="Total spent"
                   value={totalSpentQ.isLoading ? "…" : ngn.format(totalSpentQ.data ?? 0)}
-                  icon={<CreditCard size={18} />}
+                  icon={<CreditCard size={16} />}
                   accent="emerald"
                 />
                 <Stat
                   label="Orders"
                   value={String(ordersSummaryQ.data?.ordersCount ?? 0)}
-                  icon={<ShoppingBag size={18} />}
+                  icon={<ShoppingBag size={16} />}
                   accent="cyan"
                 />
-                <Stat label="Member since" value={me?.joinedAt ? `${dateFmt(me.joinedAt)} • ${sinceJoined(me.joinedAt)} ago` : "—"} />
+                <Stat
+                  label="Member since"
+                  value={me?.joinedAt ? `${dateFmt(me.joinedAt)} • ${sinceJoined(me.joinedAt)} ago` : "—"}
+                />
               </div>
-              <p className="text-xs text-zinc-600 mt-3">Tip: Turn on personalised recommendations in Preferences to see smarter picks here.</p>
+              <p className="text-[11px] sm:text-xs text-zinc-600 mt-3">
+                Tip: Turn on personalised recommendations in Preferences to see smarter picks here.
+              </p>
             </GlassCard>
           </div>
         </div>

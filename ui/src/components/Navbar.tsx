@@ -91,6 +91,45 @@ function IconNavLink({
   );
 }
 
+/* ---------------- Mobile menu UI helpers ---------------- */
+
+function MobileMenuButton({
+  icon,
+  label,
+  onClick,
+  right,
+  variant = "default",
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  right?: ReactNode;
+  variant?: "default" | "primary" | "danger";
+}) {
+  const base =
+    "w-full rounded-2xl border px-4 py-2.5 text-left inline-flex items-center gap-3 transition select-none";
+  const text = "text-[14px] leading-5 font-semibold";
+  const iconWrap = "w-5 h-5 inline-flex items-center justify-center shrink-0";
+  const rightWrap = "ml-auto shrink-0";
+
+  const styles =
+    variant === "primary"
+      ? "bg-zinc-900 text-white border-zinc-900 hover:opacity-95"
+      : variant === "danger"
+        ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
+        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50";
+
+  const iconColor = variant === "primary" ? "text-white" : "text-zinc-700";
+
+  return (
+    <button type="button" className={`${base} ${styles}`} onClick={onClick}>
+      <span className={`${iconWrap} ${iconColor}`}>{icon}</span>
+      <span className={text}>{label}</span>
+      {right ? <span className={rightWrap}>{right}</span> : null}
+    </button>
+  );
+}
+
 export default function Navbar() {
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
@@ -157,9 +196,20 @@ export default function Navbar() {
   const showSupplierNav = isLoggedIn && isSupplier && !isRider;
   const showRiderNav = isLoggedIn && isRider;
 
+  // ✅ prevent background scroll when drawer is open
+  useEffect(() => {
+    if (!mobileMoreOpen) return;
+    const prev = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.documentElement.style.overflow = prev;
+    };
+  }, [mobileMoreOpen]);
+
   return (
     <>
-      <header className="fixed top-0 left-0 right-0 z-50 w-full border-b border-zinc-200 bg-white/80 backdrop-blur">
+      {/* ✅ navbar NOT see-through */}
+      <header className="fixed top-0 left-0 right-0 z-50 w-full border-b border-zinc-200 bg-white">
         <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-4 md:px-8 flex items-center gap-3">
           <Link
             to={brandHref}
@@ -248,7 +298,7 @@ export default function Navbar() {
                       `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${
                         isActive
                           ? "bg-zinc-900 text-white border-zinc-900"
-                          : "bg-white/80 text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                          : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`
                     }
                     title="Login"
@@ -270,8 +320,9 @@ export default function Navbar() {
                 <div className="flex items-center gap-2">
                   <div className="relative" ref={menuRef}>
                     <button
+                      type="button"
                       onClick={() => setMenuOpen((v) => !v)}
-                      className="w-10 h-10 rounded-2xl grid place-items-center border border-zinc-200 bg-white/80 text-zinc-900 font-semibold hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
+                      className="w-10 h-10 rounded-2xl grid place-items-center border border-zinc-200 bg-white text-zinc-900 font-semibold hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
                       aria-label="User menu"
                       title="Account"
                     >
@@ -288,14 +339,13 @@ export default function Navbar() {
                           <div className="text-sm font-semibold truncate text-zinc-900">
                             {displayName || userEmail || "User"}
                           </div>
-                          {userEmail && (
-                            <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>
-                          )}
+                          {userEmail && <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>}
                         </div>
 
                         {isRider ? (
                           <nav className="py-1 text-sm">
                             <button
+                              type="button"
                               className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
                               onClick={() => {
                                 setMenuOpen(false);
@@ -309,6 +359,7 @@ export default function Navbar() {
 
                             <div className="my-1 border-t border-zinc-100" />
                             <button
+                              type="button"
                               className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition inline-flex items-center gap-2"
                               onClick={logout}
                               role="menuitem"
@@ -320,6 +371,7 @@ export default function Navbar() {
                         ) : (
                           <nav className="py-1 text-sm">
                             <button
+                              type="button"
                               className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
                               onClick={() => {
                                 setMenuOpen(false);
@@ -332,6 +384,7 @@ export default function Navbar() {
                             </button>
 
                             <button
+                              type="button"
                               className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
                               onClick={() => {
                                 setMenuOpen(false);
@@ -345,6 +398,7 @@ export default function Navbar() {
 
                             {!isSupplier && (
                               <button
+                                type="button"
                                 className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
                                 onClick={() => {
                                   setMenuOpen(false);
@@ -359,6 +413,7 @@ export default function Navbar() {
 
                             {userRole === "SUPER_ADMIN" && (
                               <button
+                                type="button"
                                 className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
                                 onClick={() => {
                                   setMenuOpen(false);
@@ -373,6 +428,7 @@ export default function Navbar() {
 
                             <div className="my-1 border-t border-zinc-100" />
                             <button
+                              type="button"
                               className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition inline-flex items-center gap-2"
                               onClick={logout}
                               role="menuitem"
@@ -389,10 +445,12 @@ export default function Navbar() {
               )}
             </div>
 
+            {/* Mobile */}
             <div className="md:hidden flex items-center gap-2">
               <NotificationsBell placement="navbar" />
               <button
-                className="inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white/80 text-zinc-700 hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
+                type="button"
+                className="inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
                 aria-label="Open menu"
                 onClick={() => setMobileMoreOpen(true)}
                 title="Menu"
@@ -403,182 +461,221 @@ export default function Navbar() {
           </div>
         </div>
 
+        {/* ---------------- Mobile drawer ---------------- */}
         {mobileMoreOpen && (
           <div className="md:hidden">
-            <div className="fixed inset-0 z-50 bg-black/40" onClick={() => setMobileMoreOpen(false)} />
-            <div className="fixed z-50 top-0 right-0 left-0 border-b border-zinc-200 bg-white/95 backdrop-blur">
-              <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-                <div className="font-semibold text-zinc-900">Menu</div>
+            {/* Overlay (below sheet) */}
+            <div
+              className="fixed inset-0 z-40 bg-black/60"
+              onClick={() => setMobileMoreOpen(false)}
+            />
+
+            {/* Sheet */}
+            <div className="fixed inset-y-0 right-0 z-50 w-[88vw] max-w-sm bg-white border-l border-zinc-200 shadow-2xl flex flex-col">
+              {/* Header (sticky / non-scrolling) */}
+              <div className="px-4 py-3 border-b border-zinc-100 flex items-center justify-between shrink-0 relative">
+                <div className="text-base font-semibold text-zinc-900">Menu</div>
+
+                {/* Bigger hit target + slightly inset from edge */}
                 <button
-                  className="w-10 h-10 rounded-2xl border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+                  type="button"
                   onClick={() => setMobileMoreOpen(false)}
                   aria-label="Close menu"
+                  title="Close"
+                  className="
+                    w-11 h-11 -mr-1
+                    rounded-full border border-zinc-200
+                    bg-white text-zinc-700
+                    hover:bg-zinc-50
+                    grid place-items-center
+                    active:scale-95
+                    focus:outline-none focus:ring-4 focus:ring-fuchsia-100
+                    touch-manipulation
+                  "
                 >
-                  <X size={18} />
+                  <X size={18} className="pointer-events-none" />
                 </button>
               </div>
 
-              <div className="max-w-7xl mx-auto px-4 pb-4">
-                {showRiderNav ? (
-                  <div className="grid gap-2">
-                    <button
-                      className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                      onClick={() => nav("/supplier/orders")}
-                    >
-                      <Truck size={18} />
-                      Supplier Orders
-                    </button>
+              {/* Body (scrolls when needed) */}
+              <div className="flex-1 overflow-y-auto px-4 py-4 overscroll-contain">
+                <div className="grid gap-2">
+                  {showRiderNav ? (
+                    <>
+                      <MobileMenuButton
+                        icon={<Truck size={18} />}
+                        label="Orders"
+                        onClick={() => {
+                          setMobileMoreOpen(false);
+                          nav("/supplier/orders");
+                        }}
+                      />
 
-                    <button
-                      className="w-full rounded-2xl border border-red-200 bg-red-50 px-3 py-3 text-left text-red-700 inline-flex items-center gap-2"
-                      onClick={logout}
-                    >
-                      <LogOut size={18} />
-                      Logout
-                    </button>
-                  </div>
-                ) : (
-                  <div className="grid gap-2">
-                    <button
-                      className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                      onClick={() => nav("/")}
-                    >
-                      <LayoutGrid size={18} />
-                      Catalogue
-                    </button>
+                      <MobileMenuButton
+                        icon={<LogOut size={18} />}
+                        label="Logout"
+                        variant="danger"
+                        onClick={logout}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <MobileMenuButton
+                        icon={<LayoutGrid size={18} />}
+                        label="Catalogue"
+                        onClick={() => {
+                          setMobileMoreOpen(false);
+                          nav("/");
+                        }}
+                      />
 
-                    {showBuyerNav && (
-                      <button
-                        className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2 justify-between"
-                        onClick={() => nav("/cart")}
-                      >
-                        <span className="inline-flex items-center gap-2">
-                          <ShoppingCart size={18} />
-                          Cart
-                        </span>
+                      {showBuyerNav && (
+                        <MobileMenuButton
+                          icon={<ShoppingCart size={18} />}
+                          label="Cart"
+                          onClick={() => {
+                            setMobileMoreOpen(false);
+                            nav("/cart");
+                          }}
+                          right={
+                            cartCount.totalQty > 0 ? (
+                              <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+                                {cartCount.totalQty > 9 ? "9+" : cartCount.totalQty}
+                              </span>
+                            ) : null
+                          }
+                        />
+                      )}
 
-                        {cartCount.totalQty > 0 && (
-                          <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                            {cartCount.totalQty > 9 ? "9+" : cartCount.totalQty}
-                          </span>
-                        )}
-                      </button>
-                    )}
+                      {showSupplierNav && (
+                        <MobileMenuButton
+                          icon={<Store size={18} />}
+                          label="Supplier dashboard"
+                          onClick={() => {
+                            setMobileMoreOpen(false);
+                            nav("/supplier");
+                          }}
+                        />
+                      )}
 
-                    {showSupplierNav && (
-                      <button
-                        className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                        onClick={() => nav("/supplier")}
-                      >
-                        <Store size={18} />
-                        Supplier dashboard
-                      </button>
-                    )}
+                      {isLoggedIn && !isSupplier && !isSuperAdmin && !isRider && (
+                        <MobileMenuButton
+                          icon={<User size={18} />}
+                          label="Dashboard"
+                          onClick={() => {
+                            setMobileMoreOpen(false);
+                            nav("/dashboard");
+                          }}
+                        />
+                      )}
 
-                    {isLoggedIn && !isSupplier && !isSuperAdmin && !isRider && (
-                      <button
-                        className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                        onClick={() => nav("/dashboard")}
-                      >
-                        <User size={18} />
-                        Dashboard
-                      </button>
-                    )}
+                      {isAdmin && (
+                        <>
+                          <MobileMenuButton
+                            icon={<Shield size={18} />}
+                            label="Admin"
+                            onClick={() => {
+                              setMobileMoreOpen(false);
+                              nav("/admin");
+                            }}
+                          />
+                          <MobileMenuButton
+                            icon={<ClipboardList size={18} />}
+                            label="Offer approvals"
+                            onClick={() => {
+                              setMobileMoreOpen(false);
+                              nav("/admin/offer-changes");
+                            }}
+                          />
+                        </>
+                      )}
 
-                    {isAdmin && (
-                      <>
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/admin")}
-                        >
-                          <Shield size={18} />
-                          Admin
-                        </button>
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/admin/offer-changes")}
-                        >
-                          <ClipboardList size={18} />
-                          Offer approvals
-                        </button>
-                      </>
-                    )}
+                      <div className="h-px bg-zinc-100 my-2" />
 
-                    <div className="h-px bg-zinc-100 my-2" />
+                      {!isLoggedIn ? (
+                        <>
+                          <MobileMenuButton
+                            icon={<Store size={18} />}
+                            label="Supply"
+                            onClick={() => {
+                              setMobileMoreOpen(false);
+                              nav("/register-supplier");
+                            }}
+                          />
 
-                    {!isLoggedIn ? (
-                      <div className="grid gap-2">
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/register-supplier")}
-                        >
-                          <Store size={18} />
-                          Supply
-                        </button>
+                          <MobileMenuButton
+                            icon={<User size={18} />}
+                            label="Login"
+                            onClick={() => {
+                              setMobileMoreOpen(false);
+                              nav("/login");
+                            }}
+                          />
 
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/login")}
-                        >
-                          <User size={18} />
-                          Login
-                        </button>
+                          <MobileMenuButton
+                            icon={<CheckCircle2 size={18} />}
+                            label="Register"
+                            variant="primary"
+                            onClick={() => {
+                              setMobileMoreOpen(false);
+                              nav("/register");
+                            }}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <MobileMenuButton
+                            icon={<User size={18} />}
+                            label="Edit profile"
+                            onClick={() => {
+                              setMobileMoreOpen(false);
+                              nav("/profile");
+                            }}
+                          />
 
-                        <button
-                          className="w-full rounded-2xl bg-zinc-900 text-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/register")}
-                        >
-                          <CheckCircle2 size={18} />
-                          Register
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="grid gap-2">
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/profile")}
-                        >
-                          <User size={18} />
-                          Edit profile
-                        </button>
+                          <MobileMenuButton
+                            icon={<Settings size={18} />}
+                            label="Sessions"
+                            onClick={() => {
+                              setMobileMoreOpen(false);
+                              nav("/account/sessions");
+                            }}
+                          />
 
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/account/sessions")}
-                        >
-                          <Settings size={18} />
-                          Sessions
-                        </button>
+                          {!isSupplier && (
+                            <MobileMenuButton
+                              icon={<Package size={18} />}
+                              label="Purchase history"
+                              onClick={() => {
+                                setMobileMoreOpen(false);
+                                nav("/orders");
+                              }}
+                            />
+                          )}
 
-                        {!isSupplier && (
-                          <button
-                            className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                            onClick={() => nav("/orders")}
-                          >
-                            <Package size={18} />
-                            Purchase history
-                          </button>
-                        )}
+                          <MobileMenuButton
+                            icon={<LogOut size={18} />}
+                            label="Logout"
+                            variant="danger"
+                            onClick={logout}
+                          />
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
 
-                        <button
-                          className="w-full rounded-2xl border border-red-200 bg-red-50 px-3 py-3 text-left text-red-700 inline-flex items-center gap-2"
-                          onClick={logout}
-                        >
-                          <LogOut size={18} />
-                          Logout
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
+                {/* bottom breathing room + iOS safe area */}
+                <div className="h-6 pb-[env(safe-area-inset-bottom)]" />
               </div>
             </div>
           </div>
         )}
       </header>
 
+      {/* spacer under fixed navbar */}
       <div className="h-14 md:h-16" />
-      <div className="md:hidden h-16" />
+      <div className="md:hidden h-2" />
       {!hydrated && <div className="sr-only">Loading session…</div>}
     </>
   );

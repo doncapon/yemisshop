@@ -79,7 +79,7 @@ app.set("trust proxy", 1);
 /* -------------------- CORS (MUST match preflight + request) -------------------- */
 const allowedOrigins = [
   process.env.APP_URL,
-  "https://app.dayspringhouse.com",
+  "https://dayspringhouse.com",
   "http://localhost:5173",
   "http://127.0.0.1:5173",
 ].filter(Boolean) as string[];

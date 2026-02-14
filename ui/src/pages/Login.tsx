@@ -200,7 +200,7 @@ export default function Login() {
         localStorage.setItem("verifyEmail", profile.email);
         if (vt) localStorage.setItem("verifyToken", vt);
         else localStorage.removeItem("verifyToken");
-      } catch {}
+      } catch { }
 
       const from = (loc.state as any)?.from?.pathname as string | undefined;
 
@@ -233,7 +233,7 @@ export default function Login() {
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
           if (vt) localStorage.setItem("verifyToken", vt);
-        } catch {}
+        } catch { }
 
         setCooldown(1);
         return;
@@ -367,7 +367,7 @@ export default function Login() {
           <div className="absolute -bottom-28 -left-16 w-[28rem] h-[28rem] rounded-full blur-3xl opacity-30 bg-cyan-300/50" />
         </div>
 
-        <div className="relative grid place-items-center min-h-[100dvh] px-4 py-10">
+        <div className="relative -mt-10 sm:mt-0 grid place-items-center min-h-[100dvh] px-4 py-8 sm:py-10">
           <div className="w-full max-w-md">
             <div className="mb-6 text-center">
               <div className="flex justify-center">
@@ -387,7 +387,7 @@ export default function Login() {
             <form
               onSubmit={submit}
               noValidate
-              className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm p-6 space-y-5"
+              className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm p-5 sm:p-6 space-y-5"
             >
               {err && (
                 <div className="text-sm rounded-xl border border-rose-300/60 bg-rose-50 text-rose-700 px-3 py-2">
@@ -426,8 +426,8 @@ export default function Login() {
                             {emailBusy
                               ? "Sending…"
                               : emailCooldown > 0
-                              ? `Resend in ${emailCooldown}s`
-                              : "Resend verification email"}
+                                ? `Resend in ${emailCooldown}s`
+                                : "Resend verification email"}
                           </button>
                           <button
                             type="button"
@@ -461,15 +461,15 @@ export default function Login() {
                             {otpBusy
                               ? "Sending…"
                               : otpCooldown > 0
-                              ? `Send again in ${otpCooldown}s`
-                              : "Send OTP"}
+                                ? `Send again in ${otpCooldown}s`
+                                : "Send OTP"}
                           </button>
 
                           <input
                             value={otp}
                             onChange={(e) => setOtp(e.target.value)}
                             placeholder="Enter OTP"
-                            className="w-32 rounded-xl border bg-white px-3 py-2 text-xs text-slate-900 outline-none focus:ring-4 focus:ring-fuchsia-200"
+                            className="w-32 rounded-xl border bg-white px-3 py-2 text-[16px] text-slate-900 outline-none focus:ring-4 focus:ring-fuchsia-200"
                           />
 
                           <button
@@ -496,7 +496,7 @@ export default function Login() {
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="you@example.com"
                     autoComplete="username"
-                    className="peer w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
+                    className="peer w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-10 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
                   <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-fuchsia-600 transition">
                     ✉
@@ -505,12 +505,19 @@ export default function Login() {
               </div>
 
               <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <label className="block text-sm font-medium text-zinc-800">Password</label>
-                  <Link className="text-xs text-fuchsia-700 hover:underline" to="/forgot-password">
+                {/* ✅ Stack on mobile, row on sm+ so link never overlaps */}
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <label className="block text-sm font-medium text-zinc-800 leading-tight">
+                    Password
+                  </label>
+                  <Link
+                    className="text-xs text-fuchsia-700 hover:underline leading-tight sm:leading-normal self-start sm:self-auto"
+                    to="/forgot-password"
+                  >
                     Forgot password?
                   </Link>
                 </div>
+
                 <div className="relative group">
                   <input
                     value={password}
@@ -518,7 +525,7 @@ export default function Login() {
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
                     autoComplete="current-password"
-                    className="peer w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
+                    className="peer w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-10 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
                   <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-fuchsia-600 transition">
                     🔒
@@ -534,10 +541,10 @@ export default function Login() {
                 {!hydrated
                   ? "Preparing…"
                   : loading
-                  ? "Logging in…"
-                  : cooldown > 0
-                  ? `Try again in ${cooldown}s`
-                  : "Login"}
+                    ? "Logging in…"
+                    : cooldown > 0
+                      ? `Try again in ${cooldown}s`
+                      : "Login"}
               </button>
 
               <div className="pt-1 text-center text-sm text-zinc-700">

@@ -22,6 +22,125 @@ function getSessionId(req: any) {
   return req.user?.sid || req.auth?.sessionId || null;
 }
 
+/**
+ * Normalize whatever we have into a "me" shape the UI expects.
+ * (Avoids throwing if some fields don't exist in schema.)
+ */
+function normalizeMe(raw: any) {
+  if (!raw) return null;
+
+  const emailVerified =
+    raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1;
+
+  const phoneVerified =
+    raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
+
+  return {
+    id: String(raw.id ?? ""),
+    email: String(raw.email ?? ""),
+    role: String(raw.role ?? "SHOPPER"),
+    firstName: raw.firstName ?? null,
+    middleName: raw.middleName ?? null,
+    lastName: raw.lastName ?? null,
+    status: raw.status ?? null,
+    emailVerified,
+    phoneVerified,
+  };
+}
+
+/**
+ * ✅ GET /api/auth/session
+ * Always 200:
+ * - { user: null } if not logged in
+ * - { user: {...}, sid } if logged in
+ *
+ * This is the "console-noise-free" bootstrap endpoint.
+ */
+router.get(
+  "/session",
+  wrap(async (req, res) => {
+    const userId = getUserId(req);
+    const sid = getSessionId(req);
+
+    if (!userId) {
+      return res.json({ user: null, sid: null });
+    }
+
+    // Best effort: read fresh profile from DB (falls back to req.user if select fails)
+    let profile: any = null;
+
+    try {
+      profile = await prisma.user.findUnique({
+        where: { id: String(userId) },
+        // ⚠️ Use a permissive select; if some fields don't exist, catch handles it.
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          firstName: true,
+          middleName: true,
+          lastName: true,
+          status: true,
+          emailVerified: true as any,
+          phoneVerified: true as any,
+          emailVerifiedAt: true as any,
+          phoneVerifiedAt: true as any,
+        } as any,
+      });
+    } catch {
+      // fallback to whatever auth middleware put on req.user
+      profile = (req as any).user ?? null;
+    }
+
+    const me = normalizeMe(profile);
+    if (!me?.id) return res.json({ user: null, sid: null });
+
+    return res.json({ user: me, sid: sid ?? null });
+  })
+);
+
+/**
+ * ✅ GET /api/auth/me (soft)
+ * Keeps your frontend working if it's already calling /me,
+ * but avoids red 401 noise by returning 200 with { user: null } when anonymous.
+ */
+router.get(
+  "/me",
+  wrap(async (req, res) => {
+    const userId = getUserId(req);
+    const sid = getSessionId(req);
+
+    if (!userId) return res.json({ user: null, sid: null });
+
+    let profile: any = null;
+    try {
+      profile = await prisma.user.findUnique({
+        where: { id: String(userId) },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          firstName: true,
+          middleName: true,
+          lastName: true,
+          status: true,
+          emailVerified: true as any,
+          phoneVerified: true as any,
+          emailVerifiedAt: true as any,
+          phoneVerifiedAt: true as any,
+        } as any,
+      });
+    } catch {
+      profile = (req as any).user ?? null;
+    }
+
+    const me = normalizeMe(profile);
+    if (!me?.id) return res.json({ user: null, sid: null });
+
+    return res.json(me); // if your UI expects bare profile for /me
+  })
+);
+
 // GET /api/auth/sessions
 router.get("/sessions", requireAuth, async (req, res) => {
   const userId = getUserId(req);
@@ -114,22 +233,25 @@ router.patch("/sessions/:id", requireAuth, async (req, res) => {
 });
 
 // POST /api/auth/logout  ✅ ALWAYS clears cookie, even if auth is broken
-router.post("/logout", wrap(async (req, res) => {
-  // Best-effort revoke current session if present (optional)
-  try {
-    const sid = (req as any)?.user?.sid as string | undefined;
-    if (sid) {
-      await prisma.userSession.updateMany({
-        where: { id: sid },
-        data: { revokedAt: new Date(), revokedReason: "Logged out" } as any,
-      });
+router.post(
+  "/logout",
+  wrap(async (req, res) => {
+    // Best-effort revoke current session if present (optional)
+    try {
+      const sid = (req as any)?.user?.sid as string | undefined;
+      if (sid) {
+        await prisma.userSession.updateMany({
+          where: { id: sid },
+          data: { revokedAt: new Date(), revokedReason: "Logged out" } as any,
+        });
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
-  }
 
-  clearAccessTokenCookie(res);
-  return res.json({ ok: true });
-}));
+    clearAccessTokenCookie(res);
+    return res.json({ ok: true });
+  })
+);
 
 export default router;

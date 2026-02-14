@@ -16,6 +16,7 @@ import {
   LayoutGrid,
   ArrowUpDown,
   CheckCircle2,
+  X,
 } from 'lucide-react';
 import SiteLayout from '../layouts/SiteLayout.js';
 import { showMiniCartToast } from '../components/cart/MiniCartToast';
@@ -128,11 +129,6 @@ const nnum = (v: any): number => {
   return Number.isFinite(n) ? n : NaN;
 };
 
-function toNumber(v: any, def = NaN): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : def;
-}
-
 /* ---------------- Helpers: stock model ---------------- */
 
 function sumActivePositiveQty(offers?: SupplierOfferLite[]): number {
@@ -204,11 +200,6 @@ function computeAvailableNowFromOffers(
   return false;
 }
 
-function variantAvailableNow(v?: Variant): boolean {
-  if (!v) return false;
-  return computeAvailableNowFromOffers(v.inStock === true, v.offers, []);
-}
-
 function availableNow(p: Product): boolean {
   return computeAvailableNowFromOffers(p.inStock === true, p.supplierOffers, p.variants ?? []);
 }
@@ -227,8 +218,7 @@ function offerSupplierPrice(o?: SupplierOfferLite): number {
 
 function applyMargin(supplierPrice: number, marginPct: number): number {
   if (!(supplierPrice > 0)) return 0;
-  const out = supplierPrice * (1 + marginPct / 100);
-  return out;
+  return supplierPrice * (1 + marginPct / 100);
 }
 
 /**
@@ -303,7 +293,6 @@ function pickBestAndCheapestOffer(
     const avg = Number(o.supplierRatingAvg);
     if (Number.isFinite(avg) && avg > 0) ratingAvgs.push(avg);
 
-    // bayes computed later once we know C
     candidates.push({ offer: o, supplierPrice: sp, bayes: 0 });
   }
 
@@ -439,27 +428,6 @@ function getRetailPricePair(
 }
 
 /**
- * Cheapest supplier-side price across BOTH product-level and variant-level offers.
- */
-function getCheapestSupplierPrice(
-  p: Product,
-  opts: { inStockOnlyPricing: boolean }
-): number | null {
-  const offers = collectAllOffers(p);
-  const candidates: number[] = [];
-
-  for (const o of offers) {
-    if (!o || o.isActive === false) continue;
-    if (opts.inStockOnlyPricing && !offerStockOk(o)) continue;
-
-    const sp = offerSupplierPrice(o);
-    if (sp > 0) candidates.push(sp);
-  }
-
-  return candidates.length ? Math.min(...candidates) : null;
-}
-
-/**
  * Fallback retail price coming directly from Product.price / Variant.price
  * (keeps your system working if offers don’t return price yet).
  */
@@ -512,19 +480,23 @@ function readCart(): Array<{ productId: string; variantId?: string | null; qty: 
 /* ---------------- Purchased counts (for relevance sort) ---------------- */
 
 function usePurchasedCounts(enabledOverride = true) {
-  const token = useAuthStore((s) => s.token);
+  const user = useAuthStore((s) => s.user);
 
+  // ✅ IMPORTANT: must RETURN the useQuery result (fixes "void" / .data error)
   return useQuery<Record<string, number>>({
     queryKey: ['orders', 'mine', 'purchased-counts'],
-    enabled: !!token && enabledOverride,
+    enabled: !!user && enabledOverride,
     retry: 0,
     staleTime: 30_000,
     queryFn: async () => {
-      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
       const LIMIT = 200;
 
       try {
-        const { data } = await api.get('/api/orders/mine', { headers, params: { limit: LIMIT } });
+        // ✅ cookie auth
+        const { data } = await api.get('/api/orders/mine', {
+          withCredentials: true,
+          params: { limit: LIMIT },
+        });
 
         const orders: any[] = Array.isArray((data as any)?.data)
           ? (data as any).data
@@ -620,12 +592,52 @@ function bestSupplierRatingScore(p: Product): number {
   return best;
 }
 
+/* ---------------- Motion circle (loader) ---------------- */
+
+function MotionCircleLoader({ label = 'Loading…' }: { label?: string }) {
+  return (
+    <div className="flex flex-col items-center gap-3" role="status" aria-label={label}>
+      <div className="relative w-24 h-24 sm:w-28 sm:h-28 md:w-32 md:h-32">
+        <svg className="absolute inset-0" viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="44" fill="none" stroke="rgba(226,232,240,0.9)" strokeWidth="8" />
+        </svg>
+
+        <motion.svg
+          className="absolute inset-0"
+          viewBox="0 0 100 100"
+          animate={{ rotate: 360 }}
+          transition={{ repeat: Infinity, duration: 1.2, ease: 'linear' }}
+        >
+          <circle
+            cx="50"
+            cy="50"
+            r="44"
+            fill="none"
+            stroke="rgba(59,130,246,0.95)"
+            strokeWidth="8"
+            strokeLinecap="round"
+            strokeDasharray="160 120"
+          />
+        </motion.svg>
+
+        <motion.div
+          className="absolute inset-0 rounded-full"
+          animate={{ scale: [1, 1.03, 1] }}
+          transition={{ repeat: Infinity, duration: 1.6, ease: 'easeInOut' }}
+        />
+      </div>
+
+      <div className="text-sm text-zinc-600">{label}</div>
+    </div>
+  );
+}
+
 /* ---------------- Component ---------------- */
 
 export default function Catalog() {
-  const { token } = useAuthStore();
   const user = useAuthStore((s) => s.user);
   const isSupplier = user?.role === 'SUPPLIER';
+  const isAuthed = !!user;
 
   const { openModal } = useModal();
   const nav = useNavigate();
@@ -674,11 +686,27 @@ export default function Catalog() {
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const suggestRef = useRef<HTMLDivElement | null>(null);
-  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+
+  // ✅ one drawer for ALL: search + sort + per-page + filters
+  const [refineOpen, setRefineOpen] = useState(false);
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
 
   // default checked (in-stock only)
   const [inStockOnly, setInStockOnly] = useState(true);
+
+  const closeRefine = () => {
+    setRefineOpen(false);
+    setShowSuggest(false);
+  };
+
+  // lock body scroll when drawer open
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    if (refineOpen) document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [refineOpen]);
 
   // Pin OOS to bottom when we are not filtering them out
   const stockRank = (p: Product) => (availableNow(p) ? 0 : 1);
@@ -837,24 +865,25 @@ export default function Catalog() {
   // Favorites (disable for suppliers)
   const favQuery = useQuery({
     queryKey: ['favorites', 'mine'],
-    enabled: !!token && !isSupplier,
+    enabled: !isSupplier && isAuthed,
+    retry: (count, e: any) => (Number(e?.response?.status) === 401 ? false : count < 2),
     queryFn: async () => {
-      const { data } = await api.get<{ productIds: string[] }>('/api/favorites/mine', {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      });
-      return new Set(data.productIds || []);
+      const { data } = await api.get('/api/favorites/mine', { withCredentials: true });
+      return new Set((data as any)?.productIds || []);
     },
     initialData: new Set<string>(),
   });
+
 
   const isFav = (id: string) => !!favQuery.data?.has(id);
 
   const toggleFav = useMutation({
     mutationFn: async ({ productId }: { productId: string }) => {
+      // ✅ cookie auth (no Authorization header)
       const { data } = await api.post<{ favorited: boolean }>(
         '/api/favorites/toggle',
         { productId },
-        token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
+        { withCredentials: true }
       );
       return { productId, favorited: !!data.favorited };
     },
@@ -1086,9 +1115,11 @@ export default function Catalog() {
       count: priceCounts[i] || 0,
     })).filter((x) => x.count > 0);
 
+    // ✅ FIXED: define price before using it
     let filteredCore = baseByQuery.filter((p) => {
+      const price = priceForFiltering(p);
       const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? 'uncategorized');
-      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(priceForFiltering(p), b));
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
       const brandOk = activeBrands.size === 0 ? true : activeBrands.has(getBrandName(p));
       return catOk && priceOk && brandOk;
     });
@@ -1109,7 +1140,7 @@ export default function Catalog() {
 
   /* -------- Sorting -------- */
 
-  const purchasedQ = usePurchasedCounts(!isSupplier);
+  const purchasedQ = usePurchasedCounts(!isSupplier); // ✅ now returns query result (not void)
 
   const recScored = useMemo(() => {
     if (sortKey !== 'relevance') return filtered;
@@ -1222,16 +1253,7 @@ export default function Catalog() {
   if (productsQ.isLoading)
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
-        <div
-          className="relative w-[10rem] aspect-square sm:w-[13rem] md:w-[16rem]"
-          role="status"
-          aria-label="Loading products"
-        >
-          <div className="absolute inset-0 rounded-full border-2 border-slate-200/70" />
-          <div className="absolute inset-[18%] rounded-full border border-slate-200/40" />
-          <div className="absolute inset-[8%] rounded-full bg-[conic-gradient(from_0deg,rgba(59,130,246,0.9),rgba(59,130,246,0.05)_40%,transparent_65%)] animate-[spin_1.8s_linear_infinite]" />
-          <div className="absolute top-1/2 left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-500" />
-        </div>
+        <MotionCircleLoader label="Loading products…" />
       </div>
     );
 
@@ -1239,16 +1261,7 @@ export default function Catalog() {
     return (
       <>
         <div className="flex min-h-[60vh] items-center justify-center">
-          <div
-            className="relative w-[10rem] aspect-square sm:w-[13rem] md:w-[16rem]"
-            role="status"
-            aria-label="Error loading products"
-          >
-            <div className="absolute inset-0 rounded-full border-2 border-slate-200/70" />
-            <div className="absolute inset-[18%] rounded-full border border-slate-200/40" />
-            <div className="absolute inset-[8%] rounded-full bg-[conic-gradient(from_0deg,rgba(59,130,246,0.9),rgba(59,130,246,0.05)_40%,transparent_65%)] animate-[spin_1.8s_linear_infinite]" />
-            <div className="absolute top-1/2 left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-500" />
-          </div>
+          <MotionCircleLoader label="Loading products…" />
         </div>
         <p className="p-6 text-center text-rose-600">We are sorry, we are having technical issues</p>
       </>
@@ -1271,347 +1284,126 @@ export default function Catalog() {
     <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />
   );
 
+  const anyActiveFilter =
+    selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly;
+  const hasSearch = !!query.trim();
+
   return (
     <SiteLayout>
-      <div className="mx-auto max-w-7xl px-4 md:px-8 pt-2 pb-5 md:py-8">
-        {/* Header (Shopify-minimal) */}
-        <div className="border-b bg-white">
+      <div
+        className="mx-auto max-w-7xl px-1 sm:px-4 md:px-8 pt-0 pb-4 md:py-8 -mt-6 md:mt-0"
+        // ✅ swipe from RIGHT edge to open drawer (mobile/tablet)
+        onTouchStart={(e) => {
+          if (refineOpen) return;
+          const x = e.touches[0]?.clientX ?? 0;
+          const w = window.innerWidth || 0;
+          if (w > 0 && x > w - 24) setTouchStartX(x);
+        }}
+        onTouchMove={(e) => {
+          if (touchStartX == null || refineOpen) return;
+          const x = e.touches[0]?.clientX ?? 0;
+          const dx = x - touchStartX; // moving left => negative
+          if (dx < -40) {
+            setRefineOpen(true);
+            setTouchStartX(null);
+          }
+        }}
+        onTouchEnd={() => setTouchStartX(null)}
+      >
+        {/* ✅ Desktop hero only */}
+        <div className="hidden md:block border-b bg-white">
           <div className="mx-auto max-w-7xl px-4 md:px-8 pt-3 pb-4 md:py-10">
             <div className="flex items-start justify-between gap-6">
               <div className="min-w-0">
-                <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-zinc-900">
-                  Discover Products
-                </h1>
+                <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-zinc-900">Discover Products</h1>
                 <p className="mt-2 text-sm md:text-base text-zinc-600">
                   Fresh picks, smart sorting, and instant search—tailored for you.
                 </p>
               </div>
+
+              <button
+                type="button"
+                onClick={() => setRefineOpen(true)}
+                className="hidden md:inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium bg-white/90 text-zinc-800 shadow-sm active:scale-[0.98] transition silver-border silver-hover"
+              >
+                <SlidersHorizontal size={18} />
+                Refine
+              </button>
             </div>
           </div>
         </div>
 
-        {/* Body */}
-        <div
-          className="grid grid-cols-1 md:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] gap-6 lg:gap-8"
-          onTouchStart={(e) => {
-            const x = e.touches[0]?.clientX ?? 0;
-            if (x < 24 && !mobileFiltersOpen) setTouchStartX(x);
-          }}
-          onTouchMove={(e) => {
-            if (touchStartX == null || mobileFiltersOpen) return;
-            const x = e.touches[0]?.clientX ?? 0;
-            const dx = x - touchStartX;
-            if (dx > 40) {
-              setMobileFiltersOpen(true);
-              setTouchStartX(null);
-            }
-          }}
-          onTouchEnd={() => setTouchStartX(null)}
-        >
-          {/* LEFT: Filters */}
-          <aside className="hidden md:block space-y-6 mt-6 md:mt-10">
-            <motion.section
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="rounded-2xl bg-white p-5 silver-border-grad silver-hover"
+        {/* ✅ Mobile compact title */}
+        <div className="md:hidden mb-2 flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold text-zinc-900">Products</h1>
+            <p className="text-xs text-zinc-600">Search and filter quickly.</p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setRefineOpen(true)}
+            className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-medium bg-white/90 text-zinc-800 shadow-sm active:scale-[0.97] transition silver-border silver-hover"
+          >
+            <SlidersHorizontal size={14} />
+            Refine
+          </button>
+        </div>
+
+        {/* ✅ Context chips (so users see their current settings without the controls in-page) */}
+        {(hasSearch || anyActiveFilter || sortKey !== 'relevance' || pageSize !== 9) && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-700">
+            {hasSearch && (
+              <span className="rounded-full border bg-white/80 px-2.5 py-1 silver-border">
+                Search: <span className="font-semibold">{query.trim()}</span>
+              </span>
+            )}
+            {anyActiveFilter && (
+              <span className="rounded-full border bg-white/80 px-2.5 py-1 silver-border">
+                Filters: <span className="font-semibold">active</span>
+              </span>
+            )}
+            {sortKey !== 'relevance' && (
+              <span className="rounded-full border bg-white/80 px-2.5 py-1 silver-border">
+                Sort:{' '}
+                <span className="font-semibold">
+                  {sortKey === 'price-asc' ? 'Low → High' : sortKey === 'price-desc' ? 'High → Low' : 'Relevance'}
+                </span>
+              </span>
+            )}
+            {pageSize !== 9 && (
+              <span className="rounded-full border bg-white/80 px-2.5 py-1 silver-border">
+                Per page: <span className="font-semibold">{pageSize}</span>
+              </span>
+            )}
+            <button
+              type="button"
+              className="ml-auto inline-flex items-center gap-1 rounded-full px-3 py-1.5 bg-white/90 shadow-sm silver-border silver-hover"
+              onClick={() => setRefineOpen(true)}
             >
-              <div className="flex items-center justify-between mb-3">
-                <div className="inline-flex items-center gap-2">
-                  <span className="inline-grid place-items-center w-8 h-8 rounded-xl bg-gradient-to-br from-fuchsia-500/15 to-cyan-500/15 text-fuchsia-600">
-                    <SlidersHorizontal size={18} />
-                  </span>
-                  <h3 className="font-semibold text-zinc-900">Filters</h3>
-                </div>
+              <SlidersHorizontal size={14} />
+              Edit
+            </button>
+          </div>
+        )}
 
-                <div className="flex items-center gap-3">
-                  <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-800 select-none">
-                    <input
-                      type="checkbox"
-                      checked={inStockOnly}
-                      onChange={(e) => setInStockOnly(e.target.checked)}
-                      className="h-4 w-4 rounded border-zinc-300"
-                    />
-                    In stock
-                  </label>
-
-                  {(selectedCategories.length > 0 ||
-                    selectedBucketIdxs.length > 0 ||
-                    selectedBrands.length > 0 ||
-                    !inStockOnly) && (
-                      <button className="text-sm text-fuchsia-700 hover:underline" onClick={clearFilters}>
-                        Clear all
-                      </button>
-                    )}
-                </div>
-              </div>
-
-              {/* Categories */}
-              <div className="mb-6">
-                <div className="flex items-center gap-3 mb-3">
-                  <h4 className="text-sm font-semibold text-zinc-800">Categories</h4>
-                  <button
-                    className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => setSelectedCategories([])}
-                    disabled={selectedCategories.length === 0}
-                  >
-                    Reset
-                  </button>
-                </div>
-                <ul className="space-y-2">
-                  {categories.length === 0 && <Shimmer />}
-                  {categories.map((c) => {
-                    const checked = selectedCategories.includes(c.id);
-                    return (
-                      <li key={c.id}>
-                        <button
-                          onClick={() => toggleCategory(c.id)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
-                            ? 'bg-zinc-900 text-white'
-                            : 'bg-white/80 hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
-                            }`}
-                        >
-                          <span className="truncate">{c.name}</span>
-                          <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
-                            ({c.count})
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-
-              {/* Brands */}
-              {brands.length > 0 && (
-                <div className="mb-6">
-                  <div className="flex items-center gap-3 mb-3">
-                    <h4 className="text-sm font-semibold text-zinc-800">Brands</h4>
-                    <button
-                      className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
-                      onClick={() => setSelectedBrands([])}
-                      disabled={selectedBrands.length === 0}
-                    >
-                      Reset
-                    </button>
-                  </div>
-                  <ul className="space-y-2">
-                    {brands.map((b) => {
-                      const checked = selectedBrands.includes(b.name);
-                      return (
-                        <li key={b.name}>
-                          <button
-                            onClick={() => toggleBrand(b.name)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
-                              ? 'bg-zinc-900 text-white'
-                              : 'bg-white/80 hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
-                              }`}
-                          >
-                            <span className="truncate">{b.name}</span>
-                            <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
-                              ({b.count})
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              )}
-
-              {/* Price */}
-              <div>
-                <div className="flex items-center gap-3 mb-3">
-                  <h4 className="text-sm font-semibold text-zinc-800">Price</h4>
-                  <button
-                    className="text-xs text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => setSelectedBucketIdxs([])}
-                    disabled={selectedBucketIdxs.length === 0}
-                  >
-                    Reset
-                  </button>
-                </div>
-                <ul className="space-y-2">
-                  {visiblePriceBuckets.length === 0 && <Shimmer />}
-                  {visiblePriceBuckets.map(({ bucket, idx, count }) => {
-                    const checked = selectedBucketIdxs.includes(idx);
-                    return (
-                      <li key={bucket.label}>
-                        <button
-                          onClick={() => toggleBucket(idx)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition ${checked
-                            ? 'bg-zinc-900 text-white'
-                            : 'bg-white/80 hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
-                            }`}
-                        >
-                          <span>{bucket.label}</span>
-                          <span className={`ml-2 text-xs ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
-                            ({count})
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            </motion.section>
-          </aside>
-
-          {/* RIGHT: Products */}
-          <section className="mt-2 md:mt-0 min-w-0">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="text-xl md:text-2xl font-semibold text-zinc-900">Products</h2>
-
-              <button
-                type="button"
-                onClick={() => setMobileFiltersOpen(true)}
-                className="md:hidden inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-medium bg-white/90 text-zinc-800 shadow-sm active:scale-[0.97] transition silver-border silver-hover"
-              >
-                <SlidersHorizontal size={14} />
-                Filters
-              </button>
-            </div>
-
-            {/* Search / Sort / Per page (clean, no “hole”) */}
-            <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_auto] gap-3 lg:gap-4 items-center mb-5">
-              <div className="relative w-full">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
-                  <input
-                    ref={inputRef}
-                    value={query}
-                    onChange={(e) => {
-                      setQuery(e.target.value);
-                      setShowSuggest(true);
-                      setActiveIdx(0);
-                    }}
-                    onFocus={() => query && setShowSuggest(true)}
-                    onKeyDown={(e) => {
-                      if (!showSuggest || suggestions.length === 0) return;
-                      if (e.key === 'ArrowDown') {
-                        e.preventDefault();
-                        setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                      } else if (e.key === 'ArrowUp') {
-                        e.preventDefault();
-                        setActiveIdx((i) => Math.max(i - 1, 0));
-                      } else if (e.key === 'Enter') {
-                        e.preventDefault();
-                        const pick = suggestions[activeIdx];
-                        if (pick) {
-                          bumpClick(pick.id);
-                          nav(`/product/${pick.id}`);
-                        }
-                        setShowSuggest(false);
-                      } else if (e.key === 'Escape') {
-                        setShowSuggest(false);
-                      }
-                    }}
-                    placeholder="Search products, brands, or categories…"
-                    className="rounded-2xl pl-9 pr-4 py-3 w-full bg-white/90 backdrop-blur transition silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
-                    aria-label="Search products"
-                  />
-                </div>
-
-                {showSuggest && query && suggestions.length > 0 && (
-                  <div
-                    ref={suggestRef}
-                    className="absolute left-0 right-0 mt-3 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden silver-border-grad"
-                  >
-                    <ul className="max-h-[80vh] overflow-auto p-3">
-                      {suggestions.map((p, i) => {
-                        const active = i === activeIdx;
-                        const minPrice = priceForFiltering(p);
-                        const pricingInStockOnly = inStockOnly ? true : availableNow(p);
-                        const cheapest = getRetailPricePair(p, settingsMarginPct, {
-                          inStockOnlyPricing: pricingInStockOnly,
-                        }).cheapestRetail;
-
-                        return (
-                          <li key={p.id} className="mb-3 last:mb-0">
-                            <Link
-                              to={`/product/${p.id}`}
-                              className={`flex items-center gap-4 px-3 py-3 rounded-xl hover:bg-black/5 ${active ? 'bg-black/5' : ''
-                                }`}
-                              onClick={() => bumpClick(p.id)}
-                            >
-                              {p.imagesJson?.[0] ? (
-                                <img
-                                  src={p.imagesJson[0]}
-                                  alt={p.title}
-                                  className="w-[120px] h-[120px] object-cover rounded-xl silver-border"
-                                />
-                              ) : (
-                                <div className="w-[120px] h-[120px] rounded-xl silver-border grid place-items-center text-base text-gray-500">
-                                  —
-                                </div>
-                              )}
-                              <div className="min-w-0">
-                                <div className="text-lg font-semibold truncate">{p.title}</div>
-                                <div className="text-sm opacity-80 truncate">
-                                  {ngn.format(minPrice)}
-                                  {Number.isFinite(cheapest) &&
-                                    cheapest > 0 &&
-                                    Math.abs(cheapest - minPrice) > 0.01 && (
-                                      <span className="ml-2 text-zinc-500">• Cheapest: {ngn.format(cheapest)}</span>
-                                    )}
-                                  {p.categoryName ? ` • ${p.categoryName}` : ''}
-                                  {getBrandName(p) ? ` • ${getBrandName(p)}` : ''}
-                                </div>
-
-                                {p.description && (
-                                  <div className="text-sm opacity-70 line-clamp-2 mt-1">{p.description}</div>
-                                )}
-                              </div>
-                            </Link>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                )}
-              </div>
-
-              <div className="text-sm inline-flex items-center gap-2 lg:justify-self-end">
-                <ArrowUpDown size={16} className="text-zinc-600" />
-                <label className="opacity-70">Sort</label>
-                <select
-                  value={sortKey}
-                  onChange={(e) => setSortKey(e.target.value as any)}
-                  className="rounded-xl px-3 py-2 bg-white/90 silver-border"
-                >
-                  <option value="relevance">Relevance</option>
-                  <option value="price-asc">Price: Low → High</option>
-                  <option value="price-desc">Price: High → Low</option>
-                </select>
-              </div>
-
-              <div className="text-sm inline-flex items-center gap-2 lg:justify-self-end">
-                <LayoutGrid size={16} className="text-zinc-600" />
-                <label className="opacity-70">Per page</label>
-                <select
-                  value={pageSize}
-                  onChange={(e) => setPageSize(Number(e.target.value) as 6 | 9 | 12)}
-                  className="rounded-xl px-3 py-2 bg-white/90 silver-border"
-                >
-                  <option value={6}>6</option>
-                  <option value={9}>9</option>
-                  <option value={12}>12</option>
-                </select>
-              </div>
-            </div>
-
+        {/* Body (no left sidebar now) */}
+        <div className="mt-2">
+          {/* Products */}
+          <section className="mt-0 min-w-0">
             {/* Grid */}
             {sorted.length === 0 ? (
               <p className="text-sm text-zinc-600">No products match your filters.</p>
             ) : (
               <>
-                <div className="grid gap-3 md:gap-4 grid-cols-2 md:grid-cols-3">
+                <div className="-mx-2 sm:mx-0 grid gap-1.5 sm:gap-3 md:gap-4 grid-cols-2 md:grid-cols-3">
                   {pageItems.map((p) => {
                     const fav = isFav(p.id);
                     const pricingInStockOnly = inStockOnly ? true : availableNow(p);
                     const pricePair = getRetailPricePair(p, settingsMarginPct, {
                       inStockOnlyPricing: pricingInStockOnly,
                     });
-                    const bestPrice = priceForFiltering(p); // now == best-within-band
+                    const bestPrice = priceForFiltering(p);
                     const cheapestPrice = pricePair.cheapestRetail;
 
                     const isBestValue =
@@ -1619,7 +1411,7 @@ export default function Catalog() {
                       bestPrice > 0 &&
                       Number.isFinite(cheapestPrice) &&
                       cheapestPrice > 0 &&
-                      Math.abs(bestPrice - cheapestPrice) > 0.01; // best != cheapest
+                      Math.abs(bestPrice - cheapestPrice) > 0.01;
 
                     const brand = getBrandName(p);
 
@@ -1666,11 +1458,11 @@ export default function Catalog() {
                     return (
                       <motion.article
                         key={p.id}
-                        whileHover={{ y: -4 }}
-                        className="group rounded-2xl bg-white/90 backdrop-blur overflow-hidden silver-border-grad silver-hover"
+                        whileHover={{ y: -3 }}
+                        className="group w-full rounded-2xl bg-white/90 backdrop-blur overflow-hidden silver-border-grad silver-hover"
                       >
                         <Link to={`/product/${p.id}`} className="block" onClick={() => bumpClick(p.id)}>
-                          <div className="relative w-full h-40 sm:h-44 md:h-48 overflow-hidden">
+                          <div className="relative w-full h-28 sm:h-36 md:h-48 overflow-hidden">
                             {primaryImg ? (
                               <>
                                 <img
@@ -1692,7 +1484,7 @@ export default function Catalog() {
                             )}
 
                             <span
-                              className={`absolute left-3 top-3 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium ${badge.cls}`}
+                              className={`absolute left-2 top-2 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${badge.cls}`}
                             >
                               <CheckCircle2 size={12} />
                               {badge.text}
@@ -1700,17 +1492,17 @@ export default function Catalog() {
                           </div>
                         </Link>
 
-                        <div className="p-4">
+                        <div className="p-2.5 md:p-4">
                           <Link to={`/product/${p.id}`} onClick={() => bumpClick(p.id)}>
-                            <h3 className="font-semibold text-[13px] md:text-sm text-zinc-900 line-clamp-1">
+                            <h3 className="font-semibold text-[12px] md:text-sm leading-tight text-zinc-900 line-clamp-1">
                               {p.title}
                             </h3>
-                            <div className="text-[10px] md:text-xs text-zinc-500 line-clamp-1">
+                            <div className="text-[10px] md:text-xs leading-tight text-zinc-500 line-clamp-1">
                               {brand ? `${brand} • ` : ''}
                               {p.categoryName?.trim() || 'Uncategorized'}
                             </div>
 
-                            <div className="mt-1 flex items-center gap-2">
+                            <div className="mt-0.5 flex items-center gap-1.5">
                               <p className="text-sm md:text-base font-semibold">{ngn.format(bestPrice)}</p>
 
                               {isBestValue && (
@@ -1726,14 +1518,14 @@ export default function Catalog() {
                             {Number.isFinite(cheapestPrice) &&
                               cheapestPrice > 0 &&
                               Math.abs(cheapestPrice - bestPrice) > 0.01 && (
-                                <div className="text-[10px] md:text-[11px] text-zinc-500">
+                                <div className="text-[10px] md:text-[11px] leading-tight text-zinc-500">
                                   Cheapest: {ngn.format(cheapestPrice)}
                                 </div>
                               )}
                           </Link>
 
                           {Number(p.ratingCount) > 0 && (
-                            <div className="mt-2 text-[10px] md:text-[12px] text-amber-700 inline-flex items-center gap-1">
+                            <div className="mt-1 text-[10px] md:text-[12px] leading-tight text-amber-700 inline-flex items-center gap-1">
                               <Star size={14} />
                               <span>
                                 {Number(p.ratingAvg).toFixed(1)} ({p.ratingCount})
@@ -1742,15 +1534,15 @@ export default function Catalog() {
                           )}
 
                           {!isSupplier && (
-                            <div className="mt-3 flex flex-wrap items-center justify-between gap-1.5">
+                            <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1">
                               <button
                                 aria-label={fav ? 'Remove from wishlist' : 'Add to wishlist'}
-                                className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full px-2.5 py-1.5 transition ${fav
-                                  ? 'bg-rose-50 text-rose-600 border border-rose-200'
-                                  : 'bg-white text-zinc-700 silver-border hover:bg-zinc-50 hover:silver-hover'
+                                className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full px-2 py-1 transition ${fav
+                                    ? 'bg-rose-50 text-rose-600 border border-rose-200'
+                                    : 'bg-white text-zinc-700 silver-border hover:bg-zinc-50 hover:silver-hover'
                                   }`}
                                 onClick={() => {
-                                  if (!token) {
+                                  if (!isAuthed) {
                                     openModal({
                                       title: 'Wishlist',
                                       message: 'Please login to use the wishlist.',
@@ -1768,7 +1560,7 @@ export default function Catalog() {
                               {needsOptions ? (
                                 <Link
                                   to={`/product/${p.id}`}
-                                  className="inline-flex items-center gap-2 rounded-full px-2.5 py-1.5 text-[10px] md:text-xs border bg-zinc-500 text-white border-zinc-900 hover:opacity-90"
+                                  className="inline-flex items-center gap-2 rounded-full px-2 py-1 text-[10px] md:text-xs border bg-zinc-500 text-white border-zinc-900 hover:opacity-90"
                                   onClick={() => bumpClick(p.id)}
                                   aria-label="Choose options"
                                   title="Choose options"
@@ -1776,15 +1568,15 @@ export default function Catalog() {
                                   Choose opts.
                                 </Link>
                               ) : currentQty > 0 ? (
-                                <div className="inline-flex items-center gap-1">
+                                <div className="inline-flex items-center gap-0.5">
                                   <button
                                     onClick={() => setCartQty(p, currentQty - 1)}
-                                    className="w-7 h-7 rounded-full bg-white text-[14px] flex items-center justify-center text-zinc-700 active:scale-95 transition silver-border hover:silver-hover"
+                                    className="w-6 h-6 md:w-7 md:h-7 rounded-full bg-white text-[13px] flex items-center justify-center text-zinc-700 active:scale-95 transition silver-border hover:silver-hover"
                                     aria-label="Decrease quantity"
                                   >
                                     -
                                   </button>
-                                  <span className="min-w-[20px] text-center text-[11px] font-semibold text-zinc-800">
+                                  <span className="min-w-[16px] text-center text-[10px] font-semibold text-zinc-800">
                                     {currentQty}
                                   </span>
                                   <button
@@ -1795,7 +1587,7 @@ export default function Catalog() {
                                       canIncrement && setCartQty(p, currentQty + 1);
                                     }}
                                     disabled={!allowQuickAdd || !canIncrement}
-                                    className="w-7 h-7 rounded-full border border-zinc-900 bg-zinc-900 text-white text-[14px] flex items-center justify-center disabled:opacity-40 active:scale-95 transition"
+                                    className="w-6 h-6 md:w-7 md:h-7 rounded-full border border-zinc-900 bg-zinc-900 text-white text-[13px] flex items-center justify-center disabled:opacity-40 active:scale-95 transition"
                                     aria-label="Increase quantity"
                                   >
                                     +
@@ -1805,9 +1597,9 @@ export default function Catalog() {
                                 <button
                                   disabled={!allowQuickAdd}
                                   onClick={() => setCartQty(p, 1)}
-                                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] md:text-xs border transition ${allowQuickAdd
-                                    ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
-                                    : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
+                                  className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] md:text-xs border transition ${allowQuickAdd
+                                      ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
+                                      : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
                                     }`}
                                   aria-label="Add to cart"
                                   title={allowQuickAdd ? 'Add to cart' : 'Not available'}
@@ -1824,7 +1616,7 @@ export default function Catalog() {
                 </div>
 
                 {/* Pagination */}
-                <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="mt-5 md:mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="text-sm text-zinc-600">
                     Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
                   </div>
@@ -1886,8 +1678,8 @@ export default function Catalog() {
                                 type="button"
                                 onClick={() => goTo(n)}
                                 className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
-                                  ? 'bg-zinc-900 text-white border border-zinc-900'
-                                  : 'bg-white hover:bg-zinc-50 silver-border hover:silver-hover'
+                                    ? 'bg-zinc-900 text-white border border-zinc-900'
+                                    : 'bg-white hover:bg-zinc-50 silver-border hover:silver-hover'
                                   }`}
                                 aria-current={n === currentPage ? 'page' : undefined}
                               >
@@ -1923,50 +1715,198 @@ export default function Catalog() {
         </div>
       </div>
 
-      {/* Mobile Filters Drawer */}
-      {mobileFiltersOpen && (
-        <motion.div
-          className="fixed inset-0 z-40 md:hidden"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-        >
-          <div className="absolute inset-0 bg-black/40" onClick={() => setMobileFiltersOpen(false)} />
+      {/* ✅ Refine Drawer (Search + Sort + Per-page + Filters) */}
+      {refineOpen && (
+        <motion.div className="fixed inset-0 z-50" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <div className="absolute inset-0 bg-black/40" onClick={closeRefine} />
 
           <motion.div
-            className="absolute inset-y-0 left-0 w-[82%] max-w-xs bg-white rounded-tr-3xl rounded-br-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 silver-border-grad"
-            initial={{ x: '-100%' }}
+            className="absolute inset-y-0 right-0 w-[88%] max-w-sm bg-white rounded-tl-3xl rounded-bl-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 silver-border-grad"
+            initial={{ x: '100%' }}
             animate={{ x: 0 }}
-            exit={{ x: '-100%' }}
+            exit={{ x: '100%' }}
             transition={{ type: 'spring', stiffness: 260, damping: 28 }}
           >
-            <div className="flex items-center justify-between mb-1">
-              <h3 className="text-sm font-semibold text-zinc-900">Filters</h3>
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-zinc-900">Refine</h3>
+                <p className="text-[11px] text-zinc-600">Search, sort, page size, and filters.</p>
+              </div>
+
               <button
                 type="button"
-                onClick={() => setMobileFiltersOpen(false)}
-                className="text-[10px] px-2 py-1 rounded-full bg-zinc-100 text-zinc-600"
+                onClick={closeRefine}
+                className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-zinc-100 text-zinc-700 active:scale-95 transition"
+                aria-label="Close refine panel"
               >
-                Close
+                <X size={18} />
               </button>
             </div>
 
-            <label className="inline-flex items-center gap-2 text-[11px] font-medium text-zinc-800 select-none">
-              <input
-                type="checkbox"
-                checked={inStockOnly}
-                onChange={(e) => setInStockOnly(e.target.checked)}
-                className="h-4 w-4 rounded border-zinc-300"
-              />
-              In stock
-            </label>
+            {/* Search */}
+            <div className="relative">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+                <input
+                  ref={inputRef}
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setShowSuggest(true);
+                    setActiveIdx(0);
+                  }}
+                  onFocus={() => query && setShowSuggest(true)}
+                  onKeyDown={(e) => {
+                    if (!showSuggest || suggestions.length === 0) return;
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      setActiveIdx((i) => Math.max(i - 1, 0));
+                    } else if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const pick = suggestions[activeIdx];
+                      if (pick) {
+                        bumpClick(pick.id);
+                        closeRefine();
+                        nav(`/product/${pick.id}`);
+                      }
+                      setShowSuggest(false);
+                    } else if (e.key === 'Escape') {
+                      setShowSuggest(false);
+                    }
+                  }}
+                  placeholder="Search products, brands, or categories…"
+                  className="rounded-2xl pl-9 pr-4 py-2.5 w-full bg-white/90 backdrop-blur transition silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+                  aria-label="Search products"
+                />
+              </div>
+
+              {showSuggest && query && suggestions.length > 0 && (
+                <div
+                  ref={suggestRef}
+                  className="mt-2 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden silver-border-grad"
+                >
+                  <ul className="max-h-[45vh] overflow-auto p-2">
+                    {suggestions.map((p, i) => {
+                      const active = i === activeIdx;
+                      const minPrice = priceForFiltering(p);
+                      const pricingInStockOnly = inStockOnly ? true : availableNow(p);
+                      const cheapest = getRetailPricePair(p, settingsMarginPct, {
+                        inStockOnlyPricing: pricingInStockOnly,
+                      }).cheapestRetail;
+
+                      return (
+                        <li key={p.id} className="mb-2 last:mb-0">
+                          <button
+                            type="button"
+                            className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? 'bg-black/5' : ''
+                              }`}
+                            onClick={() => {
+                              bumpClick(p.id);
+                              closeRefine();
+                              nav(`/product/${p.id}`);
+                            }}
+                          >
+                            {p.imagesJson?.[0] ? (
+                              <img
+                                src={p.imagesJson[0]}
+                                alt={p.title}
+                                className="w-16 h-16 object-cover rounded-xl silver-border"
+                              />
+                            ) : (
+                              <div className="w-16 h-16 rounded-xl silver-border grid place-items-center text-base text-gray-500">
+                                —
+                              </div>
+                            )}
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold truncate">{p.title}</div>
+                              <div className="text-xs opacity-80 truncate">
+                                {ngn.format(minPrice)}
+                                {Number.isFinite(cheapest) &&
+                                  cheapest > 0 &&
+                                  Math.abs(cheapest - minPrice) > 0.01 && (
+                                    <span className="ml-2 text-zinc-500">• Cheapest: {ngn.format(cheapest)}</span>
+                                  )}
+                                {p.categoryName ? ` • ${p.categoryName}` : ''}
+                                {getBrandName(p) ? ` • ${getBrandName(p)}` : ''}
+                              </div>
+                            </div>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            {/* Sort + Per page */}
+            <div className="grid grid-cols-1 gap-3">
+              <div className="text-sm inline-flex items-center gap-2">
+                <ArrowUpDown size={16} className="text-zinc-600" />
+                <label className="opacity-70 min-w-[44px]">Sort</label>
+                <select
+                  value={sortKey}
+                  onChange={(e) => setSortKey(e.target.value as any)}
+                  className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
+                >
+                  <option value="relevance">Relevance</option>
+                  <option value="price-asc">Price: Low → High</option>
+                  <option value="price-desc">Price: High → Low</option>
+                </select>
+              </div>
+
+              <div className="text-sm inline-flex items-center gap-2">
+                <LayoutGrid size={16} className="text-zinc-600" />
+                <label className="opacity-70 min-w-[72px]">Per page</label>
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value) as 6 | 9 | 12)}
+                  className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
+                >
+                  <option value={6}>6</option>
+                  <option value={9}>9</option>
+                  <option value={12}>12</option>
+                </select>
+              </div>
+            </div>
+
+            {/* In-stock + clear */}
+            <div className="flex items-center justify-between gap-3">
+              <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
+                <input
+                  type="checkbox"
+                  checked={inStockOnly}
+                  onChange={(e) => setInStockOnly(e.target.checked)}
+                  className="h-4 w-4 rounded border-zinc-300"
+                />
+                In stock
+              </label>
+
+              {(anyActiveFilter || hasSearch) && (
+                <button
+                  type="button"
+                  className="text-[12px] font-medium text-fuchsia-700 hover:underline"
+                  onClick={() => {
+                    setQuery('');
+                    setShowSuggest(false);
+                    clearFilters();
+                  }}
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
 
             {/* Categories */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <h4 className="text-[11px] font-semibold text-zinc-800">Categories</h4>
+                <h4 className="text-[12px] font-semibold text-zinc-800">Categories</h4>
                 <button
-                  className="text-[10px] text-zinc-600 hover:underline disabled:opacity-40"
+                  className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
                   onClick={() => setSelectedCategories([])}
                   disabled={selectedCategories.length === 0}
                 >
@@ -1974,19 +1914,20 @@ export default function Catalog() {
                 </button>
               </div>
               <ul className="space-y-1.5">
+                {categories.length === 0 && <Shimmer />}
                 {categories.map((c) => {
                   const checked = selectedCategories.includes(c.id);
                   return (
                     <li key={c.id}>
                       <button
                         onClick={() => toggleCategory(c.id)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked
-                          ? 'bg-zinc-900 text-white'
-                          : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                            ? 'bg-zinc-900 text-white'
+                            : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
                           }`}
                       >
                         <span className="truncate">{c.name}</span>
-                        <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
+                        <span className={`ml-2 text-[11px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
                           ({c.count})
                         </span>
                       </button>
@@ -2000,9 +1941,9 @@ export default function Catalog() {
             {brands.length > 0 && (
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-[11px] font-semibold text-zinc-800">Brands</h4>
+                  <h4 className="text-[12px] font-semibold text-zinc-800">Brands</h4>
                   <button
-                    className="text-[10px] text-zinc-600 hover:underline disabled:opacity-40"
+                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
                     onClick={() => setSelectedBrands([])}
                     disabled={selectedBrands.length === 0}
                   >
@@ -2016,13 +1957,13 @@ export default function Catalog() {
                       <li key={b.name}>
                         <button
                           onClick={() => toggleBrand(b.name)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked
-                            ? 'bg-zinc-900 text-white'
-                            : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? 'bg-zinc-900 text-white'
+                              : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
                             }`}
                         >
                           <span className="truncate">{b.name}</span>
-                          <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
+                          <span className={`ml-2 text-[11px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
                             ({b.count})
                           </span>
                         </button>
@@ -2036,9 +1977,9 @@ export default function Catalog() {
             {/* Price */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <h4 className="text-[11px] font-semibold text-zinc-800">Price</h4>
+                <h4 className="text-[12px] font-semibold text-zinc-800">Price</h4>
                 <button
-                  className="text-[10px] text-zinc-600 hover:underline disabled:opacity-40"
+                  className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
                   onClick={() => setSelectedBucketIdxs([])}
                   disabled={selectedBucketIdxs.length === 0}
                 >
@@ -2046,19 +1987,20 @@ export default function Catalog() {
                 </button>
               </div>
               <ul className="space-y-1.5">
+                {visiblePriceBuckets.length === 0 && <Shimmer />}
                 {visiblePriceBuckets.map(({ bucket, idx, count }) => {
                   const checked = selectedBucketIdxs.includes(idx);
                   return (
                     <li key={bucket.label}>
                       <button
                         onClick={() => toggleBucket(idx)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[11px] transition ${checked
-                          ? 'bg-zinc-900 text-white'
-                          : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                            ? 'bg-zinc-900 text-white'
+                            : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
                           }`}
                       >
                         <span>{bucket.label}</span>
-                        <span className={`ml-2 text-[10px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
+                        <span className={`ml-2 text-[11px] ${checked ? 'text-white/90' : 'text-zinc-600'}`}>
                           ({count})
                         </span>
                       </button>
@@ -2068,18 +2010,16 @@ export default function Catalog() {
               </ul>
             </div>
 
-            {/* Clear all (mobile) */}
-            {(selectedCategories.length > 0 ||
-              selectedBucketIdxs.length > 0 ||
-              selectedBrands.length > 0 ||
-              !inStockOnly) && (
-                <button
-                  className="mt-2 text-xs font-medium text-fuchsia-700 hover:underline self-start"
-                  onClick={clearFilters}
-                >
-                  Clear all
-                </button>
-              )}
+            {/* Footer actions */}
+            <div className="pt-2 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={closeRefine}
+                className="w-full rounded-2xl px-4 py-2.5 bg-zinc-900 text-white font-semibold active:scale-[0.98] transition"
+              >
+                Done
+              </button>
+            </div>
           </motion.div>
         </motion.div>
       )}

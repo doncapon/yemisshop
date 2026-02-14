@@ -110,7 +110,6 @@ const asMoney = (v: any, d = 0) => {
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
 const clampPct = (p: number) => {
-  // prevent weird values from blowing things up; adjust if you support negative/huge margins
   if (!Number.isFinite(p)) return 0;
   if (p < 0) return 0;
   if (p > 1000) return 1000;
@@ -160,19 +159,13 @@ function optionsKey(sel?: SelectedOption[]) {
  * - variant by id: productId::v:<variantId>
  * - options-only fallback: productId::o:<optionsKey>
  */
-function lineKeyFor(
-  item: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">
-) {
+function lineKeyFor(item: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) {
   const pid = String(item.productId);
   const vid = item.variantId == null ? null : String(item.variantId);
   const sel = normalizeSelectedOptions(item.selectedOptions);
 
   const kind: "BASE" | "VARIANT" =
-    item.kind === "BASE" || item.kind === "VARIANT"
-      ? item.kind
-      : item.variantId
-        ? "VARIANT"
-        : "BASE";
+    item.kind === "BASE" || item.kind === "VARIANT" ? item.kind : item.variantId ? "VARIANT" : "BASE";
 
   if (kind === "VARIANT") {
     if (vid) return `${pid}::v:${vid}`;
@@ -183,8 +176,7 @@ function lineKeyFor(
 }
 
 // Availability key stays per (productId, variantId)
-const availKeyFor = (productId: string, variantId?: string | null) =>
-  `${productId}::${variantId ?? "null"}`;
+const availKeyFor = (productId: string, variantId?: string | null) => `${productId}::${variantId ?? "null"}`;
 
 function normalizeCartShape(parsed: any[]): CartItem[] {
   return parsed.map((it: any) => {
@@ -201,11 +193,7 @@ function normalizeCartShape(parsed: any[]): CartItem[] {
     const hasUnit = Number.isFinite(Number(it.unitPrice));
 
     const unitFromTotal = hasTotal ? Number(it.totalPrice) / qtyNum : undefined;
-    const unitPrice = hasUnit
-      ? Number(it.unitPrice)
-      : hasPrice
-        ? Number(it.price)
-        : unitFromTotal ?? 0;
+    const unitPrice = hasUnit ? Number(it.unitPrice) : hasPrice ? Number(it.price) : unitFromTotal ?? 0;
 
     const totalPrice = hasTotal ? Number(it.totalPrice) : unitPrice * qtyNum;
 
@@ -239,10 +227,7 @@ function saveCart(items: CartItem[]) {
   localStorage.setItem("cart", JSON.stringify(items));
 }
 
-const sameLine = (
-  a: CartItem,
-  b: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">
-) => lineKeyFor(a) === lineKeyFor(b);
+const sameLine = (a: CartItem, b: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) => lineKeyFor(a) === lineKeyFor(b);
 
 const isBaseLine = (it: CartItem) => {
   if (it.variantId) return false;
@@ -289,8 +274,7 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Availability
           cheapestSupplierUnit?: number | null;
         };
 
-        const byProduct: Record<string, { generic: number; perVariant: Record<string, number> }> =
-          {};
+        const byProduct: Record<string, { generic: number; perVariant: Record<string, number> }> = {};
 
         for (const r of arr as Row[]) {
           const pid = String(r.productId);
@@ -300,9 +284,7 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Availability
 
           lines[k] = {
             totalAvailable: avail,
-            cheapestSupplierUnit: Number.isFinite(Number(r.cheapestSupplierUnit))
-              ? Number(r.cheapestSupplierUnit)
-              : null,
+            cheapestSupplierUnit: Number.isFinite(Number(r.cheapestSupplierUnit)) ? Number(r.cheapestSupplierUnit) : null,
           };
 
           if (!byProduct[pid]) byProduct[pid] = { generic: 0, perVariant: {} };
@@ -358,18 +340,11 @@ async function hydrateLinePrice(line: CartItem): Promise<CartItem> {
     }
 
     if (!(unit > 0)) {
-      const offersSrc = [
-        ...(Array.isArray(p.supplierOffers) ? p.supplierOffers : []),
-        ...(Array.isArray(p.offers) ? p.offers : []),
-      ];
+      const offersSrc = [...(Array.isArray(p.supplierOffers) ? p.supplierOffers : []), ...(Array.isArray(p.offers) ? p.offers : [])];
 
       const fromVariants =
         Array.isArray(p.variants) &&
-        p.variants.flatMap((v: any) =>
-          Array.isArray(v.offers)
-            ? v.offers.map((o: any) => ({ ...o, variantId: v.id }))
-            : []
-        );
+        p.variants.flatMap((v: any) => (Array.isArray(v.offers) ? v.offers.map((o: any) => ({ ...o, variantId: v.id })) : []));
 
       const allOffers = [...offersSrc, ...(Array.isArray(fromVariants) ? fromVariants : [])];
 
@@ -382,9 +357,7 @@ async function hydrateLinePrice(line: CartItem): Promise<CartItem> {
         }))
         .filter((o) => o.isActive && o.availableQty > 0 && o.unitPrice > 0);
 
-      const scoped = line.variantId
-        ? usable.filter((o) => String(o.variantId) === String(line.variantId))
-        : usable;
+      const scoped = line.variantId ? usable.filter((o) => String(o.variantId) === String(line.variantId)) : usable;
 
       if (scoped.length) {
         scoped.sort((a, b) => a.unitPrice - b.unitPrice);
@@ -412,10 +385,7 @@ function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null
   const currency = root.currency ?? root?.quote?.currency ?? null;
 
   const maybe = root.quote ?? root;
-  const subtotal = asMoney(
-    maybe.subtotal ?? maybe.itemsSubtotal ?? maybe.totalItems ?? maybe.total ?? 0,
-    0
-  );
+  const subtotal = asMoney(maybe.subtotal ?? maybe.itemsSubtotal ?? maybe.totalItems ?? maybe.total ?? 0, 0);
 
   const outLines: Record<string, QuoteLine> = {};
 
@@ -425,8 +395,7 @@ function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null
 
     const pid = String(x?.productId ?? "");
     const vid = x?.variantId == null ? null : String(x.variantId);
-    const kind: "BASE" | "VARIANT" =
-      x?.kind === "VARIANT" || (!!vid && x?.kind !== "BASE") ? "VARIANT" : "BASE";
+    const kind: "BASE" | "VARIANT" = x?.kind === "VARIANT" || (!!vid && x?.kind !== "BASE") ? "VARIANT" : "BASE";
 
     if (!pid) return "";
     if (kind === "VARIANT") return vid ? `${pid}::v:${vid}` : `${pid}::v:unknown`;
@@ -454,34 +423,18 @@ function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null
 
     const productId = String(x?.productId ?? "");
     const variantId = x?.variantId == null ? null : String(x.variantId);
-    const kind: "BASE" | "VARIANT" =
-      x?.kind === "BASE" || x?.kind === "VARIANT"
-        ? x.kind
-        : variantId
-          ? "VARIANT"
-          : "BASE";
+    const kind: "BASE" | "VARIANT" = x?.kind === "BASE" || x?.kind === "VARIANT" ? x.kind : variantId ? "VARIANT" : "BASE";
 
-    const qtyRequested = Math.max(
-      1,
-      asInt(x?.qtyRequested ?? x?.qty ?? x?.requestedQty ?? 1, 1)
-    );
+    const qtyRequested = Math.max(1, asInt(x?.qtyRequested ?? x?.qty ?? x?.requestedQty ?? 1, 1));
 
     const allocsRaw = toArray<any>(x?.allocations ?? x?.splits ?? x?.items ?? x?.parts);
     const allocations = allocsRaw.map(normalizeAlloc).filter((a) => a.qty > 0 && a.unitPrice >= 0);
 
-    const lineTotal = asMoney(
-      x?.lineTotal ?? x?.total ?? allocations.reduce((s, a) => s + asMoney(a.lineTotal, 0), 0),
-      0
-    );
+    const lineTotal = asMoney(x?.lineTotal ?? x?.total ?? allocations.reduce((s, a) => s + asMoney(a.lineTotal, 0), 0), 0);
 
-    const qtyPriced = Math.max(
-      0,
-      asInt(x?.qtyPriced ?? allocations.reduce((s, a) => s + asInt(a.qty, 0), 0), 0)
-    );
+    const qtyPriced = Math.max(0, asInt(x?.qtyPriced ?? allocations.reduce((s, a) => s + asInt(a.qty, 0), 0), 0));
 
-    const units = allocations
-      .map((a) => asMoney(a.unitPrice, NaN))
-      .filter((n) => Number.isFinite(n));
+    const units = allocations.map((a) => asMoney(a.unitPrice, NaN)).filter((n) => Number.isFinite(n));
     const minUnit = units.length ? Math.min(...(units as number[])) : 0;
     const maxUnit = units.length ? Math.max(...(units as number[])) : 0;
     const averageUnit = qtyRequested > 0 ? lineTotal / qtyRequested : 0;
@@ -556,11 +509,7 @@ async function fetchPricingQuoteForCart(cart: CartItem[]): Promise<QuotePayload 
     productId: it.productId,
     variantId: it.variantId ?? null,
     qty: Math.max(1, asInt(it.qty, 1)),
-    selectedOptions: Array.isArray(it.selectedOptions)
-      ? normalizeSelectedOptions(it.selectedOptions)
-      : undefined,
-
-    // optional passthrough — harmless if backend ignores
+    selectedOptions: Array.isArray(it.selectedOptions) ? normalizeSelectedOptions(it.selectedOptions) : undefined,
     unitPriceCache: asMoney(it.unitPrice, 0),
   }));
 
@@ -576,11 +525,7 @@ async function fetchPricingQuoteForCart(cart: CartItem[]): Promise<QuotePayload 
 
   for (const a of attempts) {
     try {
-      const res =
-        a.method === "post"
-          ? await api.post(a.url, a.body)
-          : await api.get(a.url, { params: { items: JSON.stringify(items) } });
-
+      const res = a.method === "post" ? await api.post(a.url, a.body) : await api.get(a.url, { params: { items: JSON.stringify(items) } });
       const normalized = normalizeQuoteResponse(res, cart);
       if (normalized) return normalized;
     } catch {
@@ -594,11 +539,7 @@ async function fetchPricingQuoteForCart(cart: CartItem[]): Promise<QuotePayload 
 /* ---------------- Public settings fetch ---------------- */
 
 async function fetchPublicSettings(): Promise<PublicSettings | null> {
-  const attempts = [
-    "/api/settings/public",
-    "/api/settings/public?include=pricing",
-    "/api/settings/public?scope=commerce",
-  ];
+  const attempts = ["/api/settings/public", "/api/settings/public?include=pricing", "/api/settings/public?scope=commerce"];
 
   for (const url of attempts) {
     try {
@@ -631,11 +572,8 @@ function extractMarginPercent(s: PublicSettings | null | undefined): number {
 
 export default function Cart() {
   const [cart, setCart] = useState<CartItem[]>(() => loadCart());
-
-  // ✅ NEW: draft qty string per line (allows clearing input)
   const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
 
-  // Hydrate zero-price lines once on mount (non-authoritative fallback)
   useEffect(() => {
     (async () => {
       if (!cart.some((c) => asMoney(c.unitPrice, 0) <= 0)) return;
@@ -646,12 +584,10 @@ export default function Cart() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keep localStorage synced
   useEffect(() => {
     saveCart(cart);
   }, [cart]);
 
-  // Keep drafts in sync when cart qty changes (but don't overwrite active typing unless needed)
   useEffect(() => {
     setQtyDraft((prev) => {
       let changed = false;
@@ -661,14 +597,12 @@ export default function Cart() {
         const k = lineKeyFor(it);
         const existing = prev[k];
 
-        // if no draft exists, seed it
         if (existing == null) {
           next[k] = String(Math.max(1, Number(it.qty) || 1));
           changed = true;
           continue;
         }
 
-        // if draft is a clean integer but differs from cart, update to match cart
         const dNum = Number(existing);
         if (existing !== "" && Number.isFinite(dNum) && Math.trunc(dNum) !== (Number(it.qty) || 1)) {
           next[k] = String(Math.max(1, Number(it.qty) || 1));
@@ -676,7 +610,6 @@ export default function Cart() {
         }
       }
 
-      // prune removed lines
       for (const key of Object.keys(next)) {
         if (!cart.some((it) => lineKeyFor(it) === key)) {
           delete next[key];
@@ -688,7 +621,6 @@ export default function Cart() {
     });
   }, [cart]);
 
-  // ✅ marginPercent (public)
   const publicSettingsQ = useQuery({
     queryKey: ["settings", "public:v1"],
     staleTime: 5 * 60_000,
@@ -696,44 +628,25 @@ export default function Cart() {
     queryFn: fetchPublicSettings,
   });
 
-  const marginPercent = useMemo(
-    () => extractMarginPercent(publicSettingsQ.data),
-    [publicSettingsQ.data]
-  );
+  const marginPercent = useMemo(() => extractMarginPercent(publicSettingsQ.data), [publicSettingsQ.data]);
 
   const availabilityQ = useQuery({
-    queryKey: [
-      "catalog",
-      "availability:v3",
-      cart.map((i) => availKeyFor(i.productId, i.variantId ?? null)).sort().join(","),
-    ],
+    queryKey: ["catalog", "availability:v3", cart.map((i) => availKeyFor(i.productId, i.variantId ?? null)).sort().join(",")],
     enabled: cart.length > 0,
     refetchOnWindowFocus: false,
     staleTime: 15_000,
     queryFn: () => fetchAvailabilityForCart(cart),
   });
 
-  // ✅ Supplier-split quote (supplier-cost)
   const pricingQ = useQuery({
-    queryKey: [
-      "catalog",
-      "pricing-quote:v1",
-      cart
-        .map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`)
-        .sort()
-        .join(","),
-    ],
+    queryKey: ["catalog", "pricing-quote:v1", cart.map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`).sort().join(",")],
     enabled: cart.length > 0,
     refetchOnWindowFocus: false,
     staleTime: 10_000,
     queryFn: () => fetchPricingQuoteForCart(cart),
   });
 
-  // Shared generic pool math
-  const sumOtherLinesQty = (
-    productId: string,
-    except: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">
-  ) => {
+  const sumOtherLinesQty = (productId: string, except: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) => {
     return cart.reduce((s, it) => {
       if (it.productId !== productId) return s;
       if (sameLine(it, except)) return s;
@@ -741,7 +654,6 @@ export default function Cart() {
     }, 0);
   };
 
-  // Prune only when we are SURE totalAvailable === 0
   useEffect(() => {
     const data = availabilityQ.data as AvailabilityPayload | undefined;
     if (!data || cart.length === 0) return;
@@ -770,10 +682,6 @@ export default function Cart() {
   const quoteLines = (pricingQ.data as QuotePayload | null)?.lines ?? {};
   const quoteSubtotalSupplier = (pricingQ.data as QuotePayload | null)?.subtotal;
 
-  /**
-   * ✅ Compute RETAIL totals from supplier-quote by applying marginPercent.
-   * We do NOT trust quoteSubtotal for retail because it's supplier-cost.
-   */
   const quoteRetail = useMemo(() => {
     const q = pricingQ.data as QuotePayload | null;
     if (!q) return null;
@@ -785,9 +693,7 @@ export default function Cart() {
         retailMinUnit: number;
         retailMaxUnit: number;
         retailAverageUnit: number;
-        allocationsRetail: Array<
-          QuoteAllocation & { retailUnitPrice: number; retailLineTotal: number }
-        >;
+        allocationsRetail: Array<QuoteAllocation & { retailUnitPrice: number; retailLineTotal: number }>;
       }
     > = {};
 
@@ -806,15 +712,9 @@ export default function Cart() {
         };
       });
 
-      const retailLineTotal = allocationsRetail.reduce(
-        (s, a) => s + asMoney(a.retailLineTotal, 0),
-        0
-      );
+      const retailLineTotal = allocationsRetail.reduce((s, a) => s + asMoney(a.retailLineTotal, 0), 0);
 
-      const units = allocationsRetail
-        .map((a) => asMoney(a.retailUnitPrice, NaN))
-        .filter((n) => Number.isFinite(n));
-
+      const units = allocationsRetail.map((a) => asMoney(a.retailUnitPrice, NaN)).filter((n) => Number.isFinite(n));
       const retailMinUnit = units.length ? Math.min(...(units as number[])) : 0;
       const retailMaxUnit = units.length ? Math.max(...(units as number[])) : 0;
 
@@ -840,10 +740,7 @@ export default function Cart() {
   }, [pricingQ.data, marginPercent]);
 
   const total = useMemo(() => {
-    // Prefer retail computed from quote allocations
     if (quoteRetail && quoteRetail.subtotalRetail > 0) return quoteRetail.subtotalRetail;
-
-    // else fallback to local cached totals
     return visibleCart.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
   }, [visibleCart, quoteRetail]);
 
@@ -883,8 +780,6 @@ export default function Cart() {
     return Math.min(desired, cap);
   };
 
-  // ✅ local optimistic update; quote recalculates automatically due to queryKey dependency
-  // ✅ UPDATED: return the clamped qty (so we can keep input draft consistent)
   const updateQty = useCallback(
     (target: CartItem, newQtyRaw: number) => {
       const clamped = clampToMax(target, newQtyRaw);
@@ -938,16 +833,14 @@ export default function Cart() {
       if (pools.hasVariantSpecific) {
         for (const it of visibleCart.filter((i) => i.productId === productId)) {
           const ln = data.lines[availKeyFor(it.productId, it.variantId ?? null)];
-          const cap =
-            ln && typeof ln.totalAvailable === "number" ? Math.max(0, ln.totalAvailable) : 0;
+          const cap = ln && typeof ln.totalAvailable === "number" ? Math.max(0, ln.totalAvailable) : 0;
           if (it.qty > cap) return "Reduce quantities: some items exceed available stock.";
         }
       } else {
         const sumQty = visibleCart
           .filter((i) => i.productId === productId)
           .reduce((s, i) => s + Math.max(0, Number(i.qty) || 0), 0);
-        if (sumQty > pools.genericTotal)
-          return "Reduce quantities: some items exceed available stock.";
+        if (sumQty > pools.genericTotal) return "Reduce quantities: some items exceed available stock.";
       }
     }
 
@@ -956,7 +849,6 @@ export default function Cart() {
 
   const canCheckout = cartBlockingReason == null;
 
-  // ✅ pricing warning: quote exists but some lines not fully priced
   const pricingWarning = useMemo(() => {
     const q = pricingQ.data as QuotePayload | null;
     if (!q) return null;
@@ -967,7 +859,6 @@ export default function Cart() {
     return "Some items could not be fully allocated across suppliers. Reduce quantities or try again.";
   }, [pricingQ.data]);
 
-  // UI: per-line expanded breakdown
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   if (visibleCart.length === 0) {
@@ -982,12 +873,8 @@ export default function Cart() {
               <span className="inline-block size-1.5 rounded-full bg-white/90" />
               Your cart is empty
             </div>
-            <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-ink">
-              Let’s find something you’ll love
-            </h1>
-            <p className="mt-1 text-ink-soft">
-              Browse our catalogue and add items to your cart. They’ll show up here for checkout.
-            </p>
+            <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-ink">Let’s find something you’ll love</h1>
+            <p className="mt-1 text-ink-soft">Browse our catalogue and add items to your cart. They’ll show up here for checkout.</p>
             <Link
               to="/"
               className="mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
@@ -1001,10 +888,7 @@ export default function Cart() {
   }
 
   const topBannerLoading = pricingQ.isLoading || pricingQ.isFetching;
-  const topBannerActive = topBannerLoading || !!pricingWarning;
-  const topBannerText = topBannerLoading
-    ? "Calculating best supplier prices…"
-    : (pricingWarning ?? "");
+  const topBannerText = topBannerLoading ? "Calculating best supplier prices…" : pricingWarning ?? "";
 
   return (
     <SiteLayout>
@@ -1012,8 +896,8 @@ export default function Cart() {
         <div className="pointer-events-none absolute -top-28 -left-24 size-96 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
         <div className="pointer-events-none absolute -bottom-32 -right-28 size-[28rem] rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
 
-        <div className="relative max-w-6xl mx-auto px-4 md:px-6 py-8">
-          <div className="mb-6 text-center md:text-left">
+        <div className="relative max-w-6xl mx-auto px-4 md:px-6 py-6 sm:py-8">
+          <div className="mb-5 sm:mb-6 text-center md:text-left">
             <span className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
               <span className="inline-block size-1.5 rounded-full bg-white/90" />
               Review &amp; edit
@@ -1022,11 +906,18 @@ export default function Cart() {
             <p className="text-sm text-ink-soft">
               Prices shown are <span className="font-medium">retail</span> (supplier offers + margin).
             </p>
+
+            {(topBannerLoading || !!pricingWarning) && (
+              <div className="mt-3 inline-flex items-center gap-2 rounded-full border bg-white/70 px-3 py-1 text-[12px] text-ink-soft">
+                <span className={`inline-block size-2 rounded-full ${topBannerLoading ? "bg-amber-400 animate-pulse" : "bg-rose-400"}`} />
+                {topBannerText}
+              </div>
+            )}
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-5 sm:gap-6">
             {/* LEFT: Items */}
-            <section className="space-y-4">
+            <section className="space-y-3 sm:space-y-4">
               {visibleCart.map((it) => {
                 const k = lineKeyFor(it);
                 const ql = quoteLines[k];
@@ -1035,31 +926,21 @@ export default function Cart() {
                 const currentQty = Math.max(1, Number(it.qty) || 1);
 
                 const fallbackUnit =
-                  asMoney(it.unitPrice, 0) > 0
-                    ? asMoney(it.unitPrice, 0)
-                    : currentQty > 0
-                      ? asMoney(it.totalPrice, 0) / currentQty
-                      : 0;
+                  asMoney(it.unitPrice, 0) > 0 ? asMoney(it.unitPrice, 0) : currentQty > 0 ? asMoney(it.totalPrice, 0) / currentQty : 0;
 
                 const hasQuote = !!ql && (ql.lineTotal > 0 || ql.allocations.length > 0);
                 const hasRetailLine = !!rl && rl.retailLineTotal > 0;
 
-                // ✅ prefer retail total derived from quote allocations
                 const lineTotal = hasRetailLine
                   ? rl.retailLineTotal
                   : hasQuote
                     ? applyMargin(asMoney(ql.lineTotal, 0), marginPercent)
                     : asMoney(it.totalPrice, 0);
 
-                // ✅ unit text: retail
                 const unitText = (() => {
-                  if (!hasRetailLine) {
-                    // fallback unit is already retail-ish cache; still show it
-                    return fallbackUnit > 0 ? ngn.format(fallbackUnit) : "Pending";
-                  }
+                  if (!hasRetailLine) return fallbackUnit > 0 ? ngn.format(fallbackUnit) : "Pending";
                   if (rl.retailMinUnit === rl.retailMaxUnit) return ngn.format(rl.retailMinUnit);
-                  if (rl.retailMinUnit > 0 && rl.retailMaxUnit > 0)
-                    return `${ngn.format(rl.retailMinUnit)} – ${ngn.format(rl.retailMaxUnit)}`;
+                  if (rl.retailMinUnit > 0 && rl.retailMaxUnit > 0) return `${ngn.format(rl.retailMinUnit)} – ${ngn.format(rl.retailMaxUnit)}`;
                   return rl.retailAverageUnit > 0 ? ngn.format(rl.retailAverageUnit) : "Pending";
                 })();
 
@@ -1084,13 +965,7 @@ export default function Cart() {
                       : "Out of stock"
                     : "";
 
-                const kindLabel = isBaseLine(it)
-                  ? "Base product"
-                  : it.variantId
-                    ? "Variant selection"
-                    : it.selectedOptions?.length
-                      ? "Configured selection"
-                      : "Item";
+                const kindLabel = isBaseLine(it) ? "Base" : it.variantId ? "Variant" : it.selectedOptions?.length ? "Configured" : "Item";
 
                 let helperText = "";
                 if (availabilityQ.isLoading) helperText = "Checking availability…";
@@ -1098,11 +973,9 @@ export default function Cart() {
 
                 const isExpanded = !!expanded[k];
 
-                // ✅ draft value (string) for this line
                 const draft = qtyDraft[k];
                 const inputValue = draft == null ? String(currentQty) : draft;
 
-                // ✅ commit draft -> clamp -> update cart + draft
                 const commitDraft = () => {
                   const raw = qtyDraft[k];
                   const parsed = raw === "" || raw == null ? 1 : Math.floor(Number(raw));
@@ -1111,7 +984,6 @@ export default function Cart() {
                   setQtyDraft((p) => ({ ...p, [k]: String(clamped) }));
                 };
 
-                // ✅ helper for +/- buttons: use draft if valid, else current qty
                 const effectiveQtyForButtons = () => {
                   const raw = qtyDraft[k];
                   if (raw == null || raw === "") return currentQty;
@@ -1134,126 +1006,115 @@ export default function Cart() {
                 return (
                   <article
                     key={k}
-                    className="group rounded-2xl border border-white/60 bg-white/70 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)] p-4 md:p-5 transition hover:shadow-[0_12px_40px_rgba(0,0,0,0.08)]"
+                    className="group rounded-2xl border border-white/60 bg-white/75 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)] p-4 sm:p-5"
                   >
-                    <div className="flex items-start gap-4">
+                    {/* ✅ MOBILE-NEAT: stack on mobile, row on sm+ */}
+                    <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4">
                       {/* Thumbnail */}
-                      <div className="shrink-0 w-20 h-20 rounded-xl border overflow-hidden bg-white">
+                      <div className="shrink-0 w-20 h-20 rounded-xl border overflow-hidden bg-white self-start">
                         {it.image ? (
                           <img
                             src={it.image}
                             alt={it.title}
                             className="w-full h-full object-cover"
-                            onError={(e) =>
-                            (((e.currentTarget as HTMLImageElement).style.display = "none"),
-                              void 0)
-                            }
+                            onError={(e) => (((e.currentTarget as HTMLImageElement).style.display = "none"), void 0)}
                           />
                         ) : (
-                          <div className="w-full h-full grid place-items-center text-[11px] text-ink-soft">
-                            No image
-                          </div>
+                          <div className="w-full h-full grid place-items-center text-[11px] text-ink-soft">No image</div>
                         )}
                       </div>
 
                       {/* Text */}
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="min-w-0">
-                            <div className="inline-flex items-center gap-2">
-                              <h3 className="font-semibold text-ink truncate" title={it.title}>
-                                {it.title}
-                              </h3>
+                        {/* ✅ MOBILE-NEAT HEADER: title row, then badges+remove row */}
+                        <div className="min-w-0">
+                          <div className="flex items-start justify-between gap-3">
+                            <h3 className="font-semibold text-ink text-[15px] sm:text-base leading-snug truncate" title={it.title}>
+                              {it.title}
+                            </h3>
+
+                            {/* ✅ Remove never overlaps */}
+                            <button
+                              className="shrink-0 whitespace-nowrap text-[12px] sm:text-sm text-rose-600 hover:underline rounded-lg px-2 py-1 hover:bg-rose-500/10 transition"
+                              onClick={() => remove(it)}
+                              aria-label={`Remove ${it.title}`}
+                              title="Remove item"
+                            >
+                              Remove
+                            </button>
+                          </div>
+
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">{kindLabel}</span>
+                            {!!splitBadge && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">{splitBadge}</span>
+                            )}
+                            {pricingQ.isFetching && (
                               <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">
-                                {kindLabel}
+                                Updating…
                               </span>
-                              {!!splitBadge && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">
-                                  {splitBadge}
-                                </span>
-                              )}
-                            </div>
-
-                            {!!it.selectedOptions?.length && (
-                              <div className="mt-1 text-xs text-ink-soft">
-                                {it.selectedOptions
-                                  .map((o) => `${o.attribute}: ${o.value}`)
-                                  .join(" • ")}
-                              </div>
-                            )}
-
-                            <p className="mt-1 text-xs text-ink-soft">
-                              Unit price: {unitText}
-                              {hasRetailLine && rl.retailMinUnit !== rl.retailMaxUnit ? (
-                                <span className="ml-2 text-[11px]">(varies by supplier)</span>
-                              ) : null}
-                            </p>
-
-                            {!!helperText && (
-                              <p className="mt-1 text-[11px] text-ink-soft">{helperText}</p>
-                            )}
-
-                            {pools?.hasVariantSpecific && isBaseLine(it) && (
-                              <p className="mt-1 text-[11px] text-ink-soft">
-                                This is the <span className="font-medium">base</span> item pool.
-                                Variant selections use their own pools.
-                              </p>
-                            )}
-
-                            {/* ✅ supplier split breakdown toggle */}
-                            {hasRetailLine && (rl.allocationsRetail?.length ?? 0) > 0 && (
-                              <button
-                                className="mt-2 text-[11px] text-primary-700 hover:underline"
-                                onClick={() => setExpanded((p) => ({ ...p, [k]: !p[k] }))}
-                                type="button"
-                              >
-                                {isExpanded ? "Hide supplier breakdown" : "Show supplier breakdown"}
-                              </button>
                             )}
                           </div>
 
-                          <button
-                            className="text-xs md:text-sm text-danger hover:underline rounded px-2 py-1 hover:bg-danger/5 transition"
-                            onClick={() => remove(it)}
-                            aria-label={`Remove ${it.title}`}
-                            title="Remove item"
-                          >
-                            Remove
-                          </button>
+                          {!!it.selectedOptions?.length && (
+                            <div className="mt-2 text-[12px] sm:text-xs text-ink-soft leading-snug">
+                              {it.selectedOptions.map((o) => `${o.attribute}: ${o.value}`).join(" • ")}
+                            </div>
+                          )}
+
+                          {/* ✅ compact meta block */}
+                          <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] sm:text-xs text-ink-soft">
+                            <div>
+                              Unit: <span className="font-medium text-ink">{unitText}</span>
+                              {hasRetailLine && rl.retailMinUnit !== rl.retailMaxUnit ? (
+                                <span className="ml-2 text-[11px]">(varies)</span>
+                              ) : null}
+                            </div>
+
+                            {!!helperText && <div className="text-[11px]">{helperText}</div>}
+
+                            {pools?.hasVariantSpecific && isBaseLine(it) && (
+                              <div className="text-[11px]">
+                                Base pool. Variants use their own pools.
+                              </div>
+                            )}
+                          </div>
+
+                          {/* breakdown toggle */}
+                          {hasRetailLine && (rl.allocationsRetail?.length ?? 0) > 0 && (
+                            <button
+                              className="mt-2 text-[11px] text-primary-700 hover:underline"
+                              onClick={() => setExpanded((p) => ({ ...p, [k]: !p[k] }))}
+                              type="button"
+                            >
+                              {isExpanded ? "Hide supplier breakdown" : "Show supplier breakdown"}
+                            </button>
+                          )}
                         </div>
 
-                        {/* ✅ breakdown (RETAIL numbers) */}
+                        {/* breakdown */}
                         {hasRetailLine && isExpanded && (rl.allocationsRetail?.length ?? 0) > 0 && (
                           <div className="mt-3 rounded-xl border bg-white/70 p-3 text-xs">
                             <div className="flex items-center justify-between text-ink-soft">
                               <span>Supplier split (retail)</span>
-                              <span className="font-medium text-ink">
-                                {ngn.format(asMoney(rl.retailLineTotal, 0))}
-                              </span>
+                              <span className="font-medium text-ink">{ngn.format(asMoney(rl.retailLineTotal, 0))}</span>
                             </div>
                             <div className="mt-2 space-y-1">
                               {rl.allocationsRetail
                                 .filter((a) => a.qty > 0)
-                                .map((a, idx) => {
-                                  return (
-                                    <div
-                                      key={`${a.supplierId}-${idx}`}
-                                      className="flex items-center justify-between gap-3"
-                                    >
-                                      <div className="min-w-0">
-                                        <div className="font-medium text-ink truncate">
-                                          {a.supplierName || "Supplier"}
-                                        </div>
-                                        <div className="text-ink-soft">
-                                          {a.qty} × {ngn.format(asMoney(a.retailUnitPrice, 0))}
-                                        </div>
-                                      </div>
-                                      <div className="font-semibold text-ink whitespace-nowrap">
-                                        {ngn.format(asMoney(a.retailLineTotal, 0))}
+                                .map((a, idx) => (
+                                  <div key={`${a.supplierId}-${idx}`} className="flex items-center justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="font-medium text-ink truncate">{a.supplierName || "Supplier"}</div>
+                                      <div className="text-ink-soft">
+                                        {a.qty} × {ngn.format(asMoney(a.retailUnitPrice, 0))}
                                       </div>
                                     </div>
-                                  );
-                                })}
+                                    <div className="font-semibold text-ink whitespace-nowrap">
+                                      {ngn.format(asMoney(a.retailLineTotal, 0))}
+                                    </div>
+                                  </div>
+                                ))}
                             </div>
 
                             {ql && ql.qtyPriced < ql.qtyRequested && (
@@ -1264,14 +1125,14 @@ export default function Cart() {
                           </div>
                         )}
 
-                        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                        {/* ✅ MOBILE-NEAT FOOTER: quantity + total stack cleanly */}
+                        <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                           {/* Quantity controls */}
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center justify-between sm:justify-start gap-3">
                             <div className="flex items-center rounded-xl border border-border bg-white overflow-hidden shadow-sm">
                               <button
                                 aria-label="Decrease quantity"
                                 className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
-                                // ✅ prevent input blur -> stops double-update flicker
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={dec}
                               >
@@ -1285,26 +1146,16 @@ export default function Cart() {
                                 value={inputValue}
                                 onChange={(e) => {
                                   const v = e.target.value;
-
-                                  // ✅ allow clearing
                                   if (v === "") {
                                     setQtyDraft((p) => ({ ...p, [k]: "" }));
                                     return;
                                   }
-
-                                  // digits only
                                   if (!/^\d+$/.test(v)) return;
-
                                   setQtyDraft((p) => ({ ...p, [k]: v }));
                                 }}
-                                onBlur={() => {
-                                  // ✅ if empty when leaving, becomes 1 (and clamps)
-                                  commitDraft();
-                                }}
+                                onBlur={() => commitDraft()}
                                 onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    (e.currentTarget as HTMLInputElement).blur();
-                                  }
+                                  if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
                                 }}
                                 className="w-16 text-center outline-none px-2 py-2 bg-white"
                                 aria-label="Quantity"
@@ -1313,26 +1164,20 @@ export default function Cart() {
                               <button
                                 aria-label="Increase quantity"
                                 className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
-                                title="Increase quantity"
-                                // ✅ prevent input blur -> stops double-update flicker (this is why + was worse)
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={inc}
                               >
                                 +
                               </button>
                             </div>
-                            <span className="text-xs md:text-sm text-ink-soft">Qty</span>
+
+                            <span className="text-xs text-ink-soft">Qty</span>
                           </div>
 
                           {/* Line total */}
-                          <div className="text-right">
-                            <div className="text-xs md:text-sm text-ink-soft">Line total</div>
-                            <div className="text-lg md:text-xl font-semibold tracking-tight">
-                              {ngn.format(lineTotal)}
-                            </div>
-                            {pricingQ.isFetching && (
-                              <div className="text-[11px] text-ink-soft">Updating supplier prices…</div>
-                            )}
+                          <div className="sm:ml-auto rounded-xl border bg-white/70 px-3 py-2 text-right">
+                            <div className="text-[11px] text-ink-soft">Line total</div>
+                            <div className="text-lg font-semibold tracking-tight">{ngn.format(lineTotal)}</div>
                           </div>
                         </div>
                       </div>
@@ -1347,64 +1192,73 @@ export default function Cart() {
               <div className="rounded-2xl border border-white/60 bg-white/70 backdrop-blur p-5 shadow-[0_6px_30px_rgba(0,0,0,0.06)]">
                 <h2 className="text-lg font-semibold text-ink">Order summary</h2>
 
-                <div className="mt-3 space-y-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-ink-soft">Items</span>
-                    <span className="font-medium">{visibleCart.length}</span>
+                {/* ✅ neat rows on mobile: label wraps, value never overlaps */}
+                <div className="mt-4 grid gap-3 text-[13px] sm:text-sm">
+                  <div className="grid grid-cols-[1fr_auto] items-start gap-4">
+                    <span className="text-ink-soft leading-tight">Items</span>
+                    <span className="font-semibold text-ink whitespace-nowrap text-right">{visibleCart.length}</span>
                   </div>
 
-                  {/* Retail subtotal */}
-                  <div className="flex items-center justify-between">
-                    <span className="text-ink-soft">Subtotal (retail)</span>
-                    <span className="font-medium">{ngn.format(total)}</span>
+                  <div className="grid grid-cols-[1fr_auto] items-start gap-4">
+                    <span className="text-ink-soft leading-tight">
+                      Subtotal <span className="text-[11px]">(retail)</span>
+                    </span>
+                    <span className="font-semibold text-ink whitespace-nowrap text-right">{ngn.format(total)}</span>
                   </div>
 
-                  <div className="flex items-center justify-between">
-                    <span className="text-ink-soft">Shipping</span>
-                    <span className="font-medium">Calculated at checkout</span>
+                  <div className="grid grid-cols-[1fr_auto] items-start gap-4">
+                    <span className="text-ink-soft leading-tight">Shipping</span>
+                    <span className="font-semibold text-ink text-right leading-tight">
+                      Calculated
+                      <br />
+                      at checkout
+                    </span>
                   </div>
                 </div>
 
-                <div className="mt-4 flex items-center justify-between text-ink">
-                  <span className="font-semibold">Total</span>
-                  <span className="text-2xl font-extrabold tracking-tight">{ngn.format(total)}</span>
+                {/* ✅ Total: stack on mobile so it never crushes */}
+                <div className="mt-5 pt-4 border-t border-white/50">
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <span className="font-semibold text-ink">Total</span>
+                    <span className="text-[28px] sm:text-2xl font-extrabold tracking-tight text-ink whitespace-nowrap">
+                      {ngn.format(total)}
+                    </span>
+
+                  </div>
+
+                  {!canCheckout && <p className="mt-2 text-[12px] text-rose-600">{cartBlockingReason}</p>}
+                  {pricingWarning && <p className="mt-2 text-[12px] text-rose-600">{pricingWarning}</p>}
+
+                  {/* ✅ Button never wraps: “Checkout” on mobile */}
+                  <Link
+                    to={canCheckout && !pricingWarning ? "/checkout" : "#"}
+                    onClick={(e) => {
+                      if (!canCheckout || !!pricingWarning) e.preventDefault();
+                    }}
+                    className={`mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 font-semibold shadow-sm transition whitespace-nowrap
+        ${canCheckout && !pricingWarning
+                        ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
+                        : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                      }`}
+                    aria-disabled={!canCheckout || !!pricingWarning}
+                  >
+                    <span className="sm:hidden">Checkout</span>
+                    <span className="hidden sm:inline">Proceed to checkout</span>
+                  </Link>
+
+                  <Link
+                    to="/"
+                    className="mt-3 w-full inline-flex items-center justify-center rounded-xl border border-border bg-white px-4 py-3 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"
+                  >
+                    Continue shopping
+                  </Link>
+
+                  <p className="mt-3 text-[11px] text-ink-soft">Totals above use live supplier offers.</p>
                 </div>
-
-                {!canCheckout && (
-                  <p className="mt-2 text-[12px] text-rose-600">{cartBlockingReason}</p>
-                )}
-                {pricingWarning && (
-                  <p className="mt-2 text-[12px] text-rose-600">{pricingWarning}</p>
-                )}
-
-                <Link
-                  to={canCheckout && !pricingWarning ? "/checkout" : "#"}
-                  onClick={(e) => {
-                    if (!canCheckout || !!pricingWarning) e.preventDefault();
-                  }}
-                  className={`mt-5 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 font-semibold shadow-sm transition
-                    ${canCheckout && !pricingWarning
-                      ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
-                      : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
-                    }`}
-                  aria-disabled={!canCheckout || !!pricingWarning}
-                >
-                  Proceed to checkout
-                </Link>
-
-                <Link
-                  to="/"
-                  className="mt-3 w-full inline-flex items-center justify-center rounded-xl border border-border bg-white px-4 py-3 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"
-                >
-                  Continue shopping
-                </Link>
-
-                <p className="mt-3 text-[11px] text-ink-soft">Totals above use live supplier offers.</p>
               </div>
 
-              <p className="mt-3 text-[11px] text-ink-soft text-center">
-                Taxes &amp; shipping are shown at checkout. You can update addresses there.
-              </p>
+
+              <p className="mt-3 text-[11px] text-ink-soft text-center">Taxes &amp; shipping are shown at checkout. You can update addresses there.</p>
             </aside>
           </div>
         </div>

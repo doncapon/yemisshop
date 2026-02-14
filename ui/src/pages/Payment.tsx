@@ -2,7 +2,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
-import { useAuthStore } from '../store/auth';
 import { useModal } from "../components/ModalProvider";
 import { markPaystackExit } from '../utils/paystackReturn';
 import SiteLayout from '../layouts/SiteLayout';
@@ -31,11 +30,10 @@ const ngn = new Intl.NumberFormat('en-NG', {
 
 export default function Payment() {
   const nav = useNavigate();
-  const token = useAuthStore((s) => s.token);
   const loc = useLocation();
   const orderId = new URLSearchParams(loc.search).get('orderId') || '';
 
-  // 🔹 NEW: read estimated totals (incl. service fee) from navigation state
+  // 🔹 Read estimated totals (incl. service fee) from navigation state
   const state = (loc.state || {}) as any;
   const estimatedTotal =
     typeof state.total === 'number'
@@ -76,11 +74,13 @@ export default function Payment() {
       setLoading(true);
       setErr(null);
       try {
+        // ✅ Cookie auth: rely on httpOnly session cookie
         const { data } = await api.post<InitResp>(
           '/api/payments/init',
           { orderId, channel: 'paystack' },
-          { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+          { withCredentials: true },
         );
+
         setInit(data);
 
         try {
@@ -108,18 +108,20 @@ export default function Payment() {
         setLoading(false);
       }
     })();
-  }, [orderId, token]);
+  }, [orderId]);
 
   const markPaidManual = async () => {
     if (!init) return;
     setLoading(true);
     setErr(null);
     try {
+      // ✅ Cookie auth
       await api.post(
         '/api/payments/verify',
         { reference: init.reference, orderId },
-        { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+        { withCredentials: true },
       );
+
       openModal({ title: 'Payment', message: 'Payment verified. Thank you!' });
       nav(`/payment-callback?orderId=${orderId}&reference=${init.reference}`);
     } catch (e: any) {
@@ -132,7 +134,11 @@ export default function Payment() {
   if (!orderId) {
     return (
       <SiteLayout>
-        <div className="max-w-md mx-auto p-6">Missing order ID.</div>
+        <div className="mx-auto max-w-md p-4 sm:p-6">
+          <div className="rounded-2xl border bg-white p-4 text-sm">
+            Missing order ID.
+          </div>
+        </div>
       </SiteLayout>
     );
   }
@@ -210,7 +216,7 @@ export default function Payment() {
   const HostedCheckoutModal = () => {
     if (!init?.authorization_url) return null;
 
-    // 🔹 pick what to show as "Total payable"
+    // pick what to show as "Total payable"
     const displayTotal =
       typeof estimatedTotal === 'number' && estimatedTotal > 0
         ? estimatedTotal
@@ -219,92 +225,128 @@ export default function Payment() {
         : undefined;
 
     return (
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="fixed inset-0 z-50 grid place-items-center bg-black/40 px-4"
-      >
-        <div className="w-full max-w-lg rounded-2xl bg-white shadow-2xl border">
-          <div className="px-5 py-4 border-b">
-            <h2 className="text-lg font-semibold">Before you pay</h2>
-            <p className="text-sm text-zinc-600 mt-1">
-              Save your payment reference. You’ll need it if you contact support.
-            </p>
-          </div>
+      <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/50">
+        {/* Mobile sheet: taller + more room for details */}
+        <div className="fixed inset-x-0 bottom-0 sm:inset-0 sm:grid sm:place-items-center">
+          <div
+            className="
+              w-full sm:max-w-lg sm:mx-4
+              bg-white border shadow-2xl
+              rounded-t-2xl sm:rounded-2xl
+              h-[92vh] sm:h-auto
+              max-h-[92vh] sm:max-h-[80vh]
+              flex flex-col
+            "
+          >
+            {/* ✅ smaller header */}
+            <div className="px-4 py-3 border-b flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-base sm:text-lg font-semibold leading-tight">
+                  Before you pay
+                </h2>
+                <p className="text-[11px] sm:text-sm text-zinc-600 mt-1 leading-snug">
+                  Save your payment reference. You’ll need it if you contact support.
+                </p>
+              </div>
 
-          <div className="p-5 space-y-4">
-            <div>
-              <div className="text-xs text-zinc-500">Payment Reference</div>
-              <div className="mt-1 flex flex-wrap items-center gap-2">
-                <code className="px-2 py-1 rounded bg-zinc-100 text-zinc-900 text-sm">
-                  {init.reference}
-                </code>
-                <button
-                  className="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
-                  onClick={copyRef}
-                >
-                  Copy
-                </button>
-                <button
-                  className="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
-                  onClick={shareRef}
-                >
-                  Share
-                </button>
-                <button
-                  className="text-sm px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
-                  onClick={downloadRef}
-                >
-                  Download .txt
-                </button>
-              </div>
-              <div className="text-xs text-zinc-500 mt-1">
-                Tip: We’ve also stored this reference locally on your device.
-              </div>
+              <button
+                aria-label="Close"
+                className="shrink-0 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-black/5"
+                onClick={() => setShowHosted(false)}
+              >
+                ✕
+              </button>
             </div>
 
-            {/* 🔹 Show total payable including service fee when we have it */}
-            {displayTotal !== undefined && (
-              <div className="text-sm">
-                <b>Total payable</b>{' '}
-                <span className="font-semibold">
-                  {ngn.format(displayTotal)}
-                </span>
-                {estimatedTotal &&
-                  init.amount &&
-                  estimatedTotal !== init.amount && (
-                    <div className="text-[10px] text-zinc-500">
-                      Includes estimated service &amp; gateway fees. Backend
-                      amount ({ngn.format(init.amount)}) will be reconciled on
-                      the receipt.
-                    </div>
-                  )}
-              </div>
-            )}
-          </div>
+            {/* ✅ BIG scroll area (details) */}
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+              {/* Reference block (less padding, less nested whitespace) */}
+              <div className="rounded-xl border bg-zinc-50 p-3">
+                <div className="text-[11px] text-zinc-500">Payment Reference</div>
 
-          <div className="px-5 py-4 border-t flex items-center justify-between gap-2">
-            <label className="inline-flex items-center gap-2 text-xs text-zinc-600">
-              <input
-                type="checkbox"
-                checked={autoRedirect}
-                onChange={(e) => toggleAuto(e.target.checked)}
-              />
-              Always skip this step and go straight to Paystack next time
-            </label>
-            <div className="flex items-center gap-2">
-              <button
-                className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 text-sm"
-                onClick={gotoOrders}
-              >
-                Pay later
-              </button>
-              <button
-                className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
-                onClick={goToPaystack}
-              >
-                Continue to Paystack
-              </button>
+                <code className="mt-2 block w-full rounded-lg bg-white border px-3 py-2 text-sm break-all">
+                  {init.reference}
+                </code>
+
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  <button
+                    className="rounded-lg border bg-white hover:bg-black/5 py-2 text-xs"
+                    onClick={copyRef}
+                  >
+                    Copy
+                  </button>
+                  <button
+                    className="rounded-lg border bg-white hover:bg-black/5 py-2 text-xs"
+                    onClick={shareRef}
+                  >
+                    Share
+                  </button>
+                  <button
+                    className="rounded-lg border bg-white hover:bg-black/5 py-2 text-xs"
+                    onClick={downloadRef}
+                  >
+                    Download
+                  </button>
+                </div>
+
+                <div className="mt-2 text-[10px] text-zinc-500">
+                  Tip: We’ve also stored this reference locally on your device.
+                </div>
+              </div>
+
+              {/* Total payable */}
+              {displayTotal !== undefined && (
+                <div className="rounded-xl border p-3">
+                  <div className="text-[11px] text-zinc-500">Total payable</div>
+                  <div className="text-lg font-semibold mt-1">
+                    {ngn.format(displayTotal)}
+                  </div>
+
+                  {estimatedTotal &&
+                    init.amount &&
+                    estimatedTotal !== init.amount && (
+                      <div className="text-[10px] text-zinc-500 mt-1 leading-snug">
+                        Includes estimated service &amp; gateway fees. Backend amount ({ngn.format(init.amount)}) will be reconciled on the receipt.
+                      </div>
+                    )}
+
+                  {estimatedServiceFeeTotal ? (
+                    <div className="text-[10px] text-zinc-500 mt-1">
+                      Estimated service &amp; gateway fees: {ngn.format(estimatedServiceFeeTotal)}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            {/* ✅ smaller footer + smaller buttons */}
+            <div className="px-4 py-3 border-t bg-white space-y-2">
+              <label className="flex items-start gap-2 text-[10px] sm:text-xs text-zinc-600 leading-snug">
+                <input
+                  className="mt-0.5"
+                  type="checkbox"
+                  checked={autoRedirect}
+                  onChange={(e) => toggleAuto(e.target.checked)}
+                />
+                <span>
+                  Always skip this step and go straight to Paystack next time
+                </span>
+              </label>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  className="rounded-xl border bg-white hover:bg-black/5 py-2.5 text-sm"
+                  onClick={gotoOrders}
+                >
+                  Pay later
+                </button>
+                <button
+                  className="rounded-xl bg-zinc-900 text-white hover:opacity-90 py-2.5 text-sm"
+                  onClick={goToPaystack}
+                >
+                  Continue
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -312,113 +354,96 @@ export default function Payment() {
     );
   };
 
+
   return (
     <SiteLayout>
-      <div className="max-w-lg mx-auto p-6 space-y-4">
-        <h1 className="text-2xl font-semibold">Payment</h1>
+      <div className="mx-auto max-w-lg p-4 sm:p-6 space-y-4">
+        <h1 className="text-xl sm:text-2xl font-semibold">Payment</h1>
 
         {err && (
-          <div className="p-2 rounded bg-red-50 text-red-700">
+          <div className="p-3 rounded-xl border bg-red-50 text-red-700 text-sm">
             {err}
           </div>
         )}
+
         {loading && (
           <div className="text-sm opacity-70">
             Loading…
           </div>
         )}
 
-        {showHosted &&
-          init?.mode === 'paystack' && (
-            <div className="rounded-xl border bg-amber-50 text-amber-800 px-4 py-2 text-sm">
-              You’re about to continue to Paystack. Please confirm your total and
-              save your reference.
-            </div>
-          )}
+        {showHosted && init?.mode === 'paystack' && (
+          <div className="rounded-xl border bg-amber-50 text-amber-800 px-4 py-3 text-sm">
+            You’re about to continue to Paystack. Please confirm your total and save your reference.
+          </div>
+        )}
 
-        {showHosted &&
-          init?.mode === 'paystack' && (
-            <HostedCheckoutModal />
-          )}
+        {showHosted && init?.mode === 'paystack' && <HostedCheckoutModal />}
 
         {/* Inline bank / trial */}
         {!loading && init && isBankFlow && (
           <div className="space-y-4">
-            <div className="border rounded p-4 bg-white">
-              <h2 className="font-medium mb-2">
-                Bank Transfer Details
-              </h2>
+            <div className="border rounded-2xl p-4 bg-white">
+              <h2 className="font-medium mb-2">Bank Transfer Details</h2>
 
               {init.mode === 'trial' && (
-                <p className="text-sm mb-2">
-                  Trial mode: use the demo bank details below and click “I’ve
-                  transferred” to continue.
+                <p className="text-sm mb-3 text-zinc-700">
+                  Trial mode: use the demo bank details below and click “I’ve transferred” to continue.
                 </p>
               )}
 
               {init.bank ? (
                 <ul className="text-sm space-y-1">
-                  <li>
-                    <b>Bank:</b> {init.bank.bank_name}
-                  </li>
-                  <li>
-                    <b>Account Name:</b>{' '}
-                    {init.bank.account_name}
-                  </li>
-                  <li>
-                    <b>Account Number:</b>{' '}
-                    {init.bank.account_number}
-                  </li>
+                  <li><b>Bank:</b> {init.bank.bank_name}</li>
+                  <li><b>Account Name:</b> {init.bank.account_name}</li>
+                  <li><b>Account Number:</b> {init.bank.account_number}</li>
                 </ul>
               ) : (
-                <p className="text-sm">
-                  Bank details will be shown here.
-                </p>
+                <p className="text-sm">Bank details will be shown here.</p>
               )}
 
-              {/* 🔹 Show total payable here too */}
-              {estimatedTotal && (
-                <div className="mt-3 text-sm">
-                  <b>Total payable</b>{' '}
-                  <span className="font-semibold">
-                    {ngn.format(estimatedTotal)}
-                  </span>
-                  {estimatedServiceFeeTotal && (
-                    <div className="text-[10px] text-zinc-500">
-                      Includes estimated service &amp; gateway
-                      fees: {ngn.format(estimatedServiceFeeTotal)}
+              {(estimatedTotal !== undefined || (init.amount && init.currency)) && (
+                <div className="mt-4 rounded-xl border bg-zinc-50 p-3">
+                  {estimatedTotal !== undefined ? (
+                    <>
+                      <div className="text-[11px] text-zinc-500">Total payable</div>
+                      <div className="text-lg font-semibold mt-1">
+                        {ngn.format(estimatedTotal)}
+                      </div>
+                      {estimatedServiceFeeTotal ? (
+                        <div className="text-[11px] text-zinc-500 mt-1">
+                          Includes estimated service &amp; gateway fees: {ngn.format(estimatedServiceFeeTotal)}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="text-sm">
+                      <b>Amount:</b> {init.currency} {Number(init.amount).toLocaleString()}
                     </div>
                   )}
                 </div>
               )}
 
-              {!estimatedTotal &&
-                init.amount &&
-                init.currency && (
-                  <div className="mt-3 text-sm">
-                    <b>Amount:</b>{' '}
-                    {init.currency}{' '}
-                    {Number(init.amount).toLocaleString()}
-                  </div>
-                )}
-
-              <div className="mt-1 text-xs opacity-70">
+              <div className="mt-3 text-xs text-zinc-600">
                 Use your order reference in transfer notes:
-                <br />
-                <code>{init.reference}</code>
+                <div className="mt-1">
+                  <code className="break-all px-2 py-1 rounded-lg bg-zinc-100 border">
+                    {init.reference}
+                  </code>
+                </div>
               </div>
             </div>
 
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button
-                className="rounded-md border bg-black text-white px-4 py-2 hover:opacity-90 transition disabled:opacity-50"
+                className="rounded-xl border bg-black text-white px-4 py-3 hover:opacity-90 transition disabled:opacity-50 text-sm"
                 disabled={loading}
                 onClick={markPaidManual}
               >
                 I’ve transferred
               </button>
               <button
-                className="rounded-md border px-4 py-2"
+                className="rounded-xl border px-4 py-3 text-sm"
                 onClick={() => nav('/cart')}
               >
                 Back to cart
@@ -427,14 +452,11 @@ export default function Payment() {
           </div>
         )}
 
-        {!loading &&
-          init &&
-          init.mode === 'paystack' &&
-          !init.authorization_url && (
-            <div className="text-sm opacity-70">
-              Awaiting Paystack authorization URL…
-            </div>
-          )}
+        {!loading && init && init.mode === 'paystack' && !init.authorization_url && (
+          <div className="text-sm opacity-70">
+            Awaiting Paystack authorization URL…
+          </div>
+        )}
       </div>
     </SiteLayout>
   );

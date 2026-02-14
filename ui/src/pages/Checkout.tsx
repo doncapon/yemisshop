@@ -568,10 +568,10 @@ function Card({
     tone === "primary"
       ? "border-primary-200"
       : tone === "emerald"
-      ? "border-emerald-200"
-      : tone === "amber"
-      ? "border-amber-200"
-      : "border-border";
+        ? "border-emerald-200"
+        : tone === "amber"
+          ? "border-amber-200"
+          : "border-border";
 
   return (
     <div
@@ -599,30 +599,30 @@ function CardHeader({
     tone === "primary"
       ? "from-primary-50 to-white"
       : tone === "emerald"
-      ? "from-emerald-50 to-white"
-      : tone === "amber"
-      ? "from-amber-50 to-white"
-      : "from-surface to-white";
+        ? "from-emerald-50 to-white"
+        : tone === "amber"
+          ? "from-amber-50 to-white"
+          : "from-surface to-white";
 
   const toneIcon =
     tone === "primary"
       ? "text-primary-600"
       : tone === "emerald"
-      ? "text-emerald-600"
-      : tone === "amber"
-      ? "text-amber-600"
-      : "text-ink-soft";
+        ? "text-emerald-600"
+        : tone === "amber"
+          ? "text-amber-600"
+          : "text-ink-soft";
 
   return (
-    <div className={`flex items-center justify-between p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
-      <div className="flex items-start gap-3">
+    <div className={`flex items-center justify-between px-4 py-3 md:p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
+      <div className="flex items-start gap-2.5 md:gap-3">
         {icon && <div className={`mt-[2px] ${toneIcon}`}>{icon}</div>}
-        <div>
-          <h3 className="font-semibold text-ink">{title}</h3>
-          {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
+        <div className="min-w-0">
+          <h3 className="font-semibold text-ink text-sm md:text-base leading-5 md:leading-6">{title}</h3>
+          {subtitle && <p className="text-[11px] md:text-xs text-ink-soft leading-4 md:leading-5">{subtitle}</p>}
         </div>
       </div>
-      {action}
+      <div className="shrink-0">{action}</div>
     </div>
   );
 }
@@ -631,16 +631,15 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 ${
-        props.className || ""
-      }`}
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""
+        }`}
     />
   );
 }
 
 function AddressPreview({ a }: { a: Address }) {
   return (
-    <div className="p-4 text-sm leading-6 text-ink">
+    <div className="px-4 py-3 md:p-4 text-xs md:text-sm leading-5 md:leading-6 text-ink">
       <div>
         {a.houseNumber} {a.streetName}
       </div>
@@ -1129,13 +1128,13 @@ export default function Checkout() {
 
   if (cart.length === 0) {
     return (
-      <div className="min-h-[70vh] grid place-items-center bg-bg-soft">
+      <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
         <div className="text-center space-y-3">
-          <h1 className="text-2xl font-semibold text-ink">Your cart is empty</h1>
-          <p className="text-ink-soft">Add some items to proceed to checkout.</p>
+          <h1 className="text-xl md:text-2xl font-semibold text-ink">Your cart is empty</h1>
+          <p className="text-sm text-ink-soft">Add some items to proceed to checkout.</p>
           <button
             onClick={() => nav("/")}
-            className="inline-flex items-center rounded-md bg-primary-600 px-4 py-2 text-white font-medium hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
+            className="inline-flex items-center rounded-md bg-primary-600 px-4 py-2 text-white font-medium hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-200 transition text-sm"
           >
             Go to Catalogue
           </button>
@@ -1167,11 +1166,11 @@ export default function Checkout() {
         className="fixed inset-0 z-50 grid place-items-center bg-black/40 px-4"
       >
         <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border" onClick={(e) => e.stopPropagation()}>
-          <div className="px-5 py-4 border-b">
-            <h2 className="text-lg font-semibold">{title}</h2>
+          <div className="px-4 py-3 md:px-5 md:py-4 border-b">
+            <h2 className="text-base md:text-lg font-semibold">{title}</h2>
           </div>
 
-          <div className="p-5 space-y-3 text-sm">
+          <div className="p-4 md:p-5 space-y-2 text-xs md:text-sm">
             {lines.map((l, i) => (
               <p key={i}>{l}</p>
             ))}
@@ -1186,7 +1185,7 @@ export default function Checkout() {
                   Verify now
                 </button>
               )}
-              <div className="text-xs text-ink-soft text-center">
+              <div className="text-[11px] md:text-xs text-ink-soft text-center">
                 {!emailOk && (
                   <>
                     Or{" "}
@@ -1207,7 +1206,7 @@ export default function Checkout() {
             </div>
           </div>
 
-          <div className="px-5 py-4 border-t flex items-center justify-between gap-2">
+          <div className="px-4 py-3 md:px-5 md:py-4 border-t flex items-center justify-between gap-2">
             <button
               className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 text-sm"
               onClick={() => {
@@ -1220,7 +1219,7 @@ export default function Checkout() {
             </button>
             <button
               className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
-              onClick={() => {}}
+              onClick={() => { }}
               disabled
               title="Complete the steps above"
               type="button"
@@ -1240,50 +1239,53 @@ export default function Checkout() {
       <div className="bg-bg-soft bg-hero-radial">
         {!checkingVerification && showNotVerified && <NotVerifiedModal />}
 
-        <div className="max-w-6xl mx-auto px-4 md:px-6 py-8">
-          <div className="mb-6">
-            <nav className="flex items-center gap-2 text-sm">
+        {/* ✅ mobile: tighter padding + slightly smaller title/crumbs */}
+        <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-5 sm:py-6 md:py-8">
+          <div className="mb-4 md:mb-6">
+            <nav className="flex items-center gap-2 text-xs sm:text-sm">
               <span className="text-ink font-medium">Items</span>
               <span className="opacity-40">›</span>
               <span className="text-ink-soft">Address</span>
               <span className="opacity-40">›</span>
               <span className="text-ink-soft">Payment</span>
             </nav>
-            <h1 className="mt-2 text-2xl font-semibold text-ink">Checkout</h1>
+            <h1 className="mt-2 text-xl sm:text-2xl font-semibold text-ink leading-tight">Checkout</h1>
 
             {showMarginInfo && (
-              <p className="mt-1 text-xs text-ink-soft">
+              <p className="mt-1 text-[11px] sm:text-xs text-ink-soft">
                 {publicSettingsQ.isLoading
                   ? "Loading pricing settings…"
                   : publicSettingsQ.isError
-                  ? "Could not load margin settings — showing best-effort retail pricing."
-                  : `Margin applied: ${marginPercent}%`}
+                    ? "Could not load margin settings — showing best-effort retail pricing."
+                    : `Margin applied: ${marginPercent}%`}
               </p>
             )}
 
             {profileErr && (
-              <p className="mt-2 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
+              <p className="mt-2 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
                 {profileErr}
               </p>
             )}
 
             {(pricingQ.isLoading || pricingWarning) && (
-              <div className="mt-3 text-sm rounded-xl border bg-white/80 p-3 text-ink">
+              <div className="mt-3 text-xs sm:text-sm rounded-xl border bg-white/80 p-3 text-ink">
                 {pricingQ.isLoading ? "Calculating best supplier prices…" : pricingWarning}
               </div>
             )}
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-6">
+          {/* ✅ mobile: reduce gap; desktop unchanged */}
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-4 sm:gap-5 md:gap-6">
             {/* LEFT: Items / Addresses */}
-            <section className="space-y-6">
+            <section className="space-y-4 sm:space-y-5 md:space-y-6">
               <Card tone="primary" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
                 <CardHeader
                   tone="primary"
                   title="Items in your order"
-                  subtitle="Pricing shown is retail. Items may split across suppliers."
+                  subtitle="Retail pricing shown. Items may split across suppliers."
                   icon={<IconCart />}
                 />
+
                 <ul className="divide-y">
                   {cart.map((it) => {
                     const key = lineKeyFor(it);
@@ -1320,40 +1322,49 @@ export default function Checkout() {
                     const isExpanded = !!expanded[key];
 
                     return (
-                      <li key={key} className="p-4">
-                        <div className="flex items-center gap-4">
+                      <li key={key} className="px-4 py-3 sm:p-4">
+                        {/* ✅ mobile: smaller image + tighter layout */}
+                        <div className="flex items-start gap-3 sm:gap-4">
                           {it.image ? (
-                            <img src={it.image} alt={it.title} className="w-14 h-14 rounded-md object-cover border" />
+                            <img
+                              src={it.image}
+                              alt={it.title}
+                              className="w-12 h-12 sm:w-14 sm:h-14 rounded-md object-cover border shrink-0"
+                            />
                           ) : (
-                            <div className="w-14 h-14 rounded-md bg-zinc-100 grid place-items-center text-[10px] text-ink-soft border">
+                            <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-md bg-zinc-100 grid place-items-center text-[10px] text-ink-soft border shrink-0">
                               No image
                             </div>
                           )}
 
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-start justify-between gap-2">
                               <div className="min-w-0">
-                                <div className="font-medium text-ink truncate">
+                                <div className="font-medium text-ink truncate text-sm sm:text-base">
                                   {it.title}
                                   {it.kind === "VARIANT" || it.variantId ? " (Variant)" : ""}
                                 </div>
 
-                                <div className="text-xs text-ink-soft">
+                                <div className="text-[11px] sm:text-xs text-ink-soft leading-4">
                                   Qty: {qty} • Unit: {unitText}
                                   {!!splitBadge && <span className="ml-2">• {splitBadge}</span>}
                                 </div>
 
-                                {optionsText && <div className="mt-1 text-xs text-ink-soft">{optionsText}</div>}
+                                {optionsText && (
+                                  <div className="mt-1 text-[11px] sm:text-xs text-ink-soft line-clamp-2">
+                                    {optionsText}
+                                  </div>
+                                )}
 
                                 {showDelta && (
-                                  <div className={`mt-1 text-[11px] ${delta > 0 ? "text-rose-700" : "text-emerald-700"}`}>
+                                  <div className={`mt-1 text-[10px] sm:text-[11px] ${delta > 0 ? "text-rose-700" : "text-emerald-700"}`}>
                                     Live retail price changed {delta > 0 ? "↑" : "↓"} {ngn.format(Math.abs(delta))}
                                   </div>
                                 )}
 
                                 {hasRetailQuote && (rl.allocationsRetail?.length ?? 0) > 0 && (
                                   <button
-                                    className="mt-2 text-[11px] text-primary-700 hover:underline"
+                                    className="mt-2 text-[10px] sm:text-[11px] text-primary-700 hover:underline"
                                     type="button"
                                     onClick={() => setExpanded((p) => ({ ...p, [key]: !p[key] }))}
                                   >
@@ -1362,18 +1373,20 @@ export default function Checkout() {
                                 )}
                               </div>
 
-                              <div className="text-ink font-semibold whitespace-nowrap">{ngn.format(quoteLineTotalRetail)}</div>
+                              <div className="text-ink font-semibold whitespace-nowrap text-sm sm:text-base">
+                                {ngn.format(quoteLineTotalRetail)}
+                              </div>
                             </div>
 
                             {/* Retail breakdown */}
                             {hasRetailQuote && isExpanded && (rl.allocationsRetail?.length ?? 0) > 0 && (
-                              <div className="mt-3 rounded-xl border bg-white/70 p-3 text-xs">
+                              <div className="mt-3 rounded-xl border bg-white/70 px-3 py-2 text-[11px] sm:text-xs">
                                 <div className="flex items-center justify-between text-ink-soft">
                                   <span>Supplier split (retail)</span>
                                   <span className="font-medium text-ink">{ngn.format(asMoney(rl.retailLineTotal, 0))}</span>
                                 </div>
 
-                                <div className="mt-2 space-y-1">
+                                <div className="mt-2 space-y-1.5">
                                   {rl.allocationsRetail
                                     .filter((a) => a.qty > 0)
                                     .map((a, idx) => (
@@ -1384,14 +1397,16 @@ export default function Checkout() {
                                             {a.qty} × {ngn.format(asMoney(a.retailUnitPrice, 0))}
                                           </div>
                                         </div>
-                                        <div className="font-semibold text-ink whitespace-nowrap">{ngn.format(asMoney(a.retailLineTotal, 0))}</div>
+                                        <div className="font-semibold text-ink whitespace-nowrap">
+                                          {ngn.format(asMoney(a.retailLineTotal, 0))}
+                                        </div>
                                       </div>
                                     ))}
                                 </div>
 
                                 {/* Keep allocation warning from supplier quote */}
                                 {ql && ql.qtyPriced < ql.qtyRequested && (
-                                  <div className="mt-2 text-[11px] text-rose-700">
+                                  <div className="mt-2 text-[10px] sm:text-[11px] text-rose-700">
                                     Only {ql.qtyPriced} out of {ql.qtyRequested} could be allocated.
                                   </div>
                                 )}
@@ -1414,43 +1429,58 @@ export default function Checkout() {
                   icon={<IconHome />}
                   action={
                     !showHomeForm && (
-                      <button className="text-sm text-emerald-700 hover:underline" onClick={() => setShowHomeForm(true)} type="button">
+                      <button
+                        className="text-[11px] sm:text-sm text-emerald-700 hover:underline"
+                        onClick={() => setShowHomeForm(true)}
+                        type="button"
+                      >
                         Change
                       </button>
                     )
                   }
                 />
                 {loadingProfile ? (
-                  <div className="p-4 text-sm text-ink-soft">Loading…</div>
+                  <div className="px-4 py-3 md:p-4 text-xs sm:text-sm text-ink-soft">Loading…</div>
                 ) : showHomeForm ? (
                   <div className="p-4 grid grid-cols-1 gap-3">
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <Input value={homeAddr.houseNumber} onChange={onChangeHome("houseNumber")} placeholder="House No." />
                       <Input value={homeAddr.postCode} onChange={onChangeHome("postCode")} placeholder="Post code" />
                     </div>
+
                     <Input value={homeAddr.streetName} onChange={onChangeHome("streetName")} placeholder="Street name" />
-                    <div className="grid grid-cols-2 gap-3">
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <Input value={homeAddr.town} onChange={onChangeHome("town")} placeholder="Town" />
                       <Input value={homeAddr.city} onChange={onChangeHome("city")} placeholder="City" />
                     </div>
-                    <div className="grid grid-cols-2 gap-3">
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <Input value={homeAddr.state} onChange={onChangeHome("state")} placeholder="State" />
                       <Input value={homeAddr.country} onChange={onChangeHome("country")} placeholder="Country" />
                     </div>
 
-                    <div className="flex items-center gap-3 pt-1">
+
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 pt-1">
                       <button
                         type="button"
-                        className="inline-flex items-center rounded-md bg-emerald-600 px-4 py-2 text-white font-medium hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-200 transition disabled:opacity-50"
+                        className="w-full sm:w-auto inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-white font-medium hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-200 transition disabled:opacity-50 text-sm"
                         onClick={saveHome}
                         disabled={savingHome}
                       >
                         {savingHome ? "Saving…" : "Done"}
                       </button>
-                      <button type="button" className="text-sm text-ink-soft hover:underline" onClick={() => setHomeAddr(EMPTY_ADDR)} disabled={savingHome}>
+
+                      <button
+                        type="button"
+                        className="w-full sm:w-auto text-sm text-ink-soft hover:underline"
+                        onClick={() => setHomeAddr(EMPTY_ADDR)}
+                        disabled={savingHome}
+                      >
                         Clear
                       </button>
                     </div>
+
                   </div>
                 ) : (
                   <AddressPreview a={homeAddr} />
@@ -1465,7 +1495,7 @@ export default function Checkout() {
                   subtitle="Where we’ll deliver your items."
                   icon={<IconTruck />}
                   action={
-                    <label className="flex items-center gap-2 text-sm">
+                    <label className="flex items-center gap-2 text-[11px] sm:text-sm">
                       <input
                         type="checkbox"
                         checked={sameAsHome}
@@ -1499,43 +1529,54 @@ export default function Checkout() {
                   }
                 />
                 {sameAsHome ? (
-                  <div className="p-4 text-sm text-ink-soft">Using your Home address for shipping.</div>
+                  <div className="px-4 py-3 md:p-4 text-[11px] sm:text-sm text-ink-soft">Using your Home address for shipping.</div>
                 ) : loadingProfile ? (
-                  <div className="p-4 text-sm text-ink-soft">Loading…</div>
+                  <div className="px-4 py-3 md:p-4 text-[11px] sm:text-sm text-ink-soft">Loading…</div>
                 ) : showShipForm ? (
                   <div className="p-4 grid grid-cols-1 gap-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input value={shipAddr.houseNumber} onChange={onChangeShip("houseNumber")} placeholder="House No." />
-                      <Input value={shipAddr.postCode} onChange={onChangeShip("postCode")} placeholder="Post code" />
-                    </div>
-                    <Input value={shipAddr.streetName} onChange={onChangeShip("streetName")} placeholder="Street name" />
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input value={shipAddr.town} onChange={onChangeShip("town")} placeholder="Town" />
-                      <Input value={shipAddr.city} onChange={onChangeShip("city")} placeholder="City" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input value={shipAddr.state} onChange={onChangeShip("state")} placeholder="State" />
-                      <Input value={shipAddr.country} onChange={onChangeShip("country")} placeholder="Country" />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={homeAddr.houseNumber} onChange={onChangeHome("houseNumber")} placeholder="House No." />
+                      <Input value={homeAddr.postCode} onChange={onChangeHome("postCode")} placeholder="Post code" />
                     </div>
 
-                    <div className="flex items-center gap-3 pt-1">
+                    <Input value={homeAddr.streetName} onChange={onChangeHome("streetName")} placeholder="Street name" />
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={homeAddr.town} onChange={onChangeHome("town")} placeholder="Town" />
+                      <Input value={homeAddr.city} onChange={onChangeHome("city")} placeholder="City" />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={homeAddr.state} onChange={onChangeHome("state")} placeholder="State" />
+                      <Input value={homeAddr.country} onChange={onChangeHome("country")} placeholder="Country" />
+                    </div>
+
+
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 pt-1">
                       <button
                         type="button"
-                        className="inline-flex items-center rounded-md bg-amber-600 px-4 py-2 text-white font-medium hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-200 transition disabled:opacity-50"
-                        onClick={saveShip}
-                        disabled={savingShip}
+                        className="w-full sm:w-auto inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-white font-medium hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-200 transition disabled:opacity-50 text-sm"
+                        onClick={saveHome}
+                        disabled={savingHome}
                       >
-                        {savingShip ? "Saving…" : "Done"}
+                        {savingHome ? "Saving…" : "Done"}
                       </button>
-                      <button type="button" className="text-sm text-ink-soft hover:underline" onClick={() => setShipAddr(EMPTY_ADDR)} disabled={savingShip}>
+
+                      <button
+                        type="button"
+                        className="w-full sm:w-auto text-sm text-ink-soft hover:underline"
+                        onClick={() => setHomeAddr(EMPTY_ADDR)}
+                        disabled={savingHome}
+                      >
                         Clear
                       </button>
                     </div>
+
                   </div>
                 ) : (
-                  <div className="p-4">
-                    <div className="flex items-start justify-between">
-                      <div className="text-sm leading-6 text-ink">
+                  <div className="px-4 py-3 md:p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="text-xs sm:text-sm leading-5 sm:leading-6 text-ink">
                         <div>
                           {shipAddr.houseNumber} {shipAddr.streetName}
                         </div>
@@ -1546,7 +1587,11 @@ export default function Checkout() {
                           {shipAddr.state}, {shipAddr.country}
                         </div>
                       </div>
-                      <button className="text-sm text-amber-700 hover:underline" onClick={() => setShowShipForm(true)} type="button">
+                      <button
+                        className="text-[11px] sm:text-sm text-amber-700 hover:underline"
+                        onClick={() => setShowShipForm(true)}
+                        type="button"
+                      >
                         Change
                       </button>
                     </div>
@@ -1557,17 +1602,18 @@ export default function Checkout() {
 
             {/* RIGHT: Summary / Action */}
             <aside className="lg:sticky lg:top-6 h-max">
-              <Card className="p-5">
-                <h2 className="text-lg font-semibold text-ink">Order Summary</h2>
+              {/* ✅ mobile: sticky “mini summary” feel (no actual sticky; just tighter + clearer hierarchy) */}
+              <Card className="p-4 sm:p-5">
+                <h2 className="text-base sm:text-lg font-semibold text-ink">Order Summary</h2>
 
-                <div className="mt-3 space-y-2 text-sm">
+                <div className="mt-3 space-y-2 text-xs sm:text-sm">
                   <div className="flex items-center justify-between">
                     <span className="text-ink-soft">Items Subtotal (retail)</span>
                     <span className="font-medium">{ngn.format(itemsSubtotal)}</span>
                   </div>
 
                   {taxMode === "INCLUDED" && estimatedVATIncluded > 0 && (
-                    <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center justify-between text-[11px] sm:text-xs">
                       <span className="text-ink-soft">VAT (included)</span>
                       <span className="text-ink-soft">{ngn.format(estimatedVATIncluded)}</span>
                     </div>
@@ -1582,43 +1628,43 @@ export default function Checkout() {
 
                   <div className="flex items-center justify-between">
                     <span className="text-ink-soft">Shipping</span>
-                    <span className="font-medium">Included by supplier</span>
+                    <span className="font-medium">Included</span>
                   </div>
 
-                  <div className="mt-4 pt-3 border-t border-border">
-                    <div className="flex items-center justify-between mt-2">
-                      <span className="text-ink">Service fee (total)</span>
+                  <div className="mt-3 pt-3 border-t border-border">
+                    <div className="flex items-center justify-between">
+                      <span className="text-ink">Service fee</span>
                       <span className="font-semibold">{ngn.format(serviceFeeTotal)}</span>
                     </div>
-                    {serviceFeeQ.isLoading && <div className="mt-1 text-xs text-ink-soft">Calculating fees…</div>}
-                    {serviceFeeQ.isError && <div className="mt-1 text-xs text-danger">Failed to compute fees</div>}
+                    {serviceFeeQ.isLoading && <div className="mt-1 text-[11px] sm:text-xs text-ink-soft">Calculating fees…</div>}
+                    {serviceFeeQ.isError && <div className="mt-1 text-[11px] sm:text-xs text-danger">Failed to compute fees</div>}
                   </div>
                 </div>
 
-                <div className="mt-4 flex items-center justify-between text-ink">
-                  <span className="font-semibold">Total</span>
-                  <span className="text-xl font-semibold">{ngn.format(payableTotal)}</span>
+                <div className="mt-4 flex items-baseline justify-between text-ink">
+                  <span className="font-semibold text-sm sm:text-base">Total</span>
+                  <span className="text-lg sm:text-xl font-semibold">{ngn.format(payableTotal)}</span>
                 </div>
 
                 {pricingWarning && (
-                  <p className="mt-3 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">{pricingWarning}</p>
+                  <p className="mt-3 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">{pricingWarning}</p>
                 )}
 
                 <button
                   disabled={createOrder.isPending || serviceFeeQ.isLoading || pricingQ.isLoading || !!pricingWarning}
                   onClick={() => createOrder.mutate()}
-                  className="mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50"
+                  className="mt-4 sm:mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50 text-sm"
                   type="button"
                 >
                   {createOrder.isPending
                     ? "Processing…"
                     : pricingQ.isLoading
-                    ? "Calculating supplier prices…"
-                    : "Place order & Proceed to payment"}
+                      ? "Calculating prices…"
+                      : "Place order & Pay"}
                 </button>
 
                 {createOrder.isError && (
-                  <p className="mt-3 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
+                  <p className="mt-3 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
                     {(() => {
                       const err = createOrder.error as any;
                       if (err && typeof err === "object" && "response" in err) {
@@ -1632,13 +1678,13 @@ export default function Checkout() {
 
                 <button
                   onClick={() => nav("/cart")}
-                  className="mt-3 w-full inline-flex items-center justify-center rounded-lg border border-border bg-surface px-4 py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"
+                  className="mt-3 w-full inline-flex items-center justify-center rounded-lg border border-border bg-surface px-4 py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition text-sm"
                   type="button"
                 >
                   Back to cart
                 </button>
 
-                <p className="mt-3 text-[11px] text-ink-soft text-center">
+                <p className="mt-3 text-[10px] sm:text-[11px] text-ink-soft text-center leading-4">
                   Totals use live supplier offers + margin. If an offer changes or stock reallocates, your pricing may update.
                 </p>
               </Card>
