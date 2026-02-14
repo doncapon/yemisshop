@@ -1,38 +1,56 @@
-// api/src/lib/authCookies.ts
 import type { Response } from "express";
+
+export const COOKIE_NAME = process.env.AUTH_COOKIE_NAME?.trim() || "ds_access";
 
 type SameSite = "lax" | "strict" | "none";
 
-function inferSecureFromEnv(): boolean {
-  const s = String(process.env.COOKIE_SECURE ?? "").trim().toLowerCase();
-  if (s === "true" || s === "1" || s === "yes") return true;
-  if (s === "false" || s === "0" || s === "no") return false;
-
-  // fallback: if APP_URL/API_URL are https, prefer secure cookies
-  const app = String(process.env.APP_URL ?? "");
-  const api = String(process.env.API_URL ?? "");
-  return app.startsWith("https://") || api.startsWith("https://");
+function isProd() {
+  return String(process.env.NODE_ENV || "").toLowerCase() === "production";
 }
 
 function inferSameSite(): SameSite {
-  const v = String(process.env.COOKIE_SAMESITE ?? "").trim().toLowerCase();
-  if (v === "none" || v === "lax" || v === "strict") return v as SameSite;
+  // Default to Lax (your request)
+  const v = String(process.env.COOKIE_SAMESITE || "")
+    .trim()
+    .toLowerCase();
 
-  // If you host UI+API on same origin: lax is best
+  if (v === "lax" || v === "strict" || v === "none") return v;
   return "lax";
 }
 
-const COOKIE_NAME = process.env.ACCESS_COOKIE_NAME || "access_token";
+function inferSecureFromEnv() {
+  // In production, always Secure unless explicitly forced off (not recommended).
+  // If you want to force secure in staging too, set COOKIE_SECURE=true.
+  const v = String(process.env.COOKIE_SECURE || "").trim().toLowerCase();
+  if (v === "true") return true;
+  if (v === "false") return false;
+  return isProd();
+}
+
+function inferCookieDomain(): string | undefined {
+  // ✅ Best practice:
+  // - On Railway default *.up.railway.app domain: DO NOT set Domain at all (host-only cookie)
+  // - On your custom domain: set COOKIE_DOMAIN=.dayspringhouse.com (or rely on prod default below)
+  const env = String(process.env.COOKIE_DOMAIN || "").trim();
+  if (env) return env;
+
+  // Your requested production default:
+  if (isProd()) return ".dayspringhouse.com";
+
+  // Dev (localhost): no domain attribute
+  return undefined;
+}
 
 export function setAccessTokenCookie(
   res: Response,
   token: string,
   opts?: { maxAgeDays?: number }
 ) {
-  const secure = inferSecureFromEnv();
-  const sameSite = inferSameSite();
+  const sameSite = inferSameSite(); // ✅ default "lax"
+  const secure = inferSecureFromEnv(); // ✅ true in prod
+  const domain = inferCookieDomain(); // ✅ ".dayspringhouse.com" in prod (or env)
 
-  // If SameSite=None, secure must be true (Chrome requirement)
+  // If SameSite=None, Secure must be true (Chrome requirement)
   const finalSecure = sameSite === "none" ? true : secure;
 
   const maxAgeDays = Number(opts?.maxAgeDays ?? 30);
@@ -44,23 +62,23 @@ export function setAccessTokenCookie(
     sameSite,
     path: "/",
     maxAge: maxAgeMs,
+    ...(domain ? { domain } : {}), // ✅ only set when applicable
   });
 }
 
 export function clearAccessTokenCookie(res: Response) {
-  const secure = inferSecureFromEnv();
   const sameSite = inferSameSite();
+  const secure = inferSecureFromEnv();
+  const domain = inferCookieDomain();
 
   const finalSecure = sameSite === "none" ? true : secure;
 
+  // IMPORTANT: options must match the ones used to set the cookie (esp domain/path/samesite/secure)
   res.clearCookie(COOKIE_NAME, {
     httpOnly: true,
     secure: finalSecure,
     sameSite,
     path: "/",
+    ...(domain ? { domain } : {}),
   });
-}
-
-export function getAccessTokenCookieName() {
-  return COOKIE_NAME;
 }
