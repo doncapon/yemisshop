@@ -66,7 +66,7 @@ async function issueAndEmailEmailVerification(userId: string, email: string) {
   });
 
   // ✅ MUST hit API route (this router), not UI.
-  const verifyUrl = `${APP_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+  const verifyUrl = `${API_BASE_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
 
   await sendVerifyEmail(email, verifyUrl);
 }
@@ -424,14 +424,26 @@ router.get("/verify-email", async (req, res) => {
 
   const now = new Date();
 
+  // ✅ IMPORTANT:
+  // - Use FRONTEND_URL for redirecting users back to the UI (NOT the API domain).
+  // - Keep APP_URL free to mean whatever you want, but FRONTEND_URL should be the UI origin.
+  const UI_URL = String(
+      process.env.APP_URL || // fallback for older envs
+      "https://dayspringhouse.com",
+  ).replace(/\/$/, "");
+
   const redirectUi = (params: Record<string, string>) => {
     const qp = new URLSearchParams(params);
-    const ui = `${APP_URL}/verify?${qp.toString()}`;
-    return res.redirect(ui);
+    // ✅ redirect to UI verify page
+    return res.redirect(302, `${UI_URL}/verify?${qp.toString()}`);
   };
 
   try {
-    const decoded = jwt.verify(raw, EMAIL_JWT_SECRET) as { sub: string; email: string; k: string };
+    const decoded = jwt.verify(raw, EMAIL_JWT_SECRET) as {
+      sub: string;
+      email: string;
+      k: string;
+    };
     if (decoded.k !== "email-verify") throw new Error("invalid-kind");
 
     const user = await prisma.user.findUnique({
@@ -470,10 +482,10 @@ router.get("/verify-email", async (req, res) => {
 
     await activateSupplierIfFullyVerified(nextUser);
 
+    // ✅ DO NOT send the token back to the UI (safer + avoids confusion)
     return redirectUi({
-      token: raw,
-      e: email,
       ok: "1",
+      e: email,
       role: String((user as any).role || ""),
       phoneOk: nextUser.phoneVerifiedAt ? "1" : "0",
     });
@@ -495,7 +507,7 @@ router.get("/verify-email", async (req, res) => {
     });
 
     if (!legacy) {
-      return redirectUi({ token: raw, e: "", err: "token" });
+      return redirectUi({ ok: "0", err: "token" });
     }
 
     const email = String((legacy as any).email || "").toLowerCase();
@@ -543,10 +555,10 @@ router.get("/verify-email", async (req, res) => {
 
     await activateSupplierIfFullyVerified(nextUser);
 
+    // ✅ token not returned to UI
     return redirectUi({
-      token: raw,
-      e: email,
       ok: "1",
+      e: email,
       role: String((legacy as any).role || ""),
       phoneOk: nextUser.phoneVerifiedAt ? "1" : "0",
     });
