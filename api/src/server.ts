@@ -17,7 +17,6 @@ import orderOtpRouter from "./routes/orderOtp.js";
 import purchaseOrdersRouter from "./routes/purchaseOrders.js";
 import purchaseOrderDeliveryOtpRouter from "./routes/purchaseOrderDeliveryOtp.js";
 
-import wishlistRouter from "./routes/wishlist.js";
 import favoritesRouter from "./routes/favorites.js";
 
 import adminRouter from "./routes/admin.js";
@@ -189,7 +188,6 @@ app.use("/api", supplierOffersList);
 app.use("/api/products", productsRouter);
 app.use("/api/orders", orderOtpRouter);
 app.use("/api/orders", ordersRouter);
-app.use("/api/wishlist", wishlistRouter);
 app.use("/api/favorites", favoritesRouter);
 app.use("/api/catalog", catalogRoutes);
 

@@ -2,11 +2,14 @@
 import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import type { ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+
 import { useAuthStore } from "../store/auth";
 import { performLogout } from "../utils/logout";
 import NotificationsBell from "../components/notifications/NotificationsBell";
 import DaySpringLogo from "../components/brand/DayspringLogo";
 import { useCartCount } from "../hooks/useCartCount";
+import api from "../api/client";
 
 import {
   Home,
@@ -27,6 +30,13 @@ import {
 } from "lucide-react";
 
 type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
+
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
+function isAuthError(e: any) {
+  const s = e?.response?.status;
+  return s === 401 || s === 403;
+}
 
 function useClickAway<T extends HTMLElement>(onAway: () => void) {
   const ref = useRef<T | null>(null);
@@ -49,6 +59,7 @@ function IconNavLink({
   onClick,
   disabled,
   badgeCount,
+  onPrefetch,
 }: {
   to: string;
   end?: boolean;
@@ -57,6 +68,7 @@ function IconNavLink({
   onClick?: () => void;
   disabled?: boolean;
   badgeCount?: number;
+  onPrefetch?: () => void;
 }) {
   const count = Number(badgeCount || 0);
 
@@ -64,6 +76,8 @@ function IconNavLink({
     <NavLink
       to={to}
       end={end}
+      onMouseEnter={onPrefetch}
+      onFocus={onPrefetch}
       onClick={onClick}
       className={({ isActive }) => {
         const base =
@@ -81,17 +95,16 @@ function IconNavLink({
       {count > 0 && (
         <span
           className="
-      absolute -top-1 -right-1
-      grid place-items-center
-      rounded-full bg-fuchsia-600 text-white font-semibold leading-none
-      w-5 h-5 text-[10px]
-      md:min-w-[20px] md:w-auto md:h-5 md:px-1.5
-    "
+            absolute -top-1 -right-1
+            grid place-items-center
+            rounded-full bg-fuchsia-600 text-white font-semibold leading-none
+            w-5 h-5 text-[10px]
+            md:min-w-[20px] md:w-auto md:h-5 md:px-1.5
+          "
         >
           {count > 9 ? "9+" : count}
         </span>
       )}
-
 
       <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 text-white text-[11px] px-2 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
         {label}
@@ -140,10 +153,18 @@ function MobileMenuButton({
 }
 
 export default function Navbar() {
+  const qc = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
 
-  // ✅ bootstrap once on mount
+  const nav = useNavigate();
+  const loc = useLocation();
+
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
+
+  // ✅ bootstrap once
   useEffect(() => {
     useAuthStore.getState().bootstrap().catch(() => null);
   }, []);
@@ -151,17 +172,10 @@ export default function Navbar() {
   const userRole = (user?.role ?? null) as Role | null;
   const userEmail = user?.email ?? null;
 
-  const nav = useNavigate();
-  const loc = useLocation();
-
   const isSupplier = userRole === "SUPPLIER";
   const isSuperAdmin = userRole === "SUPER_ADMIN";
   const isAdmin = userRole === "ADMIN" || userRole === "SUPER_ADMIN";
   const isRider = userRole === "SUPPLIER_RIDER";
-
-  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
 
   const cartCount = useCartCount();
 
@@ -195,9 +209,10 @@ export default function Navbar() {
 
   const brandHref = isRider ? "/supplier/orders" : "/";
 
+  // ✅ close drawer on navigation
   useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
 
-  // ✅ Cookie-mode: logged in = we have a user in store (bootstrap will fill it)
+  // ✅ Cookie-mode: logged in = we have a user in store
   const isLoggedIn = !!user?.id;
 
   const showShopNav = !isLoggedIn || (!isSupplier && !isSuperAdmin && !isRider);
@@ -215,76 +230,146 @@ export default function Navbar() {
     };
   }, [mobileMoreOpen]);
 
+  // ✅ verify cookie session with server so navbar never shows stale login
+  const verifySession = useCallback(async () => {
+    if (!useAuthStore.getState().user?.id) return;
+
+    try {
+      const { data } = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
+      if (data?.id) {
+        useAuthStore.setState({ user: data });
+      } else {
+        useAuthStore.setState({ user: null });
+      }
+    } catch (e: any) {
+      if (isAuthError(e)) {
+        useAuthStore.setState({ user: null });
+        setMenuOpen(false);
+        setMobileMoreOpen(false);
+      }
+    }
+  }, []);
+
+  // ✅ Re-check on navigation
+  useEffect(() => {
+    verifySession();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loc.key]);
+
+  // ✅ Re-check when tab regains focus
+  useEffect(() => {
+    const onFocus = () => verifySession();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [verifySession]);
+
+  // ✅ Prefetch wishlist so it shows instantly when opening Wishlist page
+  const prefetchWishlist = useCallback(async () => {
+    // If you are not logged in, no need to prefetch
+    if (!useAuthStore.getState().user?.id) return;
+
+    await qc.prefetchQuery({
+      queryKey: ["wishlist"],
+      queryFn: async () => {
+        // Try /api/wishlist first, fallback to /api/favorites/mine
+        try {
+          const { data } = await api.get("/api/wishlist", AXIOS_COOKIE_CFG);
+          if (Array.isArray((data as any)?.items)) return (data as any).items;
+          if (Array.isArray((data as any)?.data)) return (data as any).data;
+          if (Array.isArray(data)) return data;
+          return [];
+        } catch {
+          const { data } = await api.get("/api/favorites/mine", AXIOS_COOKIE_CFG);
+          if (Array.isArray((data as any)?.items)) return (data as any).items;
+          if (Array.isArray((data as any)?.data)) return (data as any).data;
+          if (Array.isArray(data)) return data;
+          return [];
+        }
+      },
+      staleTime: 15_000,
+    });
+  }, [qc]);
+
   return (
     <>
-      {/* ✅ navbar NOT see-through */}
       <header className="fixed top-0 left-0 right-0 z-50 w-full border-b border-zinc-200 bg-white">
-        <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-4 md:px-8 flex items-center gap-3">
-          <Link
-            to={brandHref}
-            className="inline-flex items-center hover:opacity-95"
-            aria-label="DaySpring home"
-          >
-            <DaySpringLogo size={28} />
-          </Link>
+        <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-3 sm:px-4 md:px-8 flex items-center justify-between gap-2">
+          {/* LEFT */}
+          <div className="flex items-center gap-3 min-w-0">
+            <Link
+              to={brandHref}
+              className="inline-flex items-center hover:opacity-95 min-w-0 max-w-[52vw] xs:max-w-[56vw] sm:max-w-none overflow-hidden"
+              aria-label="DaySpring home"
+              title="DaySpring"
+            >
+              <span className="block origin-left scale-[0.92] xs:scale-95 sm:scale-100">
+                <DaySpringLogo size={28} />
+              </span>
+            </Link>
 
-          <nav className="hidden md:flex items-center gap-2 ml-2">
-            {showRiderNav ? (
-              <IconNavLink to="/supplier/orders" icon={<Truck size={18} />} label="Orders" />
-            ) : (
-              <>
-                <IconNavLink
-                  to="/"
-                  end
-                  icon={showShopNav ? <LayoutGrid size={18} /> : <Home size={18} />}
-                  label="Catalogue"
-                />
-
-                {showSupplierNav && (
-                  <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
-                )}
-
-                {isLoggedIn && isSuperAdmin && (
+            <nav className="hidden md:flex items-center gap-2 ml-2">
+              {showRiderNav ? (
+                <IconNavLink to="/supplier/orders" icon={<Truck size={18} />} label="Orders" />
+              ) : (
+                <>
                   <IconNavLink
-                    to="/supplier"
+                    to="/"
                     end
-                    icon={<CheckCircle2 size={18} />}
-                    label="Supplier dashboard"
+                    icon={showShopNav ? <LayoutGrid size={18} /> : <Home size={18} />}
+                    label="Catalogue"
                   />
-                )}
 
-                {isLoggedIn && !isSupplier && !isSuperAdmin && (
-                  <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
-                )}
+                  {showSupplierNav && (
+                    <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
+                  )}
 
-                {showBuyerNav && (
-                  <>
+                  {isLoggedIn && isSuperAdmin && (
                     <IconNavLink
-                      to="/cart"
-                      icon={<ShoppingCart size={18} />}
-                      label="Cart"
-                      badgeCount={cartCount.distinct}
+                      to="/supplier"
+                      end
+                      icon={<CheckCircle2 size={18} />}
+                      label="Supplier dashboard"
                     />
-                    <IconNavLink to="/wishlist" end icon={<Heart size={18} />} label="Wishlist" />
-                    <IconNavLink to="/orders" end icon={<Package size={18} />} label="Orders" />
-                  </>
-                )}
+                  )}
 
-                {isAdmin && <IconNavLink to="/admin" icon={<Shield size={18} />} label="Admin" />}
-                {isAdmin && (
-                  <IconNavLink
-                    to="/admin/offer-changes"
-                    icon={<ClipboardList size={18} />}
-                    label="Offer approvals"
-                  />
-                )}
-              </>
-            )}
-          </nav>
+                  {isLoggedIn && !isSupplier && !isSuperAdmin && (
+                    <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
+                  )}
 
-          <div className="ml-auto" />
+                  {showBuyerNav && (
+                    <>
+                      <IconNavLink
+                        to="/cart"
+                        icon={<ShoppingCart size={18} />}
+                        label="Cart"
+                        badgeCount={cartCount.distinct}
+                      />
+                      <IconNavLink
+                        to="/wishlist"
+                        end
+                        icon={<Heart size={18} />}
+                        label="Wishlist"
+                        onPrefetch={prefetchWishlist}
+                      />
+                      <IconNavLink to="/orders" end icon={<Package size={18} />} label="Orders" />
+                    </>
+                  )}
 
-          <div className="flex items-center gap-2">
+                  {isAdmin && <IconNavLink to="/admin" icon={<Shield size={18} />} label="Admin" />}
+                  {isAdmin && (
+                    <IconNavLink
+                      to="/admin/offer-changes"
+                      icon={<ClipboardList size={18} />}
+                      label="Offer approvals"
+                    />
+                  )}
+                </>
+              )}
+            </nav>
+          </div>
+
+          {/* RIGHT */}
+          <div className="flex items-center gap-2 shrink-0">
             <div className="hidden md:block">
               <NotificationsBell placement="navbar" />
             </div>
@@ -304,9 +389,10 @@ export default function Navbar() {
                   <NavLink
                     to="/login"
                     className={({ isActive }) =>
-                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isActive
-                        ? "bg-zinc-900 text-white border-zinc-900"
-                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${
+                        isActive
+                          ? "bg-zinc-900 text-white border-zinc-900"
+                          : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`
                     }
                     title="Login"
@@ -338,10 +424,7 @@ export default function Navbar() {
                     </button>
 
                     {menuOpen && (
-                      <div
-                        className="absolute right-0 mt-2 w-64 rounded-2xl border border-zinc-200 bg-white shadow-xl overflow-hidden"
-                        role="menu"
-                      >
+                      <div className="absolute right-0 mt-2 w-64 rounded-2xl border border-zinc-200 bg-white shadow-xl overflow-hidden" role="menu">
                         <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
                           <div className="text-xs text-zinc-500">Signed in as</div>
                           <div className="text-sm font-semibold truncate text-zinc-900">
@@ -454,8 +537,26 @@ export default function Navbar() {
             </div>
 
             {/* Mobile */}
-            <div className="md:hidden flex items-center gap-2">
+            <div className="md:hidden flex items-center gap-2 shrink-0">
               <NotificationsBell placement="navbar" />
+
+              {showBuyerNav && (
+                <NavLink
+                  to="/wishlist"
+                  onTouchStart={prefetchWishlist}
+                  onMouseEnter={prefetchWishlist}
+                  className={({ isActive }) =>
+                    `inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${
+                      isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
+                    }`
+                  }
+                  aria-label="Wishlist"
+                  title="Wishlist"
+                >
+                  <Heart size={18} />
+                </NavLink>
+              )}
+
               <button
                 type="button"
                 className="inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
@@ -469,43 +570,24 @@ export default function Navbar() {
           </div>
         </div>
 
-        {/* ---------------- Mobile drawer ---------------- */}
+        {/* Mobile drawer */}
         {mobileMoreOpen && (
           <div className="md:hidden">
-            {/* Overlay (below sheet) */}
-            <div
-              className="fixed inset-0 z-40 bg-black/60"
-              onClick={() => setMobileMoreOpen(false)}
-            />
-
-            {/* Sheet */}
+            <div className="fixed inset-0 z-40 bg-black/60" onClick={() => setMobileMoreOpen(false)} />
             <div className="fixed inset-y-0 right-0 z-50 w-[88vw] max-w-sm bg-white border-l border-zinc-200 shadow-2xl flex flex-col">
-              {/* Header (sticky / non-scrolling) */}
               <div className="px-4 py-3 border-b border-zinc-100 flex items-center justify-between shrink-0 relative">
                 <div className="text-base font-semibold text-zinc-900">Menu</div>
-
-                {/* Bigger hit target + slightly inset from edge */}
                 <button
                   type="button"
                   onClick={() => setMobileMoreOpen(false)}
                   aria-label="Close menu"
                   title="Close"
-                  className="
-                    w-11 h-11 -mr-1
-                    rounded-full border border-zinc-200
-                    bg-white text-zinc-700
-                    hover:bg-zinc-50
-                    grid place-items-center
-                    active:scale-95
-                    focus:outline-none focus:ring-4 focus:ring-fuchsia-100
-                    touch-manipulation
-                  "
+                  className="w-11 h-11 -mr-1 rounded-full border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 grid place-items-center active:scale-95 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 touch-manipulation"
                 >
                   <X size={18} className="pointer-events-none" />
                 </button>
               </div>
 
-              {/* Body (scrolls when needed) */}
               <div className="flex-1 overflow-y-auto px-4 py-4 overscroll-contain">
                 <div className="grid gap-2">
                   {showRiderNav ? (
@@ -518,13 +600,7 @@ export default function Navbar() {
                           nav("/supplier/orders");
                         }}
                       />
-
-                      <MobileMenuButton
-                        icon={<LogOut size={18} />}
-                        label="Logout"
-                        variant="danger"
-                        onClick={logout}
-                      />
+                      <MobileMenuButton icon={<LogOut size={18} />} label="Logout" variant="danger" onClick={logout} />
                     </>
                   ) : (
                     <>
@@ -538,21 +614,33 @@ export default function Navbar() {
                       />
 
                       {showBuyerNav && (
-                        <MobileMenuButton
-                          icon={<ShoppingCart size={18} />}
-                          label="Cart"
-                          onClick={() => {
-                            setMobileMoreOpen(false);
-                            nav("/cart");
-                          }}
-                          right={
-                            cartCount.totalQty > 0 ? (
-                              <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                                {cartCount.totalQty > 9 ? "9+" : cartCount.totalQty}
-                              </span>
-                            ) : null
-                          }
-                        />
+                        <>
+                          <MobileMenuButton
+                            icon={<ShoppingCart size={18} />}
+                            label="Cart"
+                            onClick={() => {
+                              setMobileMoreOpen(false);
+                              nav("/cart");
+                            }}
+                            right={
+                              cartCount.totalQty > 0 ? (
+                                <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+                                  {cartCount.totalQty > 9 ? "9+" : cartCount.totalQty}
+                                </span>
+                              ) : null
+                            }
+                          />
+
+                          <MobileMenuButton
+                            icon={<Heart size={18} />}
+                            label="Wishlist"
+                            onClick={() => {
+                              prefetchWishlist();
+                              setMobileMoreOpen(false);
+                              nav("/wishlist");
+                            }}
+                          />
+                        </>
                       )}
 
                       {showSupplierNav && (
@@ -610,7 +698,6 @@ export default function Navbar() {
                               nav("/register-supplier");
                             }}
                           />
-
                           <MobileMenuButton
                             icon={<User size={18} />}
                             label="Login"
@@ -619,7 +706,6 @@ export default function Navbar() {
                               nav("/login");
                             }}
                           />
-
                           <MobileMenuButton
                             icon={<CheckCircle2 size={18} />}
                             label="Register"
@@ -640,7 +726,6 @@ export default function Navbar() {
                               nav("/profile");
                             }}
                           />
-
                           <MobileMenuButton
                             icon={<Settings size={18} />}
                             label="Sessions"
@@ -649,7 +734,6 @@ export default function Navbar() {
                               nav("/account/sessions");
                             }}
                           />
-
                           {!isSupplier && (
                             <MobileMenuButton
                               icon={<Package size={18} />}
@@ -660,20 +744,13 @@ export default function Navbar() {
                               }}
                             />
                           )}
-
-                          <MobileMenuButton
-                            icon={<LogOut size={18} />}
-                            label="Logout"
-                            variant="danger"
-                            onClick={logout}
-                          />
+                          <MobileMenuButton icon={<LogOut size={18} />} label="Logout" variant="danger" onClick={logout} />
                         </>
                       )}
                     </>
                   )}
                 </div>
 
-                {/* bottom breathing room + iOS safe area */}
                 <div className="h-6 pb-[env(safe-area-inset-bottom)]" />
               </div>
             </div>
@@ -681,7 +758,6 @@ export default function Navbar() {
         )}
       </header>
 
-      {/* spacer under fixed navbar */}
       <div className="h-14 md:h-16" />
       <div className="md:hidden h-2" />
       {!hydrated && <div className="sr-only">Loading session…</div>}

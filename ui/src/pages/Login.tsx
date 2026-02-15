@@ -100,6 +100,9 @@ export default function Login() {
   const [otpCooldown, setOtpCooldown] = useState(0);
   const [otp, setOtp] = useState("");
 
+  // ✅ Compact mobile: collapse verification panel by default
+  const [verifyPanelOpen, setVerifyPanelOpen] = useState(true);
+
   const nav = useNavigate();
   const loc = useLocation();
 
@@ -136,6 +139,7 @@ export default function Login() {
     if (fullyVerified) {
       setErr(null);
       setEmailMsg(null);
+      setOtpMsg(null);
     }
   }, [fullyVerified]);
 
@@ -200,7 +204,7 @@ export default function Login() {
         localStorage.setItem("verifyEmail", profile.email);
         if (vt) localStorage.setItem("verifyToken", vt);
         else localStorage.removeItem("verifyToken");
-      } catch { }
+      } catch {}
 
       const from = (loc.state as any)?.from?.pathname as string | undefined;
 
@@ -233,8 +237,9 @@ export default function Login() {
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
           if (vt) localStorage.setItem("verifyToken", vt);
-        } catch { }
+        } catch {}
 
+        setVerifyPanelOpen(true);
         setCooldown(1);
         return;
       }
@@ -359,25 +364,29 @@ export default function Login() {
     }
   };
 
+  const showSupplierVerify = blockedProfile?.role === "SUPPLIER" && !fullyVerified;
+
   return (
     <SiteLayout>
       <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-50 to-white">
+        {/* Softer background blobs (reduced on mobile to reduce noise) */}
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
-          <div className="absolute -top-24 -right-20 w-[26rem] h-[26rem] rounded-full blur-3xl opacity-35 bg-fuchsia-300/50" />
-          <div className="absolute -bottom-28 -left-16 w-[28rem] h-[28rem] rounded-full blur-3xl opacity-30 bg-cyan-300/50" />
+          <div className="absolute -top-28 -right-24 w-[22rem] h-[22rem] sm:w-[26rem] sm:h-[26rem] rounded-full blur-3xl opacity-30 bg-fuchsia-300/50" />
+          <div className="absolute -bottom-32 -left-20 w-[24rem] h-[24rem] sm:w-[28rem] sm:h-[28rem] rounded-full blur-3xl opacity-25 bg-cyan-300/50" />
         </div>
 
-        <div className="relative -mt-10 sm:mt-0 grid place-items-center min-h-[100dvh] px-4 py-8 sm:py-10">
+        <div className="relative grid place-items-center min-h-[100dvh] px-4 py-8 sm:py-10">
           <div className="w-full max-w-md">
-            <div className="mb-6 text-center">
+            {/* Header */}
+            <div className="mb-4 sm:mb-6 text-center">
               <div className="flex justify-center">
-                <div className="inline-flex items-center gap-2 rounded-2xl border bg-white/80 backdrop-blur px-4 py-2 shadow-sm">
+                <div className="inline-flex items-center gap-2 rounded-2xl border bg-white/90 backdrop-blur px-4 py-2 shadow-sm">
                   <DaySpringLogo size={26} showText={true} />
                 </div>
               </div>
 
-              <h1 className="mt-4 text-2xl md:text-3xl font-semibold text-zinc-900">
-                Sign in to your account
+              <h1 className="mt-4 text-[22px] sm:text-2xl md:text-3xl font-semibold text-zinc-900 leading-tight">
+                Sign in
               </h1>
               <p className="mt-1 text-sm text-zinc-600">
                 Access your cart, orders and personalised dashboard.
@@ -387,7 +396,7 @@ export default function Login() {
             <form
               onSubmit={submit}
               noValidate
-              className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm p-5 sm:p-6 space-y-5"
+              className="rounded-2xl border bg-white/95 backdrop-blur shadow-sm p-4 sm:p-6 space-y-4 sm:space-y-5"
             >
               {err && (
                 <div className="text-sm rounded-xl border border-rose-300/60 bg-rose-50 text-rose-700 px-3 py-2">
@@ -395,144 +404,171 @@ export default function Login() {
                 </div>
               )}
 
+              {/* ✅ Supplier verification card: compact + collapsible */}
               {blockedProfile?.role === "SUPPLIER" &&
                 (fullyVerified ? (
-                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 space-y-2">
-                    <div className="font-semibold text-emerald-900">Verification complete ✅</div>
-                    <div className="text-xs text-emerald-800">
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                    <div className="font-semibold">Verification complete ✅</div>
+                    <div className="mt-1 text-xs text-emerald-800">
                       Your supplier account is fully verified. Please login again to continue.
                     </div>
                   </div>
                 ) : (
-                  <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-slate-800 space-y-3">
-                    <div className="text-xs text-slate-700">
-                      Supplier account is pending verification:
-                      <span className="ml-2 font-medium text-slate-900">{blockedProfile.email}</span>
-                    </div>
-
-                    {!blockedProfile.emailVerified && (
-                      <div className="space-y-2">
-                        <div className="text-sm font-semibold text-slate-900">Verify your email</div>
-                        <div className="text-xs text-slate-600">
-                          Click the link we sent to your email. You can resend it below.
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50">
+                    <button
+                      type="button"
+                      onClick={() => setVerifyPanelOpen((v) => !v)}
+                      className="w-full px-4 py-3 flex items-center justify-between text-left"
+                      aria-expanded={verifyPanelOpen}
+                    >
+                      <div>
+                        <div className="text-sm font-semibold text-slate-900">Supplier verification required</div>
+                        <div className="text-xs text-slate-700 truncate max-w-[260px]">
+                          {blockedProfile.email}
                         </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={resendEmail}
-                            disabled={emailBusy || emailCooldown > 0}
-                            className="inline-flex items-center justify-center rounded-xl bg-zinc-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
-                          >
-                            {emailBusy
-                              ? "Sending…"
-                              : emailCooldown > 0
-                                ? `Resend in ${emailCooldown}s`
-                                : "Resend verification email"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={checkEmailStatus}
-                            disabled={emailBusy}
-                            className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
-                          >
-                            {emailBusy ? "Checking…" : "I verified email (check)"}
-                          </button>
-                        </div>
-                        {emailMsg && <div className="text-xs text-slate-700">{emailMsg}</div>}
                       </div>
-                    )}
+                      <div className="text-xs font-semibold text-slate-800 rounded-full border border-amber-200 bg-white px-2 py-1">
+                        {verifyPanelOpen ? "Hide" : "Show"}
+                      </div>
+                    </button>
 
-                    {!blockedProfile.phoneVerified && (
-                      <div className="space-y-2">
-                        <div className="text-sm font-semibold text-slate-900">
-                          Verify your phone (WhatsApp OTP)
-                        </div>
-                        <div className="text-xs text-slate-600">
-                          We’ll send a one-time code to your WhatsApp number on file.
-                        </div>
+                    {verifyPanelOpen && (
+                      <div className="px-4 pb-4 space-y-4">
+                        {/* Email */}
+                        {!blockedProfile.emailVerified && (
+                          <div className="rounded-xl border border-amber-200 bg-white/80 p-3">
+                            <div className="text-sm font-semibold text-slate-900">Verify your email</div>
+                            <div className="mt-1 text-xs text-slate-600">
+                              Click the link we sent to your email. You can resend it below.
+                            </div>
+                            <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                              <button
+                                type="button"
+                                onClick={resendEmail}
+                                disabled={emailBusy || emailCooldown > 0}
+                                className="inline-flex items-center justify-center rounded-xl bg-zinc-900 text-white px-3 py-2.5 text-xs font-semibold disabled:opacity-60"
+                              >
+                                {emailBusy
+                                  ? "Sending…"
+                                  : emailCooldown > 0
+                                    ? `Resend in ${emailCooldown}s`
+                                    : "Resend email"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={checkEmailStatus}
+                                disabled={emailBusy}
+                                className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2.5 text-xs font-semibold text-slate-800 disabled:opacity-60"
+                              >
+                                {emailBusy ? "Checking…" : "I verified (check)"}
+                              </button>
+                            </div>
+                            {emailMsg && <div className="mt-2 text-xs text-slate-700">{emailMsg}</div>}
+                          </div>
+                        )}
 
-                        <div className="flex flex-wrap gap-2 items-center">
-                          <button
-                            type="button"
-                            onClick={sendOtp}
-                            disabled={otpBusy || otpCooldown > 0}
-                            className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
-                          >
-                            {otpBusy
-                              ? "Sending…"
-                              : otpCooldown > 0
-                                ? `Send again in ${otpCooldown}s`
-                                : "Send OTP"}
-                          </button>
+                        {/* Phone OTP */}
+                        {!blockedProfile.phoneVerified && (
+                          <div className="rounded-xl border border-amber-200 bg-white/80 p-3">
+                            <div className="text-sm font-semibold text-slate-900">Verify your phone (WhatsApp OTP)</div>
+                            <div className="mt-1 text-xs text-slate-600">
+                              We’ll send a one-time code to your WhatsApp number on file.
+                            </div>
 
-                          <input
-                            value={otp}
-                            onChange={(e) => setOtp(e.target.value)}
-                            placeholder="Enter OTP"
-                            className="w-32 rounded-xl border bg-white px-3 py-2 text-[16px] text-slate-900 outline-none focus:ring-4 focus:ring-fuchsia-200"
-                          />
+                            <div className="mt-3 flex flex-col sm:flex-row gap-2 sm:items-center">
+                              <button
+                                type="button"
+                                onClick={sendOtp}
+                                disabled={otpBusy || otpCooldown > 0}
+                                className="inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white px-3 py-2.5 text-xs font-semibold disabled:opacity-60"
+                              >
+                                {otpBusy
+                                  ? "Sending…"
+                                  : otpCooldown > 0
+                                    ? `Send again in ${otpCooldown}s`
+                                    : "Send OTP"}
+                              </button>
 
-                          <button
-                            type="button"
-                            onClick={verifyOtpNow}
-                            disabled={otpBusy}
-                            className="inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2 text-xs font-semibold text-slate-800 disabled:opacity-60"
-                          >
-                            {otpBusy ? "Verifying…" : "Verify OTP"}
-                          </button>
-                        </div>
+                              <div className="flex gap-2">
+                                <input
+                                  value={otp}
+                                  onChange={(e) => setOtp(e.target.value)}
+                                  placeholder="OTP"
+                                  inputMode="numeric"
+                                  className="flex-1 min-w-0 rounded-xl border bg-white px-3 py-2.5 text-[16px] text-slate-900 outline-none focus:ring-4 focus:ring-fuchsia-200"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={verifyOtpNow}
+                                  disabled={otpBusy}
+                                  className="shrink-0 inline-flex items-center justify-center rounded-xl border bg-white px-3 py-2.5 text-xs font-semibold text-slate-800 disabled:opacity-60"
+                                >
+                                  {otpBusy ? "Verifying…" : "Verify"}
+                                </button>
+                              </div>
+                            </div>
 
-                        {otpMsg && <div className="text-xs text-slate-700">{otpMsg}</div>}
+                            {otpMsg && <div className="mt-2 text-xs text-slate-700">{otpMsg}</div>}
+                          </div>
+                        )}
+
+                        {!showSupplierVerify && (
+                          <div className="text-xs text-slate-700">
+                            You can continue once email and phone are verified.
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 ))}
 
+              {/* Email */}
               <div className="space-y-1">
                 <label className="block text-sm font-medium text-zinc-800">Email</label>
-                <div className="relative group">
+                <div className="relative">
                   <input
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="you@example.com"
                     autoComplete="username"
-                    className="peer w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-10 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
+                    inputMode="email"
+                    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-10 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-fuchsia-600 transition">
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">
                     ✉
                   </span>
                 </div>
               </div>
 
+              {/* Password */}
               <div className="space-y-1">
-                {/* ✅ Stack on mobile, row on sm+ so link never overlaps */}
+                {/* Stack on mobile so it never overlaps */}
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                  <label className="block text-sm font-medium text-zinc-800 leading-tight">
-                    Password
-                  </label>
+                  <label className="block text-sm font-medium text-zinc-800 leading-tight">Password</label>
                   <Link
-                    className="text-xs text-fuchsia-700 hover:underline leading-tight sm:leading-normal self-start sm:self-auto"
+                    className="text-xs text-fuchsia-700 hover:underline leading-tight self-start sm:self-auto"
                     to="/forgot-password"
                   >
                     Forgot password?
                   </Link>
                 </div>
 
-                <div className="relative group">
+                <div className="relative">
                   <input
                     value={password}
                     type="password"
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
                     autoComplete="current-password"
-                    className="peer w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-10 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
+                    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-10 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-fuchsia-600 transition">
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">
                     🔒
                   </span>
                 </div>
               </div>
 
+              {/* Submit */}
               <button
                 type="submit"
                 disabled={!hydrated || loading || cooldown > 0}
@@ -547,6 +583,7 @@ export default function Login() {
                       : "Login"}
               </button>
 
+              {/* Footer links */}
               <div className="pt-1 text-center text-sm text-zinc-700">
                 Don’t have an account?{" "}
                 <Link className="text-fuchsia-700 hover:underline" to="/register">
@@ -555,7 +592,7 @@ export default function Login() {
               </div>
             </form>
 
-            <p className="mt-5 text-center text-xs text-zinc-500">
+            <p className="mt-4 sm:mt-5 text-center text-xs text-zinc-500 px-4">
               Secured by industry-standard encryption • Need help?{" "}
               <Link className="text-fuchsia-700 hover:underline" to="/support">
                 Contact support
