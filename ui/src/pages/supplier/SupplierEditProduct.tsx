@@ -11,6 +11,10 @@ import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 import { useCatalogMeta } from "../../hooks/useCatalogMeta";
 
+/* =========================================================
+   Helpers
+========================================================= */
+
 function isUrlish(s?: string) {
   return !!s && /^(https?:\/\/|data:image\/|\/)/i.test(s);
 }
@@ -69,6 +73,37 @@ function formatComboLabel(
   return pairs.length ? pairs.join(", ") : "DEFAULT (no options selected)";
 }
 
+function Card({
+  title,
+  subtitle,
+  right,
+  children,
+  className = "",
+}: {
+  title: React.ReactNode;
+  subtitle?: React.ReactNode;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`rounded-2xl border bg-white/90 shadow-sm overflow-hidden ${className}`}>
+      <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">{title}</div>
+          {subtitle ? <div className="text-[11px] sm:text-xs text-zinc-500 mt-0.5">{subtitle}</div> : null}
+        </div>
+        {right ? <div className="shrink-0">{right}</div> : null}
+      </div>
+      <div className="p-4 sm:p-5">{children}</div>
+    </div>
+  );
+}
+
+/* =========================================================
+   Types
+========================================================= */
+
 type SupplierProductDetail = {
   id: string;
   title: string;
@@ -85,7 +120,6 @@ type SupplierProductDetail = {
   retailPrice?: number | null;
   autoPrice?: any;
 
-  // only "my" offer (may be null)
   offer?: {
     id?: string;
     basePrice: number;
@@ -96,7 +130,6 @@ type SupplierProductDetail = {
     availableQty?: number;
   } | null;
 
-  // optional direct list from catalog detail endpoint
   supplierVariantOffers?: Array<{
     id: string;
     variantId: string;
@@ -108,14 +141,13 @@ type SupplierProductDetail = {
     leadDays?: number | null;
   }>;
 
-  // ✅ pending changes awaiting admin approval (if your backend returns them)
   pendingOfferChanges?: Array<{
     id: string;
     scope: "BASE_OFFER" | "VARIANT_OFFER" | string;
     supplierProductOfferId?: string | null;
     supplierVariantOfferId?: string | null;
     variantId?: string | null;
-    proposedPatch?: any; // { basePrice?, unitPrice?, leadDays?, isActive?, currency? }
+    proposedPatch?: any;
     requestedAt?: string;
   }>;
 
@@ -134,15 +166,13 @@ type SupplierProductDetail = {
 };
 
 type VariantRow = {
-  id: string; // UI row id
-  variantId?: string; // ProductVariant.id for existing variants
+  id: string;
+  variantId?: string;
   selections: Record<string, string>;
   availableQty: string;
   isExisting?: boolean;
   comboLabel?: string;
   rawOptions?: Array<{ attributeId: string; valueId: string }>;
-
-  // ✅ my supplier variant offer id (for delete)
   variantOfferId?: string;
 };
 
@@ -366,32 +396,37 @@ function buildPendingMaps(p: any) {
   return { base, variantMap };
 }
 
-/* =========================
+/* =========================================================
    Component
-========================= */
+========================================================= */
 
 export default function SupplierEditProduct() {
   const nav = useNavigate();
   const { id } = useParams();
-  const token = useAuthStore((s) => s.token);
   const [searchParams] = useSearchParams();
+
+  // ✅ cookie-auth session
+  const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
+  const role = useAuthStore((s: any) => s.user?.role) as string | undefined;
+
+  useEffect(() => {
+    useAuthStore.getState().bootstrap?.().catch?.(() => null);
+  }, []);
 
   // ✅ if opened from catalog: offers-only mode
   const offersOnly = String(searchParams.get("scope") ?? "") === "offers_mine";
 
   const [err, setErr] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
-
   const [dupWarn, setDupWarn] = useState<string | null>(null);
 
   const [title, setTitle] = useState("");
-  const [retailPrice, setRetailPrice] = useState(""); // supplier base offer price in offersOnly mode
+  const [retailPrice, setRetailPrice] = useState("");
   const [sku, setSku] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [brandId, setBrandId] = useState("");
   const [description, setDescription] = useState("");
-
-  const [availableQty, setAvailableQty] = useState<string>("0"); // supplier base offer qty (not product qty!)
+  const [availableQty, setAvailableQty] = useState<string>("0");
 
   const [imageUrls, setImageUrls] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -402,10 +437,8 @@ export default function SupplierEditProduct() {
   const [selectedAttrs, setSelectedAttrs] = useState<Record<string, string | string[]>>({});
   const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
 
-  // price snapshot (used for owned-products LIVE logic only)
   const initialBasePriceRef = useRef<number>(0);
 
-  // ✅ offers-only: active vs pending (approval workflow)
   const [activeBasePrice, setActiveBasePrice] = useState<number>(0);
   const [pendingBasePatch, setPendingBasePatch] = useState<any | null>(null);
   const [pendingVariantPatchByVariantId, setPendingVariantPatchByVariantId] = useState<Map<string, any>>(
@@ -425,9 +458,10 @@ export default function SupplierEditProduct() {
     existingVariantIds: Set<string>;
   } | null>(null);
 
-  // hydration guards
   const hydratedBaseForIdRef = useRef<string | null>(null);
   const hydratedAttrsForIdRef = useRef<string | null>(null);
+
+  const isSupplier = role === "SUPPLIER";
 
   const ngn = useMemo(
     () =>
@@ -439,8 +473,9 @@ export default function SupplierEditProduct() {
     []
   );
 
+  // ✅ cookie-auth: meta loads once session is hydrated
   const { categories, brands, attributes, categoriesQ, brandsQ } = useCatalogMeta({
-    enabled: !!token,
+    enabled: hydrated,
   });
 
   const selectableAttrs = useMemo(
@@ -471,7 +506,6 @@ export default function SupplierEditProduct() {
     setVariantRows((rows) =>
       rows.map((row) => {
         const next: Record<string, string> = {};
-
         ids.forEach((aid) => {
           next[aid] = row.selections?.[aid] || "";
         });
@@ -487,17 +521,14 @@ export default function SupplierEditProduct() {
     );
   }, [selectableAttrs]);
 
+  // ✅ cookie-auth detail load
   const detailQ = useQuery<SupplierProductDetail>({
     queryKey: ["supplier", offersOnly ? "catalog-product" : "product", id, offersOnly ? "offersOnly" : "full"],
-    enabled: !!token && !!id,
+    enabled: hydrated && !!id && isSupplier,
     queryFn: async () => {
-      const headers = { Authorization: `Bearer ${token}` };
-
-      // ✅ offers-only should load from catalog detail endpoint first
       const attempts = offersOnly
         ? [
             `/api/supplier/products/${id}`,
-            // fallback to supplier products detail only if it happens to be accessible (already offered/owned)
             `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
             `/api/supplier/products/${id}`,
           ]
@@ -511,7 +542,7 @@ export default function SupplierEditProduct() {
 
       for (const url of attempts) {
         try {
-          const res = await api.get(url, { headers });
+          const res = await api.get(url, { withCredentials: true });
           const root = (res as any)?.data;
           const d = root?.data ?? root?.data?.data ?? root;
           if (d && d.id) return d as SupplierProductDetail;
@@ -528,10 +559,7 @@ export default function SupplierEditProduct() {
     refetchOnWindowFocus: false,
   });
 
-  const productStatusUpper = useMemo(
-    () => String(detailQ.data?.status ?? "").toUpperCase(),
-    [detailQ.data?.status]
-  );
+  const productStatusUpper = useMemo(() => String(detailQ.data?.status ?? "").toUpperCase(), [detailQ.data?.status]);
 
   // ✅ LIVE lock rules apply ONLY to owned product edits, not offers-only
   const isLive = useMemo(() => {
@@ -540,20 +568,12 @@ export default function SupplierEditProduct() {
   }, [offersOnly, productStatusUpper]);
 
   const activeBasePriceForDisplay = useMemo(() => {
-    // offersOnly: approved offer price currently applied
-    // owned-product edit: fallback to initialBasePriceRef
     if (offersOnly) return Number(activeBasePrice ?? 0);
     return Number(initialBasePriceRef.current ?? 0);
   }, [offersOnly, activeBasePrice]);
 
-  const requestedBasePriceForDisplay = useMemo(() => {
-    // whatever is in the input (could be pending request value)
-    return toMoneyNumber(retailPrice);
-  }, [retailPrice]);
+  const requestedBasePriceForDisplay = useMemo(() => toMoneyNumber(retailPrice), [retailPrice]);
 
-  // Base price used in old preview logic:
-  // - owned-product LIVE: locked to initial
-  // - otherwise: current input
   const basePriceForPreview = useMemo(() => {
     if (isLive) return Number(initialBasePriceRef.current ?? 0);
     return toMoneyNumber(retailPrice);
@@ -562,29 +582,16 @@ export default function SupplierEditProduct() {
   const isRealVariantRow = (r: VariantRow) => rowHasAnySelection(r.selections);
 
   const variantQtyTotal = useMemo(() => {
-    return variantRows.reduce((sum, r) => {
-      return sum + (isRealVariantRow(r) ? toIntNonNeg(r.availableQty) : 0);
-    }, 0);
-  }, [variantRows]);
-
-  const emptyRowQtyTotal = useMemo(() => {
-    return variantRows.reduce((sum, r) => {
-      return sum + (!isRealVariantRow(r) ? toIntNonNeg(r.availableQty) : 0);
-    }, 0);
+    return variantRows.reduce((sum, r) => sum + (isRealVariantRow(r) ? toIntNonNeg(r.availableQty) : 0), 0);
   }, [variantRows]);
 
   const baseQtyPreview = useMemo(() => toIntNonNeg(availableQty), [availableQty]);
 
-  // offersOnly: do not compute "product stock"; this is supplier offer stock
-  const totalQty = useMemo(() => {
-    // supplier-side total displayed
-    return baseQtyPreview + variantQtyTotal;
-  }, [baseQtyPreview, variantQtyTotal]);
-
+  const totalQty = useMemo(() => baseQtyPreview + variantQtyTotal, [baseQtyPreview, variantQtyTotal]);
   const inStockPreview = totalQty > 0;
 
   const variantsEnabled = useMemo(() => variantRows.some(isRealVariantRow), [variantRows]);
-  const effectiveQty = useMemo(() => totalQty, [totalQty]);
+  const effectiveQty = totalQty;
 
   const computeDupInfo = (rows: VariantRow[]): DupInfo => {
     const seen = new Map<string, string>();
@@ -624,19 +631,17 @@ export default function SupplierEditProduct() {
   const hasDuplicates = duplicateRowIds.size > 0;
 
   useEffect(() => {
-    if (hasDuplicates) setDupWarn(liveDup.explain);
-    else setDupWarn(null);
+    setDupWarn(hasDuplicates ? liveDup.explain : null);
   }, [hasDuplicates, liveDup.explain]);
 
   const activeAttrs = useMemo(() => (attributes ?? []).filter((a) => a?.isActive !== false), [attributes]);
 
-  // ✅ offersOnly = read-only product details
   const canEditCore = !offersOnly;
   const canAddNewCombos = !offersOnly;
   const canEditAttributes = !offersOnly;
 
   const setAttr = (attributeId: string, value: string | string[]) => {
-    if (offersOnly) return; // read-only for catalog products
+    if (offersOnly) return;
     setSelectedAttrs((prev) => ({ ...prev, [attributeId]: value }));
   };
 
@@ -682,16 +687,7 @@ export default function SupplierEditProduct() {
 
     const newCombosAdded = variantRows.some((r) => !r.variantId && rowHasAnySelection(r.selections));
 
-    return (
-      titleChanged ||
-      skuChanged ||
-      catChanged ||
-      brandChanged ||
-      descChanged ||
-      imagesChanged ||
-      attrChanged ||
-      newCombosAdded
-    );
+    return titleChanged || skuChanged || catChanged || brandChanged || descChanged || imagesChanged || attrChanged || newCombosAdded;
   }, [
     offersOnly,
     isLive,
@@ -723,16 +719,11 @@ export default function SupplierEditProduct() {
     setBrandId(p.brandId ?? "");
     setDescription(p.description ?? "");
 
-    // ✅ BasePrice:
-    // - prefer my offer.basePrice
-    // - else fall back to product retailPrice/autoPrice
     const productFallback = Number(p.retailPrice ?? 0) || Number((p as any).autoPrice ?? 0) || 0;
     const baseP = Number(p.offer?.basePrice ?? productFallback ?? 0) || 0;
 
-    // owned-product LIVE lock uses this
     initialBasePriceRef.current = baseP;
 
-    // offers-only: keep track of ACTIVE approved price separately
     if (offersOnly) {
       setActiveBasePrice(baseP);
 
@@ -742,15 +733,10 @@ export default function SupplierEditProduct() {
       setPendingBasePatch(basePatch);
       setPendingVariantPatchByVariantId(variantMap);
 
-      // If pending requested basePrice exists, show it in the input for clarity
       const requested = Number(basePatch?.basePrice ?? NaN);
-      if (Number.isFinite(requested) && requested > 0) {
-        setRetailPrice(String(requested));
-      } else {
-        setRetailPrice(String(baseP));
-      }
+      if (Number.isFinite(requested) && requested > 0) setRetailPrice(String(requested));
+      else setRetailPrice(String(baseP));
     } else {
-      // owned product: keep old behavior
       setActiveBasePrice(0);
       setPendingBasePatch(null);
       setPendingVariantPatchByVariantId(new Map());
@@ -760,11 +746,9 @@ export default function SupplierEditProduct() {
     const urls = normalizeImages(p).filter(isUrlish);
     setImageUrls(urls.join("\n"));
 
-    // ✅ Base qty = my base offer qty, NOT product qty
     const baseQty = p.offer ? (p.offer.availableQty ?? 0) : 0;
     setAvailableQty(String(Number(baseQty) || 0));
 
-    // ✅ Map my variant offers by variantId (from catalog detail)
     const myVarOffers: Array<any> = Array.isArray(p?.supplierVariantOffers) ? p.supplierVariantOffers : [];
     const offerByVariantId = new Map<string, any>();
     for (const o of myVarOffers) {
@@ -785,7 +769,6 @@ export default function SupplierEditProduct() {
       }
 
       const comboLabel = formatComboLabel(selections, attrOrder, attrNameById, valueNameById);
-
       const variantId = String(v?.id ?? v?.variantId ?? "").trim();
 
       const myOffer =
@@ -793,7 +776,6 @@ export default function SupplierEditProduct() {
         v?.supplierVariantOffer ??
         (Array.isArray(v?.supplierVariantOffers) ? v.supplierVariantOffers?.[0] : null);
 
-      // ✅ supplier qty is from my offer only, else 0
       const qty = myOffer?.availableQty ?? 0;
 
       return {
@@ -877,6 +859,8 @@ export default function SupplierEditProduct() {
   }, [detailQ.data?.id, detailQ.data, (attributes ?? []).length]);
 
   const UPLOAD_ENDPOINT = "/api/uploads";
+
+  // ✅ cookie-auth upload
   async function uploadLocalFiles(): Promise<string[]> {
     if (!files.length) return [];
     const fd = new FormData();
@@ -885,20 +869,17 @@ export default function SupplierEditProduct() {
     try {
       setUploading(true);
       const res = await api.post(UPLOAD_ENDPOINT, fd, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "multipart/form-data",
-        },
+        withCredentials: true,
+        headers: { "Content-Type": "multipart/form-data" },
       });
 
-      const urls: string[] =
-        (res as any)?.data?.urls || (Array.isArray((res as any)?.data) ? (res as any).data : []);
-
+      const urls: string[] = (res as any)?.data?.urls || (Array.isArray((res as any)?.data) ? (res as any).data : []);
       const clean = Array.isArray(urls) ? urls.filter(Boolean) : [];
-      setUploadedUrls((prev) => [...prev, ...clean]);
 
+      setUploadedUrls((prev) => [...prev, ...clean]);
       setFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
+
       return clean;
     } finally {
       setUploading(false);
@@ -928,10 +909,8 @@ export default function SupplierEditProduct() {
 
   function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
     setErr(null);
-    if (offersOnly) return; // catalog variants are fixed
-    const next = variantRows.map((r) =>
-      r.id === rowId ? { ...r, selections: { ...r.selections, [attributeId]: valueId } } : r
-    );
+    if (offersOnly) return;
+    const next = variantRows.map((r) => (r.id === rowId ? { ...r, selections: { ...r.selections, [attributeId]: valueId } } : r));
     setVariantRowsAndCheck(next);
   }
 
@@ -942,35 +921,29 @@ export default function SupplierEditProduct() {
 
   async function removeOfferForVariant(row: VariantRow) {
     if (!row.variantOfferId) return;
-    if (!token) return;
 
     await api.delete(`/api/supplier/catalog/offers/variant/${row.variantOfferId}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      withCredentials: true,
     });
 
-    setVariantRows((rows) =>
-      rows.map((r) => (r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r))
-    );
+    setVariantRows((rows) => rows.map((r) => (r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r)));
   }
 
   function removeVariantRow(rowId: string) {
     const row = variantRows.find((r) => r.id === rowId);
     if (!row) return;
 
-    // offersOnly: never remove rows; remove offer instead (if exists)
     if (offersOnly) {
       if (row.variantOfferId) {
         removeOfferForVariant(row).catch((e: any) => {
           setErr(e?.response?.data?.error || e?.message || "Failed to remove variant offer");
         });
       } else {
-        // no offer yet: just set qty to 0
         updateVariantQty(rowId, "0");
       }
       return;
     }
 
-    // owned product LIVE rules
     if (isLive && row.isExisting) {
       setErr("This product is LIVE. You can’t delete an existing variant. Set its qty to 0 instead.");
       return;
@@ -981,7 +954,6 @@ export default function SupplierEditProduct() {
   }
 
   const onChangeBasePrice = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // offersOnly: always allow editing (even if product itself is LIVE)
     if (isLive) {
       setErr("This product is LIVE. Base price is locked. You can update stock/qty only.");
       setRetailPrice(String(Number(initialBasePriceRef.current ?? 0)));
@@ -995,19 +967,16 @@ export default function SupplierEditProduct() {
       setErr(null);
       setOkMsg(null);
 
-      if (!token) throw new Error("Not authenticated");
       if (!id) throw new Error("Missing product id");
 
       const basePrice = toMoneyNumber(retailPrice);
       if (!Number.isFinite(basePrice) || basePrice <= 0) throw new Error("Price must be greater than 0");
 
       if (offersOnly) {
-        // ✅ offers-only save path: create/update my base offer + my variant offers
         const baseQty = baseQtyPreview;
         const baseInStock = baseQty > 0;
 
-        // 1) upsert base offer
-        const baseRes = await api.put(
+        await api.put(
           `/api/supplier/catalog/offers/base`,
           {
             productId: id,
@@ -1018,27 +987,18 @@ export default function SupplierEditProduct() {
             inStock: baseInStock,
             currency: "NGN",
           },
-          { headers: { Authorization: `Bearer ${token}` } }
+          { withCredentials: true }
         );
 
-        const baseOfferId = (baseRes as any)?.data?.data?.id;
-
-        // 2) upsert/delete variant offers
-        //    - require base offer exists first (backend enforces it)
         const tasks: Promise<any>[] = [];
 
         for (const r of variantRows) {
-          if (!r.variantId) continue; // catalog only
+          if (!r.variantId) continue;
           const qty = toIntNonNeg(r.availableQty);
 
           if (qty <= 0) {
-            // if previously offered, delete the offer to keep data clean
             if (r.variantOfferId) {
-              tasks.push(
-                api.delete(`/api/supplier/catalog/offers/variant/${r.variantOfferId}`, {
-                  headers: { Authorization: `Bearer ${token}` },
-                })
-              );
+              tasks.push(api.delete(`/api/supplier/catalog/offers/variant/${r.variantOfferId}`, { withCredentials: true }));
             }
             continue;
           }
@@ -1049,28 +1009,26 @@ export default function SupplierEditProduct() {
               {
                 productId: id,
                 variantId: r.variantId,
-                unitPrice: basePrice, // full price (your current rule)
+                unitPrice: basePrice,
                 availableQty: qty,
                 leadDays: null,
                 isActive: true,
                 inStock: qty > 0,
                 currency: "NGN",
               },
-              { headers: { Authorization: `Bearer ${token}` } }
+              { withCredentials: true }
             )
           );
         }
 
         await Promise.all(tasks);
-
-        return { ok: true, baseOfferId };
+        return { ok: true };
       }
 
-      // ---------- existing owned-product update path (unchanged as much as possible) ----------
+      // ---------- owned-product path (keep your existing logic below as-is) ----------
       if (!title.trim()) throw new Error("Title is required");
       if (!sku.trim()) throw new Error("SKU is required");
 
-      // LIVE: title & SKU locked
       const snap = initialSnapshotRef.current;
       if (isLive && snap) {
         if ((title ?? "").trim() !== (snap.title ?? "").trim()) {
@@ -1081,7 +1039,6 @@ export default function SupplierEditProduct() {
         }
       }
 
-      // LIVE: base price locked
       if (isLive) {
         const attemptedBase = toMoneyNumber(retailPrice);
         const lockedBase = Number(initialBasePriceRef.current ?? 0);
@@ -1100,14 +1057,10 @@ export default function SupplierEditProduct() {
       const freshlyUploaded = files.length ? await uploadLocalFiles() : [];
       const imagesJson = [...urlList, ...uploadedUrls, ...freshlyUploaded].filter(Boolean);
 
-      // NOTE: your existing buildPayload/buildStockOnlyPayload code is huge;
-      // you already have it in your original file above this snippet.
-      // For brevity here, we preserve the existing behavior by sending the same payload you currently build.
-      // If you want, paste your existing buildPayload/buildStockOnlyPayload functions back above and keep them unchanged.
-      //
-      // Because you pasted the full original file earlier, keep that part as-is.
-
-      // @ts-ignore - you already have these functions in your original file
+      // NOTE:
+      // Keep your existing payload builders (buildPayload / buildStockOnlyPayload) from your project file.
+      // This snippet assumes they already exist below in your actual file.
+      // @ts-ignore
       const payload = stockOnlyUpdate
         ? // @ts-ignore
           buildStockOnlyPayload({ baseQty: baseQtyPreview, variantRows })
@@ -1119,15 +1072,14 @@ export default function SupplierEditProduct() {
           };
 
       const { data } = await api.patch(`/api/supplier/products/${id}`, payload, {
-        headers: { Authorization: `Bearer ${token}` },
+        withCredentials: true,
       });
 
       return data;
     },
     onSuccess: () => {
       if (offersOnly) {
-        setOkMsg("Saved ✅ Stock updates apply immediately. Price/lead-days/active status may be pending admin approval.");
-        // best-effort: refresh so pending banners are accurate
+        setOkMsg("Saved ✅ Stock updates apply immediately. Price changes may be pending admin approval.");
         (detailQ as any)?.refetch?.();
         setTimeout(() => nav("/supplier/catalog-offers", { replace: true }), 700);
         return;
@@ -1136,9 +1088,7 @@ export default function SupplierEditProduct() {
       const stockOnlyUpdate = isLive && !nonStockChangesRequireReview;
 
       if (isLive && !stockOnlyUpdate && nonStockChangesRequireReview) {
-        setOkMsg(
-          "Saved ✅ Changes submitted for review. Listing may become PENDING until approved, depending on marketplace rules."
-        );
+        setOkMsg("Saved ✅ Changes submitted for review. Listing may become PENDING until approved.");
       } else {
         setOkMsg(stockOnlyUpdate ? "Stock updated ✅" : "Saved ✅");
       }
@@ -1160,7 +1110,7 @@ export default function SupplierEditProduct() {
     return Array.from(uniq);
   }, [urlPreviews, uploadedUrls]);
 
-  const saveDisabled = updateM.isPending || uploading || detailQ.isLoading || hasDuplicates;
+  const saveDisabled = updateM.isPending || uploading || detailQ.isLoading || hasDuplicates || !hydrated || !isSupplier;
 
   const hasPendingBase =
     offersOnly &&
@@ -1169,42 +1119,49 @@ export default function SupplierEditProduct() {
     Number(pendingBasePatch.basePrice) !== Number(activeBasePriceForDisplay);
 
   const showRequestedButNotPending =
-    offersOnly && !hasPendingBase && requestedBasePriceForDisplay > 0 && requestedBasePriceForDisplay !== activeBasePriceForDisplay;
+    offersOnly &&
+    !hasPendingBase &&
+    requestedBasePriceForDisplay > 0 &&
+    requestedBasePriceForDisplay !== activeBasePriceForDisplay;
+
+  const guardMsg =
+    !hydrated ? "Loading session…" : !isSupplier ? "This page is for suppliers only." : null;
 
   return (
     <SiteLayout>
       <SupplierLayout>
-        <div className="mt-6 space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
+        <div className="mt-4 sm:mt-6 space-y-4">
+          {/* Header (mobile: stacked + full width actions) */}
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div className="min-w-0">
               <motion.h1
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="text-2xl font-bold tracking-tight text-zinc-900"
+                className="text-[20px] sm:text-2xl font-bold tracking-tight text-zinc-900 leading-tight"
               >
                 {offersOnly ? "Offer this product" : "Edit product"}
               </motion.h1>
 
               {offersOnly ? (
-                <p className="text-sm text-zinc-600 mt-1">
-                  You’re viewing a catalog product. You can only edit <b>your offer</b> (price/stock per variant).
+                <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
+                  Catalog product: you can only edit <b>your offer</b> (price/stock per variant).
                 </p>
               ) : isLive ? (
-                <p className="text-sm text-zinc-600 mt-1">
+                <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
                   This product is <b>{productStatusUpper || "LIVE"}</b>. <b>Stock updates</b> are immediate. Other
                   changes may be <b>submitted for review</b>.
                 </p>
               ) : (
-                <p className="text-sm text-zinc-600 mt-1">
+                <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
                   You can edit this product freely while it is <b>{productStatusUpper || "PENDING"}</b>.
                 </p>
               )}
             </div>
 
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 sm:flex gap-2">
               <Link
                 to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
-                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5"
               >
                 <ArrowLeft size={16} /> Back
               </Link>
@@ -1219,7 +1176,7 @@ export default function SupplierEditProduct() {
                   }
                   updateM.mutate();
                 }}
-                className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-[13px] sm:text-sm font-semibold disabled:opacity-60"
                 title={hasDuplicates ? "Fix duplicate combinations to save." : undefined}
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
@@ -1227,17 +1184,22 @@ export default function SupplierEditProduct() {
             </div>
           </div>
 
+          {/* Alerts */}
+          {guardMsg && (
+            <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
+              {guardMsg}
+            </div>
+          )}
+
           {!offersOnly && isLive && nonStockChangesRequireReview && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
               <b>Review notice:</b> You’ve made changes beyond stock. Saving will submit changes for <b>admin review</b>.
-              The listing may become <b>PENDING</b> until approved.
             </div>
           )}
 
           {offersOnly && hasPendingBase && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-              <b>Pending approval:</b> Your last price/offer change is awaiting admin approval. Active price remains{" "}
-              <b>{ngn.format(activeBasePriceForDisplay)}</b>.
+              <b>Pending approval:</b> Active price remains <b>{ngn.format(activeBasePriceForDisplay)}</b>.
             </div>
           )}
 
@@ -1247,9 +1209,7 @@ export default function SupplierEditProduct() {
             </div>
           )}
 
-          {err && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">{err}</div>
-          )}
+          {err && <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">{err}</div>}
           {okMsg && (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
               {okMsg}
@@ -1262,50 +1222,48 @@ export default function SupplierEditProduct() {
             </div>
           )}
 
+          {/* Layout (mobile: single column; desktop: sidebar) */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2 space-y-4">
               {/* Basic info */}
-              <div className="rounded-2xl border bg-white/90 shadow-sm">
-                <div className="px-5 py-4 border-b bg-white/70">
-                  <div className="text-sm font-semibold text-zinc-900">Basic information</div>
-                  {offersOnly ? (
-                    <div className="text-xs text-zinc-600 mt-1">
-                      Catalog product: details are read-only. Set your <b>offer</b> price and stock.
-                    </div>
-                  ) : isLive ? (
-                    <div className="text-xs text-amber-700 mt-1">
-                      LIVE listing: base price is locked. You can always update stock.
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="p-5 space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Card
+                title="Basic information"
+                subtitle={
+                  offersOnly
+                    ? "Catalog product details are read-only. Set your offer price and stock."
+                    : isLive
+                    ? "LIVE listing: base price is locked. Stock updates are always allowed."
+                    : undefined
+                }
+              >
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">Title *</label>
+                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Title *</label>
                       <input
                         value={title}
                         onChange={(e) => setTitle(e.target.value)}
                         disabled={!canEditCore || isLive}
                         readOnly={!canEditCore || isLive}
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white disabled:opacity-60"
+                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">SKU *</label>
+                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">SKU *</label>
                       <input
                         value={sku}
                         onChange={(e) => setSku(e.target.value)}
                         disabled={!canEditCore || isLive}
                         readOnly={!canEditCore || isLive}
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white disabled:opacity-60"
+                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
                       />
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">
+                  {/* Mobile-friendly: break 4-col row into 2 cols on small */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="sm:col-span-2 lg:col-span-1">
+                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">
                         {offersOnly ? "Your base offer price (NGN) *" : "Retail price (NGN) *"}
                       </label>
                       <input
@@ -1314,7 +1272,7 @@ export default function SupplierEditProduct() {
                         inputMode="decimal"
                         disabled={isLive}
                         readOnly={isLive}
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white disabled:opacity-60"
+                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
                       />
 
                       {!!retailPrice && (
@@ -1331,74 +1289,55 @@ export default function SupplierEditProduct() {
 
                       {offersOnly && hasPendingBase && (
                         <div className="text-[11px] text-amber-700 mt-1">
-                          Pending approval: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
-                          {pendingBasePatch?.leadDays != null ? (
-                            <>
-                              {" "}
-                              • lead days: <b>{String(pendingBasePatch.leadDays)}</b>
-                            </>
-                          ) : null}
+                          Pending: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
                         </div>
                       )}
 
                       {offersOnly && showRequestedButNotPending && (
                         <div className="text-[11px] text-zinc-500 mt-1">
-                          New price will be submitted for approval: <b>{ngn.format(requestedBasePriceForDisplay)}</b>
+                          Will submit for approval: <b>{ngn.format(requestedBasePriceForDisplay)}</b>
                         </div>
                       )}
 
                       {!offersOnly && isLive && (
                         <div className="text-[11px] text-amber-700 mt-1">
-                          LIVE listing: retail price is <b>locked</b>.
-                        </div>
-                      )}
-
-                      {offersOnly && (
-                        <div className="text-[11px] text-zinc-500 mt-1">
-                          Stock updates apply immediately. Price / lead-days / active-status may require admin approval.
+                          LIVE listing: price is <b>locked</b>.
                         </div>
                       )}
                     </div>
 
-                    {/* base qty */}
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">
+                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">
                         {offersOnly ? "Your base offer quantity" : "Base quantity"}
                       </label>
                       <input
                         value={availableQty}
                         onChange={(e) => setAvailableQty(e.target.value)}
                         inputMode="numeric"
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
+                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white"
                         placeholder="e.g. 20"
                       />
-
                       <div className="text-[11px] text-zinc-500 mt-1">
-                        Your offer total = <b>{baseQtyPreview}</b> (base) + <b>{variantQtyTotal}</b> (variants) ={" "}
-                        <b>{totalQty}</b>
+                        Total = <b>{baseQtyPreview}</b> (base) + <b>{variantQtyTotal}</b> (variants) = <b>{totalQty}</b>
                       </div>
-
                       <div className="text-[11px] text-zinc-500 mt-1">
                         In-stock:{" "}
                         <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
                           {inStockPreview ? "YES" : "NO"}
                         </b>
                       </div>
-
                       {variantsEnabled && (
-                        <div className="text-[11px] text-zinc-500 mt-1">
-                          Variant quantities add on top of your base offer quantity.
-                        </div>
+                        <div className="text-[11px] text-zinc-500 mt-1">Variant quantities add on top.</div>
                       )}
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">Category</label>
+                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Category</label>
                       <select
                         value={categoryId}
                         onChange={(e) => setCategoryId(e.target.value)}
                         disabled={!canEditCore}
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white disabled:opacity-60"
+                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
                       >
                         <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
                         {categories.map((c) => (
@@ -1410,12 +1349,12 @@ export default function SupplierEditProduct() {
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">Brand</label>
+                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Brand</label>
                       <select
                         value={brandId}
                         onChange={(e) => setBrandId(e.target.value)}
                         disabled={!canEditCore}
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white disabled:opacity-60"
+                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
                       >
                         <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
                         {brands.map((b) => (
@@ -1428,32 +1367,29 @@ export default function SupplierEditProduct() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-700 mb-1">Description</label>
+                    <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Description</label>
                     <textarea
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
                       disabled={!canEditCore}
-                      className="w-full rounded-xl border px-3 py-2 text-sm bg-white min-h-[110px] disabled:opacity-60"
+                      className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white min-h-[110px] disabled:opacity-60"
                     />
                   </div>
 
                   {/* Attributes */}
-                  <div className="rounded-2xl border bg-white">
-                    <div className="px-5 py-4 border-b bg-white/70">
-                      <div className="text-sm font-semibold text-zinc-900">Attributes</div>
-                      {offersOnly ? (
-                        <div className="text-xs text-zinc-500">Catalog product attributes are read-only.</div>
-                      ) : isLive ? (
-                        <div className="text-xs text-zinc-500">
-                          LIVE listing: you can edit, but <b>you can’t remove existing values</b>. Additions/changes will
-                          be reviewed.
-                        </div>
-                      ) : (
-                        <div className="text-xs text-zinc-500">You can edit attributes freely while not LIVE.</div>
-                      )}
+                  <div className="rounded-2xl border bg-white overflow-hidden">
+                    <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                      <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Attributes</div>
+                      <div className="text-[11px] sm:text-xs text-zinc-500 mt-0.5">
+                        {offersOnly
+                          ? "Catalog product attributes are read-only."
+                          : isLive
+                          ? "LIVE listing: edits may require review."
+                          : "You can edit attributes freely while not LIVE."}
+                      </div>
                     </div>
 
-                    <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {activeAttrs.length === 0 && (
                         <div className="text-sm text-zinc-500">No active attributes configured.</div>
                       )}
@@ -1463,12 +1399,12 @@ export default function SupplierEditProduct() {
                           const val = String(getAttrVal(a.id) ?? "");
                           return (
                             <div key={a.id}>
-                              <label className="block text-xs font-semibold text-zinc-700 mb-1">{a.name}</label>
+                              <label className="block text-[11px] font-semibold text-zinc-700 mb-1">{a.name}</label>
                               <input
                                 value={val}
                                 onChange={(e) => setAttr(a.id, e.target.value)}
                                 disabled={!canEditAttributes}
-                                className="w-full rounded-xl border px-3 py-2 text-sm bg-white disabled:opacity-60"
+                                className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
                                 placeholder={a.placeholder || "Enter value..."}
                               />
                             </div>
@@ -1479,12 +1415,12 @@ export default function SupplierEditProduct() {
                           const val = String(getAttrVal(a.id) ?? "");
                           return (
                             <div key={a.id}>
-                              <label className="block text-xs font-semibold text-zinc-700 mb-1">{a.name}</label>
+                              <label className="block text-[11px] font-semibold text-zinc-700 mb-1">{a.name}</label>
                               <select
                                 value={val}
                                 onChange={(e) => setAttr(a.id, e.target.value)}
                                 disabled={!canEditAttributes}
-                                className="w-full rounded-xl border px-3 py-2 text-sm bg-white disabled:opacity-60"
+                                className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
                               >
                                 <option value="">— Select —</option>
                                 {(a.values || []).map((v: any) => (
@@ -1501,7 +1437,7 @@ export default function SupplierEditProduct() {
                           const vals = Array.isArray(getAttrVal(a.id)) ? (getAttrVal(a.id) as string[]) : [];
                           return (
                             <div key={a.id}>
-                              <label className="block text-xs font-semibold text-zinc-700 mb-1">{a.name}</label>
+                              <label className="block text-[11px] font-semibold text-zinc-700 mb-1">{a.name}</label>
                               <select
                                 multiple
                                 value={vals}
@@ -1510,7 +1446,7 @@ export default function SupplierEditProduct() {
                                   setAttr(a.id, ids);
                                 }}
                                 disabled={!canEditAttributes}
-                                className="w-full rounded-xl border px-3 py-2 text-sm bg-white disabled:opacity-60 min-h-[42px]"
+                                className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60 min-h-[42px]"
                               >
                                 {(a.values || []).map((v: any) => (
                                   <option key={v.id} value={v.id}>
@@ -1527,22 +1463,14 @@ export default function SupplierEditProduct() {
                     </div>
                   </div>
                 </div>
-              </div>
+              </Card>
 
               {/* Images */}
-              <div className="rounded-2xl border bg-white/90 shadow-sm">
-                <div className="px-5 py-4 border-b bg-white/70 flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold text-zinc-900">Images</div>
-                    <div className="text-xs text-zinc-500">Paste URLs or upload images.</div>
-                    {offersOnly ? (
-                      <div className="text-xs text-zinc-500 mt-1">Catalog images are read-only.</div>
-                    ) : isLive ? (
-                      <div className="text-xs text-amber-700 mt-1">LIVE listing: image changes will be reviewed.</div>
-                    ) : null}
-                  </div>
-
-                  <label className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer">
+              <Card
+                title="Images"
+                subtitle={offersOnly ? "Catalog images are read-only." : "Paste URLs or upload images."}
+                right={
+                  <label className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer">
                     <ImagePlus size={16} /> Add files
                     <input
                       ref={fileInputRef}
@@ -1554,16 +1482,16 @@ export default function SupplierEditProduct() {
                       disabled={offersOnly}
                     />
                   </label>
-                </div>
-
-                <div className="p-5 space-y-3">
+                }
+              >
+                <div className="space-y-3">
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-700 mb-1">Image URLs (one per line)</label>
+                    <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Image URLs (one per line)</label>
                     <textarea
                       value={imageUrls}
                       onChange={(e) => setImageUrls(e.target.value)}
                       disabled={offersOnly}
-                      className="w-full rounded-xl border px-3 py-2 text-xs bg-white min-h-[90px] disabled:opacity-60"
+                      className="w-full rounded-xl border px-3 py-2.5 text-xs bg-white min-h-[90px] disabled:opacity-60"
                     />
                   </div>
 
@@ -1573,12 +1501,12 @@ export default function SupplierEditProduct() {
                         Selected files: <span className="font-mono">{files.length}</span>
                       </div>
 
-                      <div className="mt-3 flex gap-2">
+                      <div className="mt-3 grid grid-cols-2 sm:flex gap-2">
                         <button
                           type="button"
                           onClick={uploadLocalFiles}
                           disabled={uploading || !files.length}
-                          className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-[13px] sm:text-sm font-semibold disabled:opacity-60"
                         >
                           {uploading ? "Uploading…" : "Upload now"}
                         </button>
@@ -1589,16 +1517,16 @@ export default function SupplierEditProduct() {
                             setFiles([]);
                             if (fileInputRef.current) fileInputRef.current.value = "";
                           }}
-                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5"
                         >
-                          <Trash2 size={16} /> Clear files
+                          <Trash2 size={16} /> Clear
                         </button>
                       </div>
                     </div>
                   )}
 
                   {allUrlPreviews.length > 0 ? (
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {allUrlPreviews.slice(0, 9).map((u) => (
                         <div key={u} className="rounded-xl border overflow-hidden bg-white">
                           <div className="aspect-[4/3] bg-zinc-100">
@@ -1619,38 +1547,30 @@ export default function SupplierEditProduct() {
                     <div className="text-xs text-zinc-500">No images found on this product yet.</div>
                   )}
                 </div>
-              </div>
+              </Card>
 
               {/* Variants */}
-              <div className="rounded-2xl border bg-white/90 shadow-sm">
-                <div className="px-5 py-4 border-b bg-white/70 flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold text-zinc-900">Variant combinations</div>
-                    {offersOnly ? (
-                      <div className="text-xs text-zinc-500">
-                        Catalog product: you can offer existing variants by setting qty. You can’t create new combos.
-                      </div>
-                    ) : isLive ? (
-                      <div className="text-xs text-zinc-500">
-                        LIVE listing: you can add new combos (review) and update qty. You can’t delete existing variants
-                        (set qty to 0).
-                      </div>
-                    ) : (
-                      <div className="text-xs text-zinc-500">You can add/remove combos while not LIVE.</div>
-                    )}
-                  </div>
-
+              <Card
+                title="Variant combinations"
+                subtitle={
+                  offersOnly
+                    ? "Catalog product: set qty for existing variants. You can’t create new combos."
+                    : isLive
+                    ? "LIVE listing: update qty. You can’t delete existing variants (set qty to 0)."
+                    : "Add/remove combos while not LIVE."
+                }
+                right={
                   <button
                     type="button"
                     onClick={addVariantRow}
                     disabled={!selectableAttrs.length || !canAddNewCombos}
-                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
+                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
                   >
                     <Plus size={16} /> Add row
                   </button>
-                </div>
-
-                <div className="p-5 space-y-2">
+                }
+              >
+                <div className="space-y-2">
                   {!selectableAttrs.length && <div className="text-sm text-zinc-500">No SELECT attributes available.</div>}
 
                   {variantRows.length === 0 ? (
@@ -1661,35 +1581,25 @@ export default function SupplierEditProduct() {
                         row.comboLabel || formatComboLabel(row.selections, attrOrder, attrNameById, valueNameById);
 
                       const isDup = duplicateRowIds.has(row.id);
-
                       const rowQty = toIntNonNeg(row.availableQty);
                       const rowInStock = rowQty > 0;
 
-                      const disableRemove =
-                        offersOnly ? !row.variantOfferId && rowQty <= 0 : isLive && row.isExisting;
+                      const disableRemove = offersOnly ? !row.variantOfferId && rowQty <= 0 : isLive && row.isExisting;
 
-                      // ✅ unit price display:
-                      // - offersOnly: show ACTIVE approved base price (not the requested input)
-                      // - owned product: keep existing preview logic
                       const activeUnitPrice = offersOnly ? activeBasePriceForDisplay : basePriceForPreview;
 
-                      // pending per-variant (if returned by backend)
                       const pendingVar = row.variantId ? pendingVariantPatchByVariantId.get(String(row.variantId)) : null;
                       const pendingVarUnitPrice = Number(pendingVar?.proposedPatch?.unitPrice ?? NaN);
                       const hasPendingVarPrice =
-                        offersOnly &&
-                        Number.isFinite(pendingVarUnitPrice) &&
-                        pendingVarUnitPrice > 0 &&
-                        pendingVarUnitPrice !== activeUnitPrice;
+                        offersOnly && Number.isFinite(pendingVarUnitPrice) && pendingVarUnitPrice > 0 && pendingVarUnitPrice !== activeUnitPrice;
 
                       return (
                         <div
                           key={row.id}
-                          className={`rounded-2xl border bg-white p-3 space-y-2 ${
-                            isDup ? "border-rose-400 ring-2 ring-rose-200" : ""
-                          }`}
+                          className={`rounded-2xl border bg-white p-3 space-y-2 ${isDup ? "border-rose-400 ring-2 ring-rose-200" : ""}`}
                         >
-                          <div className="flex flex-wrap gap-2 items-center">
+                          {/* option selects (wrap nicely on mobile) */}
+                          <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                             {selectableAttrs.map((attr) => {
                               const valueId = row.selections[attr.id] || "";
                               return (
@@ -1697,10 +1607,8 @@ export default function SupplierEditProduct() {
                                   key={attr.id}
                                   value={valueId}
                                   onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${
-                                    isDup ? "border-rose-300" : ""
-                                  }`}
-                                  disabled={true} // options fixed for existing variants (owned + catalog)
+                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${isDup ? "border-rose-300" : ""}`}
+                                  disabled={true}
                                   title="Variant options are fixed; edit qty only."
                                 >
                                   <option value="">{attr.name}</option>
@@ -1712,52 +1620,55 @@ export default function SupplierEditProduct() {
                                 </select>
                               );
                             })}
+                          </div>
 
-                            <div className="flex flex-wrap items-center justify-between gap-3">
+                          {/* info + actions */}
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                            <div className="min-w-0">
                               <div className="text-xs text-zinc-700">
                                 <span className="text-zinc-500">Combo:</span>{" "}
                                 <b className={isDup ? "text-rose-700" : "text-zinc-900"}>{comboText}</b>
                               </div>
 
-                              <div className="text-xs text-zinc-700">
-                                <span className="text-zinc-500">Unit price (active):</span>{" "}
-                                <b className="text-zinc-900">{ngn.format(activeUnitPrice)}</b>
-
-                                {offersOnly && hasPendingBase && (
-                                  <div className="text-[11px] text-amber-700">
-                                    Requested base: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b> (awaiting approval)
-                                  </div>
-                                )}
-
-                                {offersOnly && hasPendingVarPrice && (
-                                  <div className="text-[11px] text-amber-700">
-                                    Requested variant: <b>{ngn.format(pendingVarUnitPrice)}</b> (awaiting approval)
-                                  </div>
-                                )}
+                              <div className="text-[11px] text-zinc-500 mt-1 flex flex-wrap gap-3">
+                                <span>
+                                  Unit (active): <b className="text-zinc-900">{ngn.format(activeUnitPrice)}</b>
+                                </span>
+                                <span>
+                                  Qty: <b className="text-zinc-900">{rowQty}</b>
+                                </span>
+                                <span
+                                  className={`font-semibold px-2 py-0.5 rounded-full border ${
+                                    rowInStock
+                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                      : "bg-rose-50 text-rose-700 border-rose-200"
+                                  }`}
+                                >
+                                  {rowInStock ? "In stock" : "Out of stock"}
+                                </span>
                               </div>
+
+                              {offersOnly && hasPendingBase && (
+                                <div className="text-[11px] text-amber-700 mt-1">
+                                  Requested base: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b> (pending)
+                                </div>
+                              )}
+                              {offersOnly && hasPendingVarPrice && (
+                                <div className="text-[11px] text-amber-700 mt-1">
+                                  Requested variant: <b>{ngn.format(pendingVarUnitPrice)}</b> (pending)
+                                </div>
+                              )}
                             </div>
 
-                            <div className="flex items-center gap-2 ml-auto">
+                            <div className="sm:ml-auto flex items-center gap-2">
                               <span className="text-xs text-zinc-500">Qty</span>
                               <input
                                 value={row.availableQty}
                                 onChange={(e) => updateVariantQty(row.id, e.target.value)}
                                 inputMode="numeric"
-                                className={`w-20 rounded-xl border px-3 py-2 text-xs bg-white ${
-                                  isDup ? "border-rose-300" : ""
-                                }`}
+                                className={`w-24 rounded-xl border px-3 py-2 text-xs bg-white ${isDup ? "border-rose-300" : ""}`}
                                 placeholder="e.g. 5"
                               />
-
-                              <span
-                                className={`text-[11px] font-semibold px-2 py-1 rounded-full border ${
-                                  rowInStock
-                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                    : "bg-rose-50 text-rose-700 border-rose-200"
-                                }`}
-                              >
-                                {rowInStock ? "In stock" : "Out of stock"}
-                              </span>
 
                               <button
                                 type="button"
@@ -1788,48 +1699,37 @@ export default function SupplierEditProduct() {
                               Duplicate combination. Change options or remove one of the matching rows.
                             </div>
                           )}
-
-                          <div className="text-[11px] text-zinc-500 flex flex-wrap gap-3">
-                            <span>
-                              Unit price (active): <b>{ngn.format(activeUnitPrice)}</b>
-                            </span>
-                            <span>
-                              Qty: <b>{rowQty}</b>
-                            </span>
-                          </div>
                         </div>
                       );
                     })
                   )}
                 </div>
-              </div>
+              </Card>
             </div>
 
             {/* Right summary */}
             <div className="space-y-4">
-              <div className="rounded-2xl border bg-white/90 shadow-sm">
-                <div className="px-5 py-4 border-b bg-white/70">
-                  <div className="text-sm font-semibold text-zinc-900">Update summary</div>
-                  <div className="text-xs text-zinc-500">What will be saved</div>
+              <div className="rounded-2xl border bg-white/90 shadow-sm overflow-hidden">
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                  <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Update summary</div>
+                  <div className="text-[11px] sm:text-xs text-zinc-500">What will be saved</div>
                 </div>
 
-                <div className="p-5 text-sm text-zinc-700 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-zinc-500">Current status</span>
+                <div className="p-4 sm:p-5 text-sm text-zinc-700 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-zinc-500">Status</span>
                     <b className="text-zinc-900">{productStatusUpper || "—"}</b>
                   </div>
 
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-zinc-500">Title</span>
-                    <b className="text-zinc-900">{title.trim() ? title.trim() : "—"}</b>
+                    <b className="text-zinc-900 truncate max-w-[60%]">{title.trim() ? title.trim() : "—"}</b>
                   </div>
 
                   <div className="space-y-1">
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-zinc-500">{offersOnly ? "Active offer price" : "Retail price"}</span>
-                      <b className="text-zinc-900">
-                        {ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}
-                      </b>
+                      <b className="text-zinc-900">{ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}</b>
                     </div>
 
                     {offersOnly && (
@@ -1846,34 +1746,35 @@ export default function SupplierEditProduct() {
                     )}
                   </div>
 
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-zinc-500 inline-flex items-center gap-2">
-                      <Package size={14} /> Your offer stock
+                      <Package size={14} /> Offer stock
                     </span>
                     <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
                       {effectiveQty} ({inStockPreview ? "In stock" : "Out of stock"})
                     </b>
                   </div>
 
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-zinc-500">Variant rows</span>
                     <b className="text-zinc-900">{variantRows.length}</b>
                   </div>
 
                   {!offersOnly && isLive && nonStockChangesRequireReview && (
                     <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
-                      Non-stock changes → <b>admin review</b> (listing may become <b>PENDING</b>).
+                      Non-stock changes → <b>admin review</b>.
                     </div>
                   )}
 
                   {hasDuplicates && (
                     <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 text-xs">
-                      Saving is blocked until you fix duplicate combinations.
+                      Saving is blocked until duplicates are fixed.
                     </div>
                   )}
                 </div>
               </div>
 
+              {/* Sticky-ish save on mobile (nice big CTA) */}
               <button
                 type="button"
                 disabled={saveDisabled}
@@ -1891,6 +1792,8 @@ export default function SupplierEditProduct() {
               </button>
             </div>
           </div>
+
+          <div className="h-6" />
         </div>
       </SupplierLayout>
     </SiteLayout>

@@ -79,10 +79,19 @@ function IconNavLink({
       <span className="inline-flex items-center justify-center">{icon}</span>
 
       {count > 0 && (
-        <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+        <span
+          className="
+      absolute -top-1 -right-1
+      grid place-items-center
+      rounded-full bg-fuchsia-600 text-white font-semibold leading-none
+      w-5 h-5 text-[10px]
+      md:min-w-[20px] md:w-auto md:h-5 md:px-1.5
+    "
+        >
           {count > 9 ? "9+" : count}
         </span>
       )}
+
 
       <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 text-white text-[11px] px-2 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
         {label}
@@ -295,10 +304,9 @@ export default function Navbar() {
                   <NavLink
                     to="/login"
                     className={({ isActive }) =>
-                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${
-                        isActive
-                          ? "bg-zinc-900 text-white border-zinc-900"
-                          : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
+                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${isActive
+                        ? "bg-zinc-900 text-white border-zinc-900"
+                        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                       }`
                     }
                     title="Login"

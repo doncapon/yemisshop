@@ -45,37 +45,48 @@ function Badge({
       ? "border-amber-200 bg-amber-50 text-amber-800"
       : "border-zinc-200 bg-zinc-50 text-zinc-700";
 
-  return (
-    <span className={`inline-flex items-center px-2 py-1 rounded-full text-[11px] border ${cls}`}>
-      {children}
-    </span>
-  );
+  return <span className={`inline-flex items-center px-2 py-1 rounded-full text-[11px] border ${cls}`}>{children}</span>;
 }
 
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
 
+function normStr(v: any) {
+  return String(v ?? "").trim();
+}
+
 export default function SupplierProductsPage() {
-  const token = useAuthStore((s) => s.token);
+  const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const role = useAuthStore((s: any) => s.user?.role);
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
 
   const nav = useNavigate();
   const qc = useQueryClient();
-
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const adminSupplierId = useMemo(() => {
-    if (!isAdmin) return undefined;
-    const v = String(searchParams.get("supplierId") ?? "").trim();
-    return v || undefined;
-  }, [isAdmin, searchParams]);
+  // ✅ ensure session bootstrap happens (cookie auth)
+  useEffect(() => {
+    useAuthStore.getState().bootstrap?.().catch?.(() => null);
+  }, []);
 
-  // ✅ persist supplier selection across supplier pages
+  // ✅ admin supplierId: url OR stored (fixes “empty until refresh / missing supplierId”)
+  const urlSupplierId = useMemo(() => {
+    const v = normStr(searchParams.get("supplierId"));
+    return v || undefined;
+  }, [searchParams]);
+
+  const storedSupplierId = useMemo(() => {
+    const v = normStr(localStorage.getItem(ADMIN_SUPPLIER_KEY));
+    return v || undefined;
+  }, []);
+
+  const adminSupplierId = isAdmin ? (urlSupplierId ?? storedSupplierId) : undefined;
+
+  // ✅ persist + inject stored into URL if missing (admin)
   useEffect(() => {
     if (!isAdmin) return;
 
-    const fromUrl = String(searchParams.get("supplierId") ?? "").trim();
-    const fromStore = String(localStorage.getItem(ADMIN_SUPPLIER_KEY) ?? "").trim();
+    const fromUrl = normStr(searchParams.get("supplierId"));
+    const fromStore = normStr(localStorage.getItem(ADMIN_SUPPLIER_KEY));
 
     if (fromUrl) {
       if (fromUrl !== fromStore) localStorage.setItem(ADMIN_SUPPLIER_KEY, fromUrl);
@@ -95,35 +106,53 @@ export default function SupplierProductsPage() {
   }, [isAdmin, searchParams, setSearchParams]);
 
   const withSupplierCtx = (to: string) => {
-    if (!adminSupplierId) return to;
+    if (!isAdmin || !adminSupplierId) return to;
     const sep = to.includes("?") ? "&" : "?";
     return `${to}${sep}supplierId=${encodeURIComponent(adminSupplierId)}`;
   };
 
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState<"ANY" | "PENDING" | "APPROVED" | "REJECTED" | "PUBLISHED">("ANY");
+  const [status, setStatus] = useState<"ANY" | "PENDING" | "LIVE" |"APPROVED" | "REJECTED" | "PUBLISHED">("ANY");
   const [categoryId, setCategoryId] = useState("");
   const [brandId, setBrandId] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
 
-  const { categories, brands } = useCatalogMeta({ enabled: !!token });
+  // ✅ cookie-auth meta (no token gate)
+  const { categories, brands } = useCatalogMeta({ enabled: hydrated });
 
+  // ✅ cookie-auth products list
   const productsQ = useQuery({
     queryKey: ["supplier", "products", { q, status, supplierId: adminSupplierId }],
-    enabled: !!token && (!isAdmin || !!adminSupplierId),
+    enabled: hydrated && (!isAdmin || !!adminSupplierId),
     queryFn: async () => {
       const { data } = await api.get<{
         data: SupplierProductListItem[];
         total: number;
         meta?: { lowStockThreshold?: number };
       }>("/api/supplier/products", {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        params: { q: q.trim() || undefined, status, take: 100, skip: 0, supplierId: adminSupplierId },
+        withCredentials: true,
+        params: {
+          q: q.trim() || undefined,
+          status,
+          take: 100,
+          skip: 0,
+          supplierId: adminSupplierId,
+        },
       });
       return data;
     },
-    staleTime: 30_000,
+    staleTime: 20_000,
     refetchOnWindowFocus: false,
+    refetchOnMount: "always",
+    retry: 1,
   });
+
+  // ✅ force a refetch once session is hydrated (prevents “landed but blank”)
+  useEffect(() => {
+    if (!hydrated) return;
+    productsQ.refetch().catch(() => null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, adminSupplierId]);
 
   const lowStockThreshold = productsQ.data?.meta?.lowStockThreshold ?? 3;
 
@@ -148,12 +177,17 @@ export default function SupplierProductsPage() {
     });
   }, [productsQ.data, categoryId, brandId]);
 
+  const fmtPrice = (n: any) => {
+    const x = Number(n);
+    return Number.isFinite(x) ? x.toLocaleString("en-NG") : "—";
+  };
+
   return (
     <SiteLayout>
       <SupplierLayout>
         {/* Admin hint if no supplier selected */}
         {isAdmin && !adminSupplierId && (
-          <div className="mt-6 rounded-2xl border bg-amber-50 text-amber-900 border-amber-200 p-4 text-sm">
+          <div className="mt-4 sm:mt-6 rounded-2xl border bg-amber-50 text-amber-900 border-amber-200 p-4 text-sm">
             Select a supplier on the dashboard first (Admin view) to inspect their products.
             <Link to="/supplier" className="ml-2 underline font-semibold">
               Go to dashboard
@@ -161,124 +195,245 @@ export default function SupplierProductsPage() {
           </div>
         )}
 
-        {/* Hero */}
-        <div className="relative overflow-hidden rounded-3xl mt-6 border">
+        {/* Hero (compact on mobile) */}
+        <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
           <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
-          <div className="relative px-5 md:px-8 py-8 text-white">
+          <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
             <motion.h1
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="text-2xl md:text-3xl font-bold tracking-tight"
+              className="text-[20px] sm:text-2xl md:text-3xl font-bold tracking-tight leading-tight"
             >
               Products
             </motion.h1>
-            <p className="mt-1 text-sm text-white/80">Manage listings, stock, pricing and visibility.</p>
+            <p className="mt-1 text-[13px] sm:text-sm text-white/80 leading-snug">
+              Manage listings, stock, pricing and visibility.
+            </p>
 
-            <div className="mt-4 flex flex-wrap gap-2">
+            {/* Mobile-friendly actions */}
+            <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
               <Link
                 to={withSupplierCtx("/supplier/products/add")}
-                className="inline-flex items-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95"
+                className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:opacity-95"
               >
-                <Plus size={16} /> Add product
+                <Plus size={14} /> Add
               </Link>
               <Link
                 to={withSupplierCtx("/supplier")}
-                className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/15"
+                className="inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:bg-white/15"
               >
-                Back to dashboard <ArrowRight size={16} />
+                Dashboard <ArrowRight size={14} />
               </Link>
             </div>
+
+            {/* tiny status line */}
+            {!hydrated ? (
+              <div className="mt-3 text-[12px] text-white/80">Loading session…</div>
+            ) : productsQ.isFetching ? (
+              <div className="mt-3 text-[12px] text-white/80">Loading products…</div>
+            ) : productsQ.isError ? (
+              <div className="mt-3 text-[12px] text-white/90">
+                Failed to load products.{" "}
+                <button className="underline" onClick={() => productsQ.refetch()}>
+                  Retry
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
 
-        {/* Controls */}
-        <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Controls (mobile tidy + collapsible filters) */}
+        <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
           <Card className="lg:col-span-2">
-            <div className="p-5 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+            <div className="p-3 sm:p-5 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
               <div className="relative w-full">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
                 <input
-                  placeholder="Search by name, SKU, description…"
+                  placeholder="Search name, SKU…"
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
-                  className="w-full rounded-2xl border bg-white pl-9 pr-4 py-3 text-sm outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
+                  className="w-full rounded-2xl border bg-white pl-9 pr-4 py-2.5 sm:py-3 text-[13px] sm:text-sm outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
                 />
               </div>
+
               <button
                 type="button"
-                className="inline-flex items-center gap-2 rounded-2xl border bg-white px-4 py-3 text-sm hover:bg-black/5"
+                onClick={() => setShowFilters((v) => !v)}
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm hover:bg-black/5"
               >
-                <SlidersHorizontal size={16} /> Filters
+                <SlidersHorizontal size={16} /> {showFilters ? "Hide filters" : "Filters"}
               </button>
             </div>
 
-            <div className="px-5 pb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value as any)}
-                className="w-full rounded-2xl border bg-white px-4 py-3 text-sm"
-              >
-                <option value="ANY">Any status</option>
-                <option value="PENDING">PENDING</option>
-                <option value="APPROVED">APPROVED</option>
-                <option value="PUBLISHED">PUBLISHED</option>
-                <option value="REJECTED">REJECTED</option>
-              </select>
+            {(showFilters || window.matchMedia?.("(min-width: 640px)")?.matches) && (
+              <div className="px-3 sm:px-5 pb-4 sm:pb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <select
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as any)}
+                  className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+                >
+                  <option value="ANY">Any status</option>
+                  <option value="PENDING">PENDING</option>
+                  <option value="LIVE">LIVE</option>
+                  <option value="APPROVED">APPROVED</option>
+                  <option value="PUBLISHED">PUBLISHED</option>
+                  <option value="REJECTED">REJECTED</option>
+                </select>
 
-              <select
-                value={categoryId}
-                onChange={(e) => setCategoryId(e.target.value)}
-                className="w-full rounded-2xl border bg-white px-4 py-3 text-sm"
-              >
-                <option value="">All categories</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+                <select
+                  value={categoryId}
+                  onChange={(e) => setCategoryId(e.target.value)}
+                  className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+                >
+                  <option value="">All categories</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
 
-              <select
-                value={brandId}
-                onChange={(e) => setBrandId(e.target.value)}
-                className="w-full rounded-2xl border bg-white px-4 py-3 text-sm"
-              >
-                <option value="">All brands</option>
-                {brands.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+                <select
+                  value={brandId}
+                  onChange={(e) => setBrandId(e.target.value)}
+                  className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+                >
+                  <option value="">All brands</option>
+                  {brands.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </Card>
 
           <Card>
-            <div className="p-5 flex items-center gap-3">
+            <div className="p-4 sm:p-5 flex items-center gap-3">
               <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
                 <Package size={18} />
               </div>
               <div className="min-w-0">
-                <div className="text-xs text-zinc-500">Quick tip</div>
-                <div className="text-sm font-semibold text-zinc-900">Keep stock updated</div>
+                <div className="text-[11px] sm:text-xs text-zinc-500">Quick tip</div>
+                <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Keep stock updated</div>
                 <div className="text-[11px] text-zinc-500">Low stock products may get de-prioritised.</div>
               </div>
             </div>
           </Card>
         </div>
 
-        {/* Table */}
+        {/* LISTING */}
         <div className="mt-4">
           <Card>
-            <div className="px-5 py-4 border-b bg-white/70">
-              <div className="text-sm font-semibold text-zinc-900">Your listings</div>
-              <div className="text-xs text-zinc-500">
+            <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+              <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Your listings</div>
+              <div className="text-[11px] sm:text-xs text-zinc-500">
                 {productsQ.isLoading ? "Loading…" : `${filtered.length} item(s)`}
               </div>
             </div>
 
-            <div className="p-5 overflow-auto">
+            {/* ✅ Mobile cards */}
+            <div className="p-3 sm:hidden">
+              {productsQ.isLoading ? (
+                <div className="text-sm text-zinc-600 p-3">Loading…</div>
+              ) : productsQ.isError ? (
+                <div className="text-sm text-rose-700 p-3">
+                  Failed to load products.{" "}
+                  <button className="underline" onClick={() => productsQ.refetch()}>
+                    Retry
+                  </button>
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="py-10 text-center text-zinc-500 text-sm">
+                  No products yet.{" "}
+                  <Link className="underline" to={withSupplierCtx("/supplier/products/add")}>
+                    Add one
+                  </Link>
+                  .
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {filtered.map((p) => {
+                    const img = (p.imagesJson || [])[0] || "/placeholder.svg";
+                    const cat = p.categoryId ? categoryNameById.get(p.categoryId) ?? "—" : "—";
+                    const br = p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—";
+                    const low = typeof p.availableQty === "number" && p.availableQty <= lowStockThreshold;
+
+                    return (
+                      <div key={p.id} className="rounded-2xl border bg-white p-3">
+                        <div className="flex gap-3">
+                          <div className="w-16 h-16 rounded-2xl border bg-zinc-50 overflow-hidden shrink-0">
+                            <img
+                              src={img}
+                              alt={p.title}
+                              className="w-full h-full object-cover"
+                              onError={(e) => (e.currentTarget.style.opacity = "0.25")}
+                            />
+                          </div>
+
+                          <div className="min-w-0 flex-1">
+                            <div className="font-semibold text-[13px] text-zinc-900 line-clamp-2">{p.title}</div>
+                            <div className="mt-1 text-[11px] text-zinc-500">
+                              SKU: <span className="font-medium">{p.sku || "—"}</span>
+                            </div>
+
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <Badge>{p.status}</Badge>
+                              <Badge tone={p.inStock ? "neutral" : "warning"}>{p.inStock ? "In stock" : "Out"}</Badge>
+                              {low && <Badge tone="warning">Low stock</Badge>}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-zinc-600">
+                          <div className="rounded-xl border bg-zinc-50 px-3 py-2">
+                            <div className="opacity-70">Category</div>
+                            <div className="font-medium text-zinc-900 truncate">{cat}</div>
+                          </div>
+                          <div className="rounded-xl border bg-zinc-50 px-3 py-2">
+                            <div className="opacity-70">Brand</div>
+                            <div className="font-medium text-zinc-900 truncate">{br}</div>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex items-center justify-between gap-2">
+                          <div className="text-[13px] font-semibold text-zinc-900">₦{fmtPrice(p.basePrice)}</div>
+
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              qc.invalidateQueries({ queryKey: ["supplier", "product", p.id] });
+
+                              await qc.prefetchQuery({
+                                queryKey: ["supplier", "product", p.id],
+                                queryFn: async () => {
+                                  const { data } = await api.get(`/api/supplier/products/${p.id}`, {
+                                    withCredentials: true,
+                                    params: { supplierId: adminSupplierId },
+                                  });
+                                  return (data as any)?.data ?? (data as any);
+                                },
+                                staleTime: 0,
+                              });
+
+                              nav(withSupplierCtx(`/supplier/products/${p.id}/edit`));
+                            }}
+                            className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
+                          >
+                            <Pencil size={14} /> Edit
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* ✅ Desktop table */}
+            <div className="hidden sm:block p-5 overflow-auto">
               <table className="min-w-[980px] w-full text-sm">
                 <thead>
                   <tr className="text-xs text-zinc-500">
@@ -292,28 +447,31 @@ export default function SupplierProductsPage() {
                     <th className="text-left font-semibold py-2">Actions</th>
                   </tr>
                 </thead>
+
                 <tbody className="text-zinc-800">
                   {filtered.map((p) => (
                     <tr key={p.id} className="border-t">
                       <td className="py-3 font-semibold">
                         <div className="flex items-center gap-2">
                           <span className="truncate">{p.title}</span>
-
                           {typeof p.availableQty === "number" && p.availableQty <= lowStockThreshold && (
                             <Badge tone="warning">Low stock</Badge>
                           )}
                         </div>
                       </td>
+
                       <td className="py-3">{p.sku}</td>
                       <td className="py-3">{p.categoryId ? categoryNameById.get(p.categoryId) ?? "—" : "—"}</td>
                       <td className="py-3">{p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—"}</td>
+
                       <td className="py-3">
                         <span className="inline-flex px-2 py-1 rounded-full text-[11px] border bg-zinc-50 text-zinc-700 border-zinc-200">
                           {p.status}
                         </span>
                       </td>
+
                       <td className="py-3">{p.inStock ? "In stock" : "Out"}</td>
-                      <td className="py-3">₦{Number.isFinite(p.basePrice) ? p.basePrice.toLocaleString("en-NG") : "—"}</td>
+                      <td className="py-3">₦{fmtPrice(p.basePrice)}</td>
 
                       <td className="py-3">
                         <button
@@ -325,7 +483,7 @@ export default function SupplierProductsPage() {
                               queryKey: ["supplier", "product", p.id],
                               queryFn: async () => {
                                 const { data } = await api.get(`/api/supplier/products/${p.id}`, {
-                                  headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+                                  withCredentials: true,
                                   params: { supplierId: adminSupplierId },
                                 });
                                 return (data as any)?.data ?? (data as any);

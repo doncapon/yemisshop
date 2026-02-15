@@ -125,17 +125,17 @@ type OtpPurpose = "PAY_ORDER" | "CANCEL_ORDER" | "REFUND_ORDER";
 type OtpState =
   | { open: false }
   | {
-      open: true;
-      orderId: string;
-      purpose: OtpPurpose;
-      requestId: string;
-      expiresAt: number;
-      channelHint?: string | null;
-      otp: string;
-      busy: boolean;
-      error?: string | null;
-      onSuccess: (otpToken: string) => Promise<void> | void;
-    };
+    open: true;
+    orderId: string;
+    purpose: OtpPurpose;
+    requestId: string;
+    expiresAt: number;
+    channelHint?: string | null;
+    otp: string;
+    busy: boolean;
+    error?: string | null;
+    onSuccess: (otpToken: string) => Promise<void> | void;
+  };
 
 type RefundReason =
   | "NOT_RECEIVED"
@@ -206,31 +206,31 @@ function normalizeRefund(r: any): RefundRow {
     supplier: r?.supplier ? { id: String(r.supplier.id ?? ""), name: r.supplier.name ?? null } : null,
     purchaseOrder: r?.purchaseOrder
       ? {
-          id: String(r.purchaseOrder.id ?? ""),
-          status: r.purchaseOrder.status ?? null,
-          payoutStatus: r.purchaseOrder.payoutStatus ?? null,
-        }
+        id: String(r.purchaseOrder.id ?? ""),
+        status: r.purchaseOrder.status ?? null,
+        payoutStatus: r.purchaseOrder.payoutStatus ?? null,
+      }
       : null,
     events: Array.isArray(r?.events)
       ? r.events.map((e: any) => ({
-          id: String(e?.id ?? ""),
-          type: e?.type ?? null,
-          message: e?.message ?? null,
-          createdAt: e?.createdAt ?? null,
-        }))
+        id: String(e?.id ?? ""),
+        type: e?.type ?? null,
+        message: e?.message ?? null,
+        createdAt: e?.createdAt ?? null,
+      }))
       : [],
     items: Array.isArray(r?.items)
       ? r.items.map((it: any) => ({
-          id: String(it?.id ?? ""),
-          orderItem: it?.orderItem
-            ? {
-                id: String(it.orderItem.id ?? ""),
-                title: it.orderItem.title ?? null,
-                quantity: it.orderItem.quantity ?? null,
-                unitPrice: it.orderItem.unitPrice ?? null,
-              }
-            : null,
-        }))
+        id: String(it?.id ?? ""),
+        orderItem: it?.orderItem
+          ? {
+            id: String(it.orderItem.id ?? ""),
+            title: it.orderItem.title ?? null,
+            quantity: it.orderItem.quantity ?? null,
+            unitPrice: it.orderItem.unitPrice ?? null,
+          }
+          : null,
+      }))
       : [],
   };
 }
@@ -264,12 +264,12 @@ const fmtDate = (s?: string | null) => {
   return Number.isNaN(+d)
     ? String(s)
     : d.toLocaleString(undefined, {
-        month: "short",
-        day: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 };
 
 const todayYMD = () => {
@@ -377,10 +377,10 @@ function normalizeItem(it: any): OrderItem {
     selectedOptions,
     variant: variant
       ? {
-          id: String(variant?.id ?? ""),
-          sku: variant?.sku ?? null,
-          imagesJson: variant?.imagesJson ?? variant?.images ?? null,
-        }
+        id: String(variant?.id ?? ""),
+        sku: variant?.sku ?? null,
+        imagesJson: variant?.imagesJson ?? variant?.images ?? null,
+      }
       : null,
   };
 }
@@ -434,33 +434,33 @@ function normalizeOrder(raw: any): OrderRow {
     items,
     payments: payments.length
       ? payments.map((p) => ({
-          id: String(p?.id ?? ""),
-          status: String(p?.status ?? ""),
-          provider: p?.provider ?? null,
-          reference: p?.reference ?? p?.ref ?? null,
-          amount: p?.amount ?? null,
-          createdAt: p?.createdAt ?? p?.created_at ?? null,
-          allocations: Array.isArray(p?.allocations)
-            ? p.allocations.map((a: any) => ({
-                id: String(a?.id ?? ""),
-                supplierId: String(a?.supplierId ?? ""),
-                supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
-                amount: a?.amount ?? null,
-                status: a?.status ?? null,
-                purchaseOrderId: a?.purchaseOrderId ?? null,
-              }))
-            : [],
-        }))
+        id: String(p?.id ?? ""),
+        status: String(p?.status ?? ""),
+        provider: p?.provider ?? null,
+        reference: p?.reference ?? p?.ref ?? null,
+        amount: p?.amount ?? null,
+        createdAt: p?.createdAt ?? p?.created_at ?? null,
+        allocations: Array.isArray(p?.allocations)
+          ? p.allocations.map((a: any) => ({
+            id: String(a?.id ?? ""),
+            supplierId: String(a?.supplierId ?? ""),
+            supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
+            amount: a?.amount ?? null,
+            status: a?.status ?? null,
+            purchaseOrderId: a?.purchaseOrderId ?? null,
+          }))
+          : [],
+      }))
       : undefined,
     payment: payment
       ? {
-          id: String(payment?.id ?? ""),
-          status: String(payment?.status ?? ""),
-          provider: payment?.provider ?? null,
-          reference: payment?.reference ?? payment?.ref ?? null,
-          amount: payment?.amount ?? null,
-          createdAt: payment?.createdAt ?? payment?.created_at ?? null,
-        }
+        id: String(payment?.id ?? ""),
+        status: String(payment?.status ?? ""),
+        provider: payment?.provider ?? null,
+        reference: payment?.reference ?? payment?.ref ?? null,
+        amount: payment?.amount ?? null,
+        createdAt: payment?.createdAt ?? payment?.created_at ?? null,
+      }
       : null,
     paidAmount: raw?.paidAmount ?? raw?.paid_amount ?? null,
     metrics: raw?.metrics ?? null,
@@ -545,9 +545,8 @@ function Pagination({
         <>
           <button
             onClick={() => go(1)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-              page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-            }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+              }`}
           >
             1
           </button>
@@ -559,9 +558,8 @@ function Pagination({
         <button
           key={p}
           onClick={() => go(p)}
-          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-            p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-          }`}
+          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+            }`}
         >
           {p}
         </button>
@@ -572,9 +570,8 @@ function Pagination({
           {end < totalPages - 1 && <span className={`px-1 ${T_XS} text-ink-soft`}>…</span>}
           <button
             onClick={() => go(totalPages)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
-              page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-            }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+              }`}
           >
             {totalPages}
           </button>
@@ -1004,9 +1001,8 @@ export default function OrdersPage() {
           type="button"
           aria-pressed={isTodayActive}
           onClick={toggleToday}
-          className={`rounded-lg px-3 py-2 ${BTN} border transition ${
-            isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER} hover:bg-black/5`
-          }`}
+          className={`rounded-lg px-3 py-2 ${BTN} border transition ${isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER} hover:bg-black/5`
+            }`}
         >
           Today
         </button>
@@ -1286,6 +1282,212 @@ export default function OrdersPage() {
     });
   };
 
+    // ---------------- Customer Refund (SHOPPER) ----------------
+  const submitCustomerRefund = async (draft: RefundDraft) => {
+    // payload: keep it flexible for your API
+    const payload: any = {
+      orderId: draft.orderId,
+      reason: draft.reason,
+      message: draft.message,
+      mode: draft.mode,
+    };
+
+    if (draft.mode === "SOME") {
+      payload.itemIds = Object.keys(draft.selectedItemIds || {}).filter((id) => draft.selectedItemIds[id]);
+    }
+
+    // Try a couple of common endpoints (keeps your UI resilient)
+    const tryUrls = ["/api/refunds", "/api/refunds/request", "/api/orders/refund-request"];
+
+    let lastErr: any = null;
+    for (const url of tryUrls) {
+      try {
+        await api.post(url, payload, { ...AXIOS_COOKIE_CFG, headers: { "Content-Type": "application/json" } });
+        return true;
+      } catch (e: any) {
+        lastErr = e;
+        if (isAuthError(e)) throw e;
+      }
+    }
+
+    console.warn("Customer refund submit failed", lastErr);
+    throw lastErr || new Error("Could not submit refund request");
+  };
+
+  const onCustomerRefund = (details: OrderRow) => {
+    // Guard: only customers
+    if (isAdmin) return;
+
+    const orderId = String(details.id || "");
+    if (!orderId) return;
+
+    // Build an initial draft (ALL by default)
+    const initial: RefundDraft = {
+      orderId,
+      reason: "NOT_RECEIVED",
+      message: "",
+      mode: "ALL",
+      selectedItemIds: {},
+      busy: false,
+      error: null,
+    };
+
+    // Simple modal UI (no extra component files needed)
+    const RefundModal = () => {
+      const [draft, setDraft] = useState<RefundDraft>(initial);
+
+      const items = Array.isArray(details.items) ? details.items : [];
+
+      const canPickSome = items.length > 0;
+
+      const toggleItem = (id: string) => {
+        setDraft((s) => ({
+          ...s,
+          selectedItemIds: { ...s.selectedItemIds, [id]: !s.selectedItemIds[id] },
+        }));
+      };
+
+      const pickedCount = Object.keys(draft.selectedItemIds).filter((k) => draft.selectedItemIds[k]).length;
+
+      return (
+        <div className="space-y-3">
+          <div className="text-xs text-ink-soft">
+            Requesting refund for order <span className="font-mono">{orderId}</span>
+          </div>
+
+          <div>
+            <label className={T_LABEL}>Reason</label>
+            <select
+              value={draft.reason}
+              onChange={(e) => setDraft((s) => ({ ...s, reason: e.target.value as RefundReason }))}
+              className={`mt-1 w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
+            >
+              <option value="NOT_RECEIVED">Not received</option>
+              <option value="DAMAGED">Damaged</option>
+              <option value="WRONG_ITEM">Wrong item</option>
+              <option value="NOT_AS_DESCRIBED">Not as described</option>
+              <option value="CHANGED_MIND">Changed mind</option>
+              <option value="OTHER">Other</option>
+            </select>
+          </div>
+
+          <div>
+            <label className={T_LABEL}>Message (optional)</label>
+            <textarea
+              value={draft.message}
+              onChange={(e) => setDraft((s) => ({ ...s, message: e.target.value }))}
+              rows={3}
+              className={`mt-1 w-full ${SILVER_BORDER} rounded-xl px-3 py-2 ${INP}`}
+              placeholder="Tell us what went wrong…"
+            />
+          </div>
+
+          {canPickSome && (
+            <div className="space-y-2">
+              <label className={T_LABEL}>Refund scope</label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
+                    draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                  }`}
+                  onClick={() => setDraft((s) => ({ ...s, mode: "ALL" }))}
+                >
+                  All items
+                </button>
+                <button
+                  type="button"
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
+                    draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                  }`}
+                  onClick={() => setDraft((s) => ({ ...s, mode: "SOME" }))}
+                >
+                  Select items
+                </button>
+              </div>
+
+              {draft.mode === "SOME" && (
+                <div className={`rounded-xl ${SILVER_BORDER} p-2 max-h-48 overflow-auto`}>
+                  {items.map((it) => (
+                    <label key={it.id} className="flex items-start gap-2 py-1 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={!!draft.selectedItemIds[it.id]}
+                        onChange={() => toggleItem(it.id)}
+                        className="mt-1"
+                      />
+                      <span className="min-w-0">
+                        <span className="block truncate">{(it.title || it.product?.title || "—").toString()}</span>
+                        <span className="block text-xs text-ink-soft">
+                          Qty {String(it.quantity ?? 1)} • {ngn.format(fmtN(it.unitPrice))}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              {draft.mode === "SOME" && pickedCount === 0 && (
+                <div className="text-xs text-amber-700">Pick at least one item.</div>
+              )}
+            </div>
+          )}
+
+          {draft.error && <div className="text-xs text-rose-600">{draft.error}</div>}
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              className={`rounded-xl ${SILVER_BORDER} bg-white px-3 py-2 ${BTN} hover:bg-black/5`}
+              onClick={() => closeModal()}
+              disabled={draft.busy}
+            >
+              Cancel
+            </button>
+
+            <button
+              className={`rounded-xl bg-zinc-900 text-white px-3 py-2 ${BTN} disabled:opacity-50`}
+              disabled={
+                draft.busy ||
+                !draft.orderId ||
+                (draft.mode === "SOME" && canPickSome && pickedCount === 0)
+              }
+              onClick={async () => {
+                try {
+                  setDraft((s) => ({ ...s, busy: true, error: null }));
+
+                  await submitCustomerRefund(draft);
+
+                  closeModal();
+                  showSuccessModal("Refund requested", "Your refund request has been submitted. We’ll notify you with updates.");
+                  refundsQ.refetch?.();
+                } catch (e: any) {
+                  if (isAuthError(e)) {
+                    nav("/login", { replace: true, state: { from: location.pathname + location.search } });
+                    return;
+                  }
+                  setDraft((s) => ({
+                    ...s,
+                    busy: false,
+                    error: e?.response?.data?.error || e?.message || "Could not submit refund request",
+                  }));
+                }
+              }}
+            >
+              Submit request
+            </button>
+          </div>
+        </div>
+      );
+    };
+
+    openModal({
+      title: "Request refund",
+      message: <RefundModal />,
+      size: "md",
+    });
+  };
+
+
   const viewReceipt = (key: string) => nav(`/receipt/${encodeURIComponent(key)}`);
 
   const downloadReceipt = async (key: string) => {
@@ -1328,7 +1530,7 @@ export default function OrdersPage() {
           try {
             w.focus();
             w.print();
-          } catch {}
+          } catch { }
         };
         w.addEventListener("load", onLoad, { once: true });
       }
@@ -1366,7 +1568,7 @@ export default function OrdersPage() {
             </p>
           </div>
 
-          <div className="flex items-center gap-2 md:hidden">
+          <div className="flex items-center gap-2 min-[768px]:hidden">
             <button
               onClick={() => setFiltersOpen(true)}
               className={`rounded-xl ${SILVER_BORDER} px-3 py-2 ${BTN_XS} bg-white ${SILVER_SHADOW_SM}`}
@@ -1383,11 +1585,11 @@ export default function OrdersPage() {
           </div>
         </div>
 
-        <div className={`mb-4 p-4 hidden md:block ${CARD_2XL}`}>{FilterContent}</div>
+        <div className={`mb-4 p-4 hidden min-[768px]:block ${CARD_2XL}`}>{FilterContent}</div>
 
         {!isAdmin && (
-          <button
-            className={`hidden md:inline-flex items-center gap-2 rounded-lg ${SILVER_BORDER} bg-white hover:bg-black/5 px-3 py-2 ${BTN} ${SILVER_SHADOW_SM}`}
+
+          <button className={`hidden min-[768px]:inline-flexitems-center gap-2 rounded-lg ${SILVER_BORDER} bg-white hover:bg-black/5 px-3 py-2 ${BTN} ${SILVER_SHADOW_SM}`}
             onClick={() => openModal({ title: "Refunds", message: "Open refunds modal here." })}
             disabled={!queriesEnabled}
           >
@@ -1396,7 +1598,7 @@ export default function OrdersPage() {
         )}
 
         {filtersOpen && (
-          <div className="fixed inset-0 z-40 md:hidden">
+          <div className="fixed inset-0 z-40 min-[768px]:hidden">
             <div className="absolute inset-0 bg-black/40" onClick={() => setFiltersOpen(false)} />
             <div className={`absolute inset-y-0 left-0 w-[84%] max-w-xs p-4 ${CARD_2XL} rounded-none rounded-r-2xl`}>
               <div className="flex items-center justify-between mb-3">
@@ -1430,9 +1632,279 @@ export default function OrdersPage() {
         )}
 
         {/* Desktop Orders table (unchanged sizing since md+) */}
+        {/* Desktop Orders table */}
         <div className={`overflow-hidden mt-4 hidden md:block ${CARD_2XL}`}>
-          {/* ... keep your desktop table section exactly as you already had it ... */}
-          {/* I’m not repeating it here to avoid accidentally breaking your logic. */}
+          <div className="px-4 md:px-5 py-3 border-b border-zinc-200/70 flex items-center justify-between">
+            <div className="text-sm text-ink-soft">
+              {loading
+                ? "Loading…"
+                : filteredSorted.length
+                  ? `Showing ${pageStart}-${pageEnd} of ${filteredSorted.length} orders`
+                  : "No orders match your filters."}
+            </div>
+            <button
+              onClick={() => ordersQ.refetch()}
+              className="inline-flex items-center gap-2 rounded-lg border border-zinc-200/80 bg-white hover:bg-black/5 px-3 py-2 text-sm shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+              disabled={!queriesEnabled}
+            >
+              Refresh
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-zinc-50 text-ink">
+                  <th className="text-left px-3 py-2">Order</th>
+                  {isAdmin && <th className="text-left px-3 py-2">User</th>}
+                  <th className="text-left px-3 py-2">Items</th>
+                  <th className="text-left px-3 py-2">Total</th>
+                  <th className="text-left px-3 py-2">Status</th>
+                  <th className="text-left px-3 py-2">Date</th>
+                  <th className="text-left px-3 py-2">Actions</th>
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-zinc-200/70">
+                {loading && (
+                  <>
+                    <SkeletonRow cols={colSpan} mode="table" />
+                    <SkeletonRow cols={colSpan} mode="table" />
+                    <SkeletonRow cols={colSpan} mode="table" />
+                  </>
+                )}
+
+                {!loading && paginated.length === 0 && (
+                  <tr>
+                    <td colSpan={colSpan} className="px-3 py-6 text-center text-zinc-500">
+                      No orders match your filters.
+                    </td>
+                  </tr>
+                )}
+
+                {!loading &&
+                  paginated.map((o) => {
+                    const isOpen = expandedId === o.id;
+                    const details: OrderRow = isOpen && orderDetailQ.data?.id === o.id ? (orderDetailQ.data as any) : o;
+
+                    const latestPayment = latestPaymentOf(details);
+                    const receiptKey = receiptKeyFromPayment(latestPayment);
+
+                    const isPaidEffective = isPaidStatus(details.status) || isPaidStatus(latestPayment?.status);
+                    const isPendingOrCreated =
+                      !isPaidEffective && ["PENDING", "CREATED"].includes(String(details.status || "").toUpperCase());
+
+                    const canShowReceipt = !!receiptKey && isPaidEffective;
+                    const canCancelThis = canCancel(details, latestPayment);
+
+                    return (
+                      <React.Fragment key={o.id}>
+                        <tr
+                          className={`hover:bg-black/5 cursor-pointer ${isOpen ? "bg-amber-50/50" : ""}`}
+                          onClick={() => onToggle(o.id)}
+                          aria-expanded={isOpen}
+                        >
+                          <td className="px-3 py-3">
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-block w-4 transition-transform ${isOpen ? "rotate-90" : ""}`} aria-hidden>
+                                ▶
+                              </span>
+                              <span className="font-mono">{o.id}</span>
+                            </div>
+                          </td>
+
+                          {isAdmin && <td className="px-3 py-3">{details.userEmail || "—"}</td>}
+
+                          <td className="px-3 py-3">
+                            {Array.isArray(details.items) && details.items.length > 0 ? (
+                              <div className="space-y-1">
+                                {details.items.slice(0, 3).map((it) => {
+                                  const name = (it.title || it.product?.title || "—").toString();
+                                  const qty = Number(it.quantity ?? 1);
+                                  const unit = fmtN(it.unitPrice);
+                                  return (
+                                    <div key={it.id} className="text-ink">
+                                      <span className="font-medium">{name}</span>
+                                      <span className="text-ink-soft">{`  •  ${qty} × ${ngn.format(unit)}`}</span>
+                                    </div>
+                                  );
+                                })}
+                                {details.items.length > 3 && (
+                                  <div className="text-xs text-ink-soft">+ {details.items.length - 3} more…</div>
+                                )}
+                              </div>
+                            ) : isOpen && orderDetailQ.isFetching ? (
+                              <span className="text-ink-soft text-xs">Loading items…</span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+
+                          <td className="px-3 py-3">{ngn.format(fmtN(details.total))}</td>
+
+                          <td className="px-3 py-3">
+                            <StatusDot label={details.status || "—"} />
+                          </td>
+
+                          <td className="px-3 py-3">{fmtDate(details.createdAt)}</td>
+
+                          <td className="px-3 py-3">
+                            <button
+                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${isPaidEffective
+                                ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                                : isPendingOrCreated
+                                  ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
+                                  : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
+                                }`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onToggle(o.id);
+                              }}
+                            >
+                              {isOpen ? "Hide details" : "View details"}
+                            </button>
+                          </td>
+                        </tr>
+
+                        {isOpen && (
+                          <tr>
+                            <td colSpan={colSpan} className="p-0">
+                              <div className="px-4 md:px-6 py-4 bg-white border-t border-zinc-200/70">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <div className="text-sm">
+                                    <div>
+                                      <span className="text-ink-soft">Order:</span>{" "}
+                                      <span className="font-mono">{details.id}</span>
+                                    </div>
+                                    <div className="text-ink-soft">
+                                      Placed: {fmtDate(details.createdAt)} • Status: <b>{details.status}</b>
+                                    </div>
+                                    {latestPayment && (
+                                      <div className="text-ink-soft">
+                                        Payment: <b>{latestPayment.status}</b>
+                                        {latestPayment.reference && (
+                                          <>
+                                            {" "}
+                                            • Ref: <span className="font-mono">{latestPayment.reference}</span>
+                                          </>
+                                        )}
+                                        {latestPayment.amount != null && <> • {ngn.format(fmtN(latestPayment.amount))}</>}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="flex flex-wrap gap-2">
+                                    {isPendingOrCreated && (
+                                      <button
+                                        className="rounded-lg bg-emerald-600 text-white px-4 py-2 text-xs md:text-sm hover:bg-emerald-700 shadow-[0_10px_24px_rgba(16,185,129,0.18)]"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onPay(details.id);
+                                        }}
+                                      >
+                                        Pay now
+                                      </button>
+                                    )}
+
+                                    {!isAdmin && canRequestRefundAsCustomer(details, latestPayment) && (
+                                      <button
+                                        className="rounded-lg border border-zinc-200/80 px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-indigo-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onCustomerRefund(details);
+                                        }}
+                                      >
+                                        Request refund
+                                      </button>
+                                    )}
+
+                                    {canCancelThis && (
+                                      <button
+                                        className="rounded-lg border border-zinc-200/80 px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-rose-600 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onCancel(details.id);
+                                        }}
+                                      >
+                                        Cancel order
+                                      </button>
+                                    )}
+
+                                    {canShowReceipt && (
+                                      <>
+                                        <button
+                                          className="inline-flex items-center justify-center rounded-lg border border-zinc-200/80 bg-white px-3 py-2 text-xs md:text-sm hover:bg-black/5 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!receiptKey) return;
+                                            viewReceipt(receiptKey);
+                                          }}
+                                        >
+                                          View receipt
+                                        </button>
+
+                                        <button
+                                          className="inline-flex items-center justify-center rounded-lg border border-zinc-200/80 bg-white px-3 py-2 text-xs md:text-sm hover:bg-black/5 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!receiptKey) return;
+                                            downloadReceipt(receiptKey);
+                                          }}
+                                        >
+                                          Download PDF
+                                        </button>
+
+                                        <button
+                                          className="inline-flex items-center justify-center rounded-lg border border-zinc-200/80 bg-white px-3 py-2 text-xs md:text-sm hover:bg-black/5 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (!receiptKey) return;
+                                            printReceipt(receiptKey);
+                                          }}
+                                        >
+                                          Print
+                                        </button>
+                                      </>
+                                    )}
+
+                                    {canRefund(details, latestPayment) && (
+                                      <button
+                                        className="rounded-lg border border-zinc-200/80 px-4 py-2 text-xs md:text-sm hover:bg-black/5 text-indigo-700 shadow-[0_6px_16px_rgba(148,163,184,0.16)]"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onRefund(details.id);
+                                        }}
+                                      >
+                                        Refund
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className={`mt-4 overflow-hidden ${CARD_XL}`}>
+                                  {/* ... keep your existing expanded content ... */}
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="px-4 md:px-5 pb-4">
+            <Pagination
+              page={currentPage}
+              totalPages={totalPages}
+              onChange={(p) => {
+                setExpandedId(null);
+                setPage(p);
+              }}
+            />
+          </div>
         </div>
 
         {/* Mobile Orders list: tighter spacing + smaller text */}
@@ -1486,10 +1958,10 @@ export default function OrdersPage() {
                       <div className={`${T_SM} text-ink-soft truncate`}>
                         {firstItemTitle
                           ? firstItemTitle.toString().slice(0, 44) +
-                            (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
+                          (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
                           : isOpen && orderDetailQ.isFetching
-                          ? "Loading items…"
-                          : `${details.items?.length || 0} item(s)`}
+                            ? "Loading items…"
+                            : `${details.items?.length || 0} item(s)`}
                       </div>
                       <div className={`${T_XS} text-ink-soft`}>Placed {fmtDate(details.createdAt)}</div>
                     </div>
@@ -1631,10 +2103,10 @@ export default function OrdersPage() {
                         !s.open
                           ? s
                           : {
-                              ...s,
-                              busy: false,
-                              error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
-                            }
+                            ...s,
+                            busy: false,
+                            error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
+                          }
                       );
                     }
                   }}
@@ -1655,13 +2127,13 @@ export default function OrdersPage() {
                         !s.open
                           ? s
                           : {
-                              ...s,
-                              busy: false,
-                              requestId: r.requestId,
-                              expiresAt: r.expiresAt,
-                              channelHint: r.channelHint,
-                              otp: "",
-                            }
+                            ...s,
+                            busy: false,
+                            requestId: r.requestId,
+                            expiresAt: r.expiresAt,
+                            channelHint: r.channelHint,
+                            otp: "",
+                          }
                       );
                     } catch (e: any) {
                       setOtpModal((s) =>

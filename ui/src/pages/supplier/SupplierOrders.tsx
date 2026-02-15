@@ -93,15 +93,11 @@ function formatDate(d?: string | null) {
   });
 }
 
-// ✅ FIX: preserve decimals (kobo) & avoid float weirdness in display
 function moneyNgn(n?: number | null) {
   if (n == null) return "—";
-
   const v = Number(n);
   if (!Number.isFinite(v)) return "—";
-
   const hasDecimals = Math.abs(v % 1) > 0;
-
   return `₦${v.toLocaleString("en-NG", {
     minimumFractionDigits: hasDecimals ? 2 : 0,
     maximumFractionDigits: 2,
@@ -184,29 +180,45 @@ function allowedStatusOptions(curRaw?: string | null) {
   return allowed;
 }
 
+function normStr(v: any) {
+  return String(v ?? "").trim();
+}
+
 export default function SupplierOrders() {
   const { orderId } = useParams<{ orderId?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const token = useAuthStore((s) => s.token);
-  const role = useAuthStore((s) => s.user?.role);
+  const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
+  const role = useAuthStore((s: any) => s.user?.role);
+
+  // ✅ ensure session bootstrap happens (cookie auth)
+  useEffect(() => {
+    useAuthStore.getState().bootstrap?.().catch?.(() => null);
+  }, []);
 
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
   const isRider = role === "SUPPLIER_RIDER";
   const isSupplierUser = role === "SUPPLIER";
 
-  const adminSupplierId = useMemo(() => {
-    if (!isAdmin) return undefined;
-    const v = String(searchParams.get("supplierId") ?? "").trim();
+  // ✅ admin supplierId: url OR stored (works when landing directly on /supplier/orders)
+  const urlSupplierId = useMemo(() => {
+    const v = normStr(searchParams.get("supplierId"));
     return v || undefined;
-  }, [isAdmin, searchParams]);
+  }, [searchParams]);
 
-  // ✅ persist supplier selection across supplier pages (admin-only view)
+  const storedSupplierId = useMemo(() => {
+    const v = normStr(localStorage.getItem(ADMIN_SUPPLIER_KEY));
+    return v || undefined;
+  }, []);
+
+  const adminSupplierId = isAdmin ? (urlSupplierId ?? storedSupplierId) : undefined;
+
+  // ✅ persist + inject stored into URL if missing (admin-only view)
   useEffect(() => {
     if (!isAdmin) return;
 
-    const fromUrl = String(searchParams.get("supplierId") ?? "").trim();
-    const fromStore = String(localStorage.getItem(ADMIN_SUPPLIER_KEY) ?? "").trim();
+    const fromUrl = normStr(searchParams.get("supplierId"));
+    const fromStore = normStr(localStorage.getItem(ADMIN_SUPPLIER_KEY));
 
     if (fromUrl) {
       if (fromUrl !== fromStore) localStorage.setItem(ADMIN_SUPPLIER_KEY, fromUrl);
@@ -226,15 +238,13 @@ export default function SupplierOrders() {
   }, [isAdmin, searchParams, setSearchParams]);
 
   const withSupplierCtx = (to: string) => {
-    if (!adminSupplierId) return to;
+    if (!isAdmin || !adminSupplierId) return to;
     const sep = to.includes("?") ? "&" : "?";
     return `${to}${sep}supplierId=${encodeURIComponent(adminSupplierId)}`;
   };
 
   // ✅ keep q synced with route param and search param (?q=...)
   const [q, setQ] = useState(() => (orderId ?? searchParams.get("q") ?? "").trim());
-  const [deliveryOtpToken, setDeliveryOtpToken] = useState<Record<string, string>>({});
-  const [riderView, setRiderView] = useState<"active" | "delivered">("active");
 
   useEffect(() => {
     const v = (orderId ?? "").trim();
@@ -267,6 +277,9 @@ export default function SupplierOrders() {
     );
   }, [q, searchParams, setSearchParams]);
 
+  const [deliveryOtpToken, setDeliveryOtpToken] = useState<Record<string, string>>({});
+  const [riderView, setRiderView] = useState<"active" | "delivered">("active");
+
   const [deliveryOtpCode, setDeliveryOtpCode] = useState<Record<string, string>>({});
   const [deliveryOtpMsg, setDeliveryOtpMsg] = useState<Record<string, { type: "info" | "warn" | "error"; text: string }>>(
     {}
@@ -297,7 +310,17 @@ export default function SupplierOrders() {
   >({});
 
   const editorStatuses = ["CONFIRMED", "PACKED", "SHIPPED", "CANCELED"] as const;
-  const filterStatuses = ["CREATED", "FUNDED", "PROCESSING", "PENDING", "CONFIRMED", "PACKED", "SHIPPED", "DELIVERED", "CANCELED"] as const;
+  const filterStatuses = [
+    "CREATED",
+    "FUNDED",
+    "PROCESSING",
+    "PENDING",
+    "CONFIRMED",
+    "PACKED",
+    "SHIPPED",
+    "DELIVERED",
+    "CANCELED",
+  ] as const;
 
   const [payoutMsg, setPayoutMsg] = useState<Record<string, { type: "info" | "error"; text: string }>>({});
   const [payoutPendingByPo, setPayoutPendingByPo] = useState<Record<string, boolean>>({});
@@ -308,7 +331,7 @@ export default function SupplierOrders() {
 
   useEffect(() => {
     setPage(1);
-  }, [q, status]);
+  }, [q, status, riderView]);
 
   // expire cancel OTP token client-side when expiresAt passes
   useEffect(() => {
@@ -343,16 +366,17 @@ export default function SupplierOrders() {
     return () => timers.forEach((id) => window.clearTimeout(id));
   }, [cancelOtpToken, cancelOtpMeta]);
 
+  // ✅ cookie-auth orders list (loads on page launch once hydrated)
   const ordersQ = useQuery({
     queryKey: ["supplier", "orders", { supplierId: adminSupplierId, riderView }],
-    enabled: !!token && (!isAdmin || !!adminSupplierId),
+    enabled: hydrated && (!isAdmin || !!adminSupplierId),
     queryFn: async () => {
       try {
         const { data } = await api.get<{ data: SupplierOrder[] }>("/api/supplier/orders", {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          withCredentials: true,
           params: {
             supplierId: adminSupplierId,
-            ...(isRider ? { view: riderView } : {}), // ✅ only for riders
+            ...(isRider ? { view: riderView } : {}),
           },
         });
         return Array.isArray(data?.data) ? data.data : [];
@@ -364,10 +388,18 @@ export default function SupplierOrders() {
         throw err;
       }
     },
-    staleTime: 20_000,
+    staleTime: 15_000,
     refetchOnWindowFocus: false,
+    refetchOnMount: "always",
     retry: 1,
   });
+
+  // ✅ force a refetch once session is hydrated (prevents “landed but blank”)
+  useEffect(() => {
+    if (!hydrated) return;
+    ordersQ.refetch().catch(() => null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, adminSupplierId, riderView]);
 
   const filtered = useMemo(() => {
     const list = ordersQ.data || [];
@@ -375,7 +407,7 @@ export default function SupplierOrders() {
 
     return list.filter((o) => {
       const supplierStatusRaw = normStatus(o.supplierStatus || "PENDING");
-      const supplierStatusBase = toFlowBaseStatus(supplierStatusRaw); // ✅ FIX: compare on normalized base status
+      const supplierStatusBase = toFlowBaseStatus(supplierStatusRaw);
 
       if (status !== "ANY" && supplierStatusBase !== status) return false;
       if (!needle) return true;
@@ -404,13 +436,14 @@ export default function SupplierOrders() {
 
   const qc = useQueryClient();
 
+  // ✅ cookie-auth: request delivery OTP
   const requestDeliveryOtpM = useMutation({
     mutationFn: async (vars: { poId: string }) => {
       const { data } = await api.post(
         `/api/supplier/orders/purchase-orders/${vars.poId}/delivery-otp/request`,
         {},
         {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          withCredentials: true,
           params: isAdmin ? { supplierId: adminSupplierId } : undefined,
         }
       );
@@ -418,10 +451,7 @@ export default function SupplierOrders() {
     },
     onSuccess: (resp, vars) => {
       const otpToken = String(resp?.data?.otpToken ?? "").trim();
-      if (otpToken) {
-        setDeliveryOtpToken((s) => ({ ...s, [vars.poId]: otpToken }));
-      }
-
+      if (otpToken) setDeliveryOtpToken((s) => ({ ...s, [vars.poId]: otpToken }));
       setDeliveryOtpMsg((s) => ({
         ...s,
         [vars.poId]: { type: "info", text: "OTP sent to customer (WhatsApp + email)." },
@@ -434,13 +464,17 @@ export default function SupplierOrders() {
     },
   });
 
+  // ✅ cookie-auth: update supplier status
   const updateStatusM = useMutation({
     mutationFn: async (vars: { orderId: string; status: string; otpToken?: string; reason?: string }) => {
       const otpToken = String(vars.otpToken ?? "").trim();
       const { data } = await api.patch(
         `/api/supplier/orders/${vars.orderId}/status`,
         { status: vars.status, reason: vars.reason, otpToken },
-        otpToken ? { headers: { "x-otp-token": otpToken } } : undefined
+        {
+          withCredentials: true,
+          headers: otpToken ? { "x-otp-token": otpToken } : undefined,
+        }
       );
       return (data as any)?.data ?? data;
     },
@@ -452,6 +486,7 @@ export default function SupplierOrders() {
     },
   });
 
+  // ✅ cookie-auth: verify delivery OTP
   const verifyDeliveryOtpM = useMutation({
     mutationFn: async (vars: { poId: string; code: string }) => {
       const otpToken = String(deliveryOtpToken[vars.poId] ?? "").trim();
@@ -460,10 +495,8 @@ export default function SupplierOrders() {
         `/api/supplier/orders/purchase-orders/${vars.poId}/delivery-otp/verify`,
         { code: vars.code, otpToken },
         {
-          headers: {
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            ...(otpToken ? { "x-otp-token": otpToken } : {}),
-          },
+          withCredentials: true,
+          headers: otpToken ? { "x-otp-token": otpToken } : undefined,
           params: isAdmin ? { supplierId: adminSupplierId } : undefined,
         }
       );
@@ -473,7 +506,7 @@ export default function SupplierOrders() {
     onSuccess: (_data, vars) => {
       setDeliveryOtpMsg((s) => ({ ...s, [vars.poId]: { type: "info", text: "Delivery confirmed." } }));
       setDeliveryOtpCode((s) => ({ ...s, [vars.poId]: "" }));
-      setDeliveryOtpToken((s) => ({ ...s, [vars.poId]: "" })); // ✅ clear token after success
+      setDeliveryOtpToken((s) => ({ ...s, [vars.poId]: "" }));
       ordersQ.refetch();
       qc.invalidateQueries({ queryKey: ["supplier", "dashboard", "summary"] });
       qc.invalidateQueries({ queryKey: ["supplier", "dashboard", "insights"] });
@@ -485,9 +518,10 @@ export default function SupplierOrders() {
     },
   });
 
+  // ✅ cookie-auth: release payout
   const releasePayoutM = useMutation({
     mutationFn: async (vars: { poId: string; orderId: string }) => {
-      const { data } = await api.post(`/api/supplier/payouts/purchase-orders/${vars.poId}/release`, {});
+      const { data } = await api.post(`/api/supplier/payouts/purchase-orders/${vars.poId}/release`, {}, { withCredentials: true });
       return data as any;
     },
     onMutate: (vars) => {
@@ -507,7 +541,11 @@ export default function SupplierOrders() {
     onError: (err: any, vars) => {
       const poId = String(vars.poId || "").trim();
       const e = err as AxiosError<any>;
-      const msg = (e as any)?.response?.data?.error || (e as any)?.response?.data?.message || e?.message || "Failed to release payout";
+      const msg =
+        (e as any)?.response?.data?.error ||
+        (e as any)?.response?.data?.message ||
+        e?.message ||
+        "Failed to release payout";
 
       if (poId) {
         setPayoutMsg((s) => ({ ...s, [poId]: { type: "error", text: msg } }));
@@ -520,9 +558,10 @@ export default function SupplierOrders() {
     },
   });
 
+  // cancel otp endpoints (public-ish, keep cookie creds on anyway)
   const requestCancelOtpM = useMutation({
     mutationFn: async (vars: { orderId: string }) => {
-      const { data } = await api.post(`/api/orders/${vars.orderId}/cancel-otp/request`, {});
+      const { data } = await api.post(`/api/orders/${vars.orderId}/cancel-otp/request`, {}, { withCredentials: true });
       return data as any;
     },
     onSuccess: (data, vars) => {
@@ -539,7 +578,11 @@ export default function SupplierOrders() {
     },
     onError: (err: any, vars) => {
       const e = err as AxiosError<any>;
-      const msg = (e as any)?.response?.data?.error || (e as any)?.response?.data?.message || e?.message || "Failed to request OTP";
+      const msg =
+        (e as any)?.response?.data?.error ||
+        (e as any)?.response?.data?.message ||
+        e?.message ||
+        "Failed to request OTP";
       setCancelOtpErr((s) => ({ ...s, [vars.orderId]: msg }));
 
       const retryAt = (e as any)?.response?.data?.retryAt;
@@ -550,10 +593,11 @@ export default function SupplierOrders() {
   const verifyCancelOtpM = useMutation({
     mutationFn: async (vars: { orderId: string; code: string }) => {
       const requestId = cancelOtpMeta[vars.orderId]?.requestId;
-      const { data } = await api.post(`/api/orders/${vars.orderId}/cancel-otp/verify`, {
-        code: vars.code,
-        requestId,
-      });
+      const { data } = await api.post(
+        `/api/orders/${vars.orderId}/cancel-otp/verify`,
+        { code: vars.code, requestId },
+        { withCredentials: true }
+      );
       return data as any;
     },
     onSuccess: (data, vars) => {
@@ -607,11 +651,12 @@ export default function SupplierOrders() {
   }
 
   function shouldShowReleasePayout(o: SupplierOrder) {
-    if (isAdmin) return false; // admin view; avoid 403 confusion
+    if (isAdmin) return false;
     if (isRider) return false;
 
     const poId = String(o.purchaseOrderId || "").trim();
     if (!poId) return false;
+
     const orderStatus = normStatus(o.status || "");
     const supplierStatus = normStatus(o.supplierStatus || "");
     const payout = normStatus(o.payoutStatus || "");
@@ -625,11 +670,22 @@ export default function SupplierOrders() {
     return true;
   }
 
+  // ✅ Mobile-first: auto-collapse others when opening one (keeps screen clean)
+  function toggleExpand(orderId: string) {
+    setExpanded((prev) => {
+      const next: Record<string, boolean> = {};
+      const willOpen = !prev[orderId];
+      if (willOpen) next[orderId] = true;
+      else next[orderId] = false;
+      return { ...prev, ...next };
+    });
+  }
+
   return (
     <SiteLayout>
       <SupplierLayout>
         {isAdmin && !adminSupplierId && (
-          <div className="mt-6 rounded-2xl border bg-amber-50 text-amber-900 border-amber-200 p-4 text-sm">
+          <div className="mt-4 sm:mt-6 rounded-2xl border bg-amber-50 text-amber-900 border-amber-200 p-4 text-sm">
             Select a supplier on the dashboard first (Admin view) to inspect their orders.
             <Link to="/supplier" className="ml-2 underline font-semibold">
               Go to dashboard
@@ -637,110 +693,127 @@ export default function SupplierOrders() {
           </div>
         )}
 
-        <div className="relative overflow-hidden rounded-3xl mt-6 border">
+        {/* Hero (compact on mobile) */}
+        <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
           <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
-          <div className="relative px-5 md:px-8 py-8 text-white">
+          <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
             <motion.h1
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="text-2xl md:text-3xl font-bold tracking-tight"
+              className="text-[20px] sm:text-2xl md:text-3xl font-bold tracking-tight leading-tight"
             >
-              Orders <Sparkles className="inline ml-1" size={22} />
+              Orders <Sparkles className="inline ml-1" size={20} />
             </motion.h1>
-            <p className="mt-1 text-sm text-white/80">
-              Orders allocated to you (based on{" "}
-              <code className="px-1 rounded bg-white/10">chosenSupplierId</code> on order items).
+
+            <p className="mt-1 text-[13px] sm:text-sm text-white/80 leading-snug">
+              Orders allocated to you (based on <code className="px-1 rounded bg-white/10">chosenSupplierId</code>).
             </p>
 
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
               <Link
                 to={withSupplierCtx("/supplier")}
-                className="inline-flex items-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95"
+                className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:opacity-95"
               >
-                Back to overview <ArrowRight size={16} />
+                Overview <ArrowRight size={14} />
               </Link>
 
-              {/* ✅ Supplier can invite/manage riders */}
               {(isSupplierUser || isAdmin) && (
                 <Link
                   to={withSupplierCtx("/supplier/riders")}
-                  className="inline-flex items-center gap-2 rounded-full bg-white/15 text-white px-4 py-2 text-sm font-semibold border border-white/30 hover:bg-white/20"
+                  className="inline-flex items-center justify-center gap-2 rounded-full bg-white/15 text-white px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold border border-white/30 hover:bg-white/20"
                   title="Invite and manage riders"
                 >
-                  <Users size={16} /> Invite / manage riders
+                  <Users size={14} /> Riders
                 </Link>
               )}
             </div>
 
+            {!hydrated ? (
+              <div className="mt-3 text-[12px] text-white/80">Loading session…</div>
+            ) : ordersQ.isFetching ? (
+              <div className="mt-3 text-[12px] text-white/80">Loading orders…</div>
+            ) : ordersQ.isError ? (
+              <div className="mt-3 text-[12px] text-white/90">
+                Failed to load orders.{" "}
+                <button className="underline" onClick={() => ordersQ.refetch()}>
+                  Retry
+                </button>
+              </div>
+            ) : null}
+
             {isRider && (
-              <div className="mt-3 text-xs text-white/80">
-                You’re signed in as a rider. You can view assigned orders and confirm delivery (OTP).
+              <div className="mt-3 text-[12px] text-white/80">
+                Rider account: view assigned orders and confirm delivery (OTP).
               </div>
             )}
           </div>
         </div>
 
-        <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Controls (mobile tidy) */}
+        <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
           <Card className="lg:col-span-2">
-            <div className="p-5 flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="p-3 sm:p-5 flex flex-col gap-3">
               <div className="relative w-full">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={16} />
                 <input
-                  placeholder="Search by order ID, customer email, product…"
+                  placeholder="Search order ID, email, product…"
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
-                  className="w-full rounded-2xl border bg-white pl-9 pr-4 py-3 text-sm outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
+                  className="w-full rounded-2xl border bg-white pl-9 pr-4 py-2.5 sm:py-3 text-[13px] sm:text-sm outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
                 />
               </div>
 
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value)}
-                className="w-full sm:w-[220px] rounded-2xl border bg-white px-4 py-3 text-sm"
-              >
-                <option value="ANY">Any supplier status</option>
-                {filterStatuses.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-
-              {isRider && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <select
-                  value={riderView}
-                  onChange={(e) => setRiderView(e.target.value as any)}
-                  className="w-full sm:w-[220px] rounded-2xl border bg-white px-4 py-3 text-sm"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value)}
+                  className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
                 >
-                  <option value="active">Active deliveries</option>
-                  <option value="delivered">Delivered by me</option>
+                  <option value="ANY">Any supplier status</option>
+                  {filterStatuses.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
                 </select>
-              )}
+
+                {isRider && (
+                  <select
+                    value={riderView}
+                    onChange={(e) => setRiderView(e.target.value as any)}
+                    className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+                  >
+                    <option value="active">Active deliveries</option>
+                    <option value="delivered">Delivered by me</option>
+                  </select>
+                )}
+              </div>
             </div>
           </Card>
 
           <Card>
-            <div className="p-5 flex items-center gap-3">
+            <div className="p-4 sm:p-5 flex items-center gap-3">
               <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
                 <PackageCheck size={18} />
               </div>
               <div className="min-w-0">
-                <div className="text-xs text-zinc-500">Fulfillment</div>
-                <div className="text-sm font-semibold text-zinc-900">Confirm → Pack → Ship → Deliver</div>
-                <div className="text-[11px] text-zinc-500">Status changes are sequential (no skipping).</div>
+                <div className="text-[11px] sm:text-xs text-zinc-500">Fulfillment</div>
+                <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Confirm → Pack → Ship → Deliver</div>
+                <div className="text-[11px] text-zinc-500">No skipping steps.</div>
               </div>
             </div>
           </Card>
         </div>
 
+        {/* Orders list (mobile cards first) */}
         <div className="mt-4">
           <Card>
-            <div className="px-5 py-4 border-b bg-white/70">
+            <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <div>
-                  <div className="text-sm font-semibold text-zinc-900">Order queue</div>
-                  <div className="text-xs text-zinc-500">
+                  <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Order queue</div>
+                  <div className="text-[11px] sm:text-xs text-zinc-500">
                     {ordersQ.isLoading ? "Loading…" : ordersQ.isError ? "Temporarily unavailable" : `${total} order(s)`}
                   </div>
                 </div>
@@ -748,7 +821,7 @@ export default function SupplierOrders() {
                 {!ordersQ.isLoading && !ordersQ.isError && total > 0 && (
                   <div className="flex items-center gap-2 flex-wrap justify-end">
                     <div className="text-[11px] text-zinc-600">
-                      Showing <span className="font-semibold text-zinc-900">{startIdx + 1}</span>–
+                      <span className="font-semibold text-zinc-900">{startIdx + 1}</span>–
                       <span className="font-semibold text-zinc-900">{endIdxExclusive}</span> of{" "}
                       <span className="font-semibold text-zinc-900">{total}</span>
                     </div>
@@ -760,7 +833,7 @@ export default function SupplierOrders() {
                         setPageSize(Number.isFinite(n) && n > 0 ? n : 20);
                         setPage(1);
                       }}
-                      className="rounded-xl border bg-white px-3 py-2 text-xs"
+                      className="rounded-xl border bg-white px-3 py-2 text-[12px]"
                       title="Page size"
                     >
                       {PAGE_SIZES.map((n) => (
@@ -774,21 +847,20 @@ export default function SupplierOrders() {
                       type="button"
                       disabled={safePage <= 1}
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                     >
                       <ChevronLeft size={14} /> Prev
                     </button>
 
-                    <div className="text-xs text-zinc-600">
-                      Page <span className="font-semibold text-zinc-900">{safePage}</span> /{" "}
-                      <span className="font-semibold text-zinc-900">{pageCount}</span>
+                    <div className="text-[12px] text-zinc-600">
+                      <span className="font-semibold text-zinc-900">{safePage}</span>/{pageCount}
                     </div>
 
                     <button
                       type="button"
                       disabled={safePage >= pageCount}
                       onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5 disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                     >
                       Next <ChevronRight size={14} />
                     </button>
@@ -797,7 +869,7 @@ export default function SupplierOrders() {
               </div>
             </div>
 
-            <div className="p-5 space-y-3">
+            <div className="p-3 sm:p-5 space-y-3">
               {ordersQ.isError && (
                 <div className="rounded-2xl border bg-white p-6 text-sm text-zinc-600">
                   We couldn’t load your orders right now. Please refresh and try again.
@@ -815,7 +887,6 @@ export default function SupplierOrders() {
                 const supplierStatusRaw = normStatus(o.supplierStatus || "PENDING");
                 const supplierFlowBase = toFlowBaseStatus(supplierStatusRaw);
 
-                const retailTotal = (o.items || []).reduce((sum, it) => sum + Number(it.lineTotal || 0), 0);
                 const supplierTotal = (o.items || []).reduce((sum, it) => {
                   const unit = Number(it.chosenSupplierUnitPrice ?? 0);
                   const qty = Number(it.quantity ?? 0);
@@ -830,7 +901,8 @@ export default function SupplierOrders() {
 
                 const canSave =
                   allowed.has(nextStatus) &&
-                  (!cancelNeedsOtp || (String(cancelReason[o.id] ?? "").trim() && String(cancelOtpToken[o.id] ?? "").trim()));
+                  (!cancelNeedsOtp ||
+                    (String(cancelReason[o.id] ?? "").trim() && String(cancelOtpToken[o.id] ?? "").trim()));
 
                 const cmeta = cancelOtpMeta[o.id] || {};
                 const retryUntilMs = cmeta.retryAt ? new Date(cmeta.retryAt).getTime() : null;
@@ -843,99 +915,78 @@ export default function SupplierOrders() {
                 const otpVerified = !!String(o.deliveryOtpVerifiedAt || "").trim();
                 const canAttemptPayout = canAttemptReleasePayout(o);
 
-                // Riders: allow confirm delivery (OTP) + view; Suppliers: update + assign rider
                 const canShowUpdateButton =
                   !isAdmin && !isRider && !isTerminal && ["PENDING", "CONFIRMED", "PACKED"].includes(supplierFlowBase);
 
                 const canConfirmDelivery = !!poId && supplierFlowBase === "SHIPPED" && !otpVerified;
 
                 return (
-                  <div key={o.id} className="rounded-2xl border bg-white p-4 flex flex-col gap-3">
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="font-semibold text-zinc-900 flex items-center gap-2">
-                          <span className="truncate">{o.id}</span>
-                          <button
-                            type="button"
-                            onClick={() => setExpanded((s) => ({ ...s, [o.id]: !s[o.id] }))}
-                            className="inline-flex items-center gap-1 text-xs text-zinc-600 hover:text-zinc-900"
-                          >
-                            {isOpen ? (
-                              <>
-                                Hide <ChevronUp size={14} />
-                              </>
-                            ) : (
-                              <>
-                                Details <ChevronDown size={14} />
-                              </>
-                            )}
-                          </button>
-                        </div>
-
-                        <div className="text-sm text-zinc-600">
-                          {o.customerEmail ? `${o.customerEmail} • ` : ""}
-                          {o.items.length} item{o.items.length === 1 ? "" : "s"} • {formatDate(o.createdAt)}
-                        </div>
-
-                        <div className="mt-1 text-xs text-zinc-500">
-                          Ship to: <span className="text-zinc-700">{formatAddress(o.shippingAddress)}</span>
-                        </div>
-
-                        {(isSupplierUser || isAdmin) && (
-                          <div className="mt-1 text-xs text-zinc-500">
-                            Supplier total (your price): <span className="font-semibold text-zinc-800">{moneyNgn(supplierTotal)}</span>
+                  <div key={o.id} className="rounded-2xl border bg-white p-3 sm:p-4">
+                    {/* Top row (mobile stacked) */}
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm truncate">{o.id}</div>
+                          <div className="text-[11px] sm:text-xs text-zinc-600">
+                            {o.customerEmail ? `${o.customerEmail} • ` : ""}
+                            {o.items.length} item{o.items.length === 1 ? "" : "s"} • {formatDate(o.createdAt)}
                           </div>
-                        )}
+                        </div>
 
-                        {o.purchaseOrderId && (isSupplierUser || isAdmin) ? (
-                          <div className="mt-2 text-[11px] text-zinc-500 flex flex-wrap gap-x-3 gap-y-1 items-center">
-                            <span>
-                              PO: <span className="text-zinc-700 font-semibold">{o.purchaseOrderId}</span>
-                            </span>
-                            <span>
-                              Supplier amount:{" "}
-                              <span className="text-zinc-700 font-semibold">{moneyNgn(o.supplierAmount ?? o.poSubtotal ?? null)}</span>
-                            </span>
-                            <span
-                              className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${payoutBadgeClass(o.payoutStatus)}`}
-                            >
-                              PAYOUT: {payoutStatus || "PENDING"}
-                            </span>
-                            {o.paidOutAt ? (
-                              <span>
-                                Paid out: <span className="text-zinc-700">{formatDate(o.paidOutAt)}</span>
-                              </span>
-                            ) : null}
-
-                            <span
-                              className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${
-                                otpVerified ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"
-                              }`}
-                            >
-                              DELIVERY OTP: {otpVerified ? "VERIFIED" : "NOT VERIFIED"}
-                            </span>
-
-                            {/* ✅ Only supplier/admin can assign riders (riders must not see this) */}
-                            {(isSupplierUser || isAdmin) && o.supplierStatus === "SHIPPED" && (
-                              <AssignRiderControl
-                                purchaseOrderId={o.purchaseOrderId}
-                                currentRiderId={o.riderId ?? null}
-                                disabled={normStatus(o.supplierStatus) === "DELIVERED" || normStatus(o.supplierStatus) === "CANCELED"}
-                              />
-                            )}
-                          </div>
-                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => toggleExpand(o.id)}
+                          className="shrink-0 inline-flex items-center gap-1 rounded-full border bg-white px-3 py-1.5 text-[12px] hover:bg-black/5"
+                        >
+                          {isOpen ? (
+                            <>
+                              Hide <ChevronUp size={14} />
+                            </>
+                          ) : (
+                            <>
+                              Details <ChevronDown size={14} />
+                            </>
+                          )}
+                        </button>
                       </div>
 
-                      <div className="flex items-center justify-end gap-2 flex-wrap w-full md:w-auto md:ml-auto">
+                      <div className="text-[11px] text-zinc-500">
+                        Ship to: <span className="text-zinc-700">{formatAddress(o.shippingAddress)}</span>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
                         <span className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${badgeClass(o.status)}`}>
                           ORDER: {normStatus(o.status)}
                         </span>
-
                         <span className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${badgeClass(supplierStatusRaw)}`}>
                           YOU: {supplierStatusRaw}
                         </span>
 
+                        {poId && (isSupplierUser || isAdmin) && (
+                          <span className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${payoutBadgeClass(o.payoutStatus)}`}>
+                            PAYOUT: {payoutStatus || "PENDING"}
+                          </span>
+                        )}
+
+                        {poId && (
+                          <span
+                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${
+                              otpVerified ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"
+                            }`}
+                          >
+                            OTP: {otpVerified ? "VERIFIED" : "NOT VERIFIED"}
+                          </span>
+                        )}
+                      </div>
+
+                      {(isSupplierUser || isAdmin) && (
+                        <div className="text-[12px] font-semibold text-zinc-900">
+                          Supplier total: <span className="text-zinc-900">{moneyNgn(supplierTotal)}</span>
+                        </div>
+                      )}
+
+                      {/* Action buttons (mobile 2-col grid) */}
+                      <div className="mt-1 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                         {canShowUpdateButton && (
                           <button
                             type="button"
@@ -943,8 +994,9 @@ export default function SupplierOrders() {
                               setEditingId(o.id);
                               const next = suggestedNextStatus(supplierStatusRaw);
                               setNextStatus(next === "PENDING" ? "CONFIRMED" : next);
+                              setExpanded((s) => ({ ...s, [o.id]: true }));
                             }}
-                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5 disabled:opacity-50"
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
                             title={isTerminal ? "This order is already completed/canceled." : "Update fulfillment status"}
                           >
                             <Truck size={14} /> Update
@@ -958,10 +1010,10 @@ export default function SupplierOrders() {
                               setExpanded((s) => ({ ...s, [o.id]: true }));
                               if (poId) requestDeliveryOtpM.mutate({ poId });
                             }}
-                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5"
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
                             title="Confirm delivery with customer OTP"
                           >
-                            <PackageCheck size={14} /> Confirm delivery
+                            <PackageCheck size={14} /> Confirm
                           </button>
                         )}
 
@@ -972,235 +1024,257 @@ export default function SupplierOrders() {
                             onClick={() => {
                               const id = String(o.purchaseOrderId || "").trim();
                               if (!id) return;
-
                               setPayoutMsg((s) => ({ ...s, [id]: { type: "info", text: "" } }));
                               releasePayoutM.mutate({ poId: id, orderId: o.id });
                             }}
-                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5 disabled:opacity-50"
+                            className="inline-flex col-span-2 sm:col-span-1 items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                             title={!canAttemptPayout ? "Available when DELIVERED + OTP verified" : "Release payout"}
                           >
                             <Banknote size={14} /> {isPayoutPending ? "Releasing…" : "Release payout"}
                           </button>
                         )}
+
+                        <button
+                          type="button"
+                          onClick={() => ordersQ.refetch()}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
+                        >
+                          <RefreshCcw size={14} /> Refresh
+                        </button>
                       </div>
+
+                      {poId && payoutMsg[String(o.purchaseOrderId)]?.text ? (
+                        <div
+                          className={`text-[12px] ${
+                            payoutMsg[String(o.purchaseOrderId)]?.type === "error" ? "text-rose-700" : "text-emerald-700"
+                          }`}
+                        >
+                          {payoutMsg[String(o.purchaseOrderId)]?.text}
+                        </div>
+                      ) : null}
                     </div>
 
-                    {o.purchaseOrderId && payoutMsg[String(o.purchaseOrderId)]?.text ? (
-                      <div
-                        className={`text-xs ${
-                          payoutMsg[String(o.purchaseOrderId)]?.type === "error" ? "text-rose-700" : "text-emerald-700"
-                        }`}
-                      >
-                        {payoutMsg[String(o.purchaseOrderId)]?.text}
-                      </div>
-                    ) : null}
-
-                    {o.refundId ? (
-                      <div className="mt-1 text-xs text-zinc-500">
-                        Refund:{" "}
-                        <Link
-                          to={withSupplierCtx(`/supplier/refund/${encodeURIComponent(o.refundId)}`)}
-                          className="font-semibold text-indigo-700 hover:underline"
-                          title="Open refund case"
-                        >
-                          {o.refundId}
-                        </Link>
-                        {o.refundStatus ? <span className="ml-2">({o.refundStatus})</span> : null}
-                      </div>
-                    ) : null}
-
-                    {/* EDITOR */}
-                    {editingId === o.id && (
-                      <div className="rounded-xl border bg-zinc-50 p-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap">
-                        <div className="text-xs font-semibold text-zinc-700 shrink-0">Set supplier status</div>
-
-                        <select
-                          value={nextStatus}
-                          onChange={(e) => setNextStatus(e.target.value)}
-                          className="w-full sm:w-auto sm:flex-1 min-w-0 rounded-xl border bg-white px-3 py-2 text-sm"
-                        >
-                          {editorStatuses.map((s) => {
-                            const disabled = !allowed.has(s);
-                            const label = disabled ? `${s} (complete previous step)` : s;
-                            return (
-                              <option key={s} value={s} disabled={disabled}>
-                                {label}
-                              </option>
-                            );
-                          })}
-                        </select>
-
-                        <div className="flex gap-2 w-full sm:w-auto sm:ml-auto sm:justify-end">
-                          <button
-                            type="button"
-                            disabled={!canSave || updateStatusM.isPending}
-                            className="inline-flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
-                            title={!allowed.has(nextStatus) ? "Complete previous step before selecting this status" : ""}
-                            onClick={() => {
-                              if (normStatus(nextStatus) === "CANCELED" && cancelNeedsOtp) {
-                                const reason = String(cancelReason[o.id] ?? "").trim();
-                                const otpToken = String(cancelOtpToken[o.id] ?? "").trim();
-                                if (!reason || !otpToken) return;
-
-                                updateStatusM.mutate({ orderId: o.id, status: "CANCELED", otpToken, reason });
-                                return;
-                              }
-
-                              updateStatusM.mutate({ orderId: o.id, status: nextStatus });
-                            }}
-                          >
-                            <Save size={14} /> {updateStatusM.isPending ? "Saving…" : "Save"}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => setEditingId(null)}
-                            className="inline-flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-
-                        {updateStatusM.isError && <div className="text-xs text-rose-700 w-full">Failed to update. Please try again.</div>}
-                      </div>
-                    )}
-
-                    {/* CANCEL OTP PANEL */}
-                    {editingId === o.id && normStatus(nextStatus) === "CANCELED" && ["CONFIRMED", "PACKED"].includes(supplierFlowBase) && (
-                      <div className="mt-2 rounded-xl border bg-white p-3">
-                        <div className="text-xs font-semibold text-zinc-800">Cancel requires customer OTP + reason</div>
-
-                        <textarea
-                          value={cancelReason[o.id] ?? ""}
-                          onChange={(e) => setCancelReason((s) => ({ ...s, [o.id]: e.target.value }))}
-                          placeholder="Reason for cancellation…"
-                          className="mt-2 w-full rounded-xl border p-2 text-sm"
-                          rows={2}
-                        />
-
-                        {!cancelOtpVerified ? (
-                          <div className="mt-2 flex flex-wrap gap-2 items-center">
-                            <button
-                              type="button"
-                              disabled={requestCancelOtpM.isPending || retryLocked}
-                              onClick={() => requestCancelOtpM.mutate({ orderId: o.id })}
-                              className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
-                            >
-                              {retryLocked ? "Please wait…" : requestCancelOtpM.isPending ? "Requesting…" : "Request cancel OTP"}
-                            </button>
-
-                            {cancelOtpErr[o.id] ? (
-                              <div className="mt-2 text-xs text-rose-700">{cancelOtpErr[o.id]}</div>
-                            ) : cmeta.channelHint ? (
-                              <div className="mt-2 text-[11px] text-zinc-600">
-                                Sent via: <span className="font-semibold text-zinc-800">{cmeta.channelHint}</span>
-                              </div>
+                    {/* Details panel */}
+                    {isOpen && (
+                      <div className="mt-3 rounded-2xl border bg-white p-3">
+                        {poId && (isSupplierUser || isAdmin) ? (
+                          <div className="mb-3 text-[11px] text-zinc-500 flex flex-wrap gap-x-3 gap-y-1 items-center">
+                            <span>
+                              PO: <span className="text-zinc-700 font-semibold">{o.purchaseOrderId}</span>
+                            </span>
+                            <span>
+                              Supplier amount:{" "}
+                              <span className="text-zinc-700 font-semibold">{moneyNgn(o.supplierAmount ?? o.poSubtotal ?? null)}</span>
+                            </span>
+                            {o.paidOutAt ? (
+                              <span>
+                                Paid out: <span className="text-zinc-700">{formatDate(o.paidOutAt)}</span>
+                              </span>
                             ) : null}
-
-                            {cmeta.retryAt ? (
-                              <div className="mt-1 text-[11px] text-zinc-500">
-                                You can request again at: <span className="text-zinc-700">{formatDate(cmeta.retryAt)}</span>
-                              </div>
-                            ) : null}
-
-                            <input
-                              value={cancelOtpCode[o.id] ?? ""}
-                              onChange={(e) => {
-                                const v = String(e.target.value || "").replace(/\D/g, "").slice(0, 6);
-                                setCancelOtpCode((s) => ({ ...s, [o.id]: v }));
-                              }}
-                              placeholder="123456"
-                              className="rounded-xl border px-3 py-2 text-sm"
-                              inputMode="numeric"
-                            />
-
-                            <button
-                              type="button"
-                              disabled={verifyCancelOtpM.isPending || !/^\d{6}$/.test(cancelOtpCode[o.id] ?? "")}
-                              onClick={() => verifyCancelOtpM.mutate({ orderId: o.id, code: cancelOtpCode[o.id] ?? "" })}
-                              className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
-                            >
-                              Verify OTP
-                            </button>
                           </div>
                         ) : null}
 
-                        <div className="mt-2 text-[11px] text-zinc-500">After OTP is verified, Save will work.</div>
-                      </div>
-                    )}
+                        {(isSupplierUser || isAdmin) && o.supplierStatus === "SHIPPED" && o.purchaseOrderId && (
+                          <div className="mb-3">
+                            <AssignRiderControl
+                              purchaseOrderId={o.purchaseOrderId}
+                              currentRiderId={o.riderId ?? null}
+                              disabled={normStatus(o.supplierStatus) === "DELIVERED" || normStatus(o.supplierStatus) === "CANCELED"}
+                            />
+                          </div>
+                        )}
 
-                    {cancelOtpMsg[o.id]?.text ? (
-                      <div
-                        className={`mt-2 text-xs ${
-                          cancelOtpMsg[o.id].type === "warn"
-                            ? "text-amber-700"
-                            : cancelOtpMsg[o.id].type === "error"
-                            ? "text-rose-700"
-                            : "text-emerald-700"
-                        }`}
-                      >
-                        {cancelOtpMsg[o.id].text}
-                        {cancelOtpMsg[o.id].type === "warn" ? (
-                          <button type="button" onClick={() => requestCancelOtpM.mutate({ orderId: o.id })} className="ml-2 underline font-semibold">
-                            Request new OTP
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : null}
+                        {/* Editor */}
+                        {editingId === o.id && (
+                          <div className="rounded-xl border bg-zinc-50 p-3 flex flex-col gap-2">
+                            <div className="text-[12px] font-semibold text-zinc-700">Set supplier status</div>
 
-                    {/* DETAILS */}
-                    {isOpen && (
-                      <div className="rounded-2xl border bg-white p-3">
-                        <div className="text-xs font-semibold text-zinc-700 mb-2">Items allocated to you</div>
+                            <select
+                              value={nextStatus}
+                              onChange={(e) => setNextStatus(e.target.value)}
+                              className="w-full rounded-xl border bg-white px-3 py-2 text-sm"
+                            >
+                              {editorStatuses.map((s) => {
+                                const disabled = !allowed.has(s);
+                                const label = disabled ? `${s} (complete previous step)` : s;
+                                return (
+                                  <option key={s} value={s} disabled={disabled}>
+                                    {label}
+                                  </option>
+                                );
+                              })}
+                            </select>
 
-                        {poId && supplierFlowBase === "SHIPPED" && !otpVerified && (isSupplierUser || isRider) && (
-                          <div className="mb-3 rounded-xl border bg-white p-3">
-                            <div className="text-xs font-semibold text-zinc-800">Confirm delivery (customer OTP)</div>
-
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <input
-                                value={deliveryOtpCode[poId] ?? ""}
-                                onChange={(e) => {
-                                  const v = String(e.target.value || "").replace(/\D/g, "").slice(0, 6);
-                                  setDeliveryOtpCode((s) => ({ ...s, [poId]: v }));
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                disabled={!canSave || updateStatusM.isPending}
+                                className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
+                                onClick={() => {
+                                  if (normStatus(nextStatus) === "CANCELED" && cancelNeedsOtp) {
+                                    const reason = String(cancelReason[o.id] ?? "").trim();
+                                    const otpToken = String(cancelOtpToken[o.id] ?? "").trim();
+                                    if (!reason || !otpToken) return;
+                                    updateStatusM.mutate({ orderId: o.id, status: "CANCELED", otpToken, reason });
+                                    return;
+                                  }
+                                  updateStatusM.mutate({ orderId: o.id, status: nextStatus });
                                 }}
-                                placeholder="123456"
-                                className="rounded-xl border px-3 py-2 text-sm"
-                                inputMode="numeric"
-                              />
+                              >
+                                <Save size={14} /> {updateStatusM.isPending ? "Saving…" : "Save"}
+                              </button>
 
                               <button
                                 type="button"
-                                disabled={verifyDeliveryOtpM.isPending || !/^\d{6}$/.test(deliveryOtpCode[poId] ?? "")}
-                                onClick={() => verifyDeliveryOtpM.mutate({ poId, code: deliveryOtpCode[poId] ?? "" })}
-                                className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                                onClick={() => setEditingId(null)}
+                                className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
                               >
-                                {verifyDeliveryOtpM.isPending ? "Verifying…" : "Verify OTP"}
+                                Cancel
                               </button>
+                            </div>
+
+                            {updateStatusM.isError && <div className="text-[12px] text-rose-700">Failed to update. Please try again.</div>}
+                          </div>
+                        )}
+
+                        {/* Cancel OTP panel */}
+                        {editingId === o.id &&
+                          normStatus(nextStatus) === "CANCELED" &&
+                          ["CONFIRMED", "PACKED"].includes(supplierFlowBase) && (
+                            <div className="mt-2 rounded-xl border bg-white p-3">
+                              <div className="text-[12px] font-semibold text-zinc-800">Cancel requires customer OTP + reason</div>
+
+                              <textarea
+                                value={cancelReason[o.id] ?? ""}
+                                onChange={(e) => setCancelReason((s) => ({ ...s, [o.id]: e.target.value }))}
+                                placeholder="Reason for cancellation…"
+                                className="mt-2 w-full rounded-xl border p-2 text-sm"
+                                rows={2}
+                              />
+
+                              {!cancelOtpVerified ? (
+                                <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={requestCancelOtpM.isPending || retryLocked}
+                                    onClick={() => requestCancelOtpM.mutate({ orderId: o.id })}
+                                    className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
+                                  >
+                                    {retryLocked ? "Please wait…" : requestCancelOtpM.isPending ? "Requesting…" : "Request OTP"}
+                                  </button>
+
+                                  <div className="flex gap-2">
+                                    <input
+                                      value={cancelOtpCode[o.id] ?? ""}
+                                      onChange={(e) => {
+                                        const v = String(e.target.value || "").replace(/\D/g, "").slice(0, 6);
+                                        setCancelOtpCode((s) => ({ ...s, [o.id]: v }));
+                                      }}
+                                      placeholder="123456"
+                                      className="flex-1 rounded-xl border px-3 py-2 text-sm"
+                                      inputMode="numeric"
+                                    />
+
+                                    <button
+                                      type="button"
+                                      disabled={verifyCancelOtpM.isPending || !/^\d{6}$/.test(cancelOtpCode[o.id] ?? "")}
+                                      onClick={() => verifyCancelOtpM.mutate({ orderId: o.id, code: cancelOtpCode[o.id] ?? "" })}
+                                      className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
+                                    >
+                                      Verify
+                                    </button>
+                                  </div>
+
+                                  {cancelOtpErr[o.id] ? (
+                                    <div className="text-[12px] text-rose-700 sm:col-span-2">{cancelOtpErr[o.id]}</div>
+                                  ) : cmeta.channelHint ? (
+                                    <div className="text-[11px] text-zinc-600 sm:col-span-2">
+                                      Sent via: <span className="font-semibold text-zinc-800">{cmeta.channelHint}</span>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : (
+                                <div className="mt-2 text-[12px] text-emerald-700">OTP verified. You can now Save.</div>
+                              )}
+
+                              <div className="mt-2 text-[11px] text-zinc-500">After OTP is verified, Save will work.</div>
+                            </div>
+                          )}
+
+                        {cancelOtpMsg[o.id]?.text ? (
+                          <div
+                            className={`mt-2 text-[12px] ${
+                              cancelOtpMsg[o.id].type === "warn"
+                                ? "text-amber-700"
+                                : cancelOtpMsg[o.id].type === "error"
+                                ? "text-rose-700"
+                                : "text-emerald-700"
+                            }`}
+                          >
+                            {cancelOtpMsg[o.id].text}
+                            {cancelOtpMsg[o.id].type === "warn" ? (
+                              <button
+                                type="button"
+                                onClick={() => requestCancelOtpM.mutate({ orderId: o.id })}
+                                className="ml-2 underline font-semibold"
+                              >
+                                Request new OTP
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+
+                        {/* Delivery OTP verify block (when shipped) */}
+                        {poId && supplierFlowBase === "SHIPPED" && !otpVerified && (isSupplierUser || isRider) && (
+                          <div className="mt-3 rounded-xl border bg-white p-3">
+                            <div className="text-[12px] font-semibold text-zinc-800">Confirm delivery (customer OTP)</div>
+
+                            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <div className="flex gap-2">
+                                <input
+                                  value={deliveryOtpCode[poId] ?? ""}
+                                  onChange={(e) => {
+                                    const v = String(e.target.value || "").replace(/\D/g, "").slice(0, 6);
+                                    setDeliveryOtpCode((s) => ({ ...s, [poId]: v }));
+                                  }}
+                                  placeholder="123456"
+                                  className="flex-1 rounded-xl border px-3 py-2 text-sm"
+                                  inputMode="numeric"
+                                />
+
+                                <button
+                                  type="button"
+                                  disabled={verifyDeliveryOtpM.isPending || !/^\d{6}$/.test(deliveryOtpCode[poId] ?? "")}
+                                  onClick={() => verifyDeliveryOtpM.mutate({ poId, code: deliveryOtpCode[poId] ?? "" })}
+                                  className="rounded-xl bg-emerald-600 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
+                                >
+                                  {verifyDeliveryOtpM.isPending ? "Verifying…" : "Verify"}
+                                </button>
+                              </div>
 
                               <button
                                 type="button"
                                 disabled={requestDeliveryOtpM.isPending}
                                 onClick={() => requestDeliveryOtpM.mutate({ poId })}
-                                className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-xs font-semibold disabled:opacity-60"
+                                className="rounded-xl bg-zinc-900 text-white px-3 py-2 text-[12px] font-semibold disabled:opacity-60"
                               >
-                                {requestDeliveryOtpM.isPending ? "Sending…" : "Request delivery OTP"}
+                                {requestDeliveryOtpM.isPending ? "Sending…" : "Request OTP"}
                               </button>
-
-                              {deliveryOtpMsg[poId]?.text ? (
-                                <div
-                                  className={`text-xs ${
-                                    deliveryOtpMsg[poId].type === "error"
-                                      ? "text-rose-700"
-                                      : deliveryOtpMsg[poId].type === "warn"
-                                      ? "text-amber-700"
-                                      : "text-emerald-700"
-                                  }`}
-                                >
-                                  {deliveryOtpMsg[poId].text}
-                                </div>
-                              ) : null}
                             </div>
+
+                            {deliveryOtpMsg[poId]?.text ? (
+                              <div
+                                className={`mt-2 text-[12px] ${
+                                  deliveryOtpMsg[poId].type === "error"
+                                    ? "text-rose-700"
+                                    : deliveryOtpMsg[poId].type === "warn"
+                                    ? "text-amber-700"
+                                    : "text-emerald-700"
+                                }`}
+                              >
+                                {deliveryOtpMsg[poId].text}
+                              </div>
+                            ) : null}
 
                             <div className="mt-2 text-[11px] text-zinc-500">
                               This confirms delivery and unlocks payout release when status is DELIVERED.
@@ -1208,61 +1282,37 @@ export default function SupplierOrders() {
                           </div>
                         )}
 
-                        <div className="space-y-2">
+                        {/* Items */}
+                        <div className="mt-3 space-y-2">
+                          <div className="text-[12px] font-semibold text-zinc-700">Items allocated to you</div>
+
                           {(o.items || []).map((it) => {
                             const optLabel = supplierOptionsLabel(it.selectedOptions);
                             const supplierCost = it.chosenSupplierUnitPrice != null ? it.chosenSupplierUnitPrice * it.quantity : null;
 
                             return (
-                              <div
-                                key={it.id}
-                                className="rounded-xl border bg-zinc-50 p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"
-                              >
-                                <div className="min-w-0">
-                                  <div className="text-sm font-semibold text-zinc-900 truncate">{it.title}</div>
-                                  <div className="text-xs text-zinc-600">
-                                    Qty: <b>{it.quantity}</b>
-                                    {optLabel ? <span> • {optLabel}</span> : null}
-                                  </div>
-                                  {!isRider && (
-                                    <div className="text-[11px] text-zinc-500 mt-1">
-                                      Retail: <b>{moneyNgn(it.unitPrice)}</b> each • Line: <b>{moneyNgn(it.lineTotal)}</b>
-                                      {supplierCost != null ? (
-                                        <>
-                                          {" "}
-                                          • Your cost: <b>{moneyNgn(supplierCost)}</b>
-                                        </>
-                                      ) : null}
-                                    </div>
-                                  )}
+                              <div key={it.id} className="rounded-xl border bg-zinc-50 p-3">
+                                <div className="text-[13px] font-semibold text-zinc-900">{it.title}</div>
+                                <div className="text-[12px] text-zinc-600 mt-1">
+                                  Qty: <b>{it.quantity}</b>
+                                  {optLabel ? <span> • {optLabel}</span> : null}
                                 </div>
+
+                                {!isRider && (
+                                  <div className="text-[11px] text-zinc-500 mt-2">
+                                    Retail: <b>{moneyNgn(it.unitPrice)}</b> • Line: <b>{moneyNgn(it.lineTotal)}</b>
+                                    {supplierCost != null ? (
+                                      <>
+                                        {" "}
+                                        • Your cost: <b>{moneyNgn(supplierCost)}</b>
+                                      </>
+                                    ) : null}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
                         </div>
-
-                        {o.purchaseOrderId ? (
-                          <div className="mt-3 flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => ordersQ.refetch()}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5"
-                            >
-                              <RefreshCcw size={14} /> Refresh status
-                            </button>
-
-                            {/* ✅ quick link to riders from inside an order (supplier/admin) */}
-                            {(isSupplierUser || isAdmin) && (
-                              <Link
-                                to={withSupplierCtx("/supplier/riders")}
-                                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5"
-                                title="Invite and manage riders"
-                              >
-                                <Users size={14} /> Riders
-                              </Link>
-                            )}
-                          </div>
-                        ) : null}
                       </div>
                     )}
                   </div>
@@ -1274,22 +1324,13 @@ export default function SupplierOrders() {
                   <button
                     type="button"
                     disabled={safePage <= 1}
-                    onClick={() => setPage(1)}
-                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5 disabled:opacity-50"
-                  >
-                    First
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={safePage <= 1}
                     onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                   >
                     <ChevronLeft size={14} /> Prev
                   </button>
 
-                  <div className="text-xs text-zinc-600">
+                  <div className="text-[12px] text-zinc-600">
                     Page <span className="font-semibold text-zinc-900">{safePage}</span> /{" "}
                     <span className="font-semibold text-zinc-900">{pageCount}</span>
                   </div>
@@ -1298,18 +1339,9 @@ export default function SupplierOrders() {
                     type="button"
                     disabled={safePage >= pageCount}
                     onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5 disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-[12px] hover:bg-black/5 disabled:opacity-50"
                   >
                     Next <ChevronRight size={14} />
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={safePage >= pageCount}
-                    onClick={() => setPage(pageCount)}
-                    className="inline-flex items-center gap-1 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5 disabled:opacity-50"
-                  >
-                    Last
                   </button>
                 </div>
               )}

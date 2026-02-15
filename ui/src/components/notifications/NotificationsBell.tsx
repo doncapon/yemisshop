@@ -281,8 +281,8 @@ export default function NotificationsBell({
         const nextItems = exists
           ? prev.items
           : [incoming, ...prev.items]
-              .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))
-              .slice(0, 20);
+            .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))
+            .slice(0, 20);
 
         const computedUnread =
           typeof unreadCountOverride === "number"
@@ -353,7 +353,7 @@ export default function NotificationsBell({
 
         try {
           es.close();
-        } catch {}
+        } catch { }
         sseRef.current = null;
       };
 
@@ -361,7 +361,7 @@ export default function NotificationsBell({
         setSseAlive(false);
         try {
           es.close();
-        } catch {}
+        } catch { }
         sseRef.current = null;
       };
     } catch {
@@ -412,10 +412,19 @@ export default function NotificationsBell({
         >
           <Bell size={18} className="text-zinc-700" />
           {unreadCount > 0 && (
-            <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+            <span
+              className="
+      absolute -top-1 -right-1
+      grid place-items-center
+      rounded-full bg-fuchsia-600 text-white font-semibold leading-none
+      w-5 h-5 text-[10px]
+      md:min-w-[20px] md:w-auto md:h-5 md:px-1.5
+    "
+            >
               {unreadCount > 9 ? "9+" : unreadCount}
             </span>
           )}
+
         </button>
 
         {open && (
@@ -425,11 +434,10 @@ export default function NotificationsBell({
                 <div className="text-[14px] md:text-xs font-semibold text-zinc-700">Notifications</div>
                 {enableRealtime && (
                   <span
-                    className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                      sseAlive
+                    className={`text-[10px] px-2 py-0.5 rounded-full border ${sseAlive
                         ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                         : "bg-zinc-50 text-zinc-600 border-zinc-200"
-                    }`}
+                      }`}
                   >
                     {sseAlive ? "LIVE" : "POLL"}
                   </span>
@@ -461,16 +469,14 @@ export default function NotificationsBell({
                     return (
                       <li
                         key={n.id}
-                        className={`px-3 py-2.5 text-xs cursor-pointer hover:bg-zinc-50 ${
-                          unread ? "bg-fuchsia-50/60" : "bg-white"
-                        }`}
+                        className={`px-3 py-2.5 text-xs cursor-pointer hover:bg-zinc-50 ${unread ? "bg-fuchsia-50/60" : "bg-white"
+                          }`}
                         onClick={() => handleItemClick(n)}
                       >
                         <div className="flex items-start gap-2">
                           <div
-                            className={`mt-[3px] h-2 w-2 rounded-full ${
-                              unread ? "bg-fuchsia-500" : "bg-zinc-300"
-                            }`}
+                            className={`mt-[3px] h-2 w-2 rounded-full ${unread ? "bg-fuchsia-500" : "bg-zinc-300"
+                              }`}
                           />
                           <div className="min-w-0 flex-1">
                             <div className="font-semibold text-zinc-800 truncate">{n.title}</div>

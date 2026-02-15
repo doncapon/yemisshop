@@ -1538,8 +1538,8 @@ export default function Catalog() {
                               <button
                                 aria-label={fav ? 'Remove from wishlist' : 'Add to wishlist'}
                                 className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full px-2 py-1 transition ${fav
-                                    ? 'bg-rose-50 text-rose-600 border border-rose-200'
-                                    : 'bg-white text-zinc-700 silver-border hover:bg-zinc-50 hover:silver-hover'
+                                  ? 'bg-rose-50 text-rose-600 border border-rose-200'
+                                  : 'bg-white text-zinc-700 silver-border hover:bg-zinc-50 hover:silver-hover'
                                   }`}
                                 onClick={() => {
                                   if (!isAuthed) {
@@ -1598,8 +1598,8 @@ export default function Catalog() {
                                   disabled={!allowQuickAdd}
                                   onClick={() => setCartQty(p, 1)}
                                   className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] md:text-xs border transition ${allowQuickAdd
-                                      ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
-                                      : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
+                                    ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
+                                    : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'
                                     }`}
                                   aria-label="Add to cart"
                                   title={allowQuickAdd ? 'Add to cart' : 'Not available'}
@@ -1616,99 +1616,186 @@ export default function Catalog() {
                 </div>
 
                 {/* Pagination */}
-                <div className="mt-5 md:mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="text-sm text-zinc-600">
-                    Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
-                  </div>
+                <div className="mt-5 md:mt-8">
+                  {/* ✅ Mobile: compact, neat card */}
+                  <div className="md:hidden rounded-2xl bg-white/85 backdrop-blur p-3 shadow-sm silver-border">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
+                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
+                        </div>
+                        <div className="text-[11px] text-zinc-500">Page {currentPage} / {totalPages}</div>
+                      </div>
+                    </div>
 
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                    {/* Nav buttons (small + balanced) */}
+                    <div className="mt-3 grid grid-cols-4 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => goTo(1)}
+                        disabled={currentPage <= 1}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 disabled:opacity-40 silver-border hover:silver-hover active:scale-[0.99] transition"
+                      >
+                        First
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goTo(currentPage - 1)}
+                        disabled={currentPage <= 1}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 disabled:opacity-40 silver-border hover:silver-hover active:scale-[0.99] transition"
+                      >
+                        Prev
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goTo(currentPage + 1)}
+                        disabled={currentPage >= totalPages}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 disabled:opacity-40 silver-border hover:silver-hover active:scale-[0.99] transition"
+                      >
+                        Next
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goTo(totalPages)}
+                        disabled={currentPage >= totalPages}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 disabled:opacity-40 silver-border hover:silver-hover active:scale-[0.99] transition"
+                      >
+                        Last
+                      </button>
+                    </div>
+
+                    {/* Jump to page (compact) */}
                     <form
-                      className="flex items-center gap-2"
+                      className="mt-3 flex items-center gap-2"
                       onSubmit={(e) => {
                         e.preventDefault();
                         const n = Number(jumpVal);
                         if (Number.isFinite(n)) goTo(n);
                       }}
                     >
-                      <label className="text-sm text-zinc-700">Go to</label>
+                      <label className="text-[11px] font-semibold tracking-tight text-zinc-700 shrink-0">
+                        Go to
+                      </label>
+
                       <input
                         type="number"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
                         min={1}
                         max={totalPages}
                         value={jumpVal}
                         onChange={(e) => setJumpVal(e.target.value)}
-                        className="w-20 rounded-xl px-3 py-1.5 bg-white silver-border"
+                        placeholder={`${currentPage}`}
+                        className="h-9 w-full min-w-0 rounded-xl px-3 text-[12px] font-semibold bg-white silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
                         aria-label="Jump to page"
                       />
+
                       <button
                         type="submit"
-                        className="px-3 py-1.5 rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
                         disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
+                        className="h-9 shrink-0 rounded-xl px-4 text-[12px] font-semibold bg-zinc-900 text-white disabled:opacity-40 active:scale-[0.99] transition"
                       >
                         Go
                       </button>
                     </form>
+                  </div>
 
-                    <div className="flex items-center gap-1 sm:gap-2">
-                      <button
-                        type="button"
-                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
-                        onClick={() => goTo(1)}
-                        disabled={currentPage <= 1}
-                      >
-                        First
-                      </button>
-                      <button
-                        type="button"
-                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
-                        onClick={() => goTo(currentPage - 1)}
-                        disabled={currentPage <= 1}
-                      >
-                        Prev
-                      </button>
+                  {/* ✅ Desktop/tablet: keep your existing layout */}
+                  <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm text-zinc-600">
+                      Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
+                    </div>
 
-                      <div className="hidden sm:flex items-center gap-1">
-                        {pagesDesktop.map((n, idx) => {
-                          const prev = pagesDesktop[idx - 1];
-                          const showEllipsis = prev != null && n - prev > 1;
-                          return (
-                            <span key={`d-${n}`} className="inline-flex items-center">
-                              {showEllipsis && <span className="px-1 text-sm text-zinc-500">…</span>}
-                              <button
-                                type="button"
-                                onClick={() => goTo(n)}
-                                className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
-                                    ? 'bg-zinc-900 text-white border border-zinc-900'
-                                    : 'bg-white hover:bg-zinc-50 silver-border hover:silver-hover'
-                                  }`}
-                                aria-current={n === currentPage ? 'page' : undefined}
-                              >
-                                {n}
-                              </button>
-                            </span>
-                          );
-                        })}
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                      <form
+                        className="flex items-center gap-2"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const n = Number(jumpVal);
+                          if (Number.isFinite(n)) goTo(n);
+                        }}
+                      >
+                        <label className="text-sm text-zinc-700">Go to</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={totalPages}
+                          value={jumpVal}
+                          onChange={(e) => setJumpVal(e.target.value)}
+                          className="w-20 rounded-xl px-3 py-1.5 bg-white silver-border"
+                          aria-label="Jump to page"
+                        />
+                        <button
+                          type="submit"
+                          className="px-3 py-1.5 rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
+                          disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
+                        >
+                          Go
+                        </button>
+                      </form>
+
+                      <div className="flex items-center gap-1 sm:gap-2">
+                        <button
+                          type="button"
+                          className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
+                          onClick={() => goTo(1)}
+                          disabled={currentPage <= 1}
+                        >
+                          First
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
+                          onClick={() => goTo(currentPage - 1)}
+                          disabled={currentPage <= 1}
+                        >
+                          Prev
+                        </button>
+
+                        <div className="hidden sm:flex items-center gap-1">
+                          {pagesDesktop.map((n, idx) => {
+                            const prev = pagesDesktop[idx - 1];
+                            const showEllipsis = prev != null && n - prev > 1;
+                            return (
+                              <span key={`d-${n}`} className="inline-flex items-center">
+                                {showEllipsis && <span className="px-1 text-sm text-zinc-500">…</span>}
+                                <button
+                                  type="button"
+                                  onClick={() => goTo(n)}
+                                  className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
+                                      ? "bg-zinc-900 text-white border border-zinc-900"
+                                      : "bg-white hover:bg-zinc-50 silver-border hover:silver-hover"
+                                    }`}
+                                  aria-current={n === currentPage ? "page" : undefined}
+                                >
+                                  {n}
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
+
+                        <button
+                          type="button"
+                          className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
+                          onClick={() => goTo(currentPage + 1)}
+                          disabled={currentPage >= totalPages}
+                        >
+                          Next
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
+                          onClick={() => goTo(totalPages)}
+                          disabled={currentPage >= totalPages}
+                        >
+                          Last
+                        </button>
                       </div>
-
-                      <button
-                        type="button"
-                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
-                        onClick={() => goTo(currentPage + 1)}
-                        disabled={currentPage >= totalPages}
-                      >
-                        Next
-                      </button>
-                      <button
-                        type="button"
-                        className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
-                        onClick={() => goTo(totalPages)}
-                        disabled={currentPage >= totalPages}
-                      >
-                        Last
-                      </button>
                     </div>
                   </div>
                 </div>
+
               </>
             )}
           </section>
@@ -1922,8 +2009,8 @@ export default function Catalog() {
                       <button
                         onClick={() => toggleCategory(c.id)}
                         className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                            ? 'bg-zinc-900 text-white'
-                            : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                          ? 'bg-zinc-900 text-white'
+                          : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
                           }`}
                       >
                         <span className="truncate">{c.name}</span>
@@ -1958,8 +2045,8 @@ export default function Catalog() {
                         <button
                           onClick={() => toggleBrand(b.name)}
                           className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                              ? 'bg-zinc-900 text-white'
-                              : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                            ? 'bg-zinc-900 text-white'
+                            : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
                             }`}
                         >
                           <span className="truncate">{b.name}</span>
@@ -1995,8 +2082,8 @@ export default function Catalog() {
                       <button
                         onClick={() => toggleBucket(idx)}
                         className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                            ? 'bg-zinc-900 text-white'
-                            : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
+                          ? 'bg-zinc-900 text-white'
+                          : 'bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover'
                           }`}
                       >
                         <span>{bucket.label}</span>

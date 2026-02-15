@@ -1,9 +1,8 @@
 // src/layouts/SupplierLayout.tsx
 import React, { useEffect, useMemo } from "react";
 import { NavLink, useSearchParams } from "react-router-dom";
-import { Package, ShoppingBag, Wallet, LayoutDashboard, Settings } from "lucide-react";
+import { Package, ShoppingBag, Wallet, LayoutDashboard, Settings, Users } from "lucide-react";
 import { useAuthStore } from "../store/auth";
-import NotificationsBell from "../components/notifications/NotificationsBell";
 
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
 
@@ -56,68 +55,83 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
     return `${to}${sep}supplierId=${encodeURIComponent(adminSupplierId)}`;
   };
 
+  // ✅ Smaller, inline pills (scrollable) for mobile
   const linkBase =
-    "inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium border transition";
+    "inline-flex items-center gap-1.5 rounded-full border transition whitespace-nowrap " +
+    "px-3 py-2 text-sm font-medium " +
+    "max-sm:px-2.5 max-sm:py-1.5 max-sm:text-[12px]";
+
   const active = "bg-zinc-900 text-white border-zinc-900";
   const inactive = "bg-white/80 hover:bg-black/5 text-zinc-800 border-zinc-200";
 
+  const iconClass = "shrink-0 text-zinc-700";
+  const iconSize = 14; // ✅ smaller icons on mobile (still ok on desktop)
+
   return (
     <div className="min-h-screen w-full overflow-x-hidden bg-slate-100">
-      <NotificationsBell />
       {/* ✅ centered container */}
       <div className="mx-auto w-full max-w-6xl px-3 sm:px-4 md:px-8">
         {/* Sub-nav (HIDE/REDUCE for riders) */}
-        <div className="pt-6">
+        <div className="pt-3 sm:pt-6">
           {!isRider ? (
             <>
-              <div className="rounded-2xl border border-white/40 bg-white/80 backdrop-blur-md shadow-sm p-2 flex flex-wrap gap-2">
-                <NavLink
-                  to={withSupplierCtx("/supplier")}
-                  end
-                  className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
-                >
-                  <LayoutDashboard size={16} /> Overview
-                </NavLink>
+              {/* ✅ Inline + scroll on mobile */}
+              <div className="rounded-2xl border border-white/40 bg-white/80 backdrop-blur-md shadow-sm px-2 py-2">
+                <div className="flex items-center gap-2 overflow-x-auto flex-nowrap">
+                  <NavLink
+                    to={withSupplierCtx("/supplier")}
+                    end
+                    className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
+                  >
+                    <LayoutDashboard className={iconClass} size={iconSize} />
+                    <span>Overview</span>
+                  </NavLink>
 
-                <NavLink
-                  to={withSupplierCtx("/supplier/products")}
-                  className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
-                >
-                  <Package size={16} /> Products
-                </NavLink>
+                  <NavLink
+                    to={withSupplierCtx("/supplier/products")}
+                    className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
+                  >
+                    <Package className={iconClass} size={iconSize} />
+                    <span>Products</span>
+                  </NavLink>
 
-                <NavLink
-                  to={withSupplierCtx("/supplier/orders")}
-                  className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
-                >
-                  <ShoppingBag size={16} /> Orders
-                </NavLink>
+                  <NavLink
+                    to={withSupplierCtx("/supplier/orders")}
+                    className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
+                  >
+                    <ShoppingBag className={iconClass} size={iconSize} />
+                    <span>Orders</span>
+                  </NavLink>
 
-                <NavLink
-                  to={withSupplierCtx("/supplier/payouts")}
-                  className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
-                >
-                  <Wallet size={16} /> Payouts
-                </NavLink>
+                  <NavLink
+                    to={withSupplierCtx("/supplier/payouts")}
+                    className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
+                  >
+                    <Wallet className={iconClass} size={iconSize} />
+                    <span>Payouts</span>
+                  </NavLink>
 
-                <NavLink
-                  to={withSupplierCtx("/supplier/riders")}
-                  className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
-                >
-                  <Wallet size={16} /> Riders
-                </NavLink>
+                  <NavLink
+                    to={withSupplierCtx("/supplier/riders")}
+                    className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
+                  >
+                    <Users className={iconClass} size={iconSize} />
+                    <span>Riders</span>
+                  </NavLink>
 
-                <NavLink
-                  to={withSupplierCtx("/supplier/settings")}
-                  className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
-                >
-                  <Settings size={16} /> Settings
-                </NavLink>
+                  <NavLink
+                    to={withSupplierCtx("/supplier/settings")}
+                    className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
+                  >
+                    <Settings className={iconClass} size={iconSize} />
+                    <span>Settings</span>
+                  </NavLink>
+                </div>
               </div>
 
               {/* Admin hint */}
               {isAdmin && !adminSupplierId ? (
-                <div className="mt-2 text-xs text-zinc-600">
+                <div className="mt-2 text-[11px] sm:text-xs text-zinc-600">
                   Admin view: select a supplier on the Supplier Dashboard first (or add <b>?supplierId=...</b>).
                 </div>
               ) : null}
@@ -126,17 +140,15 @@ export default function SupplierLayout({ children }: { children: React.ReactNode
             // Rider minimal header (optional): keep it clean, no menus they can't control
             <div className="rounded-2xl border border-white/40 bg-white/80 backdrop-blur-md shadow-sm p-3">
               <div className="flex items-center justify-between gap-3 flex-wrap">
-                <div className="text-sm font-semibold text-zinc-900">Rider portal</div>
+                <div className="text-[12px] sm:text-sm font-semibold text-zinc-900">Rider portal</div>
                 <NavLink
                   to={withSupplierCtx("/supplier/orders")}
                   className={({ isActive }) => `${linkBase} ${isActive ? active : inactive}`}
                 >
-                  <ShoppingBag size={16} /> Orders
+                  <ShoppingBag className={iconClass} size={iconSize} /> Orders
                 </NavLink>
               </div>
-              <div className="mt-1 text-xs text-zinc-600">
-                Riders can only access assigned orders.
-              </div>
+              <div className="mt-1 text-[11px] sm:text-xs text-zinc-600">Riders can only access assigned orders.</div>
             </div>
           )}
         </div>

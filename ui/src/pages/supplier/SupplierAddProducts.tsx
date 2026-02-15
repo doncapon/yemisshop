@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ImagePlus, Plus, Trash2, ArrowLeft, Save, Package } from "lucide-react";
+import { ImagePlus, Plus, Trash2, ArrowLeft, Save, Package, ChevronDown } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import SiteLayout from "../../layouts/SiteLayout";
@@ -81,6 +81,78 @@ function comboKeyFromSelections(selections: Record<string, string>, attrOrder: s
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
 /* =========================
+   Small UI building blocks
+========================= */
+
+function Card({
+  title,
+  subtitle,
+  right,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border bg-white/90 shadow-sm overflow-hidden">
+      <div className="px-4 sm:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-zinc-900 truncate">{title}</div>
+          {subtitle ? <div className="text-xs text-zinc-500 mt-0.5">{subtitle}</div> : null}
+        </div>
+        {right ? <div className="shrink-0">{right}</div> : null}
+      </div>
+      <div className="p-4 sm:p-5">{children}</div>
+    </div>
+  );
+}
+
+function Label({ children }: { children: React.ReactNode }) {
+  return <label className="block text-xs font-semibold text-zinc-700 mb-1">{children}</label>;
+}
+
+function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      {...props}
+      className={[
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
+        props.className || "",
+      ].join(" ")}
+    />
+  );
+}
+
+function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select
+      {...props}
+      className={[
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
+        props.className || "",
+      ].join(" ")}
+    />
+  );
+}
+
+function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      {...props}
+      className={[
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
+        props.className || "",
+      ].join(" ")}
+    />
+  );
+}
+
+/* =========================
    Component
 ========================= */
 
@@ -99,9 +171,6 @@ export default function SupplierAddProduct() {
   const [description, setDescription] = useState("");
 
   // stock
-  // NOTE: Prisma schema has Product.availableQty + ProductVariant.availableQty.
-  // We keep "baseQuantity" in UI, but we persist ONLY Product.availableQty as total,
-  // and ProductVariant.availableQty for variant rows.
   const [baseQuantity, setBaseQuantity] = useState<string>("0");
 
   // images
@@ -115,6 +184,8 @@ export default function SupplierAddProduct() {
   const [selectedAttrs, setSelectedAttrs] = useState<Record<string, string | string[]>>({});
   const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
   const skuTouchedRef = useRef(false);
+
+  const [summaryOpen, setSummaryOpen] = useState(false);
 
   const ngn = useMemo(
     () =>
@@ -132,7 +203,6 @@ export default function SupplierAddProduct() {
 
   const supplierMeQ = useQuery<SupplierMe>({
     queryKey: ["supplier", "me"],
-    // ✅ cookie auth means this can be enabled always (or keep enabled: true)
     enabled: true,
     queryFn: async () => {
       const attempts = ["/api/supplier/me", "/api/supplier/profile", "/api/supplier/dashboard"];
@@ -162,8 +232,6 @@ export default function SupplierAddProduct() {
      Lookups: categories, brands, attributes
   ========================= */
 
-  // ✅ Your hook probably used token-enabled before.
-  // With cookie auth, we can enable always.
   const { categories, brands, attributes, attributesQ, categoriesQ, brandsQ } = useCatalogMeta({
     enabled: true,
   });
@@ -247,7 +315,6 @@ export default function SupplierAddProduct() {
       const changed = next.find((r) => r.id === rowId);
       if (!changed) return rows;
 
-      // ignore duplicate checks until row has at least 1 selection
       if (!rowHasAnySelection(changed.selections)) return next;
 
       const changedKey = comboKeyFromSelections(changed.selections, attrOrder);
@@ -277,10 +344,6 @@ export default function SupplierAddProduct() {
 
   /* =========================
      Stock model
-     total = baseQuantity + sum(variant quantities)
-     Persisted:
-       - Product.availableQty = total
-       - Variant.availableQty = each row qty
   ========================= */
 
   const baseQtyPreview = useMemo(() => toIntNonNeg(baseQuantity), [baseQuantity]);
@@ -374,7 +437,6 @@ export default function SupplierAddProduct() {
         const rowQty = toIntNonNeg(row.availableQty);
         const options = picks.map(([attributeId, valueId]) => ({ attributeId, valueId }));
 
-        // SKU suffix from selected values (optional)
         let variantSku: string | undefined;
         {
           const labelParts: string[] = [];
@@ -467,7 +529,6 @@ export default function SupplierAddProduct() {
   }, [filePreviews]);
 
   useEffect(() => {
-    // Only auto-generate if user hasn't manually touched the SKU field
     if (skuTouchedRef.current) return;
     setSku(slugifySku(title));
   }, [title]);
@@ -485,12 +546,70 @@ export default function SupplierAddProduct() {
     [variantRows]
   );
 
+  const submitDisabled = createM.isPending || uploading;
+
+  /* =========================
+     Render
+  ========================= */
+
   return (
     <SiteLayout>
       <SupplierLayout>
-        <div className="mt-6 space-y-4">
+        {/* Sticky mobile submit bar */}
+        <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
+          <div className="px-4 py-3 flex items-center gap-3">
+            <button
+              type="button"
+              disabled={submitDisabled}
+              onClick={() => createM.mutate()}
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+            >
+              <Save size={16} />
+              {createM.isPending ? "Submitting…" : "Submit product"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSummaryOpen((v) => !v)}
+              className="shrink-0 inline-flex items-center gap-2 rounded-full border bg-white px-3 py-2 text-sm font-semibold"
+              aria-expanded={summaryOpen}
+            >
+              <Package size={16} />
+              <ChevronDown size={16} className={summaryOpen ? "rotate-180 transition" : "transition"} />
+            </button>
+          </div>
+
+          {summaryOpen && (
+            <div className="px-4 pb-4">
+              <div className="rounded-2xl border bg-white p-4 text-sm text-zinc-700 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Status</span>
+                  <b className="text-amber-700">PENDING</b>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Price</span>
+                  <b className="text-zinc-900">{retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}</b>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Stock</span>
+                  <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
+                    {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
+                  </b>
+                </div>
+                <div className="text-[11px] text-zinc-600">
+                  Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Variant rows</span>
+                  <b className="text-zinc-900">{variantRows.length}</b>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-6 space-y-4 pb-28 sm:pb-10">
           {/* Header */}
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
             <div>
               <motion.h1
                 initial={{ opacity: 0, y: 8 }}
@@ -513,7 +632,8 @@ export default function SupplierAddProduct() {
               </div>
             </div>
 
-            <div className="flex gap-2">
+            {/* Desktop actions only (mobile uses sticky bar) */}
+            <div className="hidden sm:flex gap-2">
               <Link
                 to="/supplier/products"
                 className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
@@ -522,83 +642,89 @@ export default function SupplierAddProduct() {
               </Link>
               <button
                 type="button"
-                disabled={createM.isPending || uploading}
+                disabled={submitDisabled}
                 onClick={() => createM.mutate()}
                 className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
               >
                 <Save size={16} /> {createM.isPending ? "Submitting…" : "Submit product"}
               </button>
             </div>
+
+            {/* Mobile back */}
+            <div className="sm:hidden">
+              <Link
+                to="/supplier/products"
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+              >
+                <ArrowLeft size={16} /> Back to products
+              </Link>
+            </div>
           </div>
 
           {/* Alerts */}
           {err && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">{err}</div>
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              {err}
+            </div>
           )}
           {okMsg && (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
               {okMsg}
             </div>
           )}
 
-          {/* Form */}
+          {/* Layout: single column on mobile; sidebar only on lg */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {/* Left */}
+            {/* Main */}
             <div className="lg:col-span-2 space-y-4">
               {/* Basic info */}
-              <div className="rounded-2xl border bg-white/90 shadow-sm">
-                <div className="px-5 py-4 border-b bg-white/70">
-                  <div className="text-sm font-semibold text-zinc-900">Basic information</div>
-                  <div className="text-xs text-zinc-500">What customers will see in the catalog</div>
-                </div>
-
-                <div className="p-5 space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Card
+                title="Basic information"
+                subtitle="What customers will see in the catalog"
+              >
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">Title *</label>
-                      <input
-                        value={title}
-                        onChange={(e) => setTitle(e.target.value)}
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
-                        placeholder="e.g. Air Fryer 4L"
-                      />
+                      <Label>Title *</Label>
+                      <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Air Fryer 4L" />
                     </div>
+
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">
-                        SKU <span className="text-zinc-400 font-normal">(required by schema)</span>
-                      </label>
-                      <input
+                      <Label>
+                        SKU <span className="text-zinc-400 font-normal">(required)</span>
+                      </Label>
+                      <Input
                         value={sku}
                         onChange={(e) => {
                           skuTouchedRef.current = true;
                           setSku(e.target.value);
                         }}
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
                         placeholder="e.g. AFRY-4L-BLK"
                       />
-                      <button
-                        type="button"
-                        className="text-[11px] text-zinc-600 underline mt-1"
-                        onClick={() => {
-                          skuTouchedRef.current = false;
-                          setSku(slugifySku(title));
-                        }}
-                      >
-                        Reset to auto SKU
-                      </button>
-
-                      <div className="text-[11px] text-zinc-500 mt-1">We auto-generate from title if you don’t type it.</div>
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          className="text-[11px] text-zinc-600 underline"
+                          onClick={() => {
+                            skuTouchedRef.current = false;
+                            setSku(slugifySku(title));
+                          }}
+                        >
+                          Reset to auto SKU
+                        </button>
+                        <div className="text-[11px] text-zinc-500">Auto from title if untouched</div>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  {/* Mobile: fewer columns; Desktop: 4 columns */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">Retail price (NGN) *</label>
-                      <input
+                      <Label>Retail price (NGN) *</Label>
+                      <Input
                         value={retailPrice}
                         onChange={(e) => setRetailPrice(e.target.value)}
                         inputMode="decimal"
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
                         placeholder="e.g. 25000"
                       />
                       {!!retailPrice && (
@@ -607,22 +733,20 @@ export default function SupplierAddProduct() {
                         </div>
                       )}
                       <div className="text-[11px] text-zinc-500 mt-1">
-                        Saved as <code>Product.retailPrice</code> (mapped to DB column <code>price</code>).
+                        Saved as <code>Product.retailPrice</code>.
                       </div>
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">Base quantity</label>
-                      <input
+                      <Label>Base quantity</Label>
+                      <Input
                         value={baseQuantity}
                         onChange={(e) => setBaseQuantity(e.target.value)}
                         inputMode="numeric"
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
                         placeholder="e.g. 20"
                       />
                       <div className="text-[11px] text-zinc-500 mt-1">
-                        Total stock = <b>{baseQtyPreview}</b> (base) + <b>{variantQtyTotal}</b> (variants) ={" "}
-                        <b>{totalQty}</b>
+                        Total: <b>{baseQtyPreview}</b> + <b>{variantQtyTotal}</b> = <b>{totalQty}</b>
                       </div>
                       <div className="text-[11px] text-zinc-500 mt-1">
                         In-stock:{" "}
@@ -630,66 +754,50 @@ export default function SupplierAddProduct() {
                           {inStockPreview ? "YES" : "NO"}
                         </b>
                       </div>
-                      <div className="text-[11px] text-zinc-500 mt-1">
-                        Persisted as <code>Product.availableQty</code> (total).
-                      </div>
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">Category</label>
-                      <select
-                        value={categoryId}
-                        onChange={(e) => setCategoryId(e.target.value)}
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
-                      >
+                      <Label>Category</Label>
+                      <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
                         <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
                         {categories.map((c) => (
                           <option key={c.id} value={c.id}>
                             {c.name}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-zinc-700 mb-1">Brand</label>
-                      <select
-                        value={brandId}
-                        onChange={(e) => setBrandId(e.target.value)}
-                        className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
-                      >
+                      <Label>Brand</Label>
+                      <Select value={brandId} onChange={(e) => setBrandId(e.target.value)}>
                         <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
                         {brands.map((b) => (
                           <option key={b.id} value={b.id}>
                             {b.name}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-700 mb-1">Description</label>
-                    <textarea
+                    <Label>Description</Label>
+                    <Textarea
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
-                      className="w-full rounded-xl border px-3 py-2 text-sm bg-white min-h-[110px]"
+                      className="min-h-[110px]"
                       placeholder="Write a clear, detailed description…"
                     />
                   </div>
                 </div>
-              </div>
+              </Card>
 
               {/* Images */}
-              <div className="rounded-2xl border bg-white/90 shadow-sm">
-                <div className="px-5 py-4 border-b bg-white/70 flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold text-zinc-900">Images</div>
-                    <div className="text-xs text-zinc-500">
-                      Paste URLs or upload images (saved to <code>imagesJson</code>).
-                    </div>
-                  </div>
-
+              <Card
+                title="Images"
+                subtitle="Paste URLs or upload images (saved to imagesJson)."
+                right={
                   <label className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer">
                     <ImagePlus size={16} /> Add files
                     <input
@@ -701,24 +809,23 @@ export default function SupplierAddProduct() {
                       onChange={(e) => setFiles(Array.from(e.target.files || []))}
                     />
                   </label>
-                </div>
-
-                <div className="p-5 space-y-3">
+                }
+              >
+                <div className="space-y-3">
                   <div>
-                    <label className="block text-xs font-semibold text-zinc-700 mb-1">Image URLs (one per line)</label>
-                    <textarea
+                    <Label>Image URLs (one per line)</Label>
+                    <Textarea
                       value={imageUrls}
                       onChange={(e) => setImageUrls(e.target.value)}
-                      className="w-full rounded-xl border px-3 py-2 text-xs bg-white min-h-[90px]"
+                      className="min-h-[90px] text-xs"
                       placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
                     />
                   </div>
 
                   {(allUrlPreviews.length > 0 || filePreviews.length > 0) && (
-                    <div className="mt-1">
+                    <div>
                       <div className="text-xs font-semibold text-zinc-800 mb-2">Image previews</div>
-
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                         {allUrlPreviews.slice(0, 12).map((u) => (
                           <div key={u} className="rounded-xl border overflow-hidden bg-white">
                             <div className="aspect-[4/3] bg-zinc-100">
@@ -758,7 +865,7 @@ export default function SupplierAddProduct() {
                   )}
 
                   {files.length > 0 && (
-                    <div className="rounded-xl border bg-white p-3">
+                    <div className="rounded-2xl border bg-white p-3">
                       <div className="text-xs font-semibold text-zinc-800">
                         Selected files: <span className="font-mono">{files.length}</span>
                       </div>
@@ -770,12 +877,12 @@ export default function SupplierAddProduct() {
                         ))}
                       </div>
 
-                      <div className="mt-3 flex gap-2">
+                      <div className="mt-3 flex flex-col sm:flex-row gap-2">
                         <button
                           type="button"
                           onClick={uploadLocalFiles}
                           disabled={uploading || !files.length}
-                          className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
                         >
                           {uploading ? "Uploading…" : "Upload now"}
                         </button>
@@ -786,7 +893,7 @@ export default function SupplierAddProduct() {
                             setFiles([]);
                             if (fileInputRef.current) fileInputRef.current.value = "";
                           }}
-                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
                         >
                           <Trash2 size={16} /> Clear files
                         </button>
@@ -794,108 +901,96 @@ export default function SupplierAddProduct() {
                     </div>
                   )}
                 </div>
-              </div>
+              </Card>
 
               {/* Attributes */}
-              <div className="rounded-2xl border bg-white/90 shadow-sm">
-                <div className="px-5 py-4 border-b bg-white/70">
-                  <div className="text-sm font-semibold text-zinc-900">Attributes</div>
-                  <div className="text-xs text-zinc-500">Optional details used for filtering and variant setup.</div>
-                </div>
-
-                <div className="p-5 space-y-3">
+              <Card title="Attributes" subtitle="Optional details used for filtering and variant setup.">
+                <div className="space-y-3">
                   {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
                   {!attributesQ.isLoading && activeAttrs.length === 0 && (
                     <div className="text-sm text-zinc-500">No active attributes configured.</div>
                   )}
 
-                  {activeAttrs.map((a: CatalogAttribute) => {
-                    if (a.type === "TEXT") {
-                      const v = String(selectedAttrs[a.id] ?? "");
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {activeAttrs.map((a: CatalogAttribute) => {
+                      if (a.type === "TEXT") {
+                        const v = String(selectedAttrs[a.id] ?? "");
+                        return (
+                          <div key={a.id}>
+                            <Label>{a.name}</Label>
+                            <Input
+                              value={v}
+                              onChange={(e) => setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))}
+                              placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
+                            />
+                          </div>
+                        );
+                      }
+
+                      if (a.type === "SELECT") {
+                        const v = String(selectedAttrs[a.id] ?? "");
+                        return (
+                          <div key={a.id}>
+                            <Label>{a.name}</Label>
+                            <Select
+                              value={v}
+                              onChange={(e) => setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))}
+                            >
+                              <option value="">— Select —</option>
+                              {(a.values || []).map((x) => (
+                                <option key={x.id} value={x.id}>
+                                  {x.name}
+                                </option>
+                              ))}
+                            </Select>
+                          </div>
+                        );
+                      }
+
+                      // MULTISELECT
+                      const arr = Array.isArray(selectedAttrs[a.id]) ? (selectedAttrs[a.id] as string[]) : [];
                       return (
-                        <div key={a.id}>
-                          <label className="block text-xs font-semibold text-zinc-700 mb-1">{a.name}</label>
-                          <input
-                            value={v}
-                            onChange={(e) => setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))}
-                            className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
-                            placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
-                          />
+                        <div key={a.id} className="sm:col-span-2 rounded-2xl border bg-white p-3">
+                          <div className="text-xs font-semibold text-zinc-700 mb-2">{a.name}</div>
+                          <div className="flex flex-wrap gap-2">
+                            {(a.values || []).map((x) => {
+                              const checked = arr.includes(x.id);
+                              return (
+                                <label
+                                  key={x.id}
+                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
+                                    checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="hidden"
+                                    checked={checked}
+                                    onChange={() => {
+                                      setSelectedAttrs((s) => {
+                                        const prev = Array.isArray(s[a.id]) ? (s[a.id] as string[]) : [];
+                                        const next = checked ? prev.filter((id) => id !== x.id) : [...prev, x.id];
+                                        return { ...s, [a.id]: next };
+                                      });
+                                    }}
+                                  />
+                                  {x.name}
+                                </label>
+                              );
+                            })}
+                          </div>
                         </div>
                       );
-                    }
-
-                    if (a.type === "SELECT") {
-                      const v = String(selectedAttrs[a.id] ?? "");
-                      return (
-                        <div key={a.id}>
-                          <label className="block text-xs font-semibold text-zinc-700 mb-1">{a.name}</label>
-                          <select
-                            value={v}
-                            onChange={(e) => setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))}
-                            className="w-full rounded-xl border px-3 py-2 text-sm bg-white"
-                          >
-                            <option value="">— Select —</option>
-                            {(a.values || []).map((x) => (
-                              <option key={x.id} value={x.id}>
-                                {x.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      );
-                    }
-
-                    // MULTISELECT
-                    const arr = Array.isArray(selectedAttrs[a.id]) ? (selectedAttrs[a.id] as string[]) : [];
-                    return (
-                      <div key={a.id} className="rounded-xl border bg-white p-3">
-                        <div className="text-xs font-semibold text-zinc-700 mb-2">{a.name}</div>
-                        <div className="flex flex-wrap gap-2">
-                          {(a.values || []).map((x) => {
-                            const checked = arr.includes(x.id);
-                            return (
-                              <label
-                                key={x.id}
-                                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
-                                  checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-                                }`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  className="hidden"
-                                  checked={checked}
-                                  onChange={() => {
-                                    setSelectedAttrs((s) => {
-                                      const prev = Array.isArray(s[a.id]) ? (s[a.id] as string[]) : [];
-                                      const next = checked ? prev.filter((id) => id !== x.id) : [...prev, x.id];
-                                      return { ...s, [a.id]: next };
-                                    });
-                                  }}
-                                />
-                                {x.name}
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
+                    })}
+                  </div>
                 </div>
-              </div>
+              </Card>
 
               {/* Variant rows */}
-              <div className="rounded-2xl border bg-white/90 shadow-sm">
-                <div className="px-5 py-4 border-b bg-white/70 flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold text-zinc-900">Variant combinations</div>
-                    <div className="text-xs text-zinc-500">
-                      Add combinations of <b>SELECT</b> attributes (e.g. Color/Size) with qty.
-                      <br />
-                      <span className="text-zinc-500">Total product stock = base quantity + sum of variant quantities.</span>
-                    </div>
-                  </div>
-
+              <Card
+                title="Variant combinations"
+                subtitle="Add combinations of SELECT attributes (e.g. Color/Size) with qty. Total stock = base + variants."
+                right={
                   <button
                     type="button"
                     onClick={addVariantRow}
@@ -904,12 +999,12 @@ export default function SupplierAddProduct() {
                   >
                     <Plus size={16} /> Add row
                   </button>
-                </div>
-
-                <div className="p-5 space-y-2">
+                }
+              >
+                <div className="space-y-2">
                   {!selectableAttrs.length && (
                     <div className="text-sm text-zinc-500">
-                      No SELECT attributes are available. Create SELECT attributes (like Size/Color) to enable variants.
+                      No SELECT attributes available. Create SELECT attributes (like Size/Color) to enable variants.
                     </div>
                   )}
 
@@ -927,70 +1022,72 @@ export default function SupplierAddProduct() {
                     return (
                       <div
                         key={row.id}
-                        className={`rounded-2xl border bg-white p-3 space-y-2 ${
+                        className={`rounded-2xl border bg-white p-3 space-y-3 ${
                           isDup ? "border-rose-300 ring-2 ring-rose-100" : ""
                         }`}
                       >
-                        <div className="flex flex-wrap gap-2 items-center">
-                          {selectableAttrs.map((attr) => {
-                            const valueId = row.selections[attr.id] || "";
-                            const hasSelection = !!valueId;
-                            return (
-                              <div key={attr.id} className="flex items-center gap-2">
-                                {hasSelection && <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />}
-                                <select
-                                  value={valueId}
-                                  onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                  className="rounded-xl border px-3 py-2 text-xs bg-white"
-                                >
-                                  <option value="">{attr.name}</option>
-                                  {(attr.values || []).map((v) => (
-                                    <option key={v.id} value={v.id}>
-                                      {v.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                            );
-                          })}
+                        {/* Mobile: stack fields; Desktop: inline */}
+                        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-start">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {selectableAttrs.map((attr) => {
+                              const valueId = row.selections[attr.id] || "";
+                              return (
+                                <div key={attr.id}>
+                                  <div className="text-[11px] font-semibold text-zinc-600 mb-1">{attr.name}</div>
+                                  <Select
+                                    value={valueId}
+                                    onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
+                                    className="text-sm"
+                                  >
+                                    <option value="">Select…</option>
+                                    {(attr.values || []).map((v) => (
+                                      <option key={v.id} value={v.id}>
+                                        {v.name}
+                                      </option>
+                                    ))}
+                                  </Select>
+                                </div>
+                              );
+                            })}
+                          </div>
 
-                          <div className="flex items-center gap-2 ml-auto">
-                            <span className="text-xs text-zinc-500">Qty</span>
-                            <input
-                              value={row.availableQty}
-                              onChange={(e) => updateVariantQty(row.id, e.target.value)}
-                              inputMode="numeric"
-                              className="w-24 rounded-xl border px-3 py-2 text-xs bg-white"
-                              placeholder="e.g. 5"
-                            />
-
-                            <span
-                              className={`text-[11px] font-semibold px-2 py-1 rounded-full border ${
-                                rowInStock
-                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                  : "bg-rose-50 text-rose-700 border-rose-200"
-                              }`}
-                              title="This is based on the variant qty"
-                            >
-                              {rowInStock ? "In stock" : "Out of stock"}
-                            </span>
+                          <div className="flex sm:flex-col gap-2 sm:items-end">
+                            <div className="flex-1 sm:w-[140px]">
+                              <div className="text-[11px] font-semibold text-zinc-600 mb-1">Qty</div>
+                              <Input
+                                value={row.availableQty}
+                                onChange={(e) => updateVariantQty(row.id, e.target.value)}
+                                inputMode="numeric"
+                                placeholder="e.g. 5"
+                              />
+                            </div>
 
                             <button
                               type="button"
                               onClick={() => removeVariantRow(row.id)}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-xs font-semibold hover:bg-rose-100"
+                              className="inline-flex items-center justify-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2.5 text-sm font-semibold hover:bg-rose-100 sm:w-[140px]"
                             >
                               <Trash2 size={14} /> Remove
                             </button>
                           </div>
                         </div>
 
-                        <div className="text-[11px] text-zinc-500 flex flex-wrap gap-3">
-                          <span>
-                            Variant qty: <b>{rowQty}</b>
+                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+                          <span
+                            className={`font-semibold px-2 py-1 rounded-full border ${
+                              rowInStock
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                : "bg-rose-50 text-rose-700 border-rose-200"
+                            }`}
+                            title="Based on variant qty"
+                          >
+                            {rowInStock ? "In stock" : "Out of stock"}
                           </span>
                           <span>
-                            Variant price: <b>{ngn.format(toMoneyNumber(retailPrice))}</b>{" "}
+                            Variant qty: <b className="text-zinc-800">{rowQty}</b>
+                          </span>
+                          <span>
+                            Variant price: <b className="text-zinc-800">{ngn.format(toMoneyNumber(retailPrice))}</b>{" "}
                             <span className="text-zinc-400">(same as retail price)</span>
                           </span>
                         </div>
@@ -998,18 +1095,25 @@ export default function SupplierAddProduct() {
                     );
                   })}
                 </div>
+              </Card>
+
+              {/* Desktop submit helper */}
+              <div className="hidden sm:block">
+                <button
+                  type="button"
+                  disabled={submitDisabled}
+                  onClick={() => createM.mutate()}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
+                >
+                  <Save size={16} /> {createM.isPending ? "Submitting…" : "Submit product"}
+                </button>
               </div>
             </div>
 
-            {/* Right: summary */}
-            <div className="space-y-4">
-              <div className="rounded-2xl border bg-white/90 shadow-sm">
-                <div className="px-5 py-4 border-b bg-white/70">
-                  <div className="text-sm font-semibold text-zinc-900">Submission summary</div>
-                  <div className="text-xs text-zinc-500">What will be created</div>
-                </div>
-
-                <div className="p-5 text-sm text-zinc-700 space-y-2">
+            {/* Sidebar summary (lg only) */}
+            <div className="hidden lg:block space-y-4">
+              <Card title="Submission summary" subtitle="What will be created">
+                <div className="text-sm text-zinc-700 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-zinc-500">Status</span>
                     <b className="text-amber-700">PENDING</b>
@@ -1017,7 +1121,7 @@ export default function SupplierAddProduct() {
 
                   <div className="flex items-center justify-between">
                     <span className="text-zinc-500">Title</span>
-                    <b className="text-zinc-900">{title.trim() ? title.trim() : "—"}</b>
+                    <b className="text-zinc-900 truncate max-w-[180px]">{title.trim() ? title.trim() : "—"}</b>
                   </div>
 
                   <div className="flex items-center justify-between">
@@ -1027,7 +1131,7 @@ export default function SupplierAddProduct() {
 
                   <div className="flex items-center justify-between">
                     <span className="text-zinc-500">SKU</span>
-                    <b className="text-zinc-900">{sku.trim() ? sku.trim() : "Auto-generated"}</b>
+                    <b className="text-zinc-900 truncate max-w-[180px]">{sku.trim() ? sku.trim() : "Auto-generated"}</b>
                   </div>
 
                   <div className="flex items-center justify-between">
@@ -1054,11 +1158,11 @@ export default function SupplierAddProduct() {
                     </div>
                   )}
                 </div>
-              </div>
+              </Card>
 
               <button
                 type="button"
-                disabled={createM.isPending || uploading}
+                disabled={submitDisabled}
                 onClick={() => createM.mutate()}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
               >

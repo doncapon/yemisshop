@@ -1,102 +1,43 @@
-import React from 'react';
+// src/components/StatusDot.tsx
+import React from "react";
 
-type StatusKind =
-  | 'PUBLISHED'
-  | 'PENDING'
-  | 'REJECTED'
-  | 'DRAFT'
-  | 'ACTIVE'
-  | 'INACTIVE'
-  | 'PAID'
-  | 'UNPAID'
-  | 'FAILED'
-  | 'REFUNDED'
-  | 'CANCELLED'
-  | 'COMPLETED'
-  | 'PROCESSING'
-  | string;
+function niceLabel(s: string) {
+  return String(s || "")
+    .trim()
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ");
+}
 
-type Props = {
-  label: StatusKind | React.ReactNode;
-  title?: string;
-  className?: string;
-  /** Tailwind size classes for the dot (e.g. 'w-2 h-2'). Default: 'w-2 h-2' */
-  dotSizeClass?: string;
-  /** If you already know the tone, you can override detection with one of: success|warning|danger|info|muted */
-  toneOverride?: 'success' | 'warning' | 'danger' | 'info' | 'muted';
-};
+function colorFor(status: string) {
+  const s = String(status || "").toUpperCase();
+  if (["PAID", "SUCCESS", "COMPLETED", "DELIVERED"].includes(s)) return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  if (["FAILED", "CANCELLED", "CANCELED"].includes(s)) return "bg-rose-50 text-rose-700 border-rose-200";
+  if (["HELD"].includes(s)) return "bg-zinc-50 text-zinc-700 border-zinc-200";
+  if (["APPROVED"].includes(s)) return "bg-blue-50 text-blue-700 border-blue-200";
+  return "bg-amber-50 text-amber-700 border-amber-200";
+}
 
-/** Tiny colored status pill with a dot + label */
-export const StatusDot: React.FC<Props> = ({
-  label,
-  title,
-  className = '',
-  dotSizeClass = 'w-2 h-2',
-  toneOverride,
-}) => {
-  const raw = (typeof label === 'string' ? label : '').toUpperCase();
-
-  const tone =
-    toneOverride ??
-    (raw.includes('LIVE') || raw === 'ACTIVE' || raw === 'PAID' || raw === 'COMPLETED'
-      ? 'success'
-      : raw.includes('PEND') || raw === 'PROCESSING'
-      ? 'warning'
-      : raw.includes('REJECT') || raw === 'FAILED' || raw === 'CANCELLED' || raw === 'INACTIVE'
-      ? 'danger'
-      : raw.includes('PUBLISHED') || raw.includes('INFO')
-      ? 'info'
-      : 'muted');
-
-  const toneClasses: Record<
-    NonNullable<Props['toneOverride']> | 'muted',
-    { dot: string; text: string; bg: string; ring: string }
-  > = {
-    success: {
-      dot: 'bg-emerald-600',
-      text: 'text-emerald-800',
-      bg: 'bg-emerald-50',
-      ring: 'ring-emerald-100',
-    },
-    warning: {
-      dot: 'bg-amber-600',
-      text: 'text-amber-800',
-      bg: 'bg-amber-50',
-      ring: 'ring-amber-100',
-    },
-    danger: {
-      dot: 'bg-rose-600',
-      text: 'text-rose-800',
-      bg: 'bg-rose-50',
-      ring: 'ring-rose-100',
-    },
-    info: {
-      dot: 'bg-sky-600',
-      text: 'text-sky-800',
-      bg: 'bg-sky-50',
-      ring: 'ring-sky-100',
-    },
-    muted: {
-      dot: 'bg-zinc-400',
-      text: 'text-zinc-700',
-      bg: 'bg-zinc-50',
-      ring: 'ring-zinc-100',
-    },
-  };
-
-  const c = toneClasses[tone];
+export default function StatusDot({ label }: { label?: string | null }) {
+  const raw = String(label || "—");
+  const text = niceLabel(raw);
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs font-medium ${c.bg} ${c.text} ring-1 ${c.ring} ${className}`}
-      title={title || (typeof label === 'string' ? label : undefined)}
+      className={[
+        // ✅ critical: allow it to shrink + cap width on tiny screens
+        "min-w-0 max-w-[120px] sm:max-w-none shrink",
+        // ✅ smaller font on mobile
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5",
+        "text-[10px] sm:text-[11px] font-semibold",
+        // ✅ prevent long text from pushing layout
+        "truncate",
+        colorFor(raw),
+      ].join(" ")}
+      title={text}
     >
-      <span className={`inline-block rounded-full ${c.dot} ${dotSizeClass}`} />
-      <span className="leading-none">
-        {typeof label === 'string' ? label : label}
-      </span>
+      {/* tiny dot */}
+      <span className="inline-block w-1.5 h-1.5 rounded-full bg-current opacity-60" />
+      <span className="truncate">{text}</span>
     </span>
   );
-};
-
-export default StatusDot;
+}

@@ -26,6 +26,7 @@ import { useAuthStore } from "../../store/auth";
 import { useModal } from "../../components/ModalProvider";
 import api from "../../api/client";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import type { AxiosError } from "axios";
 
 type BankOption = { country: string; code: string; name: string };
 
@@ -101,11 +102,13 @@ type AuthMeDto = {
 };
 
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
+const LS_KEY = "supplierSettings:v3";
 
 const norm = (v: any) => String(v ?? "").trim();
 const normCode = (v: any) => norm(v).padStart(3, "0");
 
-const LS_KEY = "supplierSettings:v3";
+/** cookie-auth config (replace Bearer token header usage) */
+const cookieCfg = { withCredentials: true } as const;
 
 function Card({
   title,
@@ -122,15 +125,16 @@ function Card({
 }) {
   return (
     <div className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden">
-      <div className="px-4 md:px-5 py-3 border-b bg-white/70 flex items-center justify-between">
-        <div className="flex items-start gap-3">
-          {icon && <div className="mt-[2px] text-zinc-700">{icon}</div>}
-          <div>
-            <div className="text-sm font-semibold text-zinc-900">{title}</div>
-            {subtitle && <div className="text-xs text-zinc-500">{subtitle}</div>}
+      {/* mobile-neater header: stack on small screens */}
+      <div className="px-4 md:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <div className="flex items-start gap-3 min-w-0">
+          {icon && <div className="mt-[2px] text-zinc-700 shrink-0">{icon}</div>}
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-zinc-900 truncate">{title}</div>
+            {subtitle && <div className="text-xs text-zinc-500 mt-0.5">{subtitle}</div>}
           </div>
         </div>
-        {right}
+        {right ? <div className="sm:ml-3">{right}</div> : null}
       </div>
       <div className="p-4 md:p-5">{children}</div>
     </div>
@@ -158,7 +162,11 @@ function Field({
     <div className="space-y-1">
       <label className="block text-xs font-semibold text-zinc-700">{label}</label>
       <div className="relative">
-        {icon && <div className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">{icon}</div>}
+        {icon && (
+          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">
+            {icon}
+          </div>
+        )}
         <input
           type={type}
           value={value}
@@ -194,7 +202,11 @@ function ReadOnlyField({
     <div className="space-y-1">
       <label className="block text-xs font-semibold text-zinc-700">{label}</label>
       <div className="relative">
-        {icon && <div className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">{icon}</div>}
+        {icon && (
+          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">
+            {icon}
+          </div>
+        )}
         <input
           value={v || placeholder}
           readOnly
@@ -227,7 +239,9 @@ function Toggle({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={`w-full rounded-2xl border transition p-4 text-left flex items-start justify-between gap-3 ${
-        disabled ? "bg-zinc-50 text-zinc-500 cursor-not-allowed" : "bg-white hover:bg-black/5"
+        disabled
+          ? "bg-zinc-50 text-zinc-500 cursor-not-allowed"
+          : "bg-white hover:bg-black/5"
       }`}
     >
       <div className="min-w-0">
@@ -239,7 +253,11 @@ function Toggle({
           checked ? "bg-zinc-900 border-zinc-900" : "bg-zinc-200 border-zinc-300"
         }`}
       >
-        <span className={`h-5 w-5 rounded-full bg-white shadow-sm transition transform ${checked ? "translate-x-5" : "translate-x-1"}`} />
+        <span
+          className={`h-5 w-5 rounded-full bg-white shadow-sm transition transform ${
+            checked ? "translate-x-5" : "translate-x-1"
+          }`}
+        />
       </span>
     </button>
   );
@@ -250,11 +268,7 @@ export default function SupplierSettings() {
   const qc = useQueryClient();
   const navigate = useNavigate();
 
-  const token = useAuthStore((s) => s.token);
   const userFromStore = useAuthStore((s) => s.user);
-  const role = useAuthStore((s: any) => s.user?.role);
-  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
-  const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -267,6 +281,12 @@ export default function SupplierSettings() {
     const v = String(localStorage.getItem(ADMIN_SUPPLIER_KEY) ?? "").trim();
     return v || undefined;
   }, []);
+
+  // ✅ robust admin detection: prefer /auth/me role once loaded, fallback to store
+  const roleFromStore = (userFromStore as any)?.role;
+  const [roleOverride, setRoleOverride] = useState<string | null>(null);
+  const role = roleOverride ?? roleFromStore ?? "";
+  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
 
   const adminSupplierId = isAdmin ? (urlSupplierId ?? storedSupplierId) : undefined;
 
@@ -297,24 +317,19 @@ export default function SupplierSettings() {
     () => ({
       businessName: "",
       rcNumber: "",
-
       supportEmail: (userFromStore?.email || "").toString(),
       supportPhone: "",
-
       pickupAddressLine1: "",
       pickupCity: "",
       pickupState: "",
-
       bankCountry: "NG",
       bankCode: "",
       bankName: "",
       accountNumber: "",
       accountName: "",
-
       notifyNewOrders: true,
       notifyLowStock: true,
       notifyPayouts: true,
-
       docsID: "",
     }),
     [userFromStore?.email]
@@ -323,24 +338,47 @@ export default function SupplierSettings() {
   const [draft, setDraft] = useState<SupplierSettingsDraft>(initial);
   const [bankEditUnlocked, setBankEditUnlocked] = useState(false);
 
-  const meQ = useQuery({
-    queryKey: ["auth", "me"],
-    enabled: !!token,
-    queryFn: async () => {
-      const { data } = await api.get<AuthMeDto>("/api/auth/me", { headers: hdr });
-      return data;
-    },
-    staleTime: 60_000,
-  });
+  const meQ = useQuery<AuthMeDto, AxiosError>({
+  queryKey: ["auth", "me"],
+  queryFn: async () => {
+    const { data } = await api.get<AuthMeDto>("/api/auth/me", cookieCfg);
+    return data;
+  },
+  staleTime: 60_000,
+  retry: 1,
+});
+
+// keep role aligned even if store is stale
+useEffect(() => {
+  const roleFromMe = meQ.data?.role;
+  if (roleFromMe && roleFromMe !== roleOverride) {
+    setRoleOverride(roleFromMe);
+  }
+}, [meQ.data?.role, roleOverride]);
+
+// handle 401s
+useEffect(() => {
+  const status = meQ.error?.response?.status;
+  if (status === 401) {
+    openModal({
+      title: "Session expired",
+      message: "Please log in again.",
+    });
+    navigate("/login");
+  }
+}, [meQ.error, navigate, openModal]);
 
   const supplierQ = useQuery({
     queryKey: ["supplier", "me", { supplierId: adminSupplierId }],
-    enabled: !!token && (!isAdmin || !!adminSupplierId),
+    enabled: !isAdmin || !!adminSupplierId,
     queryFn: async () => {
-      const { data } = await api.get<{ data: SupplierMeDto }>("/api/supplier/me", {
-        headers: hdr,
-        params: { supplierId: adminSupplierId }, // ✅ admin view-as supplier
-      });
+      const { data } = await api.get<{ data: SupplierMeDto }>(
+        "/api/supplier/me",
+        {
+          ...cookieCfg,
+          params: { supplierId: adminSupplierId }, // ✅ admin view-as supplier
+        }
+      );
       return data.data;
     },
     staleTime: 60_000,
@@ -350,7 +388,7 @@ export default function SupplierSettings() {
   const banksQ = useQuery({
     queryKey: ["banks"],
     queryFn: async () => {
-      const { data } = await api.get<{ data: BankOption[] }>("/api/banks");
+      const { data } = await api.get<{ data: BankOption[] }>("/api/banks", cookieCfg);
       return Array.isArray(data?.data) && data.data.length > 0 ? data.data : FALLBACK_BANKS;
     },
     staleTime: 10 * 60 * 1000,
@@ -453,17 +491,22 @@ export default function SupplierSettings() {
     }
   }, [supplierQ.data, meQ.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const bankStatus: BankVerificationStatus = (supplierQ.data?.bankVerificationStatus ?? "UNVERIFIED") as BankVerificationStatus;
+  const bankStatus: BankVerificationStatus = (supplierQ.data?.bankVerificationStatus ??
+    "UNVERIFIED") as BankVerificationStatus;
 
   const bankLockedByStatus = bankStatus === "VERIFIED" || bankStatus === "PENDING";
   const bankEditable = !bankLockedByStatus || bankEditUnlocked;
 
   const saveM = useMutation({
     mutationFn: async (payload: any) => {
-      const { data } = await api.put<{ data: SupplierMeDto }>("/api/supplier/me", payload, {
-        headers: hdr,
-        params: { supplierId: adminSupplierId }, // if you ever allow admin edit, backend can check role
-      });
+      const { data } = await api.put<{ data: SupplierMeDto }>(
+        "/api/supplier/me",
+        payload,
+        {
+          ...cookieCfg,
+          params: { supplierId: adminSupplierId }, // backend can still enforce role
+        }
+      );
       return data.data;
     },
     onSuccess: async () => {
@@ -489,14 +532,7 @@ export default function SupplierSettings() {
       return;
     }
 
-    if (!token) {
-      openModal({
-        title: "Saved locally only",
-        message: "You’re not logged in, so settings were saved only on this device.",
-      });
-      return;
-    }
-
+    // cookie-auth: if not logged in, server will 401; keep local save message friendly
     const payload: any = {
       contactEmail: draft.supportEmail?.trim() ? draft.supportEmail.trim() : null,
       whatsappPhone: draft.supportPhone?.trim() ? draft.supportPhone.trim() : null,
@@ -510,7 +546,17 @@ export default function SupplierSettings() {
       payload.accountName = draft.accountName?.trim() ? draft.accountName.trim() : null;
     }
 
-    await saveM.mutateAsync(payload);
+    try {
+      await saveM.mutateAsync(payload);
+    } catch (e: any) {
+      const status = e?.response?.status;
+      if (status === 401) {
+        openModal({
+          title: "Saved locally only",
+          message: "You’re not logged in, so settings were saved only on this device.",
+        });
+      }
+    }
   };
 
   const saving = saveM.isPending;
@@ -544,36 +590,61 @@ export default function SupplierSettings() {
   const bankFieldsDisabled = isAdmin || !bankEditable;
   const generalFieldsDisabled = isAdmin;
 
+  const showAdminNeedSupplier = isAdmin && !adminSupplierId;
+
   return (
     <SiteLayout>
       <SupplierLayout>
+        {/* Sticky mobile save bar */}
+        {!isAdmin && (
+          <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
+            <div className="px-4 py-3 flex items-center gap-3">
+              <button
+                onClick={save}
+                disabled={saving}
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold hover:opacity-90 disabled:opacity-60"
+              >
+                <Save size={16} />
+                {saving ? "Saving…" : "Save changes"}
+              </button>
+              <div className="shrink-0">{bankStatusChip}</div>
+            </div>
+          </div>
+        )}
+
         {/* Hero */}
         <div className="relative overflow-hidden rounded-3xl mt-6 border">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
           <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
-          <div className="relative px-5 md:px-8 py-8 text-white">
-            <motion.h1 initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="text-2xl md:text-3xl font-bold tracking-tight">
+          <div className="relative px-5 md:px-8 py-7 md:py-8 text-white">
+            <motion.h1
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-2xl md:text-3xl font-bold tracking-tight"
+            >
               Supplier Settings <Sparkles className="inline ml-1" size={22} />
             </motion.h1>
-            <p className="mt-1 text-sm text-white/80">Configure store profile, pickup details, payouts, notifications and security.</p>
+            <p className="mt-1 text-sm text-white/80">
+              Configure store profile, pickup details, payouts, notifications and security.
+            </p>
 
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-4 grid grid-cols-1 sm:flex sm:flex-wrap gap-2">
               <button
                 onClick={save}
                 disabled={saving || isAdmin}
-                className="inline-flex items-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95 disabled:opacity-60"
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95 disabled:opacity-60"
               >
                 <Save size={16} />
                 {isAdmin ? "Admin view (read-only)" : saving ? "Saving…" : "Save changes"}
               </button>
 
-              <span className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold">
+              <span className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold">
                 <ShieldCheck size={16} />
                 {isAdmin ? "Admin view" : "Supplier portal"}
               </span>
 
-              {isAdmin && !adminSupplierId ? (
-                <span className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 text-amber-900 px-4 py-2 text-sm font-semibold">
+              {showAdminNeedSupplier ? (
+                <span className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full border border-amber-200 bg-amber-50 text-amber-900 px-4 py-2 text-sm font-semibold">
                   Select a supplier first
                 </span>
               ) : null}
@@ -582,20 +653,29 @@ export default function SupplierSettings() {
         </div>
 
         {/* Content */}
-        <div className="pb-10 mt-6 space-y-4">
+        <div className="mt-6 space-y-4 pb-28 sm:pb-10">
           <Card
             title="Store profile"
             subtitle="Business name, RC number and CAC address are locked (pulled from registration)."
             icon={<Building2 size={18} />}
             right={
-              <span className="hidden sm:inline-flex items-center gap-2 text-[11px] rounded-full border bg-white px-3 py-1.5 text-zinc-700">
+              <span className="inline-flex items-center gap-2 text-[11px] rounded-full border bg-white px-3 py-1.5 text-zinc-700">
                 <Lock size={14} /> CAC-locked fields
               </span>
             }
           >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <ReadOnlyField label="Business name" value={draft.businessName} icon={<Building2 size={16} />} />
-              <ReadOnlyField label="RC number" value={draft.rcNumber} icon={<Hash size={16} />} placeholder="Not available yet" />
+              <ReadOnlyField
+                label="Business name"
+                value={draft.businessName}
+                icon={<Building2 size={16} />}
+              />
+              <ReadOnlyField
+                label="RC number"
+                value={draft.rcNumber}
+                icon={<Hash size={16} />}
+                placeholder="Not available yet"
+              />
 
               <Field
                 label="Support email"
@@ -623,15 +703,24 @@ export default function SupplierSettings() {
             subtitle="Pulled from CAC during registration and cannot be edited."
             icon={<MapPin size={18} />}
             right={
-              <span className="hidden sm:inline-flex items-center gap-2 text-[11px] rounded-full border bg-white px-3 py-1.5 text-zinc-700">
+              <span className="inline-flex items-center gap-2 text-[11px] rounded-full border bg-white px-3 py-1.5 text-zinc-700">
                 <Lock size={14} /> CAC-locked
               </span>
             }
           >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <ReadOnlyField label="Address line" value={draft.pickupAddressLine1} icon={<MapPin size={16} />} placeholder="Not available yet" />
+              <ReadOnlyField
+                label="Address line"
+                value={draft.pickupAddressLine1}
+                icon={<MapPin size={16} />}
+                placeholder="Not available yet"
+              />
               <ReadOnlyField label="City" value={draft.pickupCity} placeholder="Not available yet" />
-              <ReadOnlyField label="State" value={draft.pickupState} placeholder="Not available yet" />
+              <ReadOnlyField
+                label="State"
+                value={draft.pickupState}
+                placeholder="Not available yet"
+              />
             </div>
           </Card>
 
@@ -640,7 +729,7 @@ export default function SupplierSettings() {
             subtitle="Any bank change requires admin verification. Verified details are locked."
             icon={<CreditCard size={18} />}
             right={
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {bankStatusChip}
                 {!isAdmin && bankStatus === "VERIFIED" && !bankEditUnlocked && (
                   <button
@@ -678,16 +767,20 @@ export default function SupplierSettings() {
 
             {bankStatus === "PENDING" && (
               <div className="mb-3 text-[11px] rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
-                Bank details are <span className="font-semibold">pending verification</span>. Editing is locked until admin review.
+                Bank details are <span className="font-semibold">pending verification</span>. Editing
+                is locked until admin review.
               </div>
             )}
 
+            {/* mobile-neater: keep inputs stacked; on md use 3 cols */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="md:col-span-1">
                 <label className="block text-xs font-semibold text-zinc-700">Bank country</label>
                 <select
                   className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
-                    bankFieldsDisabled ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed" : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                    bankFieldsDisabled
+                      ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
+                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
                   }`}
                   value={draft.bankCountry || "NG"}
                   disabled={bankFieldsDisabled}
@@ -702,14 +795,18 @@ export default function SupplierSettings() {
                 >
                   <option value="NG">Nigeria (NG)</option>
                 </select>
-                <div className="mt-1 text-[11px] text-zinc-500">{banksQ.isFetching ? "Loading banks…" : ""}</div>
+                <div className="mt-1 text-[11px] text-zinc-500">
+                  {banksQ.isFetching ? "Loading banks…" : ""}
+                </div>
               </div>
 
               <div className="md:col-span-1">
                 <label className="block text-xs font-semibold text-zinc-700">Bank name</label>
                 <select
                   className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
-                    bankFieldsDisabled ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed" : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                    bankFieldsDisabled
+                      ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
+                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
                   }`}
                   value={draft.bankName ?? ""}
                   disabled={bankFieldsDisabled}
@@ -728,7 +825,9 @@ export default function SupplierSettings() {
                 <label className="block text-xs font-semibold text-zinc-700">Bank code</label>
                 <select
                   className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
-                    bankFieldsDisabled ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed" : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                    bankFieldsDisabled
+                      ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
+                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
                   }`}
                   value={normCode(draft.bankCode)}
                   disabled={bankFieldsDisabled}
@@ -747,7 +846,12 @@ export default function SupplierSettings() {
                 label="Account number"
                 value={draft.accountNumber}
                 disabled={bankFieldsDisabled}
-                onChange={(v) => setDraft((d) => ({ ...d, accountNumber: v.replace(/\D/g, "").slice(0, 16) }))}
+                onChange={(v) =>
+                  setDraft((d) => ({
+                    ...d,
+                    accountNumber: v.replace(/\D/g, "").slice(0, 16),
+                  }))
+                }
                 placeholder="0123456789"
               />
 
@@ -769,7 +873,11 @@ export default function SupplierSettings() {
             </div>
           </Card>
 
-          <Card title="Notifications" subtitle="Control which alerts you receive. (Not yet wired to backend)" icon={<Bell size={18} />}>
+          <Card
+            title="Notifications"
+            subtitle="Control which alerts you receive. (Not yet wired to backend)"
+            icon={<Bell size={18} />}
+          >
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <Toggle
                 label="New orders"
@@ -797,7 +905,12 @@ export default function SupplierSettings() {
 
           <Card title="Verification documents" subtitle="Placeholder UI (not wired)." icon={<FileText size={18} />}>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <ReadOnlyField label="CAC RC number" value={draft.rcNumber} icon={<Hash size={16} />} placeholder="Not available yet" />
+              <ReadOnlyField
+                label="CAC RC number"
+                value={draft.rcNumber}
+                icon={<Hash size={16} />}
+                placeholder="Not available yet"
+              />
               <Field
                 label="Owner ID (or file ref)"
                 value={draft.docsID}
@@ -830,7 +943,8 @@ export default function SupplierSettings() {
             </div>
           </Card>
 
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Desktop footer actions (mobile uses sticky bar) */}
+          <div className="hidden sm:flex flex-wrap items-center gap-2">
             <button
               onClick={save}
               disabled={saving || isAdmin}
@@ -841,7 +955,8 @@ export default function SupplierSettings() {
             </button>
 
             <div className="text-[11px] text-zinc-500">
-              Bank changes require admin verification. Fields lock when status is <span className="font-mono">PENDING</span> or{" "}
+              Bank changes require admin verification. Fields lock when status is{" "}
+              <span className="font-mono">PENDING</span> or{" "}
               <span className="font-mono">VERIFIED</span>.
             </div>
           </div>
