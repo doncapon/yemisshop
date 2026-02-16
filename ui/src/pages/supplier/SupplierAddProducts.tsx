@@ -2,7 +2,15 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ImagePlus, Plus, Trash2, ArrowLeft, Save, Package, ChevronDown } from "lucide-react";
+import {
+  ImagePlus,
+  Plus,
+  Trash2,
+  ArrowLeft,
+  Save,
+  Package,
+  ChevronDown,
+} from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import SiteLayout from "../../layouts/SiteLayout";
@@ -24,6 +32,7 @@ type VariantRow = {
   id: string;
   selections: Record<string, string>; // attributeId -> valueId | ""
   availableQty: string; // qty for this variant row
+  unitPrice: string; // per-variant price
 };
 
 /* =========================
@@ -31,6 +40,9 @@ type VariantRow = {
 ========================= */
 
 const MAX_IMAGES = 5;
+
+// ✅ Cookie calls helper (always send cookies)
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
 function slugifySku(input: string) {
   return String(input || "")
@@ -41,35 +53,6 @@ function slugifySku(input: string) {
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 32);
-}
-
-function isUrlish(s?: string) {
-  return !!s && /^(https?:\/\/|data:image\/|\/)/i.test(s);
-}
-
-function parseUrlList(s: string) {
-  return s
-    .split(/[\n,]/g)
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
-
-function uniqStrings(arr: string[]) {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const x of arr) {
-    const v = String(x || "").trim();
-    if (!v) continue;
-    if (seen.has(v)) continue;
-    seen.add(v);
-    out.push(v);
-  }
-  return out;
-}
-
-function limitImages(urls: string[], limit = MAX_IMAGES) {
-  const clean = uniqStrings(urls).filter(isUrlish);
-  return clean.slice(0, limit);
 }
 
 function toMoneyNumber(v: any) {
@@ -97,8 +80,66 @@ function comboKeyFromSelections(selections: Record<string, string>, attrOrder: s
   return attrOrder.map((aid) => `${aid}=${String(selections?.[aid] || "")}`).join("|");
 }
 
-// ✅ Cookie calls helper (always send cookies)
-const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+function parseUrlList(s: string) {
+  return String(s || "")
+    .split(/[\n,]/g)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/**
+ * ✅ Normalize image URLs coming from server (common patterns):
+ * - "uploads/abc.jpg"      => "/uploads/abc.jpg"
+ * - "public/uploads/..."   => "/uploads/..."
+ * - already "/uploads/.."  => keep
+ * - absolute http(s)       => keep
+ * - data:image/...         => keep
+ */
+function normalizeImageUrl(input: any): string | null {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+
+  // data URLs
+  if (/^data:image\//i.test(raw)) return raw;
+
+  // absolute
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  // already rooted
+  if (raw.startsWith("/")) return raw;
+
+  // common upload paths without leading slash
+  if (raw.startsWith("uploads/")) return `/${raw}`;
+  if (raw.startsWith("public/uploads/")) return `/${raw.replace(/^public\//, "")}`;
+
+  // accept other relative-ish image paths if they look like files
+  if (/\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i.test(raw) && raw.includes("/")) {
+    return `/${raw}`;
+  }
+
+  return null;
+}
+
+function uniqStrings(arr: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const x of arr) {
+    const v = String(x || "").trim();
+    if (!v) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function limitImages(urls: any[], limit = MAX_IMAGES) {
+  const normalized = urls
+    .map(normalizeImageUrl)
+    .filter(Boolean) as string[];
+  const clean = uniqStrings(normalized);
+  return clean.slice(0, limit);
+}
 
 /* =========================
    Small UI building blocks
@@ -109,14 +150,16 @@ function Card({
   subtitle,
   right,
   children,
+  className = "",
 }: {
   title: string;
   subtitle?: string;
   right?: React.ReactNode;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="rounded-2xl border bg-white/90 shadow-sm overflow-hidden">
+    <div className={["rounded-2xl border bg-white/90 shadow-sm overflow-hidden", className].join(" ")}>
       <div className="px-4 sm:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="min-w-0">
           <div className="text-sm font-semibold text-zinc-900 truncate">{title}</div>
@@ -184,7 +227,7 @@ export default function SupplierAddProduct() {
 
   // basic form fields
   const [title, setTitle] = useState("");
-  const [retailPrice, setRetailPrice] = useState(""); // UI input (we will ALSO send basePrice to API)
+  const [retailPrice, setRetailPrice] = useState(""); // UI input
   const [sku, setSku] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [brandId, setBrandId] = useState("");
@@ -207,6 +250,11 @@ export default function SupplierAddProduct() {
 
   const [summaryOpen, setSummaryOpen] = useState(false);
 
+  // conflict flash
+  const [flashBaseCombo, setFlashBaseCombo] = useState(false);
+  const [flashVariantRowId, setFlashVariantRowId] = useState<string | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+
   const ngn = useMemo(
     () =>
       new Intl.NumberFormat("en-NG", {
@@ -216,6 +264,25 @@ export default function SupplierAddProduct() {
       }),
     []
   );
+
+  const triggerConflictFlash = (rowId?: string) => {
+    if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+
+    setFlashBaseCombo(true);
+    setFlashVariantRowId(rowId || null);
+
+    flashTimerRef.current = window.setTimeout(() => {
+      setFlashBaseCombo(false);
+      setFlashVariantRowId(null);
+      flashTimerRef.current = null;
+    }, 1200);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+    };
+  }, []);
 
   /* =========================
      Supplier identity (display-only)
@@ -266,6 +333,23 @@ export default function SupplierAddProduct() {
   // stable attribute order for combo keys
   const attrOrder = useMemo(() => selectableAttrs.map((a) => a.id), [selectableAttrs]);
 
+  // baseCombo selections from SELECT attributes
+  const baseComboSelections = useMemo(() => {
+    const sel: Record<string, string> = {};
+    for (const aid of attrOrder) {
+      const v = selectedAttrs[aid];
+      sel[aid] = typeof v === "string" ? String(v || "").trim() : "";
+    }
+    return sel;
+  }, [selectedAttrs, attrOrder]);
+
+  const baseComboKey = useMemo(
+    () => comboKeyFromSelections(baseComboSelections, attrOrder),
+    [baseComboSelections, attrOrder]
+  );
+
+  const baseComboHasAny = useMemo(() => rowHasAnySelection(baseComboSelections), [baseComboSelections]);
+
   // keep variant row keys aligned to selectable attributes
   useEffect(() => {
     if (!selectableAttrs.length) return;
@@ -286,7 +370,11 @@ export default function SupplierAddProduct() {
   const UPLOAD_ENDPOINT = "/api/uploads";
 
   const urlPreviews = useMemo(() => limitImages(parseUrlList(imageUrls), MAX_IMAGES), [imageUrls]);
-  const filePreviews = useMemo(() => files.map((f) => ({ file: f, url: URL.createObjectURL(f) })), [files]);
+
+  const filePreviews = useMemo(
+    () => files.map((f) => ({ file: f, url: URL.createObjectURL(f) })),
+    [files]
+  );
 
   useEffect(() => {
     return () => {
@@ -294,39 +382,72 @@ export default function SupplierAddProduct() {
     };
   }, [filePreviews]);
 
-  // count already “claimed” slots by urls + uploaded
+  // claimed by URL + already uploaded (not counting pending files)
   const claimedByTextAndUploaded = useMemo(() => {
     const merged = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
     return merged.length;
   }, [urlPreviews, uploadedUrls]);
 
-  const remainingSlots = useMemo(() => Math.max(0, MAX_IMAGES - claimedByTextAndUploaded), [claimedByTextAndUploaded]);
+  const remainingSlotsExcludingSelectedFiles = useMemo(
+    () => Math.max(0, MAX_IMAGES - claimedByTextAndUploaded),
+    [claimedByTextAndUploaded]
+  );
 
   function onPickFiles(nextPicked: File[]) {
     setErr(null);
     if (!nextPicked.length) return;
 
-    const room = remainingSlots;
-    if (room <= 0) {
-      setErr(`You can only add up to ${MAX_IMAGES} images. Remove one to add another.`);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      return;
-    }
+    setFiles((prev) => {
+      const room = Math.max(0, remainingSlotsExcludingSelectedFiles - prev.length);
+      if (room <= 0) {
+        setErr(`You can only add up to ${MAX_IMAGES} images. Remove one to add another.`);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        return prev;
+      }
 
-    const limited = nextPicked.slice(0, room);
-    if (limited.length < nextPicked.length) {
-      setErr(`Only ${MAX_IMAGES} images max. Added ${limited.length}; ignored ${nextPicked.length - limited.length}.`);
-    }
+      const toAdd = nextPicked.slice(0, room);
+      if (toAdd.length < nextPicked.length) {
+        setErr(
+          `Only ${MAX_IMAGES} images max. Added ${toAdd.length}; ignored ${nextPicked.length - toAdd.length}.`
+        );
+      }
+      return [...prev, ...toAdd];
+    });
+  }
 
-    setFiles(limited);
+  // ✅ Extract URLs from many possible upload response shapes
+  function extractUploadUrls(respData: any): string[] {
+    const d = respData;
+
+    // Common shapes
+    const candidates: any[] =
+      (Array.isArray(d) ? d : null) ??
+      (Array.isArray(d?.urls) ? d.urls : null) ??
+      (Array.isArray(d?.data) ? d.data : null) ??
+      (Array.isArray(d?.data?.urls) ? d.data.urls : null) ??
+      (Array.isArray(d?.data?.items) ? d.data.items : null) ??
+      [];
+
+    const out: string[] = [];
+    for (const x of candidates) {
+      if (typeof x === "string") out.push(x);
+      else if (x && typeof x === "object") {
+        if (typeof x.url === "string") out.push(x.url);
+        if (typeof x.path === "string") out.push(x.path);
+        if (typeof x.location === "string") out.push(x.location);
+      }
+    }
+    return out;
   }
 
   async function uploadLocalFiles(): Promise<string[]> {
     if (!files.length) return [];
 
     // enforce max before uploading
-    if (files.length > remainingSlots) {
-      throw new Error(`You can only upload ${remainingSlots} more image(s). Max is ${MAX_IMAGES}.`);
+    const already = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
+    const room = Math.max(0, MAX_IMAGES - already.length);
+    if (files.length > room) {
+      throw new Error(`You can only upload ${room} more image(s). Max is ${MAX_IMAGES}.`);
     }
 
     const fd = new FormData();
@@ -334,19 +455,25 @@ export default function SupplierAddProduct() {
 
     try {
       setUploading(true);
+
       const res = await api.post(UPLOAD_ENDPOINT, fd, {
         ...AXIOS_COOKIE_CFG,
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      const urls: string[] =
-        (res as any)?.data?.urls || (Array.isArray((res as any)?.data) ? (res as any).data : []);
+      const rawUrls = extractUploadUrls((res as any)?.data);
+      const clean = limitImages(rawUrls, MAX_IMAGES);
 
-      const clean = limitImages(urls, MAX_IMAGES);
+      if (!clean.length) {
+        // helpful debugging message
+        throw new Error(
+          "Upload succeeded but no image URLs were returned. Check /api/uploads response shape."
+        );
+      }
 
       // Only take what fits
-      const space = remainingSlots;
-      const take = clean.slice(0, space);
+      const spaceNow = Math.max(0, MAX_IMAGES - limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES).length);
+      const take = clean.slice(0, spaceNow);
 
       setUploadedUrls((prev) => limitImages([...prev, ...take], MAX_IMAGES));
       setFiles([]);
@@ -358,6 +485,16 @@ export default function SupplierAddProduct() {
     }
   }
 
+  function removeUploadedUrl(u: string) {
+    setUploadedUrls((prev) => prev.filter((x) => x !== u));
+  }
+
+  function removeTextUrl(u: string) {
+    const raw = parseUrlList(imageUrls);
+    const next = raw.filter((x) => normalizeImageUrl(x) !== normalizeImageUrl(u));
+    setImageUrls(next.join("\n"));
+  }
+
   /* =========================
      Variants helpers
   ========================= */
@@ -365,7 +502,15 @@ export default function SupplierAddProduct() {
   function addVariantRow() {
     const selections: Record<string, string> = {};
     selectableAttrs.forEach((a) => (selections[a.id] = ""));
-    setVariantRows((prev) => [...prev, { id: uid("vr"), selections, availableQty: "" }]);
+    setVariantRows((prev) => [
+      ...prev,
+      {
+        id: uid("vr"),
+        selections,
+        availableQty: "",
+        unitPrice: retailPrice || "",
+      },
+    ]);
   }
 
   function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
@@ -383,6 +528,14 @@ export default function SupplierAddProduct() {
 
       const changedKey = comboKeyFromSelections(changed.selections, attrOrder);
 
+      if (baseComboHasAny && changedKey === baseComboKey) {
+        setErr(
+          "That VariantCombo matches your BaseCombo selection in Attributes. Change either the base selection or the variant row."
+        );
+        triggerConflictFlash(rowId);
+        return next;
+      }
+
       const dup = next.find((r) => {
         if (r.id === rowId) return false;
         if (!rowHasAnySelection(r.selections)) return false;
@@ -391,15 +544,19 @@ export default function SupplierAddProduct() {
 
       if (dup) {
         setErr("That variant combination already exists. Please choose a different combination.");
-        return rows; // revert
+        triggerConflictFlash(rowId);
+        return next;
       }
-
       return next;
     });
   }
 
   function updateVariantQty(rowId: string, v: string) {
     setVariantRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, availableQty: v } : r)));
+  }
+
+  function updateVariantPrice(rowId: string, v: string) {
+    setVariantRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, unitPrice: v } : r)));
   }
 
   function removeVariantRow(rowId: string) {
@@ -419,8 +576,6 @@ export default function SupplierAddProduct() {
 
   const totalQty = useMemo(() => baseQtyPreview + variantQtyTotal, [baseQtyPreview, variantQtyTotal]);
   const inStockPreview = totalQty > 0;
-
-  const variantsEnabled = useMemo(() => variantRows.some(isRealVariantRow), [variantRows]);
 
   // Detect duplicates (ignore empty rows)
   const duplicateRowIds = useMemo(() => {
@@ -442,10 +597,86 @@ export default function SupplierAddProduct() {
     return dups;
   }, [variantRows, attrOrder]);
 
+  // baseCombo conflicts (variant == base combo)
+  const baseComboConflictRowIds = useMemo(() => {
+    if (!baseComboHasAny) return new Set<string>();
+    const out = new Set<string>();
+    for (const row of variantRows) {
+      if (!rowHasAnySelection(row.selections)) continue;
+      const key = comboKeyFromSelections(row.selections, attrOrder);
+      if (key === baseComboKey) out.add(row.id);
+    }
+    return out;
+  }, [variantRows, attrOrder, baseComboKey, baseComboHasAny]);
+
+  const hasBaseComboConflict = baseComboConflictRowIds.size > 0;
+  const hasDuplicateCombos = duplicateRowIds.size > 0;
+
+  const comboErrorMsg = useMemo(() => {
+    if (hasDuplicateCombos) {
+      return "You have duplicate variant combinations. Remove or change the duplicates before submitting.";
+    }
+    if (hasBaseComboConflict) {
+      return "Your BaseCombo (Attributes) matches one or more VariantCombo rows. Change the base selection or update/remove the variant row(s).";
+    }
+    return null;
+  }, [hasDuplicateCombos, hasBaseComboConflict]);
+
+  const hasComboError = !!comboErrorMsg;
+
+  const firstComboErrorRowId = useMemo(() => {
+    if (hasBaseComboConflict) return Array.from(baseComboConflictRowIds)[0] || null;
+    if (hasDuplicateCombos) return Array.from(duplicateRowIds)[0] || null;
+    return null;
+  }, [hasBaseComboConflict, baseComboConflictRowIds, hasDuplicateCombos, duplicateRowIds]);
+
+  /* =========================
+     Prevent BaseCombo from matching existing VariantCombo
+  ========================= */
+
+  const findVariantMatchingKey = (key: string) => {
+    for (const row of variantRows) {
+      if (!rowHasAnySelection(row.selections)) continue;
+      const k = comboKeyFromSelections(row.selections, attrOrder);
+      if (k === key) return row;
+    }
+    return null;
+  };
+
+  const setBaseSelectAttr = (attributeId: string, valueId: string) => {
+    setErr(null);
+
+    setSelectedAttrs((prev) => {
+      const next = { ...prev, [attributeId]: valueId };
+
+      const nextBaseSel: Record<string, string> = {};
+      for (const aid of attrOrder) {
+        const v = next[aid];
+        nextBaseSel[aid] = typeof v === "string" ? String(v || "").trim() : "";
+      }
+
+      const nextHasAny = rowHasAnySelection(nextBaseSel);
+      const nextKey = comboKeyFromSelections(nextBaseSel, attrOrder);
+
+      if (nextHasAny) {
+        const hit = findVariantMatchingKey(nextKey);
+        if (hit) {
+          setErr(
+            "That BaseCombo matches an existing VariantCombo row. Change the base selection or update/remove the variant row."
+          );
+          triggerConflictFlash(hit.id);
+          return next;
+        }
+      }
+
+      return next;
+    });
+  };
+
   /* =========================
      Build payload (schema-conformant)
-     ✅ FIX: backend requires top-level `basePrice`
-========================= */
+     backend requires top-level `basePrice`
+  ========================= */
 
   function buildPayload(imagesJson: string[]) {
     const baseSku = sku.trim() || slugifySku(title);
@@ -486,7 +717,7 @@ export default function SupplierAddProduct() {
 
     const variants: Array<{
       sku?: string | null;
-      retailPrice?: number | null;
+      unitPrice?: number | null;
       availableQty: number;
       inStock: boolean;
       imagesJson?: string[];
@@ -498,15 +729,18 @@ export default function SupplierAddProduct() {
         const picks = Object.entries(row.selections || {}).filter(([, valueId]) => !!String(valueId || "").trim());
         if (!picks.length) continue;
 
+        const key = comboKeyFromSelections(row.selections, attrOrder);
+        if (baseComboHasAny && key === baseComboKey) continue;
+
         const rowQty = toIntNonNeg(row.availableQty);
         const options = picks.map(([attributeId, valueId]) => ({ attributeId, valueId }));
 
         let variantSku: string | undefined;
         {
           const labelParts: string[] = [];
-          for (const [attributeId, valueId] of picks) {
-            const attr = selectableAttrs.find((a) => a.id === attributeId);
-            const val = attr?.values?.find((v) => v.id === valueId);
+          for (const [aid, vid] of picks) {
+            const attr = selectableAttrs.find((a) => a.id === aid);
+            const val = attr?.values?.find((v) => v.id === vid);
             const code = (val?.code || val?.name || "").toString();
             if (code) labelParts.push(code.toUpperCase().replace(/\s+/g, ""));
           }
@@ -514,9 +748,10 @@ export default function SupplierAddProduct() {
           variantSku = baseSku && suffix ? `${baseSku}-${suffix}` : baseSku || suffix || undefined;
         }
 
+        const unitPriceNum = toMoneyNumber(row.unitPrice);
         variants.push({
           sku: variantSku,
-          retailPrice: basePriceNum || null,
+          unitPrice: unitPriceNum > 0 ? unitPriceNum : basePriceNum || null,
           availableQty: rowQty,
           inStock: rowQty > 0,
           imagesJson: [],
@@ -526,18 +761,14 @@ export default function SupplierAddProduct() {
     }
 
     return {
-      // ✅ Required by your /api/supplier/products POST Zod schema
       basePrice: basePriceNum,
 
-      // Keep product fields too (your system uses retailPrice in many places)
       title: title.trim(),
       description: description?.trim() || "",
       sku: baseSku,
       retailPrice: basePriceNum,
 
-      // ✅ IMPORTANT: base availableQty should be base ONLY
       availableQty: baseQtyPreview,
-      // inStock should reflect base + variant total
       inStock: totalQty > 0,
 
       categoryId: categoryId || null,
@@ -559,27 +790,36 @@ export default function SupplierAddProduct() {
       setOkMsg(null);
 
       if (!title.trim()) throw new Error("Title is required");
-
-      // ✅ basePrice (from retailPrice input)
       const p = toMoneyNumber(retailPrice);
       if (!Number.isFinite(p) || p <= 0) throw new Error("Price must be greater than 0");
-
-      // if your backend requires description, keep this (otherwise you can remove it)
       if (!String(description || "").trim()) throw new Error("Description is required");
 
       if (duplicateRowIds.size > 0) {
         throw new Error("You have duplicate variant combinations. Please remove or change them before submitting.");
+      }
+      if (baseComboConflictRowIds.size > 0) {
+        throw new Error(
+          "One or more variant rows match your base attributes selection (BaseCombo). Change those rows or change the base selection."
+        );
+      }
+
+      // Validate variant prices (only rows with selections)
+      for (const r of variantRows) {
+        if (!rowHasAnySelection(r.selections)) continue;
+        const up = toMoneyNumber(r.unitPrice);
+        if (up <= 0) throw new Error("Each variant row must have a Variant price greater than 0.");
       }
 
       // Build images (max 5)
       const urlListRaw = parseUrlList(imageUrls);
       const urlList = limitImages(urlListRaw, MAX_IMAGES);
 
-      if (urlListRaw.filter(isUrlish).length > MAX_IMAGES) {
+      if (urlListRaw.length !== urlList.length) {
+        // normalize stored text list too
         setImageUrls(urlList.join("\n"));
       }
 
-      // Ensure uploads will not exceed limit
+      // upload any local files (if present)
       const already = limitImages([...urlList, ...uploadedUrls], MAX_IMAGES);
       const room = Math.max(0, MAX_IMAGES - already.length);
 
@@ -604,8 +844,14 @@ export default function SupplierAddProduct() {
       setTimeout(() => nav("/supplier/products", { replace: true }), 600);
     },
     onError: (e: any) => {
-      const msg = e?.response?.data?.detail || e?.response?.data?.error || e?.message || "Could not create product";
-      setErr(msg);
+      // ✅ better extraction so you see the real backend error
+      const msg =
+        e?.response?.data?.detail ||
+        e?.response?.data?.error ||
+        e?.response?.data?.message ||
+        e?.message ||
+        "Could not create product";
+      setErr(String(msg));
     },
   });
 
@@ -615,8 +861,7 @@ export default function SupplierAddProduct() {
   }, [title]);
 
   const allUrlPreviews = useMemo(() => {
-    const merged = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
-    return merged;
+    return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
   }, [urlPreviews, uploadedUrls]);
 
   const variantRowsWithSelections = useMemo(
@@ -624,10 +869,26 @@ export default function SupplierAddProduct() {
     [variantRows]
   );
 
-  const submitDisabled = createM.isPending || uploading;
+  const handleSubmit = () => {
+    setErr(null);
+    setOkMsg(null);
+
+    if (hasComboError) {
+      setErr(comboErrorMsg);
+      triggerConflictFlash(firstComboErrorRowId || undefined);
+      return;
+    }
+
+    createM.mutate();
+  };
+
+  const submitDisabled = createM.isPending || uploading || hasComboError;
 
   const imagesCount = allUrlPreviews.length;
   const fileCount = files.length;
+
+  const baseComboBorder =
+    hasBaseComboConflict || flashBaseCombo ? "border-rose-300 ring-2 ring-rose-100" : "";
 
   /* =========================
      Render
@@ -642,7 +903,7 @@ export default function SupplierAddProduct() {
             <button
               type="button"
               disabled={submitDisabled}
-              onClick={() => createM.mutate()}
+              onClick={handleSubmit}
               className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
             >
               <Save size={16} />
@@ -719,7 +980,7 @@ export default function SupplierAddProduct() {
               </div>
             </div>
 
-            {/* Desktop actions only (mobile uses sticky bar) */}
+            {/* Desktop actions */}
             <div className="hidden sm:flex gap-2">
               <Link
                 to="/supplier/products"
@@ -730,7 +991,7 @@ export default function SupplierAddProduct() {
               <button
                 type="button"
                 disabled={submitDisabled}
-                onClick={() => createM.mutate()}
+                onClick={handleSubmit}
                 className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
               >
                 <Save size={16} /> {createM.isPending ? "Submitting…" : "Submit product"}
@@ -750,7 +1011,9 @@ export default function SupplierAddProduct() {
 
           {/* Alerts */}
           {err && (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">{err}</div>
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              {err}
+            </div>
           )}
           {okMsg && (
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
@@ -758,7 +1021,6 @@ export default function SupplierAddProduct() {
             </div>
           )}
 
-          {/* Layout: single column on mobile; sidebar only on lg */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             {/* Main */}
             <div className="lg:col-span-2 space-y-4">
@@ -799,7 +1061,6 @@ export default function SupplierAddProduct() {
                     </div>
                   </div>
 
-                  {/* Mobile: fewer columns; Desktop: 4 columns */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     <div>
                       <Label>Retail price (NGN) *</Label>
@@ -893,7 +1154,6 @@ export default function SupplierAddProduct() {
                   </label>
                 }
               >
-                {/* (unchanged image section UI) */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between text-xs">
                     <div className="text-zinc-600">
@@ -906,7 +1166,8 @@ export default function SupplierAddProduct() {
                       )}
                     </div>
                     <div className="text-zinc-500">
-                      Remaining slots: <b>{remainingSlots}</b>
+                      Remaining slots:{" "}
+                      <b>{Math.max(0, MAX_IMAGES - limitImages([...urlPreviews, ...uploadedUrls, ...files], MAX_IMAGES).length)}</b>
                     </div>
                   </div>
 
@@ -919,9 +1180,6 @@ export default function SupplierAddProduct() {
                         const raw = parseUrlList(e.target.value);
                         const capped = limitImages(raw, MAX_IMAGES);
                         setImageUrls(capped.join("\n"));
-                        if (raw.filter(isUrlish).length > MAX_IMAGES) {
-                          setErr(`Max ${MAX_IMAGES} image URLs. Extra URLs were ignored.`);
-                        }
                       }}
                       className="min-h-[90px] text-xs"
                       placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
@@ -934,21 +1192,29 @@ export default function SupplierAddProduct() {
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                         {allUrlPreviews.slice(0, MAX_IMAGES).map((u) => (
                           <div key={u} className="rounded-xl border overflow-hidden bg-white">
-                            <div className="aspect-[4/3] bg-zinc-100">
-                              <img
-                                src={u}
-                                alt=""
-                                className="w-full h-full object-cover"
-                                onError={(e) => {
-                                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                            <div className="aspect-[4/3] bg-zinc-100 relative">
+                              <img src={u} alt="" className="w-full h-full object-cover" />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  // try removing from text list first, otherwise from uploaded
+                                  const inText = parseUrlList(imageUrls).some(
+                                    (x) => normalizeImageUrl(x) === normalizeImageUrl(u)
+                                  );
+                                  if (inText) removeTextUrl(u);
+                                  else removeUploadedUrl(u);
                                 }}
-                              />
+                                className="absolute top-2 right-2 inline-flex items-center justify-center w-8 h-8 rounded-full bg-white/90 border hover:bg-white"
+                                title="Remove"
+                              >
+                                <Trash2 size={14} className="text-rose-700" />
+                              </button>
                             </div>
                             <div className="p-2 text-[10px] text-zinc-600 truncate">{u}</div>
                           </div>
                         ))}
 
-                        {filePreviews.slice(0, remainingSlots).map(({ file, url }) => (
+                        {filePreviews.slice(0, MAX_IMAGES - allUrlPreviews.length).map(({ file, url }) => (
                           <div key={url} className="rounded-xl border overflow-hidden bg-white">
                             <div className="aspect-[4/3] bg-zinc-100">
                               <img src={url} alt={file.name} className="w-full h-full object-cover" />
@@ -975,7 +1241,14 @@ export default function SupplierAddProduct() {
                       <div className="mt-3 flex flex-col sm:flex-row gap-2">
                         <button
                           type="button"
-                          onClick={uploadLocalFiles}
+                          onClick={async () => {
+                            try {
+                              setErr(null);
+                              await uploadLocalFiles();
+                            } catch (e: any) {
+                              setErr(e?.message || "Upload failed");
+                            }
+                          }}
                           disabled={uploading || !files.length}
                           className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
                         >
@@ -999,11 +1272,35 @@ export default function SupplierAddProduct() {
               </Card>
 
               {/* Attributes */}
-              <Card title="Attributes" subtitle="Optional details used for filtering and variant setup.">
+              <Card
+                title="Attributes"
+                subtitle="Optional details used for filtering and variant setup."
+                className={baseComboBorder}
+              >
                 <div className="space-y-3">
                   {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
                   {!attributesQ.isLoading && activeAttrs.length === 0 && (
                     <div className="text-sm text-zinc-500">No active attributes configured.</div>
+                  )}
+
+                  {selectableAttrs.length > 0 && (
+                    <div
+                      className={[
+                        "rounded-xl border px-3 py-2 text-[12px]",
+                        hasBaseComboConflict || flashBaseCombo
+                          ? "bg-rose-50 border-rose-200 text-rose-800"
+                          : "bg-amber-50 border-amber-200 text-amber-800",
+                      ].join(" ")}
+                    >
+                      The selected <b>SELECT</b> attributes here form your <b>BaseCombo</b>. Variant combos below must be
+                      different.
+                      {(hasBaseComboConflict || flashBaseCombo) && (
+                        <>
+                          {" "}
+                          <b>Fix:</b> change either the base selection or the highlighted variant row(s).
+                        </>
+                      )}
+                    </div>
                   )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1027,7 +1324,11 @@ export default function SupplierAddProduct() {
                         return (
                           <div key={a.id}>
                             <Label>{a.name}</Label>
-                            <Select value={v} onChange={(e) => setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))}>
+                            <Select
+                              value={v}
+                              onChange={(e) => setBaseSelectAttr(a.id, e.target.value)}
+                              className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300" : ""}
+                            >
                               <option value="">— Select —</option>
                               {(a.values || []).map((x) => (
                                 <option key={x.id} value={x.id}>
@@ -1081,7 +1382,7 @@ export default function SupplierAddProduct() {
               {/* Variant rows */}
               <Card
                 title="Variant combinations"
-                subtitle="Add combinations of SELECT attributes (e.g. Color/Size) with qty. Total stock = base + variants."
+                subtitle="Add combinations of SELECT attributes with qty and price. Total stock = base + variants."
                 right={
                   <button
                     type="button"
@@ -1100,25 +1401,24 @@ export default function SupplierAddProduct() {
                     </div>
                   )}
 
-                  {variantRows.length > 0 && (
-                    <div className="rounded-xl border bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
-                      Stock is <b>base + variants</b>. Variant qty contributes to total automatically.
-                    </div>
-                  )}
-
                   {variantRows.map((row) => {
                     const rowQty = toIntNonNeg(row.availableQty);
-                    const rowInStock = rowQty > 0;
                     const isDup = duplicateRowIds.has(row.id);
+                    const isBaseConflict = baseComboConflictRowIds.has(row.id);
+                    const isFlashing = flashVariantRowId === row.id;
+
+                    const variantPriceNum = toMoneyNumber(row.unitPrice);
+                    const effectiveVariantPrice = variantPriceNum > 0 ? variantPriceNum : toMoneyNumber(retailPrice);
 
                     return (
                       <div
                         key={row.id}
-                        className={`rounded-2xl border bg-white p-3 space-y-3 ${
-                          isDup ? "border-rose-300 ring-2 ring-rose-100" : ""
-                        }`}
+                        className={[
+                          "rounded-2xl border bg-white p-3 space-y-3",
+                          isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
+                        ].join(" ")}
                       >
-                        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-start">
+                        <div className="grid grid-cols-1 gap-3 items-start">
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             {selectableAttrs.map((attr) => {
                               const valueId = row.selections[attr.id] || "";
@@ -1128,7 +1428,7 @@ export default function SupplierAddProduct() {
                                   <Select
                                     value={valueId}
                                     onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                    className="text-sm"
+                                    className={isBaseConflict || isFlashing ? "border-rose-300" : ""}
                                   >
                                     <option value="">Select…</option>
                                     {(attr.values || []).map((v) => (
@@ -1142,8 +1442,8 @@ export default function SupplierAddProduct() {
                             })}
                           </div>
 
-                          <div className="flex sm:flex-col gap-2 sm:items-end">
-                            <div className="flex-1 sm:w-[140px]">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div>
                               <div className="text-[11px] font-semibold text-zinc-600 mb-1">Qty</div>
                               <Input
                                 value={row.availableQty}
@@ -1153,47 +1453,53 @@ export default function SupplierAddProduct() {
                               />
                             </div>
 
-                            <button
-                              type="button"
-                              onClick={() => removeVariantRow(row.id)}
-                              className="inline-flex items-center justify-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2.5 text-sm font-semibold hover:bg-rose-100 sm:w-[140px]"
-                            >
-                              <Trash2 size={14} /> Remove
-                            </button>
+                            <div>
+                              <div className="text-[11px] font-semibold text-zinc-600 mb-1">Variant price (NGN)</div>
+                              <Input
+                                value={row.unitPrice}
+                                onChange={(e) => updateVariantPrice(row.id, e.target.value)}
+                                inputMode="decimal"
+                                placeholder={retailPrice ? `e.g. ${retailPrice}` : "e.g. 25000"}
+                              />
+                              <div className="text-[11px] text-zinc-500 mt-1">
+                                Preview: <b>{effectiveVariantPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
+                              </div>
+                            </div>
+
+                            <div className="flex sm:justify-end">
+                              <button
+                                type="button"
+                                onClick={() => removeVariantRow(row.id)}
+                                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2.5 text-sm font-semibold hover:bg-rose-100"
+                              >
+                                <Trash2 size={14} /> Remove
+                              </button>
+                            </div>
                           </div>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
-                          <span
-                            className={`font-semibold px-2 py-1 rounded-full border ${
-                              rowInStock
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                : "bg-rose-50 text-rose-700 border-rose-200"
-                            }`}
-                            title="Based on variant qty"
-                          >
-                            {rowInStock ? "In stock" : "Out of stock"}
-                          </span>
-                          <span>
-                            Variant qty: <b className="text-zinc-800">{rowQty}</b>
-                          </span>
-                          <span>
-                            Variant price: <b className="text-zinc-800">{ngn.format(toMoneyNumber(retailPrice))}</b>{" "}
-                            <span className="text-zinc-400">(same as base price)</span>
-                          </span>
-                        </div>
+                        {(isDup || isBaseConflict) && (
+                          <div className="text-[12px] text-rose-700">
+                            {isDup ? "Duplicate variant combination." : null}
+                            {isDup && isBaseConflict ? " " : null}
+                            {isBaseConflict ? "This VariantCombo matches your BaseCombo (Attributes section)." : null}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
+
+                  {variantRows.length === 0 && (
+                    <div className="text-sm text-zinc-500">No variant rows yet. Click “Add row” to create combinations.</div>
+                  )}
                 </div>
               </Card>
 
-              {/* Desktop submit helper */}
               <div className="hidden sm:block">
                 <button
                   type="button"
                   disabled={submitDisabled}
-                  onClick={() => createM.mutate()}
+                  onClick={handleSubmit}
                   className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
                 >
                   <Save size={16} /> {createM.isPending ? "Submitting…" : "Submit product"}
@@ -1250,7 +1556,7 @@ export default function SupplierAddProduct() {
                     <b className="text-zinc-900">{variantRows.length}</b>
                   </div>
 
-                  {variantsEnabled && (
+                  {variantRowsWithSelections.length > 0 && (
                     <div className="text-[11px] text-zinc-600 mt-2">
                       Rows with selections: <b>{variantRowsWithSelections.length}</b>
                     </div>
@@ -1261,7 +1567,7 @@ export default function SupplierAddProduct() {
               <button
                 type="button"
                 disabled={submitDisabled}
-                onClick={() => createM.mutate()}
+                onClick={handleSubmit}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
               >
                 <Save size={16} /> {createM.isPending ? "Submitting…" : "Submit product"}

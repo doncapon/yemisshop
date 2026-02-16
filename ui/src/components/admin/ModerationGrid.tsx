@@ -1,7 +1,7 @@
+import React from "react";
 import { PackageCheck, PackageX, Search, Wrench, Plus } from "lucide-react";
 import api from "../../api/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import React from "react";
 
 /* ===================== Types ===================== */
 type SupplierOfferLite = {
@@ -143,13 +143,14 @@ function useModeratableProductsQuery(q: string) {
         include: "owner",
       };
 
+      // ✅ cookie auth
       const { data } = await api.get("/api/admin/products", { withCredentials: true, params });
       const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 
       const baseRows: AdminProduct[] = (arr ?? []).map((p: any) => ({
         id: String(p.id),
         title: String(p.title ?? ""),
-        price: p.price != null ? p.price : null,
+        retailPrice: p.retailPrice != null ? p.retailPrice : p.price != null ? p.price : null,
         status: String(p.status ?? ""),
         imagesJson: Array.isArray(p.imagesJson) || typeof p.imagesJson === "string" ? p.imagesJson : [],
         createdAt: p.createdAt ?? null,
@@ -170,6 +171,7 @@ function useModeratableProductsQuery(q: string) {
       let offersByProductId: Record<string, SupplierOfferLite[]> = {};
       if (productIds.length) {
         try {
+          // ✅ cookie auth
           const { data: offerData } = await api.get("/api/admin/supplier-offers", {
             withCredentials: true,
             params: { productIds: productIds.join(",") },
@@ -240,6 +242,7 @@ function useAdminBrands() {
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
     queryFn: async () => {
+      // ✅ cookie auth
       const { data } = await api.get("/api/admin/brands", { withCredentials: true });
       const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
       return arr.map((b: any) => ({
@@ -260,6 +263,7 @@ function useAdminCategories() {
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
     queryFn: async () => {
+      // ✅ cookie auth
       const { data } = await api.get("/api/admin/categories", { withCredentials: true });
       const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
       return arr.map((c: any) => ({
@@ -276,6 +280,7 @@ function useAdminCategories() {
 
 /* ===================== Product patch helper ===================== */
 async function patchProductCatalogMeta(productId: string, meta: { brandId?: string | null; categoryId?: string | null }) {
+  // ✅ cookie auth
   const { data } = await api.patch(`/api/admin/products/${encodeURIComponent(productId)}`, meta, {
     withCredentials: true,
   });
@@ -286,8 +291,6 @@ async function patchProductCatalogMeta(productId: string, meta: { brandId?: stri
 /* ===================== Component ===================== */
 type ModerationGridProps = {
   search: string;
-  // token kept for compatibility with caller; not used in cookie auth version
-  token?: string;
   setSearch: (s: string) => void;
   onApprove: (id: string) => void;
   onInspect: (p: Pick<AdminProduct, "id" | "title" | "sku">) => void;
@@ -336,6 +339,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
 
       const settled = await Promise.allSettled(
         fetchIds.map(async (id) => {
+          // ✅ cookie auth
           const { data } = await api.get(`/api/admin/products/${encodeURIComponent(id)}/has-orders`, {
             withCredentials: true,
           });
@@ -369,6 +373,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
   // ------ Reject ------
   const rejectM = useMutation({
     mutationFn: async (id: string) => {
+      // ✅ cookie auth
       const res = await api.post(`/api/admin/products/${id}/reject`, {}, { withCredentials: true });
       return res.data?.data ?? res.data ?? res;
     },
@@ -417,11 +422,8 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
       const name = newBrandName.trim();
       if (!name) throw new Error("Brand name is required");
       const slug = (newBrandSlug.trim() || slugifyLocal(name)).trim();
-      const { data } = await api.post(
-        "/api/admin/brands",
-        { name, slug, isActive: true },
-        { withCredentials: true }
-      );
+      // ✅ cookie auth
+      const { data } = await api.post("/api/admin/brands", { name, slug, isActive: true }, { withCredentials: true });
       return data?.brand ?? data?.data ?? data;
     },
     onSuccess: async (created: any) => {
@@ -444,6 +446,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
       const slug = (newCategorySlug.trim() || slugifyLocal(name)).trim();
       const parentId = newCategoryParentId || null;
 
+      // ✅ cookie auth
       const { data } = await api.post(
         "/api/admin/categories",
         { name, slug, parentId, position: 0, isActive: true },
@@ -501,7 +504,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
           value={searchLocal}
           onChange={(e) => setSearchLocal(e.target.value)}
           placeholder="Search by title…"
-          className="pl-9 pr-3 py-2 rounded-xl border bg-white"
+          className="w-full pl-9 pr-3 py-2 rounded-xl border bg-white"
         />
       </div>
 
@@ -562,7 +565,8 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
 
               {/* Actions */}
               <div className="px-3 pb-3">
-                <div className="mt-1 flex items-center justify-between gap-2">
+                {/* ✅ Desktop/tablet: original horizontal layout */}
+                <div className="hidden md:flex mt-1 items-center justify-between gap-2">
                   <div className="inline-flex gap-2 flex-wrap">
                     <button
                       onClick={() => {
@@ -592,7 +596,6 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
                       <Search size={16} /> Inspect
                     </button>
 
-                    {/* Fix brand/category shortcut (does NOT touch attributes) */}
                     <button
                       onClick={() => openFix(p)}
                       className={[
@@ -621,8 +624,67 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
                   </button>
                 </div>
 
+                {/* ✅ Mobile: clean grid layout (no overflow / wrapping mess) */}
+                <div className="md:hidden mt-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => {
+                        if (disableApprove) {
+                          window.alert(approveTitle);
+                          return;
+                        }
+                        onApprove(p.id);
+                      }}
+                      disabled={disableApprove}
+                      className={[
+                        "w-full inline-flex items-center justify-center gap-2 px-3 py-3 rounded-xl text-sm font-semibold",
+                        !disableApprove
+                          ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                          : "bg-emerald-600/30 text-white/70 cursor-not-allowed",
+                      ].join(" ")}
+                      title={approveTitle}
+                    >
+                      <PackageCheck size={16} /> Approve
+                    </button>
+
+                    <button
+                      onClick={() => onInspect({ id: p.id, title: p.title, sku: p.sku ?? (null as any) })}
+                      className="w-full inline-flex items-center justify-center gap-2 px-3 py-3 rounded-xl text-sm font-semibold border bg-white hover:bg-black/5"
+                      title="Go to Manage and open this item"
+                    >
+                      <Search size={16} /> Inspect
+                    </button>
+
+                    <button
+                      onClick={() => openFix(p)}
+                      className={[
+                        "col-span-2 w-full inline-flex items-center justify-center gap-2 px-3 py-3 rounded-xl text-sm font-semibold border",
+                        brandMissing || categoryMissing ? "bg-amber-50 hover:bg-amber-100" : "bg-white hover:bg-black/5",
+                      ].join(" ")}
+                      title="Quickly set Brand/Category (and optionally create them) then approve"
+                    >
+                      <Wrench size={16} /> Fix brand/category
+                    </button>
+
+                    <button
+                      onClick={() => rejectM.mutate(p.id)}
+                      className="col-span-2 w-full inline-flex items-center justify-center gap-2 px-3 py-3 rounded-xl text-sm font-semibold bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-60"
+                      title={
+                        checkingOrders
+                          ? "Checking orders…"
+                          : ordersPresent
+                          ? "Cannot reject: product already has orders"
+                          : "Reject product"
+                      }
+                      disabled={checkingOrders || ordersPresent}
+                    >
+                      <PackageX size={16} /> Reject
+                    </button>
+                  </div>
+                </div>
+
                 {/* Hints */}
-                <div className="mt-2 text-[11px] text-zinc-600 space-x-2">
+                <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-zinc-600">
                   <span
                     className={
                       published

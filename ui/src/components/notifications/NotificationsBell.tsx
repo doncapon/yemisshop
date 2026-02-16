@@ -59,6 +59,26 @@ export default function NotificationsBell({
 
   const toastTimeoutRef = React.useRef<number | null>(null);
   const popoverRef = React.useRef<HTMLDivElement | null>(null);
+  const panelRef = React.useRef<HTMLDivElement | null>(null);
+
+  /* -------- mobile detection (for centered modal dropdown) -------- */
+
+  const [isMobile, setIsMobile] = React.useState(false);
+
+  React.useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const apply = () => setIsMobile(mq.matches);
+    apply();
+
+    // Safari < 14 fallback
+    if ((mq as any).addEventListener) {
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    } else {
+      (mq as any).addListener(apply);
+      return () => (mq as any).removeListener(apply);
+    }
+  }, []);
 
   /* -------- toast timer helpers (5s, pause on hover) -------- */
 
@@ -148,10 +168,7 @@ export default function NotificationsBell({
         const payload = (data as any)?.data ?? data ?? {};
         return payload as NotificationsResponse;
       } catch (e: any) {
-        if (is401(e)) {
-          // ✅ clear user and stop all authed queries globally
-          markSessionExpired();
-        }
+        if (is401(e)) markSessionExpired();
         throw e;
       }
     },
@@ -209,10 +226,17 @@ export default function NotificationsBell({
     if (!open) return;
 
     const onPointerDown = (e: MouseEvent | TouchEvent) => {
-      const el = popoverRef.current;
-      if (!el) return;
+      const anchor = popoverRef.current;
+      const panel = panelRef.current;
       const target = e.target as Node | null;
-      if (target && !el.contains(target)) setOpen(false);
+
+      if (!target) return;
+
+      // ✅ allow clicks inside either the bell area or the dropdown panel
+      if (anchor && anchor.contains(target)) return;
+      if (panel && panel.contains(target)) return;
+
+      setOpen(false);
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -253,7 +277,6 @@ export default function NotificationsBell({
   const sseRef = React.useRef<EventSource | null>(null);
   const [sseAlive, setSseAlive] = React.useState(false);
 
-  // session flag to stop retrying SSE if endpoint is missing / blocked
   const sseDisabledKey = React.useMemo(() => {
     if (!userId) return null;
     return `notif_sse_disabled:${userId}`;
@@ -281,8 +304,8 @@ export default function NotificationsBell({
         const nextItems = exists
           ? prev.items
           : [incoming, ...prev.items]
-            .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))
-            .slice(0, 20);
+              .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))
+              .slice(0, 20);
 
         const computedUnread =
           typeof unreadCountOverride === "number"
@@ -292,7 +315,6 @@ export default function NotificationsBell({
         return { ...prev, items: nextItems, unreadCount: computedUnread };
       });
 
-      // toast only if truly new + unread
       const prevIds = prevIdsRef.current;
       if (!prevIds.has(incoming.id) && !incoming.readAt) {
         setInlineToast(incoming);
@@ -308,12 +330,11 @@ export default function NotificationsBell({
   React.useEffect(() => {
     if (!enableRealtime) return;
     if (!userId) return;
-    if (sessionExpired) return; // ✅ don't attempt SSE when session is invalid
+    if (sessionExpired) return;
     if (isSseDisabled) return;
     if (sseRef.current) return;
 
     try {
-      // If your API is same-origin (via Vite proxy), cookies will flow.
       const es = new EventSource("/api/notifications/stream");
       sseRef.current = es;
 
@@ -346,14 +367,10 @@ export default function NotificationsBell({
 
       es.onerror = () => {
         setSseAlive(false);
-
-        // If it errors before opening, disable SSE for this session
-        // (EventSource doesn't give status code)
         disableSseForSession();
-
         try {
           es.close();
-        } catch { }
+        } catch {}
         sseRef.current = null;
       };
 
@@ -361,7 +378,7 @@ export default function NotificationsBell({
         setSseAlive(false);
         try {
           es.close();
-        } catch { }
+        } catch {}
         sseRef.current = null;
       };
     } catch {
@@ -372,7 +389,6 @@ export default function NotificationsBell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enableRealtime, userId, sessionExpired, isSseDisabled, qc, upsertIntoCacheAndToast, saveSeenIdsToSession]);
 
-  // if user cleared (expired), bell should disappear (prevents UI + calls)
   if (!userId || sessionExpired) return null;
 
   const unreadCount = data?.unreadCount ?? data?.items?.filter((n) => !n.readAt).length ?? 0;
@@ -400,6 +416,80 @@ export default function NotificationsBell({
       ? "fixed top-[calc(env(safe-area-inset-top)+0.75rem)] right-[calc(env(safe-area-inset-right)+0.75rem)] z-50"
       : "relative z-50";
 
+  const Panel = (
+    <div
+      ref={panelRef}
+      className="w-[min(92vw,360px)] rounded-2xl border border-zinc-200 bg-white/95 backdrop-blur shadow-lg overflow-hidden"
+      role="dialog"
+      aria-label="Notifications"
+    >
+      <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-100">
+        <div className="flex items-center gap-2">
+          <div className="text-[14px] md:text-xs font-semibold text-zinc-700">Notifications</div>
+          {enableRealtime && (
+            <span
+              className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                sseAlive
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : "bg-zinc-50 text-zinc-600 border-zinc-200"
+              }`}
+            >
+              {sseAlive ? "LIVE" : "POLL"}
+            </span>
+          )}
+        </div>
+
+        {unreadCount > 0 && (
+          <button
+            type="button"
+            onClick={handleMarkAllRead}
+            className="text-[11px] px-2 py-1 rounded-lg border border-zinc-200 bg-white hover:bg-zinc-50"
+          >
+            Mark all as read
+          </button>
+        )}
+      </div>
+
+      <div className="max-h-[60vh] md:max-h-[360px] overflow-y-auto">
+        {isLoading ? (
+          <div className="p-3 text-xs text-zinc-600">Loading notifications…</div>
+        ) : isError ? (
+          <div className="p-3 text-xs text-rose-600">Could not load notifications.</div>
+        ) : !items.length ? (
+          <div className="p-4 text-xs text-zinc-500">No notifications yet.</div>
+        ) : (
+          <ul className="divide-y divide-zinc-100">
+            {items.map((n) => {
+              const unread = !n.readAt;
+              return (
+                <li
+                  key={n.id}
+                  className={`px-3 py-2.5 text-xs cursor-pointer hover:bg-zinc-50 ${
+                    unread ? "bg-fuchsia-50/60" : "bg-white"
+                  }`}
+                  onClick={() => handleItemClick(n)}
+                >
+                  <div className="flex items-start gap-2">
+                    <div
+                      className={`mt-[3px] h-2 w-2 rounded-full ${
+                        unread ? "bg-fuchsia-500" : "bg-zinc-300"
+                      }`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-zinc-800 truncate">{n.title}</div>
+                      <div className="mt-0.5 text-[11px] text-zinc-600 line-clamp-2">{n.body}</div>
+                      <div className="mt-0.5 text-[10px] text-zinc-400">{formatTime(n.createdAt)}</div>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <>
       <div ref={popoverRef} className={`${wrapperClass} ${className}`}>
@@ -411,88 +501,39 @@ export default function NotificationsBell({
           title={sseAlive ? "Notifications (live)" : "Notifications"}
         >
           <Bell size={18} className="text-zinc-700" />
+
           {unreadCount > 0 && (
             <span
               className="
-      absolute -top-1 -right-1
-      grid place-items-center
-      rounded-full bg-fuchsia-600 text-white font-semibold leading-none
-      w-5 h-5 text-[10px]
-      md:min-w-[20px] md:w-auto md:h-5 md:px-1.5
-    "
+                absolute -top-1 -right-1
+                grid place-items-center
+                rounded-full bg-fuchsia-600 text-white font-semibold leading-none
+                w-5 h-5 text-[10px]
+                md:min-w-[20px] md:w-auto md:h-5 md:px-1.5
+              "
             >
               {unreadCount > 9 ? "9+" : unreadCount}
             </span>
           )}
-
         </button>
 
-        {open && (
-          <div className="absolute right-0 mt-2 w-[min(92vw,360px)] rounded-2xl border border-zinc-200 bg-white/95 backdrop-blur shadow-lg overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-100">
-              <div className="flex items-center gap-2">
-                <div className="text-[14px] md:text-xs font-semibold text-zinc-700">Notifications</div>
-                {enableRealtime && (
-                  <span
-                    className={`text-[10px] px-2 py-0.5 rounded-full border ${sseAlive
-                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                        : "bg-zinc-50 text-zinc-600 border-zinc-200"
-                      }`}
-                  >
-                    {sseAlive ? "LIVE" : "POLL"}
-                  </span>
-                )}
-              </div>
-
-              {unreadCount > 0 && (
-                <button
-                  type="button"
-                  onClick={handleMarkAllRead}
-                  className="text-[11px] px-2 py-1 rounded-lg border border-zinc-200 bg-white hover:bg-zinc-50"
-                >
-                  Mark all as read
-                </button>
-              )}
-            </div>
-
-            <div className="max-h-[360px] overflow-y-auto">
-              {isLoading ? (
-                <div className="p-3 text-xs text-zinc-600">Loading notifications…</div>
-              ) : isError ? (
-                <div className="p-3 text-xs text-rose-600">Could not load notifications.</div>
-              ) : !items.length ? (
-                <div className="p-4 text-xs text-zinc-500">No notifications yet.</div>
-              ) : (
-                <ul className="divide-y divide-zinc-100">
-                  {items.map((n) => {
-                    const unread = !n.readAt;
-                    return (
-                      <li
-                        key={n.id}
-                        className={`px-3 py-2.5 text-xs cursor-pointer hover:bg-zinc-50 ${unread ? "bg-fuchsia-50/60" : "bg-white"
-                          }`}
-                        onClick={() => handleItemClick(n)}
-                      >
-                        <div className="flex items-start gap-2">
-                          <div
-                            className={`mt-[3px] h-2 w-2 rounded-full ${unread ? "bg-fuchsia-500" : "bg-zinc-300"
-                              }`}
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="font-semibold text-zinc-800 truncate">{n.title}</div>
-                            <div className="mt-0.5 text-[11px] text-zinc-600 line-clamp-2">{n.body}</div>
-                            <div className="mt-0.5 text-[10px] text-zinc-400">{formatTime(n.createdAt)}</div>
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-          </div>
+        {/* Desktop dropdown (anchored to bell) */}
+        {open && !isMobile && (
+          <div className="absolute right-0 mt-2 z-50">{Panel}</div>
         )}
       </div>
+
+      {/* Mobile dropdown (centered + fully visible) */}
+      {open &&
+        isMobile &&
+        createPortal(
+          <div className="fixed inset-0 z-[9998] flex items-center justify-center px-4">
+            {/* backdrop */}
+            <div className="absolute inset-0 bg-black/20 backdrop-blur-[1px]" onClick={() => setOpen(false)} />
+            <div className="relative z-[9999]">{Panel}</div>
+          </div>,
+          document.body
+        )}
 
       {/* Inline toast for newest notification (PORTAL: avoids transform/overflow clipping) */}
       {inlineToast &&

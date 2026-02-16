@@ -61,6 +61,15 @@ function sparseComboKey(selections: Record<string, string>, attrOrder: string[])
   return parts.length ? parts.join("|") : "DEFAULT";
 }
 
+/**
+ * ✅ STRICT key that includes blanks.
+ * Used to compare BASE combo (attributes section) against VARIANT combos.
+ * If all SELECT attrs match (including blanks), it’s considered the same combo.
+ */
+function strictComboKey(selections: Record<string, string>, attrOrder: string[]) {
+  return attrOrder.map((aid) => `${aid}=${String(selections?.[aid] || "")}`).join("|");
+}
+
 function formatComboLabel(
   selections: Record<string, string>,
   attrOrder: string[],
@@ -79,11 +88,6 @@ function formatComboLabel(
 }
 
 function autoSkuFromTitle(input: string) {
-  // Similar to typical AddProduct behavior:
-  // - uppercase
-  // - replace non-alphanumerics with hyphens
-  // - collapse hyphens
-  // - trim
   const s = String(input ?? "")
     .trim()
     .toUpperCase()
@@ -92,10 +96,8 @@ function autoSkuFromTitle(input: string) {
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
 
-  // keep it reasonably short (optional)
   return s.slice(0, 48);
 }
-
 
 function Card({
   title,
@@ -194,6 +196,13 @@ type VariantRow = {
   variantId?: string;
   selections: Record<string, string>;
   availableQty: string;
+
+  /** ✅ per-variant price (unitPrice / retailPrice) */
+  unitPrice: string;
+
+  /** display-only: approved/active unit price for this variant (offersOnly mode) */
+  activeUnitPrice?: number;
+
   isExisting?: boolean;
   comboLabel?: string;
   rawOptions?: Array<{ attributeId: string; valueId: string }>;
@@ -204,6 +213,9 @@ type DupInfo = {
   duplicateRowIds: Set<string>;
   duplicateLabels: string[];
   explain: string | null;
+
+  /** if any existing/real variant row is DEFAULT, that conflicts with base combo */
+  invalidDefaultRowIds: Set<string>;
 };
 
 /* =========================
@@ -472,9 +484,6 @@ export default function SupplierEditProduct() {
 
   const [skuTouched, setSkuTouched] = useState(false);
 
-
-
-
   const initialSnapshotRef = useRef<{
     id: string;
     title: string;
@@ -592,7 +601,7 @@ export default function SupplierEditProduct() {
 
   const productStatusUpper = useMemo(() => String(detailQ.data?.status ?? "").toUpperCase(), [detailQ.data?.status]);
 
-  // ✅ LOCK ONLY when actually LIVE/ACTIVE (fixes false-lock + missing persistence appearance)
+  // ✅ LOCK ONLY when actually LIVE/ACTIVE
   const isLive = useMemo(() => {
     if (offersOnly) return false;
     const s = String(productStatusUpper || "").toUpperCase();
@@ -611,7 +620,7 @@ export default function SupplierEditProduct() {
     return toMoneyNumber(retailPrice);
   }, [isLive, retailPrice]);
 
-  // ✅ treat an “empty, new” row as a draft row (ignore for dup checks/payload)
+  // ✅ draft row = no variantId and no option selection
   const isRealVariantRow = (r: VariantRow) => !!r.variantId || rowHasAnySelection(r.selections);
 
   const variantQtyTotal = useMemo(() => {
@@ -622,7 +631,10 @@ export default function SupplierEditProduct() {
   const totalQty = useMemo(() => baseQtyPreview + variantQtyTotal, [baseQtyPreview, variantQtyTotal]);
   const inStockPreview = totalQty > 0;
 
-  const variantsEnabled = useMemo(() => variantRows.some((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections)), [variantRows]);
+  const variantsEnabled = useMemo(
+    () => variantRows.some((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections)),
+    [variantRows]
+  );
   const effectiveQty = totalQty;
 
   const computeDupInfo = (rows: VariantRow[]): DupInfo => {
@@ -630,11 +642,18 @@ export default function SupplierEditProduct() {
     const dups = new Set<string>();
     const dupKeys = new Set<string>();
 
-    // Only consider “real” rows: existing variants or rows with at least one selected option.
+    // ✅ Also block any *real* variant that resolves to DEFAULT (base combo)
+    const invalidDefaultRowIds = new Set<string>();
+
     const realRows = rows.filter(isRealVariantRow);
 
     for (const row of realRows) {
       const key = sparseComboKey(row.selections, attrOrder);
+
+      // DEFAULT reserved for base only.
+      if (key === "DEFAULT" && !!row.variantId) {
+        invalidDefaultRowIds.add(row.id);
+      }
 
       const first = seen.get(key);
       if (first) {
@@ -652,23 +671,38 @@ export default function SupplierEditProduct() {
       return sample ? formatComboLabel(sample.selections, attrOrder, attrNameById, valueNameById) : k;
     });
 
-    const explain =
+    const dupExplain =
       dups.size > 0
         ? `Duplicate variant combinations found: ${labels.join(
           " • "
         )}. Please change options or remove one of the duplicate rows.`
         : null;
 
-    return { duplicateRowIds: dups, duplicateLabels: labels, explain };
+    const defaultExplain =
+      invalidDefaultRowIds.size > 0
+        ? "A variant row cannot be DEFAULT (no options selected). DEFAULT is reserved for the base product combo."
+        : null;
+
+    const explain = [dupExplain, defaultExplain].filter(Boolean).join(" ");
+
+    return {
+      duplicateRowIds: dups,
+      duplicateLabels: labels,
+      explain: explain || null,
+      invalidDefaultRowIds,
+    };
   };
 
   const liveDup = useMemo(() => computeDupInfo(variantRows), [variantRows, attrOrder, attrNameById, valueNameById]);
   const duplicateRowIds = liveDup.duplicateRowIds;
+  const invalidDefaultRowIds = liveDup.invalidDefaultRowIds;
+
   const hasDuplicates = duplicateRowIds.size > 0;
+  const hasInvalidDefaultVariant = invalidDefaultRowIds.size > 0;
 
   useEffect(() => {
-    setDupWarn(hasDuplicates ? liveDup.explain : null);
-  }, [hasDuplicates, liveDup.explain]);
+    setDupWarn(liveDup.explain);
+  }, [liveDup.explain]);
 
   const activeAttrs = useMemo(() => (attributes ?? []).filter((a) => a?.isActive !== false), [attributes]);
 
@@ -676,12 +710,88 @@ export default function SupplierEditProduct() {
   const canAddNewCombos = !offersOnly;
   const canEditAttributes = !offersOnly;
 
+  /* =========================================================
+     ✅ BaseCombo vs VariantCombo guard (STRICT)
+  ========================================================= */
+
+  const baseComboSelections = useMemo(() => {
+    const sel: Record<string, string> = {};
+    for (const aid of attrOrder) {
+      const v = selectedAttrs?.[aid];
+      sel[aid] = typeof v === "string" ? String(v || "").trim() : "";
+    }
+    return sel;
+  }, [selectedAttrs, attrOrder]);
+
+  const baseComboHasAny = useMemo(() => rowHasAnySelection(baseComboSelections), [baseComboSelections]);
+  const baseComboKey = useMemo(() => strictComboKey(baseComboSelections, attrOrder), [baseComboSelections, attrOrder]);
+
+  const baseComboConflict = useMemo(() => {
+    if (!attrOrder.length) return { rowIds: new Set<string>(), labels: [] as string[] };
+    if (!baseComboHasAny) return { rowIds: new Set<string>(), labels: [] as string[] };
+
+    const ids = new Set<string>();
+    const labels: string[] = [];
+
+    for (const row of variantRows) {
+      if (!isRealVariantRow(row)) continue;
+      if (!rowHasAnySelection(row.selections)) continue;
+
+      const key = strictComboKey(row.selections, attrOrder);
+      if (key === baseComboKey) {
+        ids.add(row.id);
+        const lbl = row.comboLabel || formatComboLabel(row.selections, attrOrder, attrNameById, valueNameById);
+        labels.push(lbl);
+      }
+    }
+
+    return { rowIds: ids, labels: Array.from(new Set(labels)) };
+  }, [variantRows, attrOrder, baseComboHasAny, baseComboKey, attrNameById, valueNameById]);
+
+  const hasBaseComboConflict = baseComboConflict.rowIds.size > 0;
+
+  const baseComboWarn = useMemo(() => {
+    if (!hasBaseComboConflict) return null;
+    const list = baseComboConflict.labels.length ? baseComboConflict.labels.join(" • ") : "a variant row";
+    return `Base attributes selection matches ${list}. Base combo must be different from all variant combos.`;
+  }, [hasBaseComboConflict, baseComboConflict.labels]);
+
   const setAttr = (attributeId: string, value: string | string[]) => {
     if (offersOnly) return;
+
+    // ✅ Prevent changing BASE SELECT attributes to match an existing variant combo
+    const isSelectAttr = attrOrder.includes(String(attributeId));
+    if (isSelectAttr && typeof value === "string") {
+      const nextSelected = { ...selectedAttrs, [attributeId]: value };
+
+      const nextBase: Record<string, string> = {};
+      for (const aid of attrOrder) {
+        const v = nextSelected?.[aid];
+        nextBase[aid] = typeof v === "string" ? String(v || "").trim() : "";
+      }
+
+      const nextHasAny = rowHasAnySelection(nextBase);
+      if (nextHasAny) {
+        const nextKey = strictComboKey(nextBase, attrOrder);
+        const conflicts = variantRows.some((r) => {
+          if (!isRealVariantRow(r)) return false;
+          if (!rowHasAnySelection(r.selections)) return false;
+          return strictComboKey(r.selections, attrOrder) === nextKey;
+        });
+
+        if (conflicts) {
+          setErr(
+            "That base attribute combination matches an existing variant combo. Change base attributes or the variant."
+          );
+          // ✅ do NOT block — let user rectify
+        }
+
+      }
+    }
+
     setSelectedAttrs((prev) => ({ ...prev, [attributeId]: value }));
   };
 
-  // optional: if you want to reset skuTouched when loading a new product
   useEffect(() => {
     setSkuTouched(false);
   }, [detailQ.data?.id]);
@@ -794,11 +904,11 @@ export default function SupplierEditProduct() {
       setRetailPrice(String(baseP));
     }
 
-    // Images: hydrate but respect max=5 (schema imagesJson: String[])
+    // Images: hydrate but respect max=5
     const urls = normalizeImages(p).filter(isUrlish);
     const uniq = Array.from(new Set(urls)).slice(0, MAX_IMAGES_PER_PRODUCT);
     setImageUrls(uniq.join("\n"));
-    setUploadedUrls([]); // prevent accidental overflow from previous product edit
+    setUploadedUrls([]);
 
     const baseQty = p.offer ? (p.offer.availableQty ?? 0) : (p.availableQty ?? 0);
     setAvailableQty(String(Number(baseQty) || 0));
@@ -832,6 +942,19 @@ export default function SupplierEditProduct() {
 
       const qty = myOffer?.availableQty ?? v?.availableQty ?? 0;
 
+      // ✅ hydrate per-variant price
+      const offerUnit = Number(myOffer?.unitPrice ?? NaN);
+      const variantRetail =
+        Number(v?.retailPrice ?? NaN) || Number(v?.unitPrice ?? NaN) || Number(v?.price ?? NaN);
+
+      const activeUnitPrice = Number.isFinite(offerUnit) && offerUnit > 0 ? offerUnit : baseP;
+
+      const unitForInput = offersOnly
+        ? activeUnitPrice
+        : Number.isFinite(variantRetail) && variantRetail > 0
+          ? variantRetail
+          : baseP;
+
       return {
         id: uid("vr"),
         variantId,
@@ -839,6 +962,8 @@ export default function SupplierEditProduct() {
         selections,
         comboLabel,
         availableQty: String(Number(qty) || 0),
+        unitPrice: String(Number(unitForInput) || 0),
+        activeUnitPrice: offersOnly ? activeUnitPrice : undefined,
         rawOptions,
         variantOfferId: myOffer?.id ? String(myOffer.id) : undefined,
       };
@@ -947,9 +1072,7 @@ export default function SupplierEditProduct() {
       return [];
     }
     if (current.length + files.length > MAX_IMAGES_PER_PRODUCT) {
-      setErr(
-        `You can only upload ${MAX_IMAGES_PER_PRODUCT - current.length} more image(s). Remove extras or upload fewer.`
-      );
+      setErr(`You can only upload ${MAX_IMAGES_PER_PRODUCT - current.length} more image(s). Remove extras or upload fewer.`);
       return [];
     }
 
@@ -966,7 +1089,6 @@ export default function SupplierEditProduct() {
       const urls: string[] = (res as any)?.data?.urls || (Array.isArray((res as any)?.data) ? (res as any).data : []);
       const clean = Array.isArray(urls) ? urls.filter(Boolean) : [];
 
-      // Merge + clamp to MAX_IMAGES_PER_PRODUCT
       const next = new Set<string>(current);
       for (const u of clean) {
         if (next.size >= MAX_IMAGES_PER_PRODUCT) break;
@@ -1011,21 +1133,46 @@ export default function SupplierEditProduct() {
 
     const selections: Record<string, string> = {};
     selectableAttrs.forEach((a) => (selections[a.id] = ""));
-    const next = [...variantRows, { id: uid("vr"), selections, availableQty: "" }];
+
+    // ✅ start variant price from current base input
+    const baseNow = toMoneyNumber(retailPrice);
+    const next = [...variantRows, { id: uid("vr"), selections, availableQty: "", unitPrice: String(baseNow || 0) }];
     setVariantRowsAndCheck(next);
   }
 
   function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
     setErr(null);
     if (offersOnly) return;
+
     const next = variantRows.map((r) =>
       r.id === rowId ? { ...r, selections: { ...r.selections, [attributeId]: valueId } } : r
     );
+
+    // ✅ Prevent a variant combo from matching base combo (STRICT)
+    if (attrOrder.length && baseComboHasAny) {
+      const changed = next.find((r) => r.id === rowId);
+      if (changed && rowHasAnySelection(changed.selections)) {
+        const changedKey = strictComboKey(changed.selections, attrOrder);
+        if (changedKey === baseComboKey) {
+          setErr(
+            "That variant combination matches your base attributes selection (base combo). Change the variant options or base attributes."
+          );
+          // ✅ do NOT block — let user rectify
+        }
+
+      }
+    }
+
     setVariantRowsAndCheck(next);
   }
 
   function updateVariantQty(rowId: string, v: string) {
     const next = variantRows.map((r) => (r.id === rowId ? { ...r, availableQty: v } : r));
+    setVariantRowsAndCheck(next);
+  }
+
+  function updateVariantPrice(rowId: string, v: string) {
+    const next = variantRows.map((r) => (r.id === rowId ? { ...r, unitPrice: v } : r));
     setVariantRowsAndCheck(next);
   }
 
@@ -1036,9 +1183,7 @@ export default function SupplierEditProduct() {
       withCredentials: true,
     });
 
-    setVariantRows((rows) =>
-      rows.map((r) => (r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r))
-    );
+    setVariantRows((rows) => rows.map((r) => (r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r)));
   }
 
   function removeVariantRow(rowId: string) {
@@ -1104,7 +1249,10 @@ export default function SupplierEditProduct() {
   }
 
   function buildVariantsPayload() {
+    // ✅ variants must have at least one option selected (prevents DEFAULT/base-only)
     const rows = variantRows.filter((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections));
+
+    const basePrice = toMoneyNumber(retailPrice);
 
     return rows.map((r) => {
       const opts = attrOrder
@@ -1115,8 +1263,12 @@ export default function SupplierEditProduct() {
         })
         .filter(Boolean) as Array<{ attributeId: string; valueId: string }>;
 
+      const rowUnit = toMoneyNumber(r.unitPrice);
+      const finalUnit = rowUnit > 0 ? rowUnit : basePrice;
+
       return {
         ...(r.variantId ? { id: String(r.variantId) } : {}),
+        retailPrice: finalUnit,
         availableQty: toIntNonNeg(r.availableQty),
         inStock: toIntNonNeg(r.availableQty) > 0,
         isActive: true,
@@ -1152,11 +1304,9 @@ export default function SupplierEditProduct() {
     const price = toMoneyNumber(retailPrice);
     const baseQty = baseQtyPreview;
 
-    // ✅ defense-in-depth: do NOT send title/sku changes when LIVE
     const core: any = {
       description: (description ?? "").trim(),
 
-      // ✅ IMPORTANT: API expects basePrice (or offer.basePrice), NOT retailPrice
       basePrice: price,
       offer: {
         basePrice: price,
@@ -1188,9 +1338,25 @@ export default function SupplierEditProduct() {
   }
 
   const updateM = useMutation({
+
     mutationFn: async () => {
       setErr(null);
       setOkMsg(null);
+      if (
+        imageOverLimit ||
+        hasBaseComboConflict ||
+        hasDuplicates ||
+        hasInvalidDefaultVariant
+      ) {
+        throw new Error(
+          imageOverLimit
+            ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
+            : baseComboWarn
+              ? baseComboWarn
+              : dupWarn || "Fix the errors above to save."
+        );
+      }
+
 
       if (!id) throw new Error("Missing product id");
 
@@ -1203,6 +1369,25 @@ export default function SupplierEditProduct() {
 
       const basePrice = toMoneyNumber(retailPrice);
       if (!Number.isFinite(basePrice) || basePrice <= 0) throw new Error("Price must be greater than 0");
+
+      // ✅ block base combo matching a variant combo
+      if (hasBaseComboConflict) {
+        throw new Error(baseComboWarn || "Base combo matches a variant combo. Please change one of them.");
+      }
+
+      // ✅ block invalid DEFAULT variant
+      if (hasInvalidDefaultVariant) {
+        throw new Error("A variant row cannot be DEFAULT (no options selected). DEFAULT is reserved for the base combo.");
+      }
+
+      // ✅ validate per-variant price when the row is a real variant combo
+      const realVariantRows = variantRows.filter((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections));
+      for (const r of realVariantRows) {
+        const rowUnit = toMoneyNumber(r.unitPrice);
+        if (!Number.isFinite(rowUnit) || rowUnit <= 0) {
+          throw new Error("Each variant must have a valid price greater than 0.");
+        }
+      }
 
       if (offersOnly) {
         const baseQty = baseQtyPreview;
@@ -1235,13 +1420,18 @@ export default function SupplierEditProduct() {
             continue;
           }
 
+          const unitPrice = toMoneyNumber(r.unitPrice);
+          if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+            throw new Error("Each variant offer must have a valid unit price greater than 0.");
+          }
+
           tasks.push(
             api.put(
               `/api/supplier/catalog/offers/variant`,
               {
                 productId: id,
                 variantId: r.variantId,
-                unitPrice: basePrice,
+                unitPrice,
                 availableQty: qty,
                 leadDays: null,
                 isActive: true,
@@ -1312,7 +1502,6 @@ export default function SupplierEditProduct() {
       return data;
     },
     onSuccess: async () => {
-      // ✅ critical: bust stale caches so title/sku show as persisted everywhere
       queryClient.invalidateQueries({ queryKey: ["supplier"] });
 
       if (offersOnly) {
@@ -1337,14 +1526,20 @@ export default function SupplierEditProduct() {
     },
   });
 
+  const hasBlockingError =
+    imageOverLimit ||
+    hasBaseComboConflict ||
+    hasDuplicates ||
+    hasInvalidDefaultVariant;
+
   const saveDisabled =
     updateM.isPending ||
     uploading ||
     detailQ.isLoading ||
-    hasDuplicates ||
     !hydrated ||
     !isSupplier ||
-    imageOverLimit;
+    hasBlockingError;
+
 
   const hasPendingBase =
     offersOnly &&
@@ -1364,7 +1559,7 @@ export default function SupplierEditProduct() {
     <SiteLayout>
       <SupplierLayout>
         <div className="mt-4 sm:mt-6 space-y-4">
-          {/* Header (mobile: stacked + full width actions) */}
+          {/* Header */}
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
             <div className="min-w-0">
               <motion.h1
@@ -1403,23 +1598,28 @@ export default function SupplierEditProduct() {
                 type="button"
                 disabled={saveDisabled}
                 onClick={() => {
-                  if (imageOverLimit) {
-                    setErr(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`);
-                    return;
-                  }
-                  if (hasDuplicates) {
-                    setErr(dupWarn);
+                  if (hasBlockingError) {
+                    setErr(
+                      imageOverLimit
+                        ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
+                        : baseComboWarn
+                          ? baseComboWarn
+                          : dupWarn || "Fix the errors above to save."
+                    );
                     return;
                   }
                   updateM.mutate();
                 }}
+
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-[13px] sm:text-sm font-semibold disabled:opacity-60"
                 title={
                   imageOverLimit
                     ? `Remove extra images (max ${MAX_IMAGES_PER_PRODUCT}).`
-                    : hasDuplicates
-                      ? "Fix duplicate combinations to save."
-                      : undefined
+                    : hasBaseComboConflict
+                      ? "Fix base combo vs variant combo conflict to save."
+                      : hasDuplicates || hasInvalidDefaultVariant
+                        ? "Fix duplicate/invalid combinations to save."
+                        : undefined
                 }
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
@@ -1451,9 +1651,15 @@ export default function SupplierEditProduct() {
             </div>
           )}
 
+          {baseComboWarn && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              <b>Base/Variant conflict:</b> {baseComboWarn}
+            </div>
+          )}
+
           {dupWarn && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              <b>Duplicates detected:</b> {dupWarn}
+              <b>Variant issue:</b> {dupWarn}
             </div>
           )}
 
@@ -1472,7 +1678,7 @@ export default function SupplierEditProduct() {
             </div>
           )}
 
-          {/* Layout (mobile: single column; desktop: sidebar) */}
+          {/* Layout */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2 space-y-4">
               {/* Basic info */}
@@ -1496,8 +1702,6 @@ export default function SupplierEditProduct() {
                           const nextTitle = e.target.value;
                           setTitle(nextTitle);
 
-                          // ✅ only auto-generate when SKU hasn't been manually edited
-                          // ✅ and only when core editing is allowed
                           if (!offersOnly && !isLive && !skuTouched) {
                             setSku(autoSkuFromTitle(nextTitle));
                           }
@@ -1514,9 +1718,6 @@ export default function SupplierEditProduct() {
                         onChange={(e) => {
                           const v = e.target.value;
                           setSku(v);
-
-                          // if they type anything (or even clear it), count as manual edit
-                          // but if they CLEAR it, allow title to start generating again
                           if (v.trim() === "") setSkuTouched(false);
                           else setSkuTouched(true);
                         }}
@@ -1527,7 +1728,6 @@ export default function SupplierEditProduct() {
                     </div>
                   </div>
 
-                  {/* Mobile-friendly: break 4-col row into 2 cols on small */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     <div className="sm:col-span-2 lg:col-span-1">
                       <label className="block text-[11px] font-semibold text-zinc-700 mb-1">
@@ -1642,7 +1842,10 @@ export default function SupplierEditProduct() {
                   </div>
 
                   {/* Attributes */}
-                  <div className="rounded-2xl border bg-white overflow-hidden">
+                  <div
+                    className={`rounded-2xl border bg-white overflow-hidden ${hasBaseComboConflict ? "border-rose-300 ring-2 ring-rose-200" : ""
+                      }`}
+                  >
                     <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
                       <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Attributes</div>
                       <div className="text-[11px] sm:text-xs text-zinc-500 mt-0.5">
@@ -1652,6 +1855,12 @@ export default function SupplierEditProduct() {
                             ? "LIVE listing: edits may require review."
                             : "You can edit attributes freely while not LIVE."}
                       </div>
+
+                      {hasBaseComboConflict && (
+                        <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800">
+                          <b>Conflict:</b> This base combo matches a variant combo. Change the base SELECT attributes (or the variant).
+                        </div>
+                      )}
                     </div>
 
                     <div className="p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1676,6 +1885,7 @@ export default function SupplierEditProduct() {
 
                         if (a.type === "SELECT") {
                           const val = String(getAttrVal(a.id) ?? "");
+                          const highlight = hasBaseComboConflict && attrOrder.includes(String(a.id));
                           return (
                             <div key={a.id}>
                               <label className="block text-[11px] font-semibold text-zinc-700 mb-1">{a.name}</label>
@@ -1683,7 +1893,8 @@ export default function SupplierEditProduct() {
                                 value={val}
                                 onChange={(e) => setAttr(a.id, e.target.value)}
                                 disabled={!canEditAttributes}
-                                className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
+                                className={`w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60 ${highlight ? "border-rose-300 ring-2 ring-rose-100" : ""
+                                  }`}
                               >
                                 <option value="">— Select —</option>
                                 {(a.values || []).map((v: any) => (
@@ -1692,6 +1903,11 @@ export default function SupplierEditProduct() {
                                   </option>
                                 ))}
                               </select>
+                              {highlight && (
+                                <div className="text-[11px] text-rose-700 mt-1">
+                                  This base selection is conflicting with a variant combo.
+                                </div>
+                              )}
                             </div>
                           );
                         }
@@ -1728,15 +1944,10 @@ export default function SupplierEditProduct() {
                 </div>
               </Card>
 
-
               {/* Images */}
               <Card
                 title="Images"
-                subtitle={
-                  offersOnly
-                    ? "Catalog images are read-only."
-                    : `Paste URLs or upload images. Max ${MAX_IMAGES_PER_PRODUCT} images per product.`
-                }
+                subtitle={offersOnly ? "Catalog images are read-only." : `Paste URLs or upload images. Max ${MAX_IMAGES_PER_PRODUCT} images per product.`}
                 right={
                   <label
                     className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer ${offersOnly || imageSlotsLeft <= 0 ? "opacity-60 pointer-events-none" : ""
@@ -1778,9 +1989,7 @@ export default function SupplierEditProduct() {
                       <b>{MAX_IMAGES_PER_PRODUCT}</b>
                     </div>
                     {!offersOnly && (
-                      <div className="text-[11px] text-zinc-500">
-                        {imageSlotsLeft > 0 ? `${imageSlotsLeft} slot(s) left` : "No slots left"}
-                      </div>
+                      <div className="text-[11px] text-zinc-500">{imageSlotsLeft > 0 ? `${imageSlotsLeft} slot(s) left` : "No slots left"}</div>
                     )}
                   </div>
 
@@ -1864,10 +2073,10 @@ export default function SupplierEditProduct() {
                 title="Variant combinations"
                 subtitle={
                   offersOnly
-                    ? "Catalog product: set qty for existing variants. You can’t create new combos."
+                    ? "Catalog product: set price + qty for existing variants. You can’t create new combos."
                     : isLive
-                      ? "LIVE listing: update qty. You can’t delete existing variants (set qty to 0)."
-                      : "Add/remove combos while not LIVE."
+                      ? "LIVE listing: update qty only. Prices/options are locked."
+                      : "Add/remove combos while not LIVE. Variants must have at least one option selected (DEFAULT is base-only)."
                 }
                 right={
                   <button
@@ -1891,12 +2100,17 @@ export default function SupplierEditProduct() {
                         row.comboLabel || formatComboLabel(row.selections, attrOrder, attrNameById, valueNameById);
 
                       const isDup = duplicateRowIds.has(row.id);
+                      const isInvalidDefault = invalidDefaultRowIds.has(row.id);
+                      const isBaseConflict = baseComboConflict.rowIds.has(row.id);
+
                       const rowQty = toIntNonNeg(row.availableQty);
                       const rowInStock = rowQty > 0;
 
                       const disableRemove = offersOnly ? !row.variantOfferId && rowQty <= 0 : isLive && row.isExisting;
 
-                      const activeUnitPrice = offersOnly ? activeBasePriceForDisplay : basePriceForPreview;
+                      const activeUnitPrice = offersOnly
+                        ? Number(row.activeUnitPrice ?? activeBasePriceForDisplay)
+                        : toMoneyNumber(row.unitPrice) || basePriceForPreview;
 
                       const pendingVar = row.variantId ? pendingVariantPatchByVariantId.get(String(row.variantId)) : null;
                       const pendingVarUnitPrice = Number(pendingVar?.proposedPatch?.unitPrice ?? NaN);
@@ -1904,15 +2118,22 @@ export default function SupplierEditProduct() {
                         offersOnly &&
                         Number.isFinite(pendingVarUnitPrice) &&
                         pendingVarUnitPrice > 0 &&
-                        pendingVarUnitPrice !== activeUnitPrice;
+                        pendingVarUnitPrice !== Number(row.activeUnitPrice ?? activeBasePriceForDisplay);
 
-                      // Schema safety: don’t allow editing selections for existing variants (avoids mismatch/stale ids)
                       const selectionLocked = offersOnly || row.isExisting || isLive;
+                      const priceLocked = (!offersOnly && isLive) || false;
+
+                      const isDraftNoSelection = !row.variantId && !rowHasAnySelection(row.selections);
+                      const draftHasEdits =
+                        isDraftNoSelection &&
+                        (String(row.availableQty || "").trim() !== "" || String(row.unitPrice || "").trim() !== "");
+
+                      const hasAnyIssue = isDup || isInvalidDefault || isBaseConflict;
 
                       return (
                         <div
                           key={row.id}
-                          className={`rounded-2xl border bg-white p-3 space-y-2 ${isDup ? "border-rose-400 ring-2 ring-rose-200" : ""
+                          className={`rounded-2xl border bg-white p-3 space-y-2 ${hasAnyIssue ? "border-rose-400 ring-2 ring-rose-200" : ""
                             }`}
                         >
                           {/* option selects */}
@@ -1924,12 +2145,12 @@ export default function SupplierEditProduct() {
                                   key={attr.id}
                                   value={valueId}
                                   onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${isDup ? "border-rose-300" : ""
+                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
                                     }`}
                                   disabled={selectionLocked}
                                   title={
                                     selectionLocked
-                                      ? "Variant options are fixed; edit qty only."
+                                      ? "Variant options are fixed; edit price/qty only."
                                       : "Select variant option value."
                                   }
                                 >
@@ -1949,12 +2170,13 @@ export default function SupplierEditProduct() {
                             <div className="min-w-0">
                               <div className="text-xs text-zinc-700">
                                 <span className="text-zinc-500">Combo:</span>{" "}
-                                <b className={isDup ? "text-rose-700" : "text-zinc-900"}>{comboText}</b>
+                                <b className={hasAnyIssue ? "text-rose-700" : "text-zinc-900"}>{comboText}</b>
                               </div>
 
                               <div className="text-[11px] text-zinc-500 mt-1 flex flex-wrap gap-3">
                                 <span>
-                                  Unit (active): <b className="text-zinc-900">{ngn.format(activeUnitPrice)}</b>
+                                  {offersOnly ? "Unit (approved):" : "Unit:"}{" "}
+                                  <b className="text-zinc-900">{ngn.format(activeUnitPrice)}</b>
                                 </span>
                                 <span>
                                   Qty: <b className="text-zinc-900">{rowQty}</b>
@@ -1979,15 +2201,35 @@ export default function SupplierEditProduct() {
                                   Requested variant: <b>{ngn.format(pendingVarUnitPrice)}</b> (pending)
                                 </div>
                               )}
+
+                              {draftHasEdits && (
+                                <div className="text-[11px] text-amber-700 mt-1">
+                                  Select at least one option to create a variant. Otherwise this row is ignored.
+                                </div>
+                              )}
                             </div>
 
-                            <div className="sm:ml-auto flex items-center gap-2">
+                            <div className="sm:ml-auto flex flex-wrap items-center gap-2">
+                              <span className="text-xs text-zinc-500">Price</span>
+                              <input
+                                value={row.unitPrice}
+                                onChange={(e) => updateVariantPrice(row.id, e.target.value)}
+                                inputMode="decimal"
+                                disabled={priceLocked}
+                                readOnly={priceLocked}
+                                className={`w-28 rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
+                                  } ${priceLocked ? "opacity-60" : ""}`}
+                                placeholder="e.g. 25000"
+                                title={priceLocked ? "LIVE listing: variant price is locked." : "Set this variant unit price."}
+                              />
+
                               <span className="text-xs text-zinc-500">Qty</span>
                               <input
                                 value={row.availableQty}
                                 onChange={(e) => updateVariantQty(row.id, e.target.value)}
                                 inputMode="numeric"
-                                className={`w-24 rounded-xl border px-3 py-2 text-xs bg-white ${isDup ? "border-rose-300" : ""}`}
+                                className={`w-24 rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
+                                  }`}
                                 placeholder="e.g. 5"
                               />
 
@@ -2014,9 +2256,15 @@ export default function SupplierEditProduct() {
                             </div>
                           </div>
 
-                          {isDup && (
+                          {hasAnyIssue && (
                             <div className="text-[11px] text-rose-700">
-                              Duplicate combination. Change options or remove one of the matching rows.
+                              {isBaseConflict ? "Invalid: this variant combo matches your base attributes selection (base combo)." : null}
+                              {isBaseConflict && (isInvalidDefault || isDup) ? " " : null}
+                              {isInvalidDefault
+                                ? "Invalid: a variant cannot be DEFAULT (no options selected). DEFAULT is reserved for base."
+                                : null}
+                              {(isBaseConflict || isInvalidDefault) && isDup ? " " : null}
+                              {isDup ? "Duplicate combination. Change options or remove one of the matching rows." : null}
                             </div>
                           )}
                         </div>
@@ -2049,9 +2297,7 @@ export default function SupplierEditProduct() {
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-zinc-500">{offersOnly ? "Active offer price" : "Retail price"}</span>
-                      <b className="text-zinc-900">
-                        {ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}
-                      </b>
+                      <b className="text-zinc-900">{ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}</b>
                     </div>
 
                     {offersOnly && (
@@ -2095,9 +2341,9 @@ export default function SupplierEditProduct() {
                     </div>
                   )}
 
-                  {hasDuplicates && (
+                  {(hasBaseComboConflict || hasDuplicates || hasInvalidDefaultVariant) && (
                     <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 text-xs">
-                      Saving is blocked until duplicates are fixed.
+                      Saving is blocked until base/variant conflicts and variant issues are fixed.
                     </div>
                   )}
 
@@ -2109,28 +2355,32 @@ export default function SupplierEditProduct() {
                 </div>
               </div>
 
-              {/* Sticky-ish save on mobile (nice big CTA) */}
               <button
                 type="button"
                 disabled={saveDisabled}
                 onClick={() => {
-                  if (imageOverLimit) {
-                    setErr(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`);
-                    return;
-                  }
-                  if (hasDuplicates) {
-                    setErr(dupWarn);
+                  if (hasBlockingError) {
+                    setErr(
+                      imageOverLimit
+                        ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
+                        : baseComboWarn
+                          ? baseComboWarn
+                          : dupWarn || "Fix the errors above to save."
+                    );
                     return;
                   }
                   updateM.mutate();
                 }}
+
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
                 title={
                   imageOverLimit
                     ? `Remove extra images (max ${MAX_IMAGES_PER_PRODUCT}).`
-                    : hasDuplicates
-                      ? "Fix duplicate combinations to save."
-                      : undefined
+                    : hasBaseComboConflict
+                      ? "Fix base combo vs variant combo conflict to save."
+                      : hasDuplicates || hasInvalidDefaultVariant
+                        ? "Fix duplicate/invalid combinations to save."
+                        : undefined
                 }
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
