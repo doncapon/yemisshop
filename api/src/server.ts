@@ -162,6 +162,23 @@ if (process.env.NODE_ENV === "production") {
   );
 }
 
+
+// ---------------- Permissions-Policy ----------------
+// For an API host, deny all powerful features.
+const PERMISSIONS_POLICY =
+  "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), " +
+  "display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), " +
+  "execution-while-out-of-viewport=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), " +
+  "hid=(), identity-credentials-get=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), " +
+  "midi=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), " +
+  "screen-wake-lock=(), serial=(), usb=(), web-share=(), xr-spatial-tracking=()";
+
+app.use((_, res, next) => {
+  res.setHeader("Permissions-Policy", PERMISSIONS_POLICY);
+  next();
+});
+
+
 app.use(express.json({ limit: "2mb" }));
 
 /* -------------------------------- Health -------------------------------- */
