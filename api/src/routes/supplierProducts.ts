@@ -1,6 +1,6 @@
 // api/src/routes/supplierProducts.ts
 import { Router } from "express";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { NotificationType, Prisma, PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { requireAuth, requireSupplier } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
@@ -26,7 +26,7 @@ const toDecimal = (v: Decimalish) => {
 };
 
 async function safeNotifyAdmins(payload: {
-  type: string;
+  type: NotificationType;
   title: string;
   body: string;
   data?: any;
@@ -1128,12 +1128,12 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
         for (const v of variants as any[]) {
           const opts = normalizeOptions(
             v?.options ??
-              v?.optionSelections ??
-              v?.attributes ??
-              v?.attributeSelections ??
-              v?.variantOptions ??
-              v?.VariantOptions ??
-              []
+            v?.optionSelections ??
+            v?.attributes ??
+            v?.attributeSelections ??
+            v?.variantOptions ??
+            v?.VariantOptions ??
+            []
           );
 
           const directId = String(v?.variantId ?? v?.id ?? "").trim();
@@ -1235,7 +1235,7 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
     // ✅ Notify admins OUTSIDE transaction (no TDZ, no long transaction)
     await safeNotifyAdmins({
-      type: "SUPPLIER_PRODUCT_CREATED",
+      type: NotificationType.PRODUCT_SUBMITTED,
       title: "New supplier product created",
       body: `${s.name ?? "A supplier"} created a product: ${payload.title} (${txResult.product?.sku ?? txResult.skuUsed}).`,
       data: {
@@ -1694,9 +1694,9 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
       const ProductVariant = getDelegate(tx, "productVariant");
       const variants = ProductVariant
         ? await ProductVariant.findMany({
-            where: { productId },
-            select: { id: true, productId: true },
-          })
+          where: { productId },
+          select: { id: true, productId: true },
+        })
         : [];
 
       const variantIds = (variants as any[]).map((v) => String(v.id)).filter(Boolean);
@@ -1735,9 +1735,9 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
       const otherVarByVariantId =
         !otherVarByProductId && variantIds.length
           ? await tx.supplierVariantOffer.findFirst({
-              where: { variantId: { in: variantIds }, supplierId: { not: supplierId } } as any,
-              select: { id: true },
-            })
+            where: { variantId: { in: variantIds }, supplierId: { not: supplierId } } as any,
+            select: { id: true },
+          })
           : null;
 
       if (otherBase || otherVarByProductId || otherVarByVariantId) {
@@ -1780,11 +1780,10 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
       try {
         await notifyAdmins(
           {
-            type: "SUPPLIER_PRODUCT_DELETED" as any,
+            type: NotificationType.PRODUCT_DELETED,
             title: "Supplier product deleted",
-            body: `${supplierName ?? "A supplier"} deleted a product: ${(product as any).title} (${
-              (product as any).sku
-            }).`,
+            body: `${supplierName ?? "A supplier"} deleted a product: ${(product as any).title} (${(product as any).sku
+              }).`,
             data: {
               supplierId,
               supplierName,
@@ -2212,6 +2211,22 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
 
         return tx.product.findUnique({ where: { id } });
+      });
+
+
+      await safeNotifyAdmins({
+        type: NotificationType.PRODUCT_CHANGE_SUBMITTED,
+        title: "Supplier product updated",
+        body: `${s.name ?? "A supplier"} updated a product: ${(updated as any)?.title ?? (product as any)?.title ?? "Unknown"
+          } (${(updated as any)?.sku ?? (product as any)?.sku ?? id}).`,
+        data: {
+          supplierId: s.id,
+          supplierName: s.name ?? null,
+          productId: id,
+          sku: (updated as any)?.sku ?? (product as any)?.sku ?? null,
+          status: (updated as any)?.status ?? (product as any)?.status ?? null,
+          source: "supplierProducts.patch",
+        },
       });
 
       return res.json({ data: updated });

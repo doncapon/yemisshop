@@ -10,6 +10,7 @@ import {
   notifySupplierBySupplierId,
 } from "../services/notifications.service.js";
 import { requiredString } from "../lib/http.js";
+import { NotificationType } from "@prisma/client";
 
 const router = Router();
 const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
@@ -208,7 +209,7 @@ router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Res
           await notifySupplierBySupplierId(
             String(updated.supplierId),
             {
-              type: "PAYOUT_MARKED_PAID_SUPPLIER" as any,
+              type:  NotificationType.SUPPLIER_PAYOUT_RELEASED,
               title: "Payout released",
               body: `An allocation of ₦${String(updated.amount)} has been marked as PAID by an admin.`,
               data: {
@@ -224,7 +225,7 @@ router.post("/allocations/:id/mark-paid", requireAuth, async (req: any, res: Res
           // Admin broadcast (other admins)
           await notifyAdmins(
             {
-              type: "PAYOUT_MARKED_PAID_ADMIN" as any,
+              type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
               title: "Allocation marked as PAID",
               body: `Allocation ${updated.id} was marked PAID (₦${String(
                 updated.amount
@@ -293,7 +294,7 @@ router.post(
           await notifySupplierBySupplierId(
             String(po.supplierId),
             {
-              type: "PAYOUT_RELEASED_SUPPLIER" as any,
+              type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
               title: "Payout released",
               body: `Your payout for purchase order ${po.id} (order ${po.orderId}) has been released.`,
               data: {
@@ -306,7 +307,7 @@ router.post(
 
           // Admins: audit trail
           await notifyAdmins({
-            type: "PAYOUT_RELEASED_ADMIN" as any,
+            type: NotificationType.SUPPLIER_PAYOUT_RELEASED,
             title: "Payout released for PO",
             body: `Payout released for purchase order ${po.id} (order ${po.orderId}) to supplier ${po.supplier?.name ?? po.supplierId}.`,
             data: {

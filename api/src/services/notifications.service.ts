@@ -86,7 +86,7 @@ function dbClient(tx?: any) {
 
 export async function notifySupplierBySupplierId(
   supplierId: string,
-  payload: { type: string; title: string; body: string; data?: any },
+  payload: { type: NotificationType; title: string; body: string; data?: any },
   tx?: any
 ) {
   const db = dbClient(tx);

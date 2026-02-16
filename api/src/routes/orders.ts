@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireSuperAdmin } from "../middleware/auth.js";
 import { logOrderActivityTx } from "../services/activity.service.js";
 import { syncProductInStockCacheTx } from "../services/inventory.service.js";
-import { Prisma } from "@prisma/client";
+import { NotificationType, Prisma } from "@prisma/client";
 import { recomputeProductStockTx } from "../services/stockRecalc.service.js";
 
 import crypto from "crypto";
@@ -1141,7 +1141,7 @@ async function assertVariantSellableTx(tx: any, productId: string, variantId: st
 async function notifySuppliersForOrderTx(
   tx: any,
   orderId: string,
-  payload: { type: string; title: string; body: string; data?: any }
+  payload: { type: NotificationType; title: string; body: string; data?: any }
 ) {
   const pos = await tx.purchaseOrder.findMany({
     where: { orderId },
@@ -1173,7 +1173,7 @@ async function notifySuppliersForOrderTx(
 async function notifyOneSupplierForPoTx(
   tx: any,
   args: { orderId: string; purchaseOrderId: string; supplierId: string },
-  payload: { type: string; title: string; body: string; data?: any }
+  payload: { type: NotificationType; title: string; body: string; data?: any }
 ) {
   try {
     await notifySupplierBySupplierId(
@@ -1509,7 +1509,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
           await notifyUser(
             userId,
             {
-              type: "ORDER_PLACED",
+              type:  NotificationType.ORDER_CANCELED,
               title: "Order placed",
               body: `Your order ${updatedOrder.id} has been created.`,
               data: { orderId: updatedOrder.id, total: updatedOrder.total },
@@ -1519,7 +1519,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
           // ✅ the requested change: centralized helper using notifySupplierBySupplierId
           await notifySuppliersForOrderTx(tx, updatedOrder.id, {
-            type: "PURCHASE_ORDER_CREATED",
+            type:  NotificationType.PURCHASE_ORDER_CREATED,
             title: "New order received",
             body: `You have received a new purchase order for order ${updatedOrder.id}.`,
             data: { total: updatedOrder.total },
@@ -1527,7 +1527,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
           await notifyAdmins(
             {
-              type: "ORDER_PLACED",
+              type:  NotificationType.ORDER_PLACED,
               title: "New order created",
               body: `Order ${updatedOrder.id} was created with total ₦${updatedOrder.total}.`,
               data: { orderId: updatedOrder.id, total: updatedOrder.total },
@@ -2523,7 +2523,7 @@ router.post("/:orderId/cancel", requireAuth, requireOtp("CANCEL_ORDER"), async (
             tx,
             { orderId, purchaseOrderId: po.id, supplierId: supplier.id },
             {
-              type: "PURCHASE_ORDER_CANCELLED",
+              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
               title: "Purchase order cancelled",
               body: `Purchase order ${po.id} for order ${orderId} was cancelled.`,
             }
@@ -2546,7 +2546,7 @@ router.post("/:orderId/cancel", requireAuth, requireOtp("CANCEL_ORDER"), async (
           await notifyUser(
             String(order.userId),
             {
-              type: "PURCHASE_ORDER_STATUS_UPDATE",
+              type:  NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
               title: "Order update",
               body: `A supplier cancelled part of your order ${orderId}.`,
               data: { orderId },
@@ -2556,7 +2556,7 @@ router.post("/:orderId/cancel", requireAuth, requireOtp("CANCEL_ORDER"), async (
 
           await notifyAdmins(
             {
-              type: "PURCHASE_ORDER_STATUS_UPDATE",
+              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
               title: "Supplier cancelled PO",
               body: `A supplier cancelled a purchase order for order ${orderId}.`,
               data: { orderId },
@@ -2578,7 +2578,7 @@ router.post("/:orderId/cancel", requireAuth, requireOtp("CANCEL_ORDER"), async (
 
       // ✅ notify ALL suppliers on this order
       await notifySuppliersForOrderTx(tx, orderId, {
-        type: "PURCHASE_ORDER_CANCELLED",
+        type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
         title: "Order cancelled",
         body: `Order ${orderId} was cancelled.`,
       });
@@ -2588,7 +2588,7 @@ router.post("/:orderId/cancel", requireAuth, requireOtp("CANCEL_ORDER"), async (
         await notifyUser(
           String(order.userId),
           {
-            type: "ORDER_CANCELED",
+            type: NotificationType.ORDER_CANCELED,
             title: "Order cancelled",
             body: `Your order ${orderId} has been cancelled.`,
             data: { orderId },
@@ -2598,7 +2598,7 @@ router.post("/:orderId/cancel", requireAuth, requireOtp("CANCEL_ORDER"), async (
 
         await notifyAdmins(
           {
-            type: "ORDER_CANCELED",
+            type: NotificationType.ORDER_CANCELED,
             title: "Order cancelled",
             body: `Order ${orderId} was cancelled.`,
             data: { orderId },

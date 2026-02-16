@@ -3,6 +3,7 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { notifyMany } from "../services/notifications.service.js";
+import { NotificationType } from "@prisma/client";
 
 const router = Router();
 
@@ -81,7 +82,7 @@ router.post("/", requireAuth, async (req: any, res) => {
   // notify admins (and supplier if tied)
   const adminUserIds = await getAdminUserIds();
   await notifyMany(adminUserIds, {
-    type: "DISPUTE_OPENED",
+    type:  NotificationType.DISPUTE_OPENED,
     title: "New dispute opened",
     body: `Dispute opened on order ${orderId}: ${subject}`,
     data: { orderId, disputeId: d.id },
@@ -91,7 +92,7 @@ router.post("/", requireAuth, async (req: any, res) => {
     const s = await prisma.supplier.findUnique({ where: { id: supplierId }, select: { userId: true } });
     if (s?.userId) {
       await notifyMany([s.userId], {
-        type: "DISPUTE_OPENED",
+        type: NotificationType.DISPUTE_OPENED,
         title: "Dispute opened",
         body: `A dispute was opened on order ${orderId}.`,
         data: { orderId, disputeId: d.id },

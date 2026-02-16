@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { Prisma, SupplierPaymentStatus } from "@prisma/client";
+import { NotificationType, Prisma, SupplierPaymentStatus } from "@prisma/client";
 import { assertVerifiedOrderOtp } from "./adminOrders.js";
 import { sendOtpEmail } from "../lib/email.js";
 import { sendWhatsAppOtp } from "../lib/sms.js";
@@ -1041,7 +1041,7 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
           await notifyUser(
             shopperId,
             {
-              type: "ORDER_DELIVERED" as any,
+              type:  NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
               title: "Order delivered",
               body: `Your delivery for order ${orderId} is complete.`,
               data: {
@@ -1056,7 +1056,7 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         await notifySupplierBySupplierId(
           supplierIdStr,
           {
-            type: "PURCHASE_ORDER_DELIVERED_SUPPLIER" as any,
+            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
             title: "Order delivered",
             body: `Purchase order ${updatedPo.id} for order ${orderId} has been delivered. Payout has been released (or queued).`,
             data: {
@@ -1069,7 +1069,7 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
 
         await notifyAdmins(
           {
-            type: "PURCHASE_ORDER_DELIVERED_ADMIN" as any,
+            type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
             title: "Purchase order delivered",
             body: `Purchase order ${updatedPo.id} for order ${orderId} was marked delivered and payout released.`,
             data: {
@@ -1284,7 +1284,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
               await notifyUser(
                 shopperId,
                 {
-                  type: "PURCHASE_ORDER_CANCELED" as any,
+                  type: NotificationType.ORDER_CANCELED,
                   title: "Items canceled",
                   body: `Some items in your order ${orderIdStr} were canceled by the supplier before processing.`,
                   data: {
@@ -1299,7 +1299,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
 
             await notifyAdmins(
               {
-                type: "PURCHASE_ORDER_CANCELED_ADMIN" as any,
+                type: NotificationType.ORDER_CANCELED,
                 title: "Purchase order canceled (pending stage)",
                 body: `Purchase order ${po.id} for order ${orderIdStr} was canceled at PENDING stage by supplier.`,
                 data: {
@@ -1335,7 +1335,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
             await notifyUser(
               shopperId,
               {
-                type: "PURCHASE_ORDER_CANCELED_REFUND_REQUESTED" as any,
+                type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
                 title: "Items canceled & refund requested",
                 body: `Some items in your order ${orderIdStr} were canceled by the supplier. A refund has been requested and will be reviewed.`,
                 data: {
@@ -1351,7 +1351,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
 
           await notifyAdmins(
             {
-              type: "PURCHASE_ORDER_CANCELED_REFUND_ADMIN" as any,
+              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
               title: "Purchase order canceled & refund requested",
               body: `Purchase order ${po.id} for order ${orderIdStr} was canceled after confirmation. A refund request (${refund.id}) was created.`,
               data: {
@@ -1379,7 +1379,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
             await notifyUser(
               shopperId,
               {
-                type: "ORDER_DELIVERED" as any,
+                type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
                 title: "Order delivered",
                 body: `Your items for order ${orderIdStr} have been delivered.`,
                 data: {
@@ -1394,7 +1394,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
           await notifySupplierBySupplierId(
             supplierIdStr,
             {
-              type: "PURCHASE_ORDER_DELIVERED_SUPPLIER" as any,
+              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
               title: "Order delivered",
               body: `Purchase order ${po.id} for order ${orderIdStr} has been marked delivered. Payout has been released (or queued).`,
               data: {
@@ -1407,7 +1407,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
 
           await notifyAdmins(
             {
-              type: "PURCHASE_ORDER_DELIVERED_ADMIN" as any,
+              type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
               title: "Purchase order delivered",
               body: `Purchase order ${po.id} for order ${orderIdStr} was marked delivered (via status patch).`,
               data: {
@@ -1431,7 +1431,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
           await notifyUser(
             shopperId,
             {
-              type: "PURCHASE_ORDER_STATUS_UPDATED" as any,
+              type:  NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
               title: "Order update",
               body: `Status for part of your order ${orderIdStr} is now ${friendly}.`,
               data: {
@@ -1447,7 +1447,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
         await notifySupplierBySupplierId(
           supplierIdStr,
           {
-            type: "PURCHASE_ORDER_STATUS_UPDATED_SUPPLIER" as any,
+            type:  NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
             title: "Purchase order updated",
             body: `Status for purchase order ${po.id} (order ${orderIdStr}) is now ${normalizedNext}.`,
             data: {
@@ -1461,7 +1461,7 @@ router.patch("/:orderId/status", requireAuth, async (req: any, res) => {
 
         await notifyAdmins(
           {
-            type: "PURCHASE_ORDER_STATUS_UPDATED_ADMIN" as any,
+            type:  NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
             title: "Purchase order status updated",
             body: `Purchase order ${po.id} for order ${orderIdStr} is now ${normalizedNext}.`,
             data: {
@@ -1573,7 +1573,7 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
             await notifyUser(
               String(rider.userId),
               {
-                type: "RIDER_ASSIGNED" as any,
+                type: NotificationType.RIDER_ASSIGNED,
                 title: "New delivery assigned",
                 body: `You have been assigned to deliver purchase order ${updated.id} for order ${orderIdStr}.`,
                 data: {
@@ -1589,7 +1589,7 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
             await notifyUser(
               shopperId,
               {
-                type: "ORDER_OUT_FOR_DELIVERY" as any,
+                type:  NotificationType.RIDER_DELIVERED,
                 title: "Order out for delivery",
                 body: `Your order ${orderIdStr} is now out for delivery.`,
                 data: {
@@ -1603,7 +1603,7 @@ router.patch("/purchase-orders/:poId/assign-rider", requireAuth, async (req: any
 
           await notifyAdmins(
             {
-              type: "PURCHASE_ORDER_RIDER_ASSIGNED_ADMIN" as any,
+              type:  NotificationType.RIDER_ASSIGNED,
               title: "Rider assigned",
               body: `Rider was assigned to purchase order ${updated.id} for order ${orderIdStr}.`,
               data: {
