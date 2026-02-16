@@ -1,6 +1,6 @@
 // api/src/routes/refunds.ts
 import { Router } from "express";
-import { Prisma } from "@prisma/client";
+import { NotificationType, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { notifyMany } from "../services/notifications.service.js";
@@ -318,7 +318,7 @@ router.post("/", requireAuth, async (req: any, res) => {
             await notifyMany(
                 supplierUsers.map((s: any) => s.userId).filter(Boolean),
                 {
-                    type: "REFUND_REQUESTED",
+                    type:  NotificationType.REFUND_REQUESTED,
                     title: "New refund request",
                     body: `A customer requested a refund on order ${orderId}.`,
                     data: { orderId, supplierIds, refundIds: created.map((r: any) => r.id) },
@@ -328,7 +328,7 @@ router.post("/", requireAuth, async (req: any, res) => {
 
         const adminUserIds = await getAdminUserIds();
         await notifyMany(adminUserIds, {
-            type: "REFUND_REQUESTED",
+            type:  NotificationType.REFUND_REQUESTED,
             title: "Refund requested",
             body: `Refund requested on order ${orderId}.`,
             data: { orderId, refundIds: created.map((r: any) => r.id) },

@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { notifyMany, notifyUser } from "../services/notifications.service.js";
 import { requiredString } from "../lib/http.js";
+import { NotificationType } from "@prisma/client";
 
 const router = Router();
 
@@ -238,7 +239,7 @@ router.patch("/:id", requireAuth, async (req: any, res) => {
     // 🔔 Notify admins
     const adminIds = await getAdminUserIds();
     await notifyMany(adminIds, {
-      type: "REFUND_STATUS_CHANGED",
+      type:  NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
       title: "Supplier responded to refund",
       body: `Supplier ${s.name} marked refund as ${out.nextStatus} for order ${out.refundMeta.orderId}.`,
       data: {
@@ -253,7 +254,7 @@ router.patch("/:id", requireAuth, async (req: any, res) => {
     // 🔔 Notify customer (refund requester)
     if (out.refundMeta.requestedByUserId) {
       await notifyUser(out.refundMeta.requestedByUserId, {
-        type: "REFUND_STATUS_CHANGED",
+        type: NotificationType.PURCHASE_ORDER_STATUS_UPDATE,
         title: "Refund update",
         body: `Your refund request for order ${out.refundMeta.orderId} is now ${out.nextStatus}.`,
         data: {

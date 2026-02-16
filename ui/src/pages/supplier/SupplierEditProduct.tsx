@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, ImagePlus, Save, Trash2, Plus, Package } from "lucide-react";
+import { ArrowLeft, ImagePlus, Save, Trash2, Plus, Package, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import SiteLayout from "../../layouts/SiteLayout";
@@ -20,11 +20,8 @@ const MAX_IMAGES_PER_PRODUCT = 5;
    Helpers
 ========================================================= */
 
-function isUrlish(s?: string) {
-  return !!s && /^(https?:\/\/|data:image\/|\/)/i.test(s);
-}
 function parseUrlList(s: string) {
-  return s
+  return String(s || "")
     .split(/[\n,]/g)
     .map((t) => t.trim())
     .filter(Boolean);
@@ -44,6 +41,62 @@ function uid(prefix = "id") {
 }
 function rowHasAnySelection(selections: Record<string, string>) {
   return Object.values(selections || {}).some((v) => !!String(v || "").trim());
+}
+
+/**
+ * ✅ Normalize image URLs coming from server (common patterns):
+ * - "uploads/abc.jpg"      => "/uploads/abc.jpg"
+ * - "public/uploads/..."   => "/uploads/..."
+ * - already "/uploads/.."  => keep
+ * - absolute http(s)       => keep
+ * - data:image/...         => keep
+ */
+function normalizeImageUrl(input: any): string | null {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+
+  // data URLs
+  if (/^data:image\//i.test(raw)) return raw;
+
+  // absolute
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  // already rooted
+  if (raw.startsWith("/")) return raw;
+
+  // common upload paths without leading slash
+  if (raw.startsWith("uploads/")) return `/${raw}`;
+  if (raw.startsWith("public/uploads/")) return `/${raw.replace(/^public\//, "")}`;
+
+  // accept other relative-ish image paths if they look like files
+  if (/\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i.test(raw) && raw.includes("/")) {
+    return `/${raw}`;
+  }
+
+  return null;
+}
+
+function isUrlish(s?: string) {
+  return !!normalizeImageUrl(s);
+}
+
+function uniqStrings(arr: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const x of arr) {
+    const v = String(x || "").trim();
+    if (!v) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function limitImages(urls: any[], limit = MAX_IMAGES_PER_PRODUCT) {
+  const normalized = urls.map(normalizeImageUrl).filter(Boolean) as string[];
+  const clean = uniqStrings(normalized);
+  return clean.slice(0, limit);
 }
 
 /**
@@ -324,7 +377,7 @@ function normalizeImages(raw: any): string[] {
         if (arr.length) return arr;
       }
 
-      const list = parseUrlList(c).filter(isUrlish);
+      const list = parseUrlList(c);
       if (list.length) return list;
       continue;
     }
@@ -465,6 +518,7 @@ export default function SupplierEditProduct() {
   const [description, setDescription] = useState("");
   const [availableQty, setAvailableQty] = useState<string>("0");
 
+  // ---------- Images (match Add page UX: immediate previews for local files) ----------
   const [imageUrls, setImageUrls] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [uploadedUrls, setUploadedUrls] = useState<string[]>([]);
@@ -567,16 +621,12 @@ export default function SupplierEditProduct() {
     enabled: hydrated && !!id && isSupplier,
     queryFn: async () => {
       const attempts = offersOnly
-        ? [
-          `/api/supplier/products/${id}`,
-          `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
-          `/api/supplier/products/${id}`,
-        ]
+        ? [`/api/supplier/products/${id}`, `/api/supplier/products/${id}?include=offer,variants,images,attributes`]
         : [
-          `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
-          `/api/supplier/products/${id}?include=offer,variants`,
-          `/api/supplier/products/${id}`,
-        ];
+            `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
+            `/api/supplier/products/${id}?include=offer,variants`,
+            `/api/supplier/products/${id}`,
+          ];
 
       let lastErr: any = null;
 
@@ -674,8 +724,8 @@ export default function SupplierEditProduct() {
     const dupExplain =
       dups.size > 0
         ? `Duplicate variant combinations found: ${labels.join(
-          " • "
-        )}. Please change options or remove one of the duplicate rows.`
+            " • "
+          )}. Please change options or remove one of the duplicate rows.`
         : null;
 
     const defaultExplain =
@@ -780,12 +830,9 @@ export default function SupplierEditProduct() {
         });
 
         if (conflicts) {
-          setErr(
-            "That base attribute combination matches an existing variant combo. Change base attributes or the variant."
-          );
+          setErr("That base attribute combination matches an existing variant combo. Change base attributes or the variant.");
           // ✅ do NOT block — let user rectify
         }
-
       }
     }
 
@@ -838,16 +885,7 @@ export default function SupplierEditProduct() {
 
     const newCombosAdded = variantRows.some((r) => !r.variantId && rowHasAnySelection(r.selections));
 
-    return (
-      titleChanged ||
-      skuChanged ||
-      catChanged ||
-      brandChanged ||
-      descChanged ||
-      imagesChanged ||
-      attrChanged ||
-      newCombosAdded
-    );
+    return titleChanged || skuChanged || catChanged || brandChanged || descChanged || imagesChanged || attrChanged || newCombosAdded;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     offersOnly,
@@ -904,11 +942,12 @@ export default function SupplierEditProduct() {
       setRetailPrice(String(baseP));
     }
 
-    // Images: hydrate but respect max=5
-    const urls = normalizeImages(p).filter(isUrlish);
-    const uniq = Array.from(new Set(urls)).slice(0, MAX_IMAGES_PER_PRODUCT);
-    setImageUrls(uniq.join("\n"));
+    // ✅ Images: normalize + limit to 5 (so server paths like "uploads/.." show immediately)
+    const urls = limitImages(normalizeImages(p), MAX_IMAGES_PER_PRODUCT);
+    setImageUrls(urls.join("\n"));
     setUploadedUrls([]);
+    setFiles([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
 
     const baseQty = p.offer ? (p.offer.availableQty ?? 0) : (p.availableQty ?? 0);
     setAvailableQty(String(Number(baseQty) || 0));
@@ -944,16 +983,15 @@ export default function SupplierEditProduct() {
 
       // ✅ hydrate per-variant price
       const offerUnit = Number(myOffer?.unitPrice ?? NaN);
-      const variantRetail =
-        Number(v?.retailPrice ?? NaN) || Number(v?.unitPrice ?? NaN) || Number(v?.price ?? NaN);
+      const variantRetail = Number(v?.retailPrice ?? NaN) || Number(v?.unitPrice ?? NaN) || Number(v?.price ?? NaN);
 
       const activeUnitPrice = Number.isFinite(offerUnit) && offerUnit > 0 ? offerUnit : baseP;
 
       const unitForInput = offersOnly
         ? activeUnitPrice
         : Number.isFinite(variantRetail) && variantRetail > 0
-          ? variantRetail
-          : baseP;
+        ? variantRetail
+        : baseP;
 
       return {
         id: uid("vr"),
@@ -978,7 +1016,7 @@ export default function SupplierEditProduct() {
       categoryId: p.categoryId ?? null,
       brandId: p.brandId ?? null,
       description: p.description ?? "",
-      images: uniq,
+      images: urls,
       attr: {},
       multiAttrValues: {},
       existingVariantIds: new Set(vr.filter((x) => x.variantId).map((x) => String(x.variantId))),
@@ -1040,40 +1078,110 @@ export default function SupplierEditProduct() {
   const UPLOAD_ENDPOINT = "/api/uploads";
 
   // ---------- Images (max 5) ----------
-  const urlPreviews = useMemo(() => parseUrlList(imageUrls).filter(isUrlish), [imageUrls]);
+  const urlPreviews = useMemo(() => limitImages(parseUrlList(imageUrls), MAX_IMAGES_PER_PRODUCT), [imageUrls]);
 
   const allUrlPreviews = useMemo(() => {
-    const uniq = new Set<string>();
-    [...urlPreviews, ...uploadedUrls].forEach((u) => {
-      if (u && isUrlish(u)) uniq.add(u);
-    });
-    return Array.from(uniq);
+    return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT);
   }, [urlPreviews, uploadedUrls]);
+
+  const filePreviews = useMemo(() => {
+    return files.map((f) => ({ file: f, url: URL.createObjectURL(f) }));
+  }, [files]);
+
+  useEffect(() => {
+    return () => {
+      filePreviews.forEach((p) => URL.revokeObjectURL(p.url));
+    };
+  }, [filePreviews]);
 
   const imageCount = allUrlPreviews.length;
   const imageOverLimit = imageCount > MAX_IMAGES_PER_PRODUCT;
-  const imageSlotsLeft = Math.max(0, MAX_IMAGES_PER_PRODUCT - imageCount);
+
+  // "claimed" = urls in textarea + already uploaded urls (not counting selected files)
+  const claimedByTextAndUploaded = useMemo(() => {
+    return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT).length;
+  }, [urlPreviews, uploadedUrls]);
+
+  const remainingSlotsExcludingSelectedFiles = useMemo(
+    () => Math.max(0, MAX_IMAGES_PER_PRODUCT - claimedByTextAndUploaded),
+    [claimedByTextAndUploaded]
+  );
+
+  const remainingSlots = useMemo(() => {
+    return Math.max(0, remainingSlotsExcludingSelectedFiles - files.length);
+  }, [remainingSlotsExcludingSelectedFiles, files.length]);
 
   function getAllImagesFromUi(): string[] {
-    const uniq = new Set<string>();
-    for (const u of [...parseUrlList(imageUrls), ...uploadedUrls]) {
-      if (u && isUrlish(u)) uniq.add(u);
-    }
-    return Array.from(uniq);
+    return limitImages([...parseUrlList(imageUrls), ...uploadedUrls], MAX_IMAGES_PER_PRODUCT);
   }
 
-  // ✅ cookie-auth upload (enforces max images)
+  function removeUploadedUrl(u: string) {
+    setUploadedUrls((prev) => prev.filter((x) => x !== u));
+  }
+
+  function removeTextUrl(u: string) {
+    const raw = parseUrlList(imageUrls);
+    const next = raw.filter((x) => normalizeImageUrl(x) !== normalizeImageUrl(u));
+    setImageUrls(next.join("\n"));
+  }
+
+  function onPickFiles(nextPicked: File[]) {
+    if (offersOnly) return;
+    setErr(null);
+    if (!nextPicked.length) return;
+
+    setFiles((prev) => {
+      const room = Math.max(0, remainingSlotsExcludingSelectedFiles - prev.length);
+      if (room <= 0) {
+        setErr(`You can only add up to ${MAX_IMAGES_PER_PRODUCT} images. Remove one to add another.`);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        return prev;
+      }
+
+      const toAdd = nextPicked.slice(0, room);
+      if (toAdd.length < nextPicked.length) {
+        setErr(
+          `Only ${MAX_IMAGES_PER_PRODUCT} images max. Added ${toAdd.length}; ignored ${nextPicked.length - toAdd.length}.`
+        );
+      }
+      return [...prev, ...toAdd];
+    });
+  }
+
+  function extractUploadUrls(respData: any): string[] {
+    const d = respData;
+
+    const candidates: any[] =
+      (Array.isArray(d) ? d : null) ??
+      (Array.isArray(d?.urls) ? d.urls : null) ??
+      (Array.isArray(d?.data) ? d.data : null) ??
+      (Array.isArray(d?.data?.urls) ? d.data.urls : null) ??
+      (Array.isArray(d?.data?.items) ? d.data.items : null) ??
+      [];
+
+    const out: string[] = [];
+    for (const x of candidates) {
+      if (typeof x === "string") out.push(x);
+      else if (x && typeof x === "object") {
+        if (typeof (x as any).url === "string") out.push((x as any).url);
+        if (typeof (x as any).path === "string") out.push((x as any).path);
+        if (typeof (x as any).location === "string") out.push((x as any).location);
+      }
+    }
+
+    return limitImages(out, MAX_IMAGES_PER_PRODUCT);
+  }
+
+  // ✅ cookie-auth upload (enforces max images) — keeps previews and merges into uploadedUrls
   async function uploadLocalFiles(): Promise<string[]> {
+    if (offersOnly) return [];
     if (!files.length) return [];
 
-    const current = getAllImagesFromUi();
-    if (current.length >= MAX_IMAGES_PER_PRODUCT) {
-      setErr(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove an image URL before uploading more.`);
-      return [];
-    }
-    if (current.length + files.length > MAX_IMAGES_PER_PRODUCT) {
-      setErr(`You can only upload ${MAX_IMAGES_PER_PRODUCT - current.length} more image(s). Remove extras or upload fewer.`);
-      return [];
+    // enforce max before uploading
+    const already = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT);
+    const room = Math.max(0, MAX_IMAGES_PER_PRODUCT - already.length);
+    if (files.length > room) {
+      throw new Error(`You can only upload ${room} more image(s). Max is ${MAX_IMAGES_PER_PRODUCT}.`);
     }
 
     const fd = new FormData();
@@ -1081,36 +1189,29 @@ export default function SupplierEditProduct() {
 
     try {
       setUploading(true);
+
       const res = await api.post(UPLOAD_ENDPOINT, fd, {
         withCredentials: true,
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      const urls: string[] = (res as any)?.data?.urls || (Array.isArray((res as any)?.data) ? (res as any).data : []);
-      const clean = Array.isArray(urls) ? urls.filter(Boolean) : [];
-
-      const next = new Set<string>(current);
-      for (const u of clean) {
-        if (next.size >= MAX_IMAGES_PER_PRODUCT) break;
-        if (u && isUrlish(u)) next.add(String(u));
+      const clean = extractUploadUrls((res as any)?.data);
+      if (!clean.length) {
+        throw new Error("Upload succeeded but no image URLs were returned. Check /api/uploads response shape.");
       }
 
-      setUploadedUrls((prev) => {
-        const prevSet = new Set<string>(prev.filter(isUrlish));
-        for (const u of Array.from(next)) prevSet.add(u);
-        const merged = Array.from(new Set([...parseUrlList(imageUrls).filter(isUrlish), ...Array.from(prevSet)]));
-        return merged.slice(0, MAX_IMAGES_PER_PRODUCT);
-      });
+      // Only take what fits right now
+      const spaceNow = Math.max(
+        0,
+        MAX_IMAGES_PER_PRODUCT - limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT).length
+      );
+      const take = clean.slice(0, spaceNow);
 
+      setUploadedUrls((prev) => limitImages([...prev, ...take], MAX_IMAGES_PER_PRODUCT));
       setFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
 
-      const finalArr = Array.from(next);
-      if (current.length + clean.length > MAX_IMAGES_PER_PRODUCT) {
-        setErr(`Only the first ${MAX_IMAGES_PER_PRODUCT} images are kept. Remove images to add different ones.`);
-      }
-
-      return finalArr.slice(0, MAX_IMAGES_PER_PRODUCT);
+      return take;
     } finally {
       setUploading(false);
     }
@@ -1159,7 +1260,6 @@ export default function SupplierEditProduct() {
           );
           // ✅ do NOT block — let user rectify
         }
-
       }
     }
 
@@ -1183,7 +1283,9 @@ export default function SupplierEditProduct() {
       withCredentials: true,
     });
 
-    setVariantRows((rows) => rows.map((r) => (r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r)));
+    setVariantRows((rows) =>
+      rows.map((r) => (r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r))
+    );
   }
 
   function removeVariantRow(rowId: string) {
@@ -1338,25 +1440,18 @@ export default function SupplierEditProduct() {
   }
 
   const updateM = useMutation({
-
     mutationFn: async () => {
       setErr(null);
       setOkMsg(null);
-      if (
-        imageOverLimit ||
-        hasBaseComboConflict ||
-        hasDuplicates ||
-        hasInvalidDefaultVariant
-      ) {
+      if (imageOverLimit || hasBaseComboConflict || hasDuplicates || hasInvalidDefaultVariant) {
         throw new Error(
           imageOverLimit
             ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
             : baseComboWarn
-              ? baseComboWarn
-              : dupWarn || "Fix the errors above to save."
+            ? baseComboWarn
+            : dupWarn || "Fix the errors above to save."
         );
       }
-
 
       if (!id) throw new Error("Missing product id");
 
@@ -1415,7 +1510,9 @@ export default function SupplierEditProduct() {
 
           if (qty <= 0) {
             if (r.variantOfferId) {
-              tasks.push(api.delete(`/api/supplier/catalog/offers/variant/${r.variantOfferId}`, { withCredentials: true }));
+              tasks.push(
+                api.delete(`/api/supplier/catalog/offers/variant/${r.variantOfferId}`, { withCredentials: true })
+              );
             }
             continue;
           }
@@ -1476,24 +1573,25 @@ export default function SupplierEditProduct() {
 
       const stockOnlyUpdate = isLive && !nonStockChangesRequireReview;
 
-      // Build final images list (clamped and validated)
-      const urlList = parseUrlList(imageUrls).filter(isUrlish);
-      const current = Array.from(new Set([...urlList, ...uploadedUrls].filter(Boolean))).slice(0, MAX_IMAGES_PER_PRODUCT);
+      // ✅ Build final images list (normalized + clamped) — matches Add page
+      const rawList = parseUrlList(imageUrls);
+      const urlList = limitImages(rawList, MAX_IMAGES_PER_PRODUCT);
+      if (rawList.length !== urlList.length) {
+        setImageUrls(urlList.join("\n"));
+      }
+
+      const current = limitImages([...urlList, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT);
 
       const freshlyUploaded = files.length ? await uploadLocalFiles() : [];
-      const merged = Array.from(new Set([...current, ...freshlyUploaded].filter(isUrlish))).slice(0, MAX_IMAGES_PER_PRODUCT);
-
-      if (merged.length > MAX_IMAGES_PER_PRODUCT) {
-        throw new Error(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Please remove extras.`);
-      }
+      const merged = limitImages([...current, ...freshlyUploaded], MAX_IMAGES_PER_PRODUCT);
 
       const payload = stockOnlyUpdate
         ? buildStockOnlyPayload({ baseQty: baseQtyPreview, variantRows })
         : {
-          ...buildPayload(merged),
-          submitForReview: isLive && nonStockChangesRequireReview,
-          stockOnly: false,
-        };
+            ...buildPayload(merged),
+            submitForReview: isLive && nonStockChangesRequireReview,
+            stockOnly: false,
+          };
 
       const { data } = await api.patch(`/api/supplier/products/${id}`, payload, {
         withCredentials: true,
@@ -1526,20 +1624,9 @@ export default function SupplierEditProduct() {
     },
   });
 
-  const hasBlockingError =
-    imageOverLimit ||
-    hasBaseComboConflict ||
-    hasDuplicates ||
-    hasInvalidDefaultVariant;
+  const hasBlockingError = imageOverLimit || hasBaseComboConflict || hasDuplicates || hasInvalidDefaultVariant;
 
-  const saveDisabled =
-    updateM.isPending ||
-    uploading ||
-    detailQ.isLoading ||
-    !hydrated ||
-    !isSupplier ||
-    hasBlockingError;
-
+  const saveDisabled = updateM.isPending || uploading || detailQ.isLoading || !hydrated || !isSupplier || hasBlockingError;
 
   const hasPendingBase =
     offersOnly &&
@@ -1603,23 +1690,22 @@ export default function SupplierEditProduct() {
                       imageOverLimit
                         ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
                         : baseComboWarn
-                          ? baseComboWarn
-                          : dupWarn || "Fix the errors above to save."
+                        ? baseComboWarn
+                        : dupWarn || "Fix the errors above to save."
                     );
                     return;
                   }
                   updateM.mutate();
                 }}
-
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-[13px] sm:text-sm font-semibold disabled:opacity-60"
                 title={
                   imageOverLimit
                     ? `Remove extra images (max ${MAX_IMAGES_PER_PRODUCT}).`
                     : hasBaseComboConflict
-                      ? "Fix base combo vs variant combo conflict to save."
-                      : hasDuplicates || hasInvalidDefaultVariant
-                        ? "Fix duplicate/invalid combinations to save."
-                        : undefined
+                    ? "Fix base combo vs variant combo conflict to save."
+                    : hasDuplicates || hasInvalidDefaultVariant
+                    ? "Fix duplicate/invalid combinations to save."
+                    : undefined
                 }
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
@@ -1688,8 +1774,8 @@ export default function SupplierEditProduct() {
                   offersOnly
                     ? "Catalog product details are read-only. Set your offer price and stock."
                     : isLive
-                      ? "LIVE listing: Title/SKU/base price are locked. Stock updates are always allowed."
-                      : undefined
+                    ? "LIVE listing: Title/SKU/base price are locked. Stock updates are always allowed."
+                    : undefined
                 }
               >
                 <div className="space-y-3">
@@ -1843,8 +1929,9 @@ export default function SupplierEditProduct() {
 
                   {/* Attributes */}
                   <div
-                    className={`rounded-2xl border bg-white overflow-hidden ${hasBaseComboConflict ? "border-rose-300 ring-2 ring-rose-200" : ""
-                      }`}
+                    className={`rounded-2xl border bg-white overflow-hidden ${
+                      hasBaseComboConflict ? "border-rose-300 ring-2 ring-rose-200" : ""
+                    }`}
                   >
                     <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
                       <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Attributes</div>
@@ -1852,13 +1939,14 @@ export default function SupplierEditProduct() {
                         {offersOnly
                           ? "Catalog product attributes are read-only."
                           : isLive
-                            ? "LIVE listing: edits may require review."
-                            : "You can edit attributes freely while not LIVE."}
+                          ? "LIVE listing: edits may require review."
+                          : "You can edit attributes freely while not LIVE."}
                       </div>
 
                       {hasBaseComboConflict && (
                         <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800">
-                          <b>Conflict:</b> This base combo matches a variant combo. Change the base SELECT attributes (or the variant).
+                          <b>Conflict:</b> This base combo matches a variant combo. Change the base SELECT attributes (or
+                          the variant).
                         </div>
                       )}
                     </div>
@@ -1893,8 +1981,9 @@ export default function SupplierEditProduct() {
                                 value={val}
                                 onChange={(e) => setAttr(a.id, e.target.value)}
                                 disabled={!canEditAttributes}
-                                className={`w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60 ${highlight ? "border-rose-300 ring-2 ring-rose-100" : ""
-                                  }`}
+                                className={`w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60 ${
+                                  highlight ? "border-rose-300 ring-2 ring-rose-100" : ""
+                                }`}
                               >
                                 <option value="">— Select —</option>
                                 {(a.values || []).map((v: any) => (
@@ -1944,15 +2033,20 @@ export default function SupplierEditProduct() {
                 </div>
               </Card>
 
-              {/* Images */}
+              {/* Images (NOW matches Add page: previews show immediately even before upload) */}
               <Card
                 title="Images"
-                subtitle={offersOnly ? "Catalog images are read-only." : `Paste URLs or upload images. Max ${MAX_IMAGES_PER_PRODUCT} images per product.`}
+                subtitle={
+                  offersOnly
+                    ? "Catalog images are read-only."
+                    : `Paste URLs or upload images. Max ${MAX_IMAGES_PER_PRODUCT} images per product.`
+                }
                 right={
                   <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer ${offersOnly || imageSlotsLeft <= 0 ? "opacity-60 pointer-events-none" : ""
-                      }`}
-                    title={imageSlotsLeft <= 0 ? `Max ${MAX_IMAGES_PER_PRODUCT} images reached.` : undefined}
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer ${
+                      offersOnly ? "opacity-60 pointer-events-none" : ""
+                    }`}
+                    title={offersOnly ? "Catalog images are read-only." : undefined}
                   >
                     <ImagePlus size={16} /> Add files
                     <input
@@ -1961,35 +2055,29 @@ export default function SupplierEditProduct() {
                       multiple
                       accept="image/*"
                       className="hidden"
-                      onChange={(e) => {
-                        const picked = Array.from(e.target.files || []);
-                        if (!picked.length) return;
-
-                        if (imageSlotsLeft <= 0) {
-                          setErr(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove an image before adding more.`);
-                          if (fileInputRef.current) fileInputRef.current.value = "";
-                          return;
-                        }
-
-                        if (picked.length > imageSlotsLeft) {
-                          setErr(`You can only add ${imageSlotsLeft} more file(s). Extra files were ignored.`);
-                        }
-
-                        setFiles(picked.slice(0, imageSlotsLeft));
-                      }}
-                      disabled={offersOnly || imageSlotsLeft <= 0}
+                      onChange={(e) => onPickFiles(Array.from(e.target.files || []))}
+                      disabled={offersOnly}
                     />
                   </label>
                 }
               >
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs text-zinc-600">
-                      Images used: <b className={imageOverLimit ? "text-rose-700" : "text-zinc-900"}>{imageCount}</b> /{" "}
-                      <b>{MAX_IMAGES_PER_PRODUCT}</b>
+                  <div className="flex items-center justify-between text-xs">
+                    <div className="text-zinc-600">
+                      Images used:{" "}
+                      <b className={imageOverLimit ? "text-rose-700" : "text-zinc-900"}>{imageCount}</b> /{" "}
+                      {MAX_IMAGES_PER_PRODUCT}
+                      {files.length > 0 && (
+                        <>
+                          {" "}
+                          • Selected files: <b>{files.length}</b>
+                        </>
+                      )}
                     </div>
                     {!offersOnly && (
-                      <div className="text-[11px] text-zinc-500">{imageSlotsLeft > 0 ? `${imageSlotsLeft} slot(s) left` : "No slots left"}</div>
+                      <div className="text-zinc-500">
+                        Remaining slots: <b>{remainingSlots}</b>
+                      </div>
                     )}
                   </div>
 
@@ -1997,10 +2085,18 @@ export default function SupplierEditProduct() {
                     <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Image URLs (one per line)</label>
                     <textarea
                       value={imageUrls}
-                      onChange={(e) => setImageUrls(e.target.value)}
+                      onChange={(e) => {
+                        if (offersOnly) return;
+                        setErr(null);
+                        const raw = parseUrlList(e.target.value);
+                        const capped = limitImages(raw, MAX_IMAGES_PER_PRODUCT);
+                        setImageUrls(capped.join("\n"));
+                      }}
                       disabled={offersOnly}
-                      className={`w-full rounded-xl border px-3 py-2.5 text-xs bg-white min-h-[90px] disabled:opacity-60 ${imageOverLimit ? "border-rose-300" : ""
-                        }`}
+                      className={`w-full rounded-xl border px-3 py-2.5 text-xs bg-white min-h-[90px] disabled:opacity-60 ${
+                        imageOverLimit ? "border-rose-300" : ""
+                      }`}
+                      placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
                     />
                     {!offersOnly && imageOverLimit && (
                       <div className="text-[11px] text-rose-700 mt-1">
@@ -2009,8 +2105,74 @@ export default function SupplierEditProduct() {
                     )}
                   </div>
 
+                  {(allUrlPreviews.length > 0 || filePreviews.length > 0) && (
+                    <div>
+                      <div className="text-xs font-semibold text-zinc-800 mb-2">Image previews</div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {/* URL previews (text + already uploaded) */}
+                        {allUrlPreviews.slice(0, MAX_IMAGES_PER_PRODUCT).map((u) => (
+                          <div key={u} className="rounded-xl border overflow-hidden bg-white">
+                            <div className="aspect-[4/3] bg-zinc-100 relative">
+                              <img
+                                src={u}
+                                alt=""
+                                className="w-full h-full object-cover"
+                                loading="lazy"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = "none";
+                                }}
+                              />
+
+                              {!offersOnly && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const inText = parseUrlList(imageUrls).some(
+                                      (x) => normalizeImageUrl(x) === normalizeImageUrl(u)
+                                    );
+                                    if (inText) removeTextUrl(u);
+                                    else removeUploadedUrl(u);
+                                  }}
+                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full
+                    bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                  aria-label="Remove image"
+                                  title="Remove"
+                                >
+                                  <X size={18} className="text-rose-700" />
+                                </button>
+                              )}
+                            </div>
+                            <div className="p-2 text-[10px] text-zinc-600 truncate">{u}</div>
+                          </div>
+                        ))}
+
+                        {/* Local file previews (IMMEDIATE, before upload) */}
+                        {!offersOnly &&
+                          filePreviews.slice(0, MAX_IMAGES_PER_PRODUCT - allUrlPreviews.length).map(({ file, url }) => (
+                            <div key={url} className="rounded-xl border overflow-hidden bg-white">
+                              <div className="aspect-[4/3] bg-zinc-100 relative">
+                                <img src={url} alt={file.name} className="w-full h-full object-cover" />
+                                <button
+                                  type="button"
+                                  onClick={() => setFiles((prev) => prev.filter((f) => f !== file))}
+                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full
+                    bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                  aria-label="Remove selected file"
+                                  title="Remove"
+                                >
+                                  <X size={18} className="text-rose-700" />
+                                </button>
+                              </div>
+                              <div className="p-2 text-[10px] text-zinc-600 truncate">{file.name}</div>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
                   {!offersOnly && files.length > 0 && (
-                    <div className="rounded-xl border bg-white p-3">
+                    <div className="rounded-2xl border bg-white p-3">
                       <div className="text-xs font-semibold text-zinc-800">
                         Selected files: <span className="font-mono">{files.length}</span>
                       </div>
@@ -2018,7 +2180,14 @@ export default function SupplierEditProduct() {
                       <div className="mt-3 grid grid-cols-2 sm:flex gap-2">
                         <button
                           type="button"
-                          onClick={uploadLocalFiles}
+                          onClick={async () => {
+                            try {
+                              setErr(null);
+                              await uploadLocalFiles();
+                            } catch (e: any) {
+                              setErr(e?.message || "Upload failed");
+                            }
+                          }}
                           disabled={uploading || !files.length}
                           className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-[13px] sm:text-sm font-semibold disabled:opacity-60"
                         >
@@ -2039,30 +2208,7 @@ export default function SupplierEditProduct() {
                     </div>
                   )}
 
-                  {allUrlPreviews.length > 0 ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {allUrlPreviews.slice(0, MAX_IMAGES_PER_PRODUCT).map((u) => (
-                        <div key={u} className="rounded-xl border overflow-hidden bg-white">
-                          <div className="aspect-[4/3] bg-zinc-100">
-                            <img
-                              src={u}
-                              alt=""
-                              className="w-full h-full object-cover"
-                              onError={(e) => {
-                                (e.currentTarget as HTMLImageElement).style.display = "none";
-                              }}
-                            />
-                          </div>
-                          <div className="p-2 text-[10px] text-zinc-600 truncate">{u}</div>
-                        </div>
-                      ))}
-                      {allUrlPreviews.length > MAX_IMAGES_PER_PRODUCT && (
-                        <div className="rounded-xl border bg-zinc-50 p-3 text-xs text-zinc-600 flex items-center justify-center">
-                          +{allUrlPreviews.length - MAX_IMAGES_PER_PRODUCT} more (remove extras to save)
-                        </div>
-                      )}
-                    </div>
-                  ) : (
+                  {allUrlPreviews.length === 0 && filePreviews.length === 0 && (
                     <div className="text-xs text-zinc-500">No images found on this product yet.</div>
                   )}
                 </div>
@@ -2075,8 +2221,8 @@ export default function SupplierEditProduct() {
                   offersOnly
                     ? "Catalog product: set price + qty for existing variants. You can’t create new combos."
                     : isLive
-                      ? "LIVE listing: update qty only. Prices/options are locked."
-                      : "Add/remove combos while not LIVE. Variants must have at least one option selected (DEFAULT is base-only)."
+                    ? "LIVE listing: update qty only. Prices/options are locked."
+                    : "Add/remove combos while not LIVE. Variants must have at least one option selected (DEFAULT is base-only)."
                 }
                 right={
                   <button
@@ -2133,8 +2279,9 @@ export default function SupplierEditProduct() {
                       return (
                         <div
                           key={row.id}
-                          className={`rounded-2xl border bg-white p-3 space-y-2 ${hasAnyIssue ? "border-rose-400 ring-2 ring-rose-200" : ""
-                            }`}
+                          className={`rounded-2xl border bg-white p-3 space-y-2 ${
+                            hasAnyIssue ? "border-rose-400 ring-2 ring-rose-200" : ""
+                          }`}
                         >
                           {/* option selects */}
                           <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
@@ -2145,8 +2292,9 @@ export default function SupplierEditProduct() {
                                   key={attr.id}
                                   value={valueId}
                                   onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
-                                    }`}
+                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${
+                                    hasAnyIssue ? "border-rose-300" : ""
+                                  }`}
                                   disabled={selectionLocked}
                                   title={
                                     selectionLocked
@@ -2182,10 +2330,11 @@ export default function SupplierEditProduct() {
                                   Qty: <b className="text-zinc-900">{rowQty}</b>
                                 </span>
                                 <span
-                                  className={`font-semibold px-2 py-0.5 rounded-full border ${rowInStock
-                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                    : "bg-rose-50 text-rose-700 border-rose-200"
-                                    }`}
+                                  className={`font-semibold px-2 py-0.5 rounded-full border ${
+                                    rowInStock
+                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                      : "bg-rose-50 text-rose-700 border-rose-200"
+                                  }`}
                                 >
                                   {rowInStock ? "In stock" : "Out of stock"}
                                 </span>
@@ -2217,8 +2366,9 @@ export default function SupplierEditProduct() {
                                 inputMode="decimal"
                                 disabled={priceLocked}
                                 readOnly={priceLocked}
-                                className={`w-28 rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
-                                  } ${priceLocked ? "opacity-60" : ""}`}
+                                className={`w-28 rounded-xl border px-3 py-2 text-xs bg-white ${
+                                  hasAnyIssue ? "border-rose-300" : ""
+                                } ${priceLocked ? "opacity-60" : ""}`}
                                 placeholder="e.g. 25000"
                                 title={priceLocked ? "LIVE listing: variant price is locked." : "Set this variant unit price."}
                               />
@@ -2228,8 +2378,9 @@ export default function SupplierEditProduct() {
                                 value={row.availableQty}
                                 onChange={(e) => updateVariantQty(row.id, e.target.value)}
                                 inputMode="numeric"
-                                className={`w-24 rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
-                                  }`}
+                                className={`w-24 rounded-xl border px-3 py-2 text-xs bg-white ${
+                                  hasAnyIssue ? "border-rose-300" : ""
+                                }`}
                                 placeholder="e.g. 5"
                               />
 
@@ -2237,18 +2388,19 @@ export default function SupplierEditProduct() {
                                 type="button"
                                 onClick={() => removeVariantRow(row.id)}
                                 disabled={disableRemove}
-                                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${disableRemove
-                                  ? "bg-zinc-50 text-zinc-400 border-zinc-200 cursor-not-allowed"
-                                  : "bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200"
-                                  }`}
+                                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${
+                                  disableRemove
+                                    ? "bg-zinc-50 text-zinc-400 border-zinc-200 cursor-not-allowed"
+                                    : "bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200"
+                                }`}
                                 title={
                                   offersOnly
                                     ? row.variantOfferId
                                       ? "Remove your variant offer for this variant."
                                       : "Nothing to remove."
                                     : isLive && row.isExisting
-                                      ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
-                                      : undefined
+                                    ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
+                                    : undefined
                                 }
                               >
                                 <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
@@ -2258,7 +2410,9 @@ export default function SupplierEditProduct() {
 
                           {hasAnyIssue && (
                             <div className="text-[11px] text-rose-700">
-                              {isBaseConflict ? "Invalid: this variant combo matches your base attributes selection (base combo)." : null}
+                              {isBaseConflict
+                                ? "Invalid: this variant combo matches your base attributes selection (base combo)."
+                                : null}
                               {isBaseConflict && (isInvalidDefault || isDup) ? " " : null}
                               {isInvalidDefault
                                 ? "Invalid: a variant cannot be DEFAULT (no options selected). DEFAULT is reserved for base."
@@ -2297,7 +2451,9 @@ export default function SupplierEditProduct() {
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-zinc-500">{offersOnly ? "Active offer price" : "Retail price"}</span>
-                      <b className="text-zinc-900">{ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}</b>
+                      <b className="text-zinc-900">
+                        {ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}
+                      </b>
                     </div>
 
                     {offersOnly && (
@@ -2364,23 +2520,22 @@ export default function SupplierEditProduct() {
                       imageOverLimit
                         ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
                         : baseComboWarn
-                          ? baseComboWarn
-                          : dupWarn || "Fix the errors above to save."
+                        ? baseComboWarn
+                        : dupWarn || "Fix the errors above to save."
                     );
                     return;
                   }
                   updateM.mutate();
                 }}
-
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
                 title={
                   imageOverLimit
                     ? `Remove extra images (max ${MAX_IMAGES_PER_PRODUCT}).`
                     : hasBaseComboConflict
-                      ? "Fix base combo vs variant combo conflict to save."
-                      : hasDuplicates || hasInvalidDefaultVariant
-                        ? "Fix duplicate/invalid combinations to save."
-                        : undefined
+                    ? "Fix base combo vs variant combo conflict to save."
+                    : hasDuplicates || hasInvalidDefaultVariant
+                    ? "Fix duplicate/invalid combinations to save."
+                    : undefined
                 }
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
