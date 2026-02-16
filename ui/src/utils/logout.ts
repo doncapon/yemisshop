@@ -1,25 +1,35 @@
-import api, { setAccessToken } from "../api/client";
+// src/utils/logout.ts
+import api from "../api/client.js";
 import { useAuthStore } from "../store/auth";
-import { hardResetApp } from "./resetApp";
 
-export async function performLogout(redirectTo = "/") {
-  // Always try to clear cookie on server (httpOnly cookie cannot be removed by JS)
-  try {
-    await api.post("/api/auth/logout", {}); // withCredentials:true is already set in axios instance
-  } catch {
-    // ignore – client should still clear local state
-  }
+type NavigateFn = (to: string, opts?: { replace?: boolean }) => void;
 
-  // Clear client token + state
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export async function performLogout(redirectTo = "/", navigate?: NavigateFn) {
+  // ✅ Cookie-auth logout: ensure cookies are sent so server can clear them
+  const serverLogoutPromise = api
+    .post("/api/auth/logout", {}, { withCredentials: true })
+    .catch(() => null);
+
+  // ✅ Clear client auth store (you likely still keep a user snapshot/flags)
   try {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("auth");
-    localStorage.removeItem("cart");
+    useAuthStore.getState().clear?.();
   } catch {}
 
-  setAccessToken(null); // clears axios default + localStorage token (your helper)
-  useAuthStore.getState().clear(); // or logout()
+  // ✅ If you still cache any auth-related bits, clear them (optional)
+  try {
+    localStorage.removeItem("auth_store_v1");
+    sessionStorage.removeItem("auth_store_v1");
+  } catch {}
 
-  // Hard reset to prevent bootstrap flicker
-  hardResetApp(redirectTo);
+  // ✅ Short wait (don’t block UX)
+  await Promise.race([serverLogoutPromise, sleep(800)]);
+
+  // ✅ Redirect
+  if (navigate) {
+    navigate(redirectTo, { replace: true });
+    return;
+  }
+  window.location.replace(redirectTo);
 }

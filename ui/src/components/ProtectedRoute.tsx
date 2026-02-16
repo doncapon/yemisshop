@@ -1,62 +1,71 @@
+// src/components/ProtectedRoute.tsx
+import React, { useMemo } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import type { ReactNode } from "react";
 import { useAuthStore } from "../store/auth";
 
-export type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
-
 type Props = {
-  roles?: Role[];
-  children: ReactNode;
+  children: React.ReactNode;
+
+  /**
+   * ✅ Allowed roles (normalized comparison).
+   * Accepts string[] so callers can pass aliases like ["SUPER_ADMIN", "SUPERADMIN"].
+   * If omitted, any authenticated user can access.
+   */
+  roles?: string[];
+
+  /**
+   * ✅ For supplier rider: allow only certain route prefixes even if rider is included in roles.
+   * Example: ["/supplier/orders"]
+   */
   riderAllowPrefixes?: string[];
 };
 
-function normRole(role: any): Role | null {
-  const r = String(role || "").trim().toUpperCase();
-  if (!r) return null;
+function normRole(role: unknown) {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
 
-  // legacy/customer aliases → treat as SHOPPER
-  if (r === "CUSTOMER" || r === "USER" || r === "BUYER") return "SHOPPER";
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  if (r === "SUPERUSER") r = "SUPER_USER";
 
-  if (r === "ADMIN") return "ADMIN";
-  if (r === "SUPER_ADMIN" || r === "SUPERADMIN") return "SUPER_ADMIN";
-  if (r === "SHOPPER") return "SHOPPER";
-  if (r === "SUPPLIER") return "SUPPLIER";
-  if (r === "SUPPLIER_RIDER" || r === "SUPPLIERRIDER") return "SUPPLIER_RIDER";
-
-  return null;
+  return r;
 }
 
-export default function ProtectedRoute({ roles, children, riderAllowPrefixes }: Props) {
-  const hydrated = useAuthStore((s) => s.hydrated);
-  const token = useAuthStore((s) => s.token);
+export default function ProtectedRoute({ children, roles, riderAllowPrefixes }: Props) {
+  const location = useLocation();
+
   const user = useAuthStore((s) => s.user);
+  const hydrated = useAuthStore((s) => s.hydrated);
 
-  const role = normRole(user?.role ?? null);
+  // ✅ wait for auth bootstrap so we don't "flash redirect"
+  if (!hydrated) return <>{children}</>;
 
-  const loc = useLocation();
-  const path = loc.pathname || "/";
-
-  if (!hydrated) {
-    return <div className="min-h-[60vh] grid place-items-center text-slate-500">Loading…</div>;
+  const isAuthed = !!user?.id;
+  if (!isAuthed) {
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
 
-  if (!token) {
-    return <Navigate to="/login" state={{ from: loc }} replace />;
+  const userRole = normRole(user?.role);
+
+  // ✅ Rider route restrictions
+  if (userRole === normRole("SUPPLIER_RIDER") && Array.isArray(riderAllowPrefixes) && riderAllowPrefixes.length > 0) {
+    const ok = riderAllowPrefixes.some((p) => location.pathname.startsWith(p));
+    if (!ok) return <Navigate to="/supplier/orders" replace />;
   }
 
-  // token exists but user not loaded yet → wait (prevents wrong redirects)
-  if (!user) {
-    return <div className="min-h-[60vh] grid place-items-center text-slate-500">Loading…</div>;
+  // ✅ SUPER_ADMIN override: allow everywhere by default
+  if (userRole === "SUPER_ADMIN") {
+    return <>{children}</>;
   }
 
-  if (roles && (!role || !roles.includes(role))) {
+  const allowedSet = useMemo(() => {
+    const arr = Array.isArray(roles) ? roles : [];
+    return new Set(arr.map(normRole).filter(Boolean));
+  }, [roles]);
+
+  // ✅ If no roles specified, allow any authed user
+  if (allowedSet.size > 0 && !allowedSet.has(userRole)) {
     return <Navigate to="/" replace />;
-  }
-
-  // Riders: allow only specific sub-routes (exact match or under prefix/)
-  if (role === "SUPPLIER_RIDER" && riderAllowPrefixes?.length) {
-    const allowed = riderAllowPrefixes.some((p) => path === p || path.startsWith(p + "/"));
-    if (!allowed) return <Navigate to="/supplier/orders" replace />;
   }
 
   return <>{children}</>;

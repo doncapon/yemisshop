@@ -8,7 +8,7 @@ export default function RiderAcceptInvite() {
   const nav = useNavigate();
 
   const email = useMemo(() => String(sp.get("email") ?? "").trim().toLowerCase(), [sp]);
-  const token = useMemo(() => String(sp.get("token") ?? "").trim(), [sp]);
+  const inviteToken = useMemo(() => String(sp.get("token") ?? "").trim(), [sp]); // ✅ keep invite token
 
   const [form, setForm] = useState({
     firstName: "",
@@ -31,7 +31,7 @@ export default function RiderAcceptInvite() {
 
   const validate = () => {
     if (!email) return "Missing email in invite link";
-    if (!token) return "Missing token in invite link";
+    if (!inviteToken) return "Missing token in invite link";
 
     const pwd = form.password ?? "";
     const hasMinLen = pwd.length >= 8;
@@ -63,7 +63,7 @@ export default function RiderAcceptInvite() {
 
       const payload = {
         email,
-        token,
+        token: inviteToken, // ✅ keep token; cookies cannot replace this flow
         password: form.password,
         firstName: form.firstName.trim() || undefined,
         lastName: form.lastName.trim() || undefined,
@@ -71,9 +71,11 @@ export default function RiderAcceptInvite() {
         dateOfBirth: form.dateOfBirth ? new Date(form.dateOfBirth).toISOString() : undefined,
       };
 
+      // ✅ cookie-friendly (api client should be withCredentials:true)
       await api.post("/api/riders/accept-invite", payload);
 
-      setOkMsg("Setup complete ✅ Redirecting to login…");
+      // If backend sets a session cookie here, you can redirect straight to dashboard instead.
+      setOkMsg("Setup complete ✅ Redirecting…");
       window.setTimeout(() => nav("/login", { replace: true }), 700);
     } catch (e: any) {
       setErr(e?.response?.data?.error || "Failed to accept invite");
@@ -82,7 +84,7 @@ export default function RiderAcceptInvite() {
     }
   };
 
-  const linkInvalid = !email || !token;
+  const linkInvalid = !email || !inviteToken;
 
   return (
     <SiteLayout>

@@ -1,8 +1,8 @@
 // src/pages/Privacy.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   ShieldCheck,
   Sparkles,
@@ -18,8 +18,15 @@ import {
 
 import SiteLayout from "../layouts/SiteLayout";
 import api from "../api/client";
-import { useAuthStore } from "../store/auth";
 import { useModal } from "../components/ModalProvider";
+
+/* ---------------------- Cookie auth helpers ---------------------- */
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
+function isAuthError(e: any) {
+  const s = e?.response?.status;
+  return s === 401 || s === 403;
+}
 
 /* ---------------------- Types ---------------------- */
 type ConsentResponse = {
@@ -51,9 +58,9 @@ const dateTimeFmt = (iso?: string | null) => {
 /* ---------------------- UI primitives (same vibe as dashboard) ---------------------- */
 function GlassCard(props: {
   title: string;
-  icon?: React.ReactNode;
-  children: React.ReactNode;
-  right?: React.ReactNode;
+  icon?: ReactNode;
+  children: ReactNode;
+  right?: ReactNode;
   className?: string;
 }) {
   return (
@@ -85,7 +92,7 @@ function ToggleRow(props: {
   checked: boolean;
   disabled?: boolean;
   onChange: (v: boolean) => void;
-  badge?: React.ReactNode;
+  badge?: ReactNode;
 }) {
   return (
     <div className="flex items-start justify-between gap-4 py-3">
@@ -119,25 +126,19 @@ function ToggleRow(props: {
 
 /* ---------------------- Data hooks ---------------------- */
 function useMeLite() {
-  const token = useAuthStore((s) => s.token);
   return useQuery({
     queryKey: ["me", "lite"],
-    enabled: !!token,
-    queryFn: async () =>
-      (await api.get<MeResponse>("/api/auth/me", { headers: token ? { Authorization: `Bearer ${token}` } : undefined }))
-        .data,
+    queryFn: async () => (await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG)).data,
     staleTime: 30_000,
+    retry: false,
   });
 }
 
-function useConsent() {
-  const token = useAuthStore((s) => s.token);
+function useConsent(enabled = true) {
   return useQuery({
     queryKey: ["privacy", "consent"],
-    enabled: !!token,
-    queryFn: async () =>
-      (await api.get<ConsentResponse>("/api/privacy/consent", { headers: token ? { Authorization: `Bearer ${token}` } : undefined }))
-        .data,
+    enabled,
+    queryFn: async () => (await api.get<ConsentResponse>("/api/privacy/consent", AXIOS_COOKIE_CFG)).data,
     staleTime: 30_000,
     retry: 1,
   });
@@ -146,13 +147,22 @@ function useConsent() {
 /* ---------------------- Page ---------------------- */
 export default function Privacy() {
   const nav = useNavigate();
+  const location = useLocation();
   const { openModal } = useModal();
   const qc = useQueryClient();
 
-  const token = useAuthStore((s) => s.token);
-
   const meQ = useMeLite();
-  const consentQ = useConsent();
+
+  // Only fetch consent after we know auth isn't failing.
+  const consentEnabled = !(meQ.isError && isAuthError(meQ.error));
+  const consentQ = useConsent(consentEnabled);
+
+  // If cookie session is missing/expired -> redirect to login
+  useEffect(() => {
+    if (!meQ.isError) return;
+    if (!isAuthError(meQ.error)) return;
+    nav("/login", { replace: true, state: { from: location.pathname + location.search } });
+  }, [meQ.isError, meQ.error, nav, location.pathname, location.search]);
 
   // local form state (so user can toggle before saving)
   const [analytics, setAnalytics] = useState(false);
@@ -167,10 +177,24 @@ export default function Privacy() {
     setDirty(false);
   }, [consentQ.data?.data?.analytics, consentQ.data?.data?.marketing]); // intentional granularity
 
+  // If consent endpoints return 401/403, also redirect (cookie not present)
+  useEffect(() => {
+    if (!consentQ.isError) return;
+    if (!isAuthError(consentQ.error)) return;
+    nav("/login", { replace: true, state: { from: location.pathname + location.search } });
+  }, [consentQ.isError, consentQ.error, nav, location.pathname, location.search]);
+
   const saveM = useMutation({
     mutationFn: async (payload: { analytics: boolean; marketing: boolean }) => {
-      const { data } = await api.post("/api/privacy/consent", payload);
-      return data as ConsentResponse;
+      const { data } = await api.post<ConsentResponse>(
+        "/api/privacy/consent",
+        payload,
+        {
+          ...AXIOS_COOKIE_CFG,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+      return data;
     },
     onSuccess: async () => {
       setDirty(false);
@@ -178,6 +202,10 @@ export default function Privacy() {
       openModal({ title: "Saved", message: "Your privacy preferences have been updated." });
     },
     onError: (e: any) => {
+      if (isAuthError(e)) {
+        nav("/login", { replace: true, state: { from: location.pathname + location.search } });
+        return;
+      }
       openModal({
         title: "Could not save",
         message: e?.response?.data?.error || "Please try again.",
@@ -193,7 +221,7 @@ export default function Privacy() {
     setDirty(false);
   };
 
-  const busy = consentQ.isLoading || saveM.isPending;
+  const busy = consentQ.isLoading || saveM.isPending || meQ.isLoading;
 
   // marketing implies analytics (mirror backend rule)
   const onToggleMarketing = (v: boolean) => {
@@ -279,10 +307,7 @@ export default function Privacy() {
         <div className="px-4 md:px-8 pb-10 grid gap-6 lg:grid-cols-[320px_1fr]">
           {/* Left rail */}
           <div className="space-y-6 lg:sticky lg:top-6 lg:self-start">
-            <GlassCard
-              title="Quick links"
-              icon={<ChevronRight size={18} />}
-            >
+            <GlassCard title="Quick links" icon={<ChevronRight size={18} />}>
               <div className="grid gap-2 text-sm">
                 <Link to="/profile" className="group inline-flex items-center gap-1.5 text-cyan-700 hover:underline">
                   Profile <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
@@ -290,7 +315,10 @@ export default function Privacy() {
                 <Link to="/orders" className="group inline-flex items-center gap-1.5 text-cyan-700 hover:underline">
                   Orders <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
                 </Link>
-                <Link to="/account/sessions" className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline">
+                <Link
+                  to="/account/sessions"
+                  className="group inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline"
+                >
                   Sessions & devices <ChevronRight className="group-hover:translate-x-0.5 transition" size={14} />
                 </Link>
               </div>
@@ -307,8 +335,7 @@ export default function Privacy() {
                 <div className="text-sm text-zinc-700 space-y-1">
                   <div className="font-semibold text-zinc-900 truncate">{meQ.data?.email}</div>
                   <div className="text-xs text-zinc-600">
-                    Name:{" "}
-                    {[meQ.data?.firstName, meQ.data?.lastName].filter(Boolean).join(" ") || "—"}
+                    Name: {[meQ.data?.firstName, meQ.data?.lastName].filter(Boolean).join(" ") || "—"}
                   </div>
                   <div className="text-xs text-zinc-600">
                     Email verification: {meQ.data?.emailVerified ? "Verified" : "Pending"}
@@ -402,9 +429,7 @@ export default function Privacy() {
                       Reset
                     </button>
 
-                    <div className="text-xs text-zinc-500">
-                      You can change preferences anytime.
-                    </div>
+                    <div className="text-xs text-zinc-500">You can change preferences anytime.</div>
                   </div>
                 </>
               )}
@@ -427,7 +452,8 @@ export default function Privacy() {
                       <b>Orders:</b> items, quantities, totals, delivery address (to fulfil orders).
                     </li>
                     <li>
-                      <b>Payments:</b> payment status, reference, provider transaction identifiers (to confirm payment and handle refunds).
+                      <b>Payments:</b> payment status, reference, provider transaction identifiers (to confirm payment and
+                      handle refunds).
                     </li>
                     <li>
                       <b>Security:</b> session/device metadata (to protect your account).
@@ -439,21 +465,17 @@ export default function Privacy() {
                 </div>
 
                 <p className="text-xs text-zinc-500">
-                  This page is a practical control panel. Your full privacy notice should live on a dedicated route
-                  (e.g. <span className="font-mono">/privacy-policy</span>) with legal text aligned to Nigerian data protection requirements.
+                  This page is a practical control panel. Your full privacy notice should live on a dedicated route (e.g.{" "}
+                  <span className="font-mono">/privacy-policy</span>) with legal text aligned to Nigerian data protection
+                  requirements.
                 </p>
               </div>
             </GlassCard>
 
             <GlassCard title="Contact" icon={<Mail size={18} />}>
-              <div className="text-sm text-zinc-700">
-                For privacy questions or data requests, contact support.
-              </div>
+              <div className="text-sm text-zinc-700">For privacy questions or data requests, contact support.</div>
               <div className="mt-3">
-                <Link
-                  to="/support"
-                  className="inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline text-sm"
-                >
+                <Link to="/support" className="inline-flex items-center gap-1.5 text-fuchsia-700 hover:underline text-sm">
                   Contact support <ChevronRight size={14} />
                 </Link>
               </div>

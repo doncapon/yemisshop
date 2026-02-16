@@ -1,293 +1,216 @@
-// src/middleware/auth.ts (or src/lib/authMiddleware.ts, depending on your setup)
+// api/src/middleware/auth.ts
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
+import { getAccessTokenCookieName } from "../lib/authCookies.js";
 import { prisma } from "../lib/prisma.js";
 
-export type Role =
-  | "SHOPPER"
-  | "ADMIN"
-  | "SUPER_ADMIN"
-  | "SUPPLIER"
-  | "SUPPLIER_RIDER";
-export type TokenKind = "access" | "verify";
+// ✅ Import policy helpers (kept; used lightly to avoid unused)
+import type { Role as PolicyRole } from "../lib/sessionPolicy.js";
+import { normRole as normPolicyRole } from "../lib/sessionPolicy.js";
 
-export type AuthedUser = {
-  id: string;
-  email: string;
-  role: Role;
-
-  // ✅ token kind
-  k?: TokenKind | string;
-
-  // ✅ session id for access tokens
-  sid?: string | null;
-
-  // ✅ optional: supplier context if you later attach it
-  supplierId?: string | null;
+type JwtPayload = {
+  id?: string;              // some tokens
+  sub?: string;             // standard JWT subject (common)
+  email?: string;
+  role?: PolicyRole | string;
+  k?: "access" | "verify" | string;
+  sid?: string;
+  iat?: number;
+  exp?: number;
 };
 
 declare global {
-  namespace Express {
-    interface Request {
-      user?: AuthedUser;
-    }
+  // eslint-disable-next-line no-var
+  var __auth_ignore: boolean | undefined;
+}
+
+declare module "express-serve-static-core" {
+  interface Request {
+    user?: { id: string; email?: string; role?: string; k?: string; sid?: string };
   }
 }
 
-const AUTH_DEBUG =
-  String(process.env.AUTH_DEBUG || "").toLowerCase() === "true";
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+const ACCESS_JWT_SECRET =
+  process.env.ACCESS_JWT_SECRET || process.env.JWT_SECRET || "CHANGE_ME_DEV_SECRET";
 
-const IDLE_MINUTES_DEFAULT = 60; // shopper default
-const IDLE_MINUTES_ADMIN = 20; // admin/supplier/rider default
+/* ----------------------------- helpers ----------------------------- */
 
-function idleMinutesForRole(role: string) {
-  return role === "ADMIN" ||
-    role === "SUPER_ADMIN" ||
-    role === "SUPPLIER" ||
-    role === "SUPPLIER_RIDER"
-    ? IDLE_MINUTES_ADMIN
-    : IDLE_MINUTES_DEFAULT;
+function bearerFromAuthHeader(req: Request): string | null {
+  const h = String(req.headers.authorization ?? "");
+  if (!h) return null;
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m?.[1]?.trim() || null;
 }
 
-/* ---------- helpers ---------- */
-
-function normalizeRole(r?: string | null): Role | null {
-  if (!r) return null;
-  const v = r.replace(/[\s-]/g, "").toUpperCase();
-
-  if (v === "SUPERADMIN" || v === "SUPER_ADMIN") return "SUPER_ADMIN";
-  if (v === "ADMIN") return "ADMIN";
-  if (v === "SUPPLIER") return "SUPPLIER";
-  if (v === "SUPPLIERRIDER" || v === "SUPPLIER_RIDER") return "SUPPLIER_RIDER";
-  if (v === "SHOPPER" || v === "USER") return "SHOPPER";
-  return null;
+function tokenFromCookie(req: Request): string | null {
+  const name = getAccessTokenCookieName();
+  const raw = (req as any).cookies?.[name];
+  return raw ? String(raw) : null;
 }
 
-function getToken(req: Request): string | null {
-  // 1) Authorization: Bearer
-  const h = req.headers.authorization;
-  if (h && /^Bearer\s+/i.test(h)) return h.replace(/^Bearer\s+/i, "").trim();
-
-  // 2) cookies (requires app.use(cookieParser()))
-  const c1 = (req as any).cookies?.access_token;
-  const c2 = (req as any).cookies?.token;
-  return c1 || c2 || null;
+function readToken(req: Request): string | null {
+  // cookie-first in practice, but keep Bearer as a fallback for tooling/admin scripts
+  return tokenFromCookie(req) || bearerFromAuthHeader(req) || null;
 }
 
-/**
- * Verify JWT and (optionally) use userSession for analytics/idle tracking.
- * IMPORTANT: Session lookup is **non-fatal**.
- * If anything about sessions is wrong, we still accept the JWT.
- */
-async function verifyAndHydrate(token: string): Promise<AuthedUser | null> {
+function verifyToken(token: string): JwtPayload | null {
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as any;
-
-    const id = payload.id ?? payload.userId ?? payload.sub;
-    if (!id) return null;
-
-    const k = payload.k; // "access" | "verify" (or undefined)
-    const sid = payload.sid ?? null;
-
-    // Refresh from DB to avoid stale role/email
-    const db = await prisma.user.findUnique({
-      where: { id },
-      select: { id: true, email: true, role: true },
-    });
-
-    const emailFromToken =
-      payload.email ?? payload.upn ?? payload.preferred_username;
-    const email = (db?.email ?? emailFromToken ?? "").toString();
-
-    const roleFromDb = normalizeRole(db?.role);
-    const roleFromToken = normalizeRole(payload.role);
-    const role: Role = (roleFromDb ?? roleFromToken ?? "SHOPPER") as Role;
-
-    // 🔍 Optional session checks – but **never** reject token because of them
-    if (String(k || "") === "access" && sid) {
-      const sessionDelegate = (prisma as any).userSession;
-
-      if (!sessionDelegate?.findFirst) {
-        if (AUTH_DEBUG) {
-          console.warn(
-            "[auth] userSession model not found – skipping session checks"
-          );
-        }
-      } else {
-        try {
-          const sess = await sessionDelegate.findFirst({
-            where: {
-              id: String(sid),
-              userId: String(id),
-              revokedAt: null,
-            },
-            select: {
-              id: true,
-              lastSeenAt: true,
-              createdAt: true,
-              expiresAt: true,
-            },
-          });
-
-          if (!sess) {
-            // ⚠️ Just log for now; DO NOT return null
-            if (AUTH_DEBUG) {
-              console.warn(
-                "[auth] no session row for token – allowing token anyway",
-                {
-                  userId: String(id),
-                  sid: String(sid),
-                  role,
-                }
-              );
-            }
-          } else {
-            const now = new Date();
-
-            // Absolute expiry: log if expired, but still allow for now
-            if (sess.expiresAt && +sess.expiresAt <= +now) {
-              if (AUTH_DEBUG) {
-                console.warn(
-                  "[auth] session expired – allowing token anyway (no hard block)",
-                  {
-                    userId: String(id),
-                    sid: String(sid),
-                    role,
-                    expiresAt: sess.expiresAt,
-                  }
-                );
-              }
-            } else {
-              // Idle tracking (best-effort)
-              const idleMs = idleMinutesForRole(role) * 60_000;
-              const last = sess.lastSeenAt ? +new Date(sess.lastSeenAt) : 0;
-
-              if (last && +now - last > idleMs) {
-                if (AUTH_DEBUG) {
-                  console.warn(
-                    "[auth] session idle timeout would have applied – but not blocking token",
-                    {
-                      userId: String(id),
-                      sid: String(sid),
-                      role,
-                      lastSeenAt: sess.lastSeenAt,
-                    }
-                  );
-                }
-              }
-
-              // Update lastSeenAt at most once per minute
-              if (!last || +now - last > 60_000) {
-                try {
-                  await sessionDelegate.update({
-                    where: { id: String(sid) },
-                    data: { lastSeenAt: now },
-                  });
-                } catch (e) {
-                  if (AUTH_DEBUG) {
-                    console.warn(
-                      "[auth] failed to bump lastSeenAt (non-fatal):",
-                      (e as any)?.message
-                    );
-                  }
-                }
-              }
-            }
-          }
-        } catch (e) {
-          if (AUTH_DEBUG) {
-            console.warn(
-              "[auth] session lookup threw – allowing token anyway:",
-              (e as any)?.message
-            );
-          }
-        }
-      }
-    }
-
-    // ✅ Final decision: JWT ok → user ok
-    return { id: String(id), email, role, k, sid };
-  } catch (e) {
-    if (AUTH_DEBUG)
-      console.warn("[auth] jwt verify failed:", (e as any)?.message);
+    const decoded = jwt.verify(token, ACCESS_JWT_SECRET) as any;
+    return decoded as JwtPayload;
+  } catch {
     return null;
   }
 }
 
-/* ---------- middlewares ---------- */
-
 /**
- * Non-blocking: attach req.user if token present & valid; otherwise continue anonymous.
- * Use this first, then add `requireAuth` or `requireAdmin` on routes that need it.
+ * ✅ Guard role normalizer (independent of policy)
+ * - handles SUPERADMIN / SUPER ADMIN / SUPER-ADMIN
+ * - handles spacing/dashes
  */
-export const attachUser: RequestHandler = async (req, _res, next) => {
-  const token = getToken(req);
-  if (!token) return next();
+function normRoleStr(r: unknown): string {
+  let s = String(r ?? "").trim().toUpperCase();
+  s = s.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (s === "SUPERADMIN") s = "SUPER_ADMIN";
+  if (s === "SUPER_ADMINISTRATOR") s = "SUPER_ADMIN";
+  if (s === "SUPERUSER") s = "SUPER_USER";
+  return s;
+}
 
-  const user = await verifyAndHydrate(token);
-  if (user) {
-    req.user = user;
-    if (AUTH_DEBUG) console.log("[auth] user attached:", user);
-  } else if (AUTH_DEBUG) {
-    console.log("[auth] token present but invalid");
+function isRevoked(row: { revokedAt: Date | null } | null) {
+  return !!row?.revokedAt;
+}
+
+// throttle lastSeen updates to reduce DB writes
+const LAST_SEEN_THROTTLE_MS = 60_000;
+
+async function assertSessionIfPresent(decoded: JwtPayload) {
+  const sid = decoded.sid ? String(decoded.sid) : "";
+  if (!sid) return;
+
+  // Your schema might be Session or AuthSession.
+  const sessionModel: any = (prisma as any).session || (prisma as any).authSession;
+  if (!sessionModel?.findUnique) return; // if model doesn't exist, don't block login
+
+  const userId = String(decoded.id ?? decoded.sub ?? "");
+  if (!userId) return;
+
+  const row = await sessionModel.findUnique({
+    where: { id: sid },
+    select: { id: true, userId: true, revokedAt: true, expiresAt: true, lastSeenAt: true },
+  });
+
+  if (!row || String(row.userId) !== userId) throw new Error("session-not-found");
+  if (isRevoked(row)) throw new Error("session-revoked");
+
+  if (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) {
+    throw new Error("session-expired");
   }
-  next();
+
+  // throttle lastSeen updates
+  const last = row.lastSeenAt ? new Date(row.lastSeenAt).getTime() : 0;
+  if (Date.now() - last > LAST_SEEN_THROTTLE_MS) {
+    // best-effort update, do not fail request
+    sessionModel
+      .update({ where: { id: sid }, data: { lastSeenAt: new Date() } })
+      .catch(() => null);
+  }
+}
+
+function attachReqUser(req: Request, decoded: JwtPayload) {
+  const id = String(decoded.id ?? decoded.sub ?? "");
+  const roleRaw = decoded.role ?? "";
+  const role = normRoleStr(roleRaw);
+
+  // also normalize via policy helper (covers more variants), but keep our canonical output
+  const policyNorm = normPolicyRole(role as any) || role;
+
+  req.user = {
+    id,
+    email: decoded.email ? String(decoded.email) : undefined,
+    role: normRoleStr(policyNorm),
+    k: decoded.k ? String(decoded.k) : undefined,
+    sid: decoded.sid ? String(decoded.sid) : undefined,
+  };
+}
+
+function unauthorized(res: Response, msg?: string) {
+  return res.status(401).json({ error: "Unauthorized", message: msg || "Unauthenticated" });
+}
+
+function forbidden(res: Response) {
+  return res.status(403).json({ error: "Forbidden" });
+}
+
+/* ----------------------------- core guards ----------------------------- */
+
+export const requireAuth: RequestHandler = async (req, res, next) => {
+  // dev escape hatch if you use it
+  if (globalThis.__auth_ignore) return next();
+
+  const token = readToken(req);
+  if (!token) return unauthorized(res, "Missing auth cookie");
+
+  const decoded = verifyToken(token);
+  const userId = String(decoded?.id ?? decoded?.sub ?? "");
+  if (!decoded || !userId) return unauthorized(res, "Invalid token");
+
+  // Only "access" tokens should be allowed here (unless token has no k, then allow)
+  const k = String(decoded.k ?? "");
+  if (k && k !== "access") return unauthorized(res, "Wrong token type");
+
+  try {
+    await assertSessionIfPresent(decoded);
+  } catch (e: any) {
+    return unauthorized(res, e?.message || "Session invalid");
+  }
+
+  attachReqUser(req, decoded);
+  return next();
 };
 
-/** Hard requirement: must be authenticated. */
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const u = req.user as any;
-  if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
-  if (u.k && u.k !== "access")
-    return res.status(403).json({ error: "Forbidden" });
-  next();
-}
+export const requireVerifySession: RequestHandler = async (req, res, next) => {
+  if (globalThis.__auth_ignore) return next();
 
-export function requireVerifySession(
-  req: Request,
-  res: Response,
-  next: NextFunction
-) {
-  const u = req.user as any;
-  if (!u?.id) return res.status(401).json({ error: "Unauthorized" });
+  const token = readToken(req);
+  if (!token) return unauthorized(res);
 
-  // allow verify token OR full access token (handy if already logged in)
-  if (u.k && u.k !== "verify" && u.k !== "access") {
-    return res.status(403).json({ error: "Forbidden" });
+  const decoded = verifyToken(token);
+  const userId = String(decoded?.id ?? decoded?.sub ?? "");
+  if (!decoded || !userId) return unauthorized(res);
+
+  const k = String(decoded.k ?? "");
+  if (k !== "verify") return unauthorized(res);
+
+  try {
+    await assertSessionIfPresent(decoded);
+  } catch (e: any) {
+    return unauthorized(res, e?.message || "Session invalid");
   }
 
-  next();
-}
+  attachReqUser(req, decoded);
+  return next();
+};
 
-/** Admin or Super Admin only. */
-export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
-  const role = normalizeRole(req.user.role);
-  if (role === "ADMIN" || role === "SUPER_ADMIN") return next();
-  return res.status(403).json({ error: "Forbidden" });
-}
+export const requireAdmin: RequestHandler = (req, res, next) => {
+  requireAuth(req, res, () => {
+    const r = normRoleStr(req.user?.role);
+    if (r === "ADMIN" || r === "SUPER_ADMIN") return next();
+    return forbidden(res);
+  });
+};
 
-/** Super Admin only. */
-export function requireSuperAdmin(
-  req: Request,
-  res: Response,
-  next: NextFunction
-) {
-  if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
-  const role = normalizeRole(req.user.role);
-  if (role === "SUPER_ADMIN") return next();
-  return res.status(403).json({ error: "Forbidden" });
-}
+export const requireSuperAdmin: RequestHandler = (req, res, next) => {
+  requireAuth(req, res, () => {
+    const r = normRoleStr(req.user?.role);
+    if (r === "SUPER_ADMIN") return next();
+    return forbidden(res);
+  });
+};
 
-/** Supplier only. */
-export function requireSupplier(
-  req: Request,
-  res: Response,
-  next: NextFunction
-) {
-  if (!req.user?.id) return res.status(401).json({ error: "Unauthorized" });
-  const role = normalizeRole(req.user.role);
-  if (role === "SUPPLIER") return next();
-  return res.status(403).json({ error: "Forbidden" });
-}
+export const requireSupplier: RequestHandler = (req, res, next) => {
+  requireAuth(req, res, () => {
+    const r = normRoleStr(req.user?.role);
+    if (r === "SUPPLIER") return next();
+    return forbidden(res);
+  });
+};

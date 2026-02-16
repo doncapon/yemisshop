@@ -8,9 +8,17 @@ type Props = {
   showText?: boolean;
 };
 
-export default function DaySpringLogo({ className = "", size = 28, showText = true }: Props) {
+export default function DaySpringLogo({
+  className = "",
+  size = 44, // ✅ bigger default icon
+  showText = true,
+}: Props) {
+  // ✅ make text scale bigger relative to icon size
+  const textPx = Math.round(size * 0.72);   // 44 -> ~32px
+  const textPxMd = Math.round(size * 0.78); // 44 -> ~34px
+
   return (
-    <div className={`inline-flex items-center gap-2 ${className}`}>
+    <div className={`inline-flex items-center gap-3 ${className}`}>
       <svg
         width={size}
         height={size}
@@ -84,7 +92,12 @@ export default function DaySpringLogo({ className = "", size = 28, showText = tr
       </svg>
 
       {showText && (
-        <span className="text-[17px] md:text-[18px] font-semibold tracking-tight text-zinc-900">
+        <span
+          className="font-semibold tracking-tight text-zinc-900"
+          style={{ fontSize: textPx }}
+        >
+          {/* bump slightly more on md+ */}
+          <span className="hidden md:inline" style={{ fontSize: textPxMd }} />
           Day<span className="font-extrabold">Spring</span>
         </span>
       )}

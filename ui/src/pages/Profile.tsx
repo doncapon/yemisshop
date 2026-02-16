@@ -1,9 +1,8 @@
 // src/pages/Profile.tsx
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import api from '../api/client';
-import { useAuthStore } from '../store/auth';
-import SiteLayout from '../layouts/SiteLayout';
+import React, { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import api from "../api/client";
+import SiteLayout from "../layouts/SiteLayout";
 
 type Address = {
   id?: string;
@@ -19,8 +18,8 @@ type Address = {
 type MeResponse = {
   id: string;
   email: string;
-  role: 'ADMIN' | 'SUPER_ADMIN' | 'SUPER_USER' | 'SHOPPER';
-  status: 'PENDING' | 'PARTIAL' | 'VERIFIED';
+  role: "ADMIN" | "SUPER_ADMIN" | "SUPER_USER" | "SHOPPER";
+  status: "PENDING" | "PARTIAL" | "VERIFIED";
   firstName?: string | null;
   middleName?: string | null;
   lastName?: string | null;
@@ -38,18 +37,26 @@ type MeResponse = {
 };
 
 const emptyAddr: Address = {
-  houseNumber: '',
-  streetName: '',
-  postCode: '',
-  town: '',
-  city: '',
-  state: '',
-  country: '',
+  houseNumber: "",
+  streetName: "",
+  postCode: "",
+  town: "",
+  city: "",
+  state: "",
+  country: "",
 };
 
+/* ---------------- Cookie auth helpers ---------------- */
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
+function isAuthError(e: any) {
+  const s = e?.response?.status;
+  return s === 401 || s === 403;
+}
+
 export default function Profile() {
-  const token = useAuthStore((s) => s.token);
   const nav = useNavigate();
+  const location = useLocation();
 
   const [me, setMe] = useState<MeResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,10 +69,10 @@ export default function Profile() {
   const [sameAsHome, setSameAsHome] = useState<boolean>(false);
   const [savingAddr, setSavingAddr] = useState<boolean>(false);
 
-  // NEW: Verification helpers
+  // Verification helpers
   const [emailBusy, setEmailBusy] = useState(false);
   const [phoneBusy, setPhoneBusy] = useState(false);
-  const [otp, setOtp] = useState('');
+  const [otp, setOtp] = useState("");
   const [otpBusy, setOtpBusy] = useState(false);
   const [otpCooldown, setOtpCooldown] = useState(0);
 
@@ -76,71 +83,11 @@ export default function Profile() {
     return () => clearInterval(t);
   }, [otpCooldown]);
 
-  // -------- Load profile (requires token) --------
-  useEffect(() => {
-    let cancelled = false;
-
-    if (!token) {
-      nav('/login', { state: { from: { pathname: '/profile' } } });
-      return;
-    }
-
-    (async () => {
-      setLoading(true);
-      setErr(null);
-      try {
-        const { data } = await api.get<MeResponse>('/api/auth/me', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (cancelled) return;
-
-        setMe(data);
-
-        const a = data.address || {};
-        const s = data.shippingAddress || {};
-        setHome({
-          houseNumber: a.houseNumber ?? '',
-          streetName: a.streetName ?? '',
-          postCode: a.postCode ?? '',
-          town: a.town ?? '',
-          city: a.city ?? '',
-          state: a.state ?? '',
-          country: a.country ?? '',
-        });
-
-        setShip({
-          houseNumber: s.houseNumber ?? '',
-          streetName: s.streetName ?? '',
-          postCode: s.postCode ?? '',
-          town: s.town ?? '',
-          city: s.city ?? '',
-          state: s.state ?? '',
-          country: s.country ?? '',
-        });
-
-        setSameAsHome(isAddrEqual(a, s));
-      } catch (e: any) {
-        if (cancelled) return;
-        if (e?.response?.status === 401) {
-          nav('/login', { state: { from: { pathname: '/profile' } } });
-          return;
-        }
-        setErr(e?.response?.data?.error || 'Failed to load profile');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [token, nav]);
-
-  // -------- Helpers --------
+  /* ---------------- Helpers ---------------- */
   function isAddrEqual(a?: Address | null, b?: Address | null) {
     const ax = a || {};
     const bx = b || {};
-    const norm = (v: unknown) => (typeof v === 'string' ? v.trim() : '') || '';
+    const norm = (v: unknown) => (typeof v === "string" ? v.trim() : "") || "";
     return (
       norm(ax.houseNumber) === norm(bx.houseNumber) &&
       norm(ax.streetName) === norm(bx.streetName) &&
@@ -153,103 +100,171 @@ export default function Profile() {
   }
 
   const displayName = useMemo(() => {
-    if (!me) return '';
+    if (!me) return "";
     const f = me.firstName?.trim();
     const m = me.middleName?.trim();
     const l = me.lastName?.trim();
-    if (!f && !l) return '';
-    const mid = m ? ` ${m[0].toUpperCase()}.` : '';
-    return `${f || ''}${mid} ${l || ''}`.trim();
+    if (!f && !l) return "";
+    const mid = m ? ` ${m[0].toUpperCase()}.` : "";
+    return `${f || ""}${mid} ${l || ""}`.trim();
   }, [me]);
 
-  // -------- Address change handlers --------
+  const redirectToLogin = () => {
+    nav("/login", {
+      replace: true,
+      state: { from: location.pathname + location.search },
+    });
+  };
+
+  /* ---------------- Load profile (cookie session) ---------------- */
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      setLoading(true);
+      setErr(null);
+
+      try {
+        const { data } = await api.get<MeResponse>("/api/auth/me", AXIOS_COOKIE_CFG);
+        if (cancelled) return;
+
+        setMe(data);
+
+        const a = data.address || {};
+        const s = data.shippingAddress || {};
+        setHome({
+          houseNumber: a.houseNumber ?? "",
+          streetName: a.streetName ?? "",
+          postCode: a.postCode ?? "",
+          town: a.town ?? "",
+          city: a.city ?? "",
+          state: a.state ?? "",
+          country: a.country ?? "",
+        });
+
+        setShip({
+          houseNumber: s.houseNumber ?? "",
+          streetName: s.streetName ?? "",
+          postCode: s.postCode ?? "",
+          town: s.town ?? "",
+          city: s.city ?? "",
+          state: s.state ?? "",
+          country: s.country ?? "",
+        });
+
+        setSameAsHome(isAddrEqual(a, s));
+      } catch (e: any) {
+        if (cancelled) return;
+
+        if (isAuthError(e)) {
+          redirectToLogin();
+          return;
+        }
+
+        setErr(e?.response?.data?.error || "Failed to load profile");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav]);
+
+  /* ---------------- Address change handlers ---------------- */
   const onHome =
     (k: keyof Address) =>
-      (e: React.ChangeEvent<HTMLInputElement>) => {
-        const v = e.target.value;
-        setHome((h) => ({ ...h, [k]: v }));
-        if (sameAsHome) {
-          setShip((s) => ({ ...s, [k]: v }));
-        }
-      };
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const v = e.target.value;
+      setHome((h) => ({ ...h, [k]: v }));
+      if (sameAsHome) {
+        setShip((s) => ({ ...s, [k]: v }));
+      }
+    };
 
   const onShip =
     (k: keyof Address) =>
-      (e: React.ChangeEvent<HTMLInputElement>) => {
-        const v = e.target.value;
-        setShip((s) => ({ ...s, [k]: v }));
-      };
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const v = e.target.value;
+      setShip((s) => ({ ...s, [k]: v }));
+    };
 
-  // -------- Email / Phone verification handlers --------
+  /* ---------------- Email / Phone verification (cookie session) ---------------- */
   const resendEmail = async () => {
-    if (!token) return nav('/login', { state: { from: { pathname: '/profile' } } });
     setErr(null);
     setMsg(null);
     setEmailBusy(true);
     try {
-      await api.post('/api/auth/resend-email', {}, { headers: { Authorization: `Bearer ${token}` } });
-      setMsg('Verification email sent.');
+      await api.post("/api/auth/resend-email", {}, AXIOS_COOKIE_CFG);
+      setMsg("Verification email sent.");
     } catch (e: any) {
-      setErr(e?.response?.data?.error || 'Failed to resend verification email');
+      if (isAuthError(e)) return redirectToLogin();
+      setErr(e?.response?.data?.error || "Failed to resend verification email");
     } finally {
       setEmailBusy(false);
     }
   };
 
   const requestOtp = async () => {
-    if (!token) return nav('/login', { state: { from: { pathname: '/profile' } } });
     setErr(null);
     setMsg(null);
     setPhoneBusy(true);
     try {
-      const { data } = await api.post('/api/auth/resend-otp', {}, { headers: { Authorization: `Bearer ${token}` } });
-      setMsg('OTP sent to your phone.');
+      const { data } = await api.post("/api/auth/resend-otp", {}, AXIOS_COOKIE_CFG);
+      setMsg("OTP sent to your phone.");
       setOtpCooldown(Number(data?.nextResendAfterSec ?? 60));
     } catch (e: any) {
+      if (isAuthError(e)) return redirectToLogin();
       const retryAfter = Number(e?.response?.data?.retryAfterSec || 0);
       if (retryAfter) setOtpCooldown(retryAfter);
-      setErr(e?.response?.data?.error || 'Failed to send OTP');
+      setErr(e?.response?.data?.error || "Failed to send OTP");
     } finally {
       setPhoneBusy(false);
     }
   };
 
   const verifyOtp = async () => {
-    if (!token) return nav('/login', { state: { from: { pathname: '/profile' } } });
     if (!otp.trim()) {
-      setErr('Enter the OTP sent to your phone.');
+      setErr("Enter the OTP sent to your phone.");
       return;
     }
+
     setErr(null);
     setMsg(null);
     setOtpBusy(true);
+
     try {
-      await api.post('/api/auth/verify-otp', { user: me, otp: otp.trim() }, { headers: { Authorization: `Bearer ${token}` } });
-      setMsg('Phone verified successfully.');
+      // keep your existing payload shape to avoid breaking backend expectations
+      await api.post("/api/auth/verify-otp", { user: me, otp: otp.trim() }, AXIOS_COOKIE_CFG);
+
+      setMsg("Phone verified successfully.");
       setMe((prev) => (prev ? { ...prev, phoneVerified: true } : prev));
-      setOtp('');
+      setOtp("");
     } catch (e: any) {
-      setErr(e?.response?.data?.error || 'Invalid OTP');
+      if (isAuthError(e)) return redirectToLogin();
+      setErr(e?.response?.data?.error || "Invalid OTP");
     } finally {
       setOtpBusy(false);
     }
   };
 
-  // -------- Save addresses only --------
+  /* ---------------- Save addresses only (cookie session) ---------------- */
   const saveAddresses = async () => {
-    if (!token) {
-      nav('/login', { state: { from: { pathname: '/profile' } } });
+    if (!me) {
+      redirectToLogin();
       return;
     }
 
     setErr(null);
     setMsg(null);
 
-    const req = ['houseNumber', 'streetName', 'city', 'state', 'country'] as const;
+    const req = ["houseNumber", "streetName", "city", "state", "country"] as const;
     for (const key of req) {
       const val = (home as any)[key];
       if (!val || !String(val).trim()) {
-        setErr('Please complete the required Home Address fields.');
+        setErr("Please complete the required Home Address fields.");
         return;
       }
     }
@@ -267,57 +282,55 @@ export default function Profile() {
     try {
       // Save home
       await api.post(
-        '/api/profile/address',
+        "/api/profile/address",
         {
           houseNumber: home.houseNumber,
           streetName: home.streetName,
-          postCode: home.postCode || '',
-          town: home.town || '',
+          postCode: home.postCode || "",
+          town: home.town || "",
           city: home.city,
           state: home.state,
           country: home.country,
         },
-        { headers: { Authorization: `Bearer ${token}` } }
+        AXIOS_COOKIE_CFG
       );
 
       // Save shipping
       const payload = sameAsHome
         ? {
-          houseNumber: home.houseNumber,
-          streetName: home.streetName,
-          postCode: home.postCode || '',
-          town: home.town || '',
-          city: home.city,
-          state: home.state,
-          country: home.country,
-        }
+            houseNumber: home.houseNumber,
+            streetName: home.streetName,
+            postCode: home.postCode || "",
+            town: home.town || "",
+            city: home.city,
+            state: home.state,
+            country: home.country,
+          }
         : {
-          houseNumber: ship.houseNumber,
-          streetName: ship.streetName,
-          postCode: ship.postCode || '',
-          town: ship.town || '',
-          city: ship.city,
-          state: ship.state,
-          country: ship.country,
-        };
+            houseNumber: ship.houseNumber,
+            streetName: ship.streetName,
+            postCode: ship.postCode || "",
+            town: ship.town || "",
+            city: ship.city,
+            state: ship.state,
+            country: ship.country,
+          };
 
-      await api.post('/api/profile/shipping', payload, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      await api.post("/api/profile/shipping", payload, AXIOS_COOKIE_CFG);
 
-      setMsg('Addresses saved successfully.');
+      setMsg("Addresses saved successfully.");
     } catch (e: any) {
-      if (e?.response?.status === 401) {
-        nav('/login', { state: { from: { pathname: '/profile' } } });
+      if (isAuthError(e)) {
+        redirectToLogin();
         return;
       }
-      setErr(e?.response?.data?.error || 'Failed to save addresses');
+      setErr(e?.response?.data?.error || "Failed to save addresses");
     } finally {
       setSavingAddr(false);
     }
   };
 
-  // -------- UI --------
+  /* ---------------- UI ---------------- */
   if (loading) {
     return (
       <div className="max-w-5xl mx-auto px-4 md:px-6 py-8">
@@ -359,27 +372,33 @@ export default function Profile() {
               <div className="font-medium break-all">{displayName || me.email}</div>
               <div className="mt-1 text-xs opacity-70 break-all">{me.email}</div>
               <div className="mt-3 text-xs">
-                <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] mr-2
-                bg-primary-50 text-primary-700 border-primary-200">
+                <span
+                  className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] mr-2
+                bg-primary-50 text-primary-700 border-primary-200"
+                >
                   Role: {me.role}
                 </span>
-                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]
-                ${me.status === 'VERIFIED'
-                    ? 'bg-green-50 text-green-700 border-green-200'
-                    : me.status === 'PARTIAL'
-                      ? 'bg-amber-50 text-amber-700 border-amber-200'
-                      : 'bg-zinc-50 text-zinc-700 border-zinc-200'}`}>
+                <span
+                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]
+                ${
+                  me.status === "VERIFIED"
+                    ? "bg-green-50 text-green-700 border-green-200"
+                    : me.status === "PARTIAL"
+                    ? "bg-amber-50 text-amber-700 border-amber-200"
+                    : "bg-zinc-50 text-zinc-700 border-zinc-200"
+                }`}
+                >
                   Status: {me.status}
                 </span>
               </div>
             </div>
 
-            {/* EMAIL CARD (enhanced) */}
+            {/* EMAIL CARD */}
             <div className="rounded-xl border bg-white p-4">
               <div className="text-xs text-ink-soft">Email</div>
               <div className="font-medium break-all">{me.email}</div>
-              <div className={`mt-2 text-sm ${me.emailVerified ? 'text-green-700' : 'text-amber-700'}`}>
-                {me.emailVerified ? 'Verified' : 'Not verified'}
+              <div className={`mt-2 text-sm ${me.emailVerified ? "text-green-700" : "text-amber-700"}`}>
+                {me.emailVerified ? "Verified" : "Not verified"}
               </div>
               {!me.emailVerified && (
                 <div className="mt-3">
@@ -389,18 +408,18 @@ export default function Profile() {
                     className="text-sm underline text-primary-700 disabled:opacity-50"
                     title="Resend verification email"
                   >
-                    {emailBusy ? 'Sending…' : 'Resend verification email'}
+                    {emailBusy ? "Sending…" : "Resend verification email"}
                   </button>
                 </div>
               )}
             </div>
 
-            {/* PHONE CARD (enhanced) */}
+            {/* PHONE CARD */}
             <div className="rounded-xl border bg-white p-4">
               <div className="text-xs text-ink-soft">Phone</div>
-              <div className="font-medium break-words">{me.phone || '—'}</div>
-              <div className={`mt-2 text-sm ${me.phoneVerified ? 'text-green-700' : 'text-amber-700'}`}>
-                {me.phoneVerified ? 'Verified' : 'Not verified'}
+              <div className="font-medium break-words">{me.phone || "—"}</div>
+              <div className={`mt-2 text-sm ${me.phoneVerified ? "text-green-700" : "text-amber-700"}`}>
+                {me.phoneVerified ? "Verified" : "Not verified"}
               </div>
 
               {!me.phoneVerified && (
@@ -410,9 +429,9 @@ export default function Profile() {
                       onClick={requestOtp}
                       disabled={phoneBusy || otpCooldown > 0}
                       className="text-sm underline text-primary-700 disabled:opacity-50"
-                      title={otpCooldown > 0 ? `Retry in ${otpCooldown}s` : 'Send OTP'}
+                      title={otpCooldown > 0 ? `Retry in ${otpCooldown}s` : "Send OTP"}
                     >
-                      {phoneBusy ? 'Sending…' : otpCooldown > 0 ? `Send OTP in ${otpCooldown}s` : 'Send OTP'}
+                      {phoneBusy ? "Sending…" : otpCooldown > 0 ? `Send OTP in ${otpCooldown}s` : "Send OTP"}
                     </button>
                   </div>
 
@@ -428,7 +447,7 @@ export default function Profile() {
                       disabled={otpBusy || !otp.trim()}
                       className="rounded-md border bg-emerald-600 px-3 py-2 text-white hover:bg-emerald-700 transition disabled:opacity-50"
                     >
-                      {otpBusy ? 'Verifying…' : 'Verify'}
+                      {otpBusy ? "Verifying…" : "Verify"}
                     </button>
                   </div>
                 </div>
@@ -446,11 +465,7 @@ export default function Profile() {
                 Admin-managed
               </span>
             </div>
-            <input
-              className="mt-2 w-full rounded-lg border border-border bg-zinc-100 text-ink-soft px-3 py-2.5"
-              value={me?.phone || ''}
-              disabled
-            />
+            <input className="mt-2 w-full rounded-lg border border-border bg-zinc-100 text-ink-soft px-3 py-2.5" value={me?.phone || ""} disabled />
           </div>
 
           <div className="rounded-xl border bg-white p-4">
@@ -463,7 +478,7 @@ export default function Profile() {
             <input
               type="date"
               className="mt-2 w-full rounded-lg border border-border bg-zinc-100 text-ink-soft px-3 py-2.5"
-              value={me?.dateOfBirth ? me.dateOfBirth.substring(0, 10) : ''}
+              value={me?.dateOfBirth ? me.dateOfBirth.substring(0, 10) : ""}
               disabled
             />
           </div>
@@ -480,18 +495,18 @@ export default function Profile() {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Input label="House number" value={home.houseNumber || ''} onChange={onHome('houseNumber')} required />
-              <Input label="Street name" value={home.streetName || ''} onChange={onHome('streetName')} required />
+              <Input label="House number" value={home.houseNumber || ""} onChange={onHome("houseNumber")} required />
+              <Input label="Street name" value={home.streetName || ""} onChange={onHome("streetName")} required />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Input label="City" value={home.city || ''} onChange={onHome('city')} required />
-              <Input label="State" value={home.state || ''} onChange={onHome('state')} required />
+              <Input label="City" value={home.city || ""} onChange={onHome("city")} required />
+              <Input label="State" value={home.state || ""} onChange={onHome("state")} required />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Input label="Post code" value={home.postCode || ''} onChange={onHome('postCode')} />
-              <Input label="Country" value={home.country || ''} onChange={onHome('country')} required />
+              <Input label="Post code" value={home.postCode || ""} onChange={onHome("postCode")} />
+              <Input label="Country" value={home.country || ""} onChange={onHome("country")} required />
             </div>
           </div>
 
@@ -513,19 +528,19 @@ export default function Profile() {
               </label>
             </div>
 
-            <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${sameAsHome ? 'opacity-60 pointer-events-none select-none' : ''}`}>
-              <Input label="House number" value={ship.houseNumber || ''} onChange={onShip('houseNumber')} required disabled={sameAsHome} />
-              <Input label="Street name" value={ship.streetName || ''} onChange={onShip('streetName')} required disabled={sameAsHome} />
+            <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${sameAsHome ? "opacity-60 pointer-events-none select-none" : ""}`}>
+              <Input label="House number" value={ship.houseNumber || ""} onChange={onShip("houseNumber")} required disabled={sameAsHome} />
+              <Input label="Street name" value={ship.streetName || ""} onChange={onShip("streetName")} required disabled={sameAsHome} />
             </div>
 
-            <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${sameAsHome ? 'opacity-60 pointer-events-none select-none' : ''}`}>
-              <Input label="City" value={ship.city || ''} onChange={onShip('city')} required disabled={sameAsHome} />
-              <Input label="State" value={ship.state || ''} onChange={onShip('state')} required disabled={sameAsHome} />
+            <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${sameAsHome ? "opacity-60 pointer-events-none select-none" : ""}`}>
+              <Input label="City" value={ship.city || ""} onChange={onShip("city")} required disabled={sameAsHome} />
+              <Input label="State" value={ship.state || ""} onChange={onShip("state")} required disabled={sameAsHome} />
             </div>
 
-            <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${sameAsHome ? 'opacity-60 pointer-events-none select-none' : ''}`}>
-              <Input label="Post code" value={ship.postCode || ''} onChange={onShip('postCode')} disabled={sameAsHome} />
-              <Input label="Country" value={ship.country || ''} onChange={onShip('country')} required disabled={sameAsHome} />
+            <div className={`grid grid-cols-1 sm:grid-cols-2 gap-3 ${sameAsHome ? "opacity-60 pointer-events-none select-none" : ""}`}>
+              <Input label="Post code" value={ship.postCode || ""} onChange={onShip("postCode")} disabled={sameAsHome} />
+              <Input label="Country" value={ship.country || ""} onChange={onShip("country")} required disabled={sameAsHome} />
             </div>
           </div>
         </section>
@@ -536,7 +551,7 @@ export default function Profile() {
             disabled={savingAddr}
             className="rounded-md border bg-accent-500 px-4 py-2 text-white hover:bg-accent-600 transition disabled:opacity-50"
           >
-            {savingAddr ? 'Saving…' : 'Save addresses'}
+            {savingAddr ? "Saving…" : "Save addresses"}
           </button>
         </div>
       </div>
@@ -562,7 +577,7 @@ function Input({
     <label className="block">
       <span className="block text-sm font-medium text-ink">
         {label}
-        {required ? ' *' : ''}
+        {required ? " *" : ""}
       </span>
       <input
         value={value}
@@ -570,7 +585,7 @@ function Input({
         disabled={disabled}
         className={`mt-1 w-full rounded-lg border border-border px-3 py-2.5 bg-surface placeholder:text-ink-soft
           focus:outline-none focus:ring-4 focus:ring-primary-100 focus:border-primary-400 transition
-          ${disabled ? 'bg-zinc-100 text-ink-soft cursor-not-allowed' : ''}`}
+          ${disabled ? "bg-zinc-100 text-ink-soft cursor-not-allowed" : ""}`}
         placeholder={label}
       />
     </label>

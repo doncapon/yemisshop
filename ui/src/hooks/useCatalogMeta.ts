@@ -2,7 +2,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
-import { useAuthStore } from "../store/auth";
 
 export type CatalogCategory = {
   id: string;
@@ -42,6 +41,8 @@ export type CatalogAttribute = {
 
 type ApiListResponse<T> = { data: T[] } | T[];
 
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
 function toArray<T>(resp: ApiListResponse<T>): T[] {
   // resp can be { data: [...] } or raw [...]
   if (Array.isArray(resp)) return resp;
@@ -54,16 +55,15 @@ function toArray<T>(resp: ApiListResponse<T>): T[] {
  * - If endpoint returns 404, try next.
  * - If endpoint returns 401/403, try next (useful when suppliers hit admin endpoints).
  * - For other errors, rethrow to surface real issues.
+ *
+ * ✅ Cookie-mode: always sends cookies (no Authorization header)
  */
-async function getFirstWorking<T>(
-  urls: string[],
-  headers?: Record<string, string>
-): Promise<T[]> {
+async function getFirstWorking<T>(urls: string[]): Promise<T[]> {
   let lastErr: any = null;
 
   for (const url of urls) {
     try {
-      const res = await api.get<ApiListResponse<T>>(url, { headers });
+      const res = await api.get<ApiListResponse<T>>(url, AXIOS_COOKIE_CFG);
       return toArray<T>(res.data);
     } catch (e: any) {
       lastErr = e;
@@ -83,10 +83,7 @@ async function getFirstWorking<T>(
 }
 
 export function useCatalogMeta(opts?: { enabled?: boolean }) {
-  const token = useAuthStore((s) => s.token);
   const enabled = opts?.enabled ?? true;
-
-  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
 
   /**
    * IMPORTANT:
@@ -99,8 +96,7 @@ export function useCatalogMeta(opts?: { enabled?: boolean }) {
   const categoriesQ = useQuery<CatalogCategory[], Error>({
     queryKey: ["catalog-meta", "categories"],
     enabled,
-    queryFn: () =>
-      getFirstWorking<CatalogCategory>(["/api/catalog/categories"], headers),
+    queryFn: () => getFirstWorking<CatalogCategory>(["/api/catalog/categories"]),
     staleTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
@@ -108,8 +104,7 @@ export function useCatalogMeta(opts?: { enabled?: boolean }) {
   const brandsQ = useQuery<CatalogBrand[], Error>({
     queryKey: ["catalog-meta", "brands"],
     enabled,
-    queryFn: () =>
-      getFirstWorking<CatalogBrand>(["/api/catalog/brands"], headers),
+    queryFn: () => getFirstWorking<CatalogBrand>(["/api/catalog/brands"]),
     staleTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
@@ -117,8 +112,7 @@ export function useCatalogMeta(opts?: { enabled?: boolean }) {
   const attributesQ = useQuery<CatalogAttribute[], Error>({
     queryKey: ["catalog-meta", "attributes"],
     enabled,
-    queryFn: () =>
-      getFirstWorking<CatalogAttribute>(["/api/catalog/attributes"], headers),
+    queryFn: () => getFirstWorking<CatalogAttribute>(["/api/catalog/attributes"]),
     staleTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
   });

@@ -3,7 +3,6 @@ import React, { useCallback, useEffect, useMemo, useState, type ReactNode } from
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import api from "../../api/client";
-import { useAuthStore } from "../../store/auth";
 
 import { useModal } from "../ModalProvider";
 import StatusDot from "../StatusDot";
@@ -240,13 +239,11 @@ function SupplierForm({
   onCreate: (payload: SupplierFormValues) => void;
   onUpdate: (payload: SupplierFormValues & { id: string }) => void;
 }) {
-  const token = useAuthStore((s) => s.token);
-
   const banksQ = useQuery({
     queryKey: ["admin", "banks"],
     queryFn: async () => {
       const { data } = await api.get<{ data: BankOption[] }>("/api/banks", {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        withCredentials: true,
       });
       return Array.isArray(data?.data) && data.data.length > 0 ? data.data : FALLBACK_BANKS;
     },
@@ -628,7 +625,7 @@ function normalizeSupplierPayload(values: SupplierFormValues) {
 ========================= */
 
 export function CatalogSettingsSection(props: {
-  token?: string | null;
+  token?: string | null; // kept for compatibility; cookie auth doesn't use it
   canEdit: boolean;
 
   categoriesQ: any;
@@ -691,10 +688,6 @@ export function CatalogSettingsSection(props: {
   const qc = useQueryClient();
   const { openModal } = useModal();
 
-  const storeToken = useAuthStore((s) => s.token);
-  const token = props.token ?? storeToken;
-  const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
-
   const categoryUsage: Record<string, number> = usageQ.data?.categories || {};
   const attributeUsage: Record<string, number> = usageQ.data?.attributes || {};
   const brandUsage: Record<string, number> = usageQ.data?.brands || {};
@@ -748,7 +741,7 @@ export function CatalogSettingsSection(props: {
       const { data } = await api.post<{ ok: true; data: any }>(
         `/api/admin/suppliers/${vars.id}/bank-verify`,
         { decision: vars.decision, note: vars.note },
-        { headers: hdr }
+        { withCredentials: true }
       );
       return data;
     },
@@ -757,7 +750,7 @@ export function CatalogSettingsSection(props: {
 
       if (editingSupplier?.id) {
         const { data } = await api.get<{ data: AdminSupplier }>(`/api/admin/suppliers/${editingSupplier.id}`, {
-          headers: hdr,
+          withCredentials: true,
         });
         setEditingSupplier(data.data);
       }
@@ -843,7 +836,7 @@ export function CatalogSettingsSection(props: {
             type="button"
             onClick={async () => {
               try {
-                await api.post("/api/admin/catalog/backfill", null, { headers: hdr });
+                await api.post("/api/admin/catalog/backfill", null, { withCredentials: true });
                 qc.invalidateQueries({ queryKey: ["admin", "categories"] });
                 qc.invalidateQueries({ queryKey: ["admin", "brands"] });
                 qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
@@ -858,7 +851,9 @@ export function CatalogSettingsSection(props: {
           </button>
         }
       >
-        {canEdit && <CategoryForm categories={categoriesQ.data ?? []} onCreate={(payload) => createCategory.mutate(payload)} />}
+        {canEdit && (
+          <CategoryForm categories={categoriesQ.data ?? []} onCreate={(payload) => createCategory.mutate(payload)} />
+        )}
 
         <div className="border rounded-xl overflow-x-auto">
           <table className="w-full text-sm">
@@ -1034,7 +1029,7 @@ export function CatalogSettingsSection(props: {
                 const status = (s.bankVerificationStatus || "UNVERIFIED") as BankVerificationStatus;
 
                 const hasCoreBank = !!s.bankCode && !!s.accountNumber;
-                const isVerifiableStatus = status !== "VERIFIED"; // allow verify for PENDING/UNVERIFIED/REJECTED
+                const isVerifiableStatus = status !== "VERIFIED";
                 const canVerify = isVerifiableStatus && hasCoreBank && !bankVerifyM.isPending;
 
                 const missingReason = !hasCoreBank
@@ -1085,7 +1080,7 @@ export function CatalogSettingsSection(props: {
                             type="button"
                             onClick={async () => {
                               const { data } = await api.get<{ data: AdminSupplier }>(`/api/admin/suppliers/${s.id}`, {
-                                headers: hdr,
+                                withCredentials: true,
                               });
                               setEditingSupplier(data.data);
                             }}
@@ -1213,7 +1208,9 @@ export function CatalogSettingsSection(props: {
                             <button
                               type="button"
                               className="text-xs underline"
-                              onClick={() => updateAttrValue.mutate({ attributeId: a.id, id: v.id, isActive: !v.isActive })}
+                              onClick={() =>
+                                updateAttrValue.mutate({ attributeId: a.id, id: v.id, isActive: !v.isActive })
+                              }
                             >
                               {v.isActive ? "Disable" : "Enable"}
                             </button>

@@ -1,794 +1,154 @@
-// src/components/Navbar.tsx
-import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
-import { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import type { ReactNode } from "react";
-import { useAuthStore } from "../store/auth";
+// src/pages/Wishlist.tsx
+import React from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
+import SiteLayout from "../layouts/SiteLayout";
 import api from "../api/client";
-import { hardResetApp } from "../utils/resetApp";
-import { performLogout } from "../utils/logout";
 
-import {
-  Home,
-  LayoutGrid,
-  ShoppingCart,
-  Heart,
-  Package,
-  Shield,
-  CheckCircle2,
-  Truck,
-  Store,
-  User,
-  Menu,
-  X,
-  LogOut,
-  Settings,
-  ClipboardList,
-} from "lucide-react";
-
-import { useCartCount } from "../hooks/useCartCount";
-
-type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
-
-type MeResponse = {
+type WishlistItem = {
   id: string;
-  email: string;
-  role: Role;
-  status: "PENDING" | "PARTIAL" | "VERIFIED";
-  firstName?: string | null;
-  middleName?: string | null;
-  lastName?: string | null;
-  name?: string | null;
+  productId: string;
+  createdAt?: string;
+  product?: {
+    id: string;
+    title: string;
+    slug?: string | null;
+    retailPrice?: number | null;
+    images?: Array<{ url: string }> | string[] | null;
+    sku?: string | null;
+  } | null;
 };
 
-function useClickAway<T extends HTMLElement>(onAway: () => void) {
-  const ref = useRef<T | null>(null);
-  useEffect(() => {
-    function onDoc(e: MouseEvent) {
-      if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) onAway();
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [onAway]);
-  return ref;
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
+async function fetchWishlist(): Promise<WishlistItem[]> {
+  const { data } = await api.get("/api/favorites", AXIOS_COOKIE_CFG);
+
+  if (data && Array.isArray((data as any).items)) return (data as any).items;
+  if (data && Array.isArray((data as any).data)) return (data as any).data;
+  if (Array.isArray(data)) return data as any;
+
+  return [];
 }
 
-function IconNavLink({
-  to,
-  end,
-  icon,
-  label,
-  onClick,
-  disabled,
-  badgeCount,
-}: {
-  to: string;
-  end?: boolean;
-  icon: ReactNode;
-  label: string;
-  onClick?: () => void;
-  disabled?: boolean;
-  badgeCount?: number;
-}) {
-  const count = Number(badgeCount || 0);
+export default function Wishlist() {
+  const qc = useQueryClient();
+
+  const q = useQuery({
+    queryKey: ["favorites"],
+    queryFn: fetchWishlist,
+
+    // ✅ KEY FIX: only use placeholder if we already have cached rows
+    // (DON’T force [] here, or you’ll render empty state instantly)
+    placeholderData: () => {
+      const cached = qc.getQueryData(["favorites"]) as WishlistItem[] | undefined;
+      return cached;
+    },
+
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
+
+  const rows = Array.isArray(q.data) ? q.data : [];
+  const hasRows = rows.length > 0;
+
+  // ✅ show empty only after first fetch finishes (and no error)
+  const showInitialLoading = q.isLoading && !hasRows;
+  const showEmpty = !q.isLoading && !q.isError && rows.length === 0;
 
   return (
-    <NavLink
-      to={to}
-      end={end}
-      onClick={onClick}
-      className={({ isActive }) => {
-        const base =
-          "group relative inline-flex items-center justify-center rounded-xl border px-2.5 py-2 transition select-none";
-        const active = "bg-zinc-900 text-white border-zinc-900 shadow-sm";
-        const idle = "bg-white/80 text-zinc-700 border-zinc-200 hover:bg-zinc-50";
-        const dis = "opacity-50 pointer-events-none";
-        return `${base} ${isActive ? active : idle} ${disabled ? dis : ""}`;
-      }}
-      aria-label={label}
-      title={label}
-    >
-      <span className="inline-flex items-center justify-center">{icon}</span>
+    <SiteLayout>
+      <div className="max-w-6xl mx-auto px-4 py-6">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-bold text-zinc-900">Wishlist</h1>
 
-      {/* ✅ Badge (top-right) */}
-      {count > 0 && (
-        <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-          {count > 9 ? "9+" : count}
-        </span>
-      )}
-
-      {/* Tooltip (desktop hover) */}
-      <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 text-white text-[11px] px-2 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
-        {label}
-      </span>
-    </NavLink>
-  );
-}
-
-function IconButton({
-  icon,
-  label,
-  onClick,
-  className = "",
-}: {
-  icon: ReactNode;
-  label: string;
-  onClick: () => void;
-  className?: string;
-}) {
-  return (
-    <button
-      type="button"
-      className={
-        "group relative inline-flex items-center justify-center rounded-xl border border-zinc-200 bg-white/80 px-2.5 py-2 text-zinc-700 hover:bg-zinc-50 transition " +
-        className
-      }
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-    >
-      {icon}
-      <span className="hidden md:block absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-zinc-900 text-white text-[11px] px-2 py-1 opacity-0 group-hover:opacity-100 transition pointer-events-none">
-        {label}
-      </span>
-    </button>
-  );
-}
-
-export default function Navbar() {
-  const token = useAuthStore((s) => s.token);
-  const userRole = useAuthStore((s) => s.user?.role ?? null);
-  const userEmail = useAuthStore((s) => s.user?.email ?? null);
-  const nav = useNavigate();
-  const loc = useLocation();
-
-  const isSupplier = userRole === "SUPPLIER";
-  const isSuperAdmin = userRole === "SUPER_ADMIN";
-  const isAdmin = userRole === "ADMIN" || userRole === "SUPER_ADMIN";
-  const isRider = userRole === "SUPPLIER_RIDER";
-
-  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
-
-  const [firstName, setFirstName] = useState<string | null>(null);
-  const [middleName, setMiddleName] = useState<string | null>(null);
-  const [lastName, setLastName] = useState<string | null>(null);
-
-  // ✅ badge count for cart
-  const cartCount = useCartCount();
-
-  // Load /me when token changes
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadMe() {
-      if (!token) {
-        setFirstName(null);
-        setMiddleName(null);
-        setLastName(null);
-        return;
-      }
-      try {
-        const { data } = await api.get<MeResponse>("/api/auth/me", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        if (!cancelled) {
-          setFirstName(data.firstName?.trim() || null);
-          setMiddleName(data.middleName?.trim() || null);
-          setLastName(data.lastName?.trim() || null);
-        }
-      } catch (e: any) {
-        const status = e?.response?.status;
-        if (status === 401 || status === 403) {
-          hardResetApp("/");
-          return;
-        }
-        hardResetApp("/");
-      }
-    }
-
-    loadMe();
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
-
-  const displayName = useMemo(() => {
-    const f = firstName?.trim();
-    const l = lastName?.trim();
-    const m = middleName?.trim();
-    if (f && l) {
-      const mid = m ? ` ${m[0].toUpperCase()}.` : "";
-      return `${f}${mid} ${l}`;
-    }
-    return null;
-  }, [firstName, middleName, lastName]);
-
-  const initials = useMemo(() => {
-    const f = (firstName?.trim()?.[0] || "").toUpperCase();
-    const l = (lastName?.trim()?.[0] || "").toUpperCase();
-    const init = `${f}${l}`.trim();
-    return init || "U";
-  }, [firstName, lastName]);
-
-  const logout = useCallback(() => {
-    setMenuOpen(false);
-    setMobileMoreOpen(false);
-    performLogout("/");
-  }, []);
-
-  // Riders should only use supplier orders (and avoid the shop nav clutter)
-  const brandHref = isRider ? "/supplier/orders" : "/";
-
-  // Close mobile more when route changes
-  useEffect(() => setMobileMoreOpen(false), [loc.pathname]);
-
-  const showShopNav = !token || (!isSupplier && !isSuperAdmin && !isRider);
-  const showBuyerNav = token && !isSupplier && !isRider; // shopper/admin can still see cart/wishlist/orders
-  const showSupplierNav = token && isSupplier && !isRider;
-  const showRiderNav = token && isRider;
-
-  return (
-    <>
-      {/* Top Shopify-like header */}
-      <header className="sticky top-0 z-40 w-full border-b border-zinc-200 bg-white/80 backdrop-blur">
-        <div className="w-full max-w-7xl mx-auto h-14 md:h-16 px-4 md:px-8 flex items-center gap-3">
-          {/* Brand */}
-          <Link
-            to={brandHref}
-            className="inline-flex items-center hover:opacity-95"
-            aria-label="DaySpring home"
-          >
-            <DaySpringLogo size={28} />
-          </Link>
-
-          {/* Desktop icon nav */}
-          <nav className="hidden md:flex items-center gap-2 ml-2">
-            {/* Rider: ONLY supplier orders */}
-            {showRiderNav ? (
-              <IconNavLink to="/supplier/orders" icon={<Truck size={18} />} label="Orders" />
-            ) : (
-              <>
-                {/* Catalogue/Home */}
-                <IconNavLink
-                  to="/"
-                  end
-                  icon={showShopNav ? <LayoutGrid size={18} /> : <Home size={18} />}
-                  label="Catalogue"
-                />
-
-                {/* Dashboards */}
-                {showSupplierNav && (
-                  <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
-                )}
-
-                {token && isSuperAdmin && (
-                  <IconNavLink to="/supplier" end icon={<CheckCircle2 size={18} />} label="Supplier dashboard" />
-                )}
-
-                {token && !isSupplier && !isSuperAdmin && (
-                  <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
-                )}
-
-                {/* Buyer nav (icons) */}
-                {showBuyerNav && (
-                  <>
-                    {/* ✅ Cart badge here */}
-                    <IconNavLink
-                      to="/cart"
-                      icon={<ShoppingCart size={18} />}
-                      label="Cart"
-                      badgeCount={cartCount}
-                    />
-                    <IconNavLink to="/wishlist" end icon={<Heart size={18} />} label="Wishlist" />
-                    <IconNavLink to="/orders" end icon={<Package size={18} />} label="Orders" />
-                  </>
-                )}
-
-                {/* Admin */}
-                {isAdmin && <IconNavLink to="/admin" icon={<Shield size={18} />} label="Admin" />}
-                {isAdmin && (
-                  <IconNavLink to="/admin/offer-changes" icon={<ClipboardList size={18} />} label="Offer approvals" />
-                )}
-              </>
-            )}
-          </nav>
-
-          <div className="ml-auto" />
-
-          {/* Right cluster */}
-          <div className="flex items-center gap-2">
-            {/* Desktop bell */}
-            <div className="hidden md:block">
-              <NotificationsBell placement="navbar" />
+              {/* ✅ If we already have items, show a subtle refresh state */}
+              {hasRows && q.isFetching && (
+                <span className="text-[11px] px-2 py-1 rounded-full border bg-white text-zinc-600">
+                  Updating…
+                </span>
+              )}
             </div>
 
-            {/* Auth buttons (desktop) */}
-            <div className="hidden md:flex items-center gap-2">
-              {!token ? (
-                <>
-                  <NavLink
-                    to="/register-supplier"
-                    className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 transition"
-                    title="Become a supplier"
-                  >
-                    <Store size={16} />
-                    <span className="hidden lg:inline">Supply</span>
-                  </NavLink>
+            <p className="text-sm text-zinc-600">Items you’ve saved for later.</p>
+          </div>
+        </div>
 
-                  <NavLink
-                    to="/login"
-                    className={({ isActive }) =>
-                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${
-                        isActive
-                          ? "bg-zinc-900 text-white border-zinc-900"
-                          : "bg-white/80 text-zinc-900 border-zinc-200 hover:bg-zinc-50"
-                      }`
-                    }
-                    title="Login"
-                  >
-                    <User size={16} />
-                    <span className="hidden lg:inline">Login</span>
-                  </NavLink>
+        <div className="mt-4 rounded-2xl border bg-white overflow-hidden">
+          <div className="px-4 py-3 border-b bg-zinc-50 text-sm font-semibold text-zinc-900">
+            Items ({showInitialLoading ? "…" : rows.length})
+          </div>
 
-                  <NavLink
-                    to="/register"
-                    className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold hover:opacity-90 transition"
-                    title="Register"
-                  >
-                    <CheckCircle2 size={16} />
-                    <span className="hidden lg:inline">Register</span>
-                  </NavLink>
-                </>
-              ) : (
-                <div className="flex items-center gap-2">
-                  {/* avatar menu */}
-                  <div className="relative" ref={menuRef}>
-                    <button
-                      onClick={() => setMenuOpen((v) => !v)}
-                      className="w-10 h-10 rounded-2xl grid place-items-center border border-zinc-200 bg-white/80 text-zinc-900 font-semibold hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
-                      aria-label="User menu"
-                      title="Account"
-                    >
-                      {initials}
-                    </button>
+          {showInitialLoading && (
+            <div className="p-4 text-sm text-zinc-600">Loading…</div>
+          )}
 
-                    {menuOpen && (
-                      <div
-                        className="absolute right-0 mt-2 w-64 rounded-2xl border border-zinc-200 bg-white shadow-xl overflow-hidden"
-                        role="menu"
-                      >
-                        <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
-                          <div className="text-xs text-zinc-500">Signed in as</div>
-                          <div className="text-sm font-semibold truncate text-zinc-900">
-                            {displayName || userEmail || "User"}
-                          </div>
-                          {userEmail && <div className="text-[10px] text-zinc-500 truncate">{userEmail}</div>}
-                          {isRider && <div className="mt-1 text-[10px] text-zinc-500">Role: Rider</div>}
-                        </div>
+          {!showInitialLoading && q.isError && (
+            <div className="p-4 text-sm text-rose-700 bg-rose-50">
+              Couldn’t load wishlist. Make sure you’re logged in.
+            </div>
+          )}
 
-                        {/* Rider menu */}
-                        {isRider ? (
-                          <nav className="py-1 text-sm">
-                            <button
-                              className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                              onClick={() => {
-                                setMenuOpen(false);
-                                nav("/supplier/orders");
-                              }}
-                              role="menuitem"
-                            >
-                              <Truck size={16} />
-                              Orders
-                            </button>
+          {showEmpty && (
+            <div className="p-4 text-sm text-zinc-600">No items yet.</div>
+          )}
 
-                            <div className="my-1 border-t border-zinc-100" />
-                            <button
-                              className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition inline-flex items-center gap-2"
-                              onClick={logout}
-                              role="menuitem"
-                            >
-                              <LogOut size={16} />
-                              Logout
-                            </button>
-                          </nav>
-                        ) : (
-                          <nav className="py-1 text-sm">
-                            <button
-                              className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                              onClick={() => {
-                                setMenuOpen(false);
-                                nav("/profile");
-                              }}
-                              role="menuitem"
-                            >
-                              <User size={16} />
-                              Edit Profile
-                            </button>
+          <div className="divide-y">
+            {rows.map((it) => {
+              const p = it.product;
+              const title = p?.title || "Product";
+              const href = p?.id ? `/product/${p.id}` : "#";
 
-                            <button
-                              className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                              onClick={() => {
-                                setMenuOpen(false);
-                                nav("/account/sessions");
-                              }}
-                              role="menuitem"
-                            >
-                              <Settings size={16} />
-                              Sessions
-                            </button>
+              const img =
+                Array.isArray(p?.images)
+                  ? typeof p?.images?.[0] === "string"
+                    ? (p?.images?.[0] as string)
+                    : (p?.images?.[0] as any)?.url
+                  : null;
+              const price = (it as any).computedRetailPrice ?? p?.retailPrice ?? null;
 
-                            {!isSupplier && (
-                              <button
-                                className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                                onClick={() => {
-                                  setMenuOpen(false);
-                                  nav("/orders");
-                                }}
-                                role="menuitem"
-                              >
-                                <Package size={16} />
-                                Purchase history
-                              </button>
-                            )}
-
-                            {userRole === "SUPER_ADMIN" && (
-                              <button
-                                className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
-                                onClick={() => {
-                                  setMenuOpen(false);
-                                  nav("/admin/settings");
-                                }}
-                                role="menuitem"
-                              >
-                                <Shield size={16} />
-                                Admin Settings
-                              </button>
-                            )}
-
-                            <div className="my-1 border-t border-zinc-100" />
-                            <button
-                              className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition inline-flex items-center gap-2"
-                              onClick={logout}
-                              role="menuitem"
-                            >
-                              <LogOut size={16} />
-                              Logout
-                            </button>
-                          </nav>
-                        )}
+              return (
+                <div key={it.id} className="p-4 flex gap-3">
+                  <div className="w-16 h-16 rounded-xl border bg-zinc-50 overflow-hidden shrink-0">
+                    {img ? (
+                      <img src={img} alt={title} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full grid place-items-center text-[11px] text-zinc-500">
+                        No image
                       </div>
                     )}
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <Link to={href} className="text-sm font-semibold text-zinc-900 hover:underline line-clamp-2">
+                      {title}
+                    </Link>
+
+                    {typeof price === "number" && (
+                      <div className="mt-1 text-xs text-zinc-600">
+                        ₦{price.toLocaleString()}
+                      </div>
+                    )}
+
+                  </div>
+
+                  <div className="shrink-0 flex items-center">
+                    <Link
+                      to={href}
+                      className="text-xs font-semibold rounded-xl border bg-white px-3 py-2 hover:bg-zinc-50"
+                    >
+                      View
+                    </Link>
                   </div>
                 </div>
-              )}
-            </div>
-
-            {/* Mobile: bell + more */}
-            <div className="md:hidden flex items-center gap-2">
-              <NotificationsBell placement="navbar" />
-              <button
-                className="inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white/80 text-zinc-700 hover:bg-zinc-50 focus:outline-none focus:ring-4 focus:ring-fuchsia-100 transition"
-                aria-label="Open menu"
-                onClick={() => setMobileMoreOpen(true)}
-                title="Menu"
-              >
-                <Menu size={18} />
-              </button>
-            </div>
+              );
+            })}
           </div>
-        </div>
-
-        {/* Mobile top drawer ("More") */}
-        {mobileMoreOpen && (
-          <div className="md:hidden">
-            <div className="fixed inset-0 z-50 bg-black/40" onClick={() => setMobileMoreOpen(false)} />
-            <div className="fixed z-50 top-0 right-0 left-0 border-b border-zinc-200 bg-white/95 backdrop-blur">
-              <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-                <div className="font-semibold text-zinc-900">Menu</div>
-                <button
-                  className="w-10 h-10 rounded-2xl border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
-                  onClick={() => setMobileMoreOpen(false)}
-                  aria-label="Close menu"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-
-              <div className="max-w-7xl mx-auto px-4 pb-4">
-                {showRiderNav ? (
-                  <div className="grid gap-2">
-                    <button
-                      className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                      onClick={() => nav("/supplier/orders")}
-                    >
-                      <Truck size={18} />
-                      Supplier Orders
-                    </button>
-
-                    <button
-                      className="w-full rounded-2xl border border-red-200 bg-red-50 px-3 py-3 text-left text-red-700 inline-flex items-center gap-2"
-                      onClick={logout}
-                    >
-                      <LogOut size={18} />
-                      Logout
-                    </button>
-                  </div>
-                ) : (
-                  <div className="grid gap-2">
-                    <button
-                      className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                      onClick={() => nav("/")}
-                    >
-                      <LayoutGrid size={18} />
-                      Catalogue
-                    </button>
-
-                    {showBuyerNav && (
-                      <button
-                        className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2 justify-between"
-                        onClick={() => nav("/cart")}
-                      >
-                        <span className="inline-flex items-center gap-2">
-                          <ShoppingCart size={18} />
-                          Cart
-                        </span>
-
-                        {cartCount > 0 && (
-                          <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                            {cartCount > 9 ? "9+" : cartCount}
-                          </span>
-                        )}
-                      </button>
-                    )}
-
-                    {showSupplierNav && (
-                      <button
-                        className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                        onClick={() => nav("/supplier")}
-                      >
-                        <Store size={18} />
-                        Supplier dashboard
-                      </button>
-                    )}
-
-                    {token && !isSupplier && !isSuperAdmin && (
-                      <button
-                        className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                        onClick={() => nav("/dashboard")}
-                      >
-                        <User size={18} />
-                        Dashboard
-                      </button>
-                    )}
-
-                    {isAdmin && (
-                      <>
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/admin")}
-                        >
-                          <Shield size={18} />
-                          Admin
-                        </button>
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/admin/offer-changes")}
-                        >
-                          <ClipboardList size={18} />
-                          Offer approvals
-                        </button>
-                      </>
-                    )}
-
-                    <div className="h-px bg-zinc-100 my-2" />
-
-                    {!token ? (
-                      <div className="grid gap-2">
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/register-supplier")}
-                        >
-                          <Store size={18} />
-                          Supply
-                        </button>
-
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/login")}
-                        >
-                          <User size={18} />
-                          Login
-                        </button>
-
-                        <button
-                          className="w-full rounded-2xl bg-zinc-900 text-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/register")}
-                        >
-                          <CheckCircle2 size={18} />
-                          Register
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="grid gap-2">
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/profile")}
-                        >
-                          <User size={18} />
-                          Edit profile
-                        </button>
-
-                        <button
-                          className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                          onClick={() => nav("/account/sessions")}
-                        >
-                          <Settings size={18} />
-                          Sessions
-                        </button>
-
-                        {!isSupplier && (
-                          <button
-                            className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-3 text-left inline-flex items-center gap-2"
-                            onClick={() => nav("/orders")}
-                          >
-                            <Package size={18} />
-                            Purchase history
-                          </button>
-                        )}
-
-                        <button
-                          className="w-full rounded-2xl border border-red-200 bg-red-50 px-3 py-3 text-left text-red-700 inline-flex items-center gap-2"
-                          onClick={logout}
-                        >
-                          <LogOut size={18} />
-                          Logout
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </header>
-
-      {/* Mobile bottom nav (Shopify-like) */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-200 bg-white/90 backdrop-blur">
-        <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-around">
-          {showRiderNav ? (
-            <>
-              <NavLink
-                to="/supplier/orders"
-                className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                    isActive ? "text-zinc-900" : "text-zinc-500"
-                  }`
-                }
-              >
-                <Truck size={20} />
-                <span className="text-[10px]">Orders</span>
-              </NavLink>
-
-              <button
-                className="flex flex-col items-center gap-1 px-3 py-1 rounded-xl text-zinc-500"
-                onClick={() => setMobileMoreOpen(true)}
-              >
-                <Menu size={20} />
-                <span className="text-[10px]">More</span>
-              </button>
-            </>
-          ) : (
-            <>
-              <NavLink
-                to="/"
-                end
-                className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                    isActive ? "text-zinc-900" : "text-zinc-500"
-                  }`
-                }
-              >
-                <LayoutGrid size={20} />
-                <span className="text-[10px]">Shop</span>
-              </NavLink>
-
-              {showBuyerNav ? (
-                <>
-                  {/* ✅ Cart badge on mobile bottom icon */}
-                  <NavLink
-                    to="/cart"
-                    className={({ isActive }) =>
-                      `relative flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
-                      }`
-                    }
-                  >
-                    <div className="relative">
-                      <ShoppingCart size={20} />
-                      {cartCount > 0 && (
-                        <span className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                          {cartCount > 9 ? "9+" : cartCount}
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-[10px]">Cart</span>
-                  </NavLink>
-
-                  <NavLink
-                    to="/wishlist"
-                    className={({ isActive }) =>
-                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
-                      }`
-                    }
-                  >
-                    <Heart size={20} />
-                    <span className="text-[10px]">Wish</span>
-                  </NavLink>
-
-                  <NavLink
-                    to="/orders"
-                    className={({ isActive }) =>
-                      `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                        isActive ? "text-zinc-900" : "text-zinc-500"
-                      }`
-                    }
-                  >
-                    <Package size={20} />
-                    <span className="text-[10px]">Orders</span>
-                  </NavLink>
-                </>
-              ) : (
-                <>
-                  {token && isSupplier && (
-                    <NavLink
-                      to="/supplier"
-                      end
-                      className={({ isActive }) =>
-                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                          isActive ? "text-zinc-900" : "text-zinc-500"
-                        }`
-                      }
-                    >
-                      <Store size={20} />
-                      <span className="text-[10px]">Supplier</span>
-                    </NavLink>
-                  )}
-
-                  {isAdmin && (
-                    <NavLink
-                      to="/admin"
-                      className={({ isActive }) =>
-                        `flex flex-col items-center gap-1 px-3 py-1 rounded-xl ${
-                          isActive ? "text-zinc-900" : "text-zinc-500"
-                        }`
-                      }
-                    >
-                      <Shield size={20} />
-                      <span className="text-[10px]">Admin</span>
-                    </NavLink>
-                  )}
-                </>
-              )}
-
-              <button
-                className="flex flex-col items-center gap-1 px-3 py-1 rounded-xl text-zinc-500"
-                onClick={() => setMobileMoreOpen(true)}
-              >
-                <Menu size={20} />
-                <span className="text-[10px]">More</span>
-              </button>
-            </>
-          )}
         </div>
       </div>
-
-      {/* Spacer so bottom nav doesn't cover content */}
-      <div className="md:hidden h-16" />
-    </>
+    </SiteLayout>
   );
 }

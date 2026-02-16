@@ -1,49 +1,127 @@
 // src/utils/resetApp.ts
 import { useAuthStore } from "../store/auth.js";
+import api from "../api/client"; // ✅ cookie auth logout endpoint
 
-const PRESERVE_LOCALSTORAGE_KEYS = ["consent"]; // 👈 keep cookie consent across logout/reset
+type ResetMode = "hard" | "soft";
 
-export function hardResetApp(redirectTo: string = "/") {
+const PRESERVE_LOCALSTORAGE_KEYS = ["consent"]; // keep cookie consent across logout/reset
+
+// Keys we intentionally wipe on reset (cookie-auth friendly)
+const WIPE_LOCALSTORAGE_KEYS = [
+  "auth", // zustand persist (keep if you persist user/session state)
+  "cart",
+  "verifyEmail",
+  "verifyToken",
+  "verify_token",
+];
+
+function safeGet(k: string) {
   try {
-    // ✅ snapshot keys we want to keep
-    const preserved: Record<string, string> = {};
-    try {
-      for (const k of PRESERVE_LOCALSTORAGE_KEYS) {
-        const v = localStorage.getItem(k);
-        if (v != null) preserved[k] = v;
-      }
-    } catch {}
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+}
 
-    // Clear Zustand auth store if available
-    try {
-      useAuthStore.getState().clear?.();
-    } catch {}
+function safeSet(k: string, v: string) {
+  try {
+    localStorage.setItem(k, v);
+  } catch {
+    /* ignore */
+  }
+}
 
-    // Clear storages
-    try {
-      localStorage.clear();
-    } catch {}
-    try {
-      sessionStorage.clear();
-    } catch {}
+function safeRemove(k: string) {
+  try {
+    localStorage.removeItem(k);
+  } catch {
+    /* ignore */
+  }
+}
 
-    // ✅ restore preserved keys
-    try {
-      for (const [k, v] of Object.entries(preserved)) {
-        localStorage.setItem(k, v);
-      }
-    } catch {}
+function preserveSelectedKeys(): Record<string, string> {
+  const preserved: Record<string, string> = {};
+  for (const k of PRESERVE_LOCALSTORAGE_KEYS) {
+    const v = safeGet(k);
+    if (v != null) preserved[k] = v;
+  }
+  return preserved;
+}
 
-    // Best-effort cookie clearing (can’t touch HttpOnly cookies)
-    // NOTE: If you later store consent in cookies, you may also want to SKIP clearing that cookie here.
-    try {
-      const cookies = document.cookie.split(";");
-      for (const c of cookies) {
-        const [name] = c.split("=");
-        document.cookie = `${name.trim()}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
-      }
-    } catch {}
-  } catch {}
+function restoreSelectedKeys(preserved: Record<string, string>) {
+  for (const [k, v] of Object.entries(preserved)) {
+    safeSet(k, v);
+  }
+}
 
+/**
+ * Reset app state after logout or auth failure.
+ *
+ * Cookie auth notes:
+ * - Browser sends cookies automatically; no token to wipe.
+ * - To clear the session cookie, call POST /api/auth/logout (server clears cookie).
+ */
+export function hardResetApp(redirectTo: string = "/", opts?: { mode?: ResetMode }) {
+  const mode: ResetMode = opts?.mode ?? "hard";
+  console.trace("hardResetApp CALLED");
+
+  // 1) preserve consent (and anything else you add)
+  const preserved = preserveSelectedKeys();
+
+  // 2) clear zustand auth store (in-memory)
+  try {
+    useAuthStore.getState().clear?.();
+  } catch {
+    /* ignore */
+  }
+
+  // 3) wipe only the keys we care about (NOT localStorage.clear())
+  for (const k of WIPE_LOCALSTORAGE_KEYS) safeRemove(k);
+
+  // 4) sessionStorage can still be wiped (usually safe)
+  try {
+    sessionStorage.clear();
+  } catch {
+    /* ignore */
+  }
+
+  // 5) restore preserved keys
+  restoreSelectedKeys(preserved);
+
+  // 6) redirect
+  if (mode === "soft") {
+    // SPA-friendly: no full reload
+    if (window.location.pathname !== redirectTo) {
+      window.history.replaceState(null, "", redirectTo);
+    }
+    // fire a popstate so routers listening can react (best-effort)
+    try {
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
+  // Hard reload (your existing behavior)
   window.location.replace(redirectTo);
+}
+
+/**
+ * Cookie-auth logout helper:
+ * - calls server to clear HttpOnly session cookie
+ * - then resets client state
+ */
+export async function logoutAndReset(
+  redirectTo: string = "/login",
+  opts?: { mode?: ResetMode }
+) {
+  try {
+    // ✅ server should clear cookie (Set-Cookie session=; Max-Age=0)
+    await api.post("/api/auth/logout");
+  } catch {
+    // ignore network failure; still clear client state
+  }
+
+  hardResetApp(redirectTo, opts);
 }

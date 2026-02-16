@@ -1,105 +1,118 @@
 // src/store/auth.ts
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
-import { setAccessToken } from "../api/client";
+import { persist, createJSONStorage } from "zustand/middleware";
+import api from "../api/client";
 
-export type Role =
-  | "ADMIN"
-  | "SUPER_ADMIN"
-  | "SHOPPER"
-  | "SUPPLIER"
-  | "SUPPLIER_RIDER";
+export type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
-export type User = {
+export type AuthUser = {
   id: string;
   email: string;
+
   role: Role;
   firstName?: string | null;
+  middleName?: string | null;
   lastName?: string | null;
-  emailVerified: boolean;
-  phoneVerified: boolean;
+  emailVerified?: boolean;
+  phoneVerified?: boolean;
+  status?: string | null;
 };
 
 type AuthState = {
   hydrated: boolean;
-  token: string | null;
-  user: User | null;
+  bootstrapping: boolean;
+
+  user: AuthUser | null;
   needsVerification: boolean;
 
-  setHydrated: (v: boolean) => void;
-  setAuth: (p: { token: string; user: User }) => void;
+  // ✅ NEW: set when we detect 401 so components can stop polling/retrying
+  sessionExpired: boolean;
 
-  // ✅ NEW: use this when /me succeeded via cookie but we don’t want Bearer
-  setCookieSession: (user: User) => void;
-
+  setUser: (u: AuthUser | null) => void;
   setNeedsVerification: (v: boolean) => void;
 
-  logout: () => void;
+  // ✅ NEW: mark session expired (clears user + flips sessionExpired)
+  markSessionExpired: () => void;
+
   clear: () => void;
+
+  bootstrap: () => Promise<void>;
 };
 
-const COOKIE_SESSION_TOKEN = "__cookie__";
+const is401 = (e: any) => Number(e?.response?.status) === 401;
 
-function looksLikeJwt(t: string | null) {
-  // JWT has 3 dot-separated parts
-  return !!t && t.split(".").length === 3;
+/** ✅ Single source of truth role normalizer (matches backend guard style) */
+function normRole(role: unknown): Role {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  if (r === "SUPERUSER") r = "SUPER_USER"; // not part of Role union but kept in case
+
+  // clamp to known union values to avoid runtime surprises
+  if (r === "ADMIN") return "ADMIN";
+  if (r === "SUPER_ADMIN") return "SUPER_ADMIN";
+  if (r === "SUPPLIER") return "SUPPLIER";
+  if (r === "SUPPLIER_RIDER") return "SUPPLIER_RIDER";
+  return "SHOPPER";
+}
+
+function normalizeUser(u: AuthUser | null): AuthUser | null {
+  if (!u?.id) return null;
+  return { ...u, role: normRole((u as any).role) };
 }
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       hydrated: false,
-      token: null,
+      bootstrapping: false,
+
       user: null,
       needsVerification: false,
 
-      setHydrated: (v: any) => set({ hydrated: v }),
+      sessionExpired: false,
 
-      setAuth: ({ token, user }: { token: string; user: User }) => {
-        // Only apply Bearer header if it’s a real JWT
-        setAccessToken(looksLikeJwt(token) ? token : null);
-        set({ token, user });
+      setUser: (u) => set({ user: normalizeUser(u), sessionExpired: false }),
+      setNeedsVerification: (v) => set({ needsVerification: !!v }),
+
+      markSessionExpired: () => {
+        set({ user: null, needsVerification: false, sessionExpired: true });
       },
 
-      setCookieSession: (user: User) => {
-        // Cookie auth should NOT set Authorization header
-        setAccessToken(null);
-        set({ token: COOKIE_SESSION_TOKEN, user });
-      },
+      clear: () => set({ user: null, needsVerification: false, sessionExpired: false }),
 
-      setNeedsVerification: (v: any) => set({ needsVerification: v }),
+      bootstrap: async () => {
+        if (get().bootstrapping) return;
+        set({ bootstrapping: true });
 
-      logout: () => {
-        setAccessToken(null);
-        set({ token: null, user: null, needsVerification: false });
-      },
+        try {
+          const r = await api.get("/api/auth/me", { withCredentials: true }); // ✅ cookie auth
+          const me = r.data as AuthUser | null;
 
-      clear: () => {
-        setAccessToken(null);
-        set({ token: null, user: null, needsVerification: false });
+          if (me?.id) set({ user: normalizeUser(me), sessionExpired: false });
+          else set({ user: null, sessionExpired: false });
+        } catch (e: any) {
+          if (is401(e)) {
+            set({ user: null, needsVerification: false, sessionExpired: true });
+          }
+          // other errors: keep state but still hydrate
+        } finally {
+          set({ hydrated: true, bootstrapping: false });
+        }
       },
     }),
     {
-      name: "auth",
+      name: "auth_store_v1",
+      storage: createJSONStorage(() => window.sessionStorage),
       partialize: (s) => ({
-        token: s.token,
         user: s.user,
         needsVerification: s.needsVerification,
+        sessionExpired: s.sessionExpired,
       }),
-
-      merge: (persisted: any, current: any) => {
-        const p = persisted ?? {};
-        const c = current ?? {};
-        if (c.token && !p.token) return { ...p, ...c };
-        return { ...c, ...p };
-      },
-
       onRehydrateStorage: () => (state) => {
-        state?.setHydrated(true);
-
-        const t = state?.token ?? null;
-        // Don’t ever put "__cookie__" into Authorization header
-        setAccessToken(looksLikeJwt(t) ? t : null);
+        if (state) state.hydrated = true;
       },
     }
   )

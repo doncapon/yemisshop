@@ -1,7 +1,6 @@
-import React, { useMemo, useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import api from '../api/client';
-import { useAuthStore } from '../store/auth';
+import React, { useMemo, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import api from "../api/client";
 
 /* ---------- types ---------- */
 type Supplier = {
@@ -23,7 +22,7 @@ type Offer = {
   variantId?: string | null;
 
   unitPrice: number | string;
-  currency: string;           // e.g. 'NGN'
+  currency: string; // e.g. 'NGN'
   inStock: boolean;
   leadDays?: number | null;
   isActive: boolean;
@@ -32,12 +31,13 @@ type Offer = {
   variant?: { id: string; sku?: string | null } | null;
 };
 
-const fmtMoney = (n: number, cur = 'NGN') => {
+const fmtMoney = (n: number, cur = "NGN") => {
   try {
-    return new Intl.NumberFormat(
-      cur === 'NGN' ? 'en-NG' : undefined,
-      { style: 'currency', currency: cur, maximumFractionDigits: 2 }
-    ).format(n);
+    return new Intl.NumberFormat(cur === "NGN" ? "en-NG" : undefined, {
+      style: "currency",
+      currency: cur,
+      maximumFractionDigits: 2,
+    }).format(n);
   } catch {
     return `${cur} ${n.toLocaleString()}`;
   }
@@ -46,54 +46,46 @@ const fmtMoney = (n: number, cur = 'NGN') => {
 /* ---------- component ---------- */
 export function SuppliersPricingEditor({
   productId,
-  variants: variantsProp,     // <-- optional variants from parent
+  variants: variantsProp, // <-- optional variants from parent
   readOnly = false,
 }: {
   productId: string;
   variants?: Variant[];
   readOnly?: boolean;
 }) {
-  const token = useAuthStore(s => s.token);
-  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
   const qc = useQueryClient();
 
   // Fetch offers for THIS productId
   const offersQ = useQuery<Offer[]>({
-    queryKey: ['admin', 'products', productId, 'offers'],
+    queryKey: ["admin", "products", productId, "offers"],
     enabled: !!productId,
     queryFn: async () => {
-      const { data } = await api.get<{ data: Offer[] }>(
-        `/api/admin/products/${productId}/offers`,
-        { headers }
-      );
-      return Array.isArray(data?.data) ? data.data : [];
+      // ✅ Cookie auth: no Authorization header
+      const { data } = await api.get<{ data: Offer[] }>(`/api/admin/products/${productId}/offers`);
+      return Array.isArray((data as any)?.data) ? (data as any).data : [];
     },
     staleTime: 30_000,
   });
 
   // Fetch suppliers (for dropdown)
   const suppliersQ = useQuery<Supplier[]>({
-    queryKey: ['admin', 'suppliers', 'for-offers'],
+    queryKey: ["admin", "suppliers", "for-offers"],
     queryFn: async () => {
-      const { data } = await api.get<{ data: Supplier[] }>(
-        `/api/admin/suppliers`,
-        { headers }
-      );
-      return Array.isArray(data?.data) ? data.data : [];
+      // ✅ Cookie auth: no Authorization header
+      const { data } = await api.get<{ data: Supplier[] }>(`/api/admin/suppliers`);
+      return Array.isArray((data as any)?.data) ? (data as any).data : [];
     },
     staleTime: 60_000,
   });
 
   // Fetch variants only if parent didn't pass them
   const variantsQ = useQuery<Variant[]>({
-    queryKey: ['admin', 'products', productId, 'variants'],
+    queryKey: ["admin", "products", productId, "variants"],
     enabled: !!productId && !variantsProp,
     queryFn: async () => {
-      const { data } = await api.get<{ data: Variant[] }>(
-        `/api/admin/products/${productId}/variants`,
-        { headers }
-      );
-      return Array.isArray(data?.data) ? data.data : [];
+      // ✅ Cookie auth: no Authorization header
+      const { data } = await api.get<{ data: Variant[] }>(`/api/admin/products/${productId}/variants`);
+      return Array.isArray((data as any)?.data) ? (data as any).data : [];
     },
     staleTime: 60_000,
   });
@@ -103,17 +95,14 @@ export function SuppliersPricingEditor({
   const offers = offersQ.data || [];
 
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ['admin', 'products', productId, 'offers'] });
+    qc.invalidateQueries({ queryKey: ["admin", "products", productId, "offers"] });
   };
 
   /* ---------- mutations ---------- */
   const createOffer = useMutation({
     mutationFn: async (payload: Partial<Offer>) => {
-      const { data } = await api.post(
-        `/api/admin/products/${productId}/offers`,
-        payload,
-        { headers }
-      );
+      // ✅ Cookie auth: no Authorization header
+      const { data } = await api.post(`/api/admin/products/${productId}/offers`, payload);
       return data;
     },
     onSuccess: invalidate,
@@ -121,11 +110,8 @@ export function SuppliersPricingEditor({
 
   const updateOffer = useMutation({
     mutationFn: async ({ id, ...payload }: Partial<Offer> & { id: string }) => {
-      const { data } = await api.put(
-        `/api/admin/products/${productId}/offers/${id}`,
-        payload,
-        { headers }
-      );
+      // ✅ Cookie auth: no Authorization header
+      const { data } = await api.put(`/api/admin/products/${productId}/offers/${id}`, payload);
       return data;
     },
     onSuccess: invalidate,
@@ -133,10 +119,8 @@ export function SuppliersPricingEditor({
 
   const deleteOffer = useMutation({
     mutationFn: async (id: string) => {
-      const { data } = await api.delete(
-        `/api/admin/products/${productId}/offers/${id}`,
-        { headers }
-      );
+      // ✅ Cookie auth: no Authorization header
+      const { data } = await api.delete(`/api/admin/products/${productId}/offers/${id}`);
       return data;
     },
     onSuccess: invalidate,
@@ -146,20 +130,20 @@ export function SuppliersPricingEditor({
   const [newOffer, setNewOffer] = useState<{
     supplierId?: string;
     variantId?: string | null;
-    price?: string;
+    price?: string; // UI field
     currency?: string;
     inStock?: boolean;
-    leadDays?: number | '';
+    leadDays?: number | "";
     isActive?: boolean;
   }>({
-    currency: 'NGN',
+    currency: "NGN",
     inStock: true,
     isActive: true,
   });
 
   const cheapest = useMemo(() => {
     if (!offers.length) return null;
-    const cand = offers.filter(o => o.isActive && o.inStock);
+    const cand = offers.filter((o) => o.isActive && o.inStock);
     if (!cand.length) return null;
     return cand.slice().sort((a, b) => Number(a.unitPrice) - Number(b.unitPrice))[0];
   }, [offers]);
@@ -173,15 +157,13 @@ export function SuppliersPricingEditor({
           </div>
           {cheapest && (
             <div className="text-xs text-emerald-700 mt-1">
-              Cheapest active:{' '}
-              <b>{suppliers.find(s => s.id === cheapest.supplierId)?.name || cheapest.supplierId}</b>
-              {' • '}
-              {fmtMoney(Number(cheapest.unitPrice), cheapest.currency || 'NGN')}
+              Cheapest active:{" "}
+              <b>{suppliers.find((s) => s.id === cheapest.supplierId)?.name || cheapest.supplierId}</b>
+              {" • "}
+              {fmtMoney(Number(cheapest.unitPrice), cheapest.currency || "NGN")}
               {(() => {
-                const vSku =
-                  cheapest.variant?.sku ||
-                  variants.find(v => v.id === cheapest.variantId)?.sku;
-                return vSku ? ` (SKU ${vSku})` : '';
+                const vSku = cheapest.variant?.sku || variants.find((v) => v.id === cheapest.variantId)?.sku;
+                return vSku ? ` (SKU ${vSku})` : "";
               })()}
             </div>
           )}
@@ -202,29 +184,36 @@ export function SuppliersPricingEditor({
               {!readOnly && <th className="text-right px-3 py-2">Actions</th>}
             </tr>
           </thead>
+
           <tbody className="divide-y">
             {offersQ.isLoading && (
-              <tr><td className="px-3 py-3" colSpan={7}>Loading…</td></tr>
+              <tr>
+                <td className="px-3 py-3" colSpan={7}>
+                  Loading…
+                </td>
+              </tr>
             )}
 
             {!offersQ.isLoading && offers.length === 0 && (
-              <tr><td className="px-3 py-3 text-zinc-500" colSpan={7}>No supplier offers yet.</td></tr>
+              <tr>
+                <td className="px-3 py-3 text-zinc-500" colSpan={7}>
+                  No supplier offers yet.
+                </td>
+              </tr>
             )}
 
-            {offers.map(of => {
-              const sup = suppliers.find(s => s.id === of.supplierId);
-              const sku = of.variant?.sku || variants.find(v => v.id === of.variantId)?.sku;
+            {offers.map((of) => {
+              const sup = suppliers.find((s) => s.id === of.supplierId);
+              const sku = of.variant?.sku || variants.find((v) => v.id === of.variantId)?.sku;
               const priceN = Number(of.unitPrice);
               return (
                 <tr key={of.id}>
                   <td className="px-3 py-2">{sup?.name || of.supplierId}</td>
-                  <td className="px-3 py-2">{sku ? `Variant: ${sku}` : 'Product-wide'}</td>
-                  <td className="px-3 py-2">
-                    {fmtMoney(priceN, of.currency || 'NGN')}
-                  </td>
-                  <td className="px-3 py-2">{of.inStock ? 'In stock' : 'Out'}</td>
-                  <td className="px-3 py-2">{of.leadDays ?? '—'}</td>
-                  <td className="px-3 py-2">{of.isActive ? 'Yes' : 'No'}</td>
+                  <td className="px-3 py-2">{sku ? `Variant: ${sku}` : "Product-wide"}</td>
+                  <td className="px-3 py-2">{fmtMoney(priceN, of.currency || "NGN")}</td>
+                  <td className="px-3 py-2">{of.inStock ? "In stock" : "Out"}</td>
+                  <td className="px-3 py-2">{of.leadDays ?? "—"}</td>
+                  <td className="px-3 py-2">{of.isActive ? "Yes" : "No"}</td>
 
                   {!readOnly && (
                     <td className="px-3 py-2 text-right">
@@ -238,12 +227,12 @@ export function SuppliersPricingEditor({
                             })
                           }
                         >
-                          {of.isActive ? 'Deactivate' : 'Activate'}
+                          {of.isActive ? "Deactivate" : "Activate"}
                         </button>
                         <button
                           className="rounded-lg border px-3 py-1.5 hover:bg-black/5 text-rose-700"
                           onClick={() => {
-                            if (confirm('Delete this offer?')) deleteOffer.mutate(of.id);
+                            if (confirm("Delete this offer?")) deleteOffer.mutate(of.id);
                           }}
                         >
                           Delete
@@ -260,14 +249,14 @@ export function SuppliersPricingEditor({
                 <td className="px-3 py-2">
                   <select
                     className="border rounded-lg px-2 py-1 w-44"
-                    value={newOffer.supplierId || ''}
-                    onChange={(e) =>
-                      setNewOffer(o => ({ ...o, supplierId: e.target.value || undefined }))
-                    }
+                    value={newOffer.supplierId || ""}
+                    onChange={(e) => setNewOffer((o) => ({ ...o, supplierId: e.target.value || undefined }))}
                   >
                     <option value="">Select supplier…</option>
-                    {suppliers.map(s => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
+                    {suppliers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
                     ))}
                   </select>
                 </td>
@@ -275,14 +264,14 @@ export function SuppliersPricingEditor({
                 <td className="px-3 py-2">
                   <select
                     className="border rounded-lg px-2 py-1 w-44"
-                    value={newOffer.variantId || ''}
-                    onChange={(e) =>
-                      setNewOffer(o => ({ ...o, variantId: e.target.value || undefined }))
-                    }
+                    value={newOffer.variantId || ""}
+                    onChange={(e) => setNewOffer((o) => ({ ...o, variantId: e.target.value || undefined }))}
                   >
                     <option value="">Product-wide</option>
-                    {variants.map(v => (
-                      <option key={v.id} value={v.id}>{v.sku}</option>
+                    {variants.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.sku}
+                      </option>
                     ))}
                   </select>
                 </td>
@@ -291,19 +280,20 @@ export function SuppliersPricingEditor({
                   <div className="flex items-center gap-2">
                     <select
                       className="border rounded-lg px-2 py-1"
-                      value={newOffer.currency || 'NGN'}
-                      onChange={(e) => setNewOffer(o => ({ ...o, currency: e.target.value }))}
+                      value={newOffer.currency || "NGN"}
+                      onChange={(e) => setNewOffer((o) => ({ ...o, currency: e.target.value }))}
                     >
                       <option value="NGN">NGN</option>
                       <option value="USD">USD</option>
                     </select>
+
                     <input
                       type="number"
                       min={0}
                       step="0.01"
                       className="border rounded-lg px-2 py-1 w-28"
-                      value={newOffer.price ?? ''}
-                      onChange={(e) => setNewOffer(o => ({ ...o, unitPrice: e.target.value }))}
+                      value={newOffer.price ?? ""}
+                      onChange={(e) => setNewOffer((o) => ({ ...o, price: e.target.value }))} // ✅ FIX
                     />
                   </div>
                 </td>
@@ -312,7 +302,7 @@ export function SuppliersPricingEditor({
                   <input
                     type="checkbox"
                     checked={!!newOffer.inStock}
-                    onChange={(e) => setNewOffer(o => ({ ...o, inStock: e.target.checked }))}
+                    onChange={(e) => setNewOffer((o) => ({ ...o, inStock: e.target.checked }))}
                   />
                 </td>
 
@@ -321,10 +311,10 @@ export function SuppliersPricingEditor({
                     type="number"
                     min={0}
                     className="border rounded-lg px-2 py-1 w-24"
-                    value={newOffer.leadDays ?? ''}
+                    value={newOffer.leadDays ?? ""}
                     onChange={(e) => {
                       const v = e.target.value;
-                      setNewOffer(o => ({ ...o, leadDays: v === '' ? '' : Number(v) }));
+                      setNewOffer((o) => ({ ...o, leadDays: v === "" ? "" : Number(v) }));
                     }}
                   />
                 </td>
@@ -333,38 +323,43 @@ export function SuppliersPricingEditor({
                   <input
                     type="checkbox"
                     checked={!!newOffer.isActive}
-                    onChange={(e) => setNewOffer(o => ({ ...o, isActive: e.target.checked }))}
+                    onChange={(e) => setNewOffer((o) => ({ ...o, isActive: e.target.checked }))}
                   />
                 </td>
 
                 <td className="px-3 py-2 text-right">
                   <button
                     className="rounded-lg bg-zinc-900 text-white px-3 py-1.5 disabled:opacity-50"
+                    disabled={createOffer.isPending}
                     onClick={() => {
                       if (!newOffer.supplierId || !newOffer.price) {
-                        alert('Supplier and price are required');
+                        alert("Supplier and price are required");
                         return;
                       }
-                      createOffer.mutate({
-                        supplierId: newOffer.supplierId,
-                        variantId: newOffer.variantId || undefined,
-                      unitPrice: Number(newOffer.price),
-                        currency: newOffer.currency || 'NGN',
-                        inStock: !!newOffer.inStock,
-                        leadDays: newOffer.leadDays === '' ? undefined : Number(newOffer.leadDays),
-                        isActive: !!newOffer.isActive,
-                      }, {
-                        onSuccess: () => {
-                          setNewOffer({
-                            currency: 'NGN',
-                            inStock: true,
-                            isActive: true,
-                          });
+
+                      createOffer.mutate(
+                        {
+                          supplierId: newOffer.supplierId,
+                          variantId: newOffer.variantId || undefined,
+                          unitPrice: Number(newOffer.price),
+                          currency: newOffer.currency || "NGN",
+                          inStock: !!newOffer.inStock,
+                          leadDays: newOffer.leadDays === "" ? undefined : Number(newOffer.leadDays),
+                          isActive: !!newOffer.isActive,
+                        },
+                        {
+                          onSuccess: () => {
+                            setNewOffer({
+                              currency: "NGN",
+                              inStock: true,
+                              isActive: true,
+                            });
+                          },
                         }
-                      });
+                      );
                     }}
                   >
-                    Add offer
+                    {createOffer.isPending ? "Adding…" : "Add offer"}
                   </button>
                 </td>
               </tr>

@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import api from "../../api/client";
-import { useAuthStore } from "../../store/auth";
 
 type Props = {
   orderId: string;
@@ -25,8 +24,6 @@ export default function CustomerRefundModalContent({
   onDone,
   onClose,
 }: Props) {
-  const { token } = useAuthStore();
-
   const [reason, setReason] = useState(reasons[0]);
   const [message, setMessage] = useState("");
   const [evidence, setEvidence] = useState(""); // urls comma/newline separated
@@ -41,19 +38,14 @@ export default function CustomerRefundModalContent({
 
   const m = useMutation({
     mutationFn: async () => {
-      // ✅ Use the Refund-based endpoint you implement for customers.
-      // If you already use /api/refunds for RefundRequest, change accordingly.
-      const { data } = await api.post(
-        "/api/refunds",
-        {
-          orderId,
-          purchaseOrderId: purchaseOrderId ?? undefined,
-          reason,
-          message: message || undefined,
-          evidenceUrls: evidenceUrls ?? undefined,
-        },
-        { headers: token ? { Authorization: `Bearer ${token}` } : undefined }
-      );
+      // ✅ Cookie auth: browser sends HttpOnly session cookie automatically
+      const { data } = await api.post("/api/refunds", {
+        orderId,
+        purchaseOrderId: purchaseOrderId ?? undefined,
+        reason,
+        message: message || undefined,
+        evidenceUrls: evidenceUrls ?? undefined,
+      });
       return data;
     },
     onSuccess: () => {
@@ -107,7 +99,9 @@ export default function CustomerRefundModalContent({
 
       {m.isError ? (
         <div className="text-sm text-rose-600">
-          {(m.error as any)?.response?.data?.error || (m.error as any)?.message || "Failed to submit refund."}
+          {(m.error as any)?.response?.data?.error ||
+            (m.error as any)?.message ||
+            "Failed to submit refund."}
         </div>
       ) : null}
 

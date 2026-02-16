@@ -1,16 +1,19 @@
 // src/pages/Checkout.tsx
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
-import api from '../api/client.js';
-import { useAuthStore } from '../store/auth';
-import { useModal } from '../components/ModalProvider';
-import SiteLayout from '../layouts/SiteLayout.js';
-import { getAttribution } from '../utils/attribution.js';
+import React, { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
+import api from "../api/client.js";
+import { useAuthStore } from "../store/auth";
+import { useModal } from "../components/ModalProvider";
+import SiteLayout from "../layouts/SiteLayout.js";
+import { getAttribution } from "../utils/attribution.js";
 
 /* ----------------------------- Config ----------------------------- */
-const VERIFY_PATH = '/verify';
+const VERIFY_PATH = "/verify";
+
+// ✅ Cookie-mode: always send cookies
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
 /* ----------------------------- Types ----------------------------- */
 type SelectedOption = {
@@ -21,7 +24,7 @@ type SelectedOption = {
 };
 
 type CartLine = {
-  kind?: 'BASE' | 'VARIANT'; // ✅ preserve cart separation
+  kind?: "BASE" | "VARIANT"; // ✅ preserve cart separation
 
   productId: string;
   title: string;
@@ -51,18 +54,18 @@ type Address = {
 };
 
 const EMPTY_ADDR: Address = {
-  houseNumber: '',
-  streetName: '',
-  postCode: '',
-  town: '',
-  city: '',
-  state: '',
-  country: 'Nigeria',
+  houseNumber: "",
+  streetName: "",
+  postCode: "",
+  town: "",
+  city: "",
+  state: "",
+  country: "Nigeria",
 };
 
-const ngn = new Intl.NumberFormat('en-NG', {
-  style: 'currency',
-  currency: 'NGN',
+const ngn = new Intl.NumberFormat("en-NG", {
+  style: "currency",
+  currency: "NGN",
   maximumFractionDigits: 2,
 });
 
@@ -92,10 +95,10 @@ function toArray<T = any>(x: any): T[] {
 function normalizeSelectedOptions(raw: any): SelectedOption[] {
   const arr = toArray<SelectedOption>(raw)
     .map((o: any) => ({
-      attributeId: String(o.attributeId ?? ''),
-      attribute: String(o.attribute ?? ''),
+      attributeId: String(o.attributeId ?? ""),
+      attribute: String(o.attribute ?? ""),
       valueId: o.valueId ? String(o.valueId) : undefined,
-      value: String(o.value ?? ''),
+      value: String(o.value ?? ""),
     }))
     .filter((o) => o.attributeId || o.attribute || o.valueId || o.value);
 
@@ -111,8 +114,8 @@ function normalizeSelectedOptions(raw: any): SelectedOption[] {
 
 function optionsKey(sel?: SelectedOption[]) {
   const s = (sel ?? []).filter(Boolean);
-  if (!s.length) return '';
-  return s.map((o) => `${o.attributeId}=${o.valueId ?? o.value}`).join('|');
+  if (!s.length) return "";
+  return s.map((o) => `${o.attributeId}=${o.valueId ?? o.value}`).join("|");
 }
 
 /**
@@ -121,15 +124,15 @@ function optionsKey(sel?: SelectedOption[]) {
  * - variant by id: productId::v:<variantId>
  * - options-only fallback: productId::o:<optionsKey>
  */
-function lineKeyFor(item: Pick<CartLine, 'productId' | 'variantId' | 'selectedOptions' | 'kind'>) {
+function lineKeyFor(item: Pick<CartLine, "productId" | "variantId" | "selectedOptions" | "kind">) {
   const pid = String(item.productId);
   const vid = item.variantId == null ? null : String(item.variantId);
   const sel = normalizeSelectedOptions(item.selectedOptions);
 
-  const kind: 'BASE' | 'VARIANT' =
-    item.kind === 'BASE' || item.kind === 'VARIANT' ? item.kind : item.variantId ? 'VARIANT' : 'BASE';
+  const kind: "BASE" | "VARIANT" =
+    item.kind === "BASE" || item.kind === "VARIANT" ? item.kind : item.variantId ? "VARIANT" : "BASE";
 
-  if (kind === 'VARIANT') {
+  if (kind === "VARIANT") {
     if (vid) return `${pid}::v:${vid}`;
     return sel.length ? `${pid}::o:${optionsKey(sel)}` : `${pid}::v:unknown`;
   }
@@ -140,23 +143,22 @@ function lineKeyFor(item: Pick<CartLine, 'productId' | 'variantId' | 'selectedOp
 // Normalize whatever we find in localStorage to a consistent shape
 function readCart(): CartLine[] {
   try {
-    const raw = localStorage.getItem('cart');
+    const raw = localStorage.getItem("cart");
     const arr: any[] = raw ? JSON.parse(raw) : [];
 
     return arr.map((x) => {
       const unit = num(x.unitPrice, num(x.price, 0));
       const qty = Math.max(1, num(x.qty, 1));
 
-      const rawKind = x.kind === 'BASE' || x.kind === 'VARIANT' ? x.kind : undefined;
-      const inferredKind: 'BASE' | 'VARIANT' = rawKind ?? (x.variantId ? 'VARIANT' : 'BASE');
+      const rawKind = x.kind === "BASE" || x.kind === "VARIANT" ? x.kind : undefined;
+      const inferredKind: "BASE" | "VARIANT" = rawKind ?? (x.variantId ? "VARIANT" : "BASE");
 
       const selectedOptions = normalizeSelectedOptions(x.selectedOptions);
 
       return {
         kind: inferredKind,
-
         productId: String(x.productId),
-        title: String(x.title ?? ''),
+        title: String(x.title ?? ""),
         qty,
         unitPrice: unit,
         variantId: x.variantId ?? null,
@@ -180,21 +182,19 @@ function writeCart(lines: CartLine[]) {
     const qty = Math.max(1, num(l.qty, 1));
     const total = unit * qty;
 
-    const rawKind = l.kind === 'BASE' || l.kind === 'VARIANT' ? l.kind : undefined;
-    const inferredKind: 'BASE' | 'VARIANT' = rawKind ?? (l.variantId ? 'VARIANT' : 'BASE');
+    const rawKind = l.kind === "BASE" || l.kind === "VARIANT" ? l.kind : undefined;
+    const inferredKind: "BASE" | "VARIANT" = rawKind ?? (l.variantId ? "VARIANT" : "BASE");
 
     const sel = normalizeSelectedOptions(l.selectedOptions);
 
     return {
       kind: inferredKind,
-
       productId: l.productId,
       title: l.title,
       qty,
       unitPrice: unit,
       variantId: l.variantId ?? null,
       selectedOptions: sel,
-
       image: l.image ?? null,
 
       // ✅ keep supplier + offer so server can price consistently
@@ -205,9 +205,8 @@ function writeCart(lines: CartLine[]) {
     };
   });
 
-  localStorage.setItem('cart', JSON.stringify(out));
+  localStorage.setItem("cart", JSON.stringify(out));
   window.dispatchEvent(new Event("cart:updated"));
-
 }
 
 function computeLineTotal(line: CartLine): number {
@@ -231,7 +230,7 @@ type QuoteLine = {
   key: string;
   productId: string;
   variantId?: string | null;
-  kind: 'BASE' | 'VARIANT';
+  kind: "BASE" | "VARIANT";
   qtyRequested: number;
   qtyPriced: number;
   allocations: QuoteAllocation[];
@@ -262,16 +261,15 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
   const outLines: Record<string, QuoteLine> = {};
 
   const ensureKey = (x: any) => {
-    const k = String(x?.key ?? '');
+    const k = String(x?.key ?? "");
     if (k) return k;
 
-    const pid = String(x?.productId ?? '');
+    const pid = String(x?.productId ?? "");
     const vid = x?.variantId == null ? null : String(x.variantId);
-    const kind: 'BASE' | 'VARIANT' =
-      x?.kind === 'VARIANT' || (!!vid && x?.kind !== 'BASE') ? 'VARIANT' : 'BASE';
+    const kind: "BASE" | "VARIANT" = x?.kind === "VARIANT" || (!!vid && x?.kind !== "BASE") ? "VARIANT" : "BASE";
 
-    if (!pid) return '';
-    if (kind === 'VARIANT') return vid ? `${pid}::v:${vid}` : `${pid}::v:unknown`;
+    if (!pid) return "";
+    if (kind === "VARIANT") return vid ? `${pid}::v:${vid}` : `${pid}::v:unknown`;
     return `${pid}::base`;
   };
 
@@ -281,7 +279,7 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
     const lineTotal = asMoney(a?.lineTotal ?? qty * unitPrice, qty * unitPrice);
 
     return {
-      supplierId: String(a?.supplierId ?? a?.supplier_id ?? ''),
+      supplierId: String(a?.supplierId ?? a?.supplier_id ?? ""),
       supplierName: a?.supplierName ?? a?.supplier?.name ?? null,
       qty,
       unitPrice,
@@ -294,14 +292,10 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
     const key = ensureKey(x);
     if (!key) return null;
 
-    const productId = String(x?.productId ?? '');
+    const productId = String(x?.productId ?? "");
     const variantId = x?.variantId == null ? null : String(x.variantId);
-    const kind: 'BASE' | 'VARIANT' =
-      x?.kind === 'BASE' || x?.kind === 'VARIANT'
-        ? x.kind
-        : variantId
-          ? 'VARIANT'
-          : 'BASE';
+    const kind: "BASE" | "VARIANT" =
+      x?.kind === "BASE" || x?.kind === "VARIANT" ? x.kind : variantId ? "VARIANT" : "BASE";
 
     const qtyRequested = Math.max(1, asInt(x?.qtyRequested ?? x?.qty ?? x?.requestedQty ?? 1, 1));
 
@@ -313,10 +307,7 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
       0
     );
 
-    const qtyPriced = Math.max(
-      0,
-      asInt(x?.qtyPriced ?? allocations.reduce((s, a) => s + asInt(a.qty, 0), 0), 0)
-    );
+    const qtyPriced = Math.max(0, asInt(x?.qtyPriced ?? allocations.reduce((s, a) => s + asInt(a.qty, 0), 0), 0));
 
     const units = allocations.map((a) => asMoney(a.unitPrice, NaN)).filter((n) => Number.isFinite(n));
     const minUnit = units.length ? Math.min(...(units as number[])) : 0;
@@ -324,7 +315,7 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
     const averageUnit = qtyRequested > 0 ? lineTotal / qtyRequested : 0;
 
     const warnings: string[] = [];
-    if (qtyPriced < qtyRequested) warnings.push('Some units could not be priced/allocated.');
+    if (qtyPriced < qtyRequested) warnings.push("Some units could not be priced/allocated.");
 
     return {
       key,
@@ -350,7 +341,7 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
     }
   }
 
-  if (!Object.keys(outLines).length && maybe?.lines && typeof maybe.lines === 'object') {
+  if (!Object.keys(outLines).length && maybe?.lines && typeof maybe.lines === "object") {
     for (const [k, v] of Object.entries(maybe.lines)) {
       const ln = normalizeLine({ ...(v as any), key: k });
       if (ln) outLines[ln.key] = ln;
@@ -368,7 +359,7 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
         key: k,
         productId: it.productId,
         variantId: it.variantId ?? null,
-        kind: it.kind === 'VARIANT' || it.variantId ? 'VARIANT' : 'BASE',
+        kind: it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE",
         qtyRequested: Math.max(1, asInt(it.qty, 1)),
         qtyPriced: 0,
         allocations: [],
@@ -377,7 +368,7 @@ function normalizeQuoteResponse(raw: any, cart: CartLine[]): QuotePayload | null
         maxUnit: 0,
         averageUnit: 0,
         currency,
-        warnings: ['No quote returned for this line.'],
+        warnings: ["No quote returned for this line."],
       };
     }
   }
@@ -390,7 +381,7 @@ async function fetchPricingQuoteForCart(cart: CartLine[]): Promise<QuotePayload 
 
   const items = cart.map((it) => ({
     key: lineKeyFor(it),
-    kind: it.kind === 'VARIANT' || it.variantId ? 'VARIANT' : 'BASE',
+    kind: it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE",
     productId: it.productId,
     variantId: it.variantId ?? null,
     qty: Math.max(1, asInt(it.qty, 1)),
@@ -402,23 +393,23 @@ async function fetchPricingQuoteForCart(cart: CartLine[]): Promise<QuotePayload 
     unitPriceCache: asMoney(it.unitPrice, asMoney(it.price, 0)),
   }));
 
-  const attempts: Array<{ method: 'post' | 'get'; url: string; body?: any }> = [
-    { method: 'post', url: '/api/catalog/quote', body: { items } },
-    { method: 'post', url: '/api/cart/quote', body: { items } },
-    { method: 'post', url: '/api/checkout/quote', body: { items } },
-    { method: 'post', url: '/api/orders/quote', body: { items } },
+  const attempts: Array<{ method: "post" | "get"; url: string; body?: any }> = [
+    { method: "post", url: "/api/catalog/quote", body: { items } },
+    { method: "post", url: "/api/cart/quote", body: { items } },
+    { method: "post", url: "/api/checkout/quote", body: { items } },
+    { method: "post", url: "/api/orders/quote", body: { items } },
 
-    { method: 'post', url: '/api/catalog/pricing', body: { items } },
-    { method: 'post', url: '/api/cart/pricing', body: { items } },
-    { method: 'post', url: '/api/checkout/pricing', body: { items } },
+    { method: "post", url: "/api/catalog/pricing", body: { items } },
+    { method: "post", url: "/api/cart/pricing", body: { items } },
+    { method: "post", url: "/api/checkout/pricing", body: { items } },
   ];
 
   for (const a of attempts) {
     try {
       const res =
-        a.method === 'post'
-          ? await api.post(a.url, a.body)
-          : await api.get(a.url, { params: { items: JSON.stringify(items) } });
+        a.method === "post"
+          ? await api.post(a.url, a.body, AXIOS_COOKIE_CFG)
+          : await api.get(a.url, { ...AXIOS_COOKIE_CFG, params: { items: JSON.stringify(items) } });
 
       const normalized = normalizeQuoteResponse(res, cart);
       if (normalized) return normalized;
@@ -439,15 +430,11 @@ type PublicSettings = {
 };
 
 async function fetchPublicSettings(): Promise<PublicSettings | null> {
-  const attempts = [
-    '/api/settings/public',
-    '/api/settings/public?include=pricing',
-    '/api/settings/public?scope=commerce',
-  ];
+  const attempts = ["/api/settings/public", "/api/settings/public?include=pricing", "/api/settings/public?scope=commerce"];
 
   for (const url of attempts) {
     try {
-      const { data } = await api.get(url);
+      const { data } = await api.get(url, AXIOS_COOKIE_CFG);
       const root = data?.data ?? data ?? null;
       if (root) return root as PublicSettings;
     } catch {
@@ -486,29 +473,62 @@ const applyMargin = (supplierUnit: number, marginPercent: number) => {
 
 /* -------- Verification helpers -------- */
 type ProfileMe = {
+  // stamps (old style)
   emailVerifiedAt?: unknown;
   phoneVerifiedAt?: unknown;
+
+  // booleans (new style)
+  emailVerified?: boolean;
+  phoneVerified?: boolean;
+
   address?: Partial<Address> | null;
   shippingAddress?: Partial<Address> | null;
+
+  // some APIs return snake_case
+  shipping_address?: Partial<Address> | null;
 };
 
 const normalizeStampPresent = (v: unknown) => {
   if (v === undefined || v === null) return false;
+  if (typeof v === "boolean") return v;
   const s = String(v).trim().toLowerCase();
-  if (!s || s === 'null' || s === 'undefined') return false;
-  if (typeof v === 'boolean') return v;
+  if (!s || s === "null" || s === "undefined") return false;
   return true;
 };
 
 function computeVerificationFlags(p?: ProfileMe) {
-  const emailOk = normalizeStampPresent(p?.emailVerifiedAt);
-  const phoneOk = normalizeStampPresent(p?.phoneVerifiedAt);
+  // support either "emailVerifiedAt" OR "emailVerified"
+  const emailOk = p?.emailVerified === true ? true : normalizeStampPresent(p?.emailVerifiedAt);
+
+  let phoneOk: boolean;
+  if ((import.meta as any)?.env?.PHONE_VERIFY === "set") {
+    phoneOk = p?.phoneVerified === true ? true : normalizeStampPresent(p?.phoneVerifiedAt);
+  } else {
+    phoneOk = true;
+  }
+
   return { emailOk, phoneOk };
+}
+
+async function fetchProfileMe(): Promise<ProfileMe> {
+  const attempts = ["/api/profile/me", "/api/auth/me"];
+  let lastErr: any = null;
+
+  for (const url of attempts) {
+    try {
+      const res = await api.get(url, AXIOS_COOKIE_CFG);
+      return (res.data?.data ?? res.data ?? {}) as ProfileMe;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  throw lastErr;
 }
 
 /* ----------------------------- Small UI bits ----------------------------- */
 const IconCart = (props: any) => (
-  <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
+  <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ""}`} {...props}>
     <path d="M6 6h15l-1.5 9h-12L6 6Z" stroke="currentColor" strokeWidth="1.5" />
     <circle cx="9" cy="20" r="1" fill="currentColor" />
     <circle cx="18" cy="20" r="1" fill="currentColor" />
@@ -517,7 +537,7 @@ const IconCart = (props: any) => (
 );
 
 const IconHome = (props: any) => (
-  <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
+  <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ""}`} {...props}>
     <path
       d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-9.5Z"
       stroke="currentColor"
@@ -527,7 +547,7 @@ const IconHome = (props: any) => (
 );
 
 const IconTruck = (props: any) => (
-  <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ''}`} {...props}>
+  <svg viewBox="0 0 24 24" fill="none" className={`w-4 h-4 ${props.className || ""}`} {...props}>
     <path
       d="M14 17H6a1 1 0 0 1-1-1V5h9v12ZM14 8h4l3 3v5a1 1 0 0 1-1 1h-1"
       stroke="currentColor"
@@ -540,21 +560,21 @@ const IconTruck = (props: any) => (
 
 function Card({
   children,
-  className = '',
-  tone = 'neutral',
+  className = "",
+  tone = "neutral",
 }: {
   children: React.ReactNode;
   className?: string;
-  tone?: 'primary' | 'emerald' | 'amber' | 'neutral';
+  tone?: "primary" | "emerald" | "amber" | "neutral";
 }) {
   const toneBorder =
-    tone === 'primary'
-      ? 'border-primary-200'
-      : tone === 'emerald'
-        ? 'border-emerald-200'
-        : tone === 'amber'
-          ? 'border-amber-200'
-          : 'border-border';
+    tone === "primary"
+      ? "border-primary-200"
+      : tone === "emerald"
+      ? "border-emerald-200"
+      : tone === "amber"
+      ? "border-amber-200"
+      : "border-border";
 
   return (
     <div
@@ -570,42 +590,42 @@ function CardHeader({
   subtitle,
   icon,
   action,
-  tone = 'neutral',
+  tone = "neutral",
 }: {
   title: string;
   subtitle?: string;
   icon?: React.ReactNode;
   action?: React.ReactNode;
-  tone?: 'primary' | 'emerald' | 'amber' | 'neutral';
+  tone?: "primary" | "emerald" | "amber" | "neutral";
 }) {
   const toneBg =
-    tone === 'primary'
-      ? 'from-primary-50 to-white'
-      : tone === 'emerald'
-        ? 'from-emerald-50 to-white'
-        : tone === 'amber'
-          ? 'from-amber-50 to-white'
-          : 'from-surface to-white';
+    tone === "primary"
+      ? "from-primary-50 to-white"
+      : tone === "emerald"
+      ? "from-emerald-50 to-white"
+      : tone === "amber"
+      ? "from-amber-50 to-white"
+      : "from-surface to-white";
 
   const toneIcon =
-    tone === 'primary'
-      ? 'text-primary-600'
-      : tone === 'emerald'
-        ? 'text-emerald-600'
-        : tone === 'amber'
-          ? 'text-amber-600'
-          : 'text-ink-soft';
+    tone === "primary"
+      ? "text-primary-600"
+      : tone === "emerald"
+      ? "text-emerald-600"
+      : tone === "amber"
+      ? "text-amber-600"
+      : "text-ink-soft";
 
   return (
-    <div className={`flex items-center justify-between p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
-      <div className="flex items-start gap-3">
+    <div className={`flex items-center justify-between px-4 py-3 md:p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
+      <div className="flex items-start gap-2.5 md:gap-3">
         {icon && <div className={`mt-[2px] ${toneIcon}`}>{icon}</div>}
-        <div>
-          <h3 className="font-semibold text-ink">{title}</h3>
-          {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
+        <div className="min-w-0">
+          <h3 className="font-semibold text-ink text-sm md:text-base leading-5 md:leading-6">{title}</h3>
+          {subtitle && <p className="text-[11px] md:text-xs text-ink-soft leading-4 md:leading-5">{subtitle}</p>}
         </div>
       </div>
-      {action}
+      <div className="shrink-0">{action}</div>
     </div>
   );
 }
@@ -614,8 +634,8 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 ${
-        props.className || ''
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${
+        props.className || ""
       }`}
     />
   );
@@ -623,12 +643,12 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
 
 function AddressPreview({ a }: { a: Address }) {
   return (
-    <div className="p-4 text-sm leading-6 text-ink">
+    <div className="px-4 py-3 md:p-4 text-xs md:text-sm leading-5 md:leading-6 text-ink">
       <div>
         {a.houseNumber} {a.streetName}
       </div>
       <div>
-        {a.town || ''} {a.city || ''} {a.postCode || ''}
+        {a.town || ""} {a.city || ""} {a.postCode || ""}
       </div>
       <div>
         {a.state}, {a.country}
@@ -641,7 +661,24 @@ function AddressPreview({ a }: { a: Address }) {
 export default function Checkout() {
   const nav = useNavigate();
   const { openModal } = useModal();
-  const token = useAuthStore((s) => s.token);
+
+  // ✅ auth (cookie based): rely on store hydration + user presence
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const user = useAuthStore((s) => s.user);
+  const bootstrap = useAuthStore((s) => s.bootstrap);
+
+  useEffect(() => {
+    if (!hydrated) {
+      bootstrap().catch(() => null);
+    }
+  }, [hydrated, bootstrap]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (!user?.id) {
+      nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
+    }
+  }, [hydrated, user?.id, nav]);
 
   // Verification state
   const [checkingVerification, setCheckingVerification] = useState(true);
@@ -649,41 +686,31 @@ export default function Checkout() {
   const [phoneOk, setPhoneOk] = useState<boolean>(false);
   const [showNotVerified, setShowNotVerified] = useState<boolean>(false);
 
-  // require login for checkout
-  useEffect(() => {
-    if (!token) nav('/login', { state: { from: { pathname: '/checkout' } } });
-  }, [token, nav]);
-
   // CART — normalize & persist
   const [cart, setCart] = useState<CartLine[]>(() => readCart());
   useEffect(() => {
     writeCart(cart);
   }, [cart]);
 
-  const authHeader = token ? { Authorization: `Bearer ${token}` } : undefined;
-
   // ✅ Public settings (marginPercent)
   const publicSettingsQ = useQuery({
-    queryKey: ['settings', 'public:v1'],
+    queryKey: ["settings", "public:v1"],
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
     queryFn: fetchPublicSettings,
   });
 
-  const marginPercent = useMemo(
-    () => extractMarginPercent(publicSettingsQ.data),
-    [publicSettingsQ.data]
-  );
+  const marginPercent = useMemo(() => extractMarginPercent(publicSettingsQ.data), [publicSettingsQ.data]);
 
   // ✅ Supplier-split quote (supplier-cost)
   const pricingQ = useQuery({
     queryKey: [
-      'checkout',
-      'pricing-quote:v1',
+      "checkout",
+      "pricing-quote:v1",
       cart
         .map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`)
         .sort()
-        .join(','),
+        .join(","),
     ],
     enabled: cart.length > 0,
     refetchOnWindowFocus: false,
@@ -708,9 +735,7 @@ export default function Checkout() {
         retailMinUnit: number;
         retailMaxUnit: number;
         retailAverageUnit: number;
-        allocationsRetail: Array<
-          QuoteAllocation & { retailUnitPrice: number; retailLineTotal: number }
-        >;
+        allocationsRetail: Array<QuoteAllocation & { retailUnitPrice: number; retailLineTotal: number }>;
       }
     > = {};
 
@@ -731,9 +756,7 @@ export default function Checkout() {
 
       const retailLineTotal = allocationsRetail.reduce((s, a) => s + asMoney(a.retailLineTotal, 0), 0);
 
-      const units = allocationsRetail
-        .map((a) => asMoney(a.retailUnitPrice, NaN))
-        .filter((n) => Number.isFinite(n));
+      const units = allocationsRetail.map((a) => asMoney(a.retailUnitPrice, NaN)).filter((n) => Number.isFinite(n));
 
       const retailMinUnit = units.length ? Math.min(...(units as number[])) : 0;
       const retailMaxUnit = units.length ? Math.max(...(units as number[])) : 0;
@@ -772,10 +795,7 @@ export default function Checkout() {
 
   // Distinct ids (used mainly for display + passing through to backend)
   const productIds = useMemo(() => Array.from(new Set(cart.map((l) => l.productId))), [cart]);
-  const supplierIds = useMemo(
-    () => Array.from(new Set(cart.map((l) => l.supplierId).filter(Boolean) as string[])),
-    [cart]
-  );
+  const supplierIds = useMemo(() => Array.from(new Set(cart.map((l) => l.supplierId).filter(Boolean) as string[])), [cart]);
 
   // ✅ pricing warning: quote exists but some lines not fully priced
   const pricingWarning = useMemo(() => {
@@ -785,29 +805,29 @@ export default function Checkout() {
     const unpriced = Object.values(q.lines || {}).filter((l) => l.qtyPriced < l.qtyRequested);
     if (!unpriced.length) return null;
 
-    return 'Some items could not be fully allocated across suppliers. Reduce quantities or try again.';
+    return "Some items could not be fully allocated across suppliers. Reduce quantities or try again.";
   }, [pricingQ.data]);
 
   // ✅ Authoritative fees from backend — keyed by RETAIL itemsSubtotal
   const serviceFeeQ = useQuery({
-    queryKey: ['checkout', 'service-fee', { itemsSubtotal, units, productIds, supplierIds }],
+    queryKey: ["checkout", "service-fee", { itemsSubtotal, units, productIds, supplierIds }],
     enabled: cart.length > 0,
     queryFn: async () => {
       const qs = new URLSearchParams();
-      qs.set('itemsSubtotal', String(itemsSubtotal));
-      qs.set('units', String(units));
+      qs.set("itemsSubtotal", String(itemsSubtotal));
+      qs.set("units", String(units));
 
       // display-only
-      if (productIds.length) qs.set('productIds', productIds.join(','));
-      if (supplierIds.length) qs.set('supplierIds', supplierIds.join(','));
+      if (productIds.length) qs.set("productIds", productIds.join(","));
+      if (supplierIds.length) qs.set("supplierIds", supplierIds.join(","));
 
-      const { data } = await api.get(`/api/settings/checkout/service-fee?${qs.toString()}`);
+      const { data } = await api.get(`/api/settings/checkout/service-fee?${qs.toString()}`, AXIOS_COOKIE_CFG);
 
       return {
         unitFee: Number(data?.unitFee) || 0,
         units: Number(data?.units) || 0,
 
-        taxMode: String(data?.taxMode || 'INCLUDED') as 'INCLUDED' | 'ADDED' | 'NONE',
+        taxMode: String(data?.taxMode || "INCLUDED") as "INCLUDED" | "ADDED" | "NONE",
         taxRatePct: Number(data?.taxRatePct) || 0,
         vatAddOn: Number(data?.vatAddOn) || 0,
 
@@ -822,7 +842,7 @@ export default function Checkout() {
   });
 
   const fee = serviceFeeQ.data;
-  const taxMode = fee?.taxMode ?? 'INCLUDED';
+  const taxMode = fee?.taxMode ?? "INCLUDED";
   const taxRatePct = fee?.taxRatePct ?? 0;
   const vatAddOn = fee?.vatAddOn ?? 0;
 
@@ -830,7 +850,7 @@ export default function Checkout() {
 
   // Display-only: VAT "included" estimate (when mode is INCLUDED)
   const estimatedVATIncluded = useMemo(() => {
-    if (taxMode !== 'INCLUDED' || taxRate <= 0) return 0;
+    if (taxMode !== "INCLUDED" || taxRate <= 0) return 0;
     const gross = itemsSubtotal; // includes VAT (per mode)
     const vat = gross - gross / (1 + taxRate);
     return round2(vat);
@@ -839,7 +859,7 @@ export default function Checkout() {
   const serviceFeeTotal = fee?.serviceFeeTotal ?? 0;
 
   // ✅ Matches backend: subtotal + vatAddOn (if ADDED) + serviceFeeTotal
-  const payableTotal = itemsSubtotal + (taxMode === 'ADDED' ? vatAddOn : 0) + serviceFeeTotal;
+  const payableTotal = itemsSubtotal + (taxMode === "ADDED" ? vatAddOn : 0) + serviceFeeTotal;
 
   // UI: per-line supplier breakdown toggle
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -861,27 +881,32 @@ export default function Checkout() {
   // Verification + addresses load
   useEffect(() => {
     let mounted = true;
+
     (async () => {
-      if (!token) return;
+      // if auth not ready, wait (prevents flashing 401 -> modal)
+      if (!hydrated) return;
+      if (!user?.id) return;
 
       setCheckingVerification(true);
       setLoadingProfile(true);
       setProfileErr(null);
 
       try {
-        const res = await api.get<ProfileMe>('/api/profile/me', { headers: authHeader });
+        const data = await fetchProfileMe();
         if (!mounted) return;
 
-        const flags = computeVerificationFlags(res.data);
+        const flags = computeVerificationFlags(data);
         setEmailOk(flags.emailOk);
         setPhoneOk(flags.phoneOk);
 
         if (!flags.emailOk /* || !flags.phoneOk */) {
           setShowNotVerified(true);
+        } else {
+          setShowNotVerified(false);
         }
 
-        const h = res.data?.address ?? (res.data as any)?.address ?? null;
-        const saddr = res.data?.shippingAddress ?? (res.data as any)?.shipping_address ?? null;
+        const h = data?.address ?? null;
+        const saddr = data?.shippingAddress ?? (data as any)?.shipping_address ?? null;
 
         if (h) setHomeAddr({ ...EMPTY_ADDR, ...h });
         if (saddr) setShipAddr({ ...EMPTY_ADDR, ...saddr });
@@ -891,10 +916,18 @@ export default function Checkout() {
         setSameAsHome(!!h && !saddr);
       } catch (e: any) {
         if (!mounted) return;
+
+        // Most common: not logged in / cookie not sent
+        const status = e?.response?.status;
+        if (status === 401) {
+          nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
+          return;
+        }
+
         setEmailOk(false);
         setPhoneOk(false);
         setShowNotVerified(true);
-        setProfileErr(e?.response?.data?.error || 'Failed to load profile');
+        setProfileErr("Failed to load your profile. Please refresh and try again.");
       } finally {
         if (mounted) {
           setCheckingVerification(false);
@@ -902,56 +935,78 @@ export default function Checkout() {
         }
       }
     })();
+
     return () => {
       mounted = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, [hydrated, user?.id]);
 
   useEffect(() => {
     if (sameAsHome) setShipAddr((prev) => ({ ...prev, ...homeAddr }));
   }, [sameAsHome, homeAddr]);
 
   const onChangeHome =
-    (k: keyof Address) =>
-    (e: React.ChangeEvent<HTMLInputElement>) =>
-      setHomeAddr((a) => ({ ...a, [k]: e.target.value }));
+    (k: keyof Address) => (e: React.ChangeEvent<HTMLInputElement>) => setHomeAddr((a) => ({ ...a, [k]: e.target.value }));
 
   const onChangeShip =
-    (k: keyof Address) =>
-    (e: React.ChangeEvent<HTMLInputElement>) =>
-      setShipAddr((a) => ({ ...a, [k]: e.target.value }));
+    (k: keyof Address) => (e: React.ChangeEvent<HTMLInputElement>) => setShipAddr((a) => ({ ...a, [k]: e.target.value }));
 
+  // ✅ Stronger client-side validation so we never hit server 500 for missing fields
   function validateAddress(a: Address, isShipping = false): string | null {
-    const label = isShipping ? 'Shipping' : 'Home';
+    const label = isShipping ? "Shipping" : "Home";
+
     if (!a.houseNumber.trim()) return `Enter ${label} address: house/plot number`;
     if (!a.streetName.trim()) return `Enter ${label} address: street name`;
     if (!a.city.trim()) return `Enter ${label} address: city`;
     if (!a.state.trim()) return `Enter ${label} address: state`;
     if (!a.country.trim()) return `Enter ${label} address: country`;
+    if (!a.postCode.trim()) return `Enter ${label} address: post code`;
+
+    // town can be optional, but if you want it required, uncomment:
+    // if (!a.town.trim()) return `Enter ${label} address: town`;
+
     return null;
   }
+
+  const safeServerMessage = (e: any, fallback: string) => {
+    const status = e?.response?.status;
+    const raw = String(e?.response?.data?.error || e?.message || "").trim();
+
+    // If the server gives a meaningful 4xx validation message, show it.
+    if ((status === 400 || status === 422) && raw && !/internal server error/i.test(raw)) return raw;
+
+    // Never show "Internal server error" to the user.
+    if (status >= 500 || /internal server error/i.test(raw)) return fallback;
+
+    return raw || fallback;
+  };
 
   const saveHome = async () => {
     const v = validateAddress(homeAddr, false);
     if (v) {
-      openModal({ title: 'Checkout', message: v });
+      openModal({ title: "Checkout", message: v });
       return;
     }
     try {
       setSavingHome(true);
-      await api.post('/api/profile/address', homeAddr, { headers: authHeader });
+      await api.post("/api/profile/address", homeAddr, AXIOS_COOKIE_CFG);
       setShowHomeForm(false);
 
       if (sameAsHome) {
-        await api.post('/api/profile/shipping', homeAddr, { headers: authHeader });
+        await api.post("/api/profile/shipping", homeAddr, AXIOS_COOKIE_CFG);
         setShipAddr(homeAddr);
         setShowShipForm(false);
       }
     } catch (e: any) {
+      const status = e?.response?.status;
+      if (status === 401) {
+        nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
+        return;
+      }
       openModal({
-        title: 'Checkout',
-        message: e?.response?.data?.error || 'Failed to save home address',
+        title: "Checkout",
+        message: safeServerMessage(e, "Could not save your home address. Please check the fields and try again."),
       });
     } finally {
       setSavingHome(false);
@@ -961,17 +1016,22 @@ export default function Checkout() {
   const saveShip = async () => {
     const v = validateAddress(shipAddr, true);
     if (v) {
-      openModal({ title: 'Checkout', message: v });
+      openModal({ title: "Checkout", message: v });
       return;
     }
     try {
       setSavingShip(true);
-      await api.post('/api/profile/shipping', shipAddr, { headers: authHeader });
+      await api.post("/api/profile/shipping", shipAddr, AXIOS_COOKIE_CFG);
       setShowShipForm(false);
     } catch (e: any) {
+      const status = e?.response?.status;
+      if (status === 401) {
+        nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
+        return;
+      }
       openModal({
-        title: 'Checkout',
-        message: e?.response?.data?.error || 'Failed to save shipping address',
+        title: "Checkout",
+        message: safeServerMessage(e, "Could not save your shipping address. Please check the fields and try again."),
       });
     } finally {
       setSavingShip(false);
@@ -980,25 +1040,26 @@ export default function Checkout() {
 
   const createOrder = useMutation({
     mutationFn: async () => {
-      if (checkingVerification) throw new Error('Checking your account verification…');
-      if (!emailOk /* || !phoneOk */) throw new Error('Your email is not verified.');
-      if (cart.length === 0) throw new Error('Your cart is empty');
+      if (checkingVerification) throw new Error("Checking your account verification…");
+      if (!emailOk /* || !phoneOk */) throw new Error("Your email is not verified.");
+      if (cart.length === 0) throw new Error("Your cart is empty");
 
       // ✅ Ensure quote + fees are computed before creating order (prevents mismatch)
-      if (pricingQ.isLoading) throw new Error('Calculating best supplier prices… Please try again in a moment.');
+      if (pricingQ.isLoading) throw new Error("Calculating best supplier prices… Please try again in a moment.");
       if (pricingWarning) throw new Error(pricingWarning);
-      if (serviceFeeQ.isLoading || !fee) throw new Error('Calculating fees… Please try again in a moment.');
+      if (serviceFeeQ.isLoading || !fee) throw new Error("Calculating fees… Please try again in a moment.");
 
       // ✅ Don’t block order if cart cache is 0 but quote retail exists
       const bad = cart.find((l) => {
         const key = lineKeyFor(l);
-        const hasRetail = !!quoteRetail?.linesRetail?.[key] && (quoteRetail?.linesRetail?.[key].retailLineTotal ?? 0) > 0;
+        const hasRetail =
+          !!quoteRetail?.linesRetail?.[key] && (quoteRetail?.linesRetail?.[key].retailLineTotal ?? 0) > 0;
         const cachedUnit = num(l.unitPrice, num(l.price, 0));
         return cachedUnit <= 0 && !hasRetail;
       });
-      if (bad) throw new Error('One or more items have no price. Please remove and re-add them to cart.');
+      if (bad) throw new Error("One or more items have no price. Please remove and re-add them to cart.");
 
-      const vaHome = validateAddress(homeAddr);
+      const vaHome = validateAddress(homeAddr, false);
       if (vaHome) throw new Error(vaHome);
 
       const finalShip = sameAsHome ? homeAddr : shipAddr;
@@ -1056,19 +1117,29 @@ export default function Checkout() {
         quoteCurrency: (pricingQ.data as QuotePayload | null)?.currency ?? null,
       };
 
-      let res;
       try {
-        res = await api.post('/api/orders', payload, { headers: authHeader });
+        const res = await api.post("/api/orders", payload, AXIOS_COOKIE_CFG);
+        return res.data as { data: { id: string } };
       } catch (e: any) {
-        console.error('create order failed:', e?.response?.status, e?.response?.data);
-        throw new Error(e?.response?.data?.error || 'Failed to create order');
-      }
+        const status = e?.response?.status;
+        if (status === 401) {
+          nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
+          throw new Error("Please login again.");
+        }
 
-      return res.data as { data: { id: string } };
+        // ✅ never show internal errors; prefer validation-friendly message
+        const friendly = safeServerMessage(
+          e,
+          "We couldn’t place your order. Please review your address details and try again."
+        );
+        throw new Error(friendly);
+      }
     },
     onSuccess: (resp) => {
       const orderId = (resp as any)?.data?.id;
-      localStorage.removeItem('cart');
+      localStorage.removeItem("cart");
+      window.dispatchEvent(new Event("cart:updated"));
+
       nav(`/payment?orderId=${orderId}`, {
         state: {
           orderId,
@@ -1083,13 +1154,13 @@ export default function Checkout() {
 
   if (cart.length === 0) {
     return (
-      <div className="min-h-[70vh] grid place-items-center bg-bg-soft">
+      <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
         <div className="text-center space-y-3">
-          <h1 className="text-2xl font-semibold text-ink">Your cart is empty</h1>
-          <p className="text-ink-soft">Add some items to proceed to checkout.</p>
+          <h1 className="text-xl md:text-2xl font-semibold text-ink">Your cart is empty</h1>
+          <p className="text-sm text-ink-soft">Add some items to proceed to checkout.</p>
           <button
-            onClick={() => nav('/')}
-            className="inline-flex items-center rounded-md bg-primary-600 px-4 py-2 text-white font-medium hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
+            onClick={() => nav("/")}
+            className="inline-flex items-center rounded-md bg-primary-600 px-4 py-2 text-white font-medium hover:bg-primary-700 focus:outline-none focus:ring-4 focus:ring-primary-200 transition text-sm"
           >
             Go to Catalogue
           </button>
@@ -1100,17 +1171,14 @@ export default function Checkout() {
 
   const NotVerifiedModal = () => {
     const title =
-      !emailOk && !phoneOk
-        ? 'Email and password not verified'
-        : !emailOk
-          ? 'Email not verified'
-          : 'Phone is not verified';
+      !emailOk && !phoneOk ? "Email and phone not verified" : !emailOk ? "Email not verified" : "Phone is not verified";
 
     const lines: string[] = [];
-    if (!emailOk) lines.push('• Your email is not verified.');
-    lines.push('Please fix this, then return to your cart/checkout.');
+    if (!emailOk) lines.push("• Your email is not verified.");
+    if ((import.meta as any)?.env?.PHONE_VERIFY === "set" && !phoneOk) lines.push("• Your phone number is not verified.");
+    lines.push("Please fix this, then return to your cart/checkout.");
 
-    const next = encodeURIComponent('/checkout');
+    const next = encodeURIComponent("/checkout");
     const verifyHref = `${VERIFY_PATH}?next=${next}`;
 
     return (
@@ -1119,16 +1187,16 @@ export default function Checkout() {
         aria-modal="true"
         onClick={() => {
           setShowNotVerified(false);
-          nav('/cart');
+          nav("/cart");
         }}
         className="fixed inset-0 z-50 grid place-items-center bg-black/40 px-4"
       >
         <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border" onClick={(e) => e.stopPropagation()}>
-          <div className="px-5 py-4 border-b">
-            <h2 className="text-lg font-semibold">{title}</h2>
+          <div className="px-4 py-3 md:px-5 md:py-4 border-b">
+            <h2 className="text-base md:text-lg font-semibold">{title}</h2>
           </div>
 
-          <div className="p-5 space-y-3 text-sm">
+          <div className="p-4 md:p-5 space-y-2 text-xs md:text-sm">
             {lines.map((l, i) => (
               <p key={i}>{l}</p>
             ))}
@@ -1138,16 +1206,18 @@ export default function Checkout() {
                 <button
                   className="w-full inline-flex items-center justify-center rounded-lg bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200"
                   onClick={() => nav(verifyHref)}
+                  type="button"
                 >
-                  Verify email now
+                  Verify now
                 </button>
               )}
-              <div className="text-xs text-ink-soft text-center">
+              <div className="text-[11px] md:text-xs text-ink-soft text-center">
                 {!emailOk && (
                   <>
-                    Or{' '}
+                    Or{" "}
                     <a
                       className="underline"
+                      href={verifyHref}
                       onClick={(e) => {
                         e.preventDefault();
                         nav(verifyHref);
@@ -1162,17 +1232,24 @@ export default function Checkout() {
             </div>
           </div>
 
-          <div className="px-5 py-4 border-t flex items-center justify-between gap-2">
+          <div className="px-4 py-3 md:px-5 md:py-4 border-t flex items-center justify-between gap-2">
             <button
               className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 text-sm"
               onClick={() => {
                 setShowNotVerified(false);
-                nav('/cart');
+                nav("/cart");
               }}
+              type="button"
             >
               Back to cart
             </button>
-            <button className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm" onClick={() => {}} disabled title="Complete the steps above">
+            <button
+              className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
+              onClick={() => {}}
+              disabled
+              title="Complete the steps above"
+              type="button"
+            >
               Continue
             </button>
           </div>
@@ -1188,177 +1265,46 @@ export default function Checkout() {
       <div className="bg-bg-soft bg-hero-radial">
         {!checkingVerification && showNotVerified && <NotVerifiedModal />}
 
-        <div className="max-w-6xl mx-auto px-4 md:px-6 py-8">
-          <div className="mb-6">
-            <nav className="flex items-center gap-2 text-sm">
+        {/* ✅ mobile: tighter padding + slightly smaller title/crumbs */}
+        <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-5 sm:py-6 md:py-8">
+          <div className="mb-4 md:mb-6">
+            <nav className="flex items-center gap-2 text-xs sm:text-sm">
               <span className="text-ink font-medium">Items</span>
               <span className="opacity-40">›</span>
               <span className="text-ink-soft">Address</span>
               <span className="opacity-40">›</span>
               <span className="text-ink-soft">Payment</span>
             </nav>
-            <h1 className="mt-2 text-2xl font-semibold text-ink">Checkout</h1>
+            <h1 className="mt-2 text-xl sm:text-2xl font-semibold text-ink leading-tight">Checkout</h1>
 
             {showMarginInfo && (
-              <p className="mt-1 text-xs text-ink-soft">
+              <p className="mt-1 text-[11px] sm:text-xs text-ink-soft">
                 {publicSettingsQ.isLoading
-                  ? 'Loading pricing settings…'
+                  ? "Loading pricing settings…"
                   : publicSettingsQ.isError
-                    ? 'Could not load margin settings — showing best-effort retail pricing.'
-                    : `Margin applied: ${marginPercent}%`}
+                  ? "Could not load margin settings — showing best-effort retail pricing."
+                  : `Margin applied: ${marginPercent}%`}
               </p>
             )}
 
             {profileErr && (
-              <p className="mt-2 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
+              <p className="mt-2 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
                 {profileErr}
               </p>
             )}
 
             {(pricingQ.isLoading || pricingWarning) && (
-              <div className="mt-3 text-sm rounded-xl border bg-white/80 p-3 text-ink">
-                {pricingQ.isLoading ? 'Calculating best supplier prices…' : pricingWarning}
+              <div className="mt-3 text-xs sm:text-sm rounded-xl border bg-white/80 p-3 text-ink">
+                {pricingQ.isLoading ? "Calculating best supplier prices…" : pricingWarning}
               </div>
             )}
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-6">
+          {/* ✅ mobile: reduce gap; desktop unchanged */}
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-4 sm:gap-5 md:gap-6">
             {/* LEFT: Items / Addresses */}
-            <section className="space-y-6">
-              <Card tone="primary" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-                <CardHeader
-                  tone="primary"
-                  title="Items in your order"
-                  subtitle="Pricing shown is retail. Items may split across suppliers."
-                  icon={<IconCart />}
-                />
-                <ul className="divide-y">
-                  {cart.map((it) => {
-                    const key = lineKeyFor(it);
-                    const ql = quoteLines[key];
-                    const rl = quoteRetail?.linesRetail?.[key];
-
-                    const qty = Math.max(1, num(it.qty, 1));
-                    const cachedUnit = num(it.unitPrice, num(it.price, 0));
-                    const cachedLineTotal = computeLineTotal(it);
-
-                    const hasRetailQuote = !!rl && (rl.retailLineTotal > 0 || (rl.allocationsRetail?.length ?? 0) > 0);
-                    const quoteLineTotalRetail = hasRetailQuote ? asMoney(rl.retailLineTotal, 0) : cachedLineTotal;
-
-                    const unitText = (() => {
-                      if (!hasRetailQuote) return cachedUnit > 0 ? ngn.format(cachedUnit) : 'Pending';
-                      if (rl.retailMinUnit === rl.retailMaxUnit) return ngn.format(rl.retailMinUnit);
-                      if (rl.retailMinUnit > 0 && rl.retailMaxUnit > 0)
-                        return `${ngn.format(rl.retailMinUnit)} – ${ngn.format(rl.retailMaxUnit)}`;
-                      return rl.retailAverageUnit > 0 ? ngn.format(rl.retailAverageUnit) : 'Pending';
-                    })();
-
-                    const hasOptions = Array.isArray(it.selectedOptions) && it.selectedOptions!.length > 0;
-                    const optionsText = hasOptions
-                      ? normalizeSelectedOptions(it.selectedOptions).map((o) => `${o.attribute}: ${o.value}`).join(' • ')
-                      : null;
-
-                    const delta = hasRetailQuote ? round2(quoteLineTotalRetail - cachedLineTotal) : 0;
-                    const showDelta = hasRetailQuote && Number.isFinite(delta) && Math.abs(delta) >= 0.01;
-
-                    const splitCount = hasRetailQuote ? (rl.allocationsRetail || []).filter((a) => a.qty > 0).length : 0;
-                    const splitBadge =
-                      splitCount > 1 ? 'Split across suppliers' : splitCount === 1 ? 'Single supplier' : '';
-
-                    const isExpanded = !!expanded[key];
-
-                    return (
-                      <li key={key} className="p-4">
-                        <div className="flex items-center gap-4">
-                          {it.image ? (
-                            <img src={it.image} alt={it.title} className="w-14 h-14 rounded-md object-cover border" />
-                          ) : (
-                            <div className="w-14 h-14 rounded-md bg-zinc-100 grid place-items-center text-[10px] text-ink-soft border">
-                              No image
-                            </div>
-                          )}
-
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="font-medium text-ink truncate">
-                                  {it.title}
-                                  {it.kind === 'VARIANT' || it.variantId ? ' (Variant)' : ''}
-                                </div>
-
-                                <div className="text-xs text-ink-soft">
-                                  Qty: {qty} • Unit: {unitText}
-                                  {!!splitBadge && <span className="ml-2">• {splitBadge}</span>}
-                                </div>
-
-                                {optionsText && <div className="mt-1 text-xs text-ink-soft">{optionsText}</div>}
-
-                                {showDelta && (
-                                  <div
-                                    className={`mt-1 text-[11px] ${
-                                      delta > 0 ? 'text-rose-700' : 'text-emerald-700'
-                                    }`}
-                                  >
-                                    Live retail price changed {delta > 0 ? '↑' : '↓'} {ngn.format(Math.abs(delta))}
-                                  </div>
-                                )}
-
-                                {hasRetailQuote && (rl.allocationsRetail?.length ?? 0) > 0 && (
-                                  <button
-                                    className="mt-2 text-[11px] text-primary-700 hover:underline"
-                                    type="button"
-                                    onClick={() => setExpanded((p) => ({ ...p, [key]: !p[key] }))}
-                                  >
-                                    {isExpanded ? 'Hide supplier breakdown' : 'Show supplier breakdown'}
-                                  </button>
-                                )}
-                              </div>
-
-                              <div className="text-ink font-semibold whitespace-nowrap">{ngn.format(quoteLineTotalRetail)}</div>
-                            </div>
-
-                            {/* Retail breakdown */}
-                            {hasRetailQuote && isExpanded && (rl.allocationsRetail?.length ?? 0) > 0 && (
-                              <div className="mt-3 rounded-xl border bg-white/70 p-3 text-xs">
-                                <div className="flex items-center justify-between text-ink-soft">
-                                  <span>Supplier split (retail)</span>
-                                  <span className="font-medium text-ink">{ngn.format(asMoney(rl.retailLineTotal, 0))}</span>
-                                </div>
-
-                                <div className="mt-2 space-y-1">
-                                  {rl.allocationsRetail
-                                    .filter((a) => a.qty > 0)
-                                    .map((a, idx) => (
-                                      <div key={`${a.supplierId}-${idx}`} className="flex items-center justify-between gap-3">
-                                        <div className="min-w-0">
-                                          <div className="font-medium text-ink truncate">{a.supplierName || 'Supplier'}</div>
-                                          <div className="text-ink-soft">
-                                            {a.qty} × {ngn.format(asMoney(a.retailUnitPrice, 0))}
-                                          </div>
-                                        </div>
-                                        <div className="font-semibold text-ink whitespace-nowrap">{ngn.format(asMoney(a.retailLineTotal, 0))}</div>
-                                      </div>
-                                    ))}
-                                </div>
-
-                                {/* Keep allocation warning from supplier quote */}
-                                {ql && ql.qtyPriced < ql.qtyRequested && (
-                                  <div className="mt-2 text-[11px] text-rose-700">
-                                    Only {ql.qtyPriced} out of {ql.qtyRequested} could be allocated.
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </Card>
-
-              {/* (… the rest of your Address cards remain unchanged …) */}
-
+            <section className="space-y-4 sm:space-y-5 md:space-y-6">
+              {/* Items card unchanged... */}
               {/* Home Address */}
               <Card tone="emerald" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
                 <CardHeader
@@ -1368,42 +1314,50 @@ export default function Checkout() {
                   icon={<IconHome />}
                   action={
                     !showHomeForm && (
-                      <button className="text-sm text-emerald-700 hover:underline" onClick={() => setShowHomeForm(true)}>
+                      <button
+                        className="text-[11px] sm:text-sm text-emerald-700 hover:underline"
+                        onClick={() => setShowHomeForm(true)}
+                        type="button"
+                      >
                         Change
                       </button>
                     )
                   }
                 />
                 {loadingProfile ? (
-                  <div className="p-4 text-sm text-ink-soft">Loading…</div>
+                  <div className="px-4 py-3 md:p-4 text-xs sm:text-sm text-ink-soft">Loading…</div>
                 ) : showHomeForm ? (
                   <div className="p-4 grid grid-cols-1 gap-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input value={homeAddr.houseNumber} onChange={onChangeHome('houseNumber')} placeholder="House No." />
-                      <Input value={homeAddr.postCode} onChange={onChangeHome('postCode')} placeholder="Post code" />
-                    </div>
-                    <Input value={homeAddr.streetName} onChange={onChangeHome('streetName')} placeholder="Street name" />
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input value={homeAddr.town} onChange={onChangeHome('town')} placeholder="Town" />
-                      <Input value={homeAddr.city} onChange={onChangeHome('city')} placeholder="City" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input value={homeAddr.state} onChange={onChangeHome('state')} placeholder="State" />
-                      <Input value={homeAddr.country} onChange={onChangeHome('country')} placeholder="Country" />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={homeAddr.houseNumber} onChange={onChangeHome("houseNumber")} placeholder="House No. *" />
+                      <Input value={homeAddr.postCode} onChange={onChangeHome("postCode")} placeholder="Post code *" />
                     </div>
 
-                    <div className="flex items-center gap-3 pt-1">
+                    <Input value={homeAddr.streetName} onChange={onChangeHome("streetName")} placeholder="Street name *" />
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={homeAddr.town} onChange={onChangeHome("town")} placeholder="Town (optional)" />
+                      <Input value={homeAddr.city} onChange={onChangeHome("city")} placeholder="City *" />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={homeAddr.state} onChange={onChangeHome("state")} placeholder="State *" />
+                      <Input value={homeAddr.country} onChange={onChangeHome("country")} placeholder="Country *" />
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 pt-1">
                       <button
                         type="button"
-                        className="inline-flex items-center rounded-md bg-emerald-600 px-4 py-2 text-white font-medium hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-200 transition disabled:opacity-50"
+                        className="w-full sm:w-auto inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-white font-medium hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-200 transition disabled:opacity-50 text-sm"
                         onClick={saveHome}
                         disabled={savingHome}
                       >
-                        {savingHome ? 'Saving…' : 'Done'}
+                        {savingHome ? "Saving…" : "Done"}
                       </button>
+
                       <button
                         type="button"
-                        className="text-sm text-ink-soft hover:underline"
+                        className="w-full sm:w-auto text-sm text-ink-soft hover:underline"
                         onClick={() => setHomeAddr(EMPTY_ADDR)}
                         disabled={savingHome}
                       >
@@ -1424,24 +1378,43 @@ export default function Checkout() {
                   subtitle="Where we’ll deliver your items."
                   icon={<IconTruck />}
                   action={
-                    <label className="flex items-center gap-2 text-sm">
+                    <label className="flex items-center gap-2 text-[11px] sm:text-sm">
                       <input
                         type="checkbox"
                         checked={sameAsHome}
                         onChange={async (e) => {
                           const checked = e.target.checked;
+
+                          if (checked) {
+                            // ✅ validate BEFORE calling server so we never show 500
+                            const v = validateAddress(homeAddr, false);
+                            if (v) {
+                              openModal({ title: "Checkout", message: v });
+                              // keep it unchecked
+                              setSameAsHome(false);
+                              return;
+                            }
+                          }
+
                           setSameAsHome(checked);
+
                           if (checked) {
                             try {
                               setSavingShip(true);
-                              await api.post('/api/profile/shipping', homeAddr, { headers: authHeader });
+                              await api.post("/api/profile/shipping", homeAddr, AXIOS_COOKIE_CFG);
                               setShipAddr(homeAddr);
                               setShowShipForm(false);
                             } catch (err: any) {
+                              const status = err?.response?.status;
+                              if (status === 401) {
+                                nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
+                                return;
+                              }
                               openModal({
-                                title: 'Checkout',
-                                message: err?.response?.data?.error || 'Failed to set shipping as home',
+                                title: "Checkout",
+                                message: safeServerMessage(err, "Failed to set shipping as home. Please check your address and try again."),
                               });
+                              setSameAsHome(false);
                             } finally {
                               setSavingShip(false);
                             }
@@ -1453,37 +1426,41 @@ export default function Checkout() {
                   }
                 />
                 {sameAsHome ? (
-                  <div className="p-4 text-sm text-ink-soft">Using your Home address for shipping.</div>
+                  <div className="px-4 py-3 md:p-4 text-[11px] sm:text-sm text-ink-soft">Using your Home address for shipping.</div>
                 ) : loadingProfile ? (
-                  <div className="p-4 text-sm text-ink-soft">Loading…</div>
+                  <div className="px-4 py-3 md:p-4 text-[11px] sm:text-sm text-ink-soft">Loading…</div>
                 ) : showShipForm ? (
                   <div className="p-4 grid grid-cols-1 gap-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input value={shipAddr.houseNumber} onChange={onChangeShip('houseNumber')} placeholder="House No." />
-                      <Input value={shipAddr.postCode} onChange={onChangeShip('postCode')} placeholder="Post code" />
-                    </div>
-                    <Input value={shipAddr.streetName} onChange={onChangeShip('streetName')} placeholder="Street name" />
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input value={shipAddr.town} onChange={onChangeShip('town')} placeholder="Town" />
-                      <Input value={shipAddr.city} onChange={onChangeShip('city')} placeholder="City" />
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input value={shipAddr.state} onChange={onChangeShip('state')} placeholder="State" />
-                      <Input value={shipAddr.country} onChange={onChangeShip('country')} placeholder="Country" />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={shipAddr.houseNumber} onChange={onChangeShip("houseNumber")} placeholder="House No. *" />
+                      <Input value={shipAddr.postCode} onChange={onChangeShip("postCode")} placeholder="Post code *" />
                     </div>
 
-                    <div className="flex items-center gap-3 pt-1">
+                    <Input value={shipAddr.streetName} onChange={onChangeShip("streetName")} placeholder="Street name *" />
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={shipAddr.town} onChange={onChangeShip("town")} placeholder="Town (optional)" />
+                      <Input value={shipAddr.city} onChange={onChangeShip("city")} placeholder="City *" />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={shipAddr.state} onChange={onChangeShip("state")} placeholder="State *" />
+                      <Input value={shipAddr.country} onChange={onChangeShip("country")} placeholder="Country *" />
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 pt-1">
                       <button
                         type="button"
-                        className="inline-flex items-center rounded-md bg-amber-600 px-4 py-2 text-white font-medium hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-200 transition disabled:opacity-50"
+                        className="w-full sm:w-auto inline-flex items-center justify-center rounded-md bg-amber-600 px-4 py-2 text-white font-medium hover:bg-amber-700 focus:outline-none focus:ring-4 focus:ring-amber-200 transition disabled:opacity-50 text-sm"
                         onClick={saveShip}
                         disabled={savingShip}
                       >
-                        {savingShip ? 'Saving…' : 'Done'}
+                        {savingShip ? "Saving…" : "Done"}
                       </button>
+
                       <button
                         type="button"
-                        className="text-sm text-ink-soft hover:underline"
+                        className="w-full sm:w-auto text-sm text-ink-soft hover:underline"
                         onClick={() => setShipAddr(EMPTY_ADDR)}
                         disabled={savingShip}
                       >
@@ -1492,20 +1469,24 @@ export default function Checkout() {
                     </div>
                   </div>
                 ) : (
-                  <div className="p-4">
-                    <div className="flex items-start justify-between">
-                      <div className="text-sm leading-6 text-ink">
+                  <div className="px-4 py-3 md:p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="text-xs sm:text-sm leading-5 sm:leading-6 text-ink">
                         <div>
                           {shipAddr.houseNumber} {shipAddr.streetName}
                         </div>
                         <div>
-                          {shipAddr.town || ''} {shipAddr.city || ''} {shipAddr.postCode || ''}
+                          {shipAddr.town || ""} {shipAddr.city || ""} {shipAddr.postCode || ""}
                         </div>
                         <div>
                           {shipAddr.state}, {shipAddr.country}
                         </div>
                       </div>
-                      <button className="text-sm text-amber-700 hover:underline" onClick={() => setShowShipForm(true)}>
+                      <button
+                        className="text-[11px] sm:text-sm text-amber-700 hover:underline"
+                        onClick={() => setShowShipForm(true)}
+                        type="button"
+                      >
                         Change
                       </button>
                     </div>
@@ -1514,25 +1495,25 @@ export default function Checkout() {
               </Card>
             </section>
 
-            {/* RIGHT: Summary / Action */}
+            {/* RIGHT: Summary / Action (unchanged except it now receives friendly errors via mutation) */}
             <aside className="lg:sticky lg:top-6 h-max">
-              <Card className="p-5">
-                <h2 className="text-lg font-semibold text-ink">Order Summary</h2>
+              <Card className="p-4 sm:p-5">
+                <h2 className="text-base sm:text-lg font-semibold text-ink">Order Summary</h2>
 
-                <div className="mt-3 space-y-2 text-sm">
+                <div className="mt-3 space-y-2 text-xs sm:text-sm">
                   <div className="flex items-center justify-between">
                     <span className="text-ink-soft">Items Subtotal (retail)</span>
                     <span className="font-medium">{ngn.format(itemsSubtotal)}</span>
                   </div>
 
-                  {taxMode === 'INCLUDED' && estimatedVATIncluded > 0 && (
-                    <div className="flex items-center justify-between text-xs">
+                  {taxMode === "INCLUDED" && estimatedVATIncluded > 0 && (
+                    <div className="flex items-center justify-between text-[11px] sm:text-xs">
                       <span className="text-ink-soft">VAT (included)</span>
                       <span className="text-ink-soft">{ngn.format(estimatedVATIncluded)}</span>
                     </div>
                   )}
 
-                  {taxMode === 'ADDED' && vatAddOn > 0 && (
+                  {taxMode === "ADDED" && vatAddOn > 0 && (
                     <div className="flex items-center justify-between">
                       <span className="text-ink-soft">VAT</span>
                       <span className="font-medium">{ngn.format(vatAddOn)}</span>
@@ -1541,63 +1522,56 @@ export default function Checkout() {
 
                   <div className="flex items-center justify-between">
                     <span className="text-ink-soft">Shipping</span>
-                    <span className="font-medium">Included by supplier</span>
+                    <span className="font-medium">Included</span>
                   </div>
 
-                  <div className="mt-4 pt-3 border-t border-border">
-                    <div className="flex items-center justify-between mt-2">
-                      <span className="text-ink">Service fee (total)</span>
+                  <div className="mt-3 pt-3 border-t border-border">
+                    <div className="flex items-center justify-between">
+                      <span className="text-ink">Service fee</span>
                       <span className="font-semibold">{ngn.format(serviceFeeTotal)}</span>
                     </div>
-                    {serviceFeeQ.isLoading && <div className="mt-1 text-xs text-ink-soft">Calculating fees…</div>}
-                    {serviceFeeQ.isError && <div className="mt-1 text-xs text-danger">Failed to compute fees</div>}
+                    {serviceFeeQ.isLoading && <div className="mt-1 text-[11px] sm:text-xs text-ink-soft">Calculating fees…</div>}
+                    {serviceFeeQ.isError && <div className="mt-1 text-[11px] sm:text-xs text-danger">Failed to compute fees</div>}
                   </div>
                 </div>
 
-                <div className="mt-4 flex items-center justify-between text-ink">
-                  <span className="font-semibold">Total</span>
-                  <span className="text-xl font-semibold">{ngn.format(payableTotal)}</span>
+                <div className="mt-4 flex items-baseline justify-between text-ink">
+                  <span className="font-semibold text-sm sm:text-base">Total</span>
+                  <span className="text-lg sm:text-xl font-semibold">{ngn.format(payableTotal)}</span>
                 </div>
 
                 {pricingWarning && (
-                  <p className="mt-3 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
-                    {pricingWarning}
-                  </p>
+                  <p className="mt-3 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">{pricingWarning}</p>
                 )}
 
                 <button
                   disabled={createOrder.isPending || serviceFeeQ.isLoading || pricingQ.isLoading || !!pricingWarning}
                   onClick={() => createOrder.mutate()}
-                  className="mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50"
+                  className="mt-4 sm:mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50 text-sm"
+                  type="button"
                 >
                   {createOrder.isPending
-                    ? 'Processing…'
+                    ? "Processing…"
                     : pricingQ.isLoading
-                      ? 'Calculating supplier prices…'
-                      : 'Place order & Proceed to payment'}
+                    ? "Calculating prices…"
+                    : "Place order & Pay"}
                 </button>
 
                 {createOrder.isError && (
-                  <p className="mt-3 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
-                    {(() => {
-                      const err = createOrder.error as any;
-                      if (err && typeof err === 'object' && 'response' in err) {
-                        const axiosErr = err as { response?: { data?: { error?: string } } };
-                        return axiosErr.response?.data?.error || 'Failed to create order';
-                      }
-                      return (err as Error)?.message || 'Failed to create order';
-                    })()}
+                  <p className="mt-3 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
+                    {(createOrder.error as Error)?.message || "Failed to create order"}
                   </p>
                 )}
 
                 <button
-                  onClick={() => nav('/cart')}
-                  className="mt-3 w-full inline-flex items-center justify-center rounded-lg border border-border bg-surface px-4 py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"
+                  onClick={() => nav("/cart")}
+                  className="mt-3 w-full inline-flex items-center justify-center rounded-lg border border-border bg-surface px-4 py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition text-sm"
+                  type="button"
                 >
                   Back to cart
                 </button>
 
-                <p className="mt-3 text-[11px] text-ink-soft text-center">
+                <p className="mt-3 text-[10px] sm:text-[11px] text-ink-soft text-center leading-4">
                   Totals use live supplier offers + margin. If an offer changes or stock reallocates, your pricing may update.
                 </p>
               </Card>

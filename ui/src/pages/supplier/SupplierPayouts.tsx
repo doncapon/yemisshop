@@ -11,10 +11,22 @@ import { useAuthStore } from "../../store/auth";
 
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
 
-function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+// ✅ cookie calls helper (always send cookies)
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
+function Card({
+  children,
+  className = "",
+  header,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  header?: React.ReactNode;
+}) {
   return (
     <div className={`rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden ${className}`}>
-      {children}
+      {header ? <div className="px-4 sm:px-5 py-3 border-b bg-white/70">{header}</div> : null}
+      <div className="p-4 sm:p-5">{children}</div>
     </div>
   );
 }
@@ -68,8 +80,28 @@ function asNum(v: any, d = 0) {
   return Number.isFinite(n) ? n : d;
 }
 
+function statusPill(statusRaw: string) {
+  const s = String(statusRaw || "").toUpperCase();
+  const cls =
+    s === "PAID"
+      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+      : s === "FAILED"
+        ? "bg-rose-50 text-rose-700 border-rose-200"
+        : s === "APPROVED"
+          ? "bg-blue-50 text-blue-700 border-blue-200"
+          : s === "HELD"
+            ? "bg-zinc-50 text-zinc-700 border-zinc-200"
+            : "bg-amber-50 text-amber-700 border-amber-200";
+
+  return (
+    <span className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${cls}`}>
+      {s || "—"}
+    </span>
+  );
+}
+
 export default function SupplierPayouts() {
-  const token = useAuthStore((s) => s.token);
+  // keep role from store only for admin "view as" (no more token usage)
   const role = useAuthStore((s: any) => s.user?.role);
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
 
@@ -87,7 +119,7 @@ export default function SupplierPayouts() {
 
   const adminSupplierId = isAdmin ? (urlSupplierId ?? storedSupplierId) : undefined;
 
-  // inject stored into URL if missing
+  // inject stored into URL if missing (admin view-as)
   useEffect(() => {
     if (!isAdmin) return;
 
@@ -117,8 +149,6 @@ export default function SupplierPayouts() {
     return `${to}${sep}supplierId=${encodeURIComponent(adminSupplierId)}`;
   };
 
-  const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
-
   const ngn = useMemo(
     () =>
       new Intl.NumberFormat("en-NG", {
@@ -135,7 +165,7 @@ export default function SupplierPayouts() {
 
   async function fetchSummary(): Promise<PayoutSummaryDTO> {
     const res = await api.get("/api/supplier/payouts/summary", {
-      headers: hdr,
+      ...AXIOS_COOKIE_CFG,
       params: { supplierId: adminSupplierId }, // ✅ admin view-as supplier
     });
     return res.data?.data;
@@ -143,15 +173,18 @@ export default function SupplierPayouts() {
 
   async function fetchHistory(params: { take: number; skip: number }): Promise<PayoutHistoryDTO> {
     const res = await api.get("/api/supplier/payouts/history", {
-      headers: hdr,
+      ...AXIOS_COOKIE_CFG,
       params: { ...params, supplierId: adminSupplierId }, // ✅ admin view-as supplier
     });
     return res.data?.data;
   }
 
+  // ✅ cookie auth => no token gating
+  const enabled = !isAdmin || !!adminSupplierId;
+
   const summaryQ = useQuery({
     queryKey: ["supplier-payouts", "summary", { supplierId: adminSupplierId }],
-    enabled: !!token && (!isAdmin || !!adminSupplierId),
+    enabled,
     queryFn: fetchSummary,
     staleTime: 15_000,
     refetchOnWindowFocus: false,
@@ -160,7 +193,7 @@ export default function SupplierPayouts() {
 
   const historyQ = useQuery({
     queryKey: ["supplier-payouts", "history", { take, skip, supplierId: adminSupplierId }],
-    enabled: !!token && (!isAdmin || !!adminSupplierId),
+    enabled,
     queryFn: () => fetchHistory({ take, skip }),
     staleTime: 10_000,
     placeholderData: keepPreviousData,
@@ -202,16 +235,16 @@ export default function SupplierPayouts() {
             </motion.h1>
             <p className="mt-1 text-sm text-white/80">Track balance and payout history.</p>
 
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-4 flex flex-col sm:flex-row flex-wrap gap-2">
               <Link
                 to={withSupplierCtx("/supplier")}
-                className="inline-flex items-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95"
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full ... px-4 py-2 text-sm ..."
               >
                 Back to overview <ArrowRight size={16} />
               </Link>
               <Link
                 to={withSupplierCtx("/supplier/settings")}
-                className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/15"
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-full ... px-4 py-2 text-sm ..."
               >
                 Update payout details <ArrowRight size={16} />
               </Link>
@@ -237,91 +270,124 @@ export default function SupplierPayouts() {
           </div>
         </div>
 
-        {/* Summary */}
+        {/* Summary (mobile: stacked; desktop: 3 cols) */}
         <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Card className="lg:col-span-1">
-            <div className="p-5 flex items-start gap-3">
-              <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
-                <CircleDollarSign size={18} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-xs text-zinc-500">Available balance</div>
-                <div className="text-xl font-semibold text-zinc-900">
-                  {summary ? ngn.format(availableBalance) : "—"}
+          <Card
+            className="lg:col-span-1"
+            header={
+              <div className="flex items-center gap-3">
+                <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
+                  <CircleDollarSign size={18} />
                 </div>
-
-                <div className="text-[11px] text-zinc-500 mt-1 space-y-1">
-                  {summary ? (
-                    <>
-                      <div>
-                        Credits: {ngn.format(credits)} • Debits: {ngn.format(debits)}
-                      </div>
-                      <div>
-                        Pending: {ngn.format(pending)} • Approved: {ngn.format(approved)} • Held:{" "}
-                        {ngn.format(held)} • Paid: {ngn.format(paidOut)} • Failed: {ngn.format(failed)}
-                      </div>
-
-                      {outstandingDebt > 0 && (
-                        <div className="text-rose-700">Outstanding debt: {ngn.format(outstandingDebt)}</div>
-                      )}
-                    </>
-                  ) : (
-                    "—"
-                  )}
+                <div className="min-w-0">
+                  <div className="text-xs text-zinc-500">Available balance</div>
+                  <div className="text-xl font-semibold text-zinc-900">
+                    {summary ? ngn.format(availableBalance) : "—"}
+                  </div>
                 </div>
               </div>
+            }
+          >
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-[11px] text-zinc-500">Credits</div>
+                  <div className="font-semibold text-zinc-900">{summary ? ngn.format(credits) : "—"}</div>
+                </div>
+                <div className="rounded-xl border bg-white p-3">
+                  <div className="text-[11px] text-zinc-500">Debits</div>
+                  <div className="font-semibold text-zinc-900">{summary ? ngn.format(debits) : "—"}</div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
+                <div className="rounded-xl border bg-zinc-50 p-3">
+                  <div className="text-zinc-500">Pending</div>
+                  <div className="font-semibold text-zinc-900">{ngn.format(pending)}</div>
+                </div>
+                <div className="rounded-xl border bg-zinc-50 p-3">
+                  <div className="text-zinc-500">Approved</div>
+                  <div className="font-semibold text-zinc-900">{ngn.format(approved)}</div>
+                </div>
+                <div className="rounded-xl border bg-zinc-50 p-3">
+                  <div className="text-zinc-500">Held</div>
+                  <div className="font-semibold text-zinc-900">{ngn.format(held)}</div>
+                </div>
+                <div className="rounded-xl border bg-zinc-50 p-3">
+                  <div className="text-zinc-500">Paid</div>
+                  <div className="font-semibold text-zinc-900">{ngn.format(paidOut)}</div>
+                </div>
+                <div className="rounded-xl border bg-zinc-50 p-3">
+                  <div className="text-zinc-500">Failed</div>
+                  <div className="font-semibold text-zinc-900">{ngn.format(failed)}</div>
+                </div>
+              </div>
+
+              {outstandingDebt > 0 && (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
+                  Outstanding debt: <b>{ngn.format(outstandingDebt)}</b>
+                </div>
+              )}
             </div>
           </Card>
 
-          <Card className="lg:col-span-2">
-            <div className="p-5 flex items-start gap-3">
-              <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
-                <CreditCard size={18} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-sm font-semibold text-zinc-900">Payout schedule</div>
-                <div className="text-sm text-zinc-600">
-                  {summary?.scheduleNote?.trim()
-                    ? summary.scheduleNote
-                    : "Credits come from allocations marked PAID (released). Debits come from refunds/withdrawals recorded in SupplierLedgerEntry. availableBalance = max(0, credits - debits)."}
+          <Card
+            className="lg:col-span-2"
+            header={
+              <div className="flex items-center gap-3">
+                <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
+                  <CreditCard size={18} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-zinc-900">Payout schedule</div>
+                  <div className="text-xs text-zinc-500">How your credits/debits affect your balance</div>
                 </div>
               </div>
+            }
+          >
+            <div className="text-sm text-zinc-600 leading-relaxed">
+              {summary?.scheduleNote?.trim()
+                ? summary.scheduleNote
+                : "Credits come from allocations marked PAID (released). Debits come from refunds/withdrawals recorded in SupplierLedgerEntry. availableBalance = max(0, credits - debits)."}
             </div>
           </Card>
         </div>
 
         {/* History */}
         <div className="mt-4">
-          <Card>
-            <div className="px-5 py-4 border-b bg-white/70 flex items-center justify-between gap-3">
+          <div className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden">
+            <div className="px-4 sm:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-zinc-900">Payout history</div>
                 <div className="text-xs text-zinc-500">{historyQ.isLoading ? "Loading…" : "Supplier allocations"}</div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="grid grid-cols-3 gap-2 w-full sm:w-auto">
                 <button
                   disabled={!canPrev || historyQ.isFetching}
                   onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  className="text-xs px-3 py-2 rounded-xl border bg-white disabled:opacity-50"
+                  className="w-full text-[11px] px-2 py-2 rounded-full border bg-white disabled:opacity-50"
                 >
                   Prev
                 </button>
+
                 <button
                   disabled={!canNext || historyQ.isFetching}
                   onClick={() => setPage((p) => p + 1)}
-                  className="text-xs px-3 py-2 rounded-xl border bg-white disabled:opacity-50"
+                  className="w-full text-[11px] px-2 py-2 rounded-full border bg-white disabled:opacity-50"
                 >
                   Next
                 </button>
+
                 <button
                   onClick={() => historyQ.refetch()}
                   disabled={historyQ.isFetching}
-                  className="text-xs px-3 py-2 rounded-xl border bg-white disabled:opacity-50"
+                  className="w-full text-[11px] px-2 py-2 rounded-full border bg-white disabled:opacity-50"
                 >
                   Refresh
                 </button>
               </div>
+
             </div>
 
             {historyQ.isError && (
@@ -333,7 +399,44 @@ export default function SupplierPayouts() {
               </div>
             )}
 
-            <div className="p-5 overflow-auto">
+            {/* ✅ Mobile list */}
+            <div className="sm:hidden p-4 space-y-3">
+              {!historyQ.isLoading && rows.length === 0 && (
+                <div className="rounded-2xl border bg-zinc-50 p-4 text-sm text-zinc-600">No payout records yet.</div>
+              )}
+
+              {rows.map((x) => (
+                <div key={x.id} className="rounded-2xl border bg-white p-4 space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-xs text-zinc-500">{formatISODate(x.date)}</div>
+                      <div className="text-sm font-semibold text-zinc-900 truncate">{x.reference}</div>
+                    </div>
+                    {statusPill(x.status)}
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-zinc-500">Amount</div>
+                    <div className="text-sm font-semibold text-zinc-900">{ngn.format(asNum(x.amount, 0))}</div>
+                  </div>
+
+                  <div className="pt-1">
+                    <div className="text-xs text-zinc-500 mb-1">Order</div>
+                    <Link
+                      to={withSupplierCtx(`/supplier/orders?q=${encodeURIComponent(x.orderId)}`)}
+                      className="font-mono text-xs underline break-all"
+                    >
+                      {x.orderId}
+                    </Link>
+                  </div>
+                </div>
+              ))}
+
+              {historyQ.isFetching && <div className="text-xs text-zinc-500">Updating…</div>}
+            </div>
+
+            {/* ✅ Desktop table */}
+            <div className="hidden sm:block p-5 overflow-auto">
               <table className="min-w-[720px] w-full text-sm">
                 <thead>
                   <tr className="text-xs text-zinc-500">
@@ -360,29 +463,16 @@ export default function SupplierPayouts() {
                       <td className="py-3 font-semibold">{x.reference}</td>
 
                       <td className="py-3">
-                        <Link to={withSupplierCtx(`/supplier/orders?q=${encodeURIComponent(x.orderId)}`)} className="font-mono text-xs underline">
+                        <Link
+                          to={withSupplierCtx(`/supplier/orders?q=${encodeURIComponent(x.orderId)}`)}
+                          className="font-mono text-xs underline"
+                        >
                           {x.orderId}
                         </Link>
                       </td>
 
                       <td className="py-3">{ngn.format(asNum(x.amount, 0))}</td>
-                      <td className="py-3">
-                        <span
-                          className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${
-                            String(x.status).toUpperCase() === "PAID"
-                              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                              : String(x.status).toUpperCase() === "FAILED"
-                              ? "bg-rose-50 text-rose-700 border-rose-200"
-                              : String(x.status).toUpperCase() === "APPROVED"
-                              ? "bg-blue-50 text-blue-700 border-blue-200"
-                              : String(x.status).toUpperCase() === "HELD"
-                              ? "bg-zinc-50 text-zinc-700 border-zinc-200"
-                              : "bg-amber-50 text-amber-700 border-amber-200"
-                          }`}
-                        >
-                          {String(x.status)}
-                        </span>
-                      </td>
+                      <td className="py-3">{statusPill(x.status)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -390,7 +480,7 @@ export default function SupplierPayouts() {
 
               {historyQ.isFetching && <div className="mt-3 text-xs text-zinc-500">Updating…</div>}
             </div>
-          </Card>
+          </div>
         </div>
       </SupplierLayout>
     </SiteLayout>

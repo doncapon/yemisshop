@@ -10,7 +10,7 @@ type Props = {
 };
 
 export default function PhoneOtpCard({ email, onVerified }: Props) {
-  const token = useAuthStore((s) => s.token);
+  const isAuthed = useAuthStore((s) => !!s.user);
   const [otp, setOtp] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -32,7 +32,11 @@ export default function PhoneOtpCard({ email, onVerified }: Props) {
     try {
       setLoading(true);
       // This endpoint in your API takes { email, otp } and is PUBLIC.
-      await api.post('/api/auth/verify-phone', { email: email.toLowerCase(), otp: code });
+      await api.post(
+        '/api/auth/verify-phone',
+        { email: email.toLowerCase(), otp: code },
+        { withCredentials: true }
+      );
       setMsg('Phone verified!');
       setOtp('');
       onVerified?.();
@@ -44,15 +48,17 @@ export default function PhoneOtpCard({ email, onVerified }: Props) {
   };
 
   const resend = async () => {
-    if (!token || resending || cooldown > 0) return;
+    if (!isAuthed || resending || cooldown > 0) return;
     setResending(true);
     setErr(null);
     setMsg(null);
     try {
-      // Auth-required resend endpoint (uses req.user.id)
-      const { data } = await api.post('/api/auth/resend-otp', {}, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      // Auth-required resend endpoint (cookie session; uses req.user.id)
+      const { data } = await api.post(
+        '/api/auth/resend-otp',
+        {},
+        { withCredentials: true }
+      );
       setCooldown(Math.max(0, Number(data?.nextResendAfterSec ?? 60)));
       setMsg('Code sent. Check your phone.');
     } catch (e: any) {
@@ -132,14 +138,14 @@ export default function PhoneOtpCard({ email, onVerified }: Props) {
           <button
             type="button"
             onClick={resend}
-            disabled={!token || resending || cooldown > 0}
+            disabled={!isAuthed || resending || cooldown > 0}
             className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm hover:bg-black/5 disabled:opacity-50"
-            title={!token ? 'Login first to resend' : 'Resend code'}
+            title={!isAuthed ? 'Login first to resend' : 'Resend code'}
           >
             <RefreshCcw size={16} className={resending ? 'animate-spin' : ''} />
             Resend code
           </button>
-          {!token && <span className="text-xs text-ink-soft">Login to resend a new code.</span>}
+          {!isAuthed && <span className="text-xs text-ink-soft">Login to resend a new code.</span>}
         </div>
       </form>
     </div>

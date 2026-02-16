@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
-import { useAuthStore } from '../store/auth';
 import { useQuery } from '@tanstack/react-query';
 import SiteLayout from '../layouts/SiteLayout';
 
-type VerifyResp = { ok?: boolean; status?: 'PAID' | 'PENDING' | 'FAILED' | 'CANCELED' | 'REFUNDED'; message?: string; };
+type VerifyResp = {
+  ok?: boolean;
+  status?: 'PAID' | 'PENDING' | 'FAILED' | 'CANCELED' | 'REFUNDED';
+  message?: string;
+};
 type StatusResp = { status: 'PAID' | 'PENDING' | 'FAILED' | 'CANCELED' | 'REFUNDED' };
 
 const POLL_INTERVAL_MS = 4000;
@@ -14,7 +17,6 @@ const POLL_MAX_ATTEMPTS = 15;
 export default function PaymentCallback() {
   const nav = useNavigate();
   const loc = useLocation();
-  const token = useAuthStore((s) => s.token);
 
   const [phase, setPhase] = useState<'loading' | 'pending' | 'success' | 'error'>('loading');
   const [msg, setMsg] = useState('Verifying your payment…');
@@ -27,21 +29,25 @@ export default function PaymentCallback() {
   const reference = params.get('reference') || '';
   const gateway = (params.get('gateway') || '').toLowerCase(); // 'paystack' for hosted card flow
 
-  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  // ✅ cookie auth: always send cookies
+  const axiosCookie = { withCredentials: true as const };
 
   const meQ = useQuery({
     queryKey: ['me-min'],
-    enabled: !!token,
-    queryFn: async () => (await api.get('/api/profile/me', { headers: { Authorization: `Bearer ${token}` } })).data as { role: string },
+    enabled: true, // cookie-based session; if not logged in, endpoint should 401
+    queryFn: async () =>
+      (await api.get('/api/profile/me', axiosCookie)).data as { role: string },
     staleTime: 60_000,
+    retry: false,
   });
+
   const isAdmin = ['ADMIN', 'SUPER_ADMIN'].includes((meQ.data?.role || '').toUpperCase());
 
   const checkStatus = async () => {
     try {
       const { data } = await api.get<StatusResp>('/api/payments/status', {
         params: { orderId, reference },
-        headers,
+        withCredentials: true,
       });
 
       if (data.status === 'PAID') {
@@ -57,7 +63,6 @@ export default function PaymentCallback() {
         return;
       }
 
-      // still pending
       setPhase('pending');
       setMsg('Waiting for confirmation from the payment processor…');
     } catch (e: any) {
@@ -68,15 +73,13 @@ export default function PaymentCallback() {
 
   const verifyOnceIfCard = async () => {
     // Only try gateway verify for hosted Paystack card flows
+    if (gateway !== 'paystack') return;
 
-    if (gateway !== 'paystack') {
-      return;
-    }
     try {
       const { data } = await api.post<VerifyResp>(
         '/api/payments/verify',
         { orderId, reference },
-        { headers }
+        { withCredentials: true },
       );
 
       if (data.status === 'PAID') {
@@ -91,10 +94,9 @@ export default function PaymentCallback() {
         return;
       }
 
-      // pending → fall through to status polling
       setPhase('pending');
       setMsg(data.message || 'Waiting for confirmation from the payment processor…');
-    } catch (e: any) {
+    } catch {
       // If verify fails (network, etc.), just poll status — webhook can still flip it.
       setPhase('pending');
       setMsg('Awaiting confirmation…');
@@ -148,57 +150,63 @@ export default function PaymentCallback() {
     await checkStatus();
   };
 
+  const phaseTitle =
+    phase === 'loading'
+      ? 'Verifying payment'
+      : phase === 'pending'
+      ? 'Awaiting confirmation'
+      : phase === 'success'
+      ? 'Payment confirmed'
+      : 'Payment not verified';
+
   return (
     <SiteLayout>
-      <div className="max-w-4xl mx-auto px-4 md:px-8 py-8">
-
-        {
-          phase === 'success' && (
-            <>
-              {isAdmin && orderId && (
-
-                <button
-                  className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
-                  onClick={async () => {
-                    try {
-                      const res = await api.post(`/api/admin/orders/${orderId}/notify-suppliers`, {}, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
-                      alert('Notifications (re)triggered.');
-                    } catch (e: any) {
-                      alert(e?.response?.data?.error || 'Could not notify suppliers.');
-                    }
-                  }}
-                >
-                  Notify suppliers
-                </button>
-              )}
-
+      <div className="mx-auto max-w-2xl px-4 sm:px-6 py-6 sm:py-8">
+        {/* ✅ Top actions (mobile: stacked, desktop: inline) */}
+        {phase === 'success' && (
+          <div className="mb-4 flex flex-col sm:flex-row sm:items-center gap-2">
+            {isAdmin && orderId && (
               <button
-                className="inline-flex items-center justify-center rounded-xl bg-emerald-600 text-white px-4 py-2 hover:bg-emerald-700"
-                onClick={() => nav('/orders')}
+                className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2.5 text-sm hover:bg-black/5"
+                onClick={async () => {
+                  try {
+                    await api.post(`/api/admin/orders/${orderId}/notify-suppliers`, {}, { withCredentials: true });
+                    alert('Notifications (re)triggered.');
+                  } catch (e: any) {
+                    alert(e?.response?.data?.error || 'Could not notify suppliers.');
+                  }
+                }}
               >
-                Go to orders
+                Notify suppliers
               </button>
-            </>
-          )
-        }
+            )}
 
-        {/* Hero: matches dashboard header vibe */}
+            <button
+              className="inline-flex items-center justify-center rounded-xl bg-emerald-600 text-white px-4 py-2.5 text-sm hover:bg-emerald-700"
+              onClick={() => nav('/orders')}
+            >
+              Go to orders
+            </button>
+          </div>
+        )}
+
+        {/* Hero */}
         <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-sky-700 via-sky-600 to-indigo-700 text-white">
           <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(255,255,255,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,0,0,0.15),transparent_60%)]" />
-          <div className="relative px-5 md:px-8 py-6">
-            <div className="flex items-center justify-between">
+          <div className="relative px-4 sm:px-6 py-5">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
               <div>
-                <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
-                  Payment Status
-                </h1>
-                <p className="text-white/80 text-sm mt-1">
+                <h1 className="text-xl sm:text-3xl font-bold tracking-tight">Payment Status</h1>
+                <p className="text-white/85 text-xs sm:text-sm mt-1 leading-snug">
                   We’re verifying your transaction and will update this page automatically.
                 </p>
               </div>
+
+              {/* ✅ show reference on mobile too, but compact */}
               {reference && (
-                <div className="hidden md:block text-right">
-                  <div className="text-xs text-white/80">Reference</div>
-                  <div className="text-sm font-semibold">{reference}</div>
+                <div className="rounded-xl border border-white/20 bg-white/10 px-3 py-2">
+                  <div className="text-[10px] text-white/80">Reference</div>
+                  <div className="text-sm font-semibold break-all leading-snug">{reference}</div>
                 </div>
               )}
             </div>
@@ -206,50 +214,60 @@ export default function PaymentCallback() {
         </div>
 
         {/* Content card */}
-        <div className="mt-6 rounded-2xl border bg-white shadow-sm">
-          <div className="px-4 md:px-6 py-4 border-b flex items-center justify-between">
-            <div className="flex items-center gap-3">
+        <div className="mt-4 sm:mt-6 rounded-2xl border bg-white shadow-sm">
+          <div className="px-4 sm:px-6 py-4 border-b flex items-start sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-3">
               <StatusBadge phase={phase} />
               <div>
-                <div className="text-ink font-semibold">
-                  {phase === 'loading' && 'Verifying payment'}
-                  {phase === 'pending' && 'Awaiting confirmation'}
-                  {phase === 'success' && 'Payment confirmed'}
-                  {phase === 'error' && 'Payment not verified'}
-                </div>
-                <div className="text-xs text-ink-soft">
-                  {orderId ? <>Order: <span className="font-mono">{orderId}</span></> : 'No order id provided'}
+                <div className="text-ink font-semibold leading-tight">{phaseTitle}</div>
+                <div className="text-[11px] sm:text-xs text-ink-soft mt-0.5">
+                  {orderId ? (
+                    <>
+                      Order: <span className="font-mono break-all">{orderId}</span>
+                    </>
+                  ) : (
+                    'No order id provided'
+                  )}
                 </div>
               </div>
             </div>
 
             {(phase === 'pending' || phase === 'loading') && (
-              <div className="text-xs text-ink-soft">
+              <div className="text-[11px] sm:text-xs text-ink-soft text-right">
                 {phase === 'pending' ? `Attempts left: ${remaining}` : 'Please wait…'}
               </div>
             )}
           </div>
 
-          <div className="p-4 md:p-6">
-            <p className="text-sm text-ink">{msg}</p>
+          <div className="p-4 sm:p-6">
+            <p className="text-sm text-ink leading-relaxed">{msg}</p>
 
-            {/* Actions */}
-            <div className="mt-5 flex flex-wrap gap-3">
+            {/* Actions - ✅ mobile: 2-col grid where possible */}
+            <div className="mt-5">
               {phase === 'pending' && (
                 <>
-                  <button
-                    className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
-                    onClick={tryAgainNow}
-                  >
-                    Try again now
-                  </button>
-                  <button
-                    className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
-                    onClick={() => nav('/orders')}
-                  >
-                    View orders
-                  </button>
-                  <p className="text-xs text-ink-soft mt-1 w-full">
+                  <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:gap-3">
+                    <button
+                      className="col-span-2 sm:col-auto inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2.5 text-sm hover:bg-black/5"
+                      onClick={tryAgainNow}
+                    >
+                      Try again now
+                    </button>
+                    <button
+                      className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2.5 text-sm hover:bg-black/5"
+                      onClick={() => nav('/orders')}
+                    >
+                      View orders
+                    </button>
+                    <button
+                      className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2.5 text-sm hover:bg-black/5"
+                      onClick={() => nav('/cart')}
+                    >
+                      Back to cart
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-ink-soft mt-3 leading-snug">
                     Tip: If your bank app shows the transfer as successful, it may take a moment for us to receive confirmation.
                   </p>
                 </>
@@ -260,50 +278,53 @@ export default function PaymentCallback() {
               )}
 
               {phase === 'success' && (
-                <>
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:gap-3">
                   <button
-                    className="inline-flex items-center justify-center rounded-xl bg-emerald-600 text-white px-4 py-2 hover:bg-emerald-700"
+                    className="col-span-2 sm:col-auto inline-flex items-center justify-center rounded-xl bg-emerald-600 text-white px-4 py-2.5 text-sm hover:bg-emerald-700"
                     onClick={() => nav('/orders')}
                   >
                     Go to orders
                   </button>
                   <button
-                    className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                    className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2.5 text-sm hover:bg-black/5"
                     onClick={() => nav('/')}
                   >
                     Continue shopping
                   </button>
-                </>
+                </div>
               )}
 
               {phase === 'error' && (
                 <>
-                  <button
-                    className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
-                    onClick={tryAgainNow}
-                  >
-                    Try again
-                  </button>
-                  <button
-                    className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
-                    onClick={() => nav('/orders')}
-                  >
-                    View orders
-                  </button>
-                  <button
-                    className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
-                    onClick={() => nav('/cart')}
-                  >
-                    Back to cart
-                  </button>
-                  <p className="text-xs text-ink-soft mt-1 w-full">
+                  <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:gap-3">
+                    <button
+                      className="col-span-2 sm:col-auto inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2.5 text-sm hover:bg-black/5"
+                      onClick={tryAgainNow}
+                    >
+                      Try again
+                    </button>
+                    <button
+                      className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2.5 text-sm hover:bg-black/5"
+                      onClick={() => nav('/orders')}
+                    >
+                      View orders
+                    </button>
+                    <button
+                      className="inline-flex items-center justify-center rounded-xl border bg-white px-4 py-2.5 text-sm hover:bg-black/5"
+                      onClick={() => nav('/cart')}
+                    >
+                      Back to cart
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-ink-soft mt-3 leading-snug">
                     If you paid by bank transfer, please give it a minute. If it still doesn’t reflect, keep your reference handy and contact support.
                   </p>
                 </>
               )}
             </div>
 
-            {/* Sub-info grid */}
+            {/* Sub-info grid - ✅ mobile: 1 column */}
             <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
               <InfoTile label="Order ID" value={orderId || '—'} />
               <InfoTile label="Reference" value={reference || '—'} />
@@ -319,14 +340,23 @@ export default function PaymentCallback() {
   );
 }
 
-/* ---------- tiny presentational helpers (reused across dashboard pages) ---------- */
+/* ---------- tiny presentational helpers ---------- */
 
 function StatusBadge({ phase }: { phase: 'loading' | 'pending' | 'success' | 'error' }) {
   let label = 'Loading';
   let cls = 'bg-zinc-500/10 text-zinc-700 border-zinc-600/20';
-  if (phase === 'pending') { label = 'Pending'; cls = 'bg-amber-500/10 text-amber-700 border-amber-600/20'; }
-  if (phase === 'success') { label = 'Paid'; cls = 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20'; }
-  if (phase === 'error') { label = 'Failed'; cls = 'bg-rose-500/10 text-rose-700 border-rose-600/20'; }
+  if (phase === 'pending') {
+    label = 'Pending';
+    cls = 'bg-amber-500/10 text-amber-700 border-amber-600/20';
+  }
+  if (phase === 'success') {
+    label = 'Paid';
+    cls = 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20';
+  }
+  if (phase === 'error') {
+    label = 'Failed';
+    cls = 'bg-rose-500/10 text-rose-700 border-rose-600/20';
+  }
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${cls}`}>
       {label}

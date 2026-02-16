@@ -164,22 +164,32 @@ function canSupplierAct(status?: RefundStatus | string | null) {
   return s === "REQUESTED" || s === "SUPPLIER_REVIEW";
 }
 
-function EvidenceThumbs({ urls, max = 3 }: { urls: string[]; max?: number }) {
+function EvidenceThumbs({ urls, max = 3, size = 9 }: { urls: string[]; max?: number; size?: number }) {
   if (!urls.length) return <span className="text-xs text-zinc-400">—</span>;
 
   const shown = urls.slice(0, max);
   const rest = urls.length - shown.length;
 
+  // size: tailwind h/w scale (9 => 36px)
+  const cls = `h-${size} w-${size}`;
+
   return (
-    <div className="inline-flex items-center gap-2 justify-end">
+    <div className="inline-flex items-center gap-2">
       <div className="flex items-center gap-2">
         {shown.map((u) => (
-          <a key={u} href={u} target="_blank" rel="noreferrer" className="group inline-flex items-center" title="Open image">
+          <a
+            key={u}
+            href={u}
+            target="_blank"
+            rel="noreferrer"
+            className="group inline-flex items-center"
+            title="Open evidence"
+          >
             <img
               src={u}
               alt="Evidence"
               loading="lazy"
-              className="h-9 w-9 rounded-lg border object-cover group-hover:opacity-90"
+              className={`${cls} rounded-lg border object-cover group-hover:opacity-90`}
               onError={(e) => {
                 (e.currentTarget as HTMLImageElement).style.display = "none";
               }}
@@ -206,11 +216,9 @@ export default function SupplierRefunds() {
   const toast = useToast();
   const navigate = useNavigate();
 
-  const token = useAuthStore((s) => s.token);
+  // ✅ cookie-based auth: do NOT use token headers; rely on HttpOnly cookies (withCredentials)
   const role = useAuthStore((s: any) => s.user?.role);
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
-
-  const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
 
   const { refundId } = useParams<{ refundId?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -238,6 +246,7 @@ export default function SupplierRefunds() {
       return;
     }
 
+    // ✅ if admin has a stored supplierId, force it into the URL immediately (so refunds load on launch)
     if (fromStore) {
       setSearchParams(
         (prev) => {
@@ -327,7 +336,7 @@ export default function SupplierRefunds() {
 
   async function fetchRefunds(params: { q?: string; status?: string; take: number; skip: number }) {
     const { data } = await api.get("/api/supplier/refunds", {
-      headers: hdr,
+      withCredentials: true, // ✅ cookie auth
       params: {
         ...params,
         supplierId: adminSupplierId, // ✅ admin view-as supplier
@@ -341,7 +350,7 @@ export default function SupplierRefunds() {
 
   async function refundAction(id: string, body: { action: "ACCEPT" | "REJECT" | "ESCALATE"; note?: string }) {
     const { data } = await api.post(`/api/supplier/refunds/${encodeURIComponent(id)}/action`, body, {
-      headers: hdr,
+      withCredentials: true, // ✅ cookie auth
       params: { supplierId: adminSupplierId }, // ✅ admin view-as supplier
     });
     return (data as any)?.data ?? data;
@@ -349,7 +358,8 @@ export default function SupplierRefunds() {
 
   const refundsQ = useQuery({
     queryKey: ["supplier", "refunds", { q, status, supplierId: adminSupplierId }],
-    enabled: !!token && (!isAdmin || !!adminSupplierId),
+    // ✅ show on launch: cookie sessions may not store a token; only block admin view until supplierId is known
+    enabled: !isAdmin || !!adminSupplierId,
     queryFn: async () =>
       fetchRefunds({
         q: q || undefined,
@@ -359,6 +369,7 @@ export default function SupplierRefunds() {
       }),
     staleTime: 20_000,
     refetchOnWindowFocus: false,
+    refetchOnMount: "always", // ✅ ensures it fetches when you land on the page
     retry: 1,
   });
 
@@ -396,8 +407,7 @@ export default function SupplierRefunds() {
     let noteVal = "";
     const evidenceUrls = getEvidenceUrls(r);
 
-    const title =
-      action === "ACCEPT" ? "Accept refund?" : action === "REJECT" ? "Reject refund?" : "Escalate to admin?";
+    const title = action === "ACCEPT" ? "Accept refund?" : action === "REJECT" ? "Reject refund?" : "Escalate to admin?";
 
     const icon =
       action === "ACCEPT" ? (
@@ -419,7 +429,8 @@ export default function SupplierRefunds() {
                 Refund <b>{(r as any).id}</b> • Order <b>{(r as any).orderId}</b> • PO <b>{(r as any).purchaseOrderId}</b>
               </div>
               <div className="text-xs text-zinc-500 mt-1">
-                Status: <StatusPill status={(r as any).status} /> • Total: <b>{ngn.format(normMoney((r as any).totalAmount))}</b>
+                Status: <StatusPill status={(r as any).status} /> • Total:{" "}
+                <b>{ngn.format(normMoney((r as any).totalAmount))}</b>
               </div>
             </div>
           </div>
@@ -497,51 +508,183 @@ export default function SupplierRefunds() {
 
   const viewingRefundId = (refundId ?? "").trim();
 
+  const RefundCard = ({ r }: { r: SupplierRefundRow }) => {
+    const canAct = canSupplierAct((r as any).status);
+    const evidenceUrls = getEvidenceUrls(r);
+    const isMatch = viewingRefundId && String((r as any).id) === viewingRefundId;
+
+    return (
+      <div className={`rounded-2xl border bg-white p-4 shadow-sm ${isMatch ? "border-indigo-300 bg-indigo-50/40" : ""}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="font-semibold text-zinc-900 truncate">{(r as any).id}</div>
+              <StatusPill status={(r as any).status} />
+            </div>
+            <div className="text-xs text-zinc-500 mt-1 line-clamp-2">{(r as any).reason || "—"}</div>
+          </div>
+
+          <div className="text-right shrink-0">
+            <div className="font-semibold text-zinc-900">{ngn.format(normMoney((r as any).totalAmount))}</div>
+            <div className="text-[11px] text-zinc-500">{fmtDate((r as any).requestedAt || (r as any).createdAt)}</div>
+          </div>
+        </div>
+
+        <div className="mt-3 grid grid-cols-1 gap-2 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-zinc-500">Requested by</span>
+            <span className="text-xs text-zinc-900 truncate">{getRequestorName(r)}</span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-zinc-500">Order</span>
+            {r.orderId ? (
+              <Link
+                to={orderHref(r.orderId)}
+                className="text-xs font-semibold text-indigo-700 hover:underline truncate"
+                title="Open order"
+              >
+                {r.orderId}
+              </Link>
+            ) : (
+              <span className="text-xs text-zinc-700">—</span>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-zinc-500">PO</span>
+            <span className="text-xs text-zinc-800 truncate">{(r as any).purchaseOrderId || "—"}</span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-zinc-500">Provider</span>
+            <span className="text-xs text-zinc-800 truncate">
+              {(r as any).provider || "—"}{" "}
+              <span className="text-[11px] text-zinc-500">
+                {(r as any).providerReference || (r as any).providerStatus ? `• ${(r as any).providerReference || (r as any).providerStatus}` : ""}
+              </span>
+            </span>
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-zinc-500 inline-flex items-center gap-1">
+              <ImageIcon size={14} /> Evidence
+            </span>
+            <EvidenceThumbs urls={evidenceUrls} max={3} size={9} />
+          </div>
+        </div>
+
+        <div className="mt-3">
+          {isAdmin ? (
+            <div className="text-[11px] text-zinc-500">Admin view (read-only)</div>
+          ) : (
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                disabled={!canAct || actM.isPending}
+                onClick={() => openActionModal(r, "ACCEPT")}
+                className="w-full px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
+              >
+                Accept
+              </button>
+              <button
+                type="button"
+                disabled={!canAct || actM.isPending}
+                onClick={() => openActionModal(r, "REJECT")}
+                className="w-full px-3 py-2 rounded-xl bg-rose-600 text-white text-sm font-semibold hover:bg-rose-700 disabled:opacity-50"
+              >
+                Reject
+              </button>
+              <button
+                type="button"
+                disabled={!canAct || actM.isPending}
+                onClick={() => openActionModal(r, "ESCALATE")}
+                className="w-full px-3 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50"
+              >
+                Escalate
+              </button>
+            </div>
+          )}
+        </div>
+
+        {(r as any).supplierNote ? (
+          <div className="mt-3 rounded-xl border bg-white/60 px-3 py-2">
+            <div className="text-[11px] text-zinc-500">Supplier note</div>
+            <div className="text-sm text-zinc-800 mt-0.5 line-clamp-3">{(r as any).supplierNote}</div>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <SiteLayout>
       <SupplierLayout>
         <div className="mt-6">
-          <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="flex items-start justify-between gap-3">
-            <div>
+          {/* Header (mobile-first) */}
+          <motion.div
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3"
+          >
+            <div className="min-w-0">
               <h1 className="text-2xl font-bold text-zinc-900 flex items-center gap-2">
                 <ClipboardList size={20} /> Refunds
               </h1>
-              <p className="text-sm text-zinc-600 mt-1">Accept, reject, or escalate refunds tied to this supplier’s purchase orders.</p>
-              <div className="text-xs text-zinc-500 mt-1">
-                Pending actions: <b>{totals.pending}</b> • Total requested: <b>{ngn.format(totals.total)}</b>
+              <p className="text-sm text-zinc-600 mt-1">
+                Accept, reject, or escalate refunds tied to this supplier’s purchase orders.
+              </p>
+
+              <div className="mt-2 flex flex-wrap gap-2">
+                <span className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1 text-xs text-zinc-700">
+                  Pending: <b>{totals.pending}</b>
+                </span>
+                <span className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1 text-xs text-zinc-700">
+                  Total requested: <b>{ngn.format(totals.total)}</b>
+                </span>
+                <span className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-1 text-xs text-zinc-700">
+                  Rows: <b>{refundsQ.isFetching ? "…" : rows.length}</b>
+                </span>
               </div>
 
               {isAdmin && !adminSupplierId ? (
-                <div className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+                <div className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
                   Select a supplier first (Supplier Dashboard) or add <b>?supplierId=...</b> to the URL.
                 </div>
               ) : null}
 
               {viewingRefundId ? (
-                <div className="mt-2 inline-flex items-center gap-2 rounded-full border bg-indigo-50 px-3 py-1 text-xs text-indigo-700">
+                <div className="mt-3 inline-flex items-center gap-2 rounded-full border bg-indigo-50 px-3 py-1 text-xs text-indigo-700">
                   Viewing refund: <b className="font-semibold">{viewingRefundId}</b>
-                  <button type="button" className="ml-2 underline" onClick={() => navigate(withSupplierCtx("/supplier/refunds"), { replace: true })}>
+                  <button
+                    type="button"
+                    className="ml-2 underline"
+                    onClick={() => navigate(withSupplierCtx("/supplier/refunds"), { replace: true })}
+                  >
                     Clear
                   </button>
                 </div>
               ) : null}
             </div>
 
-            <button
-              onClick={() => refundsQ.refetch()}
-              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm hover:bg-black/5"
-            >
-              <RefreshCcw size={16} /> Refresh
-            </button>
+            <div className="flex gap-2 sm:justify-end">
+              <button
+                onClick={() => refundsQ.refetch()}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm hover:bg-black/5 w-full sm:w-auto"
+              >
+                <RefreshCcw size={16} /> Refresh
+              </button>
+            </div>
           </motion.div>
 
-          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* Filters */}
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
             <div className="relative">
               <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
               <input
                 value={q}
                 onChange={(e) => onChangeQ(e.target.value)}
-                placeholder="Search by refund / order / PO / reference…"
+                placeholder="Search refund / order / PO / reference…"
                 className="w-full pl-9 pr-3 py-2 rounded-xl border bg-white"
                 disabled={isAdmin && !adminSupplierId}
               />
@@ -570,7 +713,39 @@ export default function SupplierRefunds() {
             </div>
           </div>
 
-          <div className="mt-4 rounded-2xl border bg-white shadow-sm overflow-x-auto">
+          {/* ✅ Mobile cards */}
+          <div className="mt-4 space-y-3 md:hidden">
+            {refundsQ.isLoading ? (
+              <>
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="rounded-2xl border bg-white p-4 shadow-sm animate-pulse">
+                    <div className="h-4 w-1/2 bg-zinc-200 rounded" />
+                    <div className="mt-3 h-3 w-2/3 bg-zinc-200 rounded" />
+                    <div className="mt-4 grid grid-cols-2 gap-2">
+                      <div className="h-10 bg-zinc-200 rounded-xl" />
+                      <div className="h-10 bg-zinc-200 rounded-xl" />
+                    </div>
+                  </div>
+                ))}
+              </>
+            ) : refundsQ.isError ? (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+                Failed to load refunds.{" "}
+                <button className="underline" onClick={() => refundsQ.refetch()}>
+                  Retry
+                </button>
+              </div>
+            ) : rows.length === 0 ? (
+              <div className="rounded-2xl border bg-white px-4 py-8 text-center text-zinc-500 shadow-sm">
+                No refunds found.
+              </div>
+            ) : (
+              rows.map((r) => <RefundCard key={(r as any).id} r={r} />)
+            )}
+          </div>
+
+          {/* ✅ Desktop table */}
+          <div className="hidden md:block mt-4 rounded-2xl border bg-white shadow-sm overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="bg-zinc-50 text-zinc-900">
@@ -632,7 +807,11 @@ export default function SupplierRefunds() {
                         <div className="text-zinc-900">
                           Order:{" "}
                           {r.orderId ? (
-                            <Link to={orderHref(r.orderId)} className="font-semibold text-indigo-700 hover:underline" title="Open order">
+                            <Link
+                              to={orderHref(r.orderId)}
+                              className="font-semibold text-indigo-700 hover:underline"
+                              title="Open order"
+                            >
                               {r.orderId}
                             </Link>
                           ) : (
@@ -662,11 +841,15 @@ export default function SupplierRefunds() {
 
                       <td className="px-3 py-3">
                         <div className="text-zinc-900">{(r as any).provider || "—"}</div>
-                        <div className="text-[11px] text-zinc-500">{(r as any).providerReference || (r as any).providerStatus || "—"}</div>
+                        <div className="text-[11px] text-zinc-500">
+                          {(r as any).providerReference || (r as any).providerStatus || "—"}
+                        </div>
                       </td>
 
                       <td className="px-3 py-3 text-right">
-                        <EvidenceThumbs urls={evidenceUrls} />
+                        <div className="inline-flex justify-end">
+                          <EvidenceThumbs urls={evidenceUrls} />
+                        </div>
                       </td>
 
                       <td className="sticky right-0 z-10 px-3 py-3 text-right bg-white shadow-[-8px_0_12px_-10px_rgba(0,0,0,0.25)]">
@@ -708,8 +891,9 @@ export default function SupplierRefunds() {
             </table>
           </div>
 
+          {/* Desktop error (kept) */}
           {refundsQ.isError && (
-            <div className="mt-3 text-sm text-rose-700">
+            <div className="hidden md:block mt-3 text-sm text-rose-700">
               Failed to load refunds.{" "}
               <button className="underline" onClick={() => refundsQ.refetch()}>
                 Retry

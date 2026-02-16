@@ -21,7 +21,6 @@ import { Link, useSearchParams } from "react-router-dom";
 import SiteLayout from "../../layouts/SiteLayout";
 import SupplierLayout from "../../layouts/SupplierLayout";
 import { useQuery } from "@tanstack/react-query";
-
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 
@@ -47,12 +46,12 @@ function Stat({
   hint?: string;
 }) {
   return (
-    <div className="rounded-2xl border bg-white/80 p-4 flex items-start gap-3">
-      <div className="mt-0.5 text-zinc-700">{icon}</div>
+    <div className="rounded-2xl border bg-white/80 p-3 sm:p-4 flex items-start gap-2.5">
+      <div className="mt-0.5 text-zinc-700 shrink-0">{icon}</div>
       <div className="min-w-0">
-        <div className="text-xs text-zinc-500">{label}</div>
-        <div className="text-lg font-semibold text-zinc-900">{value}</div>
-        {hint && <div className="text-[11px] text-zinc-500 mt-1">{hint}</div>}
+        <div className="text-[11px] sm:text-xs text-zinc-500 leading-tight">{label}</div>
+        <div className="text-base sm:text-lg font-semibold text-zinc-900 leading-tight">{value}</div>
+        {hint && <div className="text-[11px] text-zinc-500 mt-1 leading-tight">{hint}</div>}
       </div>
     </div>
   );
@@ -71,10 +70,15 @@ function normStr(v: any) {
 }
 
 export default function SupplierDashboard() {
-  const token = useAuthStore((s) => s.token);
+  const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const role = useAuthStore((s: any) => s.user?.role);
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
   const isRider = role === "SUPPLIER_RIDER";
+
+  // ✅ ensure session bootstrap happens (cookie auth)
+  useEffect(() => {
+    useAuthStore.getState().bootstrap?.().catch?.(() => null);
+  }, []);
 
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -141,14 +145,13 @@ export default function SupplierDashboard() {
     return () => document.removeEventListener("mousedown", onDocDown);
   }, [pickerOpen]);
 
-  // Pull suppliers for admin (server-search + client filter)
+  // ✅ COOKIE AUTH (no token headers)
   const suppliersQ = useQuery({
     queryKey: ["admin", "suppliers", { q: supplierQ }],
-    enabled: !!token && isAdmin && pickerOpen, // only fetch when open
+    enabled: hydrated && isAdmin && pickerOpen, // only fetch when open
     queryFn: async () => {
-      // ✅ CHANGE THIS URL if yours differs
       const { data } = await api.get<{ data: SupplierLite[] }>("/api/admin/suppliers", {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        withCredentials: true,
         params: { q: supplierQ.trim() || undefined, take: 50, skip: 0 },
       });
       return Array.isArray((data as any)?.data) ? (data as any).data : (data as any);
@@ -160,7 +163,6 @@ export default function SupplierDashboard() {
 
   const suppliers = suppliersQ.data ?? [];
 
-  // Make typing immediately responsive even if backend ignores q:
   const filteredSuppliers = useMemo(() => {
     const needle = supplierQ.trim().toLowerCase();
     if (!needle) return suppliers;
@@ -172,14 +174,12 @@ export default function SupplierDashboard() {
     });
   }, [suppliers, supplierQ]);
 
-  // Fetch selected supplier label (so we can show name even if dropdown not open)
   const selectedSupplierQ = useQuery({
     queryKey: ["admin", "supplier", adminSupplierId],
-    enabled: !!token && isAdmin && !!adminSupplierId,
+    enabled: hydrated && isAdmin && !!adminSupplierId,
     queryFn: async () => {
-      // ✅ CHANGE THIS URL if yours differs
       const { data } = await api.get("/api/admin/suppliers/" + encodeURIComponent(String(adminSupplierId)), {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        withCredentials: true,
       });
       return (data as any)?.data ?? data;
     },
@@ -202,10 +202,8 @@ export default function SupplierDashboard() {
     const nextId = normStr(id);
     if (!nextId) return;
 
-    // persist
     localStorage.setItem(ADMIN_SUPPLIER_KEY, nextId);
 
-    // update URL (replace so history doesn't spam)
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -235,14 +233,14 @@ export default function SupplierDashboard() {
   }
 
   // --------------------------
-  // Dashboard data (supplier endpoints support supplierId query for admin)
+  // Dashboard data (cookie auth)
   // --------------------------
   const summaryQ = useQuery({
     queryKey: ["supplier", "dashboard", "summary", { supplierId: adminSupplierId }],
-    enabled: !!token && (!isAdmin || !!adminSupplierId),
+    enabled: hydrated && (!isAdmin || !!adminSupplierId),
     queryFn: async () => {
       const { data } = await api.get("/api/supplier/dashboard/summary", {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        withCredentials: true,
         params: { supplierId: adminSupplierId },
       });
       return (data as any)?.data ?? data;
@@ -254,10 +252,10 @@ export default function SupplierDashboard() {
 
   const insightsQ = useQuery({
     queryKey: ["supplier", "dashboard", "insights", { supplierId: adminSupplierId }],
-    enabled: !!token && (!isAdmin || !!adminSupplierId),
+    enabled: hydrated && (!isAdmin || !!adminSupplierId),
     queryFn: async () => {
       const { data } = await api.get("/api/supplier/dashboard/insights", {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        withCredentials: true,
         params: { supplierId: adminSupplierId },
       });
       return (data as any)?.data ?? data;
@@ -286,27 +284,32 @@ export default function SupplierDashboard() {
     maximumFractionDigits: 0,
   });
 
+  const pillBase =
+    "inline-flex items-center justify-center gap-1.5 rounded-full font-semibold transition " +
+    "px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm";
+
   return (
     <SiteLayout>
       <SupplierLayout>
-        {/* Hero */}
-        <div className="relative overflow-hidden rounded-3xl mt-6 border">
+        {/* Hero (compact on mobile) */}
+        <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
           <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
-          <div className="relative px-5 md:px-8 py-8 text-white">
+
+          <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
             <motion.h1
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              className="text-2xl md:text-3xl font-bold tracking-tight"
+              className="text-[20px] sm:text-2xl md:text-3xl font-bold tracking-tight leading-tight"
             >
-              Supplier Overview <Sparkles className="inline ml-1" size={22} />
+              Supplier Overview <Sparkles className="inline ml-1" size={18} />
             </motion.h1>
 
-            <p className="mt-1 text-sm text-white/80">
+            <p className="mt-1 text-[13px] sm:text-sm text-white/80 leading-snug">
               Track sales, manage products, and fulfill orders from one place.
             </p>
 
-            {/* ✅ Admin supplier selector (hidden for riders) */}
+            {/* Admin supplier selector (hidden for riders) */}
             {isAdmin && !isRider && (
               <div className="mt-4" ref={pickerRef}>
                 <div className="text-[11px] text-white/80 mb-1">Admin view</div>
@@ -315,23 +318,23 @@ export default function SupplierDashboard() {
                   <button
                     type="button"
                     onClick={() => setPickerOpen((v) => !v)}
-                    className="inline-flex items-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95"
+                    className={`${pillBase} bg-white text-zinc-900 hover:opacity-95`}
                     title="Choose supplier"
                   >
-                    <span className="max-w-[260px] sm:max-w-[380px] truncate">
+                    <span className="max-w-[220px] sm:max-w-[420px] truncate">
                       {selectedSupplierLabel ?? "Select supplier…"}
                     </span>
-                    <ChevronDown size={16} />
+                    <ChevronDown size={14} />
                   </button>
 
                   {!!adminSupplierId && (
                     <button
                       type="button"
                       onClick={clearSupplierSelection}
-                      className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/15"
+                      className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
                       title="Clear supplier selection"
                     >
-                      <X size={16} /> Clear
+                      <X size={14} /> Clear
                     </button>
                   )}
                 </div>
@@ -344,7 +347,7 @@ export default function SupplierDashboard() {
                         <input
                           value={supplierQ}
                           onChange={(e) => setSupplierQ(e.target.value)}
-                          placeholder="Search suppliers by name, email, id…"
+                          placeholder="Search suppliers…"
                           className="w-full rounded-xl border bg-white pl-9 pr-3 py-2 text-sm outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
                           autoFocus
                         />
@@ -400,53 +403,53 @@ export default function SupplierDashboard() {
               </div>
             )}
 
-            {/* ✅ Header quick-links (HIDDEN for riders) */}
+            {/* Quick links (tidy on mobile) */}
             {!isRider ? (
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                 <Link
                   to={withSupplierCtx("/supplier/products")}
-                  className="inline-flex items-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95"
+                  className={`${pillBase} bg-white text-zinc-900 hover:opacity-95`}
                 >
-                  Manage products <ArrowRight size={16} />
+                  Products <ArrowRight size={14} />
                 </Link>
 
                 <Link
                   to={withSupplierCtx("/supplier/orders")}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/15"
+                  className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
                 >
-                  View orders <ArrowRight size={16} />
+                  Orders <ArrowRight size={14} />
                 </Link>
 
                 <Link
                   to={withSupplierCtx("/supplier/catalog-requests")}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/15"
+                  className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
                 >
-                  Catalog requests <Tags size={16} />
+                  Catalog <Tags size={14} />
                 </Link>
 
                 <Link
                   to={withSupplierCtx("/supplier/refunds")}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/15"
+                  className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
                 >
-                  Refunds <Undo2 size={16} />
+                  Refunds <Undo2 size={14} />
                 </Link>
 
                 <Link
                   to={withSupplierCtx("/supplier/settings")}
-                  className="inline-flex items-center gap-2 rounded-full border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/15"
+                  className={`${pillBase} border border-white/30 bg-white/10 hover:bg-white/15`}
                 >
-                  Settings <Settings size={16} />
+                  Settings <Settings size={14} />
                 </Link>
               </div>
             ) : (
               <div className="mt-4">
                 <Link
                   to={withSupplierCtx("/supplier/orders")}
-                  className="inline-flex items-center gap-2 rounded-full bg-white text-zinc-900 px-4 py-2 text-sm font-semibold hover:opacity-95"
+                  className={`${pillBase} bg-white text-zinc-900 hover:opacity-95`}
                 >
-                  Go to orders <ArrowRight size={16} />
+                  Go to orders <ArrowRight size={14} />
                 </Link>
-                <div className="mt-3 text-xs text-white/80">
+                <div className="mt-3 text-[12px] text-white/80">
                   Riders can only view and deliver assigned orders.
                 </div>
               </div>
@@ -454,11 +457,11 @@ export default function SupplierDashboard() {
 
             {/* small loading/error line */}
             {isAdmin && !adminSupplierId ? (
-              <div className="mt-3 text-xs text-amber-200">Select a supplier above to load dashboard KPIs.</div>
+              <div className="mt-3 text-[12px] text-amber-200">Select a supplier above to load dashboard KPIs.</div>
             ) : summaryQ.isFetching ? (
-              <div className="mt-3 text-xs text-white/80">Loading dashboard…</div>
+              <div className="mt-3 text-[12px] text-white/80">Loading dashboard…</div>
             ) : summaryQ.isError ? (
-              <div className="mt-3 text-xs text-white/90">
+              <div className="mt-3 text-[12px] text-white/90">
                 Failed to load dashboard.{" "}
                 <button className="underline" onClick={() => summaryQ.refetch()}>
                   Retry
@@ -468,30 +471,27 @@ export default function SupplierDashboard() {
           </div>
         </div>
 
-        {/* KPI Grid (keep visible; it’s read-only info) */}
-        <div className="mt-6 grid gap-3 md:gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
-          <Stat label="Live products" value={`${kpis.liveProducts}`} icon={<Package size={18} />} />
-          <Stat label="Low stock" value={`${kpis.lowStock}`} icon={<Box size={18} />} hint="Restock soon" />
-          <Stat label="Pending orders" value={`${kpis.pendingOrders}`} icon={<ShoppingBag size={18} />} />
-          <Stat label="Shipped today" value={`${kpis.shippedToday}`} icon={<Truck size={18} />} />
-          <Stat label="Available balance" value={ngn.format(kpis.balance)} icon={<CircleDollarSign size={18} />} />
-          <Stat label="Paid out" value={ngn.format(kpis.paidOutTotal)} icon={<CircleDollarSign size={18} />} />
-          <Stat
-            label="Store rating"
-            value={kpis.rating ? `${kpis.rating.toFixed(1)}` : "—"}
-            icon={<BadgeCheck size={18} />}
-          />
+        {/* KPI Grid */}
+        <div className="mt-4 sm:mt-6 grid gap-3 sm:gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+          <Stat label="Live products" value={`${kpis.liveProducts}`} icon={<Package size={16} />} />
+          <Stat label="Low stock" value={`${kpis.lowStock}`} icon={<Box size={16} />} hint="Restock soon" />
+          <Stat label="Pending orders" value={`${kpis.pendingOrders}`} icon={<ShoppingBag size={16} />} />
+          <Stat label="Shipped today" value={`${kpis.shippedToday}`} icon={<Truck size={16} />} />
+          <Stat label="Available balance" value={ngn.format(kpis.balance)} icon={<CircleDollarSign size={16} />} />
+          <Stat label="Paid out" value={ngn.format(kpis.paidOutTotal)} icon={<CircleDollarSign size={16} />} />
+          <Stat label="Store rating" value={kpis.rating ? `${kpis.rating.toFixed(1)}` : "—"} icon={<BadgeCheck size={16} />} />
         </div>
 
-        {/* ✅ Panels (HIDDEN for riders) */}
+        {/* Panels (hidden for riders) */}
         {!isRider ? (
-          <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
             <Card className="lg:col-span-2">
-              <div className="px-5 py-4 border-b bg-white/70">
-                <div className="text-sm font-semibold text-zinc-900">Today’s checklist</div>
-                <div className="text-xs text-zinc-500">Fast actions suppliers do daily</div>
+              <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Today’s checklist</div>
+                <div className="text-[11px] sm:text-xs text-zinc-500">Fast actions suppliers do daily</div>
               </div>
-              <div className="p-5 space-y-3">
+
+              <div className="p-3 sm:p-5 space-y-2.5">
                 {[
                   { title: "Confirm stock levels", desc: "Update inventory for popular SKUs.", to: "/supplier/products" },
                   { title: "Fulfill pending orders", desc: "Pack and mark orders as shipped.", to: "/supplier/orders" },
@@ -506,22 +506,22 @@ export default function SupplierDashboard() {
                   <Link
                     key={x.title}
                     to={withSupplierCtx(x.to)}
-                    className="block rounded-2xl border bg-white hover:bg-black/5 transition p-4"
+                    className="block rounded-2xl border bg-white hover:bg-black/5 transition p-3 sm:p-4"
                   >
-                    <div className="font-semibold text-zinc-900">{x.title}</div>
-                    <div className="text-sm text-zinc-600">{x.desc}</div>
+                    <div className="font-semibold text-[13px] sm:text-sm text-zinc-900">{x.title}</div>
+                    <div className="text-[12px] sm:text-sm text-zinc-600 leading-snug mt-0.5">{x.desc}</div>
                   </Link>
                 ))}
               </div>
             </Card>
 
             <Card>
-              <div className="px-5 py-4 border-b bg-white/70">
-                <div className="text-sm font-semibold text-zinc-900">Quick insights</div>
-                <div className="text-xs text-zinc-500">Placeholder (wire to analytics)</div>
+              <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Quick insights</div>
+                <div className="text-[11px] sm:text-xs text-zinc-500">Placeholder (wire to analytics)</div>
               </div>
 
-              <div className="p-5 space-y-3 text-sm text-zinc-700">
+              <div className="p-3 sm:p-5 space-y-3 text-[13px] sm:text-sm text-zinc-700">
                 {isAdmin && !adminSupplierId ? (
                   <div className="rounded-xl border bg-white p-3 text-zinc-600">
                     Select a supplier above to load insights.
@@ -575,16 +575,16 @@ export default function SupplierDashboard() {
                   to={withSupplierCtx("/supplier/catalog-requests")}
                   className="block rounded-xl border bg-white p-3 hover:bg-black/5 transition"
                 >
-                  <div className="font-semibold text-zinc-900">Catalog requests</div>
-                  <div className="text-xs text-zinc-600">Ask admin to add new brands, categories or attributes</div>
+                  <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">Catalog requests</div>
+                  <div className="text-[11px] sm:text-xs text-zinc-600">Ask admin to add new brands, categories or attributes</div>
                 </Link>
 
                 <Link
                   to={withSupplierCtx("/supplier/settings")}
                   className="block rounded-xl border bg-white p-3 hover:bg-black/5 transition"
                 >
-                  <div className="font-semibold text-zinc-900">Settings</div>
-                  <div className="text-xs text-zinc-600">Edit payout, pickup and notifications</div>
+                  <div className="font-semibold text-zinc-900 text-[13px] sm:text-sm">Settings</div>
+                  <div className="text-[11px] sm:text-xs text-zinc-600">Edit payout, pickup and notifications</div>
                 </Link>
               </div>
             </Card>

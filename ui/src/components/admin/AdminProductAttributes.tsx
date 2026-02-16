@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import api from '../../api/client';
-import { useAuthStore } from '../../store/auth';
-import { useToast } from '../ToastProvider.js';
+import React, { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import api from "../../api/client";
+import { useToast } from "../ToastProvider.js";
 
 /* ---------------- helpers ---------------- */
 function useDebounced<T>(value: T, delay = 300) {
@@ -14,16 +13,20 @@ function useDebounced<T>(value: T, delay = 300) {
   return v;
 }
 
-function useAdminProductSearch(query: string, enabled: boolean, authHeaders?: Record<string, string>) {
+function useAdminProductSearch(query: string, enabled: boolean) {
   const q = useDebounced(query, 250);
   return useQuery({
-    queryKey: ['admin', 'product-search', q],
+    queryKey: ["admin", "product-search", q],
     enabled: enabled && q.trim().length >= 2,
     queryFn: async () => {
-      const { data } = await api.get('/api/admin/products/search', { params: { q }, headers: authHeaders });
-      return Array.isArray(data) ? data : (data?.data ?? []);
+      const { data } = await api.get("/api/admin/products/search", {
+        withCredentials: true,
+        params: { q },
+      });
+      return Array.isArray(data) ? data : data?.data ?? [];
     },
     staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 }
 
@@ -31,7 +34,7 @@ function useAdminProductSearch(query: string, enabled: boolean, authHeaders?: Re
 type AdminAttribute = {
   id: string;
   name: string;
-  type: 'TEXT' | 'SELECT' | 'MULTISELECT' | string;
+  type: "TEXT" | "SELECT" | "MULTISELECT" | string;
   values?: { id: string; name: string; code?: string | null }[];
 };
 
@@ -50,23 +53,21 @@ type ProductDetailResp = {
 
 /* ---------------- main component ---------------- */
 export default function AdminProductAttributes() {
-  const token = useAuthStore((s) => s.token);
   const toast = useToast();
-  const authHeaders = token ? { Authorization: `Bearer ${token}` } : undefined;
   const qc = useQueryClient();
 
-  const [q, setQ] = useState('');
+  const [q, setQ] = useState("");
   const [product, setProduct] = useState<{ id: string; title: string } | null>(null);
 
-  const searchQ = useAdminProductSearch(q, !product, authHeaders);
+  const searchQ = useAdminProductSearch(q, !product);
 
   const prodQ = useQuery<ProductDetailResp>({
-    queryKey: ['admin', 'product-attr', product?.id],
+    queryKey: ["admin", "product-attr", product?.id],
     enabled: !!product?.id,
     queryFn: async () => {
       const { data } = await api.get(`/api/admin/products/${product!.id}`, {
-        params: { include: 'attributes,variants' },
-        headers: authHeaders,
+        withCredentials: true,
+        params: { include: "attributes,variants" },
       });
       return (data?.data ?? data) as ProductDetailResp;
     },
@@ -77,17 +78,18 @@ export default function AdminProductAttributes() {
 
   /* --------- local form state (normalized) --------- */
   const initialSelections = useMemo(() => {
-    const m: Record<string, { kind: 'TEXT' | 'SELECT_MULTI'; valueIds?: string[]; text?: string }> = {};
+    const m: Record<string, { kind: "TEXT" | "SELECT_MULTI"; valueIds?: string[]; text?: string }> = {};
     const sel = prodQ.data?.attributeSelections || [];
     for (const s of sel) {
       const aId = (s as any).attributeId;
       if (!aId) continue;
+
       if (Array.isArray((s as any).valueIds)) {
-        m[aId] = { kind: 'SELECT_MULTI', valueIds: [...(s as any).valueIds] };
+        m[aId] = { kind: "SELECT_MULTI", valueIds: [...(s as any).valueIds] };
       } else if ((s as any).valueId) {
-        m[aId] = { kind: 'SELECT_MULTI', valueIds: [(s as any).valueId] };
-      } else if (typeof (s as any).text === 'string') {
-        m[aId] = { kind: 'TEXT', text: (s as any).text };
+        m[aId] = { kind: "SELECT_MULTI", valueIds: [(s as any).valueId] };
+      } else if (typeof (s as any).text === "string") {
+        m[aId] = { kind: "TEXT", text: (s as any).text };
       }
     }
     return m;
@@ -101,7 +103,7 @@ export default function AdminProductAttributes() {
     const sel: Record<string, string[]> = {};
     const txt: Record<string, string> = {};
     for (const [aId, v] of Object.entries(initialSelections)) {
-      if (v.kind === 'TEXT') txt[aId] = v.text ?? '';
+      if (v.kind === "TEXT") txt[aId] = v.text ?? "";
       else sel[aId] = v.valueIds ?? [];
     }
     setSelectState(sel);
@@ -111,18 +113,19 @@ export default function AdminProductAttributes() {
   /* --------- save links --------- */
   const save = useMutation({
     mutationFn: async () => {
-      if (!product?.id) throw new Error('Pick a product');
+      if (!product?.id) throw new Error("Pick a product");
       const attributes = (prodQ.data?.attributes ?? []) as AdminAttribute[];
 
       const attributeSelections: any[] = [];
       for (const a of attributes) {
-        if (a.type === 'TEXT') {
-          const t = (textState[a.id] ?? '').trim();
+        if (a.type === "TEXT") {
+          const t = (textState[a.id] ?? "").trim();
           if (t) attributeSelections.push({ attributeId: a.id, text: t });
           continue;
         }
+
         const chosen = selectState[a.id] ?? [];
-        if (a.type === 'SELECT') {
+        if (a.type === "SELECT") {
           if (chosen[0]) attributeSelections.push({ attributeId: a.id, valueId: chosen[0] });
         } else {
           if (chosen.length) attributeSelections.push({ attributeId: a.id, valueIds: chosen });
@@ -132,19 +135,19 @@ export default function AdminProductAttributes() {
       await api.put(
         `/api/admin/products/${product.id}`,
         { attributeSelections },
-        { headers: authHeaders }
+        { withCredentials: true }
       );
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['admin', 'product-attr', product?.id] });
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["admin", "product-attr", product?.id] });
       const prodId = product?.id;
-      window.dispatchEvent(new CustomEvent('product-attributes-changed', { detail: { prodId } }));
-      toast.push({ title: 'Attributes', message: 'Links saved.', duration: 1800 });
+      window.dispatchEvent(new CustomEvent("product-attributes-changed", { detail: { prodId } }));
+      toast.push({ title: "Attributes", message: "Links saved.", duration: 1800 });
     },
     onError: (e: any) => {
       toast.push({
-        title: 'Attributes',
-        message: e?.response?.data?.error || 'Failed to save attribute links.',
+        title: "Attributes",
+        message: e?.response?.data?.error || "Failed to save attribute links.",
         duration: 2600,
       });
     },
@@ -203,18 +206,19 @@ export default function AdminProductAttributes() {
               onChange={(e) => setQ(e.target.value)}
             />
             <div className="text-sm text-ink-soft self-center">
-              {searchQ.isFetching ? 'Searching…' : searchQ.isError ? 'Failed to search' : ''}
+              {searchQ.isFetching ? "Searching…" : searchQ.isError ? "Failed to search" : ""}
             </div>
-            {q && searchQ.isSuccess && searchQ.data.length > 0 && (
+
+            {q && searchQ.isSuccess && (searchQ.data?.length ?? 0) > 0 && (
               <div className="col-span-full border rounded-lg max-h-72 overflow-auto bg-white">
-                {searchQ.data.map((p: any) => (
+                {(searchQ.data ?? []).map((p: any) => (
                   <button
                     key={p.id}
                     type="button"
                     className="w-full text-left px-3 py-2 hover:bg-black/5"
                     onClick={() => {
                       setProduct({ id: String(p.id), title: String(p.title) });
-                      setQ('');
+                      setQ("");
                     }}
                   >
                     {p.title}
@@ -222,7 +226,8 @@ export default function AdminProductAttributes() {
                 ))}
               </div>
             )}
-            {q && searchQ.isSuccess && searchQ.data.length === 0 && (
+
+            {q && searchQ.isSuccess && (searchQ.data?.length ?? 0) === 0 && (
               <div className="col-span-full text-xs text-ink-soft">No products found.</div>
             )}
           </div>
@@ -236,7 +241,7 @@ export default function AdminProductAttributes() {
               className="px-2 py-1 rounded border"
               onClick={() => {
                 setProduct(null);
-                setQ('');
+                setQ("");
                 setSelectState({});
                 setTextState({});
               }}
@@ -260,16 +265,15 @@ export default function AdminProductAttributes() {
               ) : (
                 <div className="grid gap-4">
                   {attrs.map((a) => {
-                    const multi = a.type === 'MULTISELECT';
+                    const multi = a.type === "MULTISELECT";
                     const selected = selectState[a.id] ?? [];
                     return (
                       <div key={a.id} className="border rounded-lg p-3">
                         <div className="flex items-center justify-between">
                           <div className="font-medium">
-                            {a.name}{' '}
-                            <span className="text-xs text-zinc-500">({a.type})</span>
+                            {a.name} <span className="text-xs text-zinc-500">({a.type})</span>
                           </div>
-                          {a.type !== 'TEXT' && (
+                          {a.type !== "TEXT" && (
                             <button
                               type="button"
                               className="text-xs text-zinc-600 underline"
@@ -280,11 +284,11 @@ export default function AdminProductAttributes() {
                           )}
                         </div>
 
-                        {a.type === 'TEXT' ? (
+                        {a.type === "TEXT" ? (
                           <input
                             className="mt-2 w-full border rounded-lg px-3 py-2"
                             placeholder={`Enter ${a.name}…`}
-                            value={textState[a.id] ?? ''}
+                            value={textState[a.id] ?? ""}
                             onChange={(e) => setTextState((s) => ({ ...s, [a.id]: e.target.value }))}
                           />
                         ) : (
@@ -298,8 +302,8 @@ export default function AdminProductAttributes() {
                                   onClick={() => toggleValue(a.id, v.id, multi)}
                                   className={`px-2 py-1 rounded-full border text-sm ${
                                     active
-                                      ? 'bg-zinc-900 text-white border-zinc-900'
-                                      : 'bg-white hover:bg-zinc-50'
+                                      ? "bg-zinc-900 text-white border-zinc-900"
+                                      : "bg-white hover:bg-zinc-50"
                                   }`}
                                   title={v.code ? `${v.name} (${v.code})` : v.name}
                                 >
@@ -336,7 +340,7 @@ export default function AdminProductAttributes() {
                 disabled={save.isPending || attrs.length === 0}
                 onClick={() => save.mutate()}
               >
-                {save.isPending ? 'Saving…' : 'Save links'}
+                {save.isPending ? "Saving…" : "Save links"}
               </button>
             </div>
 
@@ -347,15 +351,15 @@ export default function AdminProductAttributes() {
                 <div className="space-y-2">
                   {(prodQ.data?.variants ?? []).map((v: any) => (
                     <div key={v.id} className="text-sm border rounded-lg px-3 py-2">
-                      <div className="font-mono text-xs">SKU: {v.sku || '—'}</div>
+                      <div className="font-mono text-xs">SKU: {v.sku || "—"}</div>
                       <div className="text-xs text-zinc-600">
                         {(v.options ?? [])
                           .map((o: any) => {
-                            const aName = o.attributeName || o.attribute?.name || '—';
-                            const vName = o.valueName || o.value?.name || '—';
+                            const aName = o.attributeName || o.attribute?.name || "—";
+                            const vName = o.valueName || o.value?.name || "—";
                             return `${aName}: ${vName}`;
                           })
-                          .join(' • ')}
+                          .join(" • ")}
                       </div>
                     </div>
                   ))}

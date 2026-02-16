@@ -1,5 +1,5 @@
 // src/App.tsx
-import { Route, Routes, Navigate, Outlet } from "react-router-dom";
+import { Route, Routes, Navigate, Outlet, useParams } from "react-router-dom";
 import { useEffect, useMemo } from "react";
 
 import Footer from "./components/Footer";
@@ -29,7 +29,6 @@ import UserDashboard from "./pages/UserDashboard";
 import SupplierRegister from "./pages/supplier/SupplierRegister";
 
 import { useAuthStore } from "./store/auth";
-import { scheduleTokenExpiryLogout } from "./utils/tokenWatcher";
 import { useIdleLogout } from "./hooks/useIdleLogout";
 
 import SupplierDashboard from "./pages/supplier/SupplierDashboard";
@@ -54,57 +53,87 @@ import AuthBootstrap from "./components/AuthBootstrap";
 import AdminOfferChangeRequests from "./pages/admin/AdminOfferChangeRequests";
 import ScrollToTop from "./components/ScrollToTop";
 
+/* -----------------------------
+   Role normalization + aliases
+----------------------------- */
+
+function normRole(role: unknown) {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  return r;
+}
+
+/* ----------------------------- */
+
 function AdminLayout() {
   return <Outlet />;
 }
-
 function SupplierLayoutShell() {
   return <Outlet />;
 }
 
+/**
+ * Admin "view as" wrappers.
+ * These pass a userId param down so pages can optionally fetch/render for that user.
+ * (Requires those pages to support a prop OR read route param; your current pages cast any)
+ */
+function DashboardAsUser() {
+  const { userId } = useParams<{ userId: string }>();
+  return <UserDashboard {...({ adminUserId: userId } as any)} />;
+}
+function ProfileAsUser() {
+  const { userId } = useParams<{ userId: string }>();
+  return <Profile {...({ adminUserId: userId } as any)} />;
+}
+function OrdersAsUser() {
+  const { userId } = useParams<{ userId: string }>();
+  return <Orders {...({ adminUserId: userId } as any)} />;
+}
+function WishlistAsUser() {
+  const { userId } = useParams<{ userId: string }>();
+  return <Wishlist {...({ adminUserId: userId } as any)} />;
+}
+
 /** ✅ Role-aware landing page */
 function HomeRoute() {
-  const token = useAuthStore((s) => s.token);
-  const role = useAuthStore((s) => s.user?.role);
+  const user = useAuthStore((s) => s.user);
+  const hydrated = useAuthStore((s) => s.hydrated);
 
-  const r = String(role || "").toUpperCase();
+  if (!hydrated) return <Catalog />;
 
-  // If logged-in supplier, land them on supplier catalog offers
-  if (token && r === "SUPPLIER") return <Navigate to="/supplier/catalog-offers" replace />;
+  const isAuthed = !!user?.id;
+  const r = normRole(user?.role);
 
-  // Keep riders off public catalog after login
-  if (token && r === "SUPPLIER_RIDER") return <Navigate to="/supplier/orders" replace />;
+  if (isAuthed && r === "SUPPLIER") return <Navigate to="/supplier/catalog-offers" replace />;
+  if (isAuthed && r === "SUPPLIER_RIDER") return <Navigate to="/supplier/orders" replace />;
 
   return <Catalog />;
 }
 
 export default function App() {
-  const token = useAuthStore((s) => s.token);
-  const clear = useAuthStore((s) => s.clear);
-  const role = useAuthStore((s) => s.user?.role);
+  const bootstrap = useAuthStore((s) => s.bootstrap);
+  const user = useAuthStore((s) => s.user);
+  const hydrated = useAuthStore((s) => s.hydrated);
+
+  const isAuthed = !!user?.id;
+  const roleNorm = normRole(user?.role);
 
   useEffect(() => {
-    scheduleTokenExpiryLogout(token, () => {
-      clear();
-      try {        // or whatever you store
-        localStorage.removeItem("access_token");
-      } catch {
-        /* no-op */
-      }
-      window.location.replace("/login");
-    });
-  }, [token, clear]);
+    bootstrap();
+  }, [bootstrap]);
 
-  // ✅ riders can ONLY access supplier orders routes inside /supplier
   const riderAllowPrefixes = useMemo(() => ["/supplier/orders"], []);
 
   const RoleDashboard = useMemo(() => {
-    const r = String(role || "").toUpperCase();
+    const r = roleNorm;
+
     if (r === "ADMIN" || r === "SUPER_ADMIN") return AdminDashboard;
     if (r === "SUPPLIER") return SupplierDashboard;
     if (r === "SUPPLIER_RIDER") return () => <Navigate to="/supplier/orders" replace />;
     return UserDashboard;
-  }, [role]);
+  }, [roleNorm]);
 
   useIdleLogout();
 
@@ -116,6 +145,7 @@ export default function App() {
           <div className="max-w-7xl mx-auto">
             <Toaster position="top-right" />
             <ScrollToTop />
+
             <Routes>
               {/* ---------------- Public site ---------------- */}
               <Route path="/" element={<HomeRoute />} />
@@ -127,13 +157,15 @@ export default function App() {
               <Route path="/payment-callback" element={<PaymentCallback />} />
               <Route path="/receipt/:paymentId" element={<ReceiptPage />} />
 
-              {/* Public rider invite accept (MUST be top-level) */}
               <Route path="/rider/accept" element={<RiderAcceptInvite />} />
 
               {/* ---------------- Auth ---------------- */}
-              <Route path="/login" element={token ? <Navigate to="/" replace /> : <Login />} />
-              <Route path="/register" element={token ? <Navigate to="/" replace /> : <Register />} />
-              <Route path="/register-supplier" element={token ? <Navigate to="/" replace /> : <SupplierRegister />} />
+              <Route path="/login" element={hydrated && isAuthed ? <Navigate to="/" replace /> : <Login />} />
+              <Route path="/register" element={hydrated && isAuthed ? <Navigate to="/" replace /> : <Register />} />
+              <Route
+                path="/register-supplier"
+                element={hydrated && isAuthed ? <Navigate to="/" replace /> : <SupplierRegister />}
+              />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route
                 path="/reset-password"
@@ -144,11 +176,11 @@ export default function App() {
                 }
               />
 
-              {/* ---------------- Shared protected ---------------- */}
+              {/* ---------------- Shared protected (self) ---------------- */}
               <Route
                 path="/profile"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPPLIER"]}>
+                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPPLIER", "SUPERADMIN", "SUPER ADMIN"]}>
                     <Profile />
                   </ProtectedRoute>
                 }
@@ -157,7 +189,7 @@ export default function App() {
               <Route
                 path="/orders"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <Orders />
                   </ProtectedRoute>
                 }
@@ -166,7 +198,7 @@ export default function App() {
               <Route
                 path="/checkout"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["SHOPPER", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <Checkout />
                   </ProtectedRoute>
                 }
@@ -175,7 +207,7 @@ export default function App() {
               <Route
                 path="/wishlist"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <Wishlist />
                   </ProtectedRoute>
                 }
@@ -184,28 +216,81 @@ export default function App() {
               <Route
                 path="/account/sessions"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "SUPPLIER", "ADMIN", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["SHOPPER", "SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <AccountSessions />
                   </ProtectedRoute>
                 }
               />
 
-              {/* Role-based “/dashboard” */}
+              {/* ✅ Your normal role-aware dashboard */}
               <Route
                 path="/dashboard"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPPLIER", "SUPPLIER_RIDER"]}>
+                  <ProtectedRoute
+                    roles={[
+                      "SHOPPER",
+                      "ADMIN",
+                      "SUPER_ADMIN",
+                      "SUPPLIER",
+                      "SUPPLIER_RIDER",
+                      "SUPERADMIN",
+                      "SUPER ADMIN",
+                    ]}
+                  >
                     <RoleDashboard />
                   </ProtectedRoute>
                 }
               />
 
-              {/* Optional rider entry point (after login) */}
+              {/* ✅ Dedicated shopper dashboard that Admin/Super can open */}
+              <Route
+                path="/customer-dashboard"
+                element={
+                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <UserDashboard />
+                  </ProtectedRoute>
+                }
+              />
+
               <Route
                 path="/rider"
                 element={
-                  <ProtectedRoute roles={["SUPPLIER_RIDER", "SUPPLIER", "ADMIN", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["SUPPLIER_RIDER", "SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN"]}>
                     <Navigate to="/supplier/orders" replace />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* ---------------- Admin "view as user" ---------------- */}
+              <Route
+                path="/u/:userId/dashboard"
+                element={
+                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <DashboardAsUser />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/u/:userId/profile"
+                element={
+                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <ProfileAsUser />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/u/:userId/orders"
+                element={
+                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <OrdersAsUser />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/u/:userId/wishlist"
+                element={
+                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <WishlistAsUser />
                   </ProtectedRoute>
                 }
               />
@@ -215,7 +300,7 @@ export default function App() {
                 path="/supplier"
                 element={
                   <ProtectedRoute
-                    roles={["SUPPLIER", "SUPPLIER_RIDER", "ADMIN", "SUPER_ADMIN"]}
+                    roles={["SUPPLIER", "SUPPLIER_RIDER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
                     riderAllowPrefixes={riderAllowPrefixes}
                   >
                     <SupplierLayoutShell />
@@ -224,7 +309,6 @@ export default function App() {
               >
                 <Route index element={<SupplierDashboard />} />
 
-                {/* ✅ Catalog Offers now lives inside supplier area */}
                 <Route
                   path="catalog-offers"
                   element={
@@ -240,7 +324,6 @@ export default function App() {
                   <Route path=":id/edit" element={<SupplierEditProduct />} />
                 </Route>
 
-                {/* ✅ Riders allowed here via riderAllowPrefixes */}
                 <Route path="orders" element={<SupplierOrdersPage />} />
                 <Route path="orders/:orderId" element={<SupplierOrdersPage />} />
 
@@ -250,7 +333,7 @@ export default function App() {
                 <Route
                   path="riders"
                   element={
-                    <ProtectedRoute roles={["SUPPLIER", "ADMIN", "SUPER_ADMIN"]}>
+                    <ProtectedRoute roles={["SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                       <SupplierRiders />
                     </ProtectedRoute>
                   }
@@ -267,14 +350,14 @@ export default function App() {
               <Route
                 path="/admin"
                 element={
-                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <AdminLayout />
                   </ProtectedRoute>
                 }
               >
-                <Route path="offer-changes" element={<AdminOfferChangeRequests />} />
-
                 <Route index element={<AdminDashboard />} />
+
+                <Route path="offer-changes" element={<AdminOfferChangeRequests />} />
                 <Route path="dashboard" element={<Navigate to="/admin" replace />} />
                 <Route path="products" element={<Navigate to="/admin?tab=products&pTab=manage" replace />} />
                 <Route path="products/moderation" element={<Navigate to="/admin?tab=products&pTab=moderation" replace />} />
@@ -282,7 +365,7 @@ export default function App() {
                 <Route
                   path="settings"
                   element={
-                    <ProtectedRoute roles={["SUPER_ADMIN"]}>
+                    <ProtectedRoute roles={["SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                       <SettingsAdminPage />
                     </ProtectedRoute>
                   }

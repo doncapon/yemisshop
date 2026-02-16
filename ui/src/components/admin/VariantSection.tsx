@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import api from "../../api/client";
-import { useAuthStore } from "../../store/auth";
 
 /* ---------------- Debounce ---------------- */
 function useDebounced<T>(value: T, delay = 300) {
@@ -20,19 +19,19 @@ function toInt(x: any, d = 0) {
 }
 function availOf(o: any): number {
   // tolerate different field names from various endpoints
-  const a =
-    (o && (o.availableQty ?? o.available ?? o.qty ?? o.stock)) ?? 0;
+  const a = (o && (o.availableQty ?? o.available ?? o.qty ?? o.stock)) ?? 0;
   return Math.max(0, toInt(a, 0));
 }
 
 /* ---------------- Admin product search (debounced) ---------------- */
-function useAdminProductSearch(query: string, headers?: Record<string, string>) {
+function useAdminProductSearch(query: string) {
   const q = useDebounced(query, 300);
   return useQuery({
     queryKey: ["admin", "product-search", q],
     enabled: q.trim().length >= 2,
     queryFn: async () => {
-      const res = await api.get("/api/admin/products/search", { params: { q }, headers });
+      // ✅ Cookie auth: no headers
+      const res = await api.get("/api/admin/products/search", { params: { q } });
       const body = res.data;
       return Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : [];
     },
@@ -80,20 +79,19 @@ export function VariantsSection() {
   const [newValueCode, setNewValueCode] = useState("");
 
   const qc = useQueryClient();
-  const token = useAuthStore((s) => s.token);
-  const authHeaders = token ? { Authorization: `Bearer ${token}` } : undefined;
 
   /* ---------------- Search (as you type) ---------------- */
-  const searchQ = useAdminProductSearch(selectedProduct ? "" : q, authHeaders);
+  const searchQ = useAdminProductSearch(selectedProduct ? "" : q);
   const firstResult = (searchQ.data ?? [])[0];
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   /* ---------------- All attributes (global) ---------------- */
   const attrsAllQ = useQuery<AdminAttr[]>({
     queryKey: ["admin", "attributes", "all"],
-    enabled: !!token && !!selectedProduct,
+    enabled: !!selectedProduct,
     queryFn: async () => {
-      const res = await api.get("/api/admin/catalog/attributes", { headers: authHeaders });
+      // ✅ Cookie auth: no headers
+      const res = await api.get("/api/admin/catalog/attributes");
       const body = res.data;
       // expect {data:[...]} or [...]
       return (Array.isArray(body) ? body : body?.data) ?? [];
@@ -105,11 +103,11 @@ export function VariantsSection() {
   /* ---------------- Fetch product details (attributes + variants) ---------------- */
   const productQ = useQuery({
     queryKey: ["admin", "productVariants", selectedProduct?.id],
-    enabled: !!token && !!selectedProduct?.id,
+    enabled: !!selectedProduct?.id,
     queryFn: async () => {
+      // ✅ Cookie auth: no headers
       const res = await api.get(`/api/admin/products/${selectedProduct!.id}`, {
         params: { include: "attributes,variants" },
-        headers: authHeaders,
       });
       const raw = res.data;
       return raw?.data ?? raw;
@@ -121,12 +119,12 @@ export function VariantsSection() {
   /* ---------------- Fetch supplier offers for this product ---------------- */
   const offersQ = useQuery({
     queryKey: ["admin", "product", selectedProduct?.id, "offers"],
-    enabled: !!token && !!selectedProduct?.id,
+    enabled: !!selectedProduct?.id,
     refetchOnWindowFocus: false,
     staleTime: 30_000,
     queryFn: async () => {
       const pid = selectedProduct!.id;
-      const hdr = authHeaders;
+
       // Try a few endpoints, accept any that returns an array
       const attempts = [
         `/api/admin/products/${pid}/supplier-offers`,
@@ -134,10 +132,12 @@ export function VariantsSection() {
         `/api/admin/supplier-offers?productId=${encodeURIComponent(pid)}`,
         `/api/admin/supplier-offers?productIds=${encodeURIComponent(pid)}`,
       ];
+
       for (const url of attempts) {
         try {
-          const { data } = await api.get(url, { headers: hdr });
-          const arr = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+          // ✅ Cookie auth: no headers
+          const { data } = await api.get(url);
+          const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
         } catch {
           // try next
@@ -195,11 +195,9 @@ export function VariantsSection() {
     mutationFn: async () => {
       if (!selectedProduct) throw new Error("Pick a product first");
       const attributeSelections = buildSelectionsFromLinked(linked);
-      await api.patch(
-        `/api/admin/products/${selectedProduct.id}`,
-        { attributeSelections },
-        { headers: authHeaders }
-      );
+
+      // ✅ Cookie auth: no headers
+      await api.patch(`/api/admin/products/${selectedProduct.id}`, { attributeSelections });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "productVariants", selectedProduct?.id] });
@@ -211,7 +209,9 @@ export function VariantsSection() {
     mutationFn: async (attrId: string) => {
       const payload = { name: newValueName.trim(), code: newValueCode.trim() || undefined };
       if (!payload.name) throw new Error("Value name is required");
-      await api.post(`/api/admin/catalog/attributes/${attrId}/values`, payload, { headers: authHeaders });
+
+      // ✅ Cookie auth: no headers
+      await api.post(`/api/admin/catalog/attributes/${attrId}/values`, payload);
     },
     onSuccess: (_d, attrId) => {
       setNewValueName("");
@@ -236,7 +236,9 @@ export function VariantsSection() {
         inStock,
         optionValues: Object.entries(selValues).map(([attributeId, valueId]) => ({ attributeId, valueId })),
       };
-      const { data } = await api.post(`/api/admin/products/${selectedProduct.id}/variants`, payload, { headers: authHeaders });
+
+      // ✅ Cookie auth: no headers
+      const { data } = await api.post(`/api/admin/products/${selectedProduct.id}/variants`, payload);
       return data;
     },
     onSuccess: () => {
@@ -252,7 +254,8 @@ export function VariantsSection() {
 
   const updateVariant = useMutation({
     mutationFn: async (v: { id: string; sku?: string | null; unitPrice?: number | null; inStock?: boolean }) => {
-      const { data } = await api.put(`/api/admin/variants/${v.id}`, v, { headers: authHeaders });
+      // ✅ Cookie auth: no headers
+      const { data } = await api.put(`/api/admin/variants/${v.id}`, v);
       return data;
     },
     onSuccess: () => {
@@ -263,7 +266,8 @@ export function VariantsSection() {
 
   const deleteVariant = useMutation({
     mutationFn: async (variantId: string) => {
-      await api.delete(`/api/admin/variants/${variantId}`, { headers: authHeaders });
+      // ✅ Cookie auth: no headers
+      await api.delete(`/api/admin/variants/${variantId}`);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "productVariants", selectedProduct?.id] });
@@ -290,7 +294,7 @@ export function VariantsSection() {
   }, [attrsAllQ.data, linked]);
 
   /* ------------- keyboard: Enter picks first search result ------------- */
-  const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const onSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !selectedProduct && firstResult) {
       setSelectedProduct(firstResult);
       setQ("");
@@ -336,7 +340,10 @@ export function VariantsSection() {
                     <button
                       key={p.id}
                       className="w-full text-left px-3 py-2 hover:bg-black/5"
-                      onClick={() => { setSelectedProduct(p); setQ(""); }}
+                      onClick={() => {
+                        setSelectedProduct(p);
+                        setQ("");
+                      }}
                     >
                       <div className="font-medium">{p.title}</div>
                       {p.sku ? <div className="text-xs text-zinc-500">SKU: {p.sku}</div> : null}
@@ -356,7 +363,11 @@ export function VariantsSection() {
               </div>
               <button
                 className="px-2 py-1 rounded border"
-                onClick={() => { setSelectedProduct(null); setLinked({}); setSelValues({}); }}
+                onClick={() => {
+                  setSelectedProduct(null);
+                  setLinked({});
+                  setSelValues({});
+                }}
               >
                 Change product
               </button>
@@ -369,10 +380,7 @@ export function VariantsSection() {
           <div className="rounded-xl border">
             <div className="px-3 py-2 flex items-center justify-between">
               <div className="font-medium">Options Manager</div>
-              <button
-                className="text-xs underline"
-                onClick={() => setShowOptionsManager((s) => !s)}
-              >
+              <button className="text-xs underline" onClick={() => setShowOptionsManager((s) => !s)}>
                 {showOptionsManager ? "Hide" : "Show"}
               </button>
             </div>
@@ -382,9 +390,7 @@ export function VariantsSection() {
                 {attrsAllQ.isLoading ? (
                   <div className="text-sm text-ink-soft">Loading attributes…</div>
                 ) : (attrsAllQ.data ?? []).length === 0 ? (
-                  <div className="text-sm text-ink-soft">
-                    No attributes defined yet. Create attributes & values in Catalog Settings.
-                  </div>
+                  <div className="text-sm text-ink-soft">No attributes defined yet. Create attributes & values in Catalog Settings.</div>
                 ) : (
                   <>
                     {(attrsAllQ.data ?? []).map((a) => {
@@ -433,7 +439,9 @@ export function VariantsSection() {
                                       <button
                                         key={v.id}
                                         type="button"
-                                        className={`px-2 py-1 rounded border text-sm ${on ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"}`}
+                                        className={`px-2 py-1 rounded border text-sm ${
+                                          on ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                        }`}
                                         onClick={() =>
                                           setLinked((prev) => {
                                             const list = new Set(prev[a.id] || []);
@@ -530,12 +538,7 @@ export function VariantsSection() {
                 </div>
 
                 <div className="grid md:grid-cols-4 gap-3">
-                  <input
-                    className="border rounded-lg px-3 py-2"
-                    placeholder="SKU (optional)"
-                    value={sku}
-                    onChange={(e) => setSku(e.target.value)}
-                  />
+                  <input className="border rounded-lg px-3 py-2" placeholder="SKU (optional)" value={sku} onChange={(e) => setSku(e.target.value)} />
                   <input
                     className="border rounded-lg px-3 py-2"
                     placeholder="Price (optional)"
@@ -575,13 +578,11 @@ export function VariantsSection() {
                   <th className="text-right px-3 py-2">Actions</th>
                 </tr>
               </thead>
+
               <tbody className="divide-y">
                 {(productQ.data?.variants ?? []).map((v: any) => {
                   const variantAvail = availByVariant[v.id]; // undefined if no offers data
-                  const showInStock =
-                    typeof variantAvail === "number"
-                      ? variantAvail > 0
-                      : !!v.inStock; // fallback if offers not loaded
+                  const showInStock = typeof variantAvail === "number" ? variantAvail > 0 : !!v.inStock; // fallback if offers not loaded
 
                   return (
                     <tr key={v.id}>
@@ -590,16 +591,8 @@ export function VariantsSection() {
                           const parts = (v.options ?? [])
                             .filter(Boolean)
                             .map((o: any) => {
-                              const attr =
-                                o.attributeName ??
-                                o.attribute?.name ??
-                                o.attributeId ??
-                                "—";
-                              const val =
-                                o.valueName ??
-                                o.value?.name ??
-                                o.valueId ??
-                                "—";
+                              const attr = o.attributeName ?? o.attribute?.name ?? o.attributeId ?? "—";
+                              const val = o.valueName ?? o.value?.name ?? o.valueId ?? "—";
                               return `${attr}: ${val}`;
                             });
 
@@ -608,6 +601,7 @@ export function VariantsSection() {
                       </td>
 
                       <td className="px-3 py-2">{v.sku || "—"}</td>
+
                       <td className="px-3 py-2">
                         {v.price != null ? `₦${Number(v.price).toLocaleString()}` : "— (uses product price)"}
                       </td>
@@ -625,10 +619,13 @@ export function VariantsSection() {
                             className="px-2 py-1 rounded border"
                             onClick={() => {
                               const newSku = prompt("SKU", v.sku || "") ?? v.sku;
-                              const newPriceStr = prompt("Price (leave empty to use product price)", v.unitPrice ?? "") ?? v.unitPrice;
+                              const newPriceStr =
+                                prompt("Price (leave empty to use product price)", v.unitPrice ?? "") ?? v.unitPrice;
                               const newPrice = newPriceStr === "" ? null : Number(newPriceStr);
+
                               // Keep supporting manual flag for now; computed stock still wins for display
                               const newStock = confirm("Set as IN STOCK? (Cancel = OUT)");
+
                               updateVariant.mutate({
                                 id: v.id,
                                 sku: newSku || null,
@@ -639,9 +636,12 @@ export function VariantsSection() {
                           >
                             Edit
                           </button>
+
                           <button
                             className="px-2 py-1 rounded bg-rose-600 text-white"
-                            onClick={() => { if (confirm("Delete this variant?")) deleteVariant.mutate(v.id); }}
+                            onClick={() => {
+                              if (confirm("Delete this variant?")) deleteVariant.mutate(v.id);
+                            }}
                           >
                             Delete
                           </button>
@@ -650,6 +650,7 @@ export function VariantsSection() {
                     </tr>
                   );
                 })}
+
                 {(!productQ.data?.variants || productQ.data.variants.length === 0) && (
                   <tr>
                     <td colSpan={5} className="px-3 py-4 text-center text-zinc-500">

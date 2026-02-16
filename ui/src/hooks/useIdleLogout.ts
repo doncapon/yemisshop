@@ -5,13 +5,20 @@ import api from "../api/client";
 import { useAuthStore, type Role } from "../store/auth";
 
 type Options = {
-  shopperIdleMs?: number;      // default 45 min
-  privilegedIdleMs?: number;   // default 15 min
-  throttleMs?: number;         // default 2000ms
+  shopperIdleMs?: number; // default 45 min
+  privilegedIdleMs?: number; // default 15 min
+  throttleMs?: number; // default 2000ms
 };
 
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
+function isAuthError(e: any) {
+  const status = e?.response?.status;
+  return status === 401 || status === 403;
+}
+
 export function useIdleLogout(opts?: Options) {
-  const token = useAuthStore((s) => s.token);
+  // ✅ Cookie-mode: no token; role comes from store (if present)
   const role = useAuthStore((s) => s.user?.role);
   const clear = useAuthStore((s) => s.clear);
 
@@ -32,48 +39,55 @@ export function useIdleLogout(opts?: Options) {
   const lastResetRef = useRef<number>(0);
   const loggingOutRef = useRef<boolean>(false);
 
+  // ✅ Track cookie auth state locally
+  const authedRef = useRef<boolean>(false);
+
   useEffect(() => {
-    // Only run idle logic when authenticated
-    if (!token) {
+    let cancelled = false;
+
+    const clearTimer = () => {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
       loggingOutRef.current = false;
-      return;
-    }
+    };
+
+    const serverLogoutAndRedirect = async () => {
+      if (loggingOutRef.current) return;
+      loggingOutRef.current = true;
+
+      try {
+        await api.post("/api/auth/logout", {}, AXIOS_COOKIE_CFG);
+      } catch {
+        // ignore
+      }
+
+      clear();
+      try {
+        localStorage.removeItem("cart");
+        localStorage.removeItem("auth");
+      } catch {
+        //
+      }
+
+      nav("/login?reason=idle", { replace: true });
+    };
 
     const schedule = () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       // @ts-ignore
       timeoutRef.current = setTimeout(async () => {
-        if (loggingOutRef.current) return;
-        loggingOutRef.current = true;
-
-        // Best practice: revoke server session too (DB-backed sessions)
-        try {
-          await api.post("/api/auth/logout");
-        } catch {
-          // ignore (network/server down shouldn't block logout)
-        }
-
-        clear();
-        try {
-          // optional hard cleanup
-          localStorage.removeItem("cart");
-          localStorage.removeItem("auth");
-        } catch {
-          //
-        }
-
-        nav("/login?reason=idle", { replace: true });
+        if (!authedRef.current) return; // safety
+        await serverLogoutAndRedirect();
       }, idleMs) as any;
     };
 
     const markActivity = () => {
-      const now = Date.now();
+      if (!authedRef.current) return;
 
-      // Throttle resets (mousemove can be very noisy)
+      const now = Date.now();
+      // Throttle resets (mousemove can be noisy)
       if (now - lastResetRef.current < throttleMs) return;
 
       lastResetRef.current = now;
@@ -83,58 +97,86 @@ export function useIdleLogout(opts?: Options) {
     };
 
     const onVisibility = () => {
-      // When returning to tab, check if user was idle too long.
+      if (!authedRef.current) return;
+
       if (document.visibilityState === "visible") {
         const now = Date.now();
         const idleFor = now - lastActivityRef.current;
+
         if (idleFor >= idleMs && !loggingOutRef.current) {
-          // trigger the timeout immediately
           if (timeoutRef.current) clearTimeout(timeoutRef.current);
-          // @ts-ignore
-          timeoutRef.current = setTimeout(() => markActivity(), 0) as any;
-          // markActivity schedules, but we want immediate logout:
-          // easiest is to call the scheduled function directly by simulating timeout:
-          // So just force schedule to 0:
-          // (we’ll do it cleanly)
-          (async () => {
-            if (loggingOutRef.current) return;
-            loggingOutRef.current = true;
-            try {
-              await api.post("/api/auth/logout");
-            } catch {}
-            clear();
-            nav("/login?reason=idle", { replace: true });
-          })();
+          serverLogoutAndRedirect();
         } else {
           markActivity();
         }
       }
     };
 
-    // Initial schedule
-    lastActivityRef.current = Date.now();
-    lastResetRef.current = 0;
-    loggingOutRef.current = false;
-    schedule();
+    const attachListeners = () => {
+      const events: Array<keyof WindowEventMap> = [
+        "mousedown",
+        "mousemove",
+        "keydown",
+        "scroll",
+        "touchstart",
+        "wheel",
+      ];
 
-    const events: Array<keyof WindowEventMap> = [
-      "mousedown",
-      "mousemove",
-      "keydown",
-      "scroll",
-      "touchstart",
-      "wheel",
-    ];
+      for (const e of events) window.addEventListener(e, markActivity, { passive: true });
+      document.addEventListener("visibilitychange", onVisibility);
 
-    for (const e of events) window.addEventListener(e, markActivity, { passive: true });
-    document.addEventListener("visibilitychange", onVisibility);
+      return () => {
+        for (const e of events) window.removeEventListener(e, markActivity as any);
+        document.removeEventListener("visibilitychange", onVisibility);
+      };
+    };
+
+    // ✅ Cookie auth check: only run idle logic when session exists
+    (async () => {
+      try {
+        await api.get("/api/profile/me", AXIOS_COOKIE_CFG);
+        if (cancelled) return;
+
+        authedRef.current = true;
+
+        // Initial schedule
+        lastActivityRef.current = Date.now();
+        lastResetRef.current = 0;
+        loggingOutRef.current = false;
+
+        schedule();
+        const detach = attachListeners();
+
+        // cleanup when effect re-runs/unmounts
+        const prevCleanup = cleanupRef.current;
+        cleanupRef.current = () => {
+          prevCleanup?.();
+          detach();
+          clearTimer();
+          authedRef.current = false;
+        };
+      } catch (e: any) {
+        // Not authenticated (or server down) -> disable idle logic
+        if (cancelled) return;
+
+        authedRef.current = false;
+        clearTimer();
+
+        // If backend explicitly says unauth, clear client state too
+        if (isAuthError(e)) {
+          clear();
+        }
+      }
+    })();
 
     return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-
-      for (const e of events) window.removeEventListener(e, markActivity as any);
-      document.removeEventListener("visibilitychange", onVisibility);
+      cancelled = true;
+      cleanupRef.current?.();
+      cleanupRef.current = null;
     };
-  }, [token, idleMs, throttleMs, clear, nav]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idleMs, throttleMs, clear, nav]);
+
+  // store cleanup between async attach
+  const cleanupRef = useRef<null | (() => void)>(null);
 }
