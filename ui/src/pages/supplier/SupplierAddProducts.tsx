@@ -10,6 +10,7 @@ import {
   Save,
   Package,
   ChevronDown,
+  X,
 } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
@@ -243,6 +244,11 @@ export default function SupplierAddProduct() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // ✅ Stable object URLs for local previews (fixes “no preview until upload” in StrictMode)
+  const fileKey = (f: File) => `${f.name}-${f.size}-${f.lastModified}`;
+  const filePreviewMapRef = useRef<Record<string, string>>({});
+  const [, bumpPreview] = useState(0); // force rerender when preview map changes
+
   // variants
   const [selectedAttrs, setSelectedAttrs] = useState<Record<string, string | string[]>>({});
   const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
@@ -371,16 +377,57 @@ export default function SupplierAddProduct() {
 
   const urlPreviews = useMemo(() => limitImages(parseUrlList(imageUrls), MAX_IMAGES), [imageUrls]);
 
-  const filePreviews = useMemo(
-    () => files.map((f) => ({ file: f, url: URL.createObjectURL(f) })),
-    [files]
-  );
+  // ✅ maintain stable object URLs for selected files
+  useEffect(() => {
+    const wanted = new Set(files.map(fileKey));
+    const map = filePreviewMapRef.current;
 
+    // add missing
+    for (const f of files) {
+      const k = fileKey(f);
+      if (!map[k]) map[k] = URL.createObjectURL(f);
+    }
+
+    // remove stale
+    for (const k of Object.keys(map)) {
+      if (!wanted.has(k)) {
+        try {
+          URL.revokeObjectURL(map[k]);
+        } catch {
+          //
+        }
+        delete map[k];
+      }
+    }
+
+    bumpPreview((x) => x + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files]);
+
+  // cleanup on unmount
   useEffect(() => {
     return () => {
-      filePreviews.forEach((p) => URL.revokeObjectURL(p.url));
+      const map = filePreviewMapRef.current;
+      for (const k of Object.keys(map)) {
+        try {
+          URL.revokeObjectURL(map[k]);
+        } catch {
+          //
+        }
+        delete map[k];
+      }
     };
-  }, [filePreviews]);
+  }, []);
+
+  const filePreviews = useMemo(() => {
+    const map = filePreviewMapRef.current;
+    return files
+      .map((f) => {
+        const k = fileKey(f);
+        return { file: f, url: map[k] };
+      })
+      .filter((x) => !!x.url);
+  }, [files]);
 
   // claimed by URL + already uploaded (not counting pending files)
   const claimedByTextAndUploaded = useMemo(() => {
@@ -415,11 +462,9 @@ export default function SupplierAddProduct() {
     });
   }
 
-  // ✅ Extract URLs from many possible upload response shapes
   function extractUploadUrls(respData: any): string[] {
     const d = respData;
 
-    // Common shapes
     const candidates: any[] =
       (Array.isArray(d) ? d : null) ??
       (Array.isArray(d?.urls) ? d.urls : null) ??
@@ -437,7 +482,9 @@ export default function SupplierAddProduct() {
         if (typeof x.location === "string") out.push(x.location);
       }
     }
-    return out;
+
+    // ✅ normalize to /uploads/... and dedupe
+    return limitImages(out, MAX_IMAGES);
   }
 
   async function uploadLocalFiles(): Promise<string[]> {
@@ -465,14 +512,14 @@ export default function SupplierAddProduct() {
       const clean = limitImages(rawUrls, MAX_IMAGES);
 
       if (!clean.length) {
-        // helpful debugging message
-        throw new Error(
-          "Upload succeeded but no image URLs were returned. Check /api/uploads response shape."
-        );
+        throw new Error("Upload succeeded but no image URLs were returned. Check /api/uploads response shape.");
       }
 
       // Only take what fits
-      const spaceNow = Math.max(0, MAX_IMAGES - limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES).length);
+      const spaceNow = Math.max(
+        0,
+        MAX_IMAGES - limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES).length
+      );
       const take = clean.slice(0, spaceNow);
 
       setUploadedUrls((prev) => limitImages([...prev, ...take], MAX_IMAGES));
@@ -494,6 +541,16 @@ export default function SupplierAddProduct() {
     const next = raw.filter((x) => normalizeImageUrl(x) !== normalizeImageUrl(u));
     setImageUrls(next.join("\n"));
   }
+
+  function removeSelectedFile(file: File) {
+    setFiles((prev) => prev.filter((f) => f !== file));
+    // preview map cleanup happens in effect
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  const allUrlPreviews = useMemo(() => {
+    return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
+  }, [urlPreviews, uploadedUrls]);
 
   /* =========================
      Variants helpers
@@ -815,7 +872,6 @@ export default function SupplierAddProduct() {
       const urlList = limitImages(urlListRaw, MAX_IMAGES);
 
       if (urlListRaw.length !== urlList.length) {
-        // normalize stored text list too
         setImageUrls(urlList.join("\n"));
       }
 
@@ -844,7 +900,6 @@ export default function SupplierAddProduct() {
       setTimeout(() => nav("/supplier/products", { replace: true }), 600);
     },
     onError: (e: any) => {
-      // ✅ better extraction so you see the real backend error
       const msg =
         e?.response?.data?.detail ||
         e?.response?.data?.error ||
@@ -859,10 +914,6 @@ export default function SupplierAddProduct() {
     if (skuTouchedRef.current) return;
     setSku(slugifySku(title));
   }, [title]);
-
-  const allUrlPreviews = useMemo(() => {
-    return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
-  }, [urlPreviews, uploadedUrls]);
 
   const variantRowsWithSelections = useMemo(
     () => variantRows.filter((r) => rowHasAnySelection(r.selections)),
@@ -1189,39 +1240,61 @@ export default function SupplierAddProduct() {
                   {(allUrlPreviews.length > 0 || filePreviews.length > 0) && (
                     <div>
                       <div className="text-xs font-semibold text-zinc-800 mb-2">Image previews</div>
+
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                         {allUrlPreviews.slice(0, MAX_IMAGES).map((u) => (
                           <div key={u} className="rounded-xl border overflow-hidden bg-white">
                             <div className="aspect-[4/3] bg-zinc-100 relative">
-                              <img src={u} alt="" className="w-full h-full object-cover" />
+                              <img
+                                src={u}
+                                alt=""
+                                className="w-full h-full object-cover"
+                                loading="lazy"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = "none";
+                                }}
+                              />
                               <button
                                 type="button"
                                 onClick={() => {
-                                  // try removing from text list first, otherwise from uploaded
                                   const inText = parseUrlList(imageUrls).some(
                                     (x) => normalizeImageUrl(x) === normalizeImageUrl(u)
                                   );
                                   if (inText) removeTextUrl(u);
                                   else removeUploadedUrl(u);
                                 }}
-                                className="absolute top-2 right-2 inline-flex items-center justify-center w-8 h-8 rounded-full bg-white/90 border hover:bg-white"
+                                className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full
+                                  bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                aria-label="Remove image"
                                 title="Remove"
                               >
-                                <Trash2 size={14} className="text-rose-700" />
+                                <X size={18} className="text-rose-700" />
                               </button>
                             </div>
                             <div className="p-2 text-[10px] text-zinc-600 truncate">{u}</div>
                           </div>
                         ))}
 
-                        {filePreviews.slice(0, MAX_IMAGES - allUrlPreviews.length).map(({ file, url }) => (
-                          <div key={url} className="rounded-xl border overflow-hidden bg-white">
-                            <div className="aspect-[4/3] bg-zinc-100">
-                              <img src={url} alt={file.name} className="w-full h-full object-cover" />
+                        {filePreviews
+                          .slice(0, Math.max(0, MAX_IMAGES - allUrlPreviews.length))
+                          .map(({ file, url }) => (
+                            <div key={url} className="rounded-xl border overflow-hidden bg-white">
+                              <div className="aspect-[4/3] bg-zinc-100 relative">
+                                <img src={url} alt={file.name} className="w-full h-full object-cover" />
+                                <button
+                                  type="button"
+                                  onClick={() => removeSelectedFile(file)}
+                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full
+                                    bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                  aria-label="Remove selected file"
+                                  title="Remove"
+                                >
+                                  <X size={18} className="text-rose-700" />
+                                </button>
+                              </div>
+                              <div className="p-2 text-[10px] text-zinc-600 truncate">{file.name}</div>
                             </div>
-                            <div className="p-2 text-[10px] text-zinc-600 truncate">{file.name}</div>
-                          </div>
-                        ))}
+                          ))}
                       </div>
                     </div>
                   )}
@@ -1352,7 +1425,9 @@ export default function SupplierAddProduct() {
                                 <label
                                   key={x.id}
                                   className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
-                                    checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                    checked
+                                      ? "bg-zinc-900 text-white border-zinc-900"
+                                      : "bg-white hover:bg-black/5"
                                   }`}
                                 >
                                   <input
@@ -1402,7 +1477,6 @@ export default function SupplierAddProduct() {
                   )}
 
                   {variantRows.map((row) => {
-                    const rowQty = toIntNonNeg(row.availableQty);
                     const isDup = duplicateRowIds.has(row.id);
                     const isBaseConflict = baseComboConflictRowIds.has(row.id);
                     const isFlashing = flashVariantRowId === row.id;
@@ -1490,7 +1564,9 @@ export default function SupplierAddProduct() {
                   })}
 
                   {variantRows.length === 0 && (
-                    <div className="text-sm text-zinc-500">No variant rows yet. Click “Add row” to create combinations.</div>
+                    <div className="text-sm text-zinc-500">
+                      No variant rows yet. Click “Add row” to create combinations.
+                    </div>
                   )}
                 </div>
               </Card>

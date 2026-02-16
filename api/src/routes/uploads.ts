@@ -97,9 +97,7 @@ router.post(
       return res.status(400).json({ error: "No files uploaded. Use field 'files' (multi) or 'file' (single)." });
     }
 
-    const base = absoluteBase(req);
-    const urls = files.map((f) => `${base}/uploads/${path.basename(f.path)}`);
-
+    const urls = files.map((f) => `/uploads/${encodeURIComponent(path.basename(f.path))}`);
     return res.json({ urls });
   }
 );
@@ -111,10 +109,10 @@ router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => 
       err.code === "LIMIT_FILE_SIZE"
         ? "File too large (max 10MB)."
         : err.code === "LIMIT_FILE_COUNT"
-        ? "Too many files."
-        : err.code === "LIMIT_UNEXPECTED_FILE"
-        ? "Unexpected file field. Use 'files' (multi) or 'file' (single)."
-        : `Upload error: ${err.message}`;
+          ? "Too many files."
+          : err.code === "LIMIT_UNEXPECTED_FILE"
+            ? "Unexpected file field. Use 'files' (multi) or 'file' (single)."
+            : `Upload error: ${err.message}`;
 
     return res.status(400).json({ error: msg, code: err.code });
   }

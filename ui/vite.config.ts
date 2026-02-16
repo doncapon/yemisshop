@@ -14,10 +14,9 @@ export default defineConfig({
         secure: false,
 
       },
+      "/uploads": "http://127.0.0.1:8080",
     },
   },
   base: "/"
 });
-
-
 
