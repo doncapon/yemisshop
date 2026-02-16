@@ -2,8 +2,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowRight, Package, Plus, Search, SlidersHorizontal, Pencil } from "lucide-react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowRight, Package, Plus, Search, SlidersHorizontal, Pencil, Trash2 } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import SiteLayout from "../../layouts/SiteLayout";
 import SupplierLayout from "../../layouts/SupplierLayout";
@@ -33,6 +33,14 @@ type SupplierProductListItem = {
   availableQty?: number;
 };
 
+type DeleteEligibility = {
+  canDelete: boolean;
+  reason?: string | null;
+  ownedBySupplier?: boolean;
+  hasOrders?: boolean;
+  hasOtherSupplierOffers?: boolean;
+};
+
 function Badge({
   children,
   tone = "neutral",
@@ -45,7 +53,11 @@ function Badge({
       ? "border-amber-200 bg-amber-50 text-amber-800"
       : "border-zinc-200 bg-zinc-50 text-zinc-700";
 
-  return <span className={`inline-flex items-center px-2 py-1 rounded-full text-[11px] border ${cls}`}>{children}</span>;
+  return (
+    <span className={`inline-flex items-center px-2 py-1 rounded-full text-[11px] border ${cls}`}>
+      {children}
+    </span>
+  );
 }
 
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
@@ -68,7 +80,7 @@ export default function SupplierProductsPage() {
     useAuthStore.getState().bootstrap?.().catch?.(() => null);
   }, []);
 
-  // ✅ admin supplierId: url OR stored (fixes “empty until refresh / missing supplierId”)
+  // ✅ admin supplierId: url OR stored
   const urlSupplierId = useMemo(() => {
     const v = normStr(searchParams.get("supplierId"));
     return v || undefined;
@@ -112,7 +124,9 @@ export default function SupplierProductsPage() {
   };
 
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState<"ANY" | "PENDING" | "LIVE" |"APPROVED" | "REJECTED" | "PUBLISHED">("ANY");
+  const [status, setStatus] = useState<
+    "ANY" | "PENDING" | "LIVE" | "APPROVED" | "REJECTED" | "PUBLISHED"
+  >("ANY");
   const [categoryId, setCategoryId] = useState("");
   const [brandId, setBrandId] = useState("");
   const [showFilters, setShowFilters] = useState(false);
@@ -147,7 +161,7 @@ export default function SupplierProductsPage() {
     retry: 1,
   });
 
-  // ✅ force a refetch once session is hydrated (prevents “landed but blank”)
+  // ✅ force a refetch once session is hydrated
   useEffect(() => {
     if (!hydrated) return;
     productsQ.refetch().catch(() => null);
@@ -182,6 +196,86 @@ export default function SupplierProductsPage() {
     return Number.isFinite(x) ? x.toLocaleString("en-NG") : "—";
   };
 
+  // ✅ Bulk eligibility (THIS is the endpoint you implemented)
+  const eligQ = useQuery({
+    queryKey: [
+      "supplier",
+      "products",
+      "delete-eligibility",
+      { ids: filtered.map((x) => x.id), supplierId: adminSupplierId },
+    ],
+    enabled: hydrated && filtered.length > 0 && (!isAdmin || !!adminSupplierId),
+    queryFn: async () => {
+      const ids = filtered.map((x) => x.id).join(",");
+      const { data } = await api.get("/api/supplier/products/delete-eligibility", {
+        withCredentials: true,
+        params: { ids, supplierId: adminSupplierId },
+      });
+      return ((data as any)?.data ?? {}) as Record<string, DeleteEligibility>;
+    },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    retry: 0,
+  });
+
+  const canDeleteOf = (productId: string) => {
+    const row = (eligQ.data || {})[productId] as DeleteEligibility | undefined;
+    return { canDelete: !!row?.canDelete, reason: row?.reason ?? null };
+  };
+
+  const deleteM = useMutation({
+    mutationFn: async (productId: string) => {
+      const { data } = await api.delete(`/api/supplier/products/${productId}`, {
+        withCredentials: true,
+        params: { supplierId: adminSupplierId },
+      });
+      return (data as any)?.data ?? data;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["supplier", "products"] });
+      await qc.invalidateQueries({ queryKey: ["supplier", "products", "delete-eligibility"] });
+    },
+    onError: (e: any) => {
+      const msg = e?.response?.data?.userMessage || e?.response?.data?.error || e?.message || "Failed to delete product.";
+      window.alert(msg);
+    },
+  });
+
+  const confirmAndDelete = async (p: SupplierProductListItem) => {
+    const { canDelete, reason } = canDeleteOf(p.id);
+
+    if (!canDelete) {
+      window.alert(reason || "This product cannot be deleted.");
+      return;
+    }
+
+    const ok = window.confirm(`Delete "${p.title}"?\n\nThis cannot be undone.`);
+    if (!ok) return;
+
+    deleteM.mutate(p.id);
+  };
+
+  const goEdit = async (productId: string) => {
+    // warm cache a bit then navigate
+    qc.invalidateQueries({ queryKey: ["supplier", "product", productId] });
+    try {
+      await qc.prefetchQuery({
+        queryKey: ["supplier", "product", productId],
+        queryFn: async () => {
+          const { data } = await api.get(`/api/supplier/products/${productId}`, {
+            withCredentials: true,
+            params: { supplierId: adminSupplierId },
+          });
+          return (data as any)?.data ?? (data as any);
+        },
+        staleTime: 0,
+      });
+    } catch {
+      // ok to ignore; edit page will load anyway
+    }
+    nav(withSupplierCtx(`/supplier/products/${productId}/edit`));
+  };
+
   return (
     <SiteLayout>
       <SupplierLayout>
@@ -195,7 +289,7 @@ export default function SupplierProductsPage() {
           </div>
         )}
 
-        {/* Hero (compact on mobile) */}
+        {/* Hero */}
         <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
           <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
@@ -227,7 +321,6 @@ export default function SupplierProductsPage() {
               </Link>
             </div>
 
-            {/* tiny status line */}
             {!hydrated ? (
               <div className="mt-3 text-[12px] text-white/80">Loading session…</div>
             ) : productsQ.isFetching ? (
@@ -243,7 +336,7 @@ export default function SupplierProductsPage() {
           </div>
         </div>
 
-        {/* Controls (mobile tidy + collapsible filters) */}
+        {/* Controls */}
         <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
           <Card className="lg:col-span-2">
             <div className="p-3 sm:p-5 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
@@ -266,7 +359,8 @@ export default function SupplierProductsPage() {
               </button>
             </div>
 
-            {(showFilters || window.matchMedia?.("(min-width: 640px)")?.matches) && (
+            {/* show filters always on >=sm; toggle on mobile */}
+            {(showFilters || typeof window === "undefined" || window.matchMedia("(min-width: 640px)").matches) && (
               <div className="px-3 sm:px-5 pb-4 sm:pb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
                 <select
                   value={status}
@@ -361,6 +455,8 @@ export default function SupplierProductsPage() {
                     const br = p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—";
                     const low = typeof p.availableQty === "number" && p.availableQty <= lowStockThreshold;
 
+                    const del = canDeleteOf(p.id);
+
                     return (
                       <div key={p.id} className="rounded-2xl border bg-white p-3">
                         <div className="flex gap-3">
@@ -398,33 +494,44 @@ export default function SupplierProductsPage() {
                           </div>
                         </div>
 
-                        <div className="mt-3 flex items-center justify-between gap-2">
-                          <div className="text-[13px] font-semibold text-zinc-900">₦{fmtPrice(p.basePrice)}</div>
+                        <div className="mt-3 flex items-center justify-between gap-3">
+                          <div className="text-[14px] font-semibold text-zinc-900">₦{fmtPrice(p.basePrice)}</div>
+                          {typeof p.availableQty === "number" && (
+                            <div className="text-[11px] text-zinc-500">
+                              Qty: <span className="font-medium text-zinc-800">{p.availableQty}</span>
+                            </div>
+                          )}
+                        </div>
 
+                        {/* ✅ Mobile actions: neat + always visible */}
+                        <div className="mt-3 grid grid-cols-2 gap-2">
                           <button
                             type="button"
-                            onClick={async () => {
-                              qc.invalidateQueries({ queryKey: ["supplier", "product", p.id] });
-
-                              await qc.prefetchQuery({
-                                queryKey: ["supplier", "product", p.id],
-                                queryFn: async () => {
-                                  const { data } = await api.get(`/api/supplier/products/${p.id}`, {
-                                    withCredentials: true,
-                                    params: { supplierId: adminSupplierId },
-                                  });
-                                  return (data as any)?.data ?? (data as any);
-                                },
-                                staleTime: 0,
-                              });
-
-                              nav(withSupplierCtx(`/supplier/products/${p.id}/edit`));
-                            }}
-                            className="inline-flex items-center gap-2 rounded-full border bg-white px-3 py-2 text-[12px] hover:bg-black/5"
+                            onClick={() => goEdit(p.id)}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-3 py-2.5 text-[12px] font-semibold hover:bg-black/5"
                           >
                             <Pencil size={14} /> Edit
                           </button>
+
+                          <button
+                            type="button"
+                            disabled={!del.canDelete || deleteM.isPending}
+                            title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
+                            onClick={() => confirmAndDelete(p)}
+                            className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold transition
+                              ${
+                                del.canDelete && !deleteM.isPending
+                                  ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
+                                  : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                              }`}
+                          >
+                            <Trash2 size={14} /> Delete
+                          </button>
                         </div>
+
+                        {!del.canDelete && del.reason && (
+                          <div className="mt-2 text-[11px] text-zinc-500 leading-snug">{del.reason}</div>
+                        )}
                       </div>
                     );
                   })}
@@ -449,57 +556,66 @@ export default function SupplierProductsPage() {
                 </thead>
 
                 <tbody className="text-zinc-800">
-                  {filtered.map((p) => (
-                    <tr key={p.id} className="border-t">
-                      <td className="py-3 font-semibold">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate">{p.title}</span>
-                          {typeof p.availableQty === "number" && p.availableQty <= lowStockThreshold && (
-                            <Badge tone="warning">Low stock</Badge>
+                  {filtered.map((p) => {
+                    const del = canDeleteOf(p.id);
+
+                    return (
+                      <tr key={p.id} className="border-t">
+                        <td className="py-3 font-semibold">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate">{p.title}</span>
+                            {typeof p.availableQty === "number" && p.availableQty <= lowStockThreshold && (
+                              <Badge tone="warning">Low stock</Badge>
+                            )}
+                          </div>
+                        </td>
+
+                        <td className="py-3">{p.sku}</td>
+                        <td className="py-3">{p.categoryId ? categoryNameById.get(p.categoryId) ?? "—" : "—"}</td>
+                        <td className="py-3">{p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—"}</td>
+
+                        <td className="py-3">
+                          <span className="inline-flex px-2 py-1 rounded-full text-[11px] border bg-zinc-50 text-zinc-700 border-zinc-200">
+                            {p.status}
+                          </span>
+                        </td>
+
+                        <td className="py-3">{p.inStock ? "In stock" : "Out"}</td>
+                        <td className="py-3">₦{fmtPrice(p.basePrice)}</td>
+
+                        <td className="py-3">
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => goEdit(p.id)}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5"
+                            >
+                              <Pencil size={14} /> Edit
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={!del.canDelete || deleteM.isPending}
+                              title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
+                              onClick={() => confirmAndDelete(p)}
+                              className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs transition
+                                ${
+                                  del.canDelete && !deleteM.isPending
+                                    ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
+                                    : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                                }`}
+                            >
+                              <Trash2 size={14} /> Delete
+                            </button>
+                          </div>
+
+                          {!del.canDelete && del.reason && (
+                            <div className="mt-1 text-[11px] text-zinc-500">{del.reason}</div>
                           )}
-                        </div>
-                      </td>
-
-                      <td className="py-3">{p.sku}</td>
-                      <td className="py-3">{p.categoryId ? categoryNameById.get(p.categoryId) ?? "—" : "—"}</td>
-                      <td className="py-3">{p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—"}</td>
-
-                      <td className="py-3">
-                        <span className="inline-flex px-2 py-1 rounded-full text-[11px] border bg-zinc-50 text-zinc-700 border-zinc-200">
-                          {p.status}
-                        </span>
-                      </td>
-
-                      <td className="py-3">{p.inStock ? "In stock" : "Out"}</td>
-                      <td className="py-3">₦{fmtPrice(p.basePrice)}</td>
-
-                      <td className="py-3">
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            qc.invalidateQueries({ queryKey: ["supplier", "product", p.id] });
-
-                            await qc.prefetchQuery({
-                              queryKey: ["supplier", "product", p.id],
-                              queryFn: async () => {
-                                const { data } = await api.get(`/api/supplier/products/${p.id}`, {
-                                  withCredentials: true,
-                                  params: { supplierId: adminSupplierId },
-                                });
-                                return (data as any)?.data ?? (data as any);
-                              },
-                              staleTime: 0,
-                            });
-
-                            nav(withSupplierCtx(`/supplier/products/${p.id}/edit`));
-                          }}
-                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5"
-                        >
-                          <Pencil size={14} /> Edit
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                      </tr>
+                    );
+                  })}
 
                   {!productsQ.isLoading && filtered.length === 0 && (
                     <tr>

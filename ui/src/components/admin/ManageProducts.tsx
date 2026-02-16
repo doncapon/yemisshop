@@ -857,7 +857,7 @@ export function ManageProducts({
           const { data } = await api.get(url, cookieOpts);
           const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
-        } catch {}
+        } catch { }
       }
       return [];
     },
@@ -875,7 +875,7 @@ export function ManageProducts({
           const { data } = await api.get(url, cookieOpts);
           const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
-        } catch {}
+        } catch { }
       }
       return [];
     },
@@ -895,7 +895,7 @@ export function ManageProducts({
           const { data } = await api.get(url, cookieOpts);
           const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
-        } catch {}
+        } catch { }
       }
       return [];
     },
@@ -911,7 +911,7 @@ export function ManageProducts({
           const { data } = await api.get(url, cookieOpts);
           const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
-        } catch {}
+        } catch { }
       }
       return [];
     },
@@ -1121,7 +1121,7 @@ export function ManageProducts({
       if (d?.pending) setPending(d.pending);
       if (Array.isArray(d?.variantRows)) setVariantRows(d.variantRows);
       if (d?.selectedAttrs) setSelectedAttrs(d.selectedAttrs);
-    } catch {}
+    } catch { }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [DRAFT_KEY]);
 
@@ -1516,9 +1516,9 @@ export function ManageProducts({
         String(r?.id) !== rid
           ? r
           : {
-              ...r,
-              selections: { ...(r.selections || {}), [aid]: vid },
-            }
+            ...r,
+            selections: { ...(r.selections || {}), [aid]: vid },
+          }
       );
     });
 
@@ -2293,7 +2293,7 @@ export function ManageProducts({
 
   /* ---------------- Primary actions ---------------- */
 
-  function submitStatusEdit(pId: string, intent: "approvePublished" | "movePending") {
+  function submitStatusEdit(pId: string, intent: "approvePublished" | "movePending" | "reject") {
     const source = rowsWithDerived.find((r: any) => r.id === pId);
     if (!source) return;
 
@@ -2308,10 +2308,13 @@ export function ManageProducts({
       patch.status = "PUBLISHED";
     } else if (intent === "movePending") {
       patch.status = "PENDING";
+    } else if (intent === "reject") {
+      patch.status = "REJECTED";
     }
 
     updateStatusM.mutate({ id: pId, ...patch });
   }
+
 
   function primaryActionForRow(p: any): any {
     const eff = getStatus(p);
@@ -2325,7 +2328,7 @@ export function ManageProducts({
         label: "…",
         title: "Checking…",
         disabled: true,
-        onClick: () => {},
+        onClick: () => { },
         className: "px-2 py-1 rounded bg-zinc-400 text-white",
       };
     }
@@ -3053,7 +3056,7 @@ export function ManageProducts({
                 onBlur={() => {
                   try {
                     setSearch(qInput);
-                  } catch {}
+                  } catch { }
                 }}
                 placeholder="Search by title / SKU / owner…"
                 className="w-full rounded-xl border px-3 py-2 text-sm"
@@ -3072,53 +3075,120 @@ export function ManageProducts({
       </div>
 
       {/* ================= Mobile Cards (neater) ================= */}
-      <div className="md:hidden space-y-2">
+      {/* ================= Mobile Cards (neater) ================= */}
+      <div className="md:hidden space-y-3">
         {displayRows.map((p) => {
           const action = primaryActionForRow(p);
           const price = displayRetailForRow(p);
+          const status = getStatus(p);
+          const owner = getOwner(p) || "—";
+
+          const mobileLabel = (label: string) => {
+            if (label === "Approve PUBLISHED") return "Approve";
+            if (label === "Move to PENDING") return "Unpublish";
+            if (label === "Delete") return "Delete";
+            if (label === "Archive") return "Archive";
+            if (label === "Revive") return "Restore";
+            return label;
+          };
+
+          const statusPill =
+            status === "PUBLISHED" || status === "LIVE"
+              ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+              : status === "PENDING"
+                ? "bg-amber-50 text-amber-700 border-amber-200"
+                : status === "REJECTED"
+                  ? "bg-rose-50 text-rose-700 border-rose-200"
+                  : "bg-slate-50 text-slate-700 border-slate-200";
+
+          // derive a consistent primary button style for mobile (ignore px/py in action.className)
+          const primaryIntent =
+            action.label === "Approve PUBLISHED"
+              ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+              : action.label === "Move to PENDING"
+                ? "bg-amber-400 hover:bg-amber-500 text-white"
+                : action.label === "Revive"
+                  ? "bg-sky-600 hover:bg-sky-700 text-white"
+                  : action.label === "…"
+                    ? "bg-zinc-400 text-white"
+                    : "bg-rose-600 hover:bg-rose-700 text-white";
+
           return (
-            <div key={p.id} className="rounded-2xl border bg-white shadow-sm p-3">
+            <div key={p.id} className="rounded-2xl border bg-white shadow-sm p-4">
+              {/* Header */}
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="font-semibold truncate">{p.title}</div>
-                  <div className="text-xs text-slate-500 font-mono truncate">{p.sku || p.id}</div>
+                  <div className="font-semibold truncate">{(p.title || "").trim() || "Untitled product"}</div>
+                  <div className="mt-0.5 text-[11px] text-slate-500 font-mono truncate">{p.sku || p.id}</div>
                 </div>
+
                 <div className="text-right shrink-0">
-                  <div className="font-semibold">₦{Number(price || 0).toLocaleString()}</div>
-                  <div className="text-xs text-slate-600">{getStatus(p)}</div>
+                  <div className="font-semibold tabular-nums">₦{Number(price || 0).toLocaleString()}</div>
+                  <div className="mt-1">
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPill}`}>
+                      {status}
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-600">
-                <div className="rounded-xl bg-slate-50 border px-2 py-1">
-                  <div className="text-[11px] text-slate-500">Offers</div>
-                  <div className="font-medium">{Number((p as any).__offerCount ?? 0).toLocaleString()}</div>
+              {/* Stats */}
+              <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                <div className="rounded-xl bg-slate-50 border px-2.5 py-2">
+                  <div className="text-[11px] text-slate- reminder:
+ove-500">Offers</div>
+                  <div className="mt-0.5 font-semibold text-slate-800 tabular-nums">
+                    {Number((p as any).__offerCount ?? 0).toLocaleString()}
+                  </div>
                 </div>
-                <div className="rounded-xl bg-slate-50 border px-2 py-1">
+
+                <div className="rounded-xl bg-slate-50 border px-2.5 py-2">
                   <div className="text-[11px] text-slate-500">Avail</div>
-                  <div className="font-medium">{Number(p.availableQty ?? 0).toLocaleString()}</div>
+                  <div className="mt-0.5 font-semibold text-slate-800 tabular-nums">
+                    {Number(p.availableQty ?? 0).toLocaleString()}
+                  </div>
                 </div>
-                <div className="rounded-xl bg-slate-50 border px-2 py-1">
+
+                <div className="rounded-xl bg-slate-50 border px-2.5 py-2">
                   <div className="text-[11px] text-slate-500">Stock</div>
-                  <div className="font-medium">{p.inStock ? "Yes" : "No"}</div>
+                  <div className="mt-0.5 font-semibold text-slate-800">{p.inStock ? "Yes" : "No"}</div>
                 </div>
               </div>
 
-              <div className="mt-2 text-xs text-slate-500 truncate">Owner: {getOwner(p) || "—"}</div>
+              <div className="mt-2 text-[12px] text-slate-500 truncate">Owner: {owner}</div>
 
-              <div className="mt-3 flex gap-2">
-                <button type="button" onClick={() => startEdit(p)} className="flex-1 rounded-xl border px-3 py-2 text-sm hover:bg-slate-50">
+              {/* Actions (clean grid, no overflow) */}
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => startEdit(p)}
+                  className="w-full rounded-xl border px-3 py-3 text-sm font-medium hover:bg-slate-50"
+                >
                   Edit
                 </button>
+
                 <button
                   type="button"
                   title={action.title}
                   onClick={action.onClick}
-                  className={`flex-1 ${action.className}`}
                   disabled={action.disabled || deleteM.isPending || restoreM.isPending}
+                  className={`w-full rounded-xl px-3 py-3 text-sm font-semibold ${primaryIntent} disabled:opacity-50`}
                 >
-                  {action.label}
+                  <span className="block truncate">{mobileLabel(action.label)}</span>
                 </button>
+
+                {/* SUPER_ADMIN only: Reject when still pending (shown under row) */}
+                {isSuper && status === "PENDING" && action.label === "Approve PUBLISHED" && (
+                  <button
+                    type="button"
+                    onClick={() => submitStatusEdit(p.id, "reject")}
+                    className="col-span-2 w-full rounded-xl bg-rose-600 text-white px-3 py-3 text-sm font-semibold hover:bg-rose-700 disabled:opacity-50"
+                    disabled={updateStatusM.isPending}
+                    title="Reject product"
+                  >
+                    Reject
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -3132,6 +3202,7 @@ export function ManageProducts({
           <div className="rounded-2xl border bg-white shadow-sm p-6 text-slate-500">Loading…</div>
         )}
       </div>
+
 
       {/* ================= Desktop Table ================= */}
       <div className="hidden md:block rounded-2xl border bg-white shadow-sm overflow-hidden">
@@ -3200,19 +3271,34 @@ export function ManageProducts({
                     <td className="p-3">{getOwner(p) || "—"}</td>
                     <td className="p-3">
                       <div className="flex flex-wrap gap-2">
-                        <button type="button" onClick={() => startEdit(p)} className="rounded-lg border px-3 py-2 hover:bg-slate-50">
-                          Edit
-                        </button>
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" onClick={() => startEdit(p)} className="rounded-lg border px-3 py-2 hover:bg-slate-50">
+                            Edit
+                          </button>
 
-                        <button
-                          type="button"
-                          title={action.title}
-                          onClick={action.onClick}
-                          className={action.className}
-                          disabled={action.disabled || deleteM.isPending || restoreM.isPending}
-                        >
-                          {action.label}
-                        </button>
+                          <button
+                            type="button"
+                            title={action.title}
+                            onClick={action.onClick}
+                            className={action.className}
+                            disabled={action.disabled || deleteM.isPending || restoreM.isPending}
+                          >
+                            {action.label}
+                          </button>
+
+                          {/* ✅ SUPER_ADMIN only: Reject when still pending (shown next to Approve) */}
+                          {isSuper && getStatus(p) === "PENDING" && action.label === "Approve PUBLISHED" && (
+                            <button
+                              type="button"
+                              onClick={() => submitStatusEdit(p.id, "reject")}
+                              className="px-3 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-700"
+                              disabled={updateStatusM.isPending}
+                              title="Reject product"
+                            >
+                              Reject
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </td>
                   </tr>

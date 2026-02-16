@@ -1335,40 +1335,56 @@ router.post(
   })
 );
 
+/* -------------------------------------------------------------------------- */
+/* Go-live / Publish helper                                                    */
+/* -------------------------------------------------------------------------- */
+
 router.post(
-  "/:productId/approve",
+  "/:id/go-live",
   requireSuperAdmin,
   wrap(async (req, res) => {
-    const productId = requiredString(req.params.productId);
+    const id = requiredString(req.params.id);
 
-    if (!isValidProductStatus("PUBLISHED")) {
-      return res.status(400).json({ error: "Schema does not support PUBLISHED status" });
+    // ✅ default: require offer (approvable only if there is an eligible offer)
+    const mustHaveOffer = String((req.query as any)?.requireOffer ?? "1") !== "0";
+    if (mustHaveOffer) {
+      const ok = await computeHasLiveEligibleOffer(id);
+      if (!ok) {
+        return res
+          .status(400)
+          .json({ error: "Cannot go-live: no active in-stock offer with price/qty found." });
+      }
     }
 
-    const data = await prisma.product.update({
-      where: { id: productId },
-      data: { status: "PUBLISHED" } as any,
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        retailPrice: true,
-        autoPrice: true,
-        priceMode: true,
-        imagesJson: true,
-        createdAt: true,
-      },
+    // ✅ FIX: prefer LIVE first; fallback to PUBLISHED only if LIVE isn't in the enum
+    const nextStatus = isValidProductStatus("LIVE")
+      ? "LIVE"
+      : isValidProductStatus("PUBLISHED")
+      ? "PUBLISHED"
+      : null;
+
+    if (!nextStatus) {
+      return res.status(400).json({ error: "Schema does not support LIVE/PUBLISHED status" });
+    }
+
+    const updated = await prisma.product.update({
+      where: { id },
+      data: { status: nextStatus } as any,
+      select: { id: true, status: true, retailPrice: true, autoPrice: true, priceMode: true, title: true },
     });
 
-    res.json({
+    return res.json({
       data: {
-        ...data,
-        autoPrice: data.autoPrice != null ? Number(data.autoPrice) : null,
-        retailPrice: computeDisplayPrice(data),
+        ...updated,
+        autoPrice: updated.autoPrice != null ? Number(updated.autoPrice) : null,
+        retailPrice: computeDisplayPrice(updated),
       },
     });
   })
 );
+
+
+
 
 router.post(
   "/:productId/reject",

@@ -536,8 +536,10 @@ type PriceBucket = { label: string; min: number; max?: number };
 type SortKey = 'relevance' | 'price-asc' | 'price-desc';
 
 function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceBucket[] {
+  // fallback (your static defaults) — also fix the label typo (₦1,00 -> ₦100)
   if (!Number.isFinite(maxPrice) || maxPrice <= 0) {
     return [
+      { label: '₦0 – ₦999', min: 0, max: 999 },
       { label: '₦1,000 – ₦4,999', min: 1_000, max: 4_999 },
       { label: '₦5,000 – ₦9,999', min: 5_000, max: 9_999 },
       { label: '₦10,000 – ₦49,999', min: 10_000, max: 49_999 },
@@ -546,23 +548,40 @@ function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceB
     ];
   }
 
+  const buckets: PriceBucket[] = [];
+
+  // ✅ Always include the 0–(baseStep-1) bucket
+  const firstMax = Math.min(baseStep - 1, Math.floor(maxPrice));
+  buckets.push({
+    label: `${formatN(0)} – ${formatN(firstMax)}`,
+    min: 0,
+    max: firstMax,
+  });
+
+  // If everything is under baseStep, we're done
+  if (maxPrice < baseStep) return buckets;
+
+  // Continue your dynamic thresholds from baseStep
   const thresholds: number[] = [baseStep];
   let mult = 5;
 
   while (thresholds[thresholds.length - 1] < maxPrice) {
-    const next = thresholds[thresholds.length - 1] * mult;
-    thresholds.push(next);
+    thresholds.push(thresholds[thresholds.length - 1] * mult);
     mult = mult === 5 ? 2 : 5;
   }
 
-  const buckets: PriceBucket[] = [];
   for (let i = 0; i < thresholds.length; i++) {
     const start = thresholds[i];
     const next = thresholds[i + 1];
     const end = next ? next - 1 : undefined;
-    const label = end ? `${formatN(start)} – ${formatN(end)}` : `${formatN(start)}+`;
-    buckets.push({ label, min: start, max: end });
+
+    buckets.push({
+      label: end ? `${formatN(start)} – ${formatN(end)}` : `${formatN(start)}+`,
+      min: start,
+      max: end,
+    });
   }
+
   return buckets;
 }
 
