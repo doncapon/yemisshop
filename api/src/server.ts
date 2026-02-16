@@ -4,6 +4,7 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import path from "path";
+import helmet from "helmet";
 import * as fs from "fs";
 
 // Routers
@@ -125,6 +126,41 @@ app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
   next();
 });
+
+app.use(
+  helmet({
+    // Good defaults; we’ll override CSP below
+    crossOriginResourcePolicy: { policy: "same-site" },
+  })
+);
+
+
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'none'"],
+      baseUri: ["'none'"],
+      frameAncestors: ["'none'"],
+      formAction: ["'none'"],
+      scriptSrc: ["'none'"],
+      styleSrc: ["'none'"],
+      imgSrc: ["'none'"],
+      connectSrc: ["'self'"], // keep if you need same-origin calls
+      upgradeInsecureRequests: [],
+    },
+  })
+);
+
+// If you serve over HTTPS (you should), enable HSTS *in production only*
+if (process.env.NODE_ENV === "production") {
+  app.use(
+    helmet.hsts({
+      maxAge: 60 * 60 * 24 * 365, // 1 year
+      includeSubDomains: true,
+      preload: false, // set true only when you're 100% ready
+    })
+  );
+}
 
 app.use(express.json({ limit: "2mb" }));
 
