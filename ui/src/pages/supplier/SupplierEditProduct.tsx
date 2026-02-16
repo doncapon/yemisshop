@@ -3,13 +3,18 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { ArrowLeft, ImagePlus, Save, Trash2, Plus, Package } from "lucide-react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import SiteLayout from "../../layouts/SiteLayout";
 import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 import { useCatalogMeta } from "../../hooks/useCatalogMeta";
+
+/* =========================================================
+   Config
+========================================================= */
+const MAX_IMAGES_PER_PRODUCT = 5;
 
 /* =========================================================
    Helpers
@@ -72,6 +77,25 @@ function formatComboLabel(
   }
   return pairs.length ? pairs.join(", ") : "DEFAULT (no options selected)";
 }
+
+function autoSkuFromTitle(input: string) {
+  // Similar to typical AddProduct behavior:
+  // - uppercase
+  // - replace non-alphanumerics with hyphens
+  // - collapse hyphens
+  // - trim
+  const s = String(input ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/&/g, " AND ")
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  // keep it reasonably short (optional)
+  return s.slice(0, 48);
+}
+
 
 function Card({
   title,
@@ -404,6 +428,7 @@ export default function SupplierEditProduct() {
   const nav = useNavigate();
   const { id } = useParams();
   const [searchParams] = useSearchParams();
+  const queryClient = useQueryClient();
 
   // ✅ cookie-auth session
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
@@ -444,6 +469,11 @@ export default function SupplierEditProduct() {
   const [pendingVariantPatchByVariantId, setPendingVariantPatchByVariantId] = useState<Map<string, any>>(
     () => new Map()
   );
+
+  const [skuTouched, setSkuTouched] = useState(false);
+
+
+
 
   const initialSnapshotRef = useRef<{
     id: string;
@@ -499,6 +529,7 @@ export default function SupplierEditProduct() {
     return m;
   }, [selectableAttrs]);
 
+  // keep rows aligned to current selectable attributes
   useEffect(() => {
     if (!selectableAttrs.length) return;
     const ids = selectableAttrs.map((a) => a.id);
@@ -528,15 +559,15 @@ export default function SupplierEditProduct() {
     queryFn: async () => {
       const attempts = offersOnly
         ? [
-            `/api/supplier/products/${id}`,
-            `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
-            `/api/supplier/products/${id}`,
-          ]
+          `/api/supplier/products/${id}`,
+          `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
+          `/api/supplier/products/${id}`,
+        ]
         : [
-            `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
-            `/api/supplier/products/${id}?include=offer,variants`,
-            `/api/supplier/products/${id}`,
-          ];
+          `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
+          `/api/supplier/products/${id}?include=offer,variants`,
+          `/api/supplier/products/${id}`,
+        ];
 
       let lastErr: any = null;
 
@@ -561,10 +592,11 @@ export default function SupplierEditProduct() {
 
   const productStatusUpper = useMemo(() => String(detailQ.data?.status ?? "").toUpperCase(), [detailQ.data?.status]);
 
-  // ✅ LIVE lock rules apply ONLY to owned product edits, not offers-only
+  // ✅ LOCK ONLY when actually LIVE/ACTIVE (fixes false-lock + missing persistence appearance)
   const isLive = useMemo(() => {
     if (offersOnly) return false;
-    return !["PENDING", "REJECTED"].includes(productStatusUpper);
+    const s = String(productStatusUpper || "").toUpperCase();
+    return s === "LIVE" || s === "ACTIVE";
   }, [offersOnly, productStatusUpper]);
 
   const activeBasePriceForDisplay = useMemo(() => {
@@ -579,18 +611,18 @@ export default function SupplierEditProduct() {
     return toMoneyNumber(retailPrice);
   }, [isLive, retailPrice]);
 
-  const isRealVariantRow = (r: VariantRow) => rowHasAnySelection(r.selections);
+  // ✅ treat an “empty, new” row as a draft row (ignore for dup checks/payload)
+  const isRealVariantRow = (r: VariantRow) => !!r.variantId || rowHasAnySelection(r.selections);
 
   const variantQtyTotal = useMemo(() => {
     return variantRows.reduce((sum, r) => sum + (isRealVariantRow(r) ? toIntNonNeg(r.availableQty) : 0), 0);
   }, [variantRows]);
 
   const baseQtyPreview = useMemo(() => toIntNonNeg(availableQty), [availableQty]);
-
   const totalQty = useMemo(() => baseQtyPreview + variantQtyTotal, [baseQtyPreview, variantQtyTotal]);
   const inStockPreview = totalQty > 0;
 
-  const variantsEnabled = useMemo(() => variantRows.some(isRealVariantRow), [variantRows]);
+  const variantsEnabled = useMemo(() => variantRows.some((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections)), [variantRows]);
   const effectiveQty = totalQty;
 
   const computeDupInfo = (rows: VariantRow[]): DupInfo => {
@@ -598,8 +630,12 @@ export default function SupplierEditProduct() {
     const dups = new Set<string>();
     const dupKeys = new Set<string>();
 
-    for (const row of rows) {
+    // Only consider “real” rows: existing variants or rows with at least one selected option.
+    const realRows = rows.filter(isRealVariantRow);
+
+    for (const row of realRows) {
       const key = sparseComboKey(row.selections, attrOrder);
+
       const first = seen.get(key);
       if (first) {
         dups.add(first);
@@ -612,15 +648,15 @@ export default function SupplierEditProduct() {
 
     const labels = Array.from(dupKeys).map((k) => {
       if (k === "DEFAULT") return "DEFAULT (no options selected)";
-      const sample = rows.find((r) => sparseComboKey(r.selections, attrOrder) === k);
+      const sample = realRows.find((r) => sparseComboKey(r.selections, attrOrder) === k);
       return sample ? formatComboLabel(sample.selections, attrOrder, attrNameById, valueNameById) : k;
     });
 
     const explain =
       dups.size > 0
         ? `Duplicate variant combinations found: ${labels.join(
-            " • "
-          )}. Please change options or remove one of the duplicate rows.`
+          " • "
+        )}. Please change options or remove one of the duplicate rows.`
         : null;
 
     return { duplicateRowIds: dups, duplicateLabels: labels, explain };
@@ -645,6 +681,11 @@ export default function SupplierEditProduct() {
     setSelectedAttrs((prev) => ({ ...prev, [attributeId]: value }));
   };
 
+  // optional: if you want to reset skuTouched when loading a new product
+  useEffect(() => {
+    setSkuTouched(false);
+  }, [detailQ.data?.id]);
+
   const getAttrVal = (attributeId: string) => {
     const v = selectedAttrs?.[attributeId];
     if (Array.isArray(v)) return v;
@@ -664,7 +705,7 @@ export default function SupplierEditProduct() {
     const brandChanged = String(brandId ?? "") !== String(snap.brandId ?? "");
     const descChanged = String(description ?? "").trim() !== String(snap.description ?? "").trim();
 
-    const currentImgs = [...parseUrlList(imageUrls).filter(isUrlish), ...uploadedUrls.filter(isUrlish)];
+    const currentImgs = getAllImagesFromUi().slice(0, MAX_IMAGES_PER_PRODUCT);
     const norm = (arr: string[]) => Array.from(new Set(arr.map(String))).sort();
     const imagesChanged = JSON.stringify(norm(currentImgs)) !== JSON.stringify(norm(snap.images));
 
@@ -687,7 +728,17 @@ export default function SupplierEditProduct() {
 
     const newCombosAdded = variantRows.some((r) => !r.variantId && rowHasAnySelection(r.selections));
 
-    return titleChanged || skuChanged || catChanged || brandChanged || descChanged || imagesChanged || attrChanged || newCombosAdded;
+    return (
+      titleChanged ||
+      skuChanged ||
+      catChanged ||
+      brandChanged ||
+      descChanged ||
+      imagesChanged ||
+      attrChanged ||
+      newCombosAdded
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     offersOnly,
     isLive,
@@ -743,10 +794,13 @@ export default function SupplierEditProduct() {
       setRetailPrice(String(baseP));
     }
 
+    // Images: hydrate but respect max=5 (schema imagesJson: String[])
     const urls = normalizeImages(p).filter(isUrlish);
-    setImageUrls(urls.join("\n"));
+    const uniq = Array.from(new Set(urls)).slice(0, MAX_IMAGES_PER_PRODUCT);
+    setImageUrls(uniq.join("\n"));
+    setUploadedUrls([]); // prevent accidental overflow from previous product edit
 
-    const baseQty = p.offer ? (p.offer.availableQty ?? 0) : 0;
+    const baseQty = p.offer ? (p.offer.availableQty ?? 0) : (p.availableQty ?? 0);
     setAvailableQty(String(Number(baseQty) || 0));
 
     const myVarOffers: Array<any> = Array.isArray(p?.supplierVariantOffers) ? p.supplierVariantOffers : [];
@@ -776,7 +830,7 @@ export default function SupplierEditProduct() {
         v?.supplierVariantOffer ??
         (Array.isArray(v?.supplierVariantOffers) ? v.supplierVariantOffers?.[0] : null);
 
-      const qty = myOffer?.availableQty ?? 0;
+      const qty = myOffer?.availableQty ?? v?.availableQty ?? 0;
 
       return {
         id: uid("vr"),
@@ -799,7 +853,7 @@ export default function SupplierEditProduct() {
       categoryId: p.categoryId ?? null,
       brandId: p.brandId ?? null,
       description: p.description ?? "",
-      images: urls,
+      images: uniq,
       attr: {},
       multiAttrValues: {},
       existingVariantIds: new Set(vr.filter((x) => x.variantId).map((x) => String(x.variantId))),
@@ -860,9 +914,45 @@ export default function SupplierEditProduct() {
 
   const UPLOAD_ENDPOINT = "/api/uploads";
 
-  // ✅ cookie-auth upload
+  // ---------- Images (max 5) ----------
+  const urlPreviews = useMemo(() => parseUrlList(imageUrls).filter(isUrlish), [imageUrls]);
+
+  const allUrlPreviews = useMemo(() => {
+    const uniq = new Set<string>();
+    [...urlPreviews, ...uploadedUrls].forEach((u) => {
+      if (u && isUrlish(u)) uniq.add(u);
+    });
+    return Array.from(uniq);
+  }, [urlPreviews, uploadedUrls]);
+
+  const imageCount = allUrlPreviews.length;
+  const imageOverLimit = imageCount > MAX_IMAGES_PER_PRODUCT;
+  const imageSlotsLeft = Math.max(0, MAX_IMAGES_PER_PRODUCT - imageCount);
+
+  function getAllImagesFromUi(): string[] {
+    const uniq = new Set<string>();
+    for (const u of [...parseUrlList(imageUrls), ...uploadedUrls]) {
+      if (u && isUrlish(u)) uniq.add(u);
+    }
+    return Array.from(uniq);
+  }
+
+  // ✅ cookie-auth upload (enforces max images)
   async function uploadLocalFiles(): Promise<string[]> {
     if (!files.length) return [];
+
+    const current = getAllImagesFromUi();
+    if (current.length >= MAX_IMAGES_PER_PRODUCT) {
+      setErr(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove an image URL before uploading more.`);
+      return [];
+    }
+    if (current.length + files.length > MAX_IMAGES_PER_PRODUCT) {
+      setErr(
+        `You can only upload ${MAX_IMAGES_PER_PRODUCT - current.length} more image(s). Remove extras or upload fewer.`
+      );
+      return [];
+    }
+
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
 
@@ -876,11 +966,29 @@ export default function SupplierEditProduct() {
       const urls: string[] = (res as any)?.data?.urls || (Array.isArray((res as any)?.data) ? (res as any).data : []);
       const clean = Array.isArray(urls) ? urls.filter(Boolean) : [];
 
-      setUploadedUrls((prev) => [...prev, ...clean]);
+      // Merge + clamp to MAX_IMAGES_PER_PRODUCT
+      const next = new Set<string>(current);
+      for (const u of clean) {
+        if (next.size >= MAX_IMAGES_PER_PRODUCT) break;
+        if (u && isUrlish(u)) next.add(String(u));
+      }
+
+      setUploadedUrls((prev) => {
+        const prevSet = new Set<string>(prev.filter(isUrlish));
+        for (const u of Array.from(next)) prevSet.add(u);
+        const merged = Array.from(new Set([...parseUrlList(imageUrls).filter(isUrlish), ...Array.from(prevSet)]));
+        return merged.slice(0, MAX_IMAGES_PER_PRODUCT);
+      });
+
       setFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
 
-      return clean;
+      const finalArr = Array.from(next);
+      if (current.length + clean.length > MAX_IMAGES_PER_PRODUCT) {
+        setErr(`Only the first ${MAX_IMAGES_PER_PRODUCT} images are kept. Remove images to add different ones.`);
+      }
+
+      return finalArr.slice(0, MAX_IMAGES_PER_PRODUCT);
     } finally {
       setUploading(false);
     }
@@ -910,7 +1018,9 @@ export default function SupplierEditProduct() {
   function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
     setErr(null);
     if (offersOnly) return;
-    const next = variantRows.map((r) => (r.id === rowId ? { ...r, selections: { ...r.selections, [attributeId]: valueId } } : r));
+    const next = variantRows.map((r) =>
+      r.id === rowId ? { ...r, selections: { ...r.selections, [attributeId]: valueId } } : r
+    );
     setVariantRowsAndCheck(next);
   }
 
@@ -926,7 +1036,9 @@ export default function SupplierEditProduct() {
       withCredentials: true,
     });
 
-    setVariantRows((rows) => rows.map((r) => (r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r)));
+    setVariantRows((rows) =>
+      rows.map((r) => (r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r))
+    );
   }
 
   function removeVariantRow(rowId: string) {
@@ -962,12 +1074,132 @@ export default function SupplierEditProduct() {
     setRetailPrice(e.target.value);
   };
 
+  // ---------- Payload builders (aligned with schema) ----------
+  function buildAttributeSelectionsPayload() {
+    const out: Array<{ attributeId: string; text?: string; valueId?: string; valueIds?: string[] }> = [];
+    for (const a of (attributes ?? []) as any[]) {
+      if (!a?.id) continue;
+      const aid = String(a.id);
+
+      if (a.type === "TEXT") {
+        const v = String(getAttrVal(aid) ?? "").trim();
+        if (v) out.push({ attributeId: aid, text: v });
+        continue;
+      }
+
+      if (a.type === "SELECT") {
+        const v = String(getAttrVal(aid) ?? "").trim();
+        if (v) out.push({ attributeId: aid, valueId: v });
+        continue;
+      }
+
+      if (a.type === "MULTISELECT") {
+        const vals = Array.isArray(getAttrVal(aid)) ? (getAttrVal(aid) as string[]) : [];
+        const clean = vals.map(String).map((x) => x.trim()).filter(Boolean);
+        if (clean.length) out.push({ attributeId: aid, valueIds: clean });
+        continue;
+      }
+    }
+    return out;
+  }
+
+  function buildVariantsPayload() {
+    const rows = variantRows.filter((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections));
+
+    return rows.map((r) => {
+      const opts = attrOrder
+        .map((aid) => {
+          const vid = String(r.selections?.[aid] ?? "").trim();
+          if (!vid) return null;
+          return { attributeId: aid, valueId: vid };
+        })
+        .filter(Boolean) as Array<{ attributeId: string; valueId: string }>;
+
+      return {
+        ...(r.variantId ? { id: String(r.variantId) } : {}),
+        availableQty: toIntNonNeg(r.availableQty),
+        inStock: toIntNonNeg(r.availableQty) > 0,
+        isActive: true,
+        imagesJson: [],
+        options: opts,
+      };
+    });
+  }
+
+  function buildStockOnlyPayload(args: { baseQty: number; variantRows: VariantRow[] }) {
+    const baseQty = toIntNonNeg(args.baseQty);
+
+    const existingRows = args.variantRows.filter((r) => !!r.variantId);
+
+    const variants = existingRows.map((r) => ({
+      id: String(r.variantId),
+      availableQty: toIntNonNeg(r.availableQty),
+      inStock: toIntNonNeg(r.availableQty) > 0,
+    }));
+
+    const sumVariants = existingRows.reduce((s, r) => s + toIntNonNeg(r.availableQty), 0);
+    const total = baseQty + sumVariants;
+
+    return {
+      availableQty: baseQty,
+      inStock: total > 0,
+      variants,
+      stockOnly: true,
+    };
+  }
+
+  function buildPayload(imagesJson: string[]) {
+    const price = toMoneyNumber(retailPrice);
+    const baseQty = baseQtyPreview;
+
+    // ✅ defense-in-depth: do NOT send title/sku changes when LIVE
+    const core: any = {
+      description: (description ?? "").trim(),
+
+      // ✅ IMPORTANT: API expects basePrice (or offer.basePrice), NOT retailPrice
+      basePrice: price,
+      offer: {
+        basePrice: price,
+        availableQty: baseQty,
+        inStock: totalQty > 0,
+        isActive: true,
+        currency: "NGN",
+        leadDays: null,
+      },
+
+      categoryId: categoryId || null,
+      brandId: brandId || null,
+      imagesJson,
+
+      availableQty: baseQty,
+      inStock: totalQty > 0,
+
+      attributeSelections: buildAttributeSelectionsPayload(),
+      variants: buildVariantsPayload(),
+      stockOnly: false,
+    };
+
+    if (!isLive) {
+      core.title = title.trim();
+      core.sku = sku.trim();
+    }
+
+    return core;
+  }
+
   const updateM = useMutation({
     mutationFn: async () => {
       setErr(null);
       setOkMsg(null);
 
       if (!id) throw new Error("Missing product id");
+
+      const imagesFromUi = getAllImagesFromUi();
+      if (imagesFromUi.length > MAX_IMAGES_PER_PRODUCT) {
+        throw new Error(
+          `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Please remove ${imagesFromUi.length - MAX_IMAGES_PER_PRODUCT} image(s).`
+        );
+      }
 
       const basePrice = toMoneyNumber(retailPrice);
       if (!Number.isFinite(basePrice) || basePrice <= 0) throw new Error("Price must be greater than 0");
@@ -1025,9 +1257,10 @@ export default function SupplierEditProduct() {
         return { ok: true };
       }
 
-      // ---------- owned-product path (keep your existing logic below as-is) ----------
+      // ---------- owned-product path ----------
       if (!title.trim()) throw new Error("Title is required");
       if (!sku.trim()) throw new Error("SKU is required");
+      if (!String(description ?? "").trim()) throw new Error("Description is required");
 
       const snap = initialSnapshotRef.current;
       if (isLive && snap) {
@@ -1053,23 +1286,24 @@ export default function SupplierEditProduct() {
 
       const stockOnlyUpdate = isLive && !nonStockChangesRequireReview;
 
+      // Build final images list (clamped and validated)
       const urlList = parseUrlList(imageUrls).filter(isUrlish);
-      const freshlyUploaded = files.length ? await uploadLocalFiles() : [];
-      const imagesJson = [...urlList, ...uploadedUrls, ...freshlyUploaded].filter(Boolean);
+      const current = Array.from(new Set([...urlList, ...uploadedUrls].filter(Boolean))).slice(0, MAX_IMAGES_PER_PRODUCT);
 
-      // NOTE:
-      // Keep your existing payload builders (buildPayload / buildStockOnlyPayload) from your project file.
-      // This snippet assumes they already exist below in your actual file.
-      // @ts-ignore
+      const freshlyUploaded = files.length ? await uploadLocalFiles() : [];
+      const merged = Array.from(new Set([...current, ...freshlyUploaded].filter(isUrlish))).slice(0, MAX_IMAGES_PER_PRODUCT);
+
+      if (merged.length > MAX_IMAGES_PER_PRODUCT) {
+        throw new Error(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Please remove extras.`);
+      }
+
       const payload = stockOnlyUpdate
-        ? // @ts-ignore
-          buildStockOnlyPayload({ baseQty: baseQtyPreview, variantRows })
+        ? buildStockOnlyPayload({ baseQty: baseQtyPreview, variantRows })
         : {
-            // @ts-ignore
-            ...buildPayload(imagesJson),
-            submitForReview: isLive && nonStockChangesRequireReview,
-            stockOnly: false,
-          };
+          ...buildPayload(merged),
+          submitForReview: isLive && nonStockChangesRequireReview,
+          stockOnly: false,
+        };
 
       const { data } = await api.patch(`/api/supplier/products/${id}`, payload, {
         withCredentials: true,
@@ -1077,7 +1311,10 @@ export default function SupplierEditProduct() {
 
       return data;
     },
-    onSuccess: () => {
+    onSuccess: async () => {
+      // ✅ critical: bust stale caches so title/sku show as persisted everywhere
+      queryClient.invalidateQueries({ queryKey: ["supplier"] });
+
       if (offersOnly) {
         setOkMsg("Saved ✅ Stock updates apply immediately. Price changes may be pending admin approval.");
         (detailQ as any)?.refetch?.();
@@ -1100,17 +1337,14 @@ export default function SupplierEditProduct() {
     },
   });
 
-  const urlPreviews = useMemo(() => parseUrlList(imageUrls).filter(isUrlish), [imageUrls]);
-
-  const allUrlPreviews = useMemo(() => {
-    const uniq = new Set<string>();
-    [...urlPreviews, ...uploadedUrls].forEach((u) => {
-      if (u && isUrlish(u)) uniq.add(u);
-    });
-    return Array.from(uniq);
-  }, [urlPreviews, uploadedUrls]);
-
-  const saveDisabled = updateM.isPending || uploading || detailQ.isLoading || hasDuplicates || !hydrated || !isSupplier;
+  const saveDisabled =
+    updateM.isPending ||
+    uploading ||
+    detailQ.isLoading ||
+    hasDuplicates ||
+    !hydrated ||
+    !isSupplier ||
+    imageOverLimit;
 
   const hasPendingBase =
     offersOnly &&
@@ -1124,8 +1358,7 @@ export default function SupplierEditProduct() {
     requestedBasePriceForDisplay > 0 &&
     requestedBasePriceForDisplay !== activeBasePriceForDisplay;
 
-  const guardMsg =
-    !hydrated ? "Loading session…" : !isSupplier ? "This page is for suppliers only." : null;
+  const guardMsg = !hydrated ? "Loading session…" : !isSupplier ? "This page is for suppliers only." : null;
 
   return (
     <SiteLayout>
@@ -1148,8 +1381,8 @@ export default function SupplierEditProduct() {
                 </p>
               ) : isLive ? (
                 <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
-                  This product is <b>{productStatusUpper || "LIVE"}</b>. <b>Stock updates</b> are immediate. Other
-                  changes may be <b>submitted for review</b>.
+                  This product is <b>{productStatusUpper || "LIVE"}</b>. <b>Stock updates</b> are immediate. Other changes
+                  may be <b>submitted for review</b>.
                 </p>
               ) : (
                 <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
@@ -1170,6 +1403,10 @@ export default function SupplierEditProduct() {
                 type="button"
                 disabled={saveDisabled}
                 onClick={() => {
+                  if (imageOverLimit) {
+                    setErr(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`);
+                    return;
+                  }
                   if (hasDuplicates) {
                     setErr(dupWarn);
                     return;
@@ -1177,7 +1414,13 @@ export default function SupplierEditProduct() {
                   updateM.mutate();
                 }}
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-[13px] sm:text-sm font-semibold disabled:opacity-60"
-                title={hasDuplicates ? "Fix duplicate combinations to save." : undefined}
+                title={
+                  imageOverLimit
+                    ? `Remove extra images (max ${MAX_IMAGES_PER_PRODUCT}).`
+                    : hasDuplicates
+                      ? "Fix duplicate combinations to save."
+                      : undefined
+                }
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
               </button>
@@ -1186,9 +1429,7 @@ export default function SupplierEditProduct() {
 
           {/* Alerts */}
           {guardMsg && (
-            <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
-              {guardMsg}
-            </div>
+            <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">{guardMsg}</div>
           )}
 
           {!offersOnly && isLive && nonStockChangesRequireReview && (
@@ -1203,13 +1444,22 @@ export default function SupplierEditProduct() {
             </div>
           )}
 
+          {imageOverLimit && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              <b>Images limit:</b> You have <b>{imageCount}</b> images. Max is <b>{MAX_IMAGES_PER_PRODUCT}</b>. Remove{" "}
+              <b>{imageCount - MAX_IMAGES_PER_PRODUCT}</b>.
+            </div>
+          )}
+
           {dupWarn && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
               <b>Duplicates detected:</b> {dupWarn}
             </div>
           )}
 
-          {err && <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">{err}</div>}
+          {err && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">{err}</div>
+          )}
           {okMsg && (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
               {okMsg}
@@ -1232,8 +1482,8 @@ export default function SupplierEditProduct() {
                   offersOnly
                     ? "Catalog product details are read-only. Set your offer price and stock."
                     : isLive
-                    ? "LIVE listing: base price is locked. Stock updates are always allowed."
-                    : undefined
+                      ? "LIVE listing: Title/SKU/base price are locked. Stock updates are always allowed."
+                      : undefined
                 }
               >
                 <div className="space-y-3">
@@ -1242,7 +1492,16 @@ export default function SupplierEditProduct() {
                       <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Title *</label>
                       <input
                         value={title}
-                        onChange={(e) => setTitle(e.target.value)}
+                        onChange={(e) => {
+                          const nextTitle = e.target.value;
+                          setTitle(nextTitle);
+
+                          // ✅ only auto-generate when SKU hasn't been manually edited
+                          // ✅ and only when core editing is allowed
+                          if (!offersOnly && !isLive && !skuTouched) {
+                            setSku(autoSkuFromTitle(nextTitle));
+                          }
+                        }}
                         disabled={!canEditCore || isLive}
                         readOnly={!canEditCore || isLive}
                         className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
@@ -1252,7 +1511,15 @@ export default function SupplierEditProduct() {
                       <label className="block text-[11px] font-semibold text-zinc-700 mb-1">SKU *</label>
                       <input
                         value={sku}
-                        onChange={(e) => setSku(e.target.value)}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setSku(v);
+
+                          // if they type anything (or even clear it), count as manual edit
+                          // but if they CLEAR it, allow title to start generating again
+                          if (v.trim() === "") setSkuTouched(false);
+                          else setSkuTouched(true);
+                        }}
                         disabled={!canEditCore || isLive}
                         readOnly={!canEditCore || isLive}
                         className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
@@ -1326,9 +1593,7 @@ export default function SupplierEditProduct() {
                           {inStockPreview ? "YES" : "NO"}
                         </b>
                       </div>
-                      {variantsEnabled && (
-                        <div className="text-[11px] text-zinc-500 mt-1">Variant quantities add on top.</div>
-                      )}
+                      {variantsEnabled && <div className="text-[11px] text-zinc-500 mt-1">Variant quantities add on top.</div>}
                     </div>
 
                     <div>
@@ -1367,7 +1632,7 @@ export default function SupplierEditProduct() {
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Description</label>
+                    <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Description *</label>
                     <textarea
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
@@ -1384,17 +1649,15 @@ export default function SupplierEditProduct() {
                         {offersOnly
                           ? "Catalog product attributes are read-only."
                           : isLive
-                          ? "LIVE listing: edits may require review."
-                          : "You can edit attributes freely while not LIVE."}
+                            ? "LIVE listing: edits may require review."
+                            : "You can edit attributes freely while not LIVE."}
                       </div>
                     </div>
 
                     <div className="p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {activeAttrs.length === 0 && (
-                        <div className="text-sm text-zinc-500">No active attributes configured.</div>
-                      )}
+                      {activeAttrs.length === 0 && <div className="text-sm text-zinc-500">No active attributes configured.</div>}
 
-                      {activeAttrs.map((a) => {
+                      {activeAttrs.map((a: any) => {
                         if (a.type === "TEXT") {
                           const val = String(getAttrVal(a.id) ?? "");
                           return (
@@ -1465,12 +1728,21 @@ export default function SupplierEditProduct() {
                 </div>
               </Card>
 
+
               {/* Images */}
               <Card
                 title="Images"
-                subtitle={offersOnly ? "Catalog images are read-only." : "Paste URLs or upload images."}
+                subtitle={
+                  offersOnly
+                    ? "Catalog images are read-only."
+                    : `Paste URLs or upload images. Max ${MAX_IMAGES_PER_PRODUCT} images per product.`
+                }
                 right={
-                  <label className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer">
+                  <label
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer ${offersOnly || imageSlotsLeft <= 0 ? "opacity-60 pointer-events-none" : ""
+                      }`}
+                    title={imageSlotsLeft <= 0 ? `Max ${MAX_IMAGES_PER_PRODUCT} images reached.` : undefined}
+                  >
                     <ImagePlus size={16} /> Add files
                     <input
                       ref={fileInputRef}
@@ -1478,21 +1750,54 @@ export default function SupplierEditProduct() {
                       multiple
                       accept="image/*"
                       className="hidden"
-                      onChange={(e) => setFiles(Array.from(e.target.files || []))}
-                      disabled={offersOnly}
+                      onChange={(e) => {
+                        const picked = Array.from(e.target.files || []);
+                        if (!picked.length) return;
+
+                        if (imageSlotsLeft <= 0) {
+                          setErr(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove an image before adding more.`);
+                          if (fileInputRef.current) fileInputRef.current.value = "";
+                          return;
+                        }
+
+                        if (picked.length > imageSlotsLeft) {
+                          setErr(`You can only add ${imageSlotsLeft} more file(s). Extra files were ignored.`);
+                        }
+
+                        setFiles(picked.slice(0, imageSlotsLeft));
+                      }}
+                      disabled={offersOnly || imageSlotsLeft <= 0}
                     />
                   </label>
                 }
               >
                 <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs text-zinc-600">
+                      Images used: <b className={imageOverLimit ? "text-rose-700" : "text-zinc-900"}>{imageCount}</b> /{" "}
+                      <b>{MAX_IMAGES_PER_PRODUCT}</b>
+                    </div>
+                    {!offersOnly && (
+                      <div className="text-[11px] text-zinc-500">
+                        {imageSlotsLeft > 0 ? `${imageSlotsLeft} slot(s) left` : "No slots left"}
+                      </div>
+                    )}
+                  </div>
+
                   <div>
                     <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Image URLs (one per line)</label>
                     <textarea
                       value={imageUrls}
                       onChange={(e) => setImageUrls(e.target.value)}
                       disabled={offersOnly}
-                      className="w-full rounded-xl border px-3 py-2.5 text-xs bg-white min-h-[90px] disabled:opacity-60"
+                      className={`w-full rounded-xl border px-3 py-2.5 text-xs bg-white min-h-[90px] disabled:opacity-60 ${imageOverLimit ? "border-rose-300" : ""
+                        }`}
                     />
+                    {!offersOnly && imageOverLimit && (
+                      <div className="text-[11px] text-rose-700 mt-1">
+                        Remove extra URLs. Saving is blocked until you have {MAX_IMAGES_PER_PRODUCT} or fewer.
+                      </div>
+                    )}
                   </div>
 
                   {!offersOnly && files.length > 0 && (
@@ -1527,7 +1832,7 @@ export default function SupplierEditProduct() {
 
                   {allUrlPreviews.length > 0 ? (
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {allUrlPreviews.slice(0, 9).map((u) => (
+                      {allUrlPreviews.slice(0, MAX_IMAGES_PER_PRODUCT).map((u) => (
                         <div key={u} className="rounded-xl border overflow-hidden bg-white">
                           <div className="aspect-[4/3] bg-zinc-100">
                             <img
@@ -1542,6 +1847,11 @@ export default function SupplierEditProduct() {
                           <div className="p-2 text-[10px] text-zinc-600 truncate">{u}</div>
                         </div>
                       ))}
+                      {allUrlPreviews.length > MAX_IMAGES_PER_PRODUCT && (
+                        <div className="rounded-xl border bg-zinc-50 p-3 text-xs text-zinc-600 flex items-center justify-center">
+                          +{allUrlPreviews.length - MAX_IMAGES_PER_PRODUCT} more (remove extras to save)
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="text-xs text-zinc-500">No images found on this product yet.</div>
@@ -1556,8 +1866,8 @@ export default function SupplierEditProduct() {
                   offersOnly
                     ? "Catalog product: set qty for existing variants. You can’t create new combos."
                     : isLive
-                    ? "LIVE listing: update qty. You can’t delete existing variants (set qty to 0)."
-                    : "Add/remove combos while not LIVE."
+                      ? "LIVE listing: update qty. You can’t delete existing variants (set qty to 0)."
+                      : "Add/remove combos while not LIVE."
                 }
                 right={
                   <button
@@ -1591,28 +1901,40 @@ export default function SupplierEditProduct() {
                       const pendingVar = row.variantId ? pendingVariantPatchByVariantId.get(String(row.variantId)) : null;
                       const pendingVarUnitPrice = Number(pendingVar?.proposedPatch?.unitPrice ?? NaN);
                       const hasPendingVarPrice =
-                        offersOnly && Number.isFinite(pendingVarUnitPrice) && pendingVarUnitPrice > 0 && pendingVarUnitPrice !== activeUnitPrice;
+                        offersOnly &&
+                        Number.isFinite(pendingVarUnitPrice) &&
+                        pendingVarUnitPrice > 0 &&
+                        pendingVarUnitPrice !== activeUnitPrice;
+
+                      // Schema safety: don’t allow editing selections for existing variants (avoids mismatch/stale ids)
+                      const selectionLocked = offersOnly || row.isExisting || isLive;
 
                       return (
                         <div
                           key={row.id}
-                          className={`rounded-2xl border bg-white p-3 space-y-2 ${isDup ? "border-rose-400 ring-2 ring-rose-200" : ""}`}
+                          className={`rounded-2xl border bg-white p-3 space-y-2 ${isDup ? "border-rose-400 ring-2 ring-rose-200" : ""
+                            }`}
                         >
-                          {/* option selects (wrap nicely on mobile) */}
+                          {/* option selects */}
                           <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-                            {selectableAttrs.map((attr) => {
+                            {selectableAttrs.map((attr: any) => {
                               const valueId = row.selections[attr.id] || "";
                               return (
                                 <select
                                   key={attr.id}
                                   value={valueId}
                                   onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${isDup ? "border-rose-300" : ""}`}
-                                  disabled={true}
-                                  title="Variant options are fixed; edit qty only."
+                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${isDup ? "border-rose-300" : ""
+                                    }`}
+                                  disabled={selectionLocked}
+                                  title={
+                                    selectionLocked
+                                      ? "Variant options are fixed; edit qty only."
+                                      : "Select variant option value."
+                                  }
                                 >
                                   <option value="">{attr.name}</option>
-                                  {(attr.values || []).map((v) => (
+                                  {(attr.values || []).map((v: any) => (
                                     <option key={v.id} value={v.id}>
                                       {v.name}
                                     </option>
@@ -1638,11 +1960,10 @@ export default function SupplierEditProduct() {
                                   Qty: <b className="text-zinc-900">{rowQty}</b>
                                 </span>
                                 <span
-                                  className={`font-semibold px-2 py-0.5 rounded-full border ${
-                                    rowInStock
-                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                      : "bg-rose-50 text-rose-700 border-rose-200"
-                                  }`}
+                                  className={`font-semibold px-2 py-0.5 rounded-full border ${rowInStock
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                    : "bg-rose-50 text-rose-700 border-rose-200"
+                                    }`}
                                 >
                                   {rowInStock ? "In stock" : "Out of stock"}
                                 </span>
@@ -1674,19 +1995,18 @@ export default function SupplierEditProduct() {
                                 type="button"
                                 onClick={() => removeVariantRow(row.id)}
                                 disabled={disableRemove}
-                                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${
-                                  disableRemove
-                                    ? "bg-zinc-50 text-zinc-400 border-zinc-200 cursor-not-allowed"
-                                    : "bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200"
-                                }`}
+                                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${disableRemove
+                                  ? "bg-zinc-50 text-zinc-400 border-zinc-200 cursor-not-allowed"
+                                  : "bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200"
+                                  }`}
                                 title={
                                   offersOnly
                                     ? row.variantOfferId
                                       ? "Remove your variant offer for this variant."
                                       : "Nothing to remove."
                                     : isLive && row.isExisting
-                                    ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
-                                    : undefined
+                                      ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
+                                      : undefined
                                 }
                               >
                                 <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
@@ -1729,7 +2049,9 @@ export default function SupplierEditProduct() {
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-zinc-500">{offersOnly ? "Active offer price" : "Retail price"}</span>
-                      <b className="text-zinc-900">{ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}</b>
+                      <b className="text-zinc-900">
+                        {ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}
+                      </b>
                     </div>
 
                     {offersOnly && (
@@ -1760,6 +2082,13 @@ export default function SupplierEditProduct() {
                     <b className="text-zinc-900">{variantRows.length}</b>
                   </div>
 
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-zinc-500">Images</span>
+                    <b className={imageOverLimit ? "text-rose-700" : "text-zinc-900"}>
+                      {imageCount}/{MAX_IMAGES_PER_PRODUCT}
+                    </b>
+                  </div>
+
                   {!offersOnly && isLive && nonStockChangesRequireReview && (
                     <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
                       Non-stock changes → <b>admin review</b>.
@@ -1771,6 +2100,12 @@ export default function SupplierEditProduct() {
                       Saving is blocked until duplicates are fixed.
                     </div>
                   )}
+
+                  {imageOverLimit && (
+                    <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 text-xs">
+                      Saving is blocked until images are ≤ {MAX_IMAGES_PER_PRODUCT}.
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1779,6 +2114,10 @@ export default function SupplierEditProduct() {
                 type="button"
                 disabled={saveDisabled}
                 onClick={() => {
+                  if (imageOverLimit) {
+                    setErr(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`);
+                    return;
+                  }
                   if (hasDuplicates) {
                     setErr(dupWarn);
                     return;
@@ -1786,7 +2125,13 @@ export default function SupplierEditProduct() {
                   updateM.mutate();
                 }}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
-                title={hasDuplicates ? "Fix duplicate combinations to save." : undefined}
+                title={
+                  imageOverLimit
+                    ? `Remove extra images (max ${MAX_IMAGES_PER_PRODUCT}).`
+                    : hasDuplicates
+                      ? "Fix duplicate combinations to save."
+                      : undefined
+                }
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
               </button>

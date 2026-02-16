@@ -1,62 +1,62 @@
 // server/routes/adminSuppliers.ts
-import { Router, type Request, type Response } from 'express';
-import { Prisma, SupplierType } from '@prisma/client'
-import axios from 'axios';
+import { Router, type Request, type Response } from "express";
+import { Prisma, SupplierType } from "@prisma/client";
+import axios from "axios";
 
-import paystack from './paystack.js';
-import { prisma } from '../lib/prisma.js';
-import { requireAdmin, requireSuperAdmin } from '../middleware/auth.js';
-import z from 'zod';
-import { requiredString } from '../lib/http.js';
+import paystack from "./paystack.js";
+import { prisma } from "../lib/prisma.js";
+import { requireAdmin, requireSuperAdmin } from "../middleware/auth.js";
+import z from "zod";
+import { requiredString } from "../lib/http.js";
 
 const router = Router();
 
 /* ---------------- helpers ---------------- */
 
 const toNull = <T = any>(v: T | undefined | null): T | null =>
-  v === '' || v === undefined ? null : (v as any);
+  v === "" || v === undefined ? null : (v as any);
 
 const toBool = (v: any, def = false) =>
-  v === true || v === 'true' || v === 1 || v === '1'
+  v === true || v === "true" || v === 1 || v === "1"
     ? true
-    : v === false || v === 'false' || v === 0 || v === '0'
+    : v === false || v === "false" || v === 0 || v === "0"
       ? false
       : def;
 
 const normAuth = (s?: string | null) => {
-  const v = (s || '').toUpperCase();
-  return (['NONE', 'BEARER', 'BASIC'] as const).includes(v as any)
-    ? (v as 'NONE' | 'BEARER' | 'BASIC')
+  const v = (s || "").toUpperCase();
+  return (["NONE", "BEARER", "BASIC"] as const).includes(v as any)
+    ? (v as "NONE" | "BEARER" | "BASIC")
     : null;
 };
 
 const normPayoutMethod = (s?: string | null) => {
-  const v = (s || '').toUpperCase();
-  return (['TRANSFER', 'SPLIT'] as const).includes(v as any)
-    ? (v as 'TRANSFER' | 'SPLIT')
+  const v = (s || "").toUpperCase();
+  return (["TRANSFER", "SPLIT"] as const).includes(v as any)
+    ? (v as "TRANSFER" | "SPLIT")
     : null;
 };
 
 function normSupplierType(v: any): SupplierType {
-  const s = String(v ?? '').toUpperCase();
+  const s = String(v ?? "").toUpperCase();
   return (Object.values(SupplierType) as string[]).includes(s)
     ? (s as SupplierType)
     : SupplierType.PHYSICAL;
 }
 
 function normStatus(v: any) {
-  return String(v ?? '').toUpperCase() === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE';
+  return String(v ?? "").toUpperCase() === "ACTIVE" ? "ACTIVE" : "INACTIVE";
 }
 
 const toUndef = <T = any>(v: T | undefined | null): T | undefined =>
-  v === '' || v === undefined ? undefined : (v as any);
+  v === "" || v === undefined ? undefined : (v as any);
 
 // for fields where you WANT to allow null-clears explicitly:
 // - "" => undefined (ignore)
 // - null => null (clear)
 // - value => value
 const toNullablePatch = <T = any>(v: T | undefined | null): T | null | undefined =>
-  v === '' || v === undefined ? undefined : (v as any);
+  v === "" || v === undefined ? undefined : (v as any);
 
 /**
  * New offers setup:
@@ -92,27 +92,27 @@ async function createPaystackRecipientIfNeeded(supplier: {
 }) {
   try {
     if (!supplier.isPayoutEnabled) return;
-    if (String(supplier.payoutMethod || '').toUpperCase() !== 'TRANSFER') return;
+    if (String(supplier.payoutMethod || "").toUpperCase() !== "TRANSFER") return;
     if (supplier.paystackRecipientCode) return;
     if (!supplier.accountNumber || !supplier.bankCode) return;
 
     const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_TEST_SECRET_KEY;
     if (!PAYSTACK_SECRET_KEY) {
-      console.warn('Paystack recipient skipped: PAYSTACK_SECRET_KEY missing');
+      console.warn("Paystack recipient skipped: PAYSTACK_SECRET_KEY missing");
       return;
     }
 
-    const isNG = (supplier.bankCountry || 'NG').toUpperCase() === 'NG';
-    const type = isNG ? 'nuban' : 'bank_account';
+    const isNG = (supplier.bankCountry || "NG").toUpperCase() === "NG";
+    const type = isNG ? "nuban" : "bank_account";
 
     const resp = await axios.post(
-      'https://api.paystack.co/transferrecipient',
+      "https://api.paystack.co/transferrecipient",
       {
         type,
         name: supplier.accountName || supplier.name,
         account_number: supplier.accountNumber,
         bank_code: supplier.bankCode,
-        currency: isNG ? 'NGN' : undefined,
+        currency: isNG ? "NGN" : undefined,
       },
       { headers: { Authorization: `Bearer ${PAYSTACK_SECRET_KEY}` }, timeout: 10000 }
     );
@@ -125,7 +125,7 @@ async function createPaystackRecipientIfNeeded(supplier: {
       });
     }
   } catch (e: any) {
-    console.error('Paystack recipient creation failed:', e?.response?.status, e?.response?.data || e?.message);
+    console.error("Paystack recipient creation failed:", e?.response?.status, e?.response?.data || e?.message);
   }
 }
 
@@ -133,6 +133,10 @@ async function createPaystackRecipientIfNeeded(supplier: {
  * Detect bank field changes and compute the "flip to PENDING" patch.
  * - If any of these fields change: bankCountry, bankCode, bankName, accountNumber, accountName
  * - Then require admin verification again.
+ *
+ * IMPORTANT:
+ * If bank details change, we also DISABLE payouts + clear paystackRecipientCode
+ * so "VERIFIED badge" and "payout ready" cannot drift apart.
  */
 function computeBankPendingPatch(args: {
   current: {
@@ -154,7 +158,7 @@ function computeBankPendingPatch(args: {
   const { current, next } = args;
 
   // Only consider keys that are actually present in payload
-  const keys: Array<keyof typeof next> = ['bankCountry', 'bankCode', 'bankName', 'accountNumber', 'accountName'];
+  const keys: Array<keyof typeof next> = ["bankCountry", "bankCode", "bankName", "accountNumber", "accountName"];
 
   const changed = keys.some((k) => {
     if (!(k in next)) return false;
@@ -162,21 +166,26 @@ function computeBankPendingPatch(args: {
     // undefined means "no change"
     if (nv === undefined) return false;
     const cv = (current as any)[k];
-    return String(nv ?? '') !== String(cv ?? '');
+    return String(nv ?? "") !== String(cv ?? "");
   });
 
   if (!changed) return { changed: false, patch: {} as any };
 
-  // If they changed bank info, it must be re-verified
+  // If they changed bank info, it must be re-verified (and payouts must be disabled)
   return {
     changed: true,
     patch: {
-      bankVerificationStatus: 'PENDING',
+      bankVerificationStatus: "PENDING",
       bankVerificationRequestedAt: new Date(),
       bankVerifiedAt: null,
       bankVerifiedById: null,
-      // keep note (or clear it). I prefer clearing to avoid stale notes:
       bankVerificationNote: null,
+
+      // ✅ keep payout readiness consistent
+      isPayoutEnabled: false,
+      paystackRecipientCode: null,
+      // If you also rely on subaccounts for SPLIT, you may want to clear this too:
+      // paystackSubaccountCode: null,
     },
   };
 }
@@ -184,10 +193,10 @@ function computeBankPendingPatch(args: {
 /* ---------------- routes ---------------- */
 
 // GET /api/admin/suppliers
-router.get('/', requireAdmin, async (_req, res) => {
+router.get("/", requireAdmin, async (_req, res) => {
   try {
     const suppliers = await prisma.supplier.findMany({
-      orderBy: { name: 'asc' },
+      orderBy: { name: "asc" },
       select: {
         id: true,
         name: true,
@@ -222,7 +231,7 @@ router.get('/', requireAdmin, async (_req, res) => {
 
     res.json({ data: suppliers });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message || 'Failed to fetch suppliers' });
+    res.status(400).json({ error: e?.message || "Failed to fetch suppliers" });
   }
 });
 
@@ -234,11 +243,11 @@ router.get('/', requireAdmin, async (_req, res) => {
  * - type (optional): CREDIT|DEBIT
  * - take, skip
  */
-router.get('/ledger', requireAdmin, async (req: Request, res: Response) => {
+router.get("/ledger", requireAdmin, async (req: Request, res: Response) => {
   try {
-    const supplierId = String((req.query as any)?.supplierId ?? '').trim() || null;
-    const qRaw = String((req.query as any)?.q ?? '').trim();
-    const typeRaw = String((req.query as any)?.type ?? '').trim().toUpperCase();
+    const supplierId = String((req.query as any)?.supplierId ?? "").trim() || null;
+    const qRaw = String((req.query as any)?.q ?? "").trim();
+    const typeRaw = String((req.query as any)?.type ?? "").trim().toUpperCase();
     const take = Math.min(200, Math.max(1, Number((req.query as any)?.take ?? 50) || 50));
     const skip = Math.max(0, Number((req.query as any)?.skip ?? 0) || 0);
 
@@ -258,7 +267,7 @@ router.get('/ledger', requireAdmin, async (req: Request, res: Response) => {
 
     const rows = await prisma.supplierLedgerEntry.findMany({
       where,
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take,
       skip,
       include: {
@@ -274,14 +283,14 @@ router.get('/ledger', requireAdmin, async (req: Request, res: Response) => {
       meta: { supplierId, q: qRaw || null, type: typeRaw || null, take, skip, total },
     });
   } catch (e: any) {
-    return res.status(400).json({ error: e?.message || 'Failed to fetch ledger' });
+    return res.status(400).json({ error: e?.message || "Failed to fetch ledger" });
   }
 });
 
 // GET /api/admin/suppliers/:id
-router.get('/:id', requireAdmin, async (req: Request, res: Response) => {
+router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
   try {
-    const id  = requiredString(req.params.id);
+    const id = requiredString(req.params.id);
 
     const supplier = await prisma.supplier.findUnique({
       where: { id },
@@ -317,21 +326,21 @@ router.get('/:id', requireAdmin, async (req: Request, res: Response) => {
       },
     });
 
-    if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
+    if (!supplier) return res.status(404).json({ error: "Supplier not found" });
 
     res.json({ data: supplier });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message || 'Failed to fetch supplier' });
+    res.status(400).json({ error: e?.message || "Failed to fetch supplier" });
   }
 });
 
 // POST /api/admin/suppliers
-router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
+router.post("/", requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const {
       name,
-      type = 'PHYSICAL',
-      status = 'ACTIVE',
+      type = "PHYSICAL",
+      status = "ACTIVE",
       contactEmail,
       whatsappPhone,
 
@@ -348,7 +357,7 @@ router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
       isPayoutEnabled,
     } = req.body || {};
 
-    if (!name) return res.status(400).json({ error: 'name is required' });
+    if (!name) return res.status(400).json({ error: "name is required" });
 
     const created = await prisma.supplier.create({
       data: {
@@ -360,11 +369,11 @@ router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
         whatsappPhone: toNull(whatsappPhone),
 
         apiBaseUrl: toNull(apiBaseUrl),
-        apiAuthType: normAuth(apiAuthType) ?? 'NONE',
+        apiAuthType: normAuth(apiAuthType) ?? "NONE",
         apiKey: toNull(apiKey),
 
         payoutMethod: normPayoutMethod(payoutMethod),
-        bankCountry: (toNull(bankCountry) || 'NG') as any,
+        bankCountry: (toNull(bankCountry) || "NG") as any,
         bankCode: toNull(bankCode),
         bankName: toNull(bankName),
         accountNumber: toNull(accountNumber),
@@ -374,9 +383,9 @@ router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
         // If bank details were provided at create time, we can mark as PENDING for verification.
         ...(bankCode || accountNumber
           ? {
-              bankVerificationStatus: 'PENDING',
-              bankVerificationRequestedAt: new Date(),
-            }
+            bankVerificationStatus: "PENDING",
+            bankVerificationRequestedAt: new Date(),
+          }
           : {}),
       },
     });
@@ -395,14 +404,14 @@ router.post('/', requireSuperAdmin, async (req: Request, res: Response) => {
 
     res.status(201).json({ data: created });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message || 'Failed to create supplier' });
+    res.status(400).json({ error: e?.message || "Failed to create supplier" });
   }
 });
 
 // PUT /api/admin/suppliers/:id
-router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
+router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
   try {
-    const id  = requiredString(req.params.id);
+    const id = requiredString(req.params.id);
     const {
       name,
       type,
@@ -441,7 +450,7 @@ router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
       },
     });
 
-    if (!current) return res.status(404).json({ error: 'Supplier not found' });
+    if (!current) return res.status(404).json({ error: "Supplier not found" });
 
     // Prepare bank patch candidates (normalized like your current code)
     const nextBank = {
@@ -466,9 +475,9 @@ router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
 
     // If already VERIFIED, block changing bank details via this endpoint.
     // (If you prefer to ALLOW changes and just flip to PENDING, remove this block.)
-    if (current.bankVerificationStatus === 'VERIFIED' && bankPending.changed) {
+    if (current.bankVerificationStatus === "VERIFIED" && bankPending.changed) {
       return res.status(400).json({
-        error: 'Bank details are VERIFIED and cannot be edited. Reject/Unlock or change via a dedicated flow.',
+        error: "Bank details are VERIFIED and cannot be edited. Reject/Unlock or change via a dedicated flow.",
       });
     }
 
@@ -483,14 +492,14 @@ router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
         ...(whatsappPhone !== undefined ? { whatsappPhone: toNullablePatch(whatsappPhone) } : {}),
 
         ...(apiBaseUrl !== undefined ? { apiBaseUrl: toNullablePatch(apiBaseUrl) } : {}),
-        ...(apiAuthType !== undefined ? { apiAuthType: normAuth(apiAuthType) ?? 'NONE' } : {}),
+        ...(apiAuthType !== undefined ? { apiAuthType: normAuth(apiAuthType) ?? "NONE" } : {}),
         ...(apiKey !== undefined ? { apiKey: toNullablePatch(apiKey) } : {}),
 
         ...(payoutMethod !== undefined ? { payoutMethod: normPayoutMethod(payoutMethod) } : {}),
         ...nextBank,
         ...(isPayoutEnabled !== undefined ? { isPayoutEnabled: toBool(isPayoutEnabled) } : {}),
 
-        // flip to PENDING if bank details changed (only when not VERIFIED because we block above)
+        // flip to PENDING (and disable payouts) if bank details changed
         ...(bankPending.changed ? bankPending.patch : {}),
       },
     });
@@ -509,14 +518,14 @@ router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
 
     res.json({ data: updated });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message || 'Failed to update supplier' });
+    res.status(400).json({ error: e?.message || "Failed to update supplier" });
   }
 });
 
 // DELETE /api/admin/suppliers/:id
-router.delete('/:id', requireSuperAdmin, async (req: Request, res: Response) => {
+router.delete("/:id", requireSuperAdmin, async (req: Request, res: Response) => {
   try {
-    const  id  = requiredString(req.params.id);
+    const id = requiredString(req.params.id);
 
     const usage = await supplierUsageCounts(id);
 
@@ -525,7 +534,7 @@ router.delete('/:id', requireSuperAdmin, async (req: Request, res: Response) => 
 
     if (inUse) {
       return res.status(400).json({
-        error: 'Cannot delete supplier: it is in use',
+        error: "Cannot delete supplier: it is in use",
         details: usage,
       });
     }
@@ -533,18 +542,18 @@ router.delete('/:id', requireSuperAdmin, async (req: Request, res: Response) => 
     await prisma.supplier.delete({ where: { id } });
     res.json({ ok: true });
   } catch (e: any) {
-    res.status(400).json({ error: e?.message || 'Failed to delete supplier' });
+    res.status(400).json({ error: e?.message || "Failed to delete supplier" });
   }
 });
 
 // POST /api/admin/suppliers/:id/link-bank
-router.post('/:id/link-bank', requireSuperAdmin, async (req: Request, res: Response) => {
+router.post("/:id/link-bank", requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const id = requiredString(req.params.id);
-    const { supplierName, bankCode, accountNumber, bankName, country = 'NG', currency = 'NGN' } = req.body || {};
+    const { supplierName, bankCode, accountNumber, bankName, country = "NG", currency = "NGN" } = req.body || {};
 
     if (!bankCode || !accountNumber) {
-      return res.status(400).json({ error: 'bankCode and accountNumber are required' });
+      return res.status(400).json({ error: "bankCode and accountNumber are required" });
     }
 
     const supplier = await prisma.supplier.findUnique({
@@ -555,21 +564,21 @@ router.post('/:id/link-bank', requireSuperAdmin, async (req: Request, res: Respo
         bankVerificationStatus: true,
       },
     });
-    if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
+    if (!supplier) return res.status(404).json({ error: "Supplier not found" });
 
     // If VERIFIED, block link-bank changes too (consistent with PUT protection)
-    if (supplier.bankVerificationStatus === 'VERIFIED') {
-      return res.status(400).json({ error: 'Bank details are VERIFIED and cannot be changed.' });
+    if (supplier.bankVerificationStatus === "VERIFIED") {
+      return res.status(400).json({ error: "Bank details are VERIFIED and cannot be changed." });
     }
 
     const { data: r } = await paystack.post(
-      '/transferrecipient',
+      "/transferrecipient",
       {
-        type: String(country).toUpperCase() === 'NG' ? 'nuban' : 'bank_account',
+        type: String(country).toUpperCase() === "NG" ? "nuban" : "bank_account",
         name: String(supplierName || supplier.name),
         account_number: String(accountNumber),
         bank_code: String(bankCode),
-        currency: String(currency || 'NGN'),
+        currency: String(currency || "NGN"),
       },
       { timeout: 10000 } as any
     );
@@ -580,17 +589,17 @@ router.post('/:id/link-bank', requireSuperAdmin, async (req: Request, res: Respo
     const sup = await prisma.supplier.update({
       where: { id },
       data: {
-        bankCountry: String(country || 'NG'),
+        bankCountry: String(country || "NG"),
         bankCode: String(bankCode),
         bankName: toNull(bankName),
         accountNumber: String(accountNumber),
         accountName: resolvedAccountName,
         paystackRecipientCode: recipientCode,
-        payoutMethod: 'TRANSFER',
+        payoutMethod: "TRANSFER",
         isPayoutEnabled: true,
 
         // ✅ require admin confirmation after linking/changing bank
-        bankVerificationStatus: 'PENDING',
+        bankVerificationStatus: "PENDING",
         bankVerificationRequestedAt: new Date(),
         bankVerifiedAt: null,
         bankVerifiedById: null,
@@ -600,19 +609,19 @@ router.post('/:id/link-bank', requireSuperAdmin, async (req: Request, res: Respo
 
     res.json({ ok: true, supplier: sup });
   } catch (e: any) {
-    console.error('link-bank failed:', e?.response?.status, e?.response?.data || e?.message);
-    res.status(400).json({ error: e?.message || 'Failed to link bank' });
+    console.error("link-bank failed:", e?.response?.status, e?.response?.data || e?.message);
+    res.status(400).json({ error: e?.message || "Failed to link bank" });
   }
 });
 
 // POST /api/admin/suppliers/:id/bank-verify
-router.post('/:id/bank-verify', requireSuperAdmin, async (req: Request, res: Response) => {
+router.post("/:id/bank-verify", requireSuperAdmin, async (req: Request, res: Response) => {
   try {
     const supplierId = requiredString(req.params.id);
 
     const body = z
       .object({
-        decision: z.enum(['VERIFIED', 'REJECTED']),
+        decision: z.enum(["VERIFIED", "REJECTED"]),
         note: z.string().max(500).optional(),
       })
       .parse(req.body ?? {});
@@ -636,34 +645,59 @@ router.post('/:id/bank-verify', requireSuperAdmin, async (req: Request, res: Res
       },
     });
 
-    if (!current) return res.status(404).json({ error: 'Supplier not found' });
+    if (!current) return res.status(404).json({ error: "Supplier not found" });
 
-    if (body.decision === 'VERIFIED') {
+    if (body.decision === "VERIFIED") {
       if (!current.bankCode || !current.accountNumber) {
         return res.status(400).json({
-          error: 'Cannot verify bank details: bankCode and accountNumber are required.',
+          error: "Cannot verify bank details: bankCode and accountNumber are required.",
         });
       }
     }
 
+    // ✅ IMPORTANT FIX:
+    // When admin verifies bank details, also enable payouts.
+    // Your offers flow blocks "in-stock/active offers" if payouts are not enabled,
+    // even if bankVerificationStatus shows VERIFIED in the UI.
     const updated = await prisma.supplier.update({
       where: { id: supplierId },
       data:
-        body.decision === 'VERIFIED'
+        body.decision === "VERIFIED"
           ? {
-              bankVerificationStatus: 'VERIFIED',
-              bankVerifiedAt: new Date(),
-              bankVerifiedById: adminId,
-              bankVerificationNote: body.note ?? null,
-            }
+            bankVerificationStatus: "VERIFIED",
+            bankVerifiedAt: new Date(),
+            bankVerifiedById: adminId,
+            bankVerificationNote: body.note ?? null,
+
+            // ✅ KEY FIX: if admin verifies the bank, payouts should be enabled
+            isPayoutEnabled: true,
+
+            // ✅ Optional: ensure payout method is set if missing
+            ...(current.payoutMethod ? {} : { payoutMethod: "TRANSFER" }),
+          }
           : {
-              bankVerificationStatus: 'REJECTED',
-              bankVerifiedAt: null,
-              bankVerifiedById: null,
-              bankVerificationNote: body.note ?? 'Rejected',
-            },
+            bankVerificationStatus: "REJECTED",
+            bankVerifiedAt: null,
+            bankVerifiedById: null,
+            bankVerificationNote: body.note ?? "Rejected",
+
+            // optional policy:
+            // isPayoutEnabled: false,
+          },
+
+
       select: {
         id: true,
+        name: true,
+
+        payoutMethod: true,
+        bankCountry: true,
+        bankCode: true,
+        accountNumber: true,
+        accountName: true,
+        isPayoutEnabled: true,
+        paystackRecipientCode: true,
+
         bankVerificationStatus: true,
         bankVerificationNote: true,
         bankVerificationRequestedAt: true,
@@ -672,23 +706,24 @@ router.post('/:id/bank-verify', requireSuperAdmin, async (req: Request, res: Res
       },
     });
 
-    if (body.decision === 'VERIFIED') {
+    if (body.decision === "VERIFIED") {
+      // use the UPDATED supplier (includes isPayoutEnabled=true)
       await createPaystackRecipientIfNeeded({
-        id: current.id,
-        name: current.name,
-        payoutMethod: current.payoutMethod,
-        bankCountry: current.bankCountry,
-        bankCode: current.bankCode,
-        accountNumber: current.accountNumber,
-        accountName: current.accountName,
-        isPayoutEnabled: current.isPayoutEnabled,
-        paystackRecipientCode: current.paystackRecipientCode,
+        id: updated.id,
+        name: updated.name,
+        payoutMethod: updated.payoutMethod,
+        bankCountry: updated.bankCountry,
+        bankCode: updated.bankCode,
+        accountNumber: updated.accountNumber,
+        accountName: updated.accountName,
+        isPayoutEnabled: updated.isPayoutEnabled,
+        paystackRecipientCode: updated.paystackRecipientCode,
       });
     }
 
     return res.json({ ok: true, data: updated });
   } catch (e: any) {
-    return res.status(400).json({ error: e?.message || 'Failed to verify bank details' });
+    return res.status(400).json({ error: e?.message || "Failed to verify bank details" });
   }
 });
 
@@ -703,16 +738,16 @@ router.post('/:id/bank-verify', requireSuperAdmin, async (req: Request, res: Res
  * - referenceType?: string (default MANUAL)
  * - referenceId?: string | null
  */
-router.post('/:id/ledger-adjust', requireSuperAdmin, async (req: Request, res: Response) => {
+router.post("/:id/ledger-adjust", requireSuperAdmin, async (req: Request, res: Response) => {
   try {
-    const supplierId = requiredString(req.params.id || '').trim();
-    if (!supplierId) return res.status(400).json({ error: 'Missing supplier id' });
+    const supplierId = requiredString(req.params.id || "").trim();
+    if (!supplierId) return res.status(400).json({ error: "Missing supplier id" });
 
     const adminId = (req as any)?.user?.id ?? null;
 
     const body = z
       .object({
-        type: z.enum(['CREDIT', 'DEBIT']),
+        type: z.enum(["CREDIT", "DEBIT"]),
         amount: z.union([z.number(), z.string()]),
         currency: z.string().min(1).optional(),
         note: z.string().max(500).optional(),
@@ -723,22 +758,22 @@ router.post('/:id/ledger-adjust', requireSuperAdmin, async (req: Request, res: R
 
     const amountNum = Number(body.amount);
     if (!Number.isFinite(amountNum) || amountNum <= 0) {
-      return res.status(400).json({ error: 'amount must be a positive number' });
+      return res.status(400).json({ error: "amount must be a positive number" });
     }
 
     const supplier = await prisma.supplier.findUnique({
       where: { id: supplierId },
       select: { id: true, name: true },
     });
-    if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
+    if (!supplier) return res.status(404).json({ error: "Supplier not found" });
 
     const entry = await prisma.supplierLedgerEntry.create({
       data: {
         supplierId,
         type: body.type,
         amount: new Prisma.Decimal(amountNum),
-        currency: (body.currency || 'NGN').toUpperCase(),
-        referenceType: (body.referenceType || 'MANUAL').toUpperCase(),
+        currency: (body.currency || "NGN").toUpperCase(),
+        referenceType: (body.referenceType || "MANUAL").toUpperCase(),
         referenceId: body.referenceId ?? null,
         meta: {
           manual: true,
@@ -754,9 +789,8 @@ router.post('/:id/ledger-adjust', requireSuperAdmin, async (req: Request, res: R
 
     return res.json({ ok: true, data: entry });
   } catch (e: any) {
-    return res.status(400).json({ error: e?.message || 'Failed to post ledger adjustment' });
+    return res.status(400).json({ error: e?.message || "Failed to post ledger adjustment" });
   }
 });
-
 
 export default router;

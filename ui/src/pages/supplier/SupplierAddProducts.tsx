@@ -30,6 +30,8 @@ type VariantRow = {
    Helpers
 ========================= */
 
+const MAX_IMAGES = 5;
+
 function slugifySku(input: string) {
   return String(input || "")
     .trim()
@@ -50,6 +52,24 @@ function parseUrlList(s: string) {
     .split(/[\n,]/g)
     .map((t) => t.trim())
     .filter(Boolean);
+}
+
+function uniqStrings(arr: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const x of arr) {
+    const v = String(x || "").trim();
+    if (!v) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function limitImages(urls: string[], limit = MAX_IMAGES) {
+  const clean = uniqStrings(urls).filter(isUrlish);
+  return clean.slice(0, limit);
 }
 
 function toMoneyNumber(v: any) {
@@ -164,7 +184,7 @@ export default function SupplierAddProduct() {
 
   // basic form fields
   const [title, setTitle] = useState("");
-  const [retailPrice, setRetailPrice] = useState(""); // Product.retailPrice (mapped to "price" in DB)
+  const [retailPrice, setRetailPrice] = useState(""); // UI input (we will ALSO send basePrice to API)
   const [sku, setSku] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [brandId, setBrandId] = useState("");
@@ -260,13 +280,55 @@ export default function SupplierAddProduct() {
   }, [selectableAttrs]);
 
   /* =========================
-     Images upload
+     Images (max 5)
   ========================= */
 
   const UPLOAD_ENDPOINT = "/api/uploads";
 
+  const urlPreviews = useMemo(() => limitImages(parseUrlList(imageUrls), MAX_IMAGES), [imageUrls]);
+  const filePreviews = useMemo(() => files.map((f) => ({ file: f, url: URL.createObjectURL(f) })), [files]);
+
+  useEffect(() => {
+    return () => {
+      filePreviews.forEach((p) => URL.revokeObjectURL(p.url));
+    };
+  }, [filePreviews]);
+
+  // count already “claimed” slots by urls + uploaded
+  const claimedByTextAndUploaded = useMemo(() => {
+    const merged = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
+    return merged.length;
+  }, [urlPreviews, uploadedUrls]);
+
+  const remainingSlots = useMemo(() => Math.max(0, MAX_IMAGES - claimedByTextAndUploaded), [claimedByTextAndUploaded]);
+
+  function onPickFiles(nextPicked: File[]) {
+    setErr(null);
+    if (!nextPicked.length) return;
+
+    const room = remainingSlots;
+    if (room <= 0) {
+      setErr(`You can only add up to ${MAX_IMAGES} images. Remove one to add another.`);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    const limited = nextPicked.slice(0, room);
+    if (limited.length < nextPicked.length) {
+      setErr(`Only ${MAX_IMAGES} images max. Added ${limited.length}; ignored ${nextPicked.length - limited.length}.`);
+    }
+
+    setFiles(limited);
+  }
+
   async function uploadLocalFiles(): Promise<string[]> {
     if (!files.length) return [];
+
+    // enforce max before uploading
+    if (files.length > remainingSlots) {
+      throw new Error(`You can only upload ${remainingSlots} more image(s). Max is ${MAX_IMAGES}.`);
+    }
+
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
 
@@ -274,21 +336,23 @@ export default function SupplierAddProduct() {
       setUploading(true);
       const res = await api.post(UPLOAD_ENDPOINT, fd, {
         ...AXIOS_COOKIE_CFG,
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
+        headers: { "Content-Type": "multipart/form-data" },
       });
 
       const urls: string[] =
         (res as any)?.data?.urls || (Array.isArray((res as any)?.data) ? (res as any).data : []);
 
-      const clean = Array.isArray(urls) ? urls.filter(Boolean) : [];
+      const clean = limitImages(urls, MAX_IMAGES);
 
-      setUploadedUrls((prev) => [...prev, ...clean]);
+      // Only take what fits
+      const space = remainingSlots;
+      const take = clean.slice(0, space);
+
+      setUploadedUrls((prev) => limitImages([...prev, ...take], MAX_IMAGES));
       setFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
 
-      return clean;
+      return take;
     } finally {
       setUploading(false);
     }
@@ -347,7 +411,6 @@ export default function SupplierAddProduct() {
   ========================= */
 
   const baseQtyPreview = useMemo(() => toIntNonNeg(baseQuantity), [baseQuantity]);
-
   const isRealVariantRow = (r: VariantRow) => rowHasAnySelection(r.selections);
 
   const variantQtyTotal = useMemo(() => {
@@ -381,10 +444,11 @@ export default function SupplierAddProduct() {
 
   /* =========================
      Build payload (schema-conformant)
-  ========================= */
+     ✅ FIX: backend requires top-level `basePrice`
+========================= */
 
   function buildPayload(imagesJson: string[]) {
-    const baseSku = sku.trim();
+    const baseSku = sku.trim() || slugifySku(title);
     const basePriceNum = toMoneyNumber(retailPrice);
 
     const attributeSelections: Array<{
@@ -462,15 +526,22 @@ export default function SupplierAddProduct() {
     }
 
     return {
+      // ✅ Required by your /api/supplier/products POST Zod schema
+      basePrice: basePriceNum,
+
+      // Keep product fields too (your system uses retailPrice in many places)
       title: title.trim(),
       description: description?.trim() || "",
-      sku: baseSku || slugifySku(title),
+      sku: baseSku,
       retailPrice: basePriceNum,
-      availableQty: totalQty,
+
+      // ✅ IMPORTANT: base availableQty should be base ONLY
+      availableQty: baseQtyPreview,
+      // inStock should reflect base + variant total
       inStock: totalQty > 0,
 
-      categoryId: categoryId || undefined,
-      brandId: brandId || undefined,
+      categoryId: categoryId || null,
+      brandId: brandId || null,
       imagesJson,
 
       ...(attributeSelections.length ? { attributeSelections } : {}),
@@ -489,16 +560,39 @@ export default function SupplierAddProduct() {
 
       if (!title.trim()) throw new Error("Title is required");
 
+      // ✅ basePrice (from retailPrice input)
       const p = toMoneyNumber(retailPrice);
       if (!Number.isFinite(p) || p <= 0) throw new Error("Price must be greater than 0");
+
+      // if your backend requires description, keep this (otherwise you can remove it)
+      if (!String(description || "").trim()) throw new Error("Description is required");
 
       if (duplicateRowIds.size > 0) {
         throw new Error("You have duplicate variant combinations. Please remove or change them before submitting.");
       }
 
-      const urlList = parseUrlList(imageUrls).filter(isUrlish);
+      // Build images (max 5)
+      const urlListRaw = parseUrlList(imageUrls);
+      const urlList = limitImages(urlListRaw, MAX_IMAGES);
+
+      if (urlListRaw.filter(isUrlish).length > MAX_IMAGES) {
+        setImageUrls(urlList.join("\n"));
+      }
+
+      // Ensure uploads will not exceed limit
+      const already = limitImages([...urlList, ...uploadedUrls], MAX_IMAGES);
+      const room = Math.max(0, MAX_IMAGES - already.length);
+
+      if (files.length > room) {
+        throw new Error(`You can only add ${MAX_IMAGES} images total. Remove some images before uploading more.`);
+      }
+
       const freshlyUploaded = files.length ? await uploadLocalFiles() : [];
-      const imagesJson = [...urlList, ...uploadedUrls, ...freshlyUploaded].filter(Boolean);
+      const imagesJson = limitImages([...urlList, ...uploadedUrls, ...freshlyUploaded], MAX_IMAGES);
+
+      if (imagesJson.length > MAX_IMAGES) {
+        throw new Error(`You can only submit ${MAX_IMAGES} images max.`);
+      }
 
       const payload = buildPayload(imagesJson);
 
@@ -515,30 +609,14 @@ export default function SupplierAddProduct() {
     },
   });
 
-  /* =========================
-     Image previews
-  ========================= */
-
-  const urlPreviews = useMemo(() => parseUrlList(imageUrls).filter(isUrlish), [imageUrls]);
-  const filePreviews = useMemo(() => files.map((f) => ({ file: f, url: URL.createObjectURL(f) })), [files]);
-
-  useEffect(() => {
-    return () => {
-      filePreviews.forEach((p) => URL.revokeObjectURL(p.url));
-    };
-  }, [filePreviews]);
-
   useEffect(() => {
     if (skuTouchedRef.current) return;
     setSku(slugifySku(title));
   }, [title]);
 
   const allUrlPreviews = useMemo(() => {
-    const uniq = new Set<string>();
-    [...urlPreviews, ...uploadedUrls].forEach((u) => {
-      if (u && isUrlish(u)) uniq.add(u);
-    });
-    return Array.from(uniq);
+    const merged = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
+    return merged;
   }, [urlPreviews, uploadedUrls]);
 
   const variantRowsWithSelections = useMemo(
@@ -547,6 +625,9 @@ export default function SupplierAddProduct() {
   );
 
   const submitDisabled = createM.isPending || uploading;
+
+  const imagesCount = allUrlPreviews.length;
+  const fileCount = files.length;
 
   /* =========================
      Render
@@ -597,6 +678,12 @@ export default function SupplierAddProduct() {
                 </div>
                 <div className="text-[11px] text-zinc-600">
                   Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Images</span>
+                  <b className="text-zinc-900">
+                    {imagesCount}/{MAX_IMAGES}
+                  </b>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500">Variant rows</span>
@@ -663,9 +750,7 @@ export default function SupplierAddProduct() {
 
           {/* Alerts */}
           {err && (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              {err}
-            </div>
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">{err}</div>
           )}
           {okMsg && (
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
@@ -678,10 +763,7 @@ export default function SupplierAddProduct() {
             {/* Main */}
             <div className="lg:col-span-2 space-y-4">
               {/* Basic info */}
-              <Card
-                title="Basic information"
-                subtitle="What customers will see in the catalog"
-              >
+              <Card title="Basic information" subtitle="What customers will see in the catalog">
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
@@ -733,7 +815,7 @@ export default function SupplierAddProduct() {
                         </div>
                       )}
                       <div className="text-[11px] text-zinc-500 mt-1">
-                        Saved as <code>Product.retailPrice</code>.
+                        Sent as <code>basePrice</code> + saved as <code>Product.retailPrice</code>.
                       </div>
                     </div>
 
@@ -782,7 +864,7 @@ export default function SupplierAddProduct() {
                   </div>
 
                   <div>
-                    <Label>Description</Label>
+                    <Label>Description *</Label>
                     <Textarea
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
@@ -796,7 +878,7 @@ export default function SupplierAddProduct() {
               {/* Images */}
               <Card
                 title="Images"
-                subtitle="Paste URLs or upload images (saved to imagesJson)."
+                subtitle={`Paste URLs or upload images (max ${MAX_IMAGES}). Saved to imagesJson.`}
                 right={
                   <label className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer">
                     <ImagePlus size={16} /> Add files
@@ -806,17 +888,41 @@ export default function SupplierAddProduct() {
                       multiple
                       accept="image/*"
                       className="hidden"
-                      onChange={(e) => setFiles(Array.from(e.target.files || []))}
+                      onChange={(e) => onPickFiles(Array.from(e.target.files || []))}
                     />
                   </label>
                 }
               >
+                {/* (unchanged image section UI) */}
                 <div className="space-y-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <div className="text-zinc-600">
+                      Images used: <b>{imagesCount}</b> / {MAX_IMAGES}
+                      {fileCount > 0 && (
+                        <>
+                          {" "}
+                          • Selected files: <b>{fileCount}</b>
+                        </>
+                      )}
+                    </div>
+                    <div className="text-zinc-500">
+                      Remaining slots: <b>{remainingSlots}</b>
+                    </div>
+                  </div>
+
                   <div>
                     <Label>Image URLs (one per line)</Label>
                     <Textarea
                       value={imageUrls}
-                      onChange={(e) => setImageUrls(e.target.value)}
+                      onChange={(e) => {
+                        setErr(null);
+                        const raw = parseUrlList(e.target.value);
+                        const capped = limitImages(raw, MAX_IMAGES);
+                        setImageUrls(capped.join("\n"));
+                        if (raw.filter(isUrlish).length > MAX_IMAGES) {
+                          setErr(`Max ${MAX_IMAGES} image URLs. Extra URLs were ignored.`);
+                        }
+                      }}
                       className="min-h-[90px] text-xs"
                       placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
                     />
@@ -826,7 +932,7 @@ export default function SupplierAddProduct() {
                     <div>
                       <div className="text-xs font-semibold text-zinc-800 mb-2">Image previews</div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {allUrlPreviews.slice(0, 12).map((u) => (
+                        {allUrlPreviews.slice(0, MAX_IMAGES).map((u) => (
                           <div key={u} className="rounded-xl border overflow-hidden bg-white">
                             <div className="aspect-[4/3] bg-zinc-100">
                               <img
@@ -842,7 +948,7 @@ export default function SupplierAddProduct() {
                           </div>
                         ))}
 
-                        {filePreviews.slice(0, 12).map(({ file, url }) => (
+                        {filePreviews.slice(0, remainingSlots).map(({ file, url }) => (
                           <div key={url} className="rounded-xl border overflow-hidden bg-white">
                             <div className="aspect-[4/3] bg-zinc-100">
                               <img src={url} alt={file.name} className="w-full h-full object-cover" />
@@ -851,10 +957,6 @@ export default function SupplierAddProduct() {
                           </div>
                         ))}
                       </div>
-
-                      {allUrlPreviews.length + filePreviews.length > 12 && (
-                        <div className="mt-2 text-[11px] text-zinc-500">Showing first 12 previews.</div>
-                      )}
                     </div>
                   )}
 
@@ -868,13 +970,6 @@ export default function SupplierAddProduct() {
                     <div className="rounded-2xl border bg-white p-3">
                       <div className="text-xs font-semibold text-zinc-800">
                         Selected files: <span className="font-mono">{files.length}</span>
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {files.map((f, i) => (
-                          <div key={`${f.name}-${i}`} className="text-[11px] rounded-full border bg-zinc-50 px-3 py-1">
-                            {f.name}
-                          </div>
-                        ))}
                       </div>
 
                       <div className="mt-3 flex flex-col sm:flex-row gap-2">
@@ -932,10 +1027,7 @@ export default function SupplierAddProduct() {
                         return (
                           <div key={a.id}>
                             <Label>{a.name}</Label>
-                            <Select
-                              value={v}
-                              onChange={(e) => setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))}
-                            >
+                            <Select value={v} onChange={(e) => setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))}>
                               <option value="">— Select —</option>
                               {(a.values || []).map((x) => (
                                 <option key={x.id} value={x.id}>
@@ -1026,7 +1118,6 @@ export default function SupplierAddProduct() {
                           isDup ? "border-rose-300 ring-2 ring-rose-100" : ""
                         }`}
                       >
-                        {/* Mobile: stack fields; Desktop: inline */}
                         <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-start">
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             {selectableAttrs.map((attr) => {
@@ -1088,7 +1179,7 @@ export default function SupplierAddProduct() {
                           </span>
                           <span>
                             Variant price: <b className="text-zinc-800">{ngn.format(toMoneyNumber(retailPrice))}</b>{" "}
-                            <span className="text-zinc-400">(same as retail price)</span>
+                            <span className="text-zinc-400">(same as base price)</span>
                           </span>
                         </div>
                       </div>
@@ -1145,6 +1236,13 @@ export default function SupplierAddProduct() {
 
                   <div className="text-[11px] text-zinc-600">
                     Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-500">Images</span>
+                    <b className="text-zinc-900">
+                      {imagesCount}/{MAX_IMAGES}
+                    </b>
                   </div>
 
                   <div className="flex items-center justify-between">
