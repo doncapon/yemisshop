@@ -8,6 +8,7 @@ export type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_
 export type AuthUser = {
   id: string;
   email: string;
+
   role: Role;
   firstName?: string | null;
   middleName?: string | null;
@@ -40,6 +41,28 @@ type AuthState = {
 
 const is401 = (e: any) => Number(e?.response?.status) === 401;
 
+/** ✅ Single source of truth role normalizer (matches backend guard style) */
+function normRole(role: unknown): Role {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  if (r === "SUPERUSER") r = "SUPER_USER"; // not part of Role union but kept in case
+
+  // clamp to known union values to avoid runtime surprises
+  if (r === "ADMIN") return "ADMIN";
+  if (r === "SUPER_ADMIN") return "SUPER_ADMIN";
+  if (r === "SUPPLIER") return "SUPPLIER";
+  if (r === "SUPPLIER_RIDER") return "SUPPLIER_RIDER";
+  return "SHOPPER";
+}
+
+function normalizeUser(u: AuthUser | null): AuthUser | null {
+  if (!u?.id) return null;
+  return { ...u, role: normRole((u as any).role) };
+}
+
 export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
@@ -51,11 +74,10 @@ export const useAuthStore = create<AuthState>()(
 
       sessionExpired: false,
 
-      setUser: (u) => set({ user: u, sessionExpired: false }),
+      setUser: (u) => set({ user: normalizeUser(u), sessionExpired: false }),
       setNeedsVerification: (v) => set({ needsVerification: !!v }),
 
       markSessionExpired: () => {
-        // ✅ clear persisted user so "enabled: !!userId" stops everywhere
         set({ user: null, needsVerification: false, sessionExpired: true });
       },
 
@@ -69,15 +91,13 @@ export const useAuthStore = create<AuthState>()(
           const r = await api.get("/api/auth/me", { withCredentials: true }); // ✅ cookie auth
           const me = r.data as AuthUser | null;
 
-          if (me?.id) set({ user: me, sessionExpired: false });
+          if (me?.id) set({ user: normalizeUser(me), sessionExpired: false });
           else set({ user: null, sessionExpired: false });
         } catch (e: any) {
-          // ✅ if cookie expired / invalid, clear user and stop "authed" queries from running
           if (is401(e)) {
             set({ user: null, needsVerification: false, sessionExpired: true });
           }
-          // If API unreachable or other error, don't hard-fail; leave whatever is there.
-          // But DO mark hydrated.
+          // other errors: keep state but still hydrate
         } finally {
           set({ hydrated: true, bootstrapping: false });
         }
@@ -85,11 +105,11 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: "auth_store_v1",
-      storage: createJSONStorage(() => window.sessionStorage), // same-tab persistence
+      storage: createJSONStorage(() => window.sessionStorage),
       partialize: (s) => ({
         user: s.user,
         needsVerification: s.needsVerification,
-        sessionExpired: s.sessionExpired, // ✅ persist so spam doesn't resume after refresh in same tab
+        sessionExpired: s.sessionExpired,
       }),
       onRehydrateStorage: () => (state) => {
         if (state) state.hydrated = true;

@@ -94,7 +94,7 @@ export default function VerifyEmail() {
   const qs = new URLSearchParams(location.search);
   const eParam = (qs.get("e") || "").toLowerCase();
   const okParam = qs.get("ok"); // "1" if server confirmed success
-  const errParam = qs.get("err"); // e.g., "token" when invalid/expired
+  const errParam = qs.get("err"); // e.g.,when invalid/expired
 
   // ---------- State ----------
   const [me, setMe] = useState<MeResponse | null>(null);

@@ -1,5 +1,5 @@
 // src/App.tsx
-import { Route, Routes, Navigate, Outlet } from "react-router-dom";
+import { Route, Routes, Navigate, Outlet, useParams } from "react-router-dom";
 import { useEffect, useMemo } from "react";
 
 import Footer from "./components/Footer";
@@ -53,6 +53,20 @@ import AuthBootstrap from "./components/AuthBootstrap";
 import AdminOfferChangeRequests from "./pages/admin/AdminOfferChangeRequests";
 import ScrollToTop from "./components/ScrollToTop";
 
+/* -----------------------------
+   Role normalization + aliases
+----------------------------- */
+
+function normRole(role: unknown) {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  return r;
+}
+
+/* ----------------------------- */
+
 function AdminLayout() {
   return <Outlet />;
 }
@@ -60,16 +74,37 @@ function SupplierLayoutShell() {
   return <Outlet />;
 }
 
+/**
+ * Admin "view as" wrappers.
+ * These pass a userId param down so pages can optionally fetch/render for that user.
+ * (Requires those pages to support a prop OR read route param; your current pages cast any)
+ */
+function DashboardAsUser() {
+  const { userId } = useParams<{ userId: string }>();
+  return <UserDashboard {...({ adminUserId: userId } as any)} />;
+}
+function ProfileAsUser() {
+  const { userId } = useParams<{ userId: string }>();
+  return <Profile {...({ adminUserId: userId } as any)} />;
+}
+function OrdersAsUser() {
+  const { userId } = useParams<{ userId: string }>();
+  return <Orders {...({ adminUserId: userId } as any)} />;
+}
+function WishlistAsUser() {
+  const { userId } = useParams<{ userId: string }>();
+  return <Wishlist {...({ adminUserId: userId } as any)} />;
+}
+
 /** ✅ Role-aware landing page */
 function HomeRoute() {
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
 
-  // ✅ don’t “guess” before bootstrap finishes
   if (!hydrated) return <Catalog />;
 
   const isAuthed = !!user?.id;
-  const r = String(user?.role || "").toUpperCase();
+  const r = normRole(user?.role);
 
   if (isAuthed && r === "SUPPLIER") return <Navigate to="/supplier/catalog-offers" replace />;
   if (isAuthed && r === "SUPPLIER_RIDER") return <Navigate to="/supplier/orders" replace />;
@@ -82,9 +117,8 @@ export default function App() {
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
 
-  // ✅ IMPORTANT: logged-in means “has an id”
   const isAuthed = !!user?.id;
-  const role = user?.role;
+  const roleNorm = normRole(user?.role);
 
   useEffect(() => {
     bootstrap();
@@ -93,12 +127,13 @@ export default function App() {
   const riderAllowPrefixes = useMemo(() => ["/supplier/orders"], []);
 
   const RoleDashboard = useMemo(() => {
-    const r = String(role || "").toUpperCase();
+    const r = roleNorm;
+
     if (r === "ADMIN" || r === "SUPER_ADMIN") return AdminDashboard;
     if (r === "SUPPLIER") return SupplierDashboard;
     if (r === "SUPPLIER_RIDER") return () => <Navigate to="/supplier/orders" replace />;
-    return UserDashboard; // SHOPPER + others
-  }, [role]);
+    return UserDashboard;
+  }, [roleNorm]);
 
   useIdleLogout();
 
@@ -125,23 +160,11 @@ export default function App() {
               <Route path="/rider/accept" element={<RiderAcceptInvite />} />
 
               {/* ---------------- Auth ---------------- */}
-              <Route
-                path="/login"
-                element={
-                  hydrated && isAuthed ? <Navigate to="/" replace /> : <Login />
-                }
-              />
-              <Route
-                path="/register"
-                element={
-                  hydrated && isAuthed ? <Navigate to="/" replace /> : <Register />
-                }
-              />
+              <Route path="/login" element={hydrated && isAuthed ? <Navigate to="/" replace /> : <Login />} />
+              <Route path="/register" element={hydrated && isAuthed ? <Navigate to="/" replace /> : <Register />} />
               <Route
                 path="/register-supplier"
-                element={
-                  hydrated && isAuthed ? <Navigate to="/" replace /> : <SupplierRegister />
-                }
+                element={hydrated && isAuthed ? <Navigate to="/" replace /> : <SupplierRegister />}
               />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route
@@ -153,11 +176,11 @@ export default function App() {
                 }
               />
 
-              {/* ---------------- Shared protected ---------------- */}
+              {/* ---------------- Shared protected (self) ---------------- */}
               <Route
                 path="/profile"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPPLIER"]}>
+                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPPLIER", "SUPERADMIN", "SUPER ADMIN"]}>
                     <Profile />
                   </ProtectedRoute>
                 }
@@ -166,7 +189,7 @@ export default function App() {
               <Route
                 path="/orders"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <Orders />
                   </ProtectedRoute>
                 }
@@ -175,7 +198,7 @@ export default function App() {
               <Route
                 path="/checkout"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["SHOPPER", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <Checkout />
                   </ProtectedRoute>
                 }
@@ -184,7 +207,7 @@ export default function App() {
               <Route
                 path="/wishlist"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <Wishlist />
                   </ProtectedRoute>
                 }
@@ -193,17 +216,38 @@ export default function App() {
               <Route
                 path="/account/sessions"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "SUPPLIER", "ADMIN", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["SHOPPER", "SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <AccountSessions />
                   </ProtectedRoute>
                 }
               />
 
+              {/* ✅ Your normal role-aware dashboard */}
               <Route
                 path="/dashboard"
                 element={
-                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPPLIER", "SUPPLIER_RIDER"]}>
+                  <ProtectedRoute
+                    roles={[
+                      "SHOPPER",
+                      "ADMIN",
+                      "SUPER_ADMIN",
+                      "SUPPLIER",
+                      "SUPPLIER_RIDER",
+                      "SUPERADMIN",
+                      "SUPER ADMIN",
+                    ]}
+                  >
                     <RoleDashboard />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* ✅ Dedicated shopper dashboard that Admin/Super can open */}
+              <Route
+                path="/customer-dashboard"
+                element={
+                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <UserDashboard />
                   </ProtectedRoute>
                 }
               />
@@ -211,8 +255,42 @@ export default function App() {
               <Route
                 path="/rider"
                 element={
-                  <ProtectedRoute roles={["SUPPLIER_RIDER", "SUPPLIER", "ADMIN", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["SUPPLIER_RIDER", "SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN"]}>
                     <Navigate to="/supplier/orders" replace />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* ---------------- Admin "view as user" ---------------- */}
+              <Route
+                path="/u/:userId/dashboard"
+                element={
+                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <DashboardAsUser />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/u/:userId/profile"
+                element={
+                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <ProfileAsUser />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/u/:userId/orders"
+                element={
+                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <OrdersAsUser />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/u/:userId/wishlist"
+                element={
+                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <WishlistAsUser />
                   </ProtectedRoute>
                 }
               />
@@ -222,7 +300,7 @@ export default function App() {
                 path="/supplier"
                 element={
                   <ProtectedRoute
-                    roles={["SUPPLIER", "SUPPLIER_RIDER", "ADMIN", "SUPER_ADMIN"]}
+                    roles={["SUPPLIER", "SUPPLIER_RIDER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}
                     riderAllowPrefixes={riderAllowPrefixes}
                   >
                     <SupplierLayoutShell />
@@ -255,7 +333,7 @@ export default function App() {
                 <Route
                   path="riders"
                   element={
-                    <ProtectedRoute roles={["SUPPLIER", "ADMIN", "SUPER_ADMIN"]}>
+                    <ProtectedRoute roles={["SUPPLIER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                       <SupplierRiders />
                     </ProtectedRoute>
                   }
@@ -272,14 +350,14 @@ export default function App() {
               <Route
                 path="/admin"
                 element={
-                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN"]}>
+                  <ProtectedRoute roles={["ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <AdminLayout />
                   </ProtectedRoute>
                 }
               >
-                <Route path="offer-changes" element={<AdminOfferChangeRequests />} />
-
                 <Route index element={<AdminDashboard />} />
+
+                <Route path="offer-changes" element={<AdminOfferChangeRequests />} />
                 <Route path="dashboard" element={<Navigate to="/admin" replace />} />
                 <Route path="products" element={<Navigate to="/admin?tab=products&pTab=manage" replace />} />
                 <Route path="products/moderation" element={<Navigate to="/admin?tab=products&pTab=moderation" replace />} />
@@ -287,7 +365,7 @@ export default function App() {
                 <Route
                   path="settings"
                   element={
-                    <ProtectedRoute roles={["SUPER_ADMIN"]}>
+                    <ProtectedRoute roles={["SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                       <SettingsAdminPage />
                     </ProtectedRoute>
                   }

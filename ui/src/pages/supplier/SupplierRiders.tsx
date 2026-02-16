@@ -49,6 +49,7 @@ export default function SupplierRiders() {
     name: "",
   });
 
+  // NOTE: this is the invite token for the rider to accept the invite (NOT auth token)
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [lastInviteEmail, setLastInviteEmail] = useState<string | null>(null);
 
@@ -82,6 +83,7 @@ export default function SupplierRiders() {
         name: invite.name.trim() || undefined,
       };
 
+      // ✅ cookie auth
       const { data } = await api.post("/api/riders/invite", payload, AXIOS_COOKIE_CFG);
       return { data: data?.data, invitedEmail: email };
     },
@@ -107,7 +109,12 @@ export default function SupplierRiders() {
 
   const toggleM = useMutation({
     mutationFn: async (p: { riderId: string; isActive: boolean }) => {
-      const { data } = await api.patch(`/api/riders/${p.riderId}`, { isActive: p.isActive }, AXIOS_COOKIE_CFG);
+      // ✅ cookie auth
+      const { data } = await api.patch(
+        `/api/riders/${p.riderId}`,
+        { isActive: p.isActive },
+        AXIOS_COOKIE_CFG
+      );
       return data?.data;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["supplierRiders"] }),
@@ -123,6 +130,7 @@ export default function SupplierRiders() {
     if (!inviteToken) return null;
     const email = (lastInviteEmail || "").trim().toLowerCase();
     const base = getAppBaseUrl();
+    // NOTE: this token is for invite acceptance (not auth)
     return `${base}/rider/accept?email=${encodeURIComponent(email)}&token=${encodeURIComponent(inviteToken)}`;
   }, [inviteToken, lastInviteEmail]);
 
@@ -265,7 +273,9 @@ export default function SupplierRiders() {
                 </div>
 
                 <div className="text-xs text-zinc-600">Send this link to the rider:</div>
-                <code className="block break-all text-xs bg-white border rounded-xl p-3">{inviteLink ?? "(missing link)"}</code>
+                <code className="block break-all text-xs bg-white border rounded-xl p-3">
+                  {inviteLink ?? "(missing link)"}
+                </code>
               </div>
             )}
           </div>
@@ -297,7 +307,11 @@ export default function SupplierRiders() {
                       <div className="font-semibold text-zinc-900 truncate">{label}</div>
 
                       <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <span className={`inline-flex items-center rounded-full border px-2 py-1 text-[11px] ${pill(r.isActive)}`}>
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-1 text-[11px] ${pill(
+                            r.isActive
+                          )}`}
+                        >
                           {r.isActive ? "ACTIVE" : "INACTIVE"}
                         </span>
                         {r.user?.status ? (
@@ -322,7 +336,9 @@ export default function SupplierRiders() {
                       onClick={() => toggleM.mutate({ riderId: r.id, isActive: !r.isActive })}
                       disabled={toggleM.isPending}
                       className={`shrink-0 rounded-xl px-3 py-2 text-sm font-semibold border disabled:opacity-50 ${
-                        r.isActive ? "bg-white hover:bg-black/5" : "bg-zinc-900 text-white border-zinc-900 hover:opacity-90"
+                        r.isActive
+                          ? "bg-white hover:bg-black/5"
+                          : "bg-zinc-900 text-white border-zinc-900 hover:opacity-90"
                       }`}
                     >
                       {r.isActive ? "Deactivate" : "Activate"}

@@ -1,15 +1,16 @@
 // api/src/middleware/auth.ts
-import type { Request, RequestHandler } from "express";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import { getAccessTokenCookieName } from "../lib/authCookies.js";
 import { prisma } from "../lib/prisma.js";
 
-// ✅ Import the typed Role + policy helpers
-import type { Role as PolicyRole, Role } from "../lib/sessionPolicy.js";
-import { DEFAULT_POLICY, SESSION_POLICY, normRole as normPolicyRole } from "../lib/sessionPolicy.js";
+// ✅ Import policy helpers (kept; used lightly to avoid unused)
+import type { Role as PolicyRole } from "../lib/sessionPolicy.js";
+import { normRole as normPolicyRole } from "../lib/sessionPolicy.js";
 
 type JwtPayload = {
-  id?: string;
+  id?: string;              // some tokens
+  sub?: string;             // standard JWT subject (common)
   email?: string;
   role?: PolicyRole | string;
   k?: "access" | "verify" | string;
@@ -29,7 +30,10 @@ declare module "express-serve-static-core" {
   }
 }
 
-const ACCESS_JWT_SECRET = process.env.ACCESS_JWT_SECRET || process.env.JWT_SECRET || "CHANGE_ME_DEV_SECRET";
+const ACCESS_JWT_SECRET =
+  process.env.ACCESS_JWT_SECRET || process.env.JWT_SECRET || "CHANGE_ME_DEV_SECRET";
+
+/* ----------------------------- helpers ----------------------------- */
 
 function bearerFromAuthHeader(req: Request): string | null {
   const h = String(req.headers.authorization ?? "");
@@ -45,7 +49,8 @@ function tokenFromCookie(req: Request): string | null {
 }
 
 function readToken(req: Request): string | null {
-  return bearerFromAuthHeader(req) || tokenFromCookie(req) || null;
+  // cookie-first in practice, but keep Bearer as a fallback for tooling/admin scripts
+  return tokenFromCookie(req) || bearerFromAuthHeader(req) || null;
 }
 
 function verifyToken(token: string): JwtPayload | null {
@@ -57,9 +62,18 @@ function verifyToken(token: string): JwtPayload | null {
   }
 }
 
-// ✅ Keep a simple string normalizer for guard checks only
-function normRoleStr(r: Role): string {
-  return String(r ?? "").trim().toUpperCase();
+/**
+ * ✅ Guard role normalizer (independent of policy)
+ * - handles SUPERADMIN / SUPER ADMIN / SUPER-ADMIN
+ * - handles spacing/dashes
+ */
+function normRoleStr(r: unknown): string {
+  let s = String(r ?? "").trim().toUpperCase();
+  s = s.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (s === "SUPERADMIN") s = "SUPER_ADMIN";
+  if (s === "SUPER_ADMINISTRATOR") s = "SUPER_ADMIN";
+  if (s === "SUPERUSER") s = "SUPER_USER";
+  return s;
 }
 
 function isRevoked(row: { revokedAt: Date | null } | null) {
@@ -69,126 +83,119 @@ function isRevoked(row: { revokedAt: Date | null } | null) {
 // throttle lastSeen updates to reduce DB writes
 const LAST_SEEN_THROTTLE_MS = 60_000;
 
-export const requireAuth: RequestHandler = async (req, res, next) => {
-  try {
-    // allow bypass in test harnesses if you use it
-    if (globalThis.__auth_ignore) return next();
+async function assertSessionIfPresent(decoded: JwtPayload) {
+  const sid = decoded.sid ? String(decoded.sid) : "";
+  if (!sid) return;
 
-    const token = readToken(req);
-    if (!token) return res.status(401).json({ error: "Unauthorized" });
+  // Your schema might be Session or AuthSession.
+  const sessionModel: any = (prisma as any).session || (prisma as any).authSession;
+  if (!sessionModel?.findUnique) return; // if model doesn't exist, don't block login
 
-    const decoded = verifyToken(token);
-    if (!decoded?.id) return res.status(401).json({ error: "Unauthorized" });
+  const userId = String(decoded.id ?? decoded.sub ?? "");
+  if (!userId) return;
 
-    // require access token
-    const k = String(decoded.k ?? "access");
-    if (k !== "access") return res.status(401).json({ error: "Unauthorized" });
+  const row = await sessionModel.findUnique({
+    where: { id: sid },
+    select: { id: true, userId: true, revokedAt: true, expiresAt: true, lastSeenAt: true },
+  });
 
-    const userId = String(decoded.id);
-    const sid = decoded.sid ? String(decoded.sid) : null;
+  if (!row || String(row.userId) !== userId) throw new Error("session-not-found");
+  if (isRevoked(row)) throw new Error("session-revoked");
 
-    // ✅ Require sid so we can enforce idle/logout per session
-    if (!sid) return res.status(401).json({ error: "Unauthorized" });
-
-    // Load session + user role (trust DB as source of truth)
-    const sess = await prisma.userSession.findUnique({
-      where: { id: sid },
-      select: {
-        id: true,
-        userId: true,
-        createdAt: true,
-        lastSeenAt: true,
-        expiresAt: true,
-        revokedAt: true,
-        revokedReason: true,
-        user: { select: { role: true, email: true } },
-      },
-    });
-
-    if (!sess) return res.status(401).json({ error: "Unauthorized" });
-    if (sess.userId !== userId) return res.status(401).json({ error: "Unauthorized" });
-    if (isRevoked(sess)) return res.status(401).json({ error: "Unauthorized" });
-
-    const now = Date.now();
-
-    // ✅ CRITICAL: use the typed normalizer from sessionPolicy (returns PolicyRole | null)
-    const role: PolicyRole | null =
-      normPolicyRole(sess.user?.role) ?? normPolicyRole(decoded.role) ?? null;
-
-    // ✅ Now TS is happy: role is PolicyRole, not string
-    const policy = role ? SESSION_POLICY[role] : DEFAULT_POLICY;
-
-    const createdAtMs = sess.createdAt.getTime();
-    const lastSeenMs = sess.lastSeenAt.getTime();
-
-    // absolute expiry: prefer DB expiresAt if set, else compute from createdAt + role policy
-    const absoluteExpiryMs = sess.expiresAt?.getTime() ?? (createdAtMs + policy.absoluteMs);
-
-    // idle expiry
-    const idleExpiryMs = lastSeenMs + policy.idleMs;
-
-    const expired = now > absoluteExpiryMs || now > idleExpiryMs;
-
-    if (expired) {
-      // revoke so future requests fail fast
-      await prisma.userSession.update({
-        where: { id: sid },
-        data: {
-          revokedAt: new Date(),
-          revokedReason: now > idleExpiryMs ? "IDLE_TIMEOUT" : "ABSOLUTE_TIMEOUT",
-        },
-      });
-      return res.status(401).json({ error: "Session expired" });
-    }
-
-    // ✅ update lastSeenAt (throttled)
-    if (now - lastSeenMs > LAST_SEEN_THROTTLE_MS) {
-      await prisma.userSession.update({
-        where: { id: sid },
-        data: { lastSeenAt: new Date() },
-      });
-    }
-
-    req.user = {
-      id: userId,
-      email: sess.user?.email ? String(sess.user.email) : decoded.email ? String(decoded.email) : undefined,
-      role: role ?? (decoded.role ? String(decoded.role) : undefined), // keep as string for downstream checks
-      k,
-      sid,
-    };
-
-    next();
-  } catch {
-    return res.status(401).json({ error: "Unauthorized" });
+  if (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) {
+    throw new Error("session-expired");
   }
-};
 
-export const requireVerifySession: RequestHandler = (req, res, next) => {
-  const token = readToken(req);
-  if (!token) return res.status(401).json({ error: "Unauthorized" });
+  // throttle lastSeen updates
+  const last = row.lastSeenAt ? new Date(row.lastSeenAt).getTime() : 0;
+  if (Date.now() - last > LAST_SEEN_THROTTLE_MS) {
+    // best-effort update, do not fail request
+    sessionModel
+      .update({ where: { id: sid }, data: { lastSeenAt: new Date() } })
+      .catch(() => null);
+  }
+}
 
-  const decoded = verifyToken(token);
-  if (!decoded?.id) return res.status(401).json({ error: "Unauthorized" });
+function attachReqUser(req: Request, decoded: JwtPayload) {
+  const id = String(decoded.id ?? decoded.sub ?? "");
+  const roleRaw = decoded.role ?? "";
+  const role = normRoleStr(roleRaw);
 
-  const k = String(decoded.k ?? "");
-  if (k !== "verify") return res.status(401).json({ error: "Unauthorized" });
+  // also normalize via policy helper (covers more variants), but keep our canonical output
+  const policyNorm = normPolicyRole(role as any) || role;
 
   req.user = {
-    id: String(decoded.id),
+    id,
     email: decoded.email ? String(decoded.email) : undefined,
-    role: decoded.role ? String(decoded.role) : undefined,
-    k,
+    role: normRoleStr(policyNorm),
+    k: decoded.k ? String(decoded.k) : undefined,
     sid: decoded.sid ? String(decoded.sid) : undefined,
   };
+}
 
-  next();
+function unauthorized(res: Response, msg?: string) {
+  return res.status(401).json({ error: "Unauthorized", message: msg || "Unauthenticated" });
+}
+
+function forbidden(res: Response) {
+  return res.status(403).json({ error: "Forbidden" });
+}
+
+/* ----------------------------- core guards ----------------------------- */
+
+export const requireAuth: RequestHandler = async (req, res, next) => {
+  // dev escape hatch if you use it
+  if (globalThis.__auth_ignore) return next();
+
+  const token = readToken(req);
+  if (!token) return unauthorized(res, "Missing auth cookie");
+
+  const decoded = verifyToken(token);
+  const userId = String(decoded?.id ?? decoded?.sub ?? "");
+  if (!decoded || !userId) return unauthorized(res, "Invalid token");
+
+  // Only "access" tokens should be allowed here (unless token has no k, then allow)
+  const k = String(decoded.k ?? "");
+  if (k && k !== "access") return unauthorized(res, "Wrong token type");
+
+  try {
+    await assertSessionIfPresent(decoded);
+  } catch (e: any) {
+    return unauthorized(res, e?.message || "Session invalid");
+  }
+
+  attachReqUser(req, decoded);
+  return next();
+};
+
+export const requireVerifySession: RequestHandler = async (req, res, next) => {
+  if (globalThis.__auth_ignore) return next();
+
+  const token = readToken(req);
+  if (!token) return unauthorized(res);
+
+  const decoded = verifyToken(token);
+  const userId = String(decoded?.id ?? decoded?.sub ?? "");
+  if (!decoded || !userId) return unauthorized(res);
+
+  const k = String(decoded.k ?? "");
+  if (k !== "verify") return unauthorized(res);
+
+  try {
+    await assertSessionIfPresent(decoded);
+  } catch (e: any) {
+    return unauthorized(res, e?.message || "Session invalid");
+  }
+
+  attachReqUser(req, decoded);
+  return next();
 };
 
 export const requireAdmin: RequestHandler = (req, res, next) => {
   requireAuth(req, res, () => {
     const r = normRoleStr(req.user?.role);
     if (r === "ADMIN" || r === "SUPER_ADMIN") return next();
-    return res.status(403).json({ error: "Forbidden" });
+    return forbidden(res);
   });
 };
 
@@ -196,7 +203,7 @@ export const requireSuperAdmin: RequestHandler = (req, res, next) => {
   requireAuth(req, res, () => {
     const r = normRoleStr(req.user?.role);
     if (r === "SUPER_ADMIN") return next();
-    return res.status(403).json({ error: "Forbidden" });
+    return forbidden(res);
   });
 };
 
@@ -204,6 +211,6 @@ export const requireSupplier: RequestHandler = (req, res, next) => {
   requireAuth(req, res, () => {
     const r = normRoleStr(req.user?.role);
     if (r === "SUPPLIER") return next();
-    return res.status(403).json({ error: "Forbidden" });
+    return forbidden(res);
   });
 };

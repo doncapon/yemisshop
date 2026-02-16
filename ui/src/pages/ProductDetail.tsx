@@ -627,7 +627,7 @@ export default function ProductDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  /* ---------------- Silver-ish UI tokens ---------------- */
+  /* ---------------- Silver-ish UI  ---------------- */
   // A subtle “silver” border + shadow look (same vibe across cards).
   const cardCls =
     "rounded-2xl border border-zinc-200/80 bg-white shadow-[0_1px_0_rgba(255,255,255,0.85),0_10px_30px_rgba(15,23,42,0.06)]";

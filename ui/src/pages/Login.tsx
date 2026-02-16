@@ -6,6 +6,9 @@ import { useAuthStore, type Role } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout";
 import DaySpringLogo from "../components/brand/DayspringLogo";
 
+/* ---------------- Cookie-mode helpers ---------------- */
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
 type MeResponse = {
   id: string;
   email: string;
@@ -19,11 +22,13 @@ type MeResponse = {
 };
 
 type LoginOk = {
-  // cookie-mode: token may exist but UI does not need it
+  // cookie-mode: backend sets cookie; UI does not need token
   token?: string;
   sid?: string;
   profile: MeResponse;
   needsVerification?: boolean;
+
+  // legacy verification session token (keep for backward-compat unless backend is cookie-only here too)
   verifyToken?: string;
 };
 
@@ -179,13 +184,18 @@ export default function Login() {
 
     setLoading(true);
     try {
-      // Start clean
+      // Start clean (UI state only; cookies are handled by backend)
       clearAuth();
 
-      const res = await api.post<LoginOk>("/api/auth/login", {
-        email: email.trim(),
-        password: password.trim(),
-      });
+      // ✅ IMPORTANT for cookie-mode: send credentials so Set-Cookie persists cross-origin
+      const res = await api.post<LoginOk>(
+        "/api/auth/login",
+        {
+          email: email.trim(),
+          password: password.trim(),
+        },
+        AXIOS_COOKIE_CFG
+      );
 
       const data = res.data as LoginOk;
       const profile = data?.profile ?? null;
@@ -199,7 +209,8 @@ export default function Login() {
       setUser(profile);
       setNeedsVerification(needsVer);
 
-      // Keep verify session token for OTP endpoints (only needed for suppliers)
+      // (Optional/backward-compatible) Keep verify session token for OTP endpoints.
+      // If you later move OTP verification to cookie-based verify session, you can remove this entire block.
       try {
         localStorage.setItem("verifyEmail", profile.email);
         if (vt) localStorage.setItem("verifyToken", vt);
@@ -264,7 +275,11 @@ export default function Login() {
     setEmailMsg(null);
     setEmailBusy(true);
     try {
-      const r = await api.post("/api/auth/resend-verification", { email: blockedProfile.email });
+      const r = await api.post(
+        "/api/auth/resend-verification",
+        { email: blockedProfile.email },
+        AXIOS_COOKIE_CFG
+      );
 
       setEmailMsg("Verification email sent. Please check your inbox (and spam).");
       const next = Number((r as any).data?.nextResendAfterSec ?? 60);
@@ -289,7 +304,13 @@ export default function Login() {
     setEmailMsg(null);
     setEmailBusy(true);
     try {
-      const r = await api.get("/api/auth/email-status", { params: { email: blockedProfile.email } });
+      const r = await api.get(
+        "/api/auth/email-status",
+        {
+          ...AXIOS_COOKIE_CFG,
+          params: { email: blockedProfile.email },
+        }
+      );
       const emailVerifiedAt = (r as any).data?.emailVerifiedAt;
 
       setBlockedProfile((p) => (p ? { ...p, emailVerified: !!emailVerifiedAt } : p));
@@ -307,8 +328,14 @@ export default function Login() {
     setOtpMsg(null);
     setOtpBusy(true);
     try {
-      const headers = verifyToken ? { Authorization: `Bearer ${verifyToken}` } : undefined;
-      const r = await api.post("/api/auth/resend-otp", {}, { headers });
+      // ✅ Cookie-mode: always include credentials.
+      // Backward-compat: include Authorization if verifyToken exists (until backend uses a verify cookie).
+      const cfg = {
+        ...AXIOS_COOKIE_CFG,
+        headers: verifyToken ? { Authorization: `Bearer ${verifyToken}` } : undefined,
+      };
+
+      const r = await api.post("/api/auth/resend-otp", {}, cfg);
 
       setOtpMsg("OTP sent via WhatsApp. Enter the code to verify your phone.");
       const next = Number((r as any).data?.nextResendAfterSec ?? 60);
@@ -340,8 +367,14 @@ export default function Login() {
     setOtpMsg(null);
     setOtpBusy(true);
     try {
-      const headers = verifyToken ? { Authorization: `Bearer ${verifyToken}` } : undefined;
-      const r = await api.post("/api/auth/verify-otp", { otp: code }, { headers });
+      // ✅ Cookie-mode: always include credentials.
+      // Backward-compat: include Authorization if verifyToken exists (until backend uses a verify cookie).
+      const cfg = {
+        ...AXIOS_COOKIE_CFG,
+        headers: verifyToken ? { Authorization: `Bearer ${verifyToken}` } : undefined,
+      };
+
+      const r = await api.post("/api/auth/verify-otp", { otp: code }, cfg);
 
       if ((r as any).data?.ok && (r as any).data?.profile) {
         const p = normalizeProfile((r as any).data.profile);

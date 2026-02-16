@@ -38,6 +38,14 @@ function isAuthError(e: any) {
   return s === 401 || s === 403;
 }
 
+function normRole(role: unknown) {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  return r;
+}
+
 function useClickAway<T extends HTMLElement>(onAway: () => void) {
   const ref = useRef<T | null>(null);
   useEffect(() => {
@@ -172,10 +180,12 @@ export default function Navbar() {
   const userRole = (user?.role ?? null) as Role | null;
   const userEmail = user?.email ?? null;
 
-  const isSupplier = userRole === "SUPPLIER";
-  const isSuperAdmin = userRole === "SUPER_ADMIN";
-  const isAdmin = userRole === "ADMIN" || userRole === "SUPER_ADMIN";
-  const isRider = userRole === "SUPPLIER_RIDER";
+  const roleNorm = normRole(userRole);
+
+  const isSupplier = roleNorm === "SUPPLIER";
+  const isSuperAdmin = roleNorm === "SUPER_ADMIN";
+  const isAdmin = roleNorm === "ADMIN" || roleNorm === "SUPER_ADMIN";
+  const isRider = roleNorm === "SUPPLIER_RIDER";
 
   const cartCount = useCartCount();
 
@@ -216,7 +226,7 @@ export default function Navbar() {
   const isLoggedIn = !!user?.id;
 
   const showShopNav = !isLoggedIn || (!isSupplier && !isSuperAdmin && !isRider);
-  const showBuyerNav = isLoggedIn && !isSupplier && !isRider;
+  const showBuyerNav = isLoggedIn && !isSupplier && !isRider; // includes admins
   const showSupplierNav = isLoggedIn && isSupplier && !isRider;
   const showRiderNav = isLoggedIn && isRider;
 
@@ -265,13 +275,11 @@ export default function Navbar() {
 
   // ✅ Prefetch wishlist so it shows instantly when opening Wishlist page
   const prefetchWishlist = useCallback(async () => {
-    // If you are not logged in, no need to prefetch
     if (!useAuthStore.getState().user?.id) return;
 
     await qc.prefetchQuery({
       queryKey: ["wishlist"],
       queryFn: async () => {
-        // Try /api/wishlist first, fallback to /api/favorites/mine
         try {
           const { data } = await api.get("/api/wishlist", AXIOS_COOKIE_CFG);
           if (Array.isArray((data as any)?.items)) return (data as any).items;
@@ -323,17 +331,24 @@ export default function Navbar() {
                     <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
                   )}
 
+                  {/* ✅ SuperAdmin can open Supplier dashboard too */}
                   {isLoggedIn && isSuperAdmin && (
-                    <IconNavLink
-                      to="/supplier"
-                      end
-                      icon={<CheckCircle2 size={18} />}
-                      label="Supplier dashboard"
-                    />
+                    <IconNavLink to="/supplier" end icon={<CheckCircle2 size={18} />} label="Supplier dashboard" />
                   )}
 
-                  {isLoggedIn && !isSupplier && !isSuperAdmin && (
+                  {/* ✅ Normal dashboard for shoppers */}
+                  {isLoggedIn && !isSupplier && !isSuperAdmin && !isRider && (
                     <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
+                  )}
+
+                  {/* ✅ NEW: Customer dashboard link for SuperAdmin (desktop) */}
+                  {isLoggedIn && isSuperAdmin && (
+                    <IconNavLink
+                      to="/customer-dashboard"
+                      end
+                      icon={<User size={18} />}
+                      label="Customer dashboard"
+                    />
                   )}
 
                   {showBuyerNav && (
@@ -424,7 +439,10 @@ export default function Navbar() {
                     </button>
 
                     {menuOpen && (
-                      <div className="absolute right-0 mt-2 w-64 rounded-2xl border border-zinc-200 bg-white shadow-xl overflow-hidden" role="menu">
+                      <div
+                        className="absolute right-0 mt-2 w-64 rounded-2xl border border-zinc-200 bg-white shadow-xl overflow-hidden"
+                        role="menu"
+                      >
                         <div className="px-3 py-3 border-b border-zinc-100 bg-zinc-50">
                           <div className="text-xs text-zinc-500">Signed in as</div>
                           <div className="text-sm font-semibold truncate text-zinc-900">
@@ -487,6 +505,22 @@ export default function Navbar() {
                               Sessions
                             </button>
 
+                            {/* ✅ Customer dashboard shortcut for SuperAdmin */}
+                            {isSuperAdmin && (
+                              <button
+                                type="button"
+                                className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                                onClick={() => {
+                                  setMenuOpen(false);
+                                  nav("/customer-dashboard");
+                                }}
+                                role="menuitem"
+                              >
+                                <User size={16} />
+                                Customer dashboard
+                              </button>
+                            )}
+
                             {!isSupplier && (
                               <button
                                 type="button"
@@ -502,7 +536,7 @@ export default function Navbar() {
                               </button>
                             )}
 
-                            {userRole === "SUPER_ADMIN" && (
+                            {roleNorm === "SUPER_ADMIN" && (
                               <button
                                 type="button"
                                 className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
@@ -650,6 +684,18 @@ export default function Navbar() {
                           onClick={() => {
                             setMobileMoreOpen(false);
                             nav("/supplier");
+                          }}
+                        />
+                      )}
+
+                      {/* ✅ Customer dashboard for SuperAdmin (mobile) */}
+                      {isLoggedIn && isSuperAdmin && (
+                        <MobileMenuButton
+                          icon={<User size={18} />}
+                          label="Customer dashboard"
+                          onClick={() => {
+                            setMobileMoreOpen(false);
+                            nav("/customer-dashboard");
                           }}
                         />
                       )}

@@ -1,5 +1,5 @@
 // src/components/admin/AdminLedgerPanel.tsx
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCcw, Plus } from "lucide-react";
 import api from "../../api/client.js";
@@ -44,19 +44,20 @@ function fmtDate(s?: string | null) {
   });
 }
 
-export default function AdminLedgerPanel({
-  token,
-  canAdmin,
-}: {
-  token?: string | null;
-  canAdmin: boolean;
-}) {
-  const qc = useQueryClient();
+function pillClass(type?: string | null) {
+  const t = String(type || "").toUpperCase();
+  if (t === "CREDIT") return "bg-emerald-600/10 text-emerald-700 border-emerald-600/20";
+  if (t === "DEBIT") return "bg-rose-500/10 text-rose-700 border-rose-600/20";
+  return "bg-zinc-500/10 text-zinc-700 border-zinc-600/20";
+}
 
-  const headers = useMemo(
-    () => (token ? { Authorization: `Bearer ${token}` } : undefined),
-    [token]
-  );
+/**
+ * Cookie auth version:
+ * - remove token/headers
+ * - use withCredentials: true
+ */
+export default function AdminLedgerPanel({ canAdmin }: { canAdmin: boolean }) {
+  const qc = useQueryClient();
 
   const [supplierId, setSupplierId] = useState<string>("");
   const [q, setQ] = useState<string>("");
@@ -68,13 +69,24 @@ export default function AdminLedgerPanel({
 
   React.useEffect(() => setPage(1), [supplierId, q, type, take]);
 
-  // Supplier dropdown (re-uses your existing GET /api/admin/suppliers)
+  // Supplier dropdown (re-uses GET /api/admin/suppliers)
   const suppliersQ = useQuery({
     queryKey: ["admin", "suppliers", "lite"],
-    enabled: !!canAdmin && !!token,
+    enabled: !!canAdmin,
     queryFn: async () => {
-      const { data } = await api.get<{ data: SupplierLite[] }>(`/api/admin/suppliers`, { headers });
-      return Array.isArray(data?.data) ? data.data : [];
+      const { data } = await api.get<{ data: SupplierLite[] }>(`/api/admin/suppliers`, {
+        withCredentials: true,
+      });
+
+      // tolerate different shapes
+      const root: any = data ?? {};
+      const rows: SupplierLite[] =
+        (Array.isArray(root?.data) ? root.data : null) ??
+        (Array.isArray(root?.items) ? root.items : null) ??
+        (Array.isArray(root) ? root : null) ??
+        [];
+
+      return rows;
     },
     staleTime: 60_000,
     refetchOnWindowFocus: false,
@@ -82,7 +94,7 @@ export default function AdminLedgerPanel({
 
   const ledgerQ = useQuery({
     queryKey: ["admin", "suppliers", "ledger", { supplierId, q, type, take, skip }],
-    enabled: !!canAdmin && !!token,
+    enabled: !!canAdmin,
     queryFn: async () => {
       const qs = new URLSearchParams();
       if (supplierId) qs.set("supplierId", supplierId);
@@ -91,16 +103,22 @@ export default function AdminLedgerPanel({
       qs.set("take", String(take));
       qs.set("skip", String(skip));
 
-      const { data } = await api.get(`/api/admin/suppliers/ledger?${qs.toString()}`, { headers });
+      const { data } = await api.get(`/api/admin/suppliers/ledger?${qs.toString()}`, {
+        withCredentials: true,
+      });
 
       const root: any = data ?? {};
       const rows: LedgerRow[] =
         (Array.isArray(root?.data) ? root.data : null) ??
         (Array.isArray(root?.data?.data) ? root.data.data : null) ??
+        (Array.isArray(root?.items) ? root.items : null) ??
+        (Array.isArray(root?.data?.items) ? root.data.items : null) ??
         [];
       const total: number | undefined =
         (typeof root?.meta?.total === "number" ? root.meta.total : undefined) ??
         (typeof root?.total === "number" ? root.total : undefined) ??
+        (typeof root?.count === "number" ? root.count : undefined) ??
+        (typeof root?.meta?.count === "number" ? root.meta.count : undefined) ??
         undefined;
 
       return { rows, total };
@@ -116,8 +134,7 @@ export default function AdminLedgerPanel({
     typeof total === "number" && total >= 0 ? Math.max(1, Math.ceil(total / take)) : undefined;
 
   const canPrev = page > 1;
-  const canNext =
-    typeof totalPages === "number" ? page < totalPages : rows.length === take;
+  const canNext = typeof totalPages === "number" ? page < totalPages : rows.length === take;
 
   // Modal state
   const [open, setOpen] = useState(false);
@@ -141,12 +158,12 @@ export default function AdminLedgerPanel({
           {
             type: mType,
             amount: amt,
-            currency: mCurrency,
+            currency: mCurrency || "NGN",
             note: mNote || undefined,
             referenceType: mRefType || undefined,
             referenceId: mRefId ? mRefId : null,
           },
-          { headers }
+          { withCredentials: true }
         )
       ).data;
     },
@@ -160,24 +177,29 @@ export default function AdminLedgerPanel({
   });
 
   const isMutating = adjustM.isPending;
+  const errMsg =
+    (ledgerQ.error as any)?.response?.data?.error ||
+    (ledgerQ.error as any)?.response?.data?.message ||
+    (ledgerQ.error as any)?.message ||
+    "Failed to load ledger.";
+
+  const suppliers = suppliersQ.data ?? [];
 
   return (
     <div className="space-y-4">
       {/* Filters */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="text-sm text-zinc-700">
-          Supplier ledger entries (credits, debits, adjustments).
-        </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-zinc-700">Supplier ledger entries (credits, debits, adjustments).</div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="grid grid-cols-1 sm:flex sm:items-center gap-2 w-full sm:w-auto">
           <select
             value={supplierId}
             onChange={(e) => setSupplierId(e.target.value)}
-            className="px-3 py-2 rounded-xl border bg-white text-sm"
+            className="w-full sm:w-auto px-3 py-2 rounded-xl border bg-white text-sm"
             title="Filter by supplier"
           >
             <option value="">All suppliers</option>
-            {(suppliersQ.data ?? []).map((s) => (
+            {suppliers.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
               </option>
@@ -188,13 +210,13 @@ export default function AdminLedgerPanel({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search id / reference…"
-            className="px-3 py-2 rounded-xl border bg-white"
+            className="w-full sm:w-[260px] px-3 py-2 rounded-xl border bg-white"
           />
 
           <select
             value={type}
             onChange={(e) => setType(e.target.value)}
-            className="px-3 py-2 rounded-xl border bg-white text-sm"
+            className="w-full sm:w-auto px-3 py-2 rounded-xl border bg-white text-sm"
           >
             <option value="">All types</option>
             <option value="CREDIT">CREDIT</option>
@@ -204,7 +226,7 @@ export default function AdminLedgerPanel({
           <select
             value={String(take)}
             onChange={(e) => setTake(Number(e.target.value) || 20)}
-            className="px-3 py-2 rounded-xl border bg-white text-sm"
+            className="w-full sm:w-auto px-3 py-2 rounded-xl border bg-white text-sm"
             title="Rows per page"
           >
             <option value="10">10 / page</option>
@@ -214,10 +236,10 @@ export default function AdminLedgerPanel({
 
           <button
             onClick={() => ledgerQ.refetch()}
-            className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 text-sm"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 text-sm disabled:opacity-50"
             disabled={ledgerQ.isFetching}
           >
-            <RefreshCcw size={16} /> Refresh
+            <RefreshCcw size={16} /> {ledgerQ.isFetching ? "Refreshing…" : "Refresh"}
           </button>
 
           <button
@@ -225,7 +247,7 @@ export default function AdminLedgerPanel({
               setMSupplierId(supplierId || "");
               setOpen(true);
             }}
-            className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90 text-sm"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90 text-sm"
           >
             <Plus size={16} /> Manual adjustment
           </button>
@@ -273,8 +295,67 @@ export default function AdminLedgerPanel({
         </div>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto rounded-2xl border">
+      {/* Error banner */}
+      {ledgerQ.isError && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+          {errMsg}
+        </div>
+      )}
+
+      {/* ✅ Mobile cards */}
+      <div className="sm:hidden space-y-3">
+        {ledgerQ.isLoading &&
+          Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="rounded-2xl border p-4 animate-pulse bg-white">
+              <div className="h-4 w-2/3 bg-zinc-200 rounded" />
+              <div className="mt-2 h-3 w-1/2 bg-zinc-200 rounded" />
+              <div className="mt-4 h-10 w-full bg-zinc-200 rounded-xl" />
+            </div>
+          ))}
+
+        {!ledgerQ.isLoading && !ledgerQ.isError && rows.length === 0 && (
+          <div className="rounded-2xl border p-4 text-sm text-zinc-600 bg-white">No ledger entries found.</div>
+        )}
+
+        {!ledgerQ.isLoading &&
+          !ledgerQ.isError &&
+          rows.map((r) => (
+            <div key={r.id} className="rounded-2xl border p-4 bg-white">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs text-zinc-500">Supplier</div>
+                  <div className="font-semibold text-ink break-all">{r.supplier?.name || r.supplierId}</div>
+                </div>
+
+                <span className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${pillClass(r.type)}`}>
+                  {String(r.type)}
+                </span>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                <div className="text-xs text-zinc-500">Amount</div>
+                <div className="text-right font-semibold">{ngn.format(fmtMoney(r.amount))}</div>
+
+                <div className="text-xs text-zinc-500">Ref Type</div>
+                <div className="text-right">{r.referenceType || "—"}</div>
+
+                <div className="text-xs text-zinc-500">Ref ID</div>
+                <div className="text-right break-all">{r.referenceId || "—"}</div>
+
+                <div className="text-xs text-zinc-500">Created</div>
+                <div className="text-right">{fmtDate(r.createdAt)}</div>
+              </div>
+
+              <div className="mt-3 pt-3 border-t">
+                <div className="text-xs text-zinc-500">Entry ID</div>
+                <div className="font-mono text-xs break-all">{r.id}</div>
+              </div>
+            </div>
+          ))}
+      </div>
+
+      {/* ✅ Desktop table */}
+      <div className="hidden sm:block overflow-x-auto rounded-2xl border">
         <table className="min-w-[1100px] w-full text-sm">
           <thead>
             <tr className="bg-zinc-50 text-ink">
@@ -297,14 +378,6 @@ export default function AdminLedgerPanel({
               </tr>
             )}
 
-            {ledgerQ.isError && (
-              <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-rose-600">
-                  Failed to load ledger.
-                </td>
-              </tr>
-            )}
-
             {!ledgerQ.isLoading && !ledgerQ.isError && rows.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-3 py-8 text-center text-zinc-500">
@@ -321,13 +394,11 @@ export default function AdminLedgerPanel({
                   </span>
                 </td>
                 <td className="px-3 py-3 whitespace-nowrap">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border bg-white">
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${pillClass(r.type)}`}>
                     {String(r.type)}
                   </span>
                 </td>
-                <td className="px-3 py-3 whitespace-nowrap">
-                  {ngn.format(fmtMoney(r.amount))}
-                </td>
+                <td className="px-3 py-3 whitespace-nowrap">{ngn.format(fmtMoney(r.amount))}</td>
                 <td className="px-3 py-3 whitespace-nowrap">{r.referenceType || "—"}</td>
                 <td className="px-3 py-3 whitespace-nowrap">
                   <span className="inline-block max-w-[260px] truncate" title={r.referenceId || ""}>
@@ -335,24 +406,26 @@ export default function AdminLedgerPanel({
                   </span>
                 </td>
                 <td className="px-3 py-3 whitespace-nowrap">{fmtDate(r.createdAt)}</td>
-                <td className="px-3 py-3 whitespace-nowrap">{r.id}</td>
+                <td className="px-3 py-3 whitespace-nowrap">
+                  <span className="font-mono text-xs">{r.id}</span>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      {/* Manual Adjustment Modal */}
+      {/* Manual Adjustment Modal (mobile-friendly) */}
       {open && (
-        <div className="fixed inset-0 z-[1000] bg-black/40 flex items-center justify-center p-4">
-          <div className="w-full max-w-[560px] rounded-2xl bg-white border shadow-lg overflow-hidden">
-            <div className="px-4 py-3 border-b flex items-center justify-between">
-              <div>
+        <div className="fixed inset-0 z-[1000] bg-black/40 flex items-end sm:items-center justify-center">
+          <div className="w-full sm:max-w-[560px] rounded-t-2xl sm:rounded-2xl bg-white border shadow-lg overflow-hidden max-h-[92vh] sm:max-h-[85vh]">
+            <div className="px-4 py-3 border-b flex items-start justify-between gap-3">
+              <div className="min-w-0">
                 <div className="font-semibold text-ink">Manual ledger adjustment</div>
-                <div className="text-xs text-ink-soft">Creates a CREDIT or DEBIT entry (Super Admin only).</div>
+                <div className="text-xs text-ink-soft">Creates a CREDIT or DEBIT entry.</div>
               </div>
               <button
-                className="px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5"
+                className="shrink-0 px-3 py-1.5 rounded-lg border bg-white hover:bg-black/5 disabled:opacity-50"
                 onClick={() => setOpen(false)}
                 disabled={isMutating}
               >
@@ -360,8 +433,8 @@ export default function AdminLedgerPanel({
               </button>
             </div>
 
-            <div className="p-4 space-y-3">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="p-4 space-y-3 overflow-y-auto">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-zinc-600">Supplier</label>
                   <select
@@ -370,7 +443,7 @@ export default function AdminLedgerPanel({
                     className="w-full mt-1 px-3 py-2 rounded-xl border bg-white text-sm"
                   >
                     <option value="">Select supplier…</option>
-                    {(suppliersQ.data ?? []).map((s) => (
+                    {suppliers.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
                       </option>
@@ -396,6 +469,7 @@ export default function AdminLedgerPanel({
                     value={mAmount}
                     onChange={(e) => setMAmount(e.target.value)}
                     placeholder="e.g. 1500"
+                    inputMode="decimal"
                     className="w-full mt-1 px-3 py-2 rounded-xl border bg-white text-sm"
                   />
                 </div>
@@ -439,17 +513,15 @@ export default function AdminLedgerPanel({
               </div>
 
               {adjustM.isError && (
-                <div className="text-sm text-rose-600">
-                  {(adjustM.error as any)?.response?.data?.error ||
-                    (adjustM.error as any)?.message ||
-                    "Failed."}
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {(adjustM.error as any)?.response?.data?.error || (adjustM.error as any)?.message || "Failed."}
                 </div>
               )}
             </div>
 
             <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
               <button
-                className="px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                className="px-3 py-2 rounded-xl border bg-white hover:bg-black/5 disabled:opacity-50"
                 onClick={() => setOpen(false)}
                 disabled={isMutating}
               >

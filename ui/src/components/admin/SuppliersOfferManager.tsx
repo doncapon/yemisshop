@@ -3,37 +3,19 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 /**
  * SuppliersOfferManager.tsx
  *
+ * ✅ Cookie auth (NO bearer tokens):
+ * - All requests use credentials: "include"
+ * - Removed all localStorage/sessionStorage token scanning
+ *
  * ✅ Uses ONLY these endpoints (no fallbacks):
  * - GET  /api/admin/products/:productId/supplier-offers
  * - POST /api/admin/products/:productId/supplier-offers
  * - PATCH /api/admin/supplier-offers/:id
- * - DELETE /api/admin/supplier-offers/:id   (manual row delete only; NOT used by saveAll)
+ * - DELETE /api/admin/supplier-offers/:id
  *
  * ✅ One price field in API payloads ONLY: `price`
  *   - BASE row:     price -> SupplierProductOffer.basePrice
  *   - VARIANT row:  price -> SupplierVariantOffer.unitPrice (FULL unit price)
- *
- * ✅ Variant price can be lower than base price
- *
- * ✅ UX changes:
- * - Do NOT auto-fill price when supplier is selected (keep blank until typed)
- * - "Add row" inserts the new row at the TOP of the list
- * - Variant offer can exist without any base offer (frontend supports this)
- *
- * ✅ FIX:
- * - Changing variant/supplier to a NEW combo should NOT wipe current row values.
- * - Only hydrate when destination combo already exists in backend.
- *
- * ✅ NEW SAVE STRATEGY (FIXED FOR YOUR 409 ISSUE):
- * - saveAll now uses TRUE PATCH whenever offerId exists (qty/price/active/leadDays etc)
- * - saveAll DOES NOT delete anything.
- * - saveAll only POSTs for brand-new rows (offerId === null).
- * - If a row is marked "replace" (deleteOfferId set) we DO NOT auto-delete (deletes are blocked after orders).
- *   We show an error telling user to undo the combo change or delete manually (if allowed).
- *
- * Why this fixes your issue:
- * - Your 409 was thrown by assertProductOffersDeletable() during DELETE.
- * - Now saveAll doesn't delete for normal edits (like increasing qty), so no 409.
  */
 
 type Supplier = {
@@ -112,7 +94,10 @@ type Props = {
 
   variants?: Variant[];
   suppliers?: Supplier[];
+
+  // kept for compatibility; NOT used (cookie auth)
   token?: string | null;
+
   readOnly?: boolean;
 
   fixedSupplierId?: string | null;
@@ -233,9 +218,7 @@ function VariantComboBox({
                 <button
                   key={item.kind === "BASE" ? "BASE" : item.v.id}
                   type="button"
-                  className={`w-full px-3 py-2 text-left text-sm hover:bg-slate-50 ${
-                    idx === active ? "bg-slate-50" : ""
-                  }`}
+                  className={`w-full px-3 py-2 text-left text-sm hover:bg-slate-50 ${idx === active ? "bg-slate-50" : ""}`}
                   onMouseEnter={() => setActive(idx)}
                   onClick={() => choose(item)}
                 >
@@ -250,82 +233,12 @@ function VariantComboBox({
   );
 }
 
-/* ------------------------------ Token helpers ------------------------------ */
+/* ------------------------------ Cookie fetch helper ------------------------------ */
 
-function isLikelyJwt(s: string) {
-  return /^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/.test(s);
-}
-
-function tryExtractTokenFromJsonString(raw: string): string | null {
-  try {
-    const obj = JSON.parse(raw);
-    const candidates = [
-      obj?.token,
-      obj?.accessToken,
-      obj?.access_token,
-      obj?.authToken,
-      obj?.jwt,
-      obj?.state?.token,
-      obj?.data?.token,
-      obj?.data?.accessToken,
-      obj?.user?.token,
-      obj?.user?.accessToken,
-    ].filter(Boolean);
-
-    for (const c of candidates) {
-      const s = String(c).trim();
-      if (s && isLikelyJwt(s)) return s;
-    }
-  } catch {}
-  return null;
-}
-
-function scanStorageForJwt(storage: Storage): string | null {
-  for (let i = 0; i < storage.length; i++) {
-    const k = storage.key(i);
-    if (!k) continue;
-    const v = storage.getItem(k);
-    if (!v) continue;
-
-    const trimmed = v.trim();
-    if (isLikelyJwt(trimmed)) return trimmed;
-
-    const fromJson = tryExtractTokenFromJsonString(trimmed);
-    if (fromJson) return fromJson;
-  }
-  return null;
-}
-
-function getAuthTokenFromStorage(): string | null {
-  const keys = ["access_token", "accessToken", "token", "authToken", "jwt", "auth", "user", "session"];
-
-  for (const k of keys) {
-    const v = localStorage.getItem(k) ?? sessionStorage.getItem(k);
-    if (!v) continue;
-
-    const trimmed = v.trim();
-    if (isLikelyJwt(trimmed)) return trimmed;
-
-    const fromJson = tryExtractTokenFromJsonString(trimmed);
-    if (fromJson) return fromJson;
-  }
-
-  return scanStorageForJwt(localStorage) ?? scanStorageForJwt(sessionStorage);
-}
-
-async function apiFetchJson<T>(
-  path: string,
-  opts: RequestInit & { signal?: AbortSignal } = {},
-  token?: string | null
-): Promise<T> {
+async function apiFetchJson<T>(path: string, opts: RequestInit & { signal?: AbortSignal } = {}): Promise<T> {
   const headers = new Headers(opts.headers || {});
   headers.set("Accept", "application/json");
   if (!headers.has("Content-Type") && opts.body) headers.set("Content-Type", "application/json");
-
-  // Only attach Authorization when token is explicitly passed in props.
-  if (token && isLikelyJwt(String(token).trim())) {
-    headers.set("Authorization", `Bearer ${String(token).trim()}`);
-  }
 
   const res = await fetch(path, { ...opts, headers, credentials: "include" });
 
@@ -434,10 +347,11 @@ export default function SuppliersOfferManager({
   productId,
   variants: variantsProp,
   suppliers: suppliersProp,
-  token,
+  // token prop ignored (cookie auth)
+  token: _tokenIgnored,
   readOnly,
   fixedSupplierId,
-  defaultUnitCost, // kept for compatibility, but NOT used to auto-fill price anymore
+  defaultUnitCost: _defaultUnitCostIgnored, // kept for compatibility
   onSaved,
 }: Props) {
   const [loading, setLoading] = useState(false);
@@ -552,7 +466,7 @@ export default function SuppliersOfferManager({
     const isActive = !!o.isActive;
 
     return {
-      rowKey: o.id, // stable enough for loaded rows
+      rowKey: o.id,
       offerId: o.id,
       deleteOfferId: null,
       supplierId: o.supplierId,
@@ -566,13 +480,6 @@ export default function SuppliersOfferManager({
     };
   }
 
-  /**
-   * - If target combo exists -> hydrate row from backend.
-   * - If target combo does NOT exist -> keep current values (NO wipe),
-   *   update supplierId/variantId/kind, and mark deleteOfferId (replacement intent).
-   *
-   * IMPORTANT: saveAll will NOT auto-delete deleteOfferId (because deletes can be blocked post-orders).
-   */
   function snapRowToCombo(rowKey: string, supplierId: string, variantId: string | null) {
     if (variantId && allowedVariantIds.size > 0 && !allowedVariantIds.has(String(variantId))) {
       setError("Selected variant does not belong to this product.");
@@ -612,7 +519,7 @@ export default function SuppliersOfferManager({
         return {
           ...r,
           deleteOfferId: idToDelete ?? r.deleteOfferId ?? null,
-          offerId: null, // new combo to create
+          offerId: null,
           supplierId,
           variantId,
           kind: nextKind,
@@ -639,19 +546,17 @@ export default function SuppliersOfferManager({
     try {
       const productPromise = apiFetchJson<any>(
         `/api/admin/products/${encodeURIComponent(productId)}?include=variants,ProductVariant,productVariants`,
-        { signal: ac.signal },
-        token
+        { signal: ac.signal }
       );
 
       const suppliersPromise =
         !suppliersProp || suppliersProp.length === 0
-          ? apiFetchJson<any>(`/api/admin/suppliers`, { signal: ac.signal }, token)
+          ? apiFetchJson<any>(`/api/admin/suppliers`, { signal: ac.signal })
           : Promise.resolve({ data: suppliersProp ?? [] } as any);
 
       const offersPromise = apiFetchJson<any>(
         `/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`,
-        { signal: ac.signal },
-        token
+        { signal: ac.signal }
       );
 
       const [pRaw, sRaw, oRaw] = await Promise.all([productPromise, suppliersPromise, offersPromise]);
@@ -808,7 +713,7 @@ export default function SuppliersOfferManager({
     setError("");
 
     try {
-      await apiFetchJson(`/api/admin/supplier-offers/${encodeURIComponent(row.offerId)}`, { method: "DELETE" }, token);
+      await apiFetchJson(`/api/admin/supplier-offers/${encodeURIComponent(row.offerId)}`, { method: "DELETE" });
       await load();
       onSaved?.();
     } catch (e: any) {
@@ -818,13 +723,6 @@ export default function SuppliersOfferManager({
     }
   }
 
-  /**
-   * ✅ FIXED saveAll:
-   * - If offerId exists: PATCH (true update) -> no deletes -> no 409
-   * - If offerId is null: POST (new row)
-   * - If deleteOfferId exists (replacement intent): we block save with clear message,
-   *   because deletes are blocked post-orders and we must not create duplicates silently.
-   */
   async function saveAll() {
     if (!canEdit) return;
 
@@ -832,7 +730,6 @@ export default function SuppliersOfferManager({
     setError("");
 
     try {
-      // If any row is marked as replacement, block save and tell user what to do.
       const replacing = rows.find((r) => !!r.deleteOfferId);
       if (replacing) {
         throw new Error(
@@ -843,19 +740,17 @@ export default function SuppliersOfferManager({
       }
 
       const patchOffer = async (offerId: string, payload: any) => {
-        return apiFetchJson<any>(
-          `/api/admin/supplier-offers/${encodeURIComponent(offerId)}`,
-          { method: "PATCH", body: JSON.stringify(payload) },
-          token
-        );
+        return apiFetchJson<any>(`/api/admin/supplier-offers/${encodeURIComponent(offerId)}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
       };
 
       const postOffer = async (payload: any) => {
-        return apiFetchJson<any>(
-          `/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`,
-          { method: "POST", body: JSON.stringify(payload) },
-          token
-        );
+        return apiFetchJson<any>(`/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
       };
 
       const setOfferId = (rowKey: string, newOfferId: string | null) => {
@@ -888,7 +783,6 @@ export default function SuppliersOfferManager({
         if (r.variantId == null) {
           // BASE
           if (r.offerId) {
-            // ✅ PATCH existing base offer
             const payload = {
               supplierId: sid,
               price,
@@ -901,7 +795,6 @@ export default function SuppliersOfferManager({
             await patchOffer(r.offerId, payload);
             setOfferId(r.rowKey, r.offerId);
           } else {
-            // ✅ POST new base offer
             const payload = {
               kind: "BASE" as const,
               supplierId: sid,
@@ -915,8 +808,7 @@ export default function SuppliersOfferManager({
 
             const out = await postOffer(payload);
             const dto = unwrap<any>(out);
-            const createdId: string | null =
-              (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
+            const createdId: string | null = (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
 
             setOfferId(r.rowKey, createdId);
           }
@@ -926,7 +818,6 @@ export default function SuppliersOfferManager({
           if (!vid) throw new Error("Each VARIANT row must have a valid variant selected.");
 
           if (r.offerId) {
-            // ✅ PATCH existing variant offer
             const payload = {
               supplierId: sid,
               variantId: vid,
@@ -940,7 +831,6 @@ export default function SuppliersOfferManager({
             await patchOffer(r.offerId, payload);
             setOfferId(r.rowKey, r.offerId);
           } else {
-            // ✅ POST new variant offer
             const payload = {
               kind: "VARIANT" as const,
               supplierId: sid,
@@ -954,8 +844,7 @@ export default function SuppliersOfferManager({
 
             const out = await postOffer(payload);
             const dto = unwrap<any>(out);
-            const createdId: string | null =
-              (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
+            const createdId: string | null = (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
 
             setOfferId(r.rowKey, createdId);
           }
@@ -1218,7 +1107,9 @@ export default function SuppliersOfferManager({
                           const nextInStock = deriveInStock(!!r.isActive, v);
 
                           setRows((prev) =>
-                            prev.map((x) => (x.rowKey === r.rowKey ? { ...x, availableQty: v, inStock: nextInStock } : x))
+                            prev.map((x) =>
+                              x.rowKey === r.rowKey ? { ...x, availableQty: v, inStock: nextInStock } : x
+                            )
                           );
                         }}
                         disabled={saving || !canEdit}
@@ -1235,7 +1126,9 @@ export default function SuppliersOfferManager({
                           const nextInStock = deriveInStock(checked, r.availableQty);
 
                           setRows((prev) =>
-                            prev.map((x) => (x.rowKey === r.rowKey ? { ...x, isActive: checked, inStock: nextInStock } : x))
+                            prev.map((x) =>
+                              x.rowKey === r.rowKey ? { ...x, isActive: checked, inStock: nextInStock } : x
+                            )
                           );
                         }}
                         disabled={saving || !canEdit}

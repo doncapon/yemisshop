@@ -1,5 +1,5 @@
 // src/pages/AdminDashboard.tsx
-import { useEffect, useRef, useState, type ReactNode, type JSX } from "react";
+import React, { useEffect, useRef, useState, type ReactNode, type JSX } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { motion } from "framer-motion";
@@ -16,10 +16,8 @@ import {
   Search,
   Undo2,
 } from "lucide-react";
-import React from "react";
 
 import api from "../../api/client.js";
-import { useAuthStore } from "../../store/auth.js";
 import { useToast } from "../../components/ToastProvider.js";
 import { useModal } from "../../components/ModalProvider.js";
 import ActivitiesPanel from "../../components/admin/ActivitiesPanel.js";
@@ -255,7 +253,7 @@ function Sparkline({ points = [] as number[] }): JSX.Element | null {
 }
 
 const stopHashNav = (evt: React.SyntheticEvent) => {
-  const el = (evt.target as HTMLElement)?.closest?.('a[href="#"],a[href=""]');
+  const el = (evt.target as HTMLElement)?.closest?.('a[href="#"],a[href=""],a[href="#top"]');
   if (el) {
     evt.preventDefault();
     evt.stopPropagation();
@@ -263,10 +261,9 @@ const stopHashNav = (evt: React.SyntheticEvent) => {
 };
 
 /* =========================================================
-   AdminDashboard
+   AdminDashboard (COOKIE AUTH)
    ========================================================= */
 export default function AdminDashboard() {
-  const { token } = useAuthStore();
   const nav = useNavigate();
   const toast = useToast();
   const { openModal } = useModal();
@@ -299,7 +296,6 @@ export default function AdminDashboard() {
   const validPTabs: ProductsInnerTab[] = ["moderation", "manage"];
 
   // ✅ Key fix: do NOT reset tab/pTab just because q changed or tab param is missing.
-  // This prevents ManageProducts from unmounting (and losing input focus) when typing.
   const didInitFromUrl = useRef(false);
   const lastUrlTab = useRef<string | null>(null);
   const lastUrlPTab = useRef<string | null>(null);
@@ -320,41 +316,33 @@ export default function AdminDashboard() {
     const hasValidPTab = !!rawPTabParam && validPTabs.includes(urlPTab);
 
     // --- TAB syncing ---
-    // First load: if tab missing, default to overview.
-    // Subsequent changes: only change tab if URL explicitly provides a valid tab.
     if (!didInitFromUrl.current) {
       const nextTab: TabKey = hasValidTab ? urlTab : "overview";
       if (nextTab !== tab) setTab(nextTab);
       didInitFromUrl.current = true;
     } else {
-      // Only update tab if the tab param exists and changed.
       if (rawTabParam && rawTabParam !== lastUrlTab.current && hasValidTab) {
         if (urlTab !== tab) setTab(urlTab);
       }
     }
 
+
     // --- PTAB syncing ---
-    // Only meaningful when tab is (or will be) products.
     const effectiveTab: TabKey = hasValidTab ? urlTab : tab;
     const isProducts = effectiveTab === "products";
 
     if (isProducts) {
-      // If URL provides pTab explicitly, adopt it when it changes.
       if (rawPTabParam && rawPTabParam !== lastUrlPTab.current && hasValidPTab) {
         if (urlPTab !== pTab) setPTab(urlPTab);
       }
-      // If pTab param is missing, do NOT force reset on every URL change.
-      // Just keep current pTab (or if we somehow got here with an invalid state, keep 'manage').
       if (!rawPTabParam && !validPTabs.includes(pTab)) {
         setPTab("manage");
       }
     } else {
-      // Leaving products: drop focus id
       if (tab === "products") setFocusProductId(null);
     }
 
     // --- q -> prodSearch syncing ---
-    // Only set prodSearch when URL q actually changes (and only while on products).
     if (isProducts) {
       if (rawQParam !== lastUrlQ.current) {
         const next = rawQParam ?? "";
@@ -380,75 +368,97 @@ export default function AdminDashboard() {
     q: "",
   });
 
-  /* -------- Auth + role -------- */
+  /* -------- Auth + role (COOKIE BASED) -------- */
   const me = useQuery({
     queryKey: ["me"],
-    enabled: !!token,
-    queryFn: async () =>
-      (
-        await api.get<Me>("/api/profile/me", {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        })
-      ).data,
+    retry: false,
+    queryFn: async () => (await api.get<Me>("/api/profile/me", { withCredentials: true })).data,
     staleTime: staleTimeMs,
+    refetchOnWindowFocus: false,
   });
 
+  // Redirect to login if unauthenticated (cookie missing/expired)
   useEffect(() => {
-    if (!token) {
-      nav("/login", {
-        replace: true,
-        state: { from: { pathname: "/admin" } },
-      });
+    if (!me.isFetched) return;
+    if (!me.isError) return;
+
+    const e: any = me.error;
+    const status = e?.response?.status;
+    if (status === 401 || status === 403) {
+      nav("/login", { replace: true, state: { from: { pathname: "/admin" } } });
     }
-  }, [token, nav]);
+  }, [me.isFetched, me.isError, me.error, nav]);
 
   const role = me.data?.role ?? "";
   const canAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
 
   useEffect(() => {
-    if (me.isFetched && !canAdmin) {
+    if (me.isFetched && !me.isError && !canAdmin) {
       nav("/", { replace: true });
     }
-  }, [me.isFetched, canAdmin, nav]);
+  }, [me.isFetched, me.isError, canAdmin, nav]);
 
   /* -------- Overview -------- */
   const overview = useQuery<Overview>({
     queryKey: ["admin", "overview"],
     enabled: !!canAdmin,
-    queryFn: async () =>
-      (
-        await api.get<Overview>("/api/admin/overview", {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-      ).data,
+    queryFn: async () => (await api.get<Overview>("/api/admin/overview", { withCredentials: true })).data,
     staleTime: staleTimeMs,
     refetchOnWindowFocus: false,
   });
+
+
+  function unwrapArray<T = any>(payload: any): T[] {
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload;
+
+    // common shapes
+    if (Array.isArray(payload.data)) return payload.data;
+    if (Array.isArray(payload.items)) return payload.items;
+
+    // nested shapes
+    if (Array.isArray(payload.data?.data)) return payload.data.data;
+    if (Array.isArray(payload.data?.items)) return payload.data.items;
+
+    // sometimes backend returns { rows: [...] }
+    if (Array.isArray(payload.rows)) return payload.rows;
+    if (Array.isArray(payload.data?.rows)) return payload.data.rows;
+
+    return [];
+  }
 
   /* -------- Transactions -------- */
   const txQ = useQuery({
     queryKey: ["admin", "payments", q],
     enabled: !!canAdmin && tab === "transactions",
     queryFn: async () => {
+      const qq = encodeURIComponent(q || "");
+
+      // ✅ Use admin endpoint first
       try {
-        const { data } = await api.get<{ data: AdminPayment[] }>(
-          `/api/payments/admin?includeItems=1&q=${encodeURIComponent(q)}`,
-          { headers: { Authorization: `Bearer ${token}` } }
+        const res = await api.get(
+          `/api/admin/payments?includeItems=1&q=${qq}`,
+          { withCredentials: true }
         );
-        return data?.data ?? [];
-      } catch {
-        const { data } = await api.get<{ data: AdminPayment[] }>(
-          `/api/admin/payments?includeItems=1&q=${encodeURIComponent(q)}`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        return data?.data ?? [];
+
+        return unwrapArray<AdminPayment>(res.data);
+      } catch (e: any) {
+        // Optional fallback if your project uses the other route
+        if (e?.response?.status === 404) {
+          const res2 = await api.get(
+            `/api/payments/admin?includeItems=1&q=${qq}`,
+            { withCredentials: true }
+          );
+          return unwrapArray<AdminPayment>(res2.data);
+        }
+        throw e;
       }
     },
-    staleTime: staleTimeMs,
-    refetchOnWindowFocus: false,
+
+
   });
 
-  type AdminRefund = {
+  type AdminRefundTop = {
     id: string;
     orderId: string;
     purchaseOrderId: string;
@@ -468,13 +478,13 @@ export default function AdminDashboard() {
   const [refundQ, setRefundQ] = useState("");
   const [refundStatus, setRefundStatus] = useState<string>("");
 
-  const refundsQ = useQuery({
+  const refundsQTop = useQuery({
     queryKey: ["admin", "refunds", { refundQ, refundStatus }],
     enabled: !!canAdmin && tab === "refunds",
     queryFn: async () => {
-      const { data } = await api.get<{ data: AdminRefund[] }>(
+      const { data } = await api.get<{ data: AdminRefundTop[] }>(
         `/api/admin/refunds?q=${encodeURIComponent(refundQ)}&status=${encodeURIComponent(refundStatus)}`,
-        { headers: { Authorization: `Bearer ${token}` } }
+        { withCredentials: true }
       );
       return data?.data ?? [];
     },
@@ -482,13 +492,13 @@ export default function AdminDashboard() {
     refetchOnWindowFocus: false,
   });
 
-  const decideRefundM = useMutation({
+  const decideRefundMTop = useMutation({
     mutationFn: async (vars: { id: string; decision: "APPROVE" | "REJECT"; note?: string }) =>
       (
         await api.patch(
           `/api/admin/refunds/${vars.id}/decision`,
           { decision: vars.decision, note: vars.note },
-          { headers: { Authorization: `Bearer ${token}` } }
+          { withCredentials: true }
         )
       ).data,
     onSuccess: () => {
@@ -498,11 +508,9 @@ export default function AdminDashboard() {
     onError: (e: any) => openModal({ title: "Refunds", message: e?.response?.data?.error || "Failed." }),
   });
 
-  const markRefundedM = useMutation({
+  const markRefundedMTop = useMutation({
     mutationFn: async (id: string) =>
-      (
-        await api.post(`/api/admin/refunds/${id}/mark-refunded`, {}, { headers: { Authorization: `Bearer ${token}` } })
-      ).data,
+      (await api.post(`/api/admin/refunds/${id}/mark-refunded`, {}, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
       toast.push({ title: "Refunds", message: "Marked refunded.", duration: 2000 });
@@ -512,8 +520,7 @@ export default function AdminDashboard() {
 
   const verifyPayment = useMutation({
     mutationFn: async (paymentId: string) =>
-      (await api.post(`/api/admin/payments/${paymentId}/verify`, {}, { headers: { Authorization: `Bearer ${token}` } }))
-        .data,
+      (await api.post(`/api/admin/payments/${paymentId}/verify`, {}, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "payments"] });
       qc.invalidateQueries({ queryKey: ["admin", "overview"] });
@@ -524,8 +531,7 @@ export default function AdminDashboard() {
 
   const refundPayment = useMutation({
     mutationFn: async (paymentId: string) =>
-      (await api.post(`/api/admin/payments/${paymentId}/refund`, {}, { headers: { Authorization: `Bearer ${token}` } }))
-        .data,
+      (await api.post(`/api/admin/payments/${paymentId}/refund`, {}, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "payments"] });
       toast.push({ title: "Payments", message: "Refund processed.", duration: 2500 });
@@ -538,18 +544,14 @@ export default function AdminDashboard() {
     queryKey: ["admin", "categories"],
     enabled: !!canAdmin && tab === "catalog",
     queryFn: async () =>
-      (
-        await api.get<{ data: AdminCategory[] }>("/api/admin/categories", {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-      ).data.data,
+      (await api.get<{ data: AdminCategory[] }>("/api/admin/categories", { withCredentials: true })).data.data,
     refetchOnWindowFocus: false,
     staleTime: staleTimeMs,
   });
 
   const createCategory = useMutation({
     mutationFn: async (payload: Partial<AdminCategory>) =>
-      (await api.post("/api/admin/categories", payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+      (await api.post("/api/admin/categories", payload, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "categories"] });
     },
@@ -557,15 +559,14 @@ export default function AdminDashboard() {
 
   const updateCategory = useMutation({
     mutationFn: async ({ id, ...payload }: Partial<AdminCategory> & { id: string }) =>
-      (await api.put(`/api/admin/categories/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+      (await api.put(`/api/admin/categories/${id}`, payload, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "categories"] });
     },
   });
 
   const deleteCategory = useMutation({
-    mutationFn: async (id: string) =>
-      (await api.delete(`/api/admin/categories/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
+    mutationFn: async (id: string) => (await api.delete(`/api/admin/categories/${id}`, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "categories"] });
     },
@@ -574,16 +575,14 @@ export default function AdminDashboard() {
   const brandsQ = useQuery({
     queryKey: ["admin", "brands"],
     enabled: !!canAdmin && tab === "catalog",
-    queryFn: async () =>
-      (await api.get<{ data: AdminBrand[] }>("/api/admin/brands", { headers: { Authorization: `Bearer ${token}` } }))
-        .data.data,
+    queryFn: async () => (await api.get<{ data: AdminBrand[] }>("/api/admin/brands", { withCredentials: true })).data.data,
     refetchOnWindowFocus: false,
     staleTime: staleTimeMs,
   });
 
   const createBrand = useMutation({
     mutationFn: async (payload: Partial<AdminBrand>) =>
-      (await api.post("/api/admin/brands", payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+      (await api.post("/api/admin/brands", payload, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "brands"] });
     },
@@ -591,15 +590,14 @@ export default function AdminDashboard() {
 
   const updateBrand = useMutation({
     mutationFn: async ({ id, ...payload }: Partial<AdminBrand> & { id: string }) =>
-      (await api.put(`/api/admin/brands/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+      (await api.put(`/api/admin/brands/${id}`, payload, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "brands"] });
     },
   });
 
   const deleteBrand = useMutation({
-    mutationFn: async (id: string) =>
-      (await api.delete(`/api/admin/brands/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
+    mutationFn: async (id: string) => (await api.delete(`/api/admin/brands/${id}`, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "brands"] });
     },
@@ -609,18 +607,14 @@ export default function AdminDashboard() {
     queryKey: ["admin", "attributes"],
     enabled: !!canAdmin && tab === "catalog",
     queryFn: async () =>
-      (
-        await api.get<{ data: AdminAttribute[] }>("/api/admin/attributes", {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-      ).data.data,
+      (await api.get<{ data: AdminAttribute[] }>("/api/admin/attributes", { withCredentials: true })).data.data,
     refetchOnWindowFocus: false,
     staleTime: staleTimeMs,
   });
 
   const createAttribute = useMutation({
     mutationFn: async (payload: Partial<AdminAttribute>) =>
-      (await api.post("/api/admin/attributes", payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+      (await api.post("/api/admin/attributes", payload, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
     },
@@ -628,15 +622,14 @@ export default function AdminDashboard() {
 
   const updateAttribute = useMutation({
     mutationFn: async ({ id, ...payload }: Partial<AdminAttribute> & { id: string }) =>
-      (await api.put(`/api/admin/attributes/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+      (await api.put(`/api/admin/attributes/${id}`, payload, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
     },
   });
 
   const deleteAttribute = useMutation({
-    mutationFn: async (id: string) =>
-      (await api.delete(`/api/admin/attributes/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
+    mutationFn: async (id: string) => (await api.delete(`/api/admin/attributes/${id}`, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
     },
@@ -646,7 +639,7 @@ export default function AdminDashboard() {
   const createAttrValue = useMutation({
     mutationFn: async (payload: { attributeId: string; name: string; code?: string }) => {
       const { data } = await api.post(`/api/admin/attributes/${payload.attributeId}/values`, payload, {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        withCredentials: true,
       });
       return data;
     },
@@ -680,7 +673,9 @@ export default function AdminDashboard() {
         const idx = prev.findIndex((a: any) => a.id === vars.attributeId);
         if (idx < 0) return prev;
         const a = { ...prev[idx] };
-        a.values = (a.values || []).map((v: any) => (v.id.startsWith("tmp-") && v.name === vars.name ? created : v));
+        a.values = (a.values || []).map((v: any) =>
+          v.id.startsWith("tmp-") && v.name === vars.name ? created : v
+        );
         const next = [...prev];
         next[idx] = a;
         return next;
@@ -701,12 +696,7 @@ export default function AdminDashboard() {
       code?: string | null;
       position?: number | null;
       isActive?: boolean;
-    }) =>
-      (
-        await api.put(`/api/admin/attributes/${attributeId}/values/${id}`, payload, {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        })
-      ).data,
+    }) => (await api.put(`/api/admin/attributes/${attributeId}/values/${id}`, payload, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
       toast.push({ title: "Attributes", message: "Value updated.", duration: 1600 });
@@ -718,11 +708,7 @@ export default function AdminDashboard() {
 
   const deleteAttrValue = useMutation({
     mutationFn: async ({ attributeId, id }: { attributeId: string; id: string }) =>
-      (
-        await api.delete(`/api/admin/attributes/${attributeId}/values/${id}`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        })
-      ).data,
+      (await api.delete(`/api/admin/attributes/${attributeId}/values/${id}`, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
       toast.push({ title: "Attributes", message: "Value deleted.", duration: 1600 });
@@ -738,14 +724,12 @@ export default function AdminDashboard() {
     enabled: !!canAdmin && tab === "catalog",
     queryFn: async () => {
       try {
-        const { data } = await api.get("/api/admin/catalog/usage", { headers: { Authorization: `Bearer ${token}` } });
+        const { data } = await api.get("/api/admin/catalog/usage", { withCredentials: true });
         return data || { categories: {}, attributes: {}, brands: {} };
       } catch {
         // Fallback: derive from products if usage endpoint is missing
         try {
-          const { data } = await api.get("/api/products?include=attributes,variants", {
-            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-          });
+          const { data } = await api.get("/api/products?include=attributes,variants", { withCredentials: true });
           const arr: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
           const categories: Record<string, number> = {};
           const attributes: Record<string, number> = {};
@@ -785,19 +769,18 @@ export default function AdminDashboard() {
   const suppliersQ = useQuery({
     queryKey: ["admin", "suppliers"],
     enabled: !!canAdmin && tab === "catalog",
-    queryFn: async () =>
-      (
-        await api.get<{ data: AdminSupplier[] }>("/api/admin/suppliers", {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-      ).data.data,
+    queryFn: async () => {
+      const res = await api.get("/api/admin/suppliers",);
+      return unwrapArray<AdminSupplier>(res.data);
+    },
+
     refetchOnWindowFocus: false,
     staleTime: staleTimeMs,
   });
 
   const createSupplier = useMutation({
     mutationFn: async (payload: Partial<AdminSupplier>) =>
-      (await api.post("/api/admin/suppliers", payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+      (await api.post("/api/admin/suppliers", payload, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
     },
@@ -805,27 +788,26 @@ export default function AdminDashboard() {
 
   const updateSupplier = useMutation({
     mutationFn: async ({ id, ...payload }: Partial<AdminSupplier> & { id: string }) =>
-      (await api.put(`/api/admin/suppliers/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+      (await api.put(`/api/admin/suppliers/${id}`, payload, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
     },
   });
 
   const deleteSupplier = useMutation({
-    mutationFn: async (id: string) =>
-      (await api.delete(`/api/admin/suppliers/${id}`, { headers: { Authorization: `Bearer ${token}` } })).data,
+    mutationFn: async (id: string) => (await api.delete(`/api/admin/suppliers/${id}`, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
     },
   });
 
-  /* -------- Backfill on first open (unchanged) -------- */
+  /* -------- Backfill on first open (cookie-based) -------- */
   const didBackfill = useRef(false);
   useEffect(() => {
     if (!canAdmin || tab !== "catalog" || didBackfill.current) return;
     (async () => {
       try {
-        await api.post("/api/admin/catalog/backfill", {}, { headers: { Authorization: `Bearer ${token}` } });
+        await api.post("/api/admin/catalog/backfill", {}, { withCredentials: true });
       } catch {
         // ignore
       } finally {
@@ -836,10 +818,19 @@ export default function AdminDashboard() {
         qc.invalidateQueries({ queryKey: ["admin", "catalog", "usage"] });
       }
     })();
-  }, [tab, canAdmin, token, qc]);
+  }, [tab, canAdmin, qc]);
 
-  /* ---------------- UI bits ---------------- */
-  function TabButton({ k, label, Icon }: { k: TabKey; label: string; Icon: any }) {
+  function TabButton({
+    k,
+    label,
+    mobileLabel,
+    Icon,
+  }: {
+    k: TabKey;
+    label: string;
+    mobileLabel?: string;
+    Icon: any;
+  }) {
     const active = tab === k;
 
     return (
@@ -861,7 +852,6 @@ export default function AdminDashboard() {
               setProdSearch("");
               setFocusProductId(null);
             } else {
-              // ensure pTab always exists when going to products
               if (!s.get("pTab")) s.set("pTab", "manage");
             }
 
@@ -869,14 +859,23 @@ export default function AdminDashboard() {
           });
         }}
         className={[
-          "group inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition",
-          "border",
-          active ? "bg-zinc-900 text-white border-zinc-900 shadow-sm" : "bg-white text-zinc-700 border-zinc-200 hover:bg-black/5",
+          // ✅ Mobile: neat pills, no overflow
+          "group inline-flex w-full items-center gap-2 justify-center",
+          "min-h-[44px] px-3 py-2 rounded-xl border transition",
+          "overflow-hidden text-[13px] font-medium",
+          // ✅ Desktop
+          "sm:w-auto sm:justify-start sm:text-sm sm:px-2.5 sm:py-2",
+          active
+            ? "bg-zinc-900 text-white border-zinc-900 shadow-sm"
+            : "bg-white text-zinc-700 border-zinc-200 hover:bg-black/5",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400/60",
         ].join(" ")}
       >
-        <Icon size={16} className={active ? "text-white" : "text-zinc-600"} />
-        <span className="whitespace-nowrap">{label}</span>
+        <Icon size={16} className={`shrink-0 ${active ? "text-white" : "text-zinc-600"}`} />
+        <span className="truncate max-w-full">
+          <span className="sm:hidden">{mobileLabel ?? label}</span>
+          <span className="hidden sm:inline">{label}</span>
+        </span>
       </button>
     );
   }
@@ -894,8 +893,8 @@ export default function AdminDashboard() {
   }) {
     return (
       <div className="rounded-2xl border bg-white shadow-sm">
-        <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
-          <div>
+        <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="min-w-[180px]">
             <h3 className="text-ink font-semibold">{title}</h3>
             {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
           </div>
@@ -933,9 +932,10 @@ export default function AdminDashboard() {
       <button
         type="button"
         onClick={onClick}
-        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${
-          emphasis ? "bg-emerald-600 text-white border-emerald-600 hover:opacity-90" : "bg-white hover:bg-black/5"
-        }`}
+        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${emphasis
+          ? "bg-emerald-600 text-white border-emerald-600 hover:opacity-90"
+          : "bg-white hover:bg-black/5"
+          }`}
         title={label}
       >
         <span className="font-medium">{value.toLocaleString()}</span>
@@ -945,21 +945,21 @@ export default function AdminDashboard() {
     );
   }
 
-  /* -------- Users Section (component) -------- */
-  function UsersSection({ token, canAdmin }: { token?: string | null; canAdmin: boolean }) {
-    const qc = useQueryClient();
-    const { openModal } = useModal();
-    const toast = useToast();
+  /* -------- Users Section (responsive) -------- */
+  function UsersSection({ canAdmin: canAdminProp }: { canAdmin: boolean }) {
+    const qc2 = useQueryClient();
+    const { openModal: openModal2 } = useModal();
+    const toast2 = useToast();
 
     const [usersSearchInput, setUsersSearchInput] = useState("");
     const usersSearch = useDebounced(usersSearchInput, 350);
 
     const usersQ = useQuery<AdminUser[]>({
       queryKey: ["admin", "users", usersSearch],
-      enabled: !!canAdmin,
+      enabled: !!canAdminProp,
       queryFn: async () => {
         const { data } = await api.get<{ data: AdminUser[] }>("/api/admin/users", {
-          headers: { Authorization: `Bearer ${token}` },
+          withCredentials: true,
           params: { q: usersSearch || "" },
         });
         return Array.isArray(data?.data) ? data.data : [];
@@ -979,55 +979,137 @@ export default function AdminDashboard() {
     }, [usersQ.isError, usersQ.error]);
 
     const updateUserRole = useMutation({
-      mutationFn: async ({ userId, role }: { userId: string; role: string }) =>
-        (await api.post(`/api/admin/users/${userId}/role`, { role }, { headers: { Authorization: `Bearer ${token}` } })).data,
+      mutationFn: async ({ userId, role: nextRole }: { userId: string; role: string }) =>
+        (await api.post(`/api/admin/users/${userId}/role`, { role: nextRole }, { withCredentials: true })).data,
       onSuccess: () => {
-        qc.invalidateQueries({ queryKey: ["admin", "users"], exact: false });
-        toast.push({ title: "Users", message: "Role updated.", duration: 2500 });
+        qc2.invalidateQueries({ queryKey: ["admin", "users"], exact: false });
+        toast2.push({ title: "Users", message: "Role updated.", duration: 2500 });
       },
       onError: (e: any) => {
         const msg = e?.response?.data?.error || "Could not update role.";
-        openModal({ title: "Users", message: msg });
+        openModal2({ title: "Users", message: msg });
       },
     });
 
     const deactivateUser = useMutation({
       mutationFn: async (userId: string) =>
-        (await api.post(`/api/admin/users/${userId}/deactivate`, {}, { headers: { Authorization: `Bearer ${token}` } })).data,
+        (await api.post(`/api/admin/users/${userId}/deactivate`, {}, { withCredentials: true })).data,
       onSuccess: () => {
-        qc.invalidateQueries({ queryKey: ["admin", "users"], exact: false });
-        toast.push({ title: "Users", message: "User deactivated.", duration: 2500 });
+        qc2.invalidateQueries({ queryKey: ["admin", "users"], exact: false });
+        toast2.push({ title: "Users", message: "User deactivated.", duration: 2500 });
       },
-      onError: () => openModal({ title: "Users", message: "Could not deactivate user." }),
+      onError: () => openModal2({ title: "Users", message: "Could not deactivate user." }),
     });
 
     const reactivateUser = useMutation({
       mutationFn: async (userId: string) =>
-        (await api.post(`/api/admin/users/${userId}/reactivate`, {}, { headers: { Authorization: `Bearer ${token}` } })).data,
+        (await api.post(`/api/admin/users/${userId}/reactivate`, {}, { withCredentials: true })).data,
       onSuccess: () => {
-        qc.invalidateQueries({ queryKey: ["admin", "users"], exact: false });
-        toast.push({ title: "Users", message: "User reactivated.", duration: 2500 });
+        qc2.invalidateQueries({ queryKey: ["admin", "users"], exact: false });
+        toast2.push({ title: "Users", message: "User reactivated.", duration: 2500 });
       },
-      onError: () => openModal({ title: "Users", message: "Could not reactivate user." }),
+      onError: () => openModal2({ title: "Users", message: "Could not reactivate user." }),
     });
+
+    const rows = usersQ.data ?? [];
 
     return (
       <SectionCard
         title="Users & Roles"
         subtitle="Create, approve, deactivate, reactivate; manage privileges"
         right={
-          <div className="relative">
+          <div className="relative w-full sm:w-[320px]">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
             <input
               value={usersSearchInput}
               onChange={(e) => setUsersSearchInput(e.target.value)}
               placeholder="Search by email or role…"
-              className="pl-9 pr-3 py-2 rounded-xl border bg-white"
+              className="w-full pl-9 pr-3 py-2 rounded-xl border bg-white"
             />
           </div>
         }
       >
-        <div className="overflow-x-auto">
+        {/* Mobile cards */}
+        <div className="sm:hidden space-y-3">
+          {usersQ.isLoading &&
+            Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="rounded-2xl border p-4 animate-pulse">
+                <div className="h-4 w-2/3 bg-zinc-200 rounded" />
+                <div className="mt-2 h-3 w-1/2 bg-zinc-200 rounded" />
+                <div className="mt-4 h-9 w-full bg-zinc-200 rounded-xl" />
+              </div>
+            ))}
+
+          {!usersQ.isLoading && rows.length === 0 && (
+            <div className="rounded-2xl border p-4 text-sm text-zinc-600">No users found.</div>
+          )}
+
+          {rows.map((u) => {
+            const statusUpper = (u.status || "").toUpperCase();
+            const isSuspended = ["SUSPENDED", "DEACTIVATED", "DISABLED"].includes(statusUpper);
+
+            return (
+              <div key={u.id} className="rounded-2xl border p-4 bg-white">
+                <div className="font-semibold text-ink break-all">{u.email}</div>
+
+                <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+                  <div className="text-xs text-ink-soft">Role</div>
+                  <div className="text-right">
+                    {role === "SUPER_ADMIN" ? (
+                      u.role === "SUPPLIER" ? (
+                        <span className="text-ink">{u.role}</span>
+                      ) : (
+                        <div className="inline-block">
+                          <RoleSelect
+                            value={u.role}
+                            onChange={(newRole) => updateUserRole.mutate({ userId: u.id, role: newRole })}
+                          />
+                        </div>
+                      )
+                    ) : (
+                      <span className="text-ink">{u.role}</span>
+                    )}
+                  </div>
+
+                  <div className="text-xs text-ink-soft">Status</div>
+                  <div className="text-right">
+                    <StatusDot label={u.status} />
+                  </div>
+
+                  <div className="text-xs text-ink-soft">Created</div>
+                  <div className="text-right text-ink">{fmtDate(u.createdAt)}</div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {!isSuspended ? (
+                    <button
+                      onClick={() => deactivateUser.mutate(u.id)}
+                      className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
+                    >
+                      Deactivate
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => reactivateUser.mutate(u.id)}
+                      className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      <RefreshCcw size={16} /> Reactivate
+                    </button>
+                  )}
+                  <button
+                    onClick={() => openModal2({ title: "User", message: u.email })}
+                    className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                  >
+                    View
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Desktop table */}
+        <div className="hidden sm:block overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead>
               <tr className="bg-zinc-50 text-ink">
@@ -1046,14 +1128,14 @@ export default function AdminDashboard() {
                   <SkeletonRow cols={5} />
                 </>
               )}
-              {!usersQ.isLoading && (usersQ.data ?? []).length === 0 && (
+              {!usersQ.isLoading && rows.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-3 py-6 text-center text-zinc-500">
                     No users found.
                   </td>
                 </tr>
               )}
-              {(usersQ.data ?? []).map((u) => {
+              {rows.map((u) => {
                 const statusUpper = (u.status || "").toUpperCase();
                 const isSuspended = ["SUSPENDED", "DEACTIVATED", "DISABLED"].includes(statusUpper);
                 return (
@@ -1061,7 +1143,14 @@ export default function AdminDashboard() {
                     <td className="px-3 py-3">{u.email}</td>
                     <td className="px-3 py-3">
                       {role === "SUPER_ADMIN" ? (
-                       u.role === 'SUPPLIER' ? u.role: <RoleSelect value={u.role} onChange={(newRole) => updateUserRole.mutate({ userId: u.id, role: newRole })}  />
+                        u.role === "SUPPLIER" ? (
+                          u.role
+                        ) : (
+                          <RoleSelect
+                            value={u.role}
+                            onChange={(newRole) => updateUserRole.mutate({ userId: u.id, role: newRole })}
+                          />
+                        )
                       ) : (
                         u.role
                       )}
@@ -1139,25 +1228,24 @@ export default function AdminDashboard() {
   }
 
   /* -------- Products moderation wrapper -------- */
-  function ModerationSection({ token, onInspect }: { token?: string | null; onInspect: (p: any) => void }) {
-    const qc = useQueryClient();
+  function ModerationSection({ onInspect }: { onInspect: (p: any) => void }) {
+    const qc2 = useQueryClient();
     const [searchInput, setSearchInput] = React.useState("");
     const debounced = useDebounced(searchInput, 350);
-    const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
 
     useQuery<AdminProduct[]>({
       queryKey: ["admin", "products", "pending", { q: debounced }],
-      enabled: !!token,
+      enabled: !!canAdmin,
       queryFn: async () => {
         try {
           const { data } = await api.get("/api/admin/products/published", {
-            headers: hdr,
+            withCredentials: true,
             params: { q: debounced },
           });
           return Array.isArray(data?.data) ? data.data : [];
         } catch {
           const { data } = await api.get("/api/products", {
-            headers: hdr,
+            withCredentials: true,
             params: { status: "PENDING", q: debounced, take: 50, skip: 0 },
           });
           return Array.isArray(data?.data) ? data.data : [];
@@ -1167,14 +1255,13 @@ export default function AdminDashboard() {
 
     const approveM = useMutation({
       mutationFn: async (id: string) => {
-        const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-        const res = await api.post(`/api/admin/products/${encodeURIComponent(id)}/go-live`, {}, { headers });
+        const res = await api.post(`/api/admin/products/${encodeURIComponent(id)}/go-live`, {}, { withCredentials: true });
         return res.data?.data ?? res.data ?? res;
       },
       onSuccess: async () => {
-        await qc.invalidateQueries({ queryKey: ["admin", "products"] });
-        await qc.invalidateQueries({ queryKey: ["admin", "products", "moderation"] });
-        await qc.invalidateQueries({ queryKey: ["admin", "overview"] });
+        await qc2.invalidateQueries({ queryKey: ["admin", "products"] });
+        await qc2.invalidateQueries({ queryKey: ["admin", "products", "moderation"] });
+        await qc2.invalidateQueries({ queryKey: ["admin", "overview"] });
       },
       onError: (e: any) => {
         const msg = e?.response?.data?.error || e?.message || "Failed to approve (go live).";
@@ -1182,10 +1269,13 @@ export default function AdminDashboard() {
       },
     });
 
+    // Some legacy components may still have a prop typed in their TS signature.
+    // We render them via `any` so this page stays cookie-only without threading auth props.
+    const ModerationGridAny = ModerationGrid as any;
+
     return (
-      <ModerationGrid
+      <ModerationGridAny
         search={searchInput}
-        token={token!}
         setSearch={setSearchInput}
         onApprove={(id: string) => approveM.mutate(id)}
         onInspect={onInspect}
@@ -1193,29 +1283,40 @@ export default function AdminDashboard() {
     );
   }
 
+  const ManageProductsAny = ManageProducts as any;
+  const CatalogSettingsAny = CatalogSettingsSection as any;
+
   /* ---------------- Render ---------------- */
   return (
     <SiteLayout>
       <div
-        className="max-w-[1400px] mx-auto px-4 md:px-6 py-6"
+        className="max-w-[1400px] mx-auto px-3 sm:px-4 md:px-6 py-5 md:py-6"
         onClickCapture={stopHashNav}
         onMouseDownCapture={stopHashNav}
       >
         {/* Hero */}
         <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-sky-700 via-sky-600 to-indigo-700 text-white">
           <div className="absolute inset-0 opacity-30 bg-[radial-gradient(closest-side,rgba(255,255,255,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,0,0,0.15),transparent_60%)]" />
-          <div className="relative px-5 md:px-8 py-6">
-            <div className="flex items-center justify-between">
+          <div className="relative px-4 sm:px-5 md:px-8 py-5 md:py-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <motion.h1 initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="text-2xl md:text-3xl font-bold tracking-tight">
+                <motion.h1
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight"
+                >
                   {me.isLoading ? "Loading…" : role === "SUPER_ADMIN" ? "Super Admin Dashboard" : "Admin Dashboard"}
                 </motion.h1>
                 <p className="text-white/80 text-sm mt-1">
                   Full control & oversight — users, products, transactions, operations, marketing, and analytics.
                 </p>
               </div>
-              <div className="hidden md:flex items-center gap-2">
-                <Link to="/" className="inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-2 text-sm">
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <Link
+                  to="/"
+                  className="inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-2 text-sm w-full sm:w-auto justify-center"
+                >
                   <ShieldCheck size={16} /> Back to site
                 </Link>
               </div>
@@ -1223,65 +1324,70 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* KPIs */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-          <KpiCard
-            title="Users"
-            value={(overview.data?.users.totalUsers ?? 0).toLocaleString()}
-            hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${overview.data?.users.totalSuppliers ?? 0} Suppliers • ${overview.data?.users.totalSupplierRiders ?? 0} Customers • ${overview.data?.users.totalAdmins ?? 0} Admins • ${
-              overview.data?.users.totalSuperAdmins ?? 0
-            } Super Admins`}
-            Icon={Users}
-          />
-
-          <KpiCardOverview
-            title="Products"
-            total={`${overview.data?.products.total ?? 0} total`}
-            value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0} Live`}
-            hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0} Rejected`}
-            res={`${overview.data?.products.availability.publishedAvailable ?? 0} Published available`}
-            Icon={PackageCheck}
-          />
-
-          <KpiCard title="Orders Today" value={(overview.data?.ordersToday ?? 0).toLocaleString()} hint="New orders" Icon={CreditCard} />
-          <KpiCard
-            title="Revenue Today"
-            value={ngn.format(fmtN(overview.data?.revenueToday))}
-            hint="Last 7 days"
-            Icon={BarChart3}
-            chart={<Sparkline points={overview.data?.sparklineRevenue7d || []} />}
-          />
-
-          {role === "SUPER_ADMIN" && (
+        {/* KPIs (Overview only) */}
+        {tab === "overview" && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
             <KpiCard
-              title="Profit Today"
-              value={ngn.format(fmtN(overview.data?.profitToday))}
+              title="Users"
+              value={(overview.data?.users.totalUsers ?? 0).toLocaleString()}
+              hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${overview.data?.users.totalSuppliers ?? 0
+                } Suppliers • ${overview.data?.users.totalSupplierRiders ?? 0} Riders • ${overview.data?.users.totalAdmins ?? 0
+                } Admins • ${overview.data?.users.totalSuperAdmins ?? 0} Super Admins`}
+              Icon={Users}
+            />
+
+            <KpiCardOverview
+              title="Products"
+              total={`${overview.data?.products.total ?? 0} total`}
+              value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0} Live`}
+              hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0} Rejected`}
+              res={`${overview.data?.products.availability.publishedAvailable ?? 0} Published available`}
+              Icon={PackageCheck}
+            />
+
+            <KpiCard title="Orders Today" value={(overview.data?.ordersToday ?? 0).toLocaleString()} hint="New orders" Icon={CreditCard} />
+
+            <KpiCard
+              title="Revenue Today"
+              value={ngn.format(fmtN(overview.data?.revenueToday))}
               hint="Last 7 days"
               Icon={BarChart3}
-              chart={<Sparkline points={overview.data?.sparklineProfit7d || []} />}
+              chart={<Sparkline points={overview.data?.sparklineRevenue7d || []} />}
             />
-          )}
-        </div>
+
+            {role === "SUPER_ADMIN" && (
+              <KpiCard
+                title="Profit Today"
+                value={ngn.format(fmtN(overview.data?.profitToday))}
+                hint="Last 7 days"
+                Icon={BarChart3}
+                chart={<Sparkline points={overview.data?.sparklineProfit7d || []} />}
+              />
+            )}
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="mt-6">
-          <div className="flex flex-wrap items-center gap-2 rounded-2xl border bg-white p-2 shadow-sm">
-            <TabButton k="overview" label="Overview" Icon={ShieldCheck} />
-            <TabButton k="users" label="Users & Roles" Icon={UserCheck} />
-            <TabButton k="products" label="Product Moderation" Icon={PackageCheck} />
-            <TabButton k="catalog" label="Catalog Settings" Icon={Settings} />
-            <TabButton k="refunds" label="Refunds" Icon={Undo2} />
-            <TabButton k="transactions" label="Transactions" Icon={CreditCard} />
-            <TabButton k="finance" label="Finance" Icon={CreditCard} />
-            <TabButton k="ops" label="Ops & Security" Icon={Settings} />
-            <TabButton k="marketing" label="Marketing" Icon={BellRing} />
-            <TabButton k="analytics" label="Analytics" Icon={BarChart3} />
+          <div className="rounded-2xl border bg-white p-2 shadow-sm">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+              <TabButton k="overview" label="Overview" Icon={ShieldCheck} />
+              <TabButton k="users" label="Users & Roles" mobileLabel="Users" Icon={UserCheck} />
+              <TabButton k="products" label="Product Moderation" mobileLabel="Products" Icon={PackageCheck} />
+              <TabButton k="catalog" label="Catalog Settings" mobileLabel="Catalog" Icon={Settings} />
+              <TabButton k="refunds" label="Refunds" Icon={Undo2} />
+              <TabButton k="transactions" label="Transactions" mobileLabel="Payments" Icon={CreditCard} />
+              <TabButton k="finance" label="Finance" Icon={CreditCard} />
+              <TabButton k="ops" label="Ops & Security" mobileLabel="Ops" Icon={Settings} />
+              <TabButton k="marketing" label="Marketing" Icon={BellRing} />
+              <TabButton k="analytics" label="Analytics" Icon={BarChart3} />
+            </div>
           </div>
         </div>
 
         {/* Content */}
         <div className="mt-4 space-y-6">
-          {tab === "users" && <UsersSection token={token} canAdmin={canAdmin} />}
+          {tab === "users" && <UsersSection canAdmin={canAdmin} />}
 
           {tab === "analytics" && <ActivitiesPanel />}
 
@@ -1348,22 +1454,10 @@ export default function AdminDashboard() {
                     <div className="flex flex-wrap gap-2">
                       <StatChip label="With any" value={overview.data?.products.offers.withAny ?? 0} onClick={() => goProductsManageFromTile("With any")} />
                       <StatChip label="Without any" value={overview.data?.products.offers.withoutAny ?? 0} onClick={() => goProductsManageFromTile("Without any")} />
-                      <StatChip
-                        label="Published with any"
-                        value={overview.data?.products.offers.publishedWithAny ?? 0}
-                        onClick={() => goProductsManageFromTile("Published with any")}
-                      />
-                      <StatChip
-                        label="Published without any"
-                        value={overview.data?.products.offers.publishedWithoutAny ?? 0}
-                        onClick={() => goProductsManageFromTile("Published without any")}
-                      />
+                      <StatChip label="Published with any" value={overview.data?.products.offers.publishedWithAny ?? 0} onClick={() => goProductsManageFromTile("Published with any")} />
+                      <StatChip label="Published without any" value={overview.data?.products.offers.publishedWithoutAny ?? 0} onClick={() => goProductsManageFromTile("Published without any")} />
                       <StatChip label="With active" value={overview.data?.products.offers.withActive ?? 0} onClick={() => goProductsManageFromTile("With active")} />
-                      <StatChip
-                        label="Published with active"
-                        value={overview.data?.products.offers.publishedWithActive ?? 0}
-                        onClick={() => goProductsManageFromTile("Published with active")}
-                      />
+                      <StatChip label="Published with active" value={overview.data?.products.offers.publishedWithActive ?? 0} onClick={() => goProductsManageFromTile("Published with active")} />
                     </div>
                   </div>
 
@@ -1378,16 +1472,8 @@ export default function AdminDashboard() {
                   <div className="rounded-xl border p-3 sm:col-span-2">
                     <div className="text-xs text-ink-soft mb-2">Published base stock (non-variant-aware)</div>
                     <div className="flex flex-wrap gap-2">
-                      <StatChip
-                        label="Base in-stock"
-                        value={overview.data?.products.publishedBaseStock.inStock ?? 0}
-                        onClick={() => goProductsManageFromTile("Base in-stock")}
-                      />
-                      <StatChip
-                        label="Base out-of-stock"
-                        value={overview.data?.products.publishedBaseStock.outOfStock ?? 0}
-                        onClick={() => goProductsManageFromTile("Base out-of-stock")}
-                      />
+                      <StatChip label="Base in-stock" value={overview.data?.products.publishedBaseStock.inStock ?? 0} onClick={() => goProductsManageFromTile("Base in-stock")} />
+                      <StatChip label="Base out-of-stock" value={overview.data?.products.publishedBaseStock.outOfStock ?? 0} onClick={() => goProductsManageFromTile("Base out-of-stock")} />
                     </div>
                   </div>
                 </div>
@@ -1401,7 +1487,7 @@ export default function AdminDashboard() {
               title="Products"
               subtitle="Moderate submissions or manage the catalog"
               right={
-                <div className="inline-flex rounded-xl border overflow-hidden">
+                <div className="inline-flex rounded-xl border overflow-hidden w-full sm:w-auto">
                   <button
                     onClick={() => {
                       setPTab("moderation");
@@ -1410,7 +1496,8 @@ export default function AdminDashboard() {
                       s.set("pTab", "moderation");
                       nav(`/admin?${s.toString()}`, { replace: false });
                     }}
-                    className={`px-3 py-1.5 text-sm ${pTab === "moderation" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"}`}
+                    className={`flex-1 sm:flex-none px-3 py-2 text-sm ${pTab === "moderation" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"
+                      }`}
                   >
                     Moderation
                   </button>
@@ -1422,7 +1509,8 @@ export default function AdminDashboard() {
                       s.set("pTab", "manage");
                       nav(`/admin?${s.toString()}`, { replace: false });
                     }}
-                    className={`px-3 py-1.5 text-sm ${pTab === "manage" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"}`}
+                    className={`flex-1 sm:flex-none px-3 py-2 text-sm ${pTab === "manage" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"
+                      }`}
                   >
                     Manage
                   </button>
@@ -1432,7 +1520,6 @@ export default function AdminDashboard() {
               {/* Keep both mounted; toggle visibility only */}
               <div className={pTab === "moderation" ? "block" : "hidden"}>
                 <ModerationSection
-                  token={token}
                   onInspect={(p: { id: string; title?: string; sku?: string }) => {
                     setProdSearch(p.title || p.sku || "");
                     setFocusProductId(p.id);
@@ -1453,13 +1540,15 @@ export default function AdminDashboard() {
               </div>
 
               <div className={pTab === "manage" ? "block" : "hidden"}>
-                <ManageProducts
+                <ManageProductsAny
                   role={role}
-                  token={token}
                   search={prodSearch}
                   setSearch={setProdSearch}
                   focusId={focusProductId}
                   onFocusedConsumed={() => setFocusProductId(null)}
+                  // pass through if your ManageProducts consumes it
+                  manageFilters={manageFilters}
+                  setManageFilters={setManageFilters}
                 />
               </div>
             </SectionCard>
@@ -1467,8 +1556,7 @@ export default function AdminDashboard() {
 
           {/* Catalog Settings */}
           {tab === "catalog" && (
-            <CatalogSettingsSection
-              token={token}
+            <CatalogSettingsAny
               canEdit={role === "SUPER_ADMIN"}
               categoriesQ={categoriesQ}
               brandsQ={brandsQ}
@@ -1493,8 +1581,8 @@ export default function AdminDashboard() {
             />
           )}
 
-          {tab === "refunds" && <RefundsSection token={token} canAdmin={canAdmin} />}
-          {tab === "finance" && <FinanceSection token={token} canAdmin={canAdmin} />}
+          {tab === "refunds" && <RefundsSection canAdmin={canAdmin} />}
+          {tab === "finance" && <FinanceSection canAdmin={canAdmin} />}
 
           {/* Transactions */}
           {tab === "transactions" && (
@@ -1542,8 +1630,8 @@ function TransactionsSection({
   }) {
     return (
       <div className="rounded-2xl border bg-white shadow-sm">
-        <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
-          <div>
+        <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="min-w-[180px]">
             <h3 className="text-ink font-semibold">{title}</h3>
             {subtitle && <p className="text-xs text-ink-soft">{subtitle}</p>}
           </div>
@@ -1566,76 +1654,140 @@ function TransactionsSection({
     );
   }
 
+  const rows: AdminPayment[] = txQ.data ?? [];
+
   return (
     <SectionCard
       title="Transactions"
       subtitle="Verify payments, process refunds, view history (item-level breakdowns)"
       right={
-        <div className="flex items-center gap-2">
-          <div className="relative">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full sm:w-auto">
+          <div className="relative w-full sm:w-[340px]">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Search by order, reference, or email…"
-              className="pl-9 pr-3 py-2 rounded-xl border bg-white"
+              className="w-full pl-9 pr-3 py-2 rounded-xl border bg-white"
             />
           </div>
-          <button onClick={onRefresh} className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5">
+          <button
+            onClick={onRefresh}
+            className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 w-full sm:w-auto"
+          >
             <RefreshCcw size={16} /> Refresh
           </button>
         </div>
       }
     >
-      <div className="overflow-x-auto">
-        <div className="p-4 md:p-5 overflow-x-auto relative pr-[220px]">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="bg-zinc-50 text-ink">
-                <th className="text-left px-3 py-2">Payment</th>
-                <th className="text-left px-3 py-2">Order</th>
-                <th className="text-left px-3 py-2">User</th>
-                <th className="text-left px-3 py-2">Total</th>
-                <th className="text-left px-3 py-2">Status</th>
-                <th className="text-left px-3 py-2">Date</th>
-                <th className="text-right px-3 py-2">Actions</th>
+      {/* Mobile cards */}
+      <div className="sm:hidden space-y-3">
+        {txQ.isLoading &&
+          Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="rounded-2xl border p-4 animate-pulse">
+              <div className="h-4 w-2/3 bg-zinc-200 rounded" />
+              <div className="mt-2 h-3 w-1/2 bg-zinc-200 rounded" />
+              <div className="mt-4 h-9 w-full bg-zinc-200 rounded-xl" />
+            </div>
+          ))}
+
+        {txQ.isError && (
+          <div className="rounded-2xl border p-4 text-sm text-rose-600">
+            Failed to load transactions. {(txQ.error as any)?.response?.data?.error || (txQ.error as any)?.message || ""}
+          </div>
+        )}
+
+        {!txQ.isLoading && !txQ.isError && rows.length === 0 && (
+          <div className="rounded-2xl border p-4 text-sm text-zinc-600">No transactions found.</div>
+        )}
+
+        {!txQ.isLoading &&
+          !txQ.isError &&
+          rows.map((t) => (
+            <div key={t.id} className="rounded-2xl border p-4 bg-white">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-semibold text-ink break-all">{t.reference || t.id}</div>
+                  <div className="text-xs text-ink-soft mt-0.5 break-all">Order: {t.orderId}</div>
+                  <div className="text-xs text-ink-soft mt-0.5 break-all">{t.userEmail || "—"}</div>
+                </div>
+                <StatusDot label={t.status} />
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                <div className="text-xs text-ink-soft">Total</div>
+                <div className="text-right text-ink">{ngn.format(fmtN(t.amount))}</div>
+
+                <div className="text-xs text-ink-soft">Date</div>
+                <div className="text-right text-ink">{fmtDate(t.createdAt)}</div>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => onVerify(t.id)}
+                  className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-zinc-900 text-white hover:opacity-90"
+                >
+                  Verify
+                </button>
+                <button
+                  onClick={() => onRefund(t.id)}
+                  className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                >
+                  Refund
+                </button>
+              </div>
+            </div>
+          ))}
+      </div>
+
+      {/* Desktop table */}
+      <div className="hidden sm:block overflow-x-auto">
+        <table className="min-w-[1050px] w-full text-sm">
+          <thead>
+            <tr className="bg-zinc-50 text-ink">
+              <th className="text-left px-3 py-2">Payment</th>
+              <th className="text-left px-3 py-2">Order</th>
+              <th className="text-left px-3 py-2">User</th>
+              <th className="text-left px-3 py-2">Total</th>
+              <th className="text-left px-3 py-2">Status</th>
+              <th className="text-left px-3 py-2">Date</th>
+              <th className="text-right px-3 py-2">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {txQ.isLoading && (
+              <>
+                <SkeletonRow cols={7} />
+                <SkeletonRow cols={7} />
+                <SkeletonRow cols={7} />
+              </>
+            )}
+            {txQ.isError && (
+              <tr>
+                <td colSpan={7} className="px-3 py-6 text-center text-rose-600">
+                  Failed to load transactions. {(txQ.error as any)?.response?.data?.error || (txQ.error as any)?.message || ""}
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y">
-              {txQ.isLoading && (
-                <>
-                  <SkeletonRow cols={7} />
-                  <SkeletonRow cols={7} />
-                  <SkeletonRow cols={7} />
-                </>
-              )}
-              {txQ.isError && (
-                <tr>
-                  <td colSpan={7} className="px-3 py-6 text-center text-rose-600">
-                    Failed to load transactions. {(txQ.error as any)?.response?.data?.error || (txQ.error as any)?.message || ""}
-                  </td>
-                </tr>
-              )}
-              {!txQ.isLoading && !txQ.isError && (txQ.data ?? []).length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-3 py-6 text-center text-zinc-500">
-                    No transactions found.
-                  </td>
-                </tr>
-              )}
-              {(txQ.data ?? []).map((t: AdminPayment) => (
-                <TransactionRow key={t.id} tx={t} onVerify={() => onVerify(t.id)} onRefund={() => onRefund(t.id)} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+            )}
+            {!txQ.isLoading && !txQ.isError && rows.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-3 py-6 text-center text-zinc-500">
+                  No transactions found.
+                </td>
+              </tr>
+            )}
+            {rows.map((t) => (
+              <TransactionRow key={t.id} tx={t} onVerify={() => onVerify(t.id)} onRefund={() => onRefund(t.id)} />
+            ))}
+          </tbody>
+        </table>
       </div>
     </SectionCard>
   );
 }
 
 /* ----------------- Refunds section (Admin) ---------------------*/
-function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: boolean }) {
+function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
   const { openModal, closeModal } = useModal();
@@ -1676,7 +1828,7 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
     return `/orders?orderId=${id}&q=${id}`;
   }
 
-  function fmtDate(s?: string | null) {
+  function fmtDate2(s?: string | null) {
     if (!s) return "—";
     const d = new Date(s);
     if (Number.isNaN(+d)) return String(s);
@@ -1689,7 +1841,7 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
     });
   }
 
-  const ngn = React.useMemo(
+  const ngnLocal = React.useMemo(
     () =>
       new Intl.NumberFormat("en-NG", {
         style: "currency",
@@ -1706,18 +1858,18 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
 
   const refundsQ = useQuery({
     queryKey: ["admin", "refunds", { q, status, take, skip }],
-    enabled: !!canAdmin && !!token,
+    enabled: !!canAdmin,
     queryFn: async () => {
-      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-
       const { data } = await api.get(
         `/api/admin/refunds?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&take=${take}&skip=${skip}`,
-        { headers }
+        { withCredentials: true }
       );
 
       const root: any = data ?? {};
       const rows: AdminRefund[] =
-        (Array.isArray(root?.data) ? root.data : null) ?? (Array.isArray(root?.data?.data) ? root.data.data : null) ?? [];
+        (Array.isArray(root?.data) ? root.data : null) ??
+        (Array.isArray(root?.data?.data) ? root.data.data : null) ??
+        [];
       const total: number | undefined =
         (typeof root?.total === "number" ? root.total : undefined) ??
         (typeof root?.count === "number" ? root.count : undefined) ??
@@ -1740,16 +1892,14 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
   const canNext = typeof totalPages === "number" ? page < totalPages : rows.length === take;
 
   const decideRefundM = useMutation({
-    mutationFn: async (vars: { id: string; decision: "APPROVE" | "REJECT"; note?: string }) => {
-      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-      return (
+    mutationFn: async (vars: { id: string; decision: "APPROVE" | "REJECT"; note?: string }) =>
+      (
         await api.patch(
           `/api/admin/refunds/${encodeURIComponent(vars.id)}/decision`,
           { decision: vars.decision, note: vars.note },
-          { headers }
+          { withCredentials: true }
         )
-      ).data;
-    },
+      ).data,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
       toast.push({ title: "Refunds", message: "Decision saved.", duration: 2000 });
@@ -1759,10 +1909,8 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
   });
 
   const markRefundedM = useMutation({
-    mutationFn: async (id: string) => {
-      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-      return (await api.post(`/api/admin/refunds/${encodeURIComponent(id)}/mark-refunded`, {}, { headers })).data;
-    },
+    mutationFn: async (id: string) =>
+      (await api.post(`/api/admin/refunds/${encodeURIComponent(id)}/mark-refunded`, {}, { withCredentials: true })).data,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
       toast.push({ title: "Refunds", message: "Marked refunded.", duration: 2000 });
@@ -1775,21 +1923,25 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
 
   return (
     <div className="rounded-2xl border bg-white shadow-sm">
-      <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
-        <div>
+      <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="min-w-[180px]">
           <h3 className="text-ink font-semibold">Refunds</h3>
           <p className="text-xs text-ink-soft">Review supplier/customer refund cases and settle them.</p>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="grid grid-cols-1 sm:flex sm:flex-row sm:items-center gap-2 w-full sm:w-auto">
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search orderId / poId / supplierId / reference…"
-            className="px-3 py-2 rounded-xl border bg-white"
+            className="w-full sm:w-[340px] px-3 py-2 rounded-xl border bg-white"
           />
 
-          <select value={status} onChange={(e) => setStatus(e.target.value)} className="px-3 py-2 rounded-xl border bg-white text-sm">
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="px-3 py-2 rounded-xl border bg-white text-sm w-full sm:w-auto"
+          >
             <option value="">All statuses</option>
             <option value="REQUESTED">REQUESTED</option>
             <option value="SUPPLIER_REVIEW">SUPPLIER_REVIEW</option>
@@ -1805,7 +1957,7 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
           <select
             value={String(take)}
             onChange={(e) => setTake(Number(e.target.value) || 20)}
-            className="px-3 py-2 rounded-xl border bg-white text-sm"
+            className="px-3 py-2 rounded-xl border bg-white text-sm w-full sm:w-auto"
             title="Rows per page"
           >
             <option value="10">10 / page</option>
@@ -1815,7 +1967,7 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
 
           <button
             onClick={() => refundsQ.refetch()}
-            className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 text-sm"
+            className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 text-sm w-full sm:w-auto"
             disabled={refundsQ.isFetching}
           >
             <RefreshCcw size={16} /> Refresh
@@ -1829,10 +1981,10 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
           {refundsQ.isFetching
             ? "Loading…"
             : refundsQ.isError
-            ? "Failed to load."
-            : typeof total === "number"
-            ? `Showing ${Math.min(skip + 1, total)}–${Math.min(skip + rows.length, total)} of ${total}`
-            : `Showing ${rows.length} item(s)`}
+              ? "Failed to load."
+              : typeof total === "number"
+                ? `Showing ${Math.min(skip + 1, total)}–${Math.min(skip + rows.length, total)} of ${total}`
+                : `Showing ${rows.length} item(s)`}
         </div>
 
         <div className="inline-flex items-center gap-2">
@@ -1864,9 +2016,139 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
         </div>
       </div>
 
-      {/* ✅ Padding OUTSIDE the horizontal scroller */}
-      <div className="p-4 pr-1 md:p-5 md:pr-2">
-        {/* ✅ Scroll container WITHOUT padding so sticky right=0 is flush */}
+      {/* Mobile cards */}
+      <div className="sm:hidden p-4 space-y-3">
+        {refundsQ.isLoading && (
+          <>
+            <div className="rounded-2xl border p-4 animate-pulse">
+              <div className="h-4 w-2/3 bg-zinc-200 rounded" />
+              <div className="mt-2 h-3 w-1/2 bg-zinc-200 rounded" />
+              <div className="mt-4 h-9 w-full bg-zinc-200 rounded-xl" />
+            </div>
+            <div className="rounded-2xl border p-4 animate-pulse">
+              <div className="h-4 w-2/3 bg-zinc-200 rounded" />
+              <div className="mt-2 h-3 w-1/2 bg-zinc-200 rounded" />
+              <div className="mt-4 h-9 w-full bg-zinc-200 rounded-xl" />
+            </div>
+          </>
+        )}
+
+        {refundsQ.isError && <div className="rounded-2xl border p-4 text-sm text-rose-600">Failed to load refunds.</div>}
+
+        {!refundsQ.isLoading && !refundsQ.isError && rows.length === 0 && (
+          <div className="rounded-2xl border p-4 text-sm text-zinc-600">No refunds found.</div>
+        )}
+
+        {!refundsQ.isLoading &&
+          !refundsQ.isError &&
+          rows.map((r) => {
+            const statusUpper = String(r.status || "").toUpperCase();
+            const disableDecision = statusUpper === "REFUNDED" || statusUpper === "CLOSED";
+
+            return (
+              <div key={r.id} className="rounded-2xl border p-4 bg-white">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-ink break-all">{r.orderId || r.id}</div>
+                    <div className="text-xs text-ink-soft mt-0.5 break-all">PO: {r.purchaseOrderId || "—"}</div>
+                    <div className="text-xs text-ink-soft mt-0.5 break-all">
+                      Supplier: {r.supplier?.name || r.supplierId || "—"}
+                    </div>
+                  </div>
+                  <StatusDot label={r.status} />
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                  <div className="text-xs text-ink-soft">Amount</div>
+                  <div className="text-right text-ink">{ngnLocal.format(fmtMoney(r.totalAmount))}</div>
+
+                  <div className="text-xs text-ink-soft">Created</div>
+                  <div className="text-right text-ink">{fmtDate2(r.createdAt || r.requestedAt)}</div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <Link
+                    to={ordersHref(r.orderId)}
+                    className="inline-flex items-center justify-center px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                  >
+                    Order
+                  </Link>
+                  <button
+                    className="inline-flex items-center justify-center px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
+                    disabled={isMutating}
+                    onClick={() =>
+                      openModal({
+                        title: `Refund ${r.orderId || r.id}`,
+                        message: (
+                          <div className="space-y-2">
+                            <div className="text-sm">
+                              <b>Status:</b> {String(r.status)}
+                            </div>
+                            <div className="text-sm">
+                              <b>PO:</b> {r.purchaseOrderId || "—"}
+                            </div>
+                            <div className="text-sm">
+                              <b>Supplier:</b> {r.supplier?.name || r.supplierId || "—"}
+                            </div>
+                            <div className="text-sm">
+                              <b>Amount:</b> {ngnLocal.format(fmtMoney(r.totalAmount))}
+                            </div>
+                            <div className="text-xs text-zinc-500">Provider ref: {r.providerReference || "—"}</div>
+                            <div className="text-xs text-zinc-500">Admin decision: {r.adminDecision || "—"}</div>
+                            {r.adminNote ? <div className="text-sm text-zinc-700">{r.adminNote}</div> : null}
+                          </div>
+                        ),
+                      })
+                    }
+                  >
+                    View
+                  </button>
+
+                  <button
+                    className="px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                    disabled={disableDecision || isMutating}
+                    onClick={() => {
+                      const note = window.prompt("Admin note (optional)");
+                      if (note === null) return;
+                      const ok = window.confirm("Approve this refund?");
+                      if (!ok) return;
+
+                      decideRefundM.mutate({
+                        id: r.id,
+                        decision: "APPROVE",
+                        note: note.trim() ? note.trim() : undefined,
+                      });
+                    }}
+                  >
+                    Approve
+                  </button>
+
+                  <button
+                    className="px-3 py-2 rounded-xl bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
+                    disabled={disableDecision || isMutating}
+                    onClick={() => {
+                      const note = window.prompt("Reject reason (optional)") || "";
+                      decideRefundM.mutate({ id: r.id, decision: "REJECT", note: note || undefined });
+                    }}
+                  >
+                    Reject
+                  </button>
+
+                  <button
+                    className="col-span-2 px-3 py-2 rounded-xl border bg-white hover:bg-black/5 disabled:opacity-50"
+                    disabled={isMutating}
+                    onClick={() => markRefundedM.mutate(r.id)}
+                  >
+                    Mark refunded
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+      </div>
+
+      {/* Desktop table */}
+      <div className="hidden sm:block p-4 pr-1 md:p-5 md:pr-2">
         <div className="overflow-x-auto relative">
           <table className="min-w-[1100px] w-full text-sm">
             <thead>
@@ -1921,7 +2203,11 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
                   <tr key={r.id} className="hover:bg-black/5">
                     <td className="px-3 py-3 whitespace-nowrap">
                       {r.orderId ? (
-                        <Link to={ordersHref(r.orderId)} className="font-semibold text-indigo-700 hover:underline" title="Open Orders filtered by this orderId">
+                        <Link
+                          to={ordersHref(r.orderId)}
+                          className="font-semibold text-indigo-700 hover:underline"
+                          title="Open Orders filtered by this orderId"
+                        >
                           {r.orderId}
                         </Link>
                       ) : (
@@ -1943,13 +2229,15 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
                       </span>
                     </td>
 
-                    <td className="px-3 py-3 whitespace-nowrap">{ngn.format(fmtMoney(r.totalAmount))}</td>
+                    <td className="px-3 py-3 whitespace-nowrap">{ngnLocal.format(fmtMoney(r.totalAmount))}</td>
 
                     <td className="px-3 py-3 whitespace-nowrap">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border bg-white whitespace-nowrap">{String(r.status)}</span>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border bg-white whitespace-nowrap">
+                        {String(r.status)}
+                      </span>
                     </td>
 
-                    <td className="px-3 py-3 whitespace-nowrap">{fmtDate(r.createdAt || r.requestedAt)}</td>
+                    <td className="px-3 py-3 whitespace-nowrap">{fmtDate2(r.createdAt || r.requestedAt)}</td>
 
                     <td
                       className="sticky right-0 z-30 px-3 py-3 text-right bg-white w-[220px] min-w-[220px] max-w-[220px] border-l"
@@ -1974,7 +2262,7 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
                                     <b>Supplier:</b> {r.supplier?.name || r.supplierId || "—"}
                                   </div>
                                   <div className="text-sm">
-                                    <b>Amount:</b> {ngn.format(fmtMoney(r.totalAmount))}
+                                    <b>Amount:</b> {ngnLocal.format(fmtMoney(r.totalAmount))}
                                   </div>
                                   <div className="text-xs text-zinc-500">Provider ref: {r.providerReference || "—"}</div>
                                   <div className="text-xs text-zinc-500">Admin decision: {r.adminDecision || "—"}</div>
@@ -2044,34 +2332,41 @@ function RefundsSection({ token, canAdmin }: { token?: string | null; canAdmin: 
 }
 
 /* ------------------ Finance section ----------------------*/
-function FinanceSection({ token, canAdmin }: { token?: string | null; canAdmin: boolean }) {
+function FinanceSection({ canAdmin }: { canAdmin: boolean }) {
   const [subTab, setSubTab] = useState<"payouts" | "ledger">("payouts");
+
+  const AdminPayoutsAny = AdminPayoutsPanel as any;
+  const AdminLedgerAny = AdminLedgerPanel as any;
 
   return (
     <div className="rounded-2xl border bg-white shadow-sm">
-      <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
-        <div>
+      <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="min-w-[180px]">
           <h3 className="text-ink font-semibold">Finance</h3>
           <p className="text-xs text-ink-soft">Release supplier payouts, view allocations, and post ledger adjustments.</p>
         </div>
 
-        <div className="inline-flex rounded-xl border overflow-hidden">
+        <div className="inline-flex rounded-xl border overflow-hidden w-full sm:w-auto">
           <button
             onClick={() => setSubTab("payouts")}
-            className={`px-3 py-1.5 text-sm ${subTab === "payouts" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"}`}
+            className={`flex-1 sm:flex-none px-3 py-2 text-sm ${subTab === "payouts" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"
+              }`}
           >
             Payouts
           </button>
           <button
             onClick={() => setSubTab("ledger")}
-            className={`px-3 py-1.5 text-sm ${subTab === "ledger" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"}`}
+            className={`flex-1 sm:flex-none px-3 py-2 text-sm ${subTab === "ledger" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"
+              }`}
           >
             Ledger
           </button>
         </div>
       </div>
 
-      <div className="p-4 md:p-5">{subTab === "payouts" ? <AdminPayoutsPanel token={token} canAdmin={canAdmin} /> : <AdminLedgerPanel token={token} canAdmin={canAdmin} />}</div>
+      <div className="p-4 md:p-5">
+        {subTab === "payouts" ? <AdminPayoutsAny canAdmin={canAdmin} /> : <AdminLedgerAny canAdmin={canAdmin} />}
+      </div>
     </div>
   );
 }
@@ -2137,12 +2432,12 @@ function StatusDot({ label }: { label?: string | null }) {
     s === "VERIFIED" || s === "PUBLISHED" || s === "PAID"
       ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
       : s === "PENDING"
-      ? "bg-amber-500/10 text-amber-700 border-amber-600/20"
-      : s === "FAILED" || s === "CANCELED" || s === "REJECTED" || s === "REFUNDED"
-      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
-      : s === "SUSPENDED" || s === "DEACTIVATED" || s === "DISABLED"
-      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
-      : "bg-zinc-500/10 text-zinc-700 border-zinc-600/20";
+        ? "bg-amber-500/10 text-amber-700 border-amber-600/20"
+        : s === "FAILED" || s === "CANCELED" || s === "REJECTED" || s === "REFUNDED"
+          ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+          : s === "SUSPENDED" || s === "DEACTIVATED" || s === "DISABLED"
+            ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+            : "bg-zinc-500/10 text-zinc-700 border-zinc-600/20";
 
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${cls}`}>{label}</span>;
 }

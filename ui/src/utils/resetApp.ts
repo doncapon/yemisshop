@@ -1,15 +1,15 @@
 // src/utils/resetApp.ts
 import { useAuthStore } from "../store/auth.js";
+import api from "../api/client"; // ✅ cookie auth logout endpoint
 
 type ResetMode = "hard" | "soft";
 
 const PRESERVE_LOCALSTORAGE_KEYS = ["consent"]; // keep cookie consent across logout/reset
 
-// Keys we intentionally wipe on reset
+// Keys we intentionally wipe on reset (cookie-auth friendly)
 const WIPE_LOCALSTORAGE_KEYS = [
-  "auth",         // zustand persist
-  "access_token", // legacy (your api/client also uses this)
-  "cart",         // if you want cart cleared on logout/reset
+  "auth", // zustand persist (keep if you persist user/session state)
+  "cart",
   "verifyEmail",
   "verifyToken",
   "verify_token",
@@ -57,12 +57,13 @@ function restoreSelectedKeys(preserved: Record<string, string>) {
 /**
  * Reset app state after logout or auth failure.
  *
- * - default is "hard" to preserve your current behavior
- * - use mode:"soft" for normal logout to avoid "network gets wiped" confusion
+ * Cookie auth notes:
+ * - Browser sends cookies automatically; no token to wipe.
+ * - To clear the session cookie, call POST /api/auth/logout (server clears cookie).
  */
 export function hardResetApp(redirectTo: string = "/", opts?: { mode?: ResetMode }) {
   const mode: ResetMode = opts?.mode ?? "hard";
-    console.trace("hardResetApp CALLED"); // ✅ tells you EXACTLY who triggered it
+  console.trace("hardResetApp CALLED");
 
   // 1) preserve consent (and anything else you add)
   const preserved = preserveSelectedKeys();
@@ -104,4 +105,23 @@ export function hardResetApp(redirectTo: string = "/", opts?: { mode?: ResetMode
 
   // Hard reload (your existing behavior)
   window.location.replace(redirectTo);
+}
+
+/**
+ * Cookie-auth logout helper:
+ * - calls server to clear HttpOnly session cookie
+ * - then resets client state
+ */
+export async function logoutAndReset(
+  redirectTo: string = "/login",
+  opts?: { mode?: ResetMode }
+) {
+  try {
+    // ✅ server should clear cookie (Set-Cookie session=; Max-Age=0)
+    await api.post("/api/auth/logout");
+  } catch {
+    // ignore network failure; still clear client state
+  }
+
+  hardResetApp(redirectTo, opts);
 }

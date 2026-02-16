@@ -162,6 +162,12 @@ type VariantRow = {
 type AttrDef = { id: string; name?: string };
 
 /* ============================
+   Cookie-auth axios options
+============================ */
+
+const cookieOpts = { withCredentials: true as const };
+
+/* ============================
    Helpers
 ============================ */
 
@@ -207,7 +213,7 @@ function availOf(o: any): number {
 }
 
 /**
- * ✅ NEW: detect whether an offer row *explicitly* provides any quantity field.
+ * ✅ detect whether an offer row explicitly provides any quantity field.
  * If qty isn't provided, we still consider the price for "best/cheapest" selection.
  */
 function hasExplicitQty(o: any): boolean {
@@ -250,18 +256,14 @@ function toNumberLoose(v: any): number | null {
   return null;
 }
 
-/**
- * ✅ NEW: pick the cheapest positive number from candidates.
- */
+/** pick the cheapest positive number from candidates */
 function minPositive(...nums: Array<number | null | undefined>) {
   const arr = nums.map((n) => Number(n ?? 0)).filter((n) => Number.isFinite(n) && n > 0);
   if (!arr.length) return 0;
   return arr.reduce((m, v) => (v < m ? v : m), Number.POSITIVE_INFINITY);
 }
 
-/**
- * Extracts supplier-side "cost/price" from a supplier offer row across DTO variants.
- */
+/** Extracts supplier-side "cost/price" from an offer row across DTO variants. */
 function offerUnitCost(o: any): number | null {
   if (!o) return null;
 
@@ -288,7 +290,6 @@ function offerUnitCost(o: any): number | null {
 }
 
 /**
- * ✅ Retail price calculation logic:
  * retail = supplierCost + supplierCost * (markupPercent/100)
  * Rounded to integer NGN.
  */
@@ -300,9 +301,7 @@ function applyMarkup(cost: number, pct: number) {
   return Math.round(c * (1 + pp / 100));
 }
 
-async function fetchSupplierOffersForProduct(productId: string, token?: string | null) {
-  const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
-
+async function fetchSupplierOffersForProduct(productId: string) {
   const attempts = [
     `/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`,
     `/api/admin/supplier-offers?productId=${encodeURIComponent(productId)}`,
@@ -310,9 +309,9 @@ async function fetchSupplierOffersForProduct(productId: string, token?: string |
 
   for (const url of attempts) {
     try {
-      const { data } = await api.get(url, { headers: hdr });
-      const root = data?.data?.data ?? data?.data ?? data;
-      const arr = Array.isArray(root) ? root : Array.isArray(root?.data) ? root.data : [];
+      const { data } = await api.get(url, cookieOpts);
+      const root = (data as any)?.data?.data ?? (data as any)?.data ?? data;
+      const arr = Array.isArray(root) ? root : Array.isArray((root as any)?.data) ? (root as any).data : [];
       return arr as any[];
     } catch (e: any) {
       const status = e?.response?.status;
@@ -365,22 +364,18 @@ function findDuplicateCombos(rows: VariantRow[], attrs: AttrDef[]): Record<strin
    Variants persistence (tries multiple endpoints)
 ============================ */
 
-async function persistVariantsStrict(productId: string, variants: any[], token?: string | null, opts?: { replace?: boolean }) {
+async function persistVariantsStrict(productId: string, variants: any[], opts?: { replace?: boolean }) {
   const replace = opts?.replace ?? true;
-  const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
 
   const clean = (variants || []).map((v) => {
     const id = normalizeId(v?.id);
     const sku = String(v?.sku ?? "").trim();
-
     const retailPriceNum = toNumberLoose(v?.retailPrice ?? v?.price);
 
     return {
       ...(id ? { id } : {}),
       ...(!id && sku ? { sku } : {}),
       ...(retailPriceNum != null ? { retailPrice: retailPriceNum } : {}),
-
-      // ✅ schema: options are just attributeId/valueId (+ optional unitPrice if you ever use it)
       options: (v?.options || v?.optionSelections || []).map((o: any) => {
         const unitPriceNum = toNumberLoose(o?.unitPrice);
 
@@ -405,7 +400,11 @@ async function persistVariantsStrict(productId: string, variants: any[], token?:
 
   for (const a of attempts) {
     try {
-      const req = a.method === "put" ? api.put(a.url, a.body, { headers: hdr }) : api.post(a.url, a.body, { headers: hdr });
+      const req =
+        a.method === "put"
+          ? api.put(a.url, a.body, cookieOpts)
+          : api.post(a.url, a.body, cookieOpts);
+
       const { data } = await req;
       return data;
     } catch (e: any) {
@@ -432,14 +431,12 @@ async function persistVariantsStrict(productId: string, variants: any[], token?:
 
 export function ManageProducts({
   role,
-  token,
   search,
   setSearch,
   focusId,
   onFocusedConsumed,
 }: {
   role: string;
-  token?: string | null;
   search: string;
   setSearch: (s: string) => void;
   focusId: string | null;
@@ -456,8 +453,7 @@ export function ManageProducts({
   const hasOrdersProbeDoneRef = useRef(false);
 
   /**
-   * ✅ FIX:
-   * Keep search fully local; only sync to parent onBlur to avoid tab remounts.
+   * Keep search fully local; only sync to parent onBlur to avoid remount churn.
    */
   const [qInput, setQInput] = useState(search || "");
   useEffect(() => {
@@ -468,34 +464,23 @@ export function ManageProducts({
 
   /* ---------------- Pricing Markup Setting ---------------- */
 
-  // ✅ CHANGED: default to 10% if setting missing/invalid
   const DEFAULT_MARKUP_PERCENT = 10;
 
   const markupQ = useQuery<number>({
     queryKey: ["admin", "settings", "pricingMarkupPercent"],
-
-    // ✅ CHANGED: allow ADMIN too (was SUPER_ADMIN-only)
-    enabled: !!token && (role === "SUPER_ADMIN" || role === "ADMIN"),
-
+    enabled: role === "SUPER_ADMIN" || role === "ADMIN",
     queryFn: async () => {
-      const { data } = await api.get("/api/settings", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const { data } = await api.get("/api/settings", cookieOpts);
 
-      // backend returns a plain array of rows
       const arr = Array.isArray(data) ? data : Array.isArray((data as any)?.data) ? (data as any).data : [];
-
       const row = arr.find((r: any) => {
         const k = String(r?.key || "").trim();
         return k === "pricingMarkupPercent" || k === "marginPercent";
       });
 
-      // ✅ CHANGED: fallback to 10 if missing/0/invalid
       const n = toNumberLoose(row?.value);
       return n != null && Number.isFinite(n) && n > 0 ? n : DEFAULT_MARKUP_PERCENT;
     },
-
-    // ✅ make it always recalc when you come back to the tab/window
     staleTime: 0,
     refetchOnMount: true,
     refetchOnWindowFocus: true,
@@ -519,7 +504,6 @@ export function ManageProducts({
     return out || `PRODUCT-${Date.now()}`;
   }
 
-  // ✅ CHANGED: ensure we never regress to old fallback; use DEFAULT_MARKUP_PERCENT
   const pricingMarkupPercent =
     Number.isFinite(Number(markupQ.data)) && Number(markupQ.data) > 0 ? Number(markupQ.data) : DEFAULT_MARKUP_PERCENT;
 
@@ -563,9 +547,7 @@ export function ManageProducts({
   }
 
   /**
-   * ✅ Robust variantId extraction:
-   * - supports variantId as string/object
-   * - supports compat IDs like: "variant:<id>" (and ignores "base:<...>")
+   * Robust variantId extraction, supports compat IDs like "variant:<id>"
    */
   function extractOfferVariantId(o: any): string | null {
     const direct = normalizeNullableId(o?.variantId?.id ?? o?.variant?.id ?? o?.variantId);
@@ -592,19 +574,22 @@ export function ManageProducts({
 
   const listQ = useQuery<AdminProduct[]>({
     queryKey: ["admin", "products", "manage", { q: debouncedQ, statusParam }],
-    enabled: !!token,
+    enabled: !!role,
     queryFn: async () => {
-      const { data } = await api.get("/api/admin/products", {
-        headers: { Authorization: `Bearer ${token}` },
-        params: {
-          status: statusParam,
-          q: debouncedQ,
-          take: 50,
-          skip: 0,
-          include: "owner,variants,supplierOffers",
-        },
-      });
-      const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      const { data } = await api.get(
+        "/api/admin/products",
+        {
+          ...cookieOpts,
+          params: {
+            status: statusParam,
+            q: debouncedQ,
+            take: 50,
+            skip: 0,
+            include: "owner,variants,supplierOffers",
+          },
+        } as any
+      );
+      const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
       return (arr ?? []) as AdminProduct[];
     },
     staleTime: staleTimeInMs,
@@ -649,27 +634,23 @@ export function ManageProducts({
   }, [rows, validVariantIdsByProduct]);
 
   /**
-   * ✅ Bulk offers summary:
-   * - availability summary
-   * - best base supplier price per product
-   * - best variant supplier price per product (for "From" pricing)
+   * Bulk offers summary
    */
   const offersSummaryQ = useQuery({
     queryKey: ["admin", "products", "offers-summary", { ids: rows.map((r) => r.id), variantIdsHash }],
-    enabled: !!token && rows.length > 0,
+    enabled: !!role && rows.length > 0,
     refetchOnWindowFocus: false,
     staleTime: 30_000,
     queryFn: async () => {
-      const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
       const productIds = rows.map((r) => r.id);
       if (!productIds.length) return {};
 
       const qs = new URLSearchParams();
       qs.set("productIds", productIds.join(","));
 
-      const { data } = await api.get(`/api/admin/supplier-offers?${qs}`, { headers: hdr });
+      const { data } = await api.get(`/api/admin/supplier-offers?${qs}`, cookieOpts);
 
-      const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+      const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
       const offers = (arr as SupplierOfferLite[]).filter((o) => !!(o as any));
 
       const byProduct: Record<
@@ -685,8 +666,8 @@ export function ManageProducts({
           inStock: boolean;
           perSupplier: Array<{ supplierId: string; supplierName?: string; availableQty: number }>;
 
-          minBaseSupplierPrice: number; // base rows only (variantId null)
-          minVariantSupplierPrice: number; // variant rows only (variantId present)
+          minBaseSupplierPrice: number;
+          minVariantSupplierPrice: number;
         }
       > = {};
 
@@ -701,7 +682,6 @@ export function ManageProducts({
         const isInStock = coerceBool((o as any).inStock, true);
         const availableQty = availOf(o) || toInt((o as any).availableQty, 0) || 0;
 
-        // ✅ CHANGED: if qty isn't explicitly provided, still allow price to be considered
         const qtyKnown = hasExplicitQty(o);
 
         if (!byProduct[pid]) {
@@ -724,7 +704,6 @@ export function ManageProducts({
         byProduct[pid].offerCountTotal += 1;
         if (isActive) byProduct[pid].activeOfferCount += 1;
 
-        // base min
         if (!vid) {
           const cost = offerUnitCost(o);
           const ok =
@@ -733,13 +712,12 @@ export function ManageProducts({
             cost != null &&
             Number.isFinite(cost) &&
             cost > 0 &&
-            (availableQty > 0 || !qtyKnown); // ✅ CHANGED
+            (availableQty > 0 || !qtyKnown);
           if (ok && cost < byProduct[pid].minBaseSupplierPrice) {
             byProduct[pid].minBaseSupplierPrice = cost;
           }
         }
 
-        // variant min
         if (vid) {
           const cost = offerUnitCost(o);
           const ok =
@@ -748,13 +726,12 @@ export function ManageProducts({
             cost != null &&
             Number.isFinite(cost) &&
             cost > 0 &&
-            (availableQty > 0 || !qtyKnown); // ✅ CHANGED
+            (availableQty > 0 || !qtyKnown);
           if (ok && cost < byProduct[pid].minVariantSupplierPrice) {
             byProduct[pid].minVariantSupplierPrice = cost;
           }
         }
 
-        // availability totals still require known qty > 0
         if (isActive && isInStock && availableQty > 0) {
           byProduct[pid].totalAvailable += availableQty;
           if (vid) byProduct[pid].variantAvailable += availableQty;
@@ -778,7 +755,7 @@ export function ManageProducts({
     },
   });
 
-  // Derive availability, offer count, and computed pricing into rows
+  // Derive availability + computed pricing into rows
   const rowsWithDerived: AdminProduct[] = useMemo(() => {
     const summary = (offersSummaryQ.data || {}) as any;
 
@@ -802,21 +779,15 @@ export function ManageProducts({
         s != null
           ? toInt(s?.offerCountTotal ?? 0, 0)
           : Array.isArray((p as any)?.supplierOffers)
-          ? (p as any).supplierOffers.length
-          : 0;
+            ? (p as any).supplierOffers.length
+            : 0;
 
       const inStock = finalAvail > 0;
 
       const bestBaseSupplier = Number(s?.minBaseSupplierPrice ?? 0) || 0;
       const bestVariantSupplier = Number(s?.minVariantSupplierPrice ?? 0) || 0;
 
-      /**
-       * ✅ FIX:
-       * Product "FROM" price should be computed from the CHEAPEST purchasable offer overall,
-       * across BOTH base + variant offers.
-       */
       const fromSupplierCost = minPositive(bestBaseSupplier, bestVariantSupplier);
-
       const computedRetailFrom = fromSupplierCost > 0 ? applyMarkup(fromSupplierCost, pricingMarkupPercent) : 0;
 
       return {
@@ -849,7 +820,7 @@ export function ManageProducts({
 
   const updateStatusM = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: "PUBLISHED" | "PENDING" | "REJECTED" | "LIVE" }) =>
-      (await api.post(`/api/admin/products/${id}/status`, { status }, { headers: { Authorization: `Bearer ${token}` } })).data,
+      (await api.post(`/api/admin/products/${id}/status`, { status }, cookieOpts)).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] });
       qc.invalidateQueries({ queryKey: ["admin", "overview"] });
@@ -878,14 +849,13 @@ export function ManageProducts({
 
   const catsQ = useQuery<AdminCategory[]>({
     queryKey: ["admin", "products", "cats"],
-    enabled: !!token,
+    enabled: !!role,
     queryFn: async () => {
-      const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
       const attempts = ["/api/admin/categories", "/api/categories", "/api/catalog/categories"];
       for (const url of attempts) {
         try {
-          const { data } = await api.get(url, { headers: hdr });
-          const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+          const { data } = await api.get(url, cookieOpts);
+          const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
         } catch {}
       }
@@ -897,14 +867,13 @@ export function ManageProducts({
 
   const brandsQ = useQuery<AdminBrand[]>({
     queryKey: ["admin", "products", "brands"],
-    enabled: !!token,
+    enabled: !!role,
     queryFn: async () => {
-      const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
       const attempts = ["/api/admin/brands", "/api/brands"];
       for (const url of attempts) {
         try {
-          const { data } = await api.get(url, { headers: hdr });
-          const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+          const { data } = await api.get(url, cookieOpts);
+          const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
         } catch {}
       }
@@ -916,16 +885,15 @@ export function ManageProducts({
 
   const suppliersQ = useQuery<AdminSupplier[]>({
     queryKey: ["admin", "products", "suppliers"],
-    enabled: !!token,
+    enabled: !!role,
     refetchOnWindowFocus: false,
     staleTime: staleTimeInMs,
     queryFn: async () => {
-      const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
       const attempts = ["/api/admin/suppliers"];
       for (const url of attempts) {
         try {
-          const { data } = await api.get(url, { headers: hdr });
-          const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+          const { data } = await api.get(url, cookieOpts);
+          const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
         } catch {}
       }
@@ -935,14 +903,13 @@ export function ManageProducts({
 
   const attrsQ = useQuery<AdminAttribute[]>({
     queryKey: ["admin", "products", "attributes"],
-    enabled: !!token,
+    enabled: !!role,
     queryFn: async () => {
-      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
       const attempts = ["/api/admin/attributes", "/api/attributes"];
       for (const url of attempts) {
         try {
-          const { data } = await api.get(url, { headers });
-          const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+          const { data } = await api.get(url, cookieOpts);
+          const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
           if (Array.isArray(arr)) return arr;
         } catch {}
       }
@@ -955,8 +922,7 @@ export function ManageProducts({
   /* ---------------- Mutations ---------------- */
 
   const createM = useMutation({
-    mutationFn: async (payload: any) =>
-      (await api.post("/api/admin/products", payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    mutationFn: async (payload: any) => (await api.post("/api/admin/products", payload, cookieOpts)).data,
     onError: (e) =>
       openModal({
         title: "Products",
@@ -965,8 +931,7 @@ export function ManageProducts({
   });
 
   const updateM = useMutation({
-    mutationFn: async ({ id, ...payload }: any) =>
-      (await api.patch(`/api/admin/products/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } })).data,
+    mutationFn: async ({ id, ...payload }: any) => (await api.patch(`/api/admin/products/${id}`, payload, cookieOpts)).data,
     onError: (e) =>
       openModal({
         title: "Products",
@@ -976,8 +941,7 @@ export function ManageProducts({
 
   const restoreM = useMutation({
     mutationFn: async (id: string) => {
-      const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
-      const res = await api.post(`/api/admin/products/${encodeURIComponent(id)}/restore`, {}, { headers: hdr });
+      const res = await api.post(`/api/admin/products/${encodeURIComponent(id)}/restore`, {}, cookieOpts);
       return (res as any).data ?? res;
     },
     onSuccess: () => {
@@ -991,15 +955,13 @@ export function ManageProducts({
   });
 
   async function ensureHasOrdersSupport(sampleId: string) {
-    if (!token) return "unsupported" as const;
     if (hasOrdersSupportRef.current !== "unknown") return hasOrdersSupportRef.current;
     if (hasOrdersProbeDoneRef.current) return hasOrdersSupportRef.current;
 
     hasOrdersProbeDoneRef.current = true;
 
     try {
-      const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
-      await api.get(`/api/admin/products/${encodeURIComponent(sampleId)}/has-orders`, { headers: hdr });
+      await api.get(`/api/admin/products/${encodeURIComponent(sampleId)}/has-orders`, cookieOpts);
       hasOrdersSupportRef.current = "supported";
       return "supported" as const;
     } catch (e: any) {
@@ -1015,13 +977,11 @@ export function ManageProducts({
 
   const hasOrdersQ = useQuery<Record<string, boolean>>({
     queryKey: ["admin", "products", "has-orders", { ids: (rowsWithDerived ?? []).map((r) => r.id) }],
-    enabled: !!token && rowsWithDerived.length > 0 && hasOrdersSupportRef.current !== "unsupported",
+    enabled: !!role && rowsWithDerived.length > 0 && hasOrdersSupportRef.current !== "unsupported",
     refetchOnWindowFocus: false,
     staleTime: 30_000,
     queryFn: async () => {
-      const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
       const ids = rowsWithDerived.map((r) => r.id);
-
       if (!ids.length) return {};
 
       const support = await ensureHasOrdersSupport(ids[0]);
@@ -1030,19 +990,19 @@ export function ManageProducts({
       const results = await Promise.all(
         ids.map(async (id) => {
           try {
-            const { data } = await api.get(`/api/admin/products/${encodeURIComponent(id)}/has-orders`, { headers: hdr });
+            const { data } = await api.get(`/api/admin/products/${encodeURIComponent(id)}/has-orders`, cookieOpts);
             const has =
               typeof data === "boolean"
                 ? data
-                : typeof data?.hasOrders === "boolean"
-                ? data.hasOrders
-                : typeof data?.data?.hasOrders === "boolean"
-                ? data.data.hasOrders
-                : typeof data?.has === "boolean"
-                ? data.has
-                : typeof data?.data?.has === "boolean"
-                ? data.data.has
-                : false;
+                : typeof (data as any)?.hasOrders === "boolean"
+                  ? (data as any).hasOrders
+                  : typeof (data as any)?.data?.hasOrders === "boolean"
+                    ? (data as any).data.hasOrders
+                    : typeof (data as any)?.has === "boolean"
+                      ? (data as any).has
+                      : typeof (data as any)?.data?.has === "boolean"
+                        ? (data as any).data.has
+                        : false;
 
             return [id, has] as const;
           } catch (e: any) {
@@ -1064,8 +1024,6 @@ export function ManageProducts({
 
   const deleteM = useMutation({
     mutationFn: async (id: string) => {
-      const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
-
       let has = hasOrder(id);
 
       if (hasOrdersSupportRef.current === "unsupported") {
@@ -1076,8 +1034,8 @@ export function ManageProducts({
           has = false;
         } else {
           try {
-            const { data } = await api.get(`/api/admin/products/${encodeURIComponent(id)}/has-orders`, { headers: hdr });
-            has = !!(data?.data?.has ?? data?.has ?? data);
+            const { data } = await api.get(`/api/admin/products/${encodeURIComponent(id)}/has-orders`, cookieOpts);
+            has = !!((data as any)?.data?.has ?? (data as any)?.has ?? data);
           } catch (e: any) {
             const status = e?.response?.status;
             if (status === 404) hasOrdersSupportRef.current = "unsupported";
@@ -1087,7 +1045,7 @@ export function ManageProducts({
       }
 
       const url = has ? `/api/admin/products/${id}/soft-delete` : `/api/admin/products/${id}`;
-      const res = await api.delete(url, { headers: hdr });
+      const res = await api.delete(url, cookieOpts);
       return (res as any).data?.data ?? res;
     },
     onSuccess: () => {
@@ -1125,7 +1083,14 @@ export function ManageProducts({
   const initialVariantIdsRef = useRef<Set<string>>(new Set());
 
   function isRealVariantId(id?: string) {
-    return !!id && !id.startsWith("vr-") && !id.startsWith("new-") && !id.startsWith("temp-") && !id.startsWith("tmp:") && !id.startsWith("tmp-");
+    return (
+      !!id &&
+      !id.startsWith("vr-") &&
+      !id.startsWith("new-") &&
+      !id.startsWith("temp-") &&
+      !id.startsWith("tmp:") &&
+      !id.startsWith("tmp-")
+    );
   }
 
   useEffect(() => {
@@ -1166,11 +1131,11 @@ export function ManageProducts({
 
   const lockedVariantIdsQ = useQuery<string[]>({
     queryKey: ["admin", "products", "locked-variant-ids", { productId: editingId }],
-    enabled: !!token && !!editingId,
+    enabled: !!role && !!editingId,
     refetchOnWindowFocus: false,
     staleTime: 30_000,
     queryFn: async () => {
-      const offers = await fetchSupplierOffersForProduct(editingId!, token);
+      const offers = await fetchSupplierOffersForProduct(editingId!);
       const locked = new Set<string>();
       for (const o of offers) {
         const vid = extractOfferVariantId(o);
@@ -1182,10 +1147,6 @@ export function ManageProducts({
 
   const lockedVariantIds = useMemo(() => new Set<string>(lockedVariantIdsQ.data ?? []), [lockedVariantIdsQ.data]);
 
-  /**
-   * Extracts the VARIANT TOTAL PRICE from a supplier variant offer row.
-   * (No more bump concept.)
-   */
   function offerVariantPrice(o: any): number | null {
     if (!o) return null;
 
@@ -1229,28 +1190,20 @@ export function ManageProducts({
     return offerUnitCost(o);
   }
 
-  /**
-   * Offer price caps (CHEAPEST):
-   * - minBase: cheapest supplier base price (variantId null)
-   * - minVariantByVariant: cheapest supplier VARIANT TOTAL PRICE per variantId
-   * - minVariantOverall: cheapest variant offer overall
-   */
   const offerPriceCapsQ = useQuery<{
     minBase: number;
     minVariantByVariant: Record<string, number>;
     minVariantOverall: number;
   }>({
     queryKey: ["admin", "products", "offer-price-caps", { productId: editingId }],
-    enabled: !!token && !!editingId,
+    enabled: !!role && !!editingId,
     refetchOnWindowFocus: false,
     staleTime: 30_000,
     queryFn: async () => {
-      const offers = await fetchSupplierOffersForProduct(editingId!, token);
+      const offers = await fetchSupplierOffersForProduct(editingId!);
 
-      // supplierId -> cheapest base price for that supplier
       const baseBySupplier: Record<string, number> = {};
 
-      // 1) capture BASE per supplier (variantId null)
       for (const o of offers ?? []) {
         const vid = extractOfferVariantId(o);
         if (vid) continue;
@@ -1262,7 +1215,6 @@ export function ManageProducts({
         const isInStock = coerceBool((o as any).inStock, true);
         const availableQty = availOf(o) || 0;
 
-        // ✅ CHANGED: accept price when qty isn't explicitly provided
         const qtyKnown = hasExplicitQty(o);
 
         if (!isActive || !isInStock) continue;
@@ -1275,7 +1227,6 @@ export function ManageProducts({
         if (!prev || base < prev) baseBySupplier[sid] = base;
       }
 
-      // 2) cheapest STANDALONE variant price per variantId across suppliers
       const minVariantByVariant: Record<string, number> = {};
 
       for (const o of offers ?? []) {
@@ -1290,7 +1241,6 @@ export function ManageProducts({
         const isInStock = coerceBool((o as any).inStock, true);
         const availableQty = availOf(o) || 0;
 
-        // ✅ CHANGED: accept price when qty isn't explicitly provided
         const qtyKnown = hasExplicitQty(o);
 
         if (!isActive || !isInStock) continue;
@@ -1303,9 +1253,7 @@ export function ManageProducts({
         if (!prev || variantPriceRaw < prev) minVariantByVariant[variantId] = variantPriceRaw;
       }
 
-      // 3) cheapest base across suppliers
       const minBaseRaw = Object.values(baseBySupplier).reduce((m, v) => (v > 0 && v < m ? v : m), Number.POSITIVE_INFINITY);
-
       const minVariantOverall = Object.values(minVariantByVariant).reduce((m, v) => (v > 0 && v < m ? v : m), Number.POSITIVE_INFINITY);
 
       const minBase = Number.isFinite(minBaseRaw) && minBaseRaw > 0 ? minBaseRaw : 0;
@@ -1326,38 +1274,24 @@ export function ManageProducts({
       minVariantOverall: 0,
     };
 
-  /**
-   * ✅ IMPORTANT CHANGE:
-   * Do NOT hide variants that don't yet have supplier offers.
-   * Only variants that ADMIN has manually added to the combos list should exist/appear.
-   */
-  const visibleVariantRows = useMemo(() => {
-    return Array.isArray(variantRows) ? variantRows : [];
-  }, [variantRows]);
+  const visibleVariantRows = useMemo(() => (Array.isArray(variantRows) ? variantRows : []), [variantRows]);
 
   const comboErrors = useMemo(() => findDuplicateCombos(visibleVariantRows ?? [], selectableAttrs ?? []), [visibleVariantRows, selectableAttrs]);
   const hasDuplicateCombos = Object.keys(comboErrors).length > 0;
 
   const emptyRowErrors = useMemo(() => findEmptyRowErrors(visibleVariantRows ?? []), [visibleVariantRows]);
 
-  // ✅ computed product retail (editing): "FROM" price
   const computedRetailFromEditing = useMemo(() => {
     if (!editingId) return null;
 
     const baseCost = Number(offerPriceCaps?.minBase ?? 0) || 0;
     const variantCost = Number(offerPriceCaps?.minVariantOverall ?? 0) || 0;
 
-    /**
-     * ✅ FIX:
-     * Editor "FROM" price should use the CHEAPEST purchasable offer overall (base or variant).
-     */
     const fromCost = minPositive(baseCost, variantCost);
-
     if (fromCost <= 0) return null;
     return applyMarkup(fromCost, pricingMarkupPercent);
   }, [editingId, offerPriceCaps?.minBase, offerPriceCaps?.minVariantOverall, pricingMarkupPercent]);
 
-  // When editing + caps load, force the displayed price to computed retail (NOT editable)
   useEffect(() => {
     if (!editingId) return;
     if (computedRetailFromEditing == null) return;
@@ -1392,7 +1326,7 @@ export function ManageProducts({
   }
 
   /* ============================
-     ✅ Image upload (file picker)
+     Image upload
   ============================ */
 
   const filePickRef = useRef<HTMLInputElement | null>(null);
@@ -1475,11 +1409,6 @@ export function ManageProducts({
   }
 
   async function uploadImages(files: FileList | File[]) {
-    if (!token) {
-      openModal({ title: "Images", message: "You must be logged in to upload images." });
-      return;
-    }
-
     const arr = Array.from(files || []).filter(Boolean);
     if (!arr.length) return;
 
@@ -1495,10 +1424,8 @@ export function ManageProducts({
       for (const f of arr) fd.append(fieldName, f);
 
       const res = await api.post("/api/uploads", fd, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "multipart/form-data",
-        },
+        withCredentials: true,
+        headers: { "Content-Type": "multipart/form-data" },
       });
 
       const urls = extractUploadUrls(res?.data ?? res);
@@ -1610,11 +1537,6 @@ export function ManageProducts({
     touchVariants();
   }
 
-  /**
-   * ✅ Variant retail (schema-aligned)
-   * - editing mode: computed from cheapest supplier VARIANT offer + markup
-   * - if a variant has no variant offer, we show "—" (unchanged behaviour)
-   */
   function computedVariantRetail(row: VariantRow) {
     const baseSupplier = offerPriceCaps.minBase || 0;
     const baseRetailComputed = baseSupplier > 0 ? applyMarkup(baseSupplier, pricingMarkupPercent) : 0;
@@ -1643,12 +1565,15 @@ export function ManageProducts({
   /* ---------------- Full product loader ---------------- */
 
   async function fetchProductFull(id: string) {
-    const { data } = await api.get(`/api/admin/products/${id}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      params: { include: "variants,attributes,brand,supplier,owner" },
-    });
+    const { data } = await api.get(
+      `/api/admin/products/${id}`,
+      {
+        ...cookieOpts,
+        params: { include: "variants,attributes,brand,supplier,owner" },
+      } as any
+    );
 
-    const prod = data?.data?.data ?? data?.data ?? data ?? {};
+    const prod = (data as any)?.data?.data ?? (data as any)?.data ?? data ?? {};
 
     const rawVariants =
       (Array.isArray(prod?.variants) && prod.variants) ||
@@ -1760,9 +1685,7 @@ export function ManageProducts({
     return vr;
   }
 
-  const imagePreviewUrls = useMemo(() => {
-    return parseUrlList(pending.imageUrls || "").filter(isUrlish);
-  }, [pending.imageUrls]);
+  const imagePreviewUrls = useMemo(() => parseUrlList(pending.imageUrls || "").filter(isUrlish), [pending.imageUrls]);
 
   function removeImageUrl(url: string) {
     const u = String(url || "").trim();
@@ -1791,12 +1714,7 @@ export function ManageProducts({
     const { baseRetail, variantRows, caps } = args;
     const errors: string[] = [];
 
-    /**
-     * ✅ FIX:
-     * Validate product FROM retail against the CHEAPEST purchasable cost overall (base or variant).
-     */
     const fromCost = minPositive(caps.minBase, caps.minVariantOverall);
-
     if (fromCost > 0) {
       const neededFromRetail = applyMarkup(fromCost, pricingMarkupPercent);
       if (baseRetail < neededFromRetail) {
@@ -1806,7 +1724,6 @@ export function ManageProducts({
       }
     }
 
-    // validate each variant retail (computed) when we have supplier offers for that variant
     for (const r of variantRows ?? []) {
       const vid = String(r?.id ?? "").trim();
       if (!vid || !isRealVariantId(vid)) continue;
@@ -1924,26 +1841,20 @@ export function ManageProducts({
         const picks = Object.entries(row.selections || {}).filter(([, valueId]) => !!valueId);
         if (picks.length === 0) continue;
 
-        // ✅ Variant retail price is NOT admin-editable while editing.
-        // Send retailPrice only when editing AND supplier pricing exists (computed).
         let retailPriceToSend: number | null = null;
 
         if (editingId) {
           const computed = computedVariantRetail(row);
-          if (computed.hasComputed && computed.variantRetail > 0) {
-            retailPriceToSend = computed.variantRetail;
-          } else {
-            retailPriceToSend = null; // omit if unknown
-          }
+          if (computed.hasComputed && computed.variantRetail > 0) retailPriceToSend = computed.variantRetail;
+          else retailPriceToSend = null;
         } else {
-          retailPriceToSend = null; // create: always omit (backend will default)
+          retailPriceToSend = null;
         }
 
         const options = picks.map(([attributeId, valueId]) => {
           return { attributeId, valueId, attributeValueId: valueId };
         });
 
-        // ✅ Build variant SKU using VALUE NAMES
         const labelParts: string[] = [];
 
         for (const [attributeId, valueId] of picks) {
@@ -1955,7 +1866,6 @@ export function ManageProducts({
 
         const comboLabel = labelParts.filter(Boolean).join("-");
         const productSku = skuSafePart(base.sku || "");
-
         const sku = productSku && comboLabel ? `${productSku}-${comboLabel}` : productSku || comboLabel || undefined;
 
         variants.push({
@@ -2092,7 +2002,6 @@ export function ManageProducts({
       }
     }
 
-    // EDIT FLOW
     if (editingId) {
       const { variantOptions, ...payloadForPatch } = fullPayload as any;
       const userTouchedVariants = variantsDirty || clearAllVariantsIntent;
@@ -2124,7 +2033,7 @@ export function ManageProducts({
                   clearAllVariantsIntent,
                 });
 
-                await persistVariantsStrict(pid, variants || [], token, { replace: replaceFlag });
+                await persistVariantsStrict(pid, variants || [], { replace: replaceFlag });
 
                 setVariantsDirty(false);
                 setClearAllVariantsIntent(false);
@@ -2176,7 +2085,6 @@ export function ManageProducts({
       return;
     }
 
-    // CREATE FLOW
     createM.mutate(fullPayload, {
       onSuccess: async (res) => {
         const created = (res?.data ?? res) as any;
@@ -2185,7 +2093,7 @@ export function ManageProducts({
         const vars = extractProductVariants(fullPayload);
         if (pid && vars.length > 0) {
           try {
-            await persistVariantsStrict(pid, vars, token, { replace: true });
+            await persistVariantsStrict(pid, vars, { replace: true });
 
             const refreshed = await fetchProductFull(pid);
             const nextRowsRaw = buildVariantRowsFromServerVariants(refreshed.variants || []);
@@ -2338,8 +2246,7 @@ export function ManageProducts({
   }, [filteredRows, sort, statusRank]);
 
   /**
-   * ✅ Build OFFERABLE variant list from ADMIN combos (variantRows),
-   * not from supplier offers/caps.
+   * OFFERABLE variants list from admin combos
    */
   const supplierVariants = useMemo(() => {
     const skuByVariantId = new Map<string, string>();
@@ -2464,15 +2371,6 @@ export function ManageProducts({
     setSelectedAttrs((prev) => ({ ...prev, [attrId]: value }));
   }
 
-  /* ============================
-     ✅ Restored UI blocks:
-     - images upload + preview
-     - description
-     - attributes section
-     - variants editor section
-     - save buttons
-  ============================ */
-
   const presetButtons: Array<{ key: FilterPreset; label: string }> = [
     { key: "all", label: "All" },
     { key: "pending", label: "Pending" },
@@ -2491,7 +2389,7 @@ export function ManageProducts({
     return fallback;
   };
 
-  // startEdit is defined here (after helper defs) to avoid scroll confusion
+  // startEdit
   async function startEdit(p: any) {
     try {
       setShowEditor(true);
@@ -2551,6 +2449,10 @@ export function ManageProducts({
     }
   }
 
+  /* ============================
+     Render
+  ============================ */
+
   return (
     <div
       className="space-y-4"
@@ -2568,7 +2470,6 @@ export function ManageProducts({
         e.stopPropagation();
       }}
     >
-
       {/* ================= Editor ================= */}
       {(showEditor || !!editingId) && (
         <div className="space-y-3">
@@ -2603,7 +2504,8 @@ export function ManageProducts({
 
           {editingId && (
             <div className="rounded-xl border bg-slate-50 px-3 py-2 text-sm text-slate-700">
-              Pricing markup: <span className="font-semibold">{pricingMarkupPercent}%</span> • set in <span className="font-mono">pricingMarkupPercent</span>
+              Pricing markup: <span className="font-semibold">{pricingMarkupPercent}%</span> • set in{" "}
+              <span className="font-mono">pricingMarkupPercent</span>
             </div>
           )}
 
@@ -2613,7 +2515,6 @@ export function ManageProducts({
                 productId={offersProductId}
                 variants={supplierVariants}
                 suppliers={suppliersQ.data}
-                token={token}
                 readOnly={!(isSuper || isAdmin)}
                 defaultUnitCost={Number(pending.retailPrice) || 0}
                 onSaved={() => {
@@ -2629,7 +2530,9 @@ export function ManageProducts({
               <div>
                 <div className="text-lg font-semibold">{editingId ? "Edit product" : "Create product (Admin)"}</div>
                 <div className="text-sm text-slate-500">
-                  {editingId ? "Retail prices are computed from the cheapest purchasable supplier prices + markup." : "Admin can create and edit products on behalf of any supplier."}
+                  {editingId
+                    ? "Retail prices are computed from the cheapest purchasable supplier prices + markup."
+                    : "Admin can create and edit products on behalf of any supplier."}
                 </div>
               </div>
 
@@ -2649,14 +2552,21 @@ export function ManageProducts({
             <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Left */}
               <div className="space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="sm:col-span-2">
                     <label className="text-sm font-medium text-slate-700">Title</label>
-                    <input value={pending.title} onChange={(e) => setPending((p) => ({ ...p, title: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2" placeholder="Product title" />
+                    <input
+                      value={pending.title}
+                      onChange={(e) => setPending((p) => ({ ...p, title: e.target.value }))}
+                      className="mt-1 w-full rounded-xl border px-3 py-2"
+                      placeholder="Product title"
+                    />
                   </div>
 
                   <div>
-                    <label className="text-sm font-medium text-slate-700">{editingId ? "Retail Price (NGN) (computed FROM)" : "Price (NGN)"}</label>
+                    <label className="text-sm font-medium text-slate-700">
+                      {editingId ? "Retail Price (NGN) (computed FROM)" : "Price (NGN)"}
+                    </label>
                     <input
                       value={pending.retailPrice}
                       onChange={(e) => setPending((p) => ({ ...p, retailPrice: e.target.value }))}
@@ -2670,7 +2580,11 @@ export function ManageProducts({
 
                   <div>
                     <label className="text-sm font-medium text-slate-700">Status</label>
-                    <select value={pending.status} onChange={(e) => setPending((p) => ({ ...p, status: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2">
+                    <select
+                      value={pending.status}
+                      onChange={(e) => setPending((p) => ({ ...p, status: e.target.value }))}
+                      className="mt-1 w-full rounded-xl border px-3 py-2"
+                    >
                       <option value="PENDING">PENDING</option>
                       <option value="PUBLISHED">PUBLISHED</option>
                       <option value="LIVE">LIVE</option>
@@ -2680,7 +2594,11 @@ export function ManageProducts({
 
                   <div>
                     <label className="text-sm font-medium text-slate-700">Supplier</label>
-                    <select value={pending.supplierId} onChange={(e) => setPending((p) => ({ ...p, supplierId: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2">
+                    <select
+                      value={pending.supplierId}
+                      onChange={(e) => setPending((p) => ({ ...p, supplierId: e.target.value }))}
+                      className="mt-1 w-full rounded-xl border px-3 py-2"
+                    >
                       <option value="">Select supplier…</option>
                       {(suppliersQ.data ?? []).map((s) => (
                         <option key={s.id} value={s.id}>
@@ -2692,7 +2610,11 @@ export function ManageProducts({
 
                   <div>
                     <label className="text-sm font-medium text-slate-700">Category</label>
-                    <select value={pending.categoryId} onChange={(e) => setPending((p) => ({ ...p, categoryId: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2">
+                    <select
+                      value={pending.categoryId}
+                      onChange={(e) => setPending((p) => ({ ...p, categoryId: e.target.value }))}
+                      className="mt-1 w-full rounded-xl border px-3 py-2"
+                    >
                       <option value="">Select category…</option>
                       {(catsQ.data ?? []).map((c) => (
                         <option key={c.id} value={c.id}>
@@ -2704,7 +2626,11 @@ export function ManageProducts({
 
                   <div>
                     <label className="text-sm font-medium text-slate-700">Brand</label>
-                    <select value={pending.brandId} onChange={(e) => setPending((p) => ({ ...p, brandId: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2">
+                    <select
+                      value={pending.brandId}
+                      onChange={(e) => setPending((p) => ({ ...p, brandId: e.target.value }))}
+                      className="mt-1 w-full rounded-xl border px-3 py-2"
+                    >
                       <option value="">Select brand…</option>
                       {(brandsQ.data ?? []).map((b) => (
                         <option key={b.id} value={b.id}>
@@ -2714,13 +2640,18 @@ export function ManageProducts({
                     </select>
                   </div>
 
-                  <div>
+                  <div className="sm:col-span-2">
                     <label className="text-sm font-medium text-slate-700">SKU</label>
-                    <input value={pending.sku} onChange={(e) => setPending((p) => ({ ...p, sku: e.target.value }))} className="mt-1 w-full rounded-xl border px-3 py-2" placeholder="SKU" />
+                    <input
+                      value={pending.sku}
+                      onChange={(e) => setPending((p) => ({ ...p, sku: e.target.value }))}
+                      className="mt-1 w-full rounded-xl border px-3 py-2"
+                      placeholder="SKU"
+                    />
                   </div>
 
                   {!editingId && (
-                    <div>
+                    <div className="sm:col-span-2">
                       <label className="text-sm font-medium text-slate-700">Supplier Qty (for NEW product)</label>
                       <input
                         value={(pending as any).supplierAvailableQty}
@@ -2741,17 +2672,21 @@ export function ManageProducts({
                       if (cheapest > 0) {
                         return (
                           <span>
-                            Supplier cheapest purchasable cost: ₦{cheapest.toLocaleString()} → retail ₦{applyMarkup(cheapest, pricingMarkupPercent).toLocaleString()} (markup {pricingMarkupPercent}%)
+                            Supplier cheapest purchasable cost: ₦{cheapest.toLocaleString()} → retail ₦
+                            {applyMarkup(cheapest, pricingMarkupPercent).toLocaleString()} (markup {pricingMarkupPercent}
+                            %)
                           </span>
                         );
                       }
                       return <span>Supplier cheapest prices → —</span>;
                     })()}
-                    {Object.keys(offerPriceCaps.minVariantByVariant || {}).length > 0 && <span className="ml-2">• variants tracked: {Object.keys(offerPriceCaps.minVariantByVariant || {}).length}</span>}
+                    {Object.keys(offerPriceCaps.minVariantByVariant || {}).length > 0 && (
+                      <span className="ml-2">• variants tracked: {Object.keys(offerPriceCaps.minVariantByVariant || {}).length}</span>
+                    )}
                   </div>
                 )}
 
-                {/* ✅ RESTORED: Images */}
+                {/* Images */}
                 <div className="rounded-xl border p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div>
@@ -2785,10 +2720,9 @@ export function ManageProducts({
                   {!!uploadInfo && <div className="mt-2 text-xs text-slate-600">{uploadInfo}</div>}
 
                   {imagePreviewUrls.length > 0 && (
-                    <div className="mt-3 grid grid-cols-2 md:grid-cols-3 gap-2">
+                    <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {imagePreviewUrls.map((u) => (
                         <div key={u} className="relative rounded-xl border overflow-hidden bg-slate-50">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img src={u} alt="preview" className="h-28 w-full object-cover" />
                           <button
                             type="button"
@@ -2811,7 +2745,7 @@ export function ManageProducts({
                   />
                 </div>
 
-                {/* ✅ RESTORED: Description */}
+                {/* Description */}
                 <div>
                   <label className="text-sm font-medium text-slate-700">Description</label>
                   <textarea
@@ -2823,9 +2757,9 @@ export function ManageProducts({
                 </div>
               </div>
 
-              {/* Right: Attributes + Variants */}
+              {/* Right */}
               <div className="space-y-3">
-                {/* ✅ RESTORED: Attributes */}
+                {/* Attributes */}
                 <div className="rounded-xl border p-3">
                   <div className="text-sm font-semibold text-slate-800">Attributes</div>
                   <div className="text-xs text-slate-500">These are product-level attributes (not variant combos).</div>
@@ -2868,7 +2802,6 @@ export function ManageProducts({
                         );
                       }
 
-                      // MULTISELECT
                       const selected = Array.isArray(val) ? val : [];
                       return (
                         <div key={a.id}>
@@ -2884,7 +2817,11 @@ export function ManageProducts({
                                     const next = on ? selected.filter((x) => x !== v.id) : [...selected, v.id];
                                     setAttr(a.id, next);
                                   }}
-                                  className={on ? "px-3 py-1.5 rounded-full bg-slate-900 text-white text-xs" : "px-3 py-1.5 rounded-full border text-xs hover:bg-slate-50"}
+                                  className={
+                                    on
+                                      ? "px-3 py-1.5 rounded-full bg-slate-900 text-white text-xs"
+                                      : "px-3 py-1.5 rounded-full border text-xs hover:bg-slate-50"
+                                  }
                                 >
                                   {v.name}
                                 </button>
@@ -2898,9 +2835,9 @@ export function ManageProducts({
                   </div>
                 </div>
 
-                {/* ✅ RESTORED: Variants editor */}
+                {/* Variants editor */}
                 <div className="rounded-xl border p-3">
-                  <div className="flex items-start justify-between gap-2">
+                  <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
                     <div>
                       <div className="text-sm font-semibold text-slate-800">Variants</div>
                       <div className="text-xs text-slate-500">Add option combinations (Color / Size etc).</div>
@@ -2914,7 +2851,6 @@ export function ManageProducts({
                       <button
                         type="button"
                         onClick={() => {
-                          // Intentional clear (forces replace)
                           setVariantRows([]);
                           setClearAllVariantsIntent(true);
                           touchVariants();
@@ -2940,7 +2876,9 @@ export function ManageProducts({
                   )}
 
                   {selectableAttrs.length === 0 ? (
-                    <div className="mt-3 text-sm text-slate-500">No SELECT attributes found. Create SELECT attributes to build variant combinations.</div>
+                    <div className="mt-3 text-sm text-slate-500">
+                      No SELECT attributes found. Create SELECT attributes to build variant combinations.
+                    </div>
                   ) : (
                     <div className="mt-3 overflow-x-auto">
                       <table className="min-w-[720px] w-full text-sm">
@@ -3011,7 +2949,13 @@ export function ManageProducts({
                                 </td>
 
                                 <td className="p-2 align-top">
-                                  <span className={isLocked ? "text-xs rounded-full bg-slate-900 text-white px-2 py-1" : "text-xs rounded-full bg-slate-100 text-slate-700 px-2 py-1"}>
+                                  <span
+                                    className={
+                                      isLocked
+                                        ? "text-xs rounded-full bg-slate-900 text-white px-2 py-1"
+                                        : "text-xs rounded-full bg-slate-100 text-slate-700 px-2 py-1"
+                                    }
+                                  >
                                     {isLocked ? "LOCKED" : "—"}
                                   </span>
                                 </td>
@@ -3044,16 +2988,14 @@ export function ManageProducts({
                   )}
 
                   {editingId && clearAllVariantsIntent && (
-                    <div className="mt-2 text-xs text-amber-700">
-                      “Remove all variants” is armed. Saving will replace server variants with none.
-                    </div>
+                    <div className="mt-2 text-xs text-amber-700">“Remove all variants” is armed. Saving will replace server variants with none.</div>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* ✅ RESTORED: Save buttons */}
-            <div className="mt-4 flex flex-wrap gap-2 justify-end">
+            {/* Save buttons */}
+            <div className="mt-4 flex flex-col sm:flex-row gap-2 justify-end">
               <button
                 type="button"
                 onClick={() => {
@@ -3085,32 +3027,35 @@ export function ManageProducts({
       {/* ================= Toolbar ================= */}
       <div className="rounded-2xl border bg-white shadow-sm p-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap gap-2">
+          {/* ✅ Mobile neater: 2-col grid for presets */}
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:gap-2">
             {presetButtons.map((b) => (
               <button
                 key={b.key}
                 type="button"
                 onClick={() => setPresetAndUrl(b.key)}
-                className={b.key === preset ? "px-3 py-2 rounded-xl bg-slate-900 text-white text-sm" : "px-3 py-2 rounded-xl border text-sm hover:bg-slate-50"}
+                className={
+                  b.key === preset
+                    ? "w-full sm:w-auto px-3 py-2 rounded-xl bg-slate-900 text-white text-sm"
+                    : "w-full sm:w-auto px-3 py-2 rounded-xl border text-sm hover:bg-slate-50"
+                }
               >
-                {b.label}
+                <span className="truncate block">{b.label}</span>
               </button>
             ))}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex-1 min-w-[220px]" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <div className="flex-1 min-w-0" onMouseDown={(e) => e.stopPropagation()}>
               <input
                 value={qInput}
-                onChange={(e) => {
-                  setQInput(e.target.value);
-                }}
+                onChange={(e) => setQInput(e.target.value)}
                 onBlur={() => {
                   try {
                     setSearch(qInput);
                   } catch {}
                 }}
-                placeholder="Search by title / SKU / owner / etc…"
+                placeholder="Search by title / SKU / owner…"
                 className="w-full rounded-xl border px-3 py-2 text-sm"
               />
             </div>
@@ -3118,7 +3063,7 @@ export function ManageProducts({
             <button
               type="button"
               onClick={startNewProduct}
-              className="ml-auto shrink-0 whitespace-nowrap rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+              className="w-full sm:w-auto shrink-0 whitespace-nowrap rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
             >
               + New product
             </button>
@@ -3126,8 +3071,70 @@ export function ManageProducts({
         </div>
       </div>
 
-      {/* ================= Products Table ================= */}
-      <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+      {/* ================= Mobile Cards (neater) ================= */}
+      <div className="md:hidden space-y-2">
+        {displayRows.map((p) => {
+          const action = primaryActionForRow(p);
+          const price = displayRetailForRow(p);
+          return (
+            <div key={p.id} className="rounded-2xl border bg-white shadow-sm p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-semibold truncate">{p.title}</div>
+                  <div className="text-xs text-slate-500 font-mono truncate">{p.sku || p.id}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="font-semibold">₦{Number(price || 0).toLocaleString()}</div>
+                  <div className="text-xs text-slate-600">{getStatus(p)}</div>
+                </div>
+              </div>
+
+              <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-600">
+                <div className="rounded-xl bg-slate-50 border px-2 py-1">
+                  <div className="text-[11px] text-slate-500">Offers</div>
+                  <div className="font-medium">{Number((p as any).__offerCount ?? 0).toLocaleString()}</div>
+                </div>
+                <div className="rounded-xl bg-slate-50 border px-2 py-1">
+                  <div className="text-[11px] text-slate-500">Avail</div>
+                  <div className="font-medium">{Number(p.availableQty ?? 0).toLocaleString()}</div>
+                </div>
+                <div className="rounded-xl bg-slate-50 border px-2 py-1">
+                  <div className="text-[11px] text-slate-500">Stock</div>
+                  <div className="font-medium">{p.inStock ? "Yes" : "No"}</div>
+                </div>
+              </div>
+
+              <div className="mt-2 text-xs text-slate-500 truncate">Owner: {getOwner(p) || "—"}</div>
+
+              <div className="mt-3 flex gap-2">
+                <button type="button" onClick={() => startEdit(p)} className="flex-1 rounded-xl border px-3 py-2 text-sm hover:bg-slate-50">
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  title={action.title}
+                  onClick={action.onClick}
+                  className={`flex-1 ${action.className}`}
+                  disabled={action.disabled || deleteM.isPending || restoreM.isPending}
+                >
+                  {action.label}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
+        {!listQ.isLoading && displayRows.length === 0 && (
+          <div className="rounded-2xl border bg-white shadow-sm p-6 text-slate-500">No products found.</div>
+        )}
+
+        {listQ.isLoading && (
+          <div className="rounded-2xl border bg-white shadow-sm p-6 text-slate-500">Loading…</div>
+        )}
+      </div>
+
+      {/* ================= Desktop Table ================= */}
+      <div className="hidden md:block rounded-2xl border bg-white shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="min-w-[980px] w-full text-sm">
             <thead className="bg-slate-50 text-slate-700">
@@ -3165,9 +3172,13 @@ export function ManageProducts({
                       <div className="font-medium">{p.title}</div>
                       <div className="text-xs text-slate-500 font-mono">{p.sku || p.id}</div>
 
-                      {p.__bestVariantSupplierPrice ? <div className="text-[11px] text-slate-500 mt-1">best supplier variant: ₦{Number(p.__bestVariantSupplierPrice).toLocaleString()}</div> : null}
+                      {p.__bestVariantSupplierPrice ? (
+                        <div className="text-[11px] text-slate-500 mt-1">best supplier variant: ₦{Number(p.__bestVariantSupplierPrice).toLocaleString()}</div>
+                      ) : null}
 
-                      {p.__bestBaseSupplierPrice ? <div className="text-[11px] text-slate-500 mt-1">best supplier base: ₦{Number(p.__bestBaseSupplierPrice).toLocaleString()}</div> : null}
+                      {p.__bestBaseSupplierPrice ? (
+                        <div className="text-[11px] text-slate-500 mt-1">best supplier base: ₦{Number(p.__bestBaseSupplierPrice).toLocaleString()}</div>
+                      ) : null}
 
                       {(p.__bestBaseSupplierPrice || p.__bestVariantSupplierPrice) && (
                         <div className="text-[11px] text-slate-500 mt-1">computed FROM uses cheapest purchasable + {pricingMarkupPercent}% markup</div>

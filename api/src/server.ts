@@ -6,7 +6,6 @@ import cookieParser from "cookie-parser";
 import path from "path";
 import * as fs from "fs";
 
-
 // Routers
 import authRouter from "./routes/auth.js";
 import authSessionRouter from "./routes/authSessions.js";
@@ -69,19 +68,17 @@ import ridersRouter from "./routes/riders.js";
 import privacyRouter from "./routes/privacy.js";
 import supplierCatalogOffers from "./routes/supplierCatalogOffers.js";
 import adminOfferChangeRequests from "./routes/adminOfferChangeRequests.js";
+import adminUsersRouter from "./routes/adminUsers.js";
 
 const app = express();
-
-// ✅ Trust proxy ONCE (Railway)
 app.set("trust proxy", 1);
 
-/* -------------------- CORS (MUST match preflight + request) -------------------- */
-
-const normalizeOrigin = (s: string) => s.replace(/\/$/, ""); // remove trailing slash
+/* -------------------- CORS -------------------- */
+const normalizeOrigin = (s: string) => s.replace(/\/$/, "");
 
 const allowedOrigins = [
-  process.env.APP_URL,                // should be your FRONTEND origin (no path)
-  process.env.FRONTEND_URL,           // add this if you can
+  process.env.APP_URL,
+  process.env.FRONTEND_URL,
   "https://dayspringhouse.com",
   "https://www.dayspringhouse.com",
   "http://localhost:5173",
@@ -92,14 +89,9 @@ const allowedOrigins = [
 
 const isAllowed = (origin: string) => {
   const o = normalizeOrigin(origin);
-
-  // exact allowlist
   if (allowedOrigins.includes(o)) return true;
-
-  // comment these out if you don't want previews
   if (/^https:\/\/.+\.pages\.dev$/.test(o)) return true;
   if (/^https:\/\/.+\.netlify\.app$/.test(o)) return true;
-
   return false;
 };
 
@@ -112,18 +104,29 @@ const corsOptions: cors.CorsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-OTP-Token"],
 };
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
+/* ------------------------------ Webhook raw body (before json) ------------------------------ */
+// IMPORTANT: if you verify signatures, raw MUST be before express.json()
+app.post("/api/payments/webhook", express.raw({ type: "*/*" }), (req, res, next) => {
+  // hand off to your payments router (it must have a POST /webhook handler)
+  return (paymentsRouter as any)(req, res, next);
+});
+
 /* ------------------------------ Common middleware ------------------------------ */
 app.use(cookieParser());
-app.use(express.json());
 
-/* ------------------------------ Auth attach first ------------------------------ */
+// Request logger (helps diagnose 500s fast)
+app.use((req, _res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+  next();
+});
 
+app.use(express.json({ limit: "2mb" }));
 
 /* -------------------------------- Health -------------------------------- */
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
@@ -140,51 +143,55 @@ app.use("/api/admin/categories", adminCategoriesRouter);
 app.use("/api/admin/brands", adminBrandsRouter);
 app.use("/api/admin/attributes", adminAttributesRouter);
 app.use("/api/admin/products", adminProductsRouter);
-app.use("/api/supplier/payouts", supplierPayouts);
-app.use("/api/supplier/dashboard", supplierDashboardRouter);
 
 // ✅ mount supplier-offers in ONE canonical place
 app.use("/api/admin", adminSupplierOffersRouter);
 
 app.use("/api/admin/suppliers", adminSuppliers);
-app.use("/api/suppliers", suppliers);
-app.use("/api/supplier", suppliers);
-
 app.use("/api/admin/order-activities", adminActivitiesRouter);
 app.use("/api/admin/orders", adminOrdersRouter);
-app.use("/api/purchase-orders", purchaseOrdersRouter);
-app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
-
 app.use("/api/admin/reports", adminReports);
-app.use("/api/banks", banks);
-app.use("/api/settings", settings);
 app.use("/api/admin/orders", adminOrderComms);
 app.use("/api/admin/metrics", adminMetricsRouter);
 app.use("/api/admin/variants", adminVariantsRouter);
-app.use("/api", availabiltyRouter);
-
 app.use("/api/admin", adminCatalogMeta);
+app.use("/api/admin/catalog-requests", adminCatalogRequests);
+app.use("/api/admin/payouts", adminPayouts);
+app.use("/api/admin/refunds", adminRefundsRouter);
+app.use("/api/admin/offer-change-requests", adminOfferChangeRequests);
+app.use("/api/admin", adminUsersRouter);
+
+/* ---------------- Supplier routes ---------------- */
+app.use("/api/suppliers", suppliers);
+app.use("/api/supplier", suppliers);
+app.use("/api/supplier/payouts", supplierPayouts);
+app.use("/api/supplier/payouts", supplierPayoutsAction);
+app.use("/api/supplier/dashboard", supplierDashboardRouter);
+app.use("/api/supplier/products", supplierProducts);
+app.use("/api/supplier/orders", supplierOrders);
+app.use("/api/supplier/catalog-requests", supplierCatalogRequests);
+app.use("/api/supplier/refunds", supplierRefundsRouter);
+app.use("/api/supplier/catalog", supplierCatalogOffers);
 
 /* ---------------- Payments + public offers ---------------- */
 app.use("/api", publicProductOffers);
 app.use("/api/payments", paymentsRouter);
 app.use("/api/cart", cartRouter);
-app.use("/api/supplier/products", supplierProducts);
-app.use("/api/supplier/orders", supplierOrders);
 
+/* ------------------------------ Other routes ------------------------------ */
+app.use("/api/purchase-orders", purchaseOrdersRouter);
+
+// ⚠️ This looks suspicious: purchaseOrderDeliveryOtpRouter is mounted under /api/orders in your original.
+// If that router is really for purchase-orders, mount it correctly; otherwise keep as-is.
+// app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
+app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
+
+app.use("/api", availabiltyRouter);
+app.use("/api/banks", banks);
+app.use("/api/settings", settings);
 app.use("/api", deliveryOtpRouter);
-app.use("/api/supplier/payouts", supplierPayoutsAction);
-
-app.post("/api/payments/webhook", express.raw({ type: "*/*" }), paymentsRouter);
-
-/* ------------------------------ Public uploads ------------------------------ */
-const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.resolve(process.cwd(), "uploads");
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "30d", index: false }));
-app.use("/api/uploads", uploadsRouter);
 app.use("/api", supplierOffersList);
 
-/* ------------------------------ Domain routes ------------------------------ */
 app.use("/api/products", productsRouter);
 app.use("/api/orders", orderOtpRouter);
 app.use("/api/orders", ordersRouter);
@@ -193,24 +200,26 @@ app.use("/api/catalog", catalogRoutes);
 
 app.use("/api/integrations/dojah", dojahRouter);
 
-app.use("/api/supplier/catalog-requests", supplierCatalogRequests);
-app.use("/api/admin/catalog-requests", adminCatalogRequests);
-app.use("/api/admin/payouts", adminPayouts);
-
 app.use("/api/refunds", refundsRouter);
-app.use("/api/supplier/refunds", supplierRefundsRouter);
-app.use("/api/admin/refunds", adminRefundsRouter);
-
 app.use("/api/disputes", disputesRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/riders", ridersRouter);
 app.use("/api/privacy", privacyRouter);
-app.use("/api/supplier/catalog", supplierCatalogOffers);
-app.use("/api/admin/offer-change-requests", adminOfferChangeRequests);
 
-/* ------------------------------ Error handler (ONE) ------------------------------ */
+/* ------------------------------ Uploads ------------------------------ */
+const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.resolve(process.cwd(), "uploads");
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "30d", index: false }));
+app.use("/api/uploads", uploadsRouter);
+
+/* ------------------------------ 404 handler ------------------------------ */
+app.use((req, res) => {
+  res.status(404).json({ error: "Not Found", path: req.originalUrl });
+});
+
+/* ------------------------------ Error handler ------------------------------ */
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error(err);
+  console.error("UNHANDLED ERROR:", err);
   res.status(500).json({ error: "Internal server error", message: err?.message ?? String(err) });
 });
 

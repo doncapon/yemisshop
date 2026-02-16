@@ -2,7 +2,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../../api/client";
-import { useAuthStore } from "../../store/auth";
 
 type CatalogRequestType = "BRAND" | "CATEGORY" | "ATTRIBUTE" | "ATTRIBUTE_VALUE";
 type CatalogRequestStatus = "PENDING" | "APPROVED" | "REJECTED";
@@ -75,10 +74,10 @@ function unwrapArray<T>(data: any): T[] {
 }
 
 /** Try multiple URLs until one works (helps when your backend paths differ) */
-async function getFirstWorking<T>(urls: string[], headers?: any): Promise<T[]> {
+async function getFirstWorking<T>(urls: string[]): Promise<T[]> {
   for (const url of urls) {
     try {
-      const { data } = await api.get(url, { headers });
+      const { data } = await api.get(url, { withCredentials: true });
       return unwrapArray<T>(data);
     } catch {
       // try next
@@ -147,7 +146,11 @@ const RequestsTable = React.memo(function RequestsTable(props: {
               <td className="px-3 py-2">{r.type}</td>
               <td className="px-3 py-2">{r.supplier?.name ?? "—"}</td>
               <td className="px-3 py-2">
-                <span className={`inline-flex items-center px-2 py-1 rounded-full border text-xs ${badgeClass(r.status)}`}>
+                <span
+                  className={`inline-flex items-center px-2 py-1 rounded-full border text-xs ${badgeClass(
+                    r.status
+                  )}`}
+                >
                   {r.status}
                 </span>
               </td>
@@ -201,8 +204,6 @@ const RequestsTable = React.memo(function RequestsTable(props: {
 });
 
 export default function AdminCatalogRequestsSection() {
-  const token = useAuthStore((s) => s.token);
-  const hdr = token ? { Authorization: `Bearer ${token}` } : undefined;
   const qc = useQueryClient();
 
   const [editing, setEditing] = useState<CatalogRequestRow | null>(null);
@@ -217,7 +218,7 @@ export default function AdminCatalogRequestsSection() {
   const requestsQ = useQuery<CatalogRequestRow[]>({
     queryKey: ["admin", "catalog-requests"],
     queryFn: async () => {
-      const { data } = await api.get("/api/admin/catalog-requests", { headers: hdr });
+      const { data } = await api.get("/api/admin/catalog-requests", { withCredentials: true });
       return unwrapArray<CatalogRequestRow>(data);
     },
     staleTime: 30_000,
@@ -228,9 +229,10 @@ export default function AdminCatalogRequestsSection() {
   // ---- meta lists (for dropdowns) ----
   const categoriesQ = useQuery<AdminCategory[]>({
     queryKey: ["admin", "categories"],
-    enabled: !!token,
+    // ✅ cookie-auth: if not admin, server returns 401/403; we can still try.
+    enabled: true,
     queryFn: () =>
-      getFirstWorking<AdminCategory>(["/api/admin/categories", "/api/categories", "/api/catalog/categories"], hdr),
+      getFirstWorking<AdminCategory>(["/api/admin/categories", "/api/categories", "/api/catalog/categories"]),
     staleTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -239,8 +241,8 @@ export default function AdminCatalogRequestsSection() {
 
   const brandsQ = useQuery<AdminBrand[]>({
     queryKey: ["admin", "brands"],
-    enabled: !!token,
-    queryFn: () => getFirstWorking<AdminBrand>(["/api/admin/brands", "/api/brands", "/api/catalog/brands"], hdr),
+    enabled: true,
+    queryFn: () => getFirstWorking<AdminBrand>(["/api/admin/brands", "/api/brands", "/api/catalog/brands"]),
     staleTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -249,9 +251,9 @@ export default function AdminCatalogRequestsSection() {
 
   const attributesQ = useQuery<AdminAttribute[]>({
     queryKey: ["admin", "attributes"],
-    enabled: !!token,
+    enabled: true,
     queryFn: () =>
-      getFirstWorking<AdminAttribute>(["/api/admin/attributes", "/api/attributes", "/api/catalog/attributes"], hdr),
+      getFirstWorking<AdminAttribute>(["/api/admin/attributes", "/api/attributes", "/api/catalog/attributes"]),
     staleTime: 10 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -263,7 +265,7 @@ export default function AdminCatalogRequestsSection() {
       const { data } = await api.patch(
         `/api/admin/catalog-requests/${vars.id}`,
         { payload: vars.payload, adminNote: vars.adminNote ?? null },
-        { headers: hdr }
+        { withCredentials: true }
       );
       return data;
     },
@@ -274,7 +276,7 @@ export default function AdminCatalogRequestsSection() {
 
   const approveReq = useMutation({
     mutationFn: async (id: string) => {
-      const { data } = await api.post(`/api/admin/catalog-requests/${id}/approve`, {}, { headers: hdr });
+      const { data } = await api.post(`/api/admin/catalog-requests/${id}/approve`, {}, { withCredentials: true });
       return data;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "catalog-requests"] }),
@@ -285,7 +287,7 @@ export default function AdminCatalogRequestsSection() {
       const { data } = await api.post(
         `/api/admin/catalog-requests/${vars.id}/reject`,
         { adminNote: vars.adminNote ?? null },
-        { headers: hdr }
+        { withCredentials: true }
       );
       return data;
     },
@@ -298,10 +300,7 @@ export default function AdminCatalogRequestsSection() {
 
   const activeBrands = useMemo(() => (brandsQ.data ?? []).filter((b) => b.isActive !== false), [brandsQ.data]);
 
-  const activeAttributes = useMemo(
-    () => (attributesQ.data ?? []).filter((a) => a.isActive !== false),
-    [attributesQ.data]
-  );
+  const activeAttributes = useMemo(() => (attributesQ.data ?? []).filter((a) => a.isActive !== false), [attributesQ.data]);
 
   const busy = approveReq.isPending || rejectReq.isPending || patchReq.isPending;
 
@@ -413,7 +412,6 @@ export default function AdminCatalogRequestsSection() {
             </div>
           </div>
 
-          {/* ✅ Parent Category Dropdown (names only) */}
           <div>
             <FieldLabel>Parent category (optional)</FieldLabel>
             <select
@@ -453,7 +451,6 @@ export default function AdminCatalogRequestsSection() {
 
       return (
         <div className="space-y-4">
-          {/* optional "pick existing brand" */}
           <div>
             <FieldLabel>Pick existing brand (optional)</FieldLabel>
             <select
@@ -531,7 +528,6 @@ export default function AdminCatalogRequestsSection() {
 
       return (
         <div className="space-y-4">
-          {/* optional pick existing attribute */}
           <div>
             <FieldLabel>Pick existing attribute (optional)</FieldLabel>
             <select
@@ -621,7 +617,6 @@ export default function AdminCatalogRequestsSection() {
               setPayload("attributeId", id || null);
               const a = activeAttributes.find((x) => x.id === id);
               setPayload("attributeName", a?.name ?? null);
-              // reset value suggestion fields when switching attribute
               setPayload("valueId", null);
             }}
           >
@@ -745,7 +740,6 @@ export default function AdminCatalogRequestsSection() {
                 Fix fields, click <b>Save</b>, then click <b>Approve</b> on the row.
               </div>
 
-              {/* ✅ Supplier note/reason (read-only) */}
               <div className="rounded-xl border bg-zinc-50 p-3">
                 <div className="text-xs text-zinc-500 mb-2">
                   Supplier note / reason {editing.supplier?.name ? `— ${editing.supplier.name}` : ""}
