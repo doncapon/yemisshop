@@ -67,9 +67,9 @@ export default function Register() {
 
   const onChange =
     (key: keyof typeof form) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-      setForm((f) => ({ ...f, [key]: e.target.value }));
-    };
+      (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+        setForm((f) => ({ ...f, [key]: e.target.value }));
+      };
 
   const onDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     let v = e.target.value;
@@ -118,8 +118,19 @@ export default function Register() {
     if (Number.isNaN(+dob)) return "Please select a valid date of birth";
 
     const today = new Date();
-    const years = (today.getTime() - dob.getTime()) / (365.25 * 24 * 3600 * 1000);
-    if (years < 18) return "You must be at least 18 years old to register";
+
+    // helper: exact age in years (integer)
+    const getAgeYears = (birth: Date, now: Date) => {
+      let age = now.getFullYear() - birth.getFullYear();
+      const m = now.getMonth() - birth.getMonth();
+      if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) age--;
+      return age;
+    };
+
+    const age = getAgeYears(dob, today);
+
+    if (age < 16) return "You must be at least 18 years old to register";
+    if (age > 125) return "Please enter a valid date of birth (age must be 125 or younger)";
 
     return null;
   };
@@ -168,7 +179,7 @@ export default function Register() {
       try {
         localStorage.setItem("verifyEmail", payload.email);
         if (data?.tempToken) localStorage.setItem("verifyToken", data.tempToken);
-      } catch {}
+      } catch { }
 
       const q = new URLSearchParams({ e: payload.email }).toString();
       nav(`/verify?${q}`);
@@ -326,15 +337,14 @@ export default function Register() {
                   />
                   <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
                     <div
-                      className={`h-full transition-all ${
-                        pwdStrength <= 1
+                      className={`h-full transition-all ${pwdStrength <= 1
                           ? "w-1/4 bg-rose-400"
                           : pwdStrength === 2
-                          ? "w-2/4 bg-amber-400"
-                          : pwdStrength === 3
-                          ? "w-3/4 bg-lime-400"
-                          : "w-full bg-emerald-400"
-                      }`}
+                            ? "w-2/4 bg-amber-400"
+                            : pwdStrength === 3
+                              ? "w-3/4 bg-lime-400"
+                              : "w-full bg-emerald-400"
+                        }`}
                     />
                   </div>
                   <p className="mt-1 text-[11px] text-slate-500">
