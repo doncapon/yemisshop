@@ -5,7 +5,6 @@ import type { ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useAuthStore } from "../store/auth";
-import { performLogout } from "../utils/logout";
 import NotificationsBell from "../components/notifications/NotificationsBell";
 import DaySpringLogo from "../components/brand/DayspringLogo";
 import { useCartCount } from "../hooks/useCartCount";
@@ -172,11 +171,6 @@ export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
 
-  // ✅ bootstrap once
-  useEffect(() => {
-    useAuthStore.getState().bootstrap().catch(() => null);
-  }, []);
-
   const userRole = (user?.role ?? null) as Role | null;
   const userEmail = user?.email ?? null;
 
@@ -211,11 +205,32 @@ export default function Navbar() {
     return init || "U";
   }, [firstName, lastName]);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
     setMenuOpen(false);
     setMobileMoreOpen(false);
-    performLogout("/", nav);
-  }, [nav]);
+
+    const target = `${loc.pathname}${loc.search}`;
+
+    // persist returnTo (refresh-safe)
+    try {
+      sessionStorage.setItem("auth:returnTo", target);
+    } catch {}
+
+    // attempt backend logout (cookie clear)
+    try {
+      await api.post("/api/auth/logout", {}, AXIOS_COOKIE_CFG);
+    } catch {
+      // ignore: we still clear local state
+    }
+
+    // clear local state + cached queries
+    useAuthStore.setState({ user: null } as any);
+    qc.clear();
+
+    // hard redirect so everything remounts cleanly after cookie clear
+    const qp = encodeURIComponent(target);
+    window.location.assign(`/login?from=${qp}`);
+  }, [qc, loc.pathname, loc.search]);
 
   const brandHref = isRider ? "/supplier/orders" : "/";
 
@@ -240,16 +255,18 @@ export default function Navbar() {
     };
   }, [mobileMoreOpen]);
 
-  // ✅ verify cookie session with server so navbar never shows stale login
+  /**
+   * ✅ Session verification (SAFE)
+   */
   const verifySession = useCallback(async () => {
-    if (!useAuthStore.getState().user?.id) return;
+    const st = useAuthStore.getState();
+    if (!st.hydrated) return;
+    if (!st.user?.id) return;
 
     try {
       const { data } = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
       if (data?.id) {
         useAuthStore.setState({ user: data });
-      } else {
-        useAuthStore.setState({ user: null });
       }
     } catch (e: any) {
       if (isAuthError(e)) {
@@ -286,7 +303,8 @@ export default function Navbar() {
           if (Array.isArray((data as any)?.data)) return (data as any).data;
           if (Array.isArray(data)) return data;
           return [];
-        } catch {
+        } catch (e: any) {
+          if (isAuthError(e)) return [];
           const { data } = await api.get("/api/favorites/mine", AXIOS_COOKIE_CFG);
           if (Array.isArray((data as any)?.items)) return (data as any).items;
           if (Array.isArray((data as any)?.data)) return (data as any).data;
@@ -331,24 +349,16 @@ export default function Navbar() {
                     <IconNavLink to="/supplier" end icon={<Store size={18} />} label="Supplier dashboard" />
                   )}
 
-                  {/* ✅ SuperAdmin can open Supplier dashboard too */}
                   {isLoggedIn && isSuperAdmin && (
                     <IconNavLink to="/supplier" end icon={<CheckCircle2 size={18} />} label="Supplier dashboard" />
                   )}
 
-                  {/* ✅ Normal dashboard for shoppers */}
                   {isLoggedIn && !isSupplier && !isSuperAdmin && !isRider && (
                     <IconNavLink to="/dashboard" end icon={<User size={18} />} label="Dashboard" />
                   )}
 
-                  {/* ✅ NEW: Customer dashboard link for SuperAdmin (desktop) */}
                   {isLoggedIn && isSuperAdmin && (
-                    <IconNavLink
-                      to="/customer-dashboard"
-                      end
-                      icon={<User size={18} />}
-                      label="Customer dashboard"
-                    />
+                    <IconNavLink to="/customer-dashboard" end icon={<User size={18} />} label="Customer dashboard" />
                   )}
 
                   {showBuyerNav && (
@@ -401,20 +411,20 @@ export default function Navbar() {
                     <span className="hidden lg:inline">Supply</span>
                   </NavLink>
 
-                  <NavLink
-                    to="/login"
-                    className={({ isActive }) =>
-                      `inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition ${
-                        isActive
-                          ? "bg-zinc-900 text-white border-zinc-900"
-                          : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
-                      }`
-                    }
+                  {/* ✅ include ?from= so refresh on login page still returns */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = `${loc.pathname}${loc.search}`;
+                      const qp = encodeURIComponent(target);
+                      nav(`/login?from=${qp}`, { state: { from: target } });
+                    }}
+                    className="inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold border transition bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50"
                     title="Login"
                   >
                     <User size={16} />
                     <span className="hidden lg:inline">Login</span>
-                  </NavLink>
+                  </button>
 
                   <NavLink
                     to="/register"
@@ -505,7 +515,6 @@ export default function Navbar() {
                               Sessions
                             </button>
 
-                            {/* ✅ Customer dashboard shortcut for SuperAdmin */}
                             {isSuperAdmin && (
                               <button
                                 type="button"
@@ -688,7 +697,6 @@ export default function Navbar() {
                         />
                       )}
 
-                      {/* ✅ Customer dashboard for SuperAdmin (mobile) */}
                       {isLoggedIn && isSuperAdmin && (
                         <MobileMenuButton
                           icon={<User size={18} />}
@@ -748,8 +756,10 @@ export default function Navbar() {
                             icon={<User size={18} />}
                             label="Login"
                             onClick={() => {
+                              const target = `${loc.pathname}${loc.search}`;
+                              const qp = encodeURIComponent(target);
                               setMobileMoreOpen(false);
-                              nav("/login");
+                              nav(`/login?from=${qp}`, { state: { from: target } });
                             }}
                           />
                           <MobileMenuButton

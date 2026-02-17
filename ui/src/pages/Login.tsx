@@ -1,5 +1,5 @@
 // src/pages/Login.tsx
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client";
 import { useAuthStore, type Role } from "../store/auth";
@@ -8,6 +8,41 @@ import DaySpringLogo from "../components/brand/DayspringLogo";
 
 /* ---------------- Cookie-mode helpers ---------------- */
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+
+/* ---------------- Return-to helpers ---------------- */
+const RETURN_TO_KEY = "auth:returnTo";
+
+function safeReturnTo(v: unknown): string | null {
+  const s = typeof v === "string" ? v : "";
+  if (!s) return null;
+
+  // allow only internal paths
+  if (!s.startsWith("/")) return null;
+
+  // avoid loops back to auth pages
+  if (s.startsWith("/login") || s.startsWith("/register") || s.startsWith("/forgot-password")) return null;
+
+  return s;
+}
+
+/**
+ * Support both formats:
+ * - state.from: "/checkout?x=1" (your current App.tsx)
+ * - state.from: { pathname, search } (common react-router pattern)
+ */
+function readFromState(state: any): string | null {
+  if (!state) return null;
+
+  const direct = safeReturnTo(state.from);
+  if (direct) return direct;
+
+  const obj = state.from;
+  const p = typeof obj?.pathname === "string" ? obj.pathname : "";
+  const q = typeof obj?.search === "string" ? obj.search : "";
+  const combined = p ? `${p}${q}` : "";
+
+  return safeReturnTo(combined);
+}
 
 type MeResponse = {
   id: string;
@@ -42,13 +77,11 @@ type LoginBlocked = {
 function normalizeProfile(raw: any): MeResponse | null {
   if (!raw) return null;
 
-  const emailVerified =
-    raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1;
+  const emailVerified = raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1;
 
   let phoneVerified: boolean;
   if ((import.meta as any)?.env?.PHONE_VERIFY === "set") {
-    phoneVerified =
-      raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
+    phoneVerified = raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
   } else {
     phoneVerified = true;
   }
@@ -111,6 +144,9 @@ export default function Login() {
   const nav = useNavigate();
   const loc = useLocation();
 
+  // ✅ Freeze returnTo so it can't “disappear” during rerenders after setUser()
+  const returnToRef = useRef<string | null>(null);
+
   const fullyVerified = useMemo(() => {
     if (!blockedProfile) return false;
     return !!blockedProfile.emailVerified && !!blockedProfile.phoneVerified;
@@ -122,6 +158,32 @@ export default function Login() {
       bootstrap().catch(() => null);
     }
   }, [hydrated, bootstrap]);
+
+  /** ✅ Compute returnTo from: state -> query -> sessionStorage */
+  const computedReturnTo = useMemo(() => {
+    const stateFrom = readFromState(loc.state as any);
+    const qpFrom = safeReturnTo(new URLSearchParams(loc.search).get("from"));
+
+    let ssFrom: string | null = null;
+    try {
+      ssFrom = safeReturnTo(sessionStorage.getItem(RETURN_TO_KEY));
+    } catch {}
+
+    return stateFrom || qpFrom || ssFrom || null;
+  }, [loc.state, loc.search]);
+
+  // ✅ lock the first non-null returnTo (so it survives login rerenders)
+  if (returnToRef.current == null && computedReturnTo) {
+    returnToRef.current = computedReturnTo;
+  }
+
+  /** ✅ Persist returnTo so refresh on /login doesn't lose it */
+  useEffect(() => {
+    if (!returnToRef.current) return;
+    try {
+      sessionStorage.setItem(RETURN_TO_KEY, returnToRef.current);
+    } catch {}
+  }, [computedReturnTo]); // (computedReturnTo triggers this once when it becomes available)
 
   // ✅ If already logged in (cookie session restored), bounce away
   useEffect(() => {
@@ -136,7 +198,8 @@ export default function Login() {
       SUPPLIER_RIDER: "/supplier/orders",
     };
 
-    nav(defaultByRole[normRole(user.role)] || "/", { replace: true });
+    const target = returnToRef.current || defaultByRole[normRole(user.role)] || "/";
+    nav(target, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, user?.id]);
 
@@ -210,14 +273,24 @@ export default function Login() {
       setNeedsVerification(needsVer);
 
       // (Optional/backward-compatible) Keep verify session token for OTP endpoints.
-      // If you later move OTP verification to cookie-based verify session, you can remove this entire block.
       try {
         localStorage.setItem("verifyEmail", profile.email);
         if (vt) localStorage.setItem("verifyToken", vt);
         else localStorage.removeItem("verifyToken");
       } catch {}
 
-      const from = (loc.state as any)?.from?.pathname as string | undefined;
+      // ✅ If backend says verification is needed but still returned 200,
+      // stay on login and show the verification panel instead of redirecting away.
+      if (needsVer) {
+        setErr("Please verify your email and phone number to continue.");
+        setBlockedProfile(normalizeProfile(profile));
+        setVerifyToken(vt);
+        setVerifyPanelOpen(true);
+        setCooldown(1);
+        return;
+      }
+
+      const roleKey = normRole(profile.role);
 
       const defaultByRole: Record<Role, string> = {
         ADMIN: "/admin",
@@ -227,8 +300,18 @@ export default function Login() {
         SUPPLIER_RIDER: "/supplier/orders",
       };
 
-      const roleKey = normRole(profile.role);
-      nav(from || defaultByRole[roleKey] || "/", { replace: true });
+      // ✅ use frozen returnTo (never changes mid-login)
+      const target = returnToRef.current || defaultByRole[roleKey] || "/";
+
+      // ✅ clear stored returnTo AFTER we’ve decided target
+      try {
+        sessionStorage.removeItem(RETURN_TO_KEY);
+      } catch {}
+
+      // also clear the ref so future manual /login doesn’t reuse old value
+      returnToRef.current = null;
+
+      nav(target, { replace: true });
     } catch (e: any) {
       const status = e?.response?.status;
 
@@ -256,9 +339,7 @@ export default function Login() {
       }
 
       const msg =
-        e?.response?.data?.error ||
-        (status === 401 ? "Invalid email or password" : null) ||
-        "Login failed";
+        e?.response?.data?.error || (status === 401 ? "Invalid email or password" : null) || "Login failed";
 
       setErr(msg);
       clearAuth();
@@ -275,11 +356,7 @@ export default function Login() {
     setEmailMsg(null);
     setEmailBusy(true);
     try {
-      const r = await api.post(
-        "/api/auth/resend-verification",
-        { email: blockedProfile.email },
-        AXIOS_COOKIE_CFG
-      );
+      const r = await api.post("/api/auth/resend-verification", { email: blockedProfile.email }, AXIOS_COOKIE_CFG);
 
       setEmailMsg("Verification email sent. Please check your inbox (and spam).");
       const next = Number((r as any).data?.nextResendAfterSec ?? 60);
@@ -304,13 +381,10 @@ export default function Login() {
     setEmailMsg(null);
     setEmailBusy(true);
     try {
-      const r = await api.get(
-        "/api/auth/email-status",
-        {
-          ...AXIOS_COOKIE_CFG,
-          params: { email: blockedProfile.email },
-        }
-      );
+      const r = await api.get("/api/auth/email-status", {
+        ...AXIOS_COOKIE_CFG,
+        params: { email: blockedProfile.email },
+      });
       const emailVerifiedAt = (r as any).data?.emailVerifiedAt;
 
       setBlockedProfile((p) => (p ? { ...p, emailVerified: !!emailVerifiedAt } : p));
@@ -328,8 +402,6 @@ export default function Login() {
     setOtpMsg(null);
     setOtpBusy(true);
     try {
-      // ✅ Cookie-mode: always include credentials.
-      // Backward-compat: include Authorization if verifyToken exists (until backend uses a verify cookie).
       const cfg = {
         ...AXIOS_COOKIE_CFG,
         headers: verifyToken ? { Authorization: `Bearer ${verifyToken}` } : undefined,
@@ -367,8 +439,6 @@ export default function Login() {
     setOtpMsg(null);
     setOtpBusy(true);
     try {
-      // ✅ Cookie-mode: always include credentials.
-      // Backward-compat: include Authorization if verifyToken exists (until backend uses a verify cookie).
       const cfg = {
         ...AXIOS_COOKIE_CFG,
         headers: verifyToken ? { Authorization: `Bearer ${verifyToken}` } : undefined,
@@ -421,9 +491,7 @@ export default function Login() {
               <h1 className="mt-4 text-[22px] sm:text-2xl md:text-3xl font-semibold text-zinc-900 leading-tight">
                 Sign in
               </h1>
-              <p className="mt-1 text-sm text-zinc-600">
-                Access your cart, orders and personalised dashboard.
-              </p>
+              <p className="mt-1 text-sm text-zinc-600">Access your cart, orders and personalised dashboard.</p>
             </div>
 
             <form
@@ -456,9 +524,7 @@ export default function Login() {
                     >
                       <div>
                         <div className="text-sm font-semibold text-slate-900">Supplier verification required</div>
-                        <div className="text-xs text-slate-700 truncate max-w-[260px]">
-                          {blockedProfile.email}
-                        </div>
+                        <div className="text-xs text-slate-700 truncate max-w-[260px]">{blockedProfile.email}</div>
                       </div>
                       <div className="text-xs font-semibold text-slate-800 rounded-full border border-amber-200 bg-white px-2 py-1">
                         {verifyPanelOpen ? "Hide" : "Show"}
@@ -546,9 +612,7 @@ export default function Login() {
                         )}
 
                         {!showSupplierVerify && (
-                          <div className="text-xs text-slate-700">
-                            You can continue once email and phone are verified.
-                          </div>
+                          <div className="text-xs text-slate-700">You can continue once email and phone are verified.</div>
                         )}
                       </div>
                     )}
@@ -567,21 +631,15 @@ export default function Login() {
                     inputMode="email"
                     className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-10 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">
-                    ✉
-                  </span>
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">✉</span>
                 </div>
               </div>
 
               {/* Password */}
               <div className="space-y-1">
-                {/* Stack on mobile so it never overlaps */}
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                   <label className="block text-sm font-medium text-zinc-800 leading-tight">Password</label>
-                  <Link
-                    className="text-xs text-fuchsia-700 hover:underline leading-tight self-start sm:self-auto"
-                    to="/forgot-password"
-                  >
+                  <Link className="text-xs text-fuchsia-700 hover:underline leading-tight self-start sm:self-auto" to="/forgot-password">
                     Forgot password?
                   </Link>
                 </div>
@@ -595,9 +653,7 @@ export default function Login() {
                     autoComplete="current-password"
                     className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-10 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">
-                    🔒
-                  </span>
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">🔒</span>
                 </div>
               </div>
 
@@ -607,13 +663,7 @@ export default function Login() {
                 disabled={!hydrated || loading || cooldown > 0}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white px-4 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.995] focus:outline-none focus:ring-4 focus:ring-fuchsia-300/40 transition disabled:opacity-50"
               >
-                {!hydrated
-                  ? "Preparing…"
-                  : loading
-                    ? "Logging in…"
-                    : cooldown > 0
-                      ? `Try again in ${cooldown}s`
-                      : "Login"}
+                {!hydrated ? "Preparing…" : loading ? "Logging in…" : cooldown > 0 ? `Try again in ${cooldown}s` : "Login"}
               </button>
 
               {/* Footer links */}

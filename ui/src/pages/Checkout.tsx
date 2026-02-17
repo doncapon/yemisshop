@@ -571,10 +571,10 @@ function Card({
     tone === "primary"
       ? "border-primary-200"
       : tone === "emerald"
-      ? "border-emerald-200"
-      : tone === "amber"
-      ? "border-amber-200"
-      : "border-border";
+        ? "border-emerald-200"
+        : tone === "amber"
+          ? "border-amber-200"
+          : "border-border";
 
   return (
     <div
@@ -602,19 +602,19 @@ function CardHeader({
     tone === "primary"
       ? "from-primary-50 to-white"
       : tone === "emerald"
-      ? "from-emerald-50 to-white"
-      : tone === "amber"
-      ? "from-amber-50 to-white"
-      : "from-surface to-white";
+        ? "from-emerald-50 to-white"
+        : tone === "amber"
+          ? "from-amber-50 to-white"
+          : "from-surface to-white";
 
   const toneIcon =
     tone === "primary"
       ? "text-primary-600"
       : tone === "emerald"
-      ? "text-emerald-600"
-      : tone === "amber"
-      ? "text-amber-600"
-      : "text-ink-soft";
+        ? "text-emerald-600"
+        : tone === "amber"
+          ? "text-amber-600"
+          : "text-ink-soft";
 
   return (
     <div className={`flex items-center justify-between px-4 py-3 md:p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
@@ -634,9 +634,8 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${
-        props.className || ""
-      }`}
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""
+        }`}
     />
   );
 }
@@ -667,8 +666,9 @@ export default function Checkout() {
   const user = useAuthStore((s) => s.user);
   const bootstrap = useAuthStore((s) => s.bootstrap);
 
-    const meQ = useQuery({
+  const meQ = useQuery({
     queryKey: ["auth", "me"],
+    enabled: hydrated,               // ✅ wait for hydration
     queryFn: async () => {
       const res = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
       return (res.data?.data ?? res.data ?? null) as any;
@@ -678,16 +678,15 @@ export default function Checkout() {
     retry: false,
   });
 
-  // ✅ While checking cookie session, DO NOT redirect yet
   useEffect(() => {
+    if (!hydrated) return;            // ✅ don’t redirect before hydration
     if (meQ.isLoading) return;
 
     const status = (meQ.error as any)?.response?.status;
     if (!meQ.data && status === 401) {
       nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
-      return;
     }
-  }, [meQ.isLoading, meQ.data, meQ.error, nav]);
+  }, [hydrated, meQ.isLoading, meQ.data, meQ.error, nav]);
 
 
   // Verification state
@@ -1255,7 +1254,7 @@ export default function Checkout() {
             </button>
             <button
               className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
-              onClick={() => {}}
+              onClick={() => { }}
               disabled
               title="Complete the steps above"
               type="button"
@@ -1278,7 +1277,7 @@ export default function Checkout() {
       </SiteLayout>
     );
   }
-  
+
   return (
     <SiteLayout>
       <div className="bg-bg-soft bg-hero-radial">
@@ -1301,8 +1300,8 @@ export default function Checkout() {
                 {publicSettingsQ.isLoading
                   ? "Loading pricing settings…"
                   : publicSettingsQ.isError
-                  ? "Could not load margin settings — showing best-effort retail pricing."
-                  : `Margin applied: ${marginPercent}%`}
+                    ? "Could not load margin settings — showing best-effort retail pricing."
+                    : `Margin applied: ${marginPercent}%`}
               </p>
             )}
 
@@ -1572,8 +1571,8 @@ export default function Checkout() {
                   {createOrder.isPending
                     ? "Processing…"
                     : pricingQ.isLoading
-                    ? "Calculating prices…"
-                    : "Place order & Pay"}
+                      ? "Calculating prices…"
+                      : "Place order & Pay"}
                 </button>
 
                 {createOrder.isError && (

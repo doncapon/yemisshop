@@ -41,8 +41,18 @@ export default function ProtectedRoute({ children, roles, riderAllowPrefixes }: 
   if (!hydrated) return <>{children}</>;
 
   const isAuthed = !!user?.id;
+
   if (!isAuthed) {
-    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+    const from = `${location.pathname}${location.search}`;
+    const qp = encodeURIComponent(from);
+
+    // ✅ store in sessionStorage so refresh keeps it
+    try {
+      sessionStorage.setItem("auth:returnTo", from);
+    } catch {}
+
+    // ✅ send BOTH: state + querystring
+    return <Navigate to={`/login?from=${qp}`} replace state={{ from }} />;
   }
 
   const userRole = normRole(user?.role);

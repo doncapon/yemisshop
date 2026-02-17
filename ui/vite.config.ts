@@ -1,6 +1,3 @@
-
-
-// ui/vite.config.ts
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -12,11 +9,13 @@ export default defineConfig({
         target: "http://127.0.0.1:8080",
         changeOrigin: true,
         secure: false,
-
       },
-      "/uploads": "http://127.0.0.1:8080",
+      "/uploads": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true,
+        secure: false,
+      },
     },
-  },
-  base: "/"
+  }
+  ,
 });
-
