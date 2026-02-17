@@ -97,6 +97,42 @@ const ngn = new Intl.NumberFormat("en-NG", {
 
 /* ---------------- Helpers: numbers ---------------- */
 
+
+// Vite only exposes env vars prefixed with VITE_
+// So set VITE_API_URL in your .env / hosting provider.
+const API_ORIGIN =
+  String((import.meta as any)?.env?.VITE_API_URL || (import.meta as any)?.env?.API_URL || "")
+    .trim()
+    .replace(/\/+$/, "") || "https://api.dayspringhouse.com";
+
+
+function resolveImageUrl(input?: string | null): string | undefined {
+  const s = String(input ?? "").trim();
+  if (!s) return undefined;
+
+  // already absolute or special
+  if (/^(https?:\/\/|data:|blob:)/i.test(s)) return s;
+
+  // protocol-relative
+  if (s.startsWith("//")) return `${window.location.protocol}${s}`;
+
+  // absolute paths
+  if (s.startsWith("/")) {
+    // If it's uploads (or api/uploads), serve from API
+    if (s.startsWith("/uploads/") || s.startsWith("/api/uploads/")) return `${API_ORIGIN}${s}`;
+    // otherwise assume same origin (UI)
+    return `${window.location.origin}${s}`;
+  }
+
+  // relative uploads paths
+  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) return `${API_ORIGIN}/${s}`;
+
+  // fallback: same origin
+  return `${window.location.origin}/${s}`;
+}
+
+
+
 const asInt = (v: any, d = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : d;
@@ -206,7 +242,7 @@ function normalizeCartShape(parsed: any[]): CartItem[] {
       unitPrice: Number.isFinite(unitPrice) ? unitPrice : 0,
       totalPrice: Number.isFinite(totalPrice) ? totalPrice : 0,
       selectedOptions,
-      image: typeof it.image === "string" ? it.image : undefined,
+      image: typeof it.image === "string" ? (resolveImageUrl(it.image) ?? undefined) : undefined,
     } as CartItem;
   });
 }
@@ -621,6 +657,19 @@ export default function Cart() {
     });
   }, [cart]);
 
+  useEffect(() => {
+    setCart((prev) => {
+      const next = prev.map((it) => ({
+        ...it,
+        image: resolveImageUrl(it.image) ?? it.image,
+      }));
+      saveCart(next);
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+
   const publicSettingsQ = useQuery({
     queryKey: ["settings", "public:v1"],
     staleTime: 5 * 60_000,
@@ -1011,18 +1060,24 @@ export default function Cart() {
                     {/* ✅ MOBILE-NEAT: stack on mobile, row on sm+ */}
                     <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4">
                       {/* Thumbnail */}
-                      <div className="shrink-0 w-20 h-20 rounded-xl border overflow-hidden bg-white self-start">
-                        {it.image ? (
+                      <div className="shrink-0 w-20 h-20 rounded-xl border overflow-hidden bg-white self-start relative">
+                        {/* fallback behind image */}
+                        <div className="absolute inset-0 grid place-items-center text-[11px] text-ink-soft">No image</div>
+
+                        {resolveImageUrl(it.image) && (
                           <img
-                            src={it.image}
-                            alt={it.title}
-                            className="w-full h-full object-cover"
-                            onError={(e) => (((e.currentTarget as HTMLImageElement).style.display = "none"), void 0)}
+                            src={resolveImageUrl(it.image)}
+                            alt="" // ✅ never show alt text
+                            aria-hidden="true"
+                            className="relative w-full h-full object-cover"
+                            onError={(e) => {
+                              // ✅ hide broken image so fallback shows
+                              (e.currentTarget as HTMLImageElement).style.display = "none";
+                            }}
                           />
-                        ) : (
-                          <div className="w-full h-full grid place-items-center text-[11px] text-ink-soft">No image</div>
                         )}
                       </div>
+
 
                       {/* Text */}
                       <div className="flex-1 min-w-0">

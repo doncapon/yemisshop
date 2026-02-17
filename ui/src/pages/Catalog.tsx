@@ -352,6 +352,54 @@ function pickBestAndCheapestOffer(
   };
 }
 
+
+/** Images can be saved as full URLs, /uploads/..., /api/uploads/..., or relative paths.
+ * This turns whatever we have into an absolute URL that the browser can fetch.
+ */
+function getApiOrigin(): string {
+  // If your axios client has a baseURL like "https://dayspring-api.up.railway.app"
+  // or "/api", this resolves to a usable origin.
+  const base = (api as any)?.defaults?.baseURL || "";
+  try {
+    return new URL(base, window.location.origin).origin;
+  } catch {
+    return window.location.origin;
+  }
+}
+
+const API_ORIGIN = getApiOrigin();
+
+function resolveImageUrl(input?: string | null): string | undefined {
+  const s = String(input ?? "").trim();
+  if (!s) return undefined;
+
+  // already good
+  if (/^(https?:\/\/|data:|blob:)/i.test(s)) return s;
+
+  // protocol-relative
+  if (s.startsWith("//")) return `${window.location.protocol}${s}`;
+
+  // absolute path
+  if (s.startsWith("/")) {
+    // If it looks like an upload path, prefer serving from API origin
+    // (useful when UI != API host).
+    if (s.startsWith("/uploads/") || s.startsWith("/api/uploads/")) {
+      return `${API_ORIGIN}${s}`;
+    }
+    // otherwise, treat as same-origin asset
+    return `${window.location.origin}${s}`;
+  }
+
+  // relative path like "uploads/x.jpg" or "api/uploads/x.jpg"
+  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) {
+    return `${API_ORIGIN}/${s}`;
+  }
+
+  // fallback: assume same origin
+  return `${window.location.origin}/${s}`;
+}
+
+
 /**
  * Main: display retail price
  * ✅ Now follows orders.ts logic: choose "best" within +2% band (fallback to cheapest)
@@ -1434,15 +1482,19 @@ export default function Catalog() {
 
                     const brand = getBrandName(p);
 
-                    const primaryImg =
+                    const primaryImgRaw =
                       p.imagesJson?.[0] ||
                       p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
                       undefined;
 
-                    const hoverImg =
+                    const hoverImgRaw =
                       p.imagesJson?.[1] ||
                       p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[1])?.imagesJson?.[1] ||
                       undefined;
+
+                    const primaryImg = resolveImageUrl(primaryImgRaw);
+                    const hoverImg = resolveImageUrl(hoverImgRaw);
+
 
                     const hasDifferentHover = !!hoverImg && hoverImg !== primaryImg;
 
@@ -1482,25 +1534,39 @@ export default function Catalog() {
                       >
                         <Link to={`/product/${p.id}`} className="block" onClick={() => bumpClick(p.id)}>
                           <div className="relative w-full h-28 sm:h-36 md:h-48 overflow-hidden">
-                            {primaryImg ? (
+                            {/* Always have a fallback behind the images */}
+                            <div className="absolute inset-0 grid place-items-center text-zinc-400 text-xs">
+                              No image
+                            </div>
+
+                            {primaryImg && (
                               <>
                                 <img
                                   src={primaryImg}
-                                  alt={p.title}
+                                  alt=""                         // ✅ prevents “alt name” text showing
+                                  aria-hidden="true"
+                                  onError={(e) => {
+                                    // ✅ hide broken image so fallback shows
+                                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                                  }}
                                   className={`w-full h-full object-cover transition-opacity duration-300 ${hasDifferentHover ? 'opacity-100 group-hover:opacity-0' : 'opacity-100'
                                     }`}
                                 />
-                                {hasDifferentHover && (
+
+                                {hasDifferentHover && hoverImg && (
                                   <img
                                     src={hoverImg}
-                                    alt={`${p.title} alt`}
+                                    alt=""                       // ✅ prevents “alt name” text showing
+                                    aria-hidden="true"
+                                    onError={(e) => {
+                                      (e.currentTarget as HTMLImageElement).style.display = 'none';
+                                    }}
                                     className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300 opacity-0 group-hover:opacity-100"
                                   />
                                 )}
                               </>
-                            ) : (
-                              <div className="w-full h-full grid place-items-center text-zinc-400">No image</div>
                             )}
+
 
                             <span
                               className={`absolute left-2 top-2 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${badge.cls}`}
@@ -1782,8 +1848,8 @@ export default function Catalog() {
                                   type="button"
                                   onClick={() => goTo(n)}
                                   className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
-                                      ? "bg-zinc-900 text-white border border-zinc-900"
-                                      : "bg-white hover:bg-zinc-50 silver-border hover:silver-hover"
+                                    ? "bg-zinc-900 text-white border border-zinc-900"
+                                    : "bg-white hover:bg-zinc-50 silver-border hover:silver-hover"
                                     }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
@@ -1918,10 +1984,16 @@ export default function Catalog() {
                           >
                             {p.imagesJson?.[0] ? (
                               <img
-                                src={p.imagesJson[0]}
-                                alt={p.title}
+                                src={resolveImageUrl(p.imagesJson?.[0])}
+                                alt=""
+                                aria-hidden="true"
+                                onError={(e) => {
+                                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                                }}
                                 className="w-16 h-16 object-cover rounded-xl silver-border"
                               />
+
+
                             ) : (
                               <div className="w-16 h-16 rounded-xl silver-border grid place-items-center text-base text-gray-500">
                                 —

@@ -88,23 +88,23 @@ type ProductWire = {
   variants?: VariantWire[];
   offers?: OfferWire[];
   attributes?:
-    | {
-        options?: Array<{
-          attributeId: string;
-          valueId: string;
-          attribute?: { id: string; name: string };
-          value?: { id: string; name: string };
-          attributeName?: string;
-          valueName?: string;
-        }>;
-        texts?: Array<{
-          attributeId: string;
-          value: string;
-          attribute?: { id: string; name: string };
-          attributeName?: string;
-        }>;
-      }
-    | null;
+  | {
+    options?: Array<{
+      attributeId: string;
+      valueId: string;
+      attribute?: { id: string; name: string };
+      value?: { id: string; name: string };
+      attributeName?: string;
+      valueName?: string;
+    }>;
+    texts?: Array<{
+      attributeId: string;
+      value: string;
+      attribute?: { id: string; name: string };
+      attributeName?: string;
+    }>;
+  }
+  | null;
 };
 
 type ValueState = {
@@ -187,26 +187,26 @@ function normalizeVariants(p: any): VariantWire[] {
     imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
     options: Array.isArray(v.options)
       ? v.options
-          .map((o: any) => ({
-            attributeId: String(o.attributeId ?? o.attribute?.id ?? ""),
-            valueId: String(o.valueId ?? o.value?.id ?? ""),
-            unitPrice: readOptionUnit(o),
-            attribute: o.attribute
-              ? {
-                  id: String(o.attribute.id),
-                  name: String(o.attribute.name),
-                  type: o.attribute.type,
-                }
-              : undefined,
-            value: o.value
-              ? {
-                  id: String(o.value.id),
-                  name: String(o.value.name),
-                  code: o.value.code ?? null,
-                }
-              : undefined,
-          }))
-          .filter((o: any) => o.attributeId && o.valueId)
+        .map((o: any) => ({
+          attributeId: String(o.attributeId ?? o.attribute?.id ?? ""),
+          valueId: String(o.valueId ?? o.value?.id ?? ""),
+          unitPrice: readOptionUnit(o),
+          attribute: o.attribute
+            ? {
+              id: String(o.attribute.id),
+              name: String(o.attribute.name),
+              type: o.attribute.type,
+            }
+            : undefined,
+          value: o.value
+            ? {
+              id: String(o.value.id),
+              name: String(o.value.name),
+              code: o.value.code ?? null,
+            }
+            : undefined,
+        }))
+        .filter((o: any) => o.attributeId && o.valueId)
       : [],
   }));
 }
@@ -432,8 +432,8 @@ function upsertCartLineLS(input: {
     idx >= 0
       ? idx
       : cart.findIndex(
-          (x: any) => String(x?.productId ?? "") === pid && (x?.variantId ?? null) === vid
-        );
+        (x: any) => String(x?.productId ?? "") === pid && (x?.variantId ?? null) === vid
+      );
 
   if (safeIdx >= 0) {
     const prevQty = Math.max(0, Number(cart[safeIdx]?.qty) || 0);
@@ -654,8 +654,8 @@ export default function ProductDetail() {
       const v = Number.isFinite(Number(s?.marginPercent))
         ? Number(s.marginPercent)
         : Number.isFinite(Number(s?.pricingMarkupPercent))
-        ? Number(s.pricingMarkupPercent)
-        : NaN;
+          ? Number(s.pricingMarkupPercent)
+          : NaN;
 
       return Math.max(0, Number.isFinite(v) ? v : 0);
     },
@@ -1280,8 +1280,8 @@ export default function ProductDetail() {
         bestVariant != null
           ? "VARIANT_OFFER"
           : bestBase != null
-          ? "BASE_OFFER_FALLBACK"
-          : "RETAIL_FALLBACK",
+            ? "BASE_OFFER_FALLBACK"
+            : "RETAIL_FALLBACK",
     };
   }, [
     product?.offers,
@@ -1391,8 +1391,8 @@ export default function ProductDetail() {
         sellableVariants.length > 0
           ? "This combination is not available (no supplier offer). Try a different set of options."
           : canBuyBase
-          ? "Only base is available right now."
-          : "No available offers for this product right now.",
+            ? "Only base is available right now."
+            : "No available offers for this product right now.",
       mode: "VARIANT" as const,
       variantId: null as string | null,
     };
@@ -1875,6 +1875,11 @@ export default function ProductDetail() {
     );
   }
 
+  const isCoarsePointer = React.useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return !!window.matchMedia?.("(pointer: coarse)").matches;
+  }, []);
+
   return (
     <SiteLayout>
       <div className="bg-gradient-to-b from-zinc-50 to-white">
@@ -1883,7 +1888,7 @@ export default function ProductDetail() {
             <button
               type="button"
               onClick={() => navigate(-1)}
-              className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+              className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
             >
               ← Back
             </button>
@@ -1900,22 +1905,24 @@ export default function ProductDetail() {
           </div>
         </div>
 
-        <div className="max-w-6xl mx-auto p-4 md:p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-[360px]:gap-5">
           <div className="space-y-3 md:space-y-5">
-            <div className="relative mx-auto" style={{ maxWidth: "92%" }}>
+            <div className="relative mx-auto w-full sm:max-w-[92%]">
               <div
                 className={`rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadow}`}
                 style={{ aspectRatio: "1 / 1" }}
-                onMouseEnter={() => {
-                  setShowZoom(true);
-                  setPaused(true);
-                  updateZoomAnchor();
-                }}
-                onMouseLeave={() => {
-                  setShowZoom(false);
-                  setPaused(false);
-                }}
-                onMouseMove={onMouseMove}
+                onMouseEnter={
+                  isCoarsePointer
+                    ? undefined
+                    : () => {
+                      setShowZoom(true);
+                      setPaused(true);
+                      updateZoomAnchor();
+                    }
+                }
+                onMouseLeave={isCoarsePointer ? undefined : () => { setShowZoom(false); setPaused(false); }}
+                onMouseMove={isCoarsePointer ? undefined : onMouseMove}
+
               >
                 <img
                   ref={mainImgRef}
@@ -1928,10 +1935,11 @@ export default function ProductDetail() {
               </div>
 
               <span
-                className={`absolute left-3 top-3 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
+                className={`absolute left-3 top-3 pointer-events-none inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
               >
                 {availabilityBadge.text}
               </span>
+
 
               {showZoom &&
                 hasBox &&
@@ -1984,9 +1992,8 @@ export default function ProductDetail() {
                       <span
                         key={i}
                         onClick={() => setMainIndex(i)}
-                        className={`h-1.5 w-1.5 rounded-full cursor-pointer ${
-                          i === mainIndex ? "bg-fuchsia-600" : "bg-white/80 border border-zinc-200/70"
-                        }`}
+                        className={`h-1.5 w-1.5 rounded-full cursor-pointer ${i === mainIndex ? "bg-fuchsia-600" : "bg-white/80 border border-zinc-200/70"
+                          }`}
                       />
                     ))}
                   </div>
@@ -2018,9 +2025,8 @@ export default function ProductDetail() {
                       src={u}
                       alt={`thumb-${absoluteIndex}`}
                       onClick={() => setMainIndex(absoluteIndex)}
-                      className={`w-24 h-20 rounded-xl object-cover select-none cursor-pointer ${silverBorder} ${silverShadowSm} ${
-                        isActive ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "hover:opacity-90 bg-white"
-                      }`}
+                      className={`w-20 h-16 sm:w-24 sm:h-20 max-[360px]:w-[68px] max-[360px]:h-[54px] rounded-xl object-cover select-none cursor-pointer ${silverBorder} ${silverShadowSm} ${isActive ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "hover:opacity-90 bg-white"
+                        }`}
                       onError={(e) => (e.currentTarget.style.opacity = "0.25")}
                     />
                   );
@@ -2030,7 +2036,7 @@ export default function ProductDetail() {
               <button
                 type="button"
                 onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                className={`rounded-full px-2.5 py-1.5 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                className={`rounded-full px-2 py-1 text-sm max-[360px]:px-1.5 max-[360px]:py-0.5 bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                 aria-label="Next thumbnails"
               >
                 ›
@@ -2049,27 +2055,34 @@ export default function ProductDetail() {
               {product.brand?.name && <div className="text-sm text-zinc-600 mt-1">{product.brand.name}</div>}
 
               <div className={`mt-4 rounded-2xl p-4 ${softInsetCls}`}>
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
-                    <div className="text-sm text-zinc-500">Current price (retail)</div>
-                    <div className="text-3xl font-bold">{priceLabel}</div>
+                    <div className="text-[12px] sm:text-sm text-zinc-500">Current price (retail)</div>
+
+                    <div className="font-bold tracking-tight leading-none text-[28px] sm:text-3xl max-[360px]:text-[24px] break-words">
+                      {priceLabel}
+                    </div>
                   </div>
 
                   <span
-                    className={`shrink-0 inline-flex items-center rounded-full px-3 py-1 text-xs font-medium border ${availabilityBadge.cls} ${silverShadowSm}`}
+                    className={`self-start sm:self-auto inline-flex items-center rounded-full border
+      px-2.5 py-1 text-[11px] sm:text-xs font-medium
+      max-[360px]:px-2 max-[360px]:py-0.5 max-[360px]:text-[10px]
+      ${availabilityBadge.cls} ${silverShadowSm}`}
                   >
                     {availabilityBadge.text}
                   </span>
                 </div>
 
+
                 <div className="text-[11px] text-zinc-600 mt-1">
                   {computed.source === "BASE_OFFER"
                     ? "Using best base offer."
                     : computed.source === "VARIANT_OFFER"
-                    ? "Using best variant offer for your selection."
-                    : computed.source === "CHEAPEST_OFFER"
-                    ? "Using best + cheapest available offer."
-                    : "Using stored retail fallback."}
+                      ? "Using best variant offer for your selection."
+                      : computed.source === "CHEAPEST_OFFER"
+                        ? "Using best + cheapest available offer."
+                        : "Using stored retail fallback."}
                 </div>
               </div>
 
@@ -2078,16 +2091,20 @@ export default function ProductDetail() {
                   <div className="flex items-center justify-between gap-2">
                     <div className="text-xs font-medium text-zinc-700">Choose options</div>
 
-                    <div className="flex items-center gap-2">
+                    <div
+                      className="flex items-center gap-2 overflow-x-auto whitespace-nowrap pr-1
+  [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                    >
                       <button
                         type="button"
                         onClick={() => {
                           setSelected({ ...baseDefaults });
                         }}
-                        className={`px-2 py-1 text-[10px] rounded-lg bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                        className={`touch-manipulation px-2 py-1 text-[10px] rounded-lg bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                         title="Select the base product default options"
                       >
-                        Choose base option
+                        <span className="sm:hidden">Base</span>
+                        <span className="hidden sm:inline">Choose base option</span>
                       </button>
 
                       <button
@@ -2099,19 +2116,21 @@ export default function ProductDetail() {
                           }
                           setSelected({ ...baseDefaults });
                         }}
-                        className={`px-2 py-1 text-[10px] rounded-lg bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                        className={`touch-manipulation px-2 py-1 text-[10px] rounded-lg bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                         title="Choose best+cheapest sellable offer (base or variant)"
                       >
-                        Choose cheapest
+                        <span className="sm:hidden">Cheapest</span>
+                        <span className="hidden sm:inline">Choose cheapest</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={() => setSelected(buildEmptySelection(axes))}
-                        className={`px-2 py-1 text-[10px] rounded-lg bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                        className={`touch-manipulation px-2 py-1 text-[10px] rounded-lg bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                         title="Clear selections (No variant)"
                       >
-                        Reset all variants(None)
+                        <span className="sm:hidden">Reset</span>
+                        <span className="hidden sm:inline">Reset all variants(None)</span>
                       </button>
                     </div>
                   </div>
@@ -2152,26 +2171,26 @@ export default function ProductDetail() {
                 </div>
               )}
 
-              <div className="pt-4 flex items-center gap-3 flex-wrap">
+              <div className="pt-4 flex flex-col sm:flex-row sm:items-center gap-3">
                 <button
                   type="button"
                   onClick={handleAddToCart}
                   disabled={purchaseMeta.disableAddToCart}
-                  className={`inline-flex items-center gap-2 rounded-2xl px-5 py-3 active:scale-[0.99] transition focus:outline-none focus:ring-4 ${silverBorder} ${silverShadow}
-                ${
-                  purchaseMeta.disableAddToCart
-                    ? "bg-zinc-200 text-zinc-600 cursor-not-allowed focus:ring-zinc-200"
-                    : "bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white hover:shadow-md focus:ring-fuchsia-300/40"
-                }`}
+                  className={`touch-manipulation w-full sm:w-auto justify-center inline-flex items-center gap-2 rounded-2xl px-5 py-3 active:scale-[0.99] transition focus:outline-none focus:ring-4 ${silverBorder} ${silverShadow}
+                ${purchaseMeta.disableAddToCart
+                      ? "bg-zinc-200 text-zinc-600 cursor-not-allowed focus:ring-zinc-200"
+                      : "bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white hover:shadow-md focus:ring-fuchsia-300/40"
+                    }`}
                 >
                   <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
-                  Add to cart — {NGN.format(toNum(computed.final, 0))}
+                  <span className="sm:hidden">Add • {NGN.format(toNum(computed.final, 0))}</span>
+                  <span className="hidden sm:inline">Add to cart — {NGN.format(toNum(computed.final, 0))}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => navigate("/cart")}
-                  className={`inline-flex items-center gap-2 rounded-2xl px-5 py-3 bg-white text-zinc-900 hover:bg-zinc-50 active:scale-[0.99] transition focus:outline-none focus:ring-4 focus:ring-zinc-300/40 ${silverBorder} ${silverShadow}`}
+                  className={`touch-manipulation w-full sm:w-auto justify-center inline-flex items-center gap-2 rounded-2xl px-5 py-3 bg-white text-zinc-900 hover:bg-zinc-50 active:scale-[0.99] transition focus:outline-none focus:ring-4 focus:ring-zinc-300/40 ${silverBorder} ${silverShadow}`}
                 >
                   Go to Cart
                 </button>
@@ -2240,8 +2259,8 @@ export default function ProductDetail() {
                       supplierMin != null && supplierMin > 0
                         ? applyMargin(supplierMin, marginPercent)
                         : sp.retailPrice != null
-                        ? sp.retailPrice
-                        : null;
+                          ? sp.retailPrice
+                          : null;
 
                     const price = computedRetail != null ? NGN.format(computedRetail) : "—";
 
@@ -2261,11 +2280,10 @@ export default function ProductDetail() {
                             onError={(e) => (e.currentTarget.style.opacity = "0.25")}
                           />
                           <span
-                            className={`absolute left-2 top-2 inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium border ${silverShadowSm} ${
-                              sp.inStock !== false
-                                ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
-                                : "bg-rose-600/10 text-rose-700 border-rose-600/20"
-                            }`}
+                            className={`absolute left-2 top-2 inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium border ${silverShadowSm} ${sp.inStock !== false
+                              ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
+                              : "bg-rose-600/10 text-rose-700 border-rose-600/20"
+                              }`}
                           >
                             {sp.inStock !== false ? "In stock" : "Out of stock"}
                           </span>
