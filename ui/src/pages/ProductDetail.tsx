@@ -1764,6 +1764,11 @@ export default function ProductDetail() {
       })),
   });
 
+    const isCoarsePointer = React.useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return !!window.matchMedia?.("(pointer: coarse)").matches;
+  }, []);
+
   /* ---------------- Render ---------------- */
   if (productQ.isLoading) {
     return (
@@ -1874,11 +1879,6 @@ export default function ProductDetail() {
       </Select>
     );
   }
-
-  const isCoarsePointer = React.useMemo(() => {
-    if (typeof window === "undefined") return false;
-    return !!window.matchMedia?.("(pointer: coarse)").matches;
-  }, []);
 
   return (
     <SiteLayout>
