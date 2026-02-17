@@ -1,20 +1,20 @@
-// src/api/client.ts
 import axios from "axios";
 
-const V = (import.meta as any)?.env || {};
-// If VITE_API_URL is "", axios uses same-origin and you can call "/api/..."
-const API_BASE = String(V.VITE_API_URL ?? "").trim();
+const normalizeBase = (s: string) => s.trim().replace(/\/+$/, "");
+
+const isDev = import.meta.env.DEV;
+
+// Only use VITE_API_URL in production builds
+const PROD_BASE = normalizeBase(String(import.meta.env.VITE_API_URL ?? ""));
+
+// ✅ DEV: same-origin so Vite proxy + cookies work
+// ✅ PROD: absolute URL from env
+const baseURL = isDev ? "" : PROD_BASE;
 
 const api = axios.create({
-  baseURL: API_BASE || undefined,
-  withCredentials: true, // ✅ send HttpOnly cookie to /api
+  baseURL: baseURL || undefined,
+  withCredentials: true,
   timeout: 20000,
 });
-
-// Cookie-mode: token is NOT stored in browser storage.
-// Keep this export so existing imports don't break.
-export function setAccessToken(_token: string | null) {
-  // no-op in cookie mode
-}
 
 export default api;

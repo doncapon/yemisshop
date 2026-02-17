@@ -667,18 +667,28 @@ export default function Checkout() {
   const user = useAuthStore((s) => s.user);
   const bootstrap = useAuthStore((s) => s.bootstrap);
 
-  useEffect(() => {
-    if (!hydrated) {
-      bootstrap().catch(() => null);
-    }
-  }, [hydrated, bootstrap]);
+    const meQ = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: async () => {
+      const res = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
+      return (res.data?.data ?? res.data ?? null) as any;
+    },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
 
+  // ✅ While checking cookie session, DO NOT redirect yet
   useEffect(() => {
-    if (!hydrated) return;
-    if (!user?.id) {
+    if (meQ.isLoading) return;
+
+    const status = (meQ.error as any)?.response?.status;
+    if (!meQ.data && status === 401) {
       nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
+      return;
     }
-  }, [hydrated, user?.id, nav]);
+  }, [meQ.isLoading, meQ.data, meQ.error, nav]);
+
 
   // Verification state
   const [checkingVerification, setCheckingVerification] = useState(true);
@@ -1259,7 +1269,16 @@ export default function Checkout() {
   };
 
   const showMarginInfo = publicSettingsQ.isLoading || publicSettingsQ.isError || marginPercent > 0;
-
+  if (meQ.isLoading) {
+    return (
+      <SiteLayout>
+        <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
+          <div className="text-sm text-ink-soft">Checking session…</div>
+        </div>
+      </SiteLayout>
+    );
+  }
+  
   return (
     <SiteLayout>
       <div className="bg-bg-soft bg-hero-radial">
