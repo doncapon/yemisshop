@@ -120,6 +120,18 @@ function getSiteOrigin(req: express.Request) {
   return `${proto}://${host}`.replace(/\/$/, "");
 }
 
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        "img-src": ["'self'", "data:", "blob:", "https:"],
+      },
+    },
+  })
+);
+
 function resolveAbsoluteImage(req: express.Request, raw?: string | null): string {
   const s = String(raw ?? "").trim();
   if (!s) return "";
@@ -147,8 +159,8 @@ function buildProductHtml(params: {
 
   const price =
     typeof params.price === "number" &&
-    Number.isFinite(params.price) &&
-    params.price > 0
+      Number.isFinite(params.price) &&
+      params.price > 0
       ? String(params.price)
       : "";
 
@@ -166,14 +178,14 @@ function buildProductHtml(params: {
     ...(brand ? { brand: { "@type": "Brand", name: params.brandName } } : {}),
     ...(price
       ? {
-          offers: {
-            "@type": "Offer",
-            priceCurrency: "NGN",
-            price,
-            availability,
-            url: params.canonical,
-          },
-        }
+        offers: {
+          "@type": "Offer",
+          priceCurrency: "NGN",
+          price,
+          availability,
+          url: params.canonical,
+        },
+      }
       : {}),
   };
 
@@ -597,6 +609,8 @@ app.get("/product/:id", async (req, res, next) => {
   }
 });
 
+
+
 if (UI_DIST_DIR) {
   console.log("Serving SPA from:", UI_DIST_DIR);
 
@@ -635,10 +649,25 @@ app.use((req, res) => {
 });
 
 /* ------------------------------ Error handler ------------------------------ */
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("UNHANDLED ERROR:", err);
-  res.status(500).json({ error: "Internal server error", message: err?.message ?? String(err) });
+
+import { ZodError } from "zod";
+
+app.use((err: any, _req: any, res: any, _next: any) => {
+  console.error(err);
+
+  if (err instanceof ZodError) {
+    return res.status(400).json({
+      error: "Invalid request",
+      detail: err.issues.map((i) => i.message).join(", "),
+    });
+  }
+
+  return res.status(500).json({
+    error: "Something went wrong",
+    detail: "Please try again later.",
+  });
 });
+
 
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST || "0.0.0.0";

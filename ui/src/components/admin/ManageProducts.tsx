@@ -5,7 +5,6 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { useDebounced } from "../../utils/useDebounced";
 import { useSearchParams } from "react-router-dom";
 import api from "../../api/client";
-import { getHttpErrorMessage } from "../../utils/httpError";
 import SuppliersOfferManager from "./SuppliersOfferManager";
 
 /* ============================
@@ -255,6 +254,28 @@ function toNumberLoose(v: any): number | null {
   }
   return null;
 }
+
+
+function friendlyErrorMessage(e: any, fallback: string) {
+  const status = e?.response?.status;
+  const detail =
+    e?.response?.data?.detail ||
+    e?.response?.data?.error ||
+    e?.response?.data?.message ||
+    e?.message;
+
+  // Never expose raw 5xx to end users
+  if (status >= 500) {
+    return "Something went wrong while saving. Please try again in a moment.";
+  }
+
+  // Common nice cases
+  if (status === 413) return "Upload too large. Please use smaller images.";
+  if (status === 401 || status === 403) return "You’re not authorized to do that. Please log in again.";
+
+  return detail || fallback;
+}
+
 
 /** pick the cheapest positive number from candidates */
 function minPositive(...nums: Array<number | null | undefined>) {
@@ -828,7 +849,7 @@ export function ManageProducts({
     onError: (e) =>
       openModal({
         title: "Products",
-        message: getHttpErrorMessage(e, "Status update failed"),
+        message: friendlyErrorMessage(e, "Status update failed"),
       }),
   });
 
@@ -926,7 +947,7 @@ export function ManageProducts({
     onError: (e) =>
       openModal({
         title: "Products",
-        message: getHttpErrorMessage(e, "Create failed"),
+        message: friendlyErrorMessage(e, "Create failed"),
       }),
   });
 
@@ -935,7 +956,7 @@ export function ManageProducts({
     onError: (e) =>
       openModal({
         title: "Products",
-        message: getHttpErrorMessage(e, "Update failed"),
+        message: friendlyErrorMessage(e, "Update failed"),
       }),
   });
 
@@ -950,7 +971,7 @@ export function ManageProducts({
     onError: (e) =>
       openModal({
         title: "Products",
-        message: getHttpErrorMessage(e, "Restore failed"),
+        message: friendlyErrorMessage(e, "Restore failed"),
       }),
   });
 
@@ -1373,7 +1394,7 @@ export function ManageProducts({
         imageUrls: (extractImageUrls(refreshed) || []).join("\n"),
       }));
     } catch (e: any) {
-      openModal({ title: "Refresh product", message: getHttpErrorMessage(e, "Failed to refresh product") });
+      openModal({ title: "Refresh product", message: friendlyErrorMessage(e, "Failed to refresh product") });
     } finally {
       setIsRefreshingProduct(false);
     }
@@ -1441,7 +1462,7 @@ export function ManageProducts({
 
       setUploadInfo(`Uploaded ${uploaded.length} image(s).`);
     } catch (e: any) {
-      openModal({ title: "Images", message: getHttpErrorMessage(e, "Image upload failed") });
+      openModal({ title: "Images", message: friendlyErrorMessage(e, "Image upload failed") });
       setUploadInfo("");
     } finally {
       setIsUploadingImages(false);
@@ -1843,13 +1864,27 @@ export function ManageProducts({
 
         let retailPriceToSend: number | null = null;
 
+        const baseRetailFallback =
+          typeof base.retailPrice === "number" && Number.isFinite(base.retailPrice) && base.retailPrice > 0
+            ? base.retailPrice
+            : toNumberLoose((base as any).retailPrice) ?? null;
+
         if (editingId) {
           const computed = computedVariantRetail(row);
-          if (computed.hasComputed && computed.variantRetail > 0) retailPriceToSend = computed.variantRetail;
-          else retailPriceToSend = null;
+
+          // ✅ always give server a price
+          retailPriceToSend =
+            computed.hasComputed && computed.variantRetail > 0
+              ? computed.variantRetail
+              : computed.baseRetail > 0
+                ? computed.baseRetail
+                : baseRetailFallback;
         } else {
-          retailPriceToSend = null;
+          // ✅ CREATE: respect user input per row, else base fallback
+          const rowRetail = toNumberLoose(row?.retailPrice);
+          retailPriceToSend = rowRetail != null && rowRetail > 0 ? rowRetail : baseRetailFallback;
         }
+
 
         const options = picks.map(([attributeId, valueId]) => {
           return { attributeId, valueId, attributeValueId: valueId };
@@ -2044,7 +2079,7 @@ export function ManageProducts({
               } catch (e) {
                 // eslint-disable-next-line no-console
                 console.error("Failed to persist variants on update", e);
-                openModal({ title: "Products", message: getHttpErrorMessage(e, "Failed to save variants") });
+                openModal({ title: "Products", message: friendlyErrorMessage(e, "Failed to save variants") });
                 return;
               }
             }
@@ -2107,7 +2142,7 @@ export function ManageProducts({
           } catch (e) {
             // eslint-disable-next-line no-console
             console.error("Failed to persist variants on create", e);
-            openModal({ title: "Products", message: getHttpErrorMessage(e, "Failed to save variants") });
+            openModal({ title: "Products", message: friendlyErrorMessage(e, "Failed to save variants") });
           }
         }
 
@@ -2726,8 +2761,17 @@ export function ManageProducts({
                     <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {imagePreviewUrls.map((u) => (
                         <div key={u} className="relative rounded-xl border overflow-hidden bg-slate-50">
-                          <img src={u} alt="preview" className="h-28 w-full object-cover" />
-                          <button
+                          <img
+                            src={u}
+                            alt="preview"
+                            className="h-28 w-full object-cover"
+                            loading="lazy"
+                            decoding="async"
+                            referrerPolicy="no-referrer"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).src = "/placeholder.png"; // or a data-uri
+                            }}
+                          />                          <button
                             type="button"
                             onClick={() => removeImageUrl(u)}
                             className="absolute top-2 right-2 rounded-lg bg-black/60 text-white text-xs px-2 py-1 hover:bg-black/70"
