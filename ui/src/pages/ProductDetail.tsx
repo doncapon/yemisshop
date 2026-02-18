@@ -15,6 +15,8 @@ import {
 } from "../components/Select";
 
 import { showMiniCartToast } from "../components/cart/MiniCartToast";
+import { useEffect } from "react";
+import { setSeo } from "../seo/head";
 
 /* ---------------- Types ---------------- */
 type Brand = { id: string; name: string } | null;
@@ -734,6 +736,65 @@ export default function ProductDetail() {
         offers,
         attributes: normalizeAttributesIntoProductWire(p),
       };
+
+      // after you have `product` loaded:
+      useEffect(() => {
+        if (!product?.id) return;
+
+        const site = "https://dayspringhouse.com";
+        const url = `${site}/product/${product.id}`;
+
+        const title = `${product.title} | DaySpring`;
+        const desc =
+          (product.description ? String(product.description) : "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 155) || `Buy ${product.title} on DaySpring.`;
+
+        const img =
+          Array.isArray(product.imagesJson) && product.imagesJson.length > 0
+            ? String(product.imagesJson[0])
+            : "";
+
+        // Your API returns retailPrice already computed for display
+        const price = typeof product.retailPrice === "number" ? product.retailPrice : null;
+
+        setSeo({
+          title,
+          description: desc,
+          canonical: url,
+          og: [
+            { property: "og:title", content: title },
+            { property: "og:description", content: desc },
+            { property: "og:url", content: url },
+            { property: "og:type", content: "product" },
+            ...(img ? [{ property: "og:image", content: img }] : []),
+          ],
+          jsonLd: {
+            id: `product-${product.id}`,
+            data: {
+              "@context": "https://schema.org",
+              "@type": "Product",
+              name: product.title,
+              description: desc,
+              url,
+              ...(img ? { image: [img] } : {}),
+              offers: price
+                ? {
+                  "@type": "Offer",
+                  priceCurrency: "NGN",
+                  price: String(price),
+                  availability: product.inStock
+                    ? "https://schema.org/InStock"
+                    : "https://schema.org/OutOfStock",
+                  url,
+                }
+                : undefined,
+            },
+          },
+        });
+      }, [product?.id]);
+
 
       // ✅ Best + Cheapest offers
       const cheapestBaseOffer = pickBestOffer({ offers, kind: "BASE" });
@@ -1764,7 +1825,7 @@ export default function ProductDetail() {
       })),
   });
 
-    const isCoarsePointer = React.useMemo(() => {
+  const isCoarsePointer = React.useMemo(() => {
     if (typeof window === "undefined") return false;
     return !!window.matchMedia?.("(pointer: coarse)").matches;
   }, []);
