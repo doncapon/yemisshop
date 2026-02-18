@@ -84,7 +84,6 @@ export default function ToastProvider({ children }: { children: React.ReactNode 
       meta.isPaused = false;
 
       meta.timeoutId = window.setTimeout(() => {
-        // when timer fires, remove
         remove(id);
       }, meta.remainingMs);
     },
@@ -131,7 +130,6 @@ export default function ToastProvider({ children }: { children: React.ReactNode 
       const toast: Toast = { id, ...t, duration };
       setToasts((list) => [...list, toast]);
 
-      // init timer meta and schedule dismiss
       timersRef.current.set(id, {
         remainingMs: Math.max(0, duration),
         startedAt: Date.now(),
@@ -167,37 +165,74 @@ export default function ToastProvider({ children }: { children: React.ReactNode 
     <ToastContext.Provider value={value}>
       {children}
 
-      {/* Top-right stack */}
-      <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-3">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            className="relative w-80 max-w-[90vw] rounded-xl border shadow-lg bg-white text-gray-900 overflow-hidden animate-[toast-in_200ms_ease-out] hover:shadow-xl"
-            role="status"
-            onMouseEnter={() => pause(t.id)}
-            onMouseLeave={() => resume(t.id)}
-            onFocus={() => pause(t.id)}
-            onBlur={() => resume(t.id)}
-            tabIndex={-1}
-          >
-            {/* Accent bar */}
-            <div className="h-1 w-full bg-gradient-to-r from-indigo-500 via-fuchsia-500 to-rose-500" />
-
-            <div className="p-3">
-              {t.title && <div className="font-semibold mb-1 pr-10">{t.title}</div>}
-              <div className="text-sm pr-10">{t.message}</div>
-            </div>
-
-            <button
-              onClick={() => remove(t.id)}
-              className="absolute top-2 right-2 text-xs px-2 py-1 rounded bg-black/5 hover:bg-black/10"
-              aria-label="Dismiss"
-              type="button"
+      {/* ✅ Top-right stack: scroll VERTICALLY if many toasts */}
+      <div
+        className="
+          fixed top-4 right-4 z-[9999]
+          w-[calc(100vw-2rem)] sm:w-auto
+          max-h-[calc(100vh-2rem)]
+          overflow-y-auto overflow-x-hidden
+          pr-1
+          [scrollbar-gutter:stable]
+        "
+        style={{ WebkitOverflowScrolling: "touch" }}
+        aria-label="Notifications"
+      >
+        <div className="flex flex-col gap-3 items-end">
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              className="
+                relative w-80 max-w-full
+                rounded-xl border shadow-lg bg-white text-gray-900
+                overflow-hidden hover:shadow-xl
+                animate-[toast-in_200ms_ease-out]
+                flex flex-col
+                max-h-[calc(100vh-6rem)]
+              "
+              role="status"
+              onMouseEnter={() => pause(t.id)}
+              onMouseLeave={() => resume(t.id)}
+              onFocus={() => pause(t.id)}
+              onBlur={() => resume(t.id)}
+              tabIndex={-1}
             >
-              ✕
-            </button>
-          </div>
-        ))}
+              {/* Accent bar */}
+              <div className="h-1 w-full bg-gradient-to-r from-indigo-500 via-fuchsia-500 to-rose-500 shrink-0" />
+
+              {/* ✅ Scrollable toast body (this is what fixes HUGE cart content) */}
+              <div
+                className="
+                  p-3 pr-10
+                  flex-1 min-h-0 min-w-0
+                  overflow-y-auto overflow-x-hidden
+                  overscroll-contain
+                "
+                style={{ WebkitOverflowScrolling: "touch" }}
+              >
+                {t.title && (
+                  <div
+                    className="font-semibold mb-1 truncate"
+                    title={typeof t.title === "string" ? t.title : undefined}
+                  >
+                    {t.title}
+                  </div>
+                )}
+
+                <div className="text-sm break-words">{t.message}</div>
+              </div>
+
+              <button
+                onClick={() => remove(t.id)}
+                className="absolute top-2 right-2 text-xs px-2 py-1 rounded bg-black/5 hover:bg-black/10"
+                aria-label="Dismiss"
+                type="button"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* keyframes */}
