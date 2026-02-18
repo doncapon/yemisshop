@@ -7,7 +7,7 @@ import path from "path";
 import helmet from "helmet";
 import * as fs from "fs";
 
-// ✅ Prisma (adjust if your prisma export differs)
+// ✅ Prisma (adjust path if yours differs)
 import { prisma } from "./lib/prisma.js";
 
 // Routers
@@ -77,7 +77,7 @@ import adminUsersRouter from "./routes/adminUsers.js";
 const app = express();
 app.set("trust proxy", 1);
 
-/* -------------------- SEO helpers (Option A) -------------------- */
+/* -------------------- SEO helpers (bot HTML for /product/:id) -------------------- */
 
 const BOT_UA =
   /(googlebot|bingbot|duckduckbot|yandexbot|baiduspider|slurp|facebookexternalhit|twitterbot|linkedinbot|pinterest|whatsapp|telegrambot|discordbot)/i;
@@ -101,7 +101,12 @@ function normalizeWhitespace(s: string) {
 }
 
 function getSiteOrigin(req: express.Request) {
-  const env = process.env.APP_URL || process.env.FRONTEND_URL || "https://dayspringhouse.com";
+  // Prefer your canonical domain if set
+  const env =
+    process.env.APP_URL ||
+    process.env.FRONTEND_URL ||
+    "https://dayspringhouse.com";
+
   if (/^https?:\/\//i.test(env)) return env.replace(/\/$/, "");
 
   const proto = req.headers["x-forwarded-proto"]
@@ -134,14 +139,16 @@ function buildProductHtml(params: {
   inStock?: boolean;
   brandName?: string | null;
 }) {
-  const titleEsc = escapeHtml(params.title);
-  const descEsc = escapeHtml(params.description);
-  const canonicalEsc = escapeHtml(params.canonical);
-  const imgEsc = params.imageUrl ? escapeHtml(params.imageUrl) : "";
-  const brandName = params.brandName ? String(params.brandName) : "";
+  const title = escapeHtml(params.title);
+  const desc = escapeHtml(params.description);
+  const canonical = escapeHtml(params.canonical);
+  const img = params.imageUrl ? escapeHtml(params.imageUrl) : "";
+  const brand = params.brandName ? escapeHtml(params.brandName) : "";
 
   const price =
-    typeof params.price === "number" && Number.isFinite(params.price) && params.price > 0
+    typeof params.price === "number" &&
+    Number.isFinite(params.price) &&
+    params.price > 0
       ? String(params.price)
       : "";
 
@@ -156,7 +163,7 @@ function buildProductHtml(params: {
     description: params.description,
     url: params.canonical,
     ...(params.imageUrl ? { image: [params.imageUrl] } : {}),
-    ...(brandName ? { brand: { "@type": "Brand", name: brandName } } : {}),
+    ...(brand ? { brand: { "@type": "Brand", name: params.brandName } } : {}),
     ...(price
       ? {
           offers: {
@@ -175,23 +182,25 @@ function buildProductHtml(params: {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>${titleEsc} | DaySpring</title>
-  <meta name="description" content="${descEsc}" />
-  <link rel="canonical" href="${canonicalEsc}" />
+  <title>${title} | DaySpring</title>
+  <meta name="description" content="${desc}" />
+  <link rel="canonical" href="${canonical}" />
 
   <meta property="og:site_name" content="DaySpring" />
   <meta property="og:type" content="product" />
-  <meta property="og:title" content="${titleEsc} | DaySpring" />
-  <meta property="og:description" content="${descEsc}" />
-  <meta property="og:url" content="${canonicalEsc}" />
-  ${imgEsc ? `<meta property="og:image" content="${imgEsc}" />` : ""}
+  <meta property="og:title" content="${title} | DaySpring" />
+  <meta property="og:description" content="${desc}" />
+  <meta property="og:url" content="${canonical}" />
+  ${img ? `<meta property="og:image" content="${img}" />` : ""}
 
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="${titleEsc} | DaySpring" />
-  <meta name="twitter:description" content="${descEsc}" />
-  ${imgEsc ? `<meta name="twitter:image" content="${imgEsc}" />` : ""}
+  <meta name="twitter:title" content="${title} | DaySpring" />
+  <meta name="twitter:description" content="${desc}" />
+  ${img ? `<meta name="twitter:image" content="${img}" />` : ""}
 
-  <script type="application/ld+json">${escapeHtml(JSON.stringify(jsonLd))}</script>
+  <script type="application/ld+json">${escapeHtml(
+    JSON.stringify(jsonLd)
+  )}</script>
 </head>
 <body>
   <noscript>DaySpring product page. Enable JavaScript to view the full experience.</noscript>
@@ -237,6 +246,7 @@ app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
 /* ------------------------------ Webhook raw body (before json) ------------------------------ */
+// IMPORTANT: raw MUST be before express.json()
 app.post("/api/payments/webhook", express.raw({ type: "*/*" }), (req, res, next) => {
   return (paymentsRouter as any)(req, res, next);
 });
@@ -252,11 +262,14 @@ app.use((req, _res, next) => {
 
 app.use(
   helmet({
+    // Good defaults; strict CSP below is only for /api
     crossOriginResourcePolicy: { policy: "same-site" },
   })
 );
 
-// Strict CSP ONLY for /api routes (otherwise it breaks SPA)
+/**
+ * ✅ Strict CSP ONLY for /api routes (so it doesn't break the SPA)
+ */
 const apiCsp = helmet.contentSecurityPolicy({
   directives: {
     defaultSrc: ["'none'"],
@@ -276,7 +289,7 @@ app.use((req, res, next) => {
   return next();
 });
 
-// HSTS in production
+// HSTS in production only
 if (process.env.NODE_ENV === "production") {
   app.use(
     helmet.hsts({
@@ -318,7 +331,10 @@ app.use("/api/admin/categories", adminCategoriesRouter);
 app.use("/api/admin/brands", adminBrandsRouter);
 app.use("/api/admin/attributes", adminAttributesRouter);
 app.use("/api/admin/products", adminProductsRouter);
+
+// ✅ mount supplier-offers in ONE canonical place
 app.use("/api/admin", adminSupplierOffersRouter);
+
 app.use("/api/admin/suppliers", adminSuppliers);
 app.use("/api/admin/order-activities", adminActivitiesRouter);
 app.use("/api/admin/orders", adminOrdersRouter);
@@ -380,7 +396,8 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "30d", index: false }));
 app.use("/api/uploads", uploadsRouter);
 
-/* ------------------------------ Serve Frontend (SPA) ------------------------------ */
+/* ------------------------------ Serve Frontend (SPA) + SEO endpoints ------------------------------ */
+
 const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {
   for (const d of dirs) {
     if (!d) continue;
@@ -395,18 +412,19 @@ const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {
   return null;
 };
 
-const UI_DIST_DIR =
-  pickFirstExistingDir([
-    process.env.UI_DIST_DIR,
-    path.resolve(process.cwd(), "../ui/dist"),
-    path.resolve(process.cwd(), "ui/dist"),
-    path.resolve(process.cwd(), "dist"),
-    path.resolve(process.cwd(), "public"),
-  ]);
+// Try env first, then common monorepo locations.
+const UI_DIST_DIR = pickFirstExistingDir([
+  process.env.UI_DIST_DIR, // ✅ recommended in prod
+  path.resolve(process.cwd(), "../ui/dist"), // monorepo: /api -> ../ui/dist
+  path.resolve(process.cwd(), "ui/dist"), // if ui is nested
+  path.resolve(process.cwd(), "dist"), // if you copy dist here
+  path.resolve(process.cwd(), "public"), // alternative
+]);
 
 if (UI_DIST_DIR) {
   console.log("Serving SPA from:", UI_DIST_DIR);
 
+  // robots.txt (serve from dist if present, else default)
   app.get("/robots.txt", (req, res) => {
     const p = path.join(UI_DIST_DIR, "robots.txt");
     if (fs.existsSync(p)) return res.sendFile(p);
@@ -415,6 +433,7 @@ if (UI_DIST_DIR) {
     res.type("text/plain").send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
   });
 
+  // sitemap.xml (simple + cached)
   let sitemapCache: { xml: string; at: number } | null = null;
   const SITEMAP_TTL_MS = 10 * 60 * 1000;
 
@@ -429,29 +448,29 @@ if (UI_DIST_DIR) {
       const origin = getSiteOrigin(req);
 
       const products = await prisma.product.findMany({
-        where: { isDeleted: false as any } as any,
-        select: { id: true, updatedAt: true } as any,
-        orderBy: { updatedAt: "desc" } as any,
+        where: {
+          isDeleted: false,
+          // status: "PUBLISHED", // uncomment if you ONLY want published indexed
+        },
+        select: { id: true, updatedAt: true },
+        orderBy: { updatedAt: "desc" },
         take: 5000,
-      });
-
-      const urls = products.map((p: any) => {
-        const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
-        const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : undefined;
-        return { loc, lastmod };
       });
 
       const xml =
         `<?xml version="1.0" encoding="UTF-8"?>\n` +
         `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-        urls
-          .map(
-            (u) =>
+        products
+          .map((p) => {
+            const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
+            const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : "";
+            return (
               `  <url>\n` +
-              `    <loc>${escapeHtml(u.loc)}</loc>\n` +
-              (u.lastmod ? `    <lastmod>${escapeHtml(u.lastmod)}</lastmod>\n` : "") +
+              `    <loc>${escapeHtml(loc)}</loc>\n` +
+              (lastmod ? `    <lastmod>${escapeHtml(lastmod)}</lastmod>\n` : "") +
               `  </url>`
-          )
+            );
+          })
           .join("\n") +
         `\n</urlset>\n`;
 
@@ -464,39 +483,41 @@ if (UI_DIST_DIR) {
   });
 
   /**
-   * ✅ Bot-friendly product HTML
-   * - bots OR ?__seo=1 get real HTML (not SPA shell)
-   * - humans get SPA
+   * ✅ Bot-friendly /product/:id HTML
+   * - Bots OR __seo=1 get real title + JSON-LD Product
+   * - Humans (no __seo=1) fall through to SPA
    */
   app.get("/product/:id", async (req, res, next) => {
     try {
       const forceSeo = String(req.query.__seo ?? "") === "1";
       if (!forceSeo && !isBot(req)) return next();
 
-      const id = String(req.params.id || "").trim();
-      if (!id) return next();
+      // Never cache this (prevents stale titles in crawlers / proxies)
+      res.setHeader("Cache-Control", "no-store");
 
-      const row: any = await prisma.product.findUnique({
-        where: { id } as any,
+      const origin = getSiteOrigin(req);
+      const id = String(req.params.id || "").trim();
+      const canonical = `${origin}/product/${encodeURIComponent(id)}`;
+
+      const row = await prisma.product.findUnique({
+        where: { id },
         select: {
           id: true,
           title: true,
           description: true,
-          retailPrice: true,
+          retailPrice: true, // ✅ exists in your schema (mapped to DB "price")
           inStock: true,
           imagesJson: true,
           brand: { select: { name: true } },
-          variants: {
+
+          // ✅ your Product -> variants relation field is ProductVariant (not "variants")
+          ProductVariant: {
             select: { imagesJson: true, retailPrice: true },
+            orderBy: { createdAt: "desc" },
             take: 1,
           },
-        } as any,
+        },
       });
-
-      const origin = getSiteOrigin(req);
-      const canonical = `${origin}/product/${encodeURIComponent(id)}`;
-
-      res.setHeader("Cache-Control", "no-store");
 
       if (!row) {
         res.setHeader("X-DaySpring-SEO", "product-404");
@@ -518,20 +539,24 @@ if (UI_DIST_DIR) {
         normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
         `Buy ${title} on DaySpring.`;
 
-      const images: string[] = Array.isArray(row.imagesJson) ? row.imagesJson : [];
-      const variantImg =
-        Array.isArray(row.variants?.[0]?.imagesJson) ? row.variants[0].imagesJson[0] : "";
+      const productImgs = Array.isArray(row.imagesJson) ? row.imagesJson : [];
+      const v0 = Array.isArray((row as any).ProductVariant) ? (row as any).ProductVariant[0] : null;
+      const variantImgs = v0 && Array.isArray(v0.imagesJson) ? v0.imagesJson : [];
 
-      const imgRaw = images[0] || variantImg || "";
+      const imgRaw = String(productImgs[0] ?? variantImgs[0] ?? "").trim();
       const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
 
-      // ✅ Only fields that exist in your schema:
-      const priceRaw =
+      const pRetail =
         row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
           ? Number(row.retailPrice)
-          : row.variants?.[0]?.retailPrice != null && Number.isFinite(Number(row.variants[0].retailPrice))
-            ? Number(row.variants[0].retailPrice)
-            : null;
+          : null;
+
+      const vRetail =
+        v0?.retailPrice != null && Number.isFinite(Number(v0.retailPrice))
+          ? Number(v0.retailPrice)
+          : null;
+
+      const priceRaw = pRetail ?? vRetail ?? null;
 
       res.setHeader("X-DaySpring-SEO", forceSeo ? "product-force" : "product-bot");
 
@@ -547,12 +572,12 @@ if (UI_DIST_DIR) {
         })
       );
     } catch (e: any) {
-      console.error("Bot product HTML error:", e?.message ?? e);
+      console.error("SEO product route error:", e?.message ?? e);
       return next(e);
     }
   });
 
-  // Serve UI static assets
+  // Serve built assets
   app.use(
     express.static(UI_DIST_DIR, {
       index: false,
@@ -560,13 +585,15 @@ if (UI_DIST_DIR) {
     })
   );
 
-  // SPA fallback
+  // SPA fallback: any non-API route returns index.html
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) return next();
     return res.sendFile(path.join(UI_DIST_DIR, "index.html"));
   });
 } else {
-  console.warn("UI_DIST_DIR not found (no index.html). SPA routes may 404 unless served elsewhere.");
+  console.warn(
+    "UI_DIST_DIR not found (no index.html). SPA routes like /product/:id will 404 unless served elsewhere."
+  );
 }
 
 /* ------------------------------ 404 handler ------------------------------ */
