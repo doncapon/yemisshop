@@ -477,92 +477,86 @@ if (UI_DIST_DIR) {
     }
   });
 
-  /**
-   * ✅ Bot/forced SEO product HTML
-   * - Bots (or ?__seo=1) get real HTML with real title (from DB)
-   * - Browsers get normal SPA index.html via fallback
-   */
-  app.get("/product/:id", async (req, res, next) => {
-    try {
-      if (!shouldServeSeo(req)) return next();
+app.get("/product/:id", async (req, res, next) => {
+  try {
+    const forceSeo = String(req.query.__seo ?? "") === "1";
+    if (!forceSeo && !isBot(req)) return next();
 
-      const id = String(req.params.id || "").trim();
-      if (!id) return next();
+    const id = String(req.params.id || "").trim();
+    if (!id) return next();
 
-      const row: any = await prisma.product.findUnique({
-        where: { id } as any,
-        select: {
-          id: true,
-          title: true,
-          description: true,
-          retailPrice: true,
-          price: true, // legacy fallback if exists
-          inStock: true,
-          imagesJson: true,
-          brand: { select: { name: true } },
-          variants: { select: { imagesJson: true }, take: 1 },
-        } as any,
-      });
+    const row: any = await prisma.product.findUnique({
+      where: { id } as any,
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        retailPrice: true,
+        price: true,
+        inStock: true,
+        imagesJson: true,
+        brand: { select: { name: true } },
+        variants: { select: { imagesJson: true }, take: 1 },
+      } as any,
+    });
 
-      const origin = getSiteOrigin(req);
-      const canonical = `${origin}/product/${encodeURIComponent(String(id))}`;
+    const origin = getSiteOrigin(req);
+    const canonical = `${origin}/product/${encodeURIComponent(id)}`;
 
-      // mark response so you can test quickly
-      res.setHeader("x-dayspring-seo", "1");
-      res.setHeader("cache-control", "public, max-age=60");
+    if (!row) {
+      res.setHeader("X-DaySpring-SEO", "product-404");
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(404).type("text/html").send(
+        buildProductHtml({
+          title: "Product not found",
+          description: "This product does not exist on DaySpring.",
+          canonical,
+          imageUrl: "",
+          price: null,
+          inStock: false,
+          brandName: null,
+        })
+      );
+    }
 
-      if (!row) {
-        return res
-          .status(404)
-          .type("text/html")
-          .send(
-            buildProductHtml({
-              title: "Product not found",
-              description: "This product does not exist on DaySpring.",
-              canonical,
-              imageUrl: "",
-              price: null,
-              inStock: false,
-              brandName: null,
-            })
-          );
-      }
+    const title = normalizeWhitespace(String(row.title ?? "Product"));
+    const desc =
+      normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
+      `Buy ${title} on DaySpring.`;
 
-      const title = normalizeWhitespace(String(row.title ?? "Product"));
-      const desc =
-        normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
-        `Buy ${title} on DaySpring.`;
+    const images: string[] = Array.isArray(row.imagesJson) ? row.imagesJson : [];
+    const variantImg =
+      Array.isArray(row.variants?.[0]?.imagesJson) ? row.variants[0].imagesJson[0] : "";
 
-      const images: string[] = Array.isArray(row.imagesJson) ? row.imagesJson : [];
-      const variantImg =
-        Array.isArray(row.variants?.[0]?.imagesJson) ? row.variants[0].imagesJson[0] : "";
+    const imgRaw = images[0] || variantImg || "";
+    const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
 
-      const imgRaw = images[0] || variantImg || "";
-      const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
+    const priceRaw =
+      row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
+        ? Number(row.retailPrice)
+        : row.price != null && Number.isFinite(Number(row.price))
+          ? Number(row.price)
+          : null;
 
-      const priceRaw =
-        row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
-          ? Number(row.retailPrice)
-          : row.price != null && Number.isFinite(Number(row.price))
-            ? Number(row.price)
-            : null;
+    res.setHeader("X-DaySpring-SEO", forceSeo ? "product-force" : "product-bot");
+    res.setHeader("Cache-Control", "no-store");
 
-      const html = buildProductHtml({
+    return res.status(200).type("text/html").send(
+      buildProductHtml({
         title,
         description: desc,
-        canonical: `${origin}/product/${encodeURIComponent(String(row.id))}`,
-        imageUrl: imgAbs || "",
+        canonical,
+        imageUrl: imgAbs,
         price: priceRaw,
         inStock: row.inStock !== false,
         brandName: row.brand?.name ?? null,
-      });
+      })
+    );
+  } catch (e) {
+    return next(e);
+  }
+});
 
-      return res.status(200).type("text/html").send(html);
-    } catch (e: any) {
-      console.error("SEO product HTML error:", e?.message ?? e);
-      return next();
-    }
-  });
 
   // Serve UI assets
   app.use(
