@@ -503,9 +503,10 @@ export function ManageProducts({
       return n != null && Number.isFinite(n) && n > 0 ? n : DEFAULT_MARKUP_PERCENT;
     },
     staleTime: 0,
-    refetchOnMount: true,
-    refetchOnWindowFocus: true,
-    refetchOnReconnect: true,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: "always",
+
   });
 
   function skuSafePart(input: any) {
@@ -2768,10 +2769,9 @@ export function ManageProducts({
                             loading="lazy"
                             decoding="async"
                             referrerPolicy="no-referrer"
-                            onError={(e) => {
-                              (e.currentTarget as HTMLImageElement).src = "/placeholder.png"; // or a data-uri
-                            }}
-                          />                          <button
+                          />
+
+                          <button
                             type="button"
                             onClick={() => removeImageUrl(u)}
                             className="absolute top-2 right-2 rounded-lg bg-black/60 text-white text-xs px-2 py-1 hover:bg-black/70"

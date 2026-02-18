@@ -102,10 +102,7 @@ function normalizeWhitespace(s: string) {
 
 function getSiteOrigin(req: express.Request) {
   // Prefer your canonical domain if set
-  const env =
-    process.env.APP_URL ||
-    process.env.FRONTEND_URL ||
-    "https://dayspringhouse.com";
+  const env = process.env.APP_URL || process.env.FRONTEND_URL || "https://dayspringhouse.com";
 
   if (/^https?:\/\//i.test(env)) return env.replace(/\/$/, "");
 
@@ -120,17 +117,25 @@ function getSiteOrigin(req: express.Request) {
   return `${proto}://${host}`.replace(/\/$/, "");
 }
 
+/**
+ * ✅ IMPORTANT FIX FOR EXTERNAL IMAGES:
+ * - DO NOT apply Helmet twice with defaults (it can re-introduce default CSP + COEP).
+ * - Disable Cross-Origin-Embedder-Policy (COEP) so cross-origin <img> works (e.g. picsum.photos).
+ */
 app.use(
   helmet({
-    contentSecurityPolicy: {
-      useDefaults: true,
-      directives: {
-        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-        "img-src": ["'self'", "data:", "blob:", "https:"],
-      },
-    },
+    // ✅ allows cross-origin <img> to render (picsum, cloudinary etc.)
+    crossOriginEmbedderPolicy: false,
+
+    // ✅ IMPORTANT: don't apply global CSP to the SPA (Vite/React/admin UI can break subtly)
+    // You already apply strict CSP for /api routes below via `apiCsp`.
+    contentSecurityPolicy: false,
+
+    // keep this if you want; it doesn't control outbound images
+    crossOriginResourcePolicy: { policy: "same-site" },
   })
 );
+
 
 function resolveAbsoluteImage(req: express.Request, raw?: string | null): string {
   const s = String(raw ?? "").trim();
@@ -158,15 +163,9 @@ function buildProductHtml(params: {
   const brand = params.brandName ? escapeHtml(params.brandName) : "";
 
   const price =
-    typeof params.price === "number" &&
-      Number.isFinite(params.price) &&
-      params.price > 0
-      ? String(params.price)
-      : "";
+    typeof params.price === "number" && Number.isFinite(params.price) && params.price > 0 ? String(params.price) : "";
 
-  const availability = params.inStock
-    ? "https://schema.org/InStock"
-    : "https://schema.org/OutOfStock";
+  const availability = params.inStock ? "https://schema.org/InStock" : "https://schema.org/OutOfStock";
 
   const jsonLd: any = {
     "@context": "https://schema.org",
@@ -273,13 +272,6 @@ app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
   next();
 });
-
-app.use(
-  helmet({
-    // Good defaults; strict CSP below is only for /api
-    crossOriginResourcePolicy: { policy: "same-site" },
-  })
-);
 
 /**
  * ✅ Strict CSP ONLY for /api routes (so it doesn't break the SPA)
@@ -446,10 +438,7 @@ app.get("/robots.txt", (req, res) => {
     if (fs.existsSync(p)) return res.sendFile(p);
   }
 
-  res
-    .status(200)
-    .type("text/plain")
-    .send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
+  res.status(200).type("text/plain").send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
 });
 
 // sitemap.xml (dynamic)
@@ -566,27 +555,20 @@ app.get("/product/:id", async (req, res, next) => {
 
     const title = normalizeWhitespace(String(row.title ?? "Product"));
     const desc =
-      normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
-      `Buy ${title} on DaySpring.`;
+      normalizeWhitespace(String(row.description ?? "")).slice(0, 155) || `Buy ${title} on DaySpring.`;
 
     const productImgs = Array.isArray(row.imagesJson) ? row.imagesJson : [];
-    const v0 = Array.isArray((row as any).ProductVariant)
-      ? (row as any).ProductVariant[0]
-      : null;
+    const v0 = Array.isArray((row as any).ProductVariant) ? (row as any).ProductVariant[0] : null;
     const variantImgs = v0 && Array.isArray(v0.imagesJson) ? v0.imagesJson : [];
 
     const imgRaw = String(productImgs[0] ?? variantImgs[0] ?? "").trim();
     const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
 
     const pRetail =
-      row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
-        ? Number(row.retailPrice)
-        : null;
+      row.retailPrice != null && Number.isFinite(Number(row.retailPrice)) ? Number(row.retailPrice) : null;
 
     const vRetail =
-      v0?.retailPrice != null && Number.isFinite(Number(v0.retailPrice))
-        ? Number(v0.retailPrice)
-        : null;
+      v0?.retailPrice != null && Number.isFinite(Number(v0.retailPrice)) ? Number(v0.retailPrice) : null;
 
     const priceRaw = pRetail ?? vRetail ?? null;
 
@@ -608,8 +590,6 @@ app.get("/product/:id", async (req, res, next) => {
     return next(e);
   }
 });
-
-
 
 if (UI_DIST_DIR) {
   console.log("Serving SPA from:", UI_DIST_DIR);
@@ -635,9 +615,7 @@ if (UI_DIST_DIR) {
     return res.sendFile(path.join(UI_DIST_DIR, "index.html"));
   });
 } else {
-  console.warn(
-    "UI_DIST_DIR not found (no index.html). SPA routes like /product/:id will 404 unless served elsewhere."
-  );
+  console.warn("UI_DIST_DIR not found (no index.html). SPA routes like /product/:id will 404 unless served elsewhere.");
 }
 
 /* ------------------------------ 404 handler ------------------------------ */
@@ -667,7 +645,6 @@ app.use((err: any, _req: any, res: any, _next: any) => {
     detail: "Please try again later.",
   });
 });
-
 
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST || "0.0.0.0";

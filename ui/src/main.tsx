@@ -9,7 +9,16 @@ import ToastProvider from "./components/ToastProvider";
 import { UnheadProvider } from "@unhead/react/client";
 import { head } from "./seo/head"; // ✅ use the SAME head instance
 
-const qc = new QueryClient();
+const qc =new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      // optional: reduces "random" refetching
+      staleTime: 60_000,
+    },
+  },
+});
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
