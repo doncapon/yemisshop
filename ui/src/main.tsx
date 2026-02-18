@@ -7,7 +7,9 @@ import App from './App'
 import './index.css';
 import ToastProvider from './components/ToastProvider'
 
+import { createHead, UnheadProvider } from "@unhead/react/client";
 
+const head = createHead();
 
 const qc = new QueryClient()
 
@@ -17,7 +19,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={qc}>
       <BrowserRouter>
         <ToastProvider>
-          <App />
+          <UnheadProvider head={head}>
+            <App />
+          </UnheadProvider>
         </ToastProvider>
       </BrowserRouter>
     </QueryClientProvider>

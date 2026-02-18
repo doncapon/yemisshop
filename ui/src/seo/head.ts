@@ -1,70 +1,44 @@
-// src/seo/head.ts
-type MetaName = { name: string; content: string };
-type MetaProp = { property: string; content: string };
+import { createHead } from "@unhead/react/client";
 
-function upsertMetaByName(name: string, content: string) {
-  if (!content) return;
-  let el = document.head.querySelector<HTMLMetaElement>(`meta[name="${CSS.escape(name)}"]`);
-  if (!el) {
-    el = document.createElement("meta");
-    el.setAttribute("name", name);
-    document.head.appendChild(el);
-  }
-  el.setAttribute("content", content);
-}
+export const head = createHead();
 
-function upsertMetaByProperty(property: string, content: string) {
-  if (!content) return;
-  let el = document.head.querySelector<HTMLMetaElement>(`meta[property="${CSS.escape(property)}"]`);
-  if (!el) {
-    el = document.createElement("meta");
-    el.setAttribute("property", property);
-    document.head.appendChild(el);
-  }
-  el.setAttribute("content", content);
-}
+type OgTag = { property: string; content: string };
 
-function upsertLink(rel: string, href: string) {
-  if (!href) return;
-  let el = document.head.querySelector<HTMLLinkElement>(`link[rel="${CSS.escape(rel)}"]`);
-  if (!el) {
-    el = document.createElement("link");
-    el.setAttribute("rel", rel);
-    document.head.appendChild(el);
-  }
-  el.setAttribute("href", href);
-}
-
-function upsertJsonLd(id: string, data: unknown) {
-  const json = JSON.stringify(data);
-  let el = document.head.querySelector<HTMLScriptElement>(
-    `script[type="application/ld+json"][data-seo="${CSS.escape(id)}"]`
-  );
-  if (!el) {
-    el = document.createElement("script");
-    el.type = "application/ld+json";
-    el.setAttribute("data-seo", id);
-    document.head.appendChild(el);
-  }
-  el.textContent = json;
-}
-
-export function setSeo(opts: {
+export function setSeo(input: {
   title?: string;
   description?: string;
   canonical?: string;
-  og?: MetaProp[];
-  meta?: MetaName[];
-  jsonLd?: { id: string; data: unknown };
+  og?: OgTag[];
+  jsonLd?: { id: string; data: any };
 }) {
-  if (opts.title) document.title = opts.title;
+  const meta: any[] = [];
+  const link: any[] = [];
+  const script: any[] = [];
 
-  if (opts.description) upsertMetaByName("description", opts.description);
+  if (input.description) meta.push({ name: "description", content: input.description });
 
-  (opts.meta ?? []).forEach((m) => upsertMetaByName(m.name, m.content));
-  (opts.og ?? []).forEach((m) => upsertMetaByProperty(m.property, m.content));
+  for (const t of input.og || []) {
+    if (!t?.property || !t?.content) continue;
+    meta.push({ property: t.property, content: t.content });
+  }
 
-  if (opts.canonical) upsertLink("canonical", opts.canonical);
+  if (input.canonical) link.push({ rel: "canonical", href: input.canonical });
 
-  if (opts.jsonLd) upsertJsonLd(opts.jsonLd.id, opts.jsonLd.data);
+  if (input.jsonLd?.data) {
+    script.push({
+      key: input.jsonLd.id || "jsonld",
+      type: "application/ld+json",
+      children: JSON.stringify(input.jsonLd.data),
+    });
+  }
+
+  const entry = head.push({
+    title: input.title,
+    meta,
+    link,
+    script,
+  });
+
+  // ✅ return cleanup so callers can dispose on unmount/change
+  return () => entry.dispose();
 }
