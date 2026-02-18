@@ -7,6 +7,9 @@ import path from "path";
 import helmet from "helmet";
 import * as fs from "fs";
 
+// ✅ Prisma (adjust path if yours differs)
+import { prisma } from "./lib/prisma.js";
+
 // Routers
 import authRouter from "./routes/auth.js";
 import authSessionRouter from "./routes/authSessions.js";
@@ -74,6 +77,152 @@ import adminUsersRouter from "./routes/adminUsers.js";
 const app = express();
 app.set("trust proxy", 1);
 
+/* -------------------- SEO helpers (bot HTML for /product/:id) -------------------- */
+
+const BOT_UA =
+  /(googlebot|bingbot|duckduckbot|yandexbot|baiduspider|slurp|facebookexternalhit|twitterbot|linkedinbot|pinterest|whatsapp|telegrambot|discordbot)/i;
+
+function isBot(req: express.Request) {
+  const ua = String(req.headers["user-agent"] || "");
+  return BOT_UA.test(ua);
+}
+
+function escapeHtml(s: string) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function normalizeWhitespace(s: string) {
+  return String(s ?? "").replace(/\s+/g, " ").trim();
+}
+
+function getSiteOrigin(req: express.Request) {
+  // Prefer your canonical domain if set
+  const env =
+    process.env.APP_URL ||
+    process.env.FRONTEND_URL ||
+    "https://dayspringhouse.com";
+
+  if (/^https?:\/\//i.test(env)) return env.replace(/\/$/, "");
+
+  const proto = req.headers["x-forwarded-proto"]
+    ? String(req.headers["x-forwarded-proto"]).split(",")[0].trim()
+    : req.protocol;
+
+  const host = req.headers["x-forwarded-host"]
+    ? String(req.headers["x-forwarded-host"]).split(",")[0].trim()
+    : req.get("host");
+
+  return `${proto}://${host}`.replace(/\/$/, "");
+}
+
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        "img-src": ["'self'", "data:", "blob:", "https:"],
+      },
+    },
+  })
+);
+
+function resolveAbsoluteImage(req: express.Request, raw?: string | null): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  if (/^(https?:\/\/|data:|blob:)/i.test(s)) return s;
+  if (s.startsWith("//")) return `${req.protocol}:${s}`;
+  const origin = getSiteOrigin(req);
+  if (s.startsWith("/")) return `${origin}${s}`;
+  return `${origin}/${s}`;
+}
+
+function buildProductHtml(params: {
+  title: string;
+  description: string;
+  canonical: string;
+  imageUrl?: string;
+  price?: number | null;
+  inStock?: boolean;
+  brandName?: string | null;
+}) {
+  const title = escapeHtml(params.title);
+  const desc = escapeHtml(params.description);
+  const canonical = escapeHtml(params.canonical);
+  const img = params.imageUrl ? escapeHtml(params.imageUrl) : "";
+  const brand = params.brandName ? escapeHtml(params.brandName) : "";
+
+  const price =
+    typeof params.price === "number" &&
+      Number.isFinite(params.price) &&
+      params.price > 0
+      ? String(params.price)
+      : "";
+
+  const availability = params.inStock
+    ? "https://schema.org/InStock"
+    : "https://schema.org/OutOfStock";
+
+  const jsonLd: any = {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    name: params.title,
+    description: params.description,
+    url: params.canonical,
+    ...(params.imageUrl ? { image: [params.imageUrl] } : {}),
+    ...(brand ? { brand: { "@type": "Brand", name: params.brandName } } : {}),
+    ...(price
+      ? {
+        offers: {
+          "@type": "Offer",
+          priceCurrency: "NGN",
+          price,
+          availability,
+          url: params.canonical,
+        },
+      }
+      : {}),
+  };
+
+  // ✅ IMPORTANT: do NOT HTML-escape JSON-LD, or crawlers/tools can’t parse it properly.
+  // Only make it safe against accidental "</script>" issues by escaping "<".
+  const jsonLdSafe = JSON.stringify(jsonLd).replace(/</g, "\\u003c");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${title} | DaySpring</title>
+  <meta name="description" content="${desc}" />
+  <link rel="canonical" href="${canonical}" />
+
+  <meta property="og:site_name" content="DaySpring" />
+  <meta property="og:type" content="product" />
+  <meta property="og:title" content="${title} | DaySpring" />
+  <meta property="og:description" content="${desc}" />
+  <meta property="og:url" content="${canonical}" />
+  ${img ? `<meta property="og:image" content="${img}" />` : ""}
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="${title} | DaySpring" />
+  <meta name="twitter:description" content="${desc}" />
+  ${img ? `<meta name="twitter:image" content="${img}" />` : ""}
+
+  <script type="application/ld+json">${jsonLdSafe}</script>
+</head>
+<body>
+  <noscript>DaySpring product page. Enable JavaScript to view the full experience.</noscript>
+  <div id="root"></div>
+</body>
+</html>`;
+}
+
 /* -------------------- CORS -------------------- */
 const normalizeOrigin = (s: string) => s.replace(/\/$/, "");
 
@@ -83,7 +232,6 @@ const allowedOrigins = [
   "https://dayspringhouse.com",
   "https://www.dayspringhouse.com",
   "http://localhost:5173",
-  
 ]
   .filter(Boolean)
   .map((x) => normalizeOrigin(String(x)));
@@ -112,16 +260,15 @@ app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
 /* ------------------------------ Webhook raw body (before json) ------------------------------ */
-// IMPORTANT: if you verify signatures, raw MUST be before express.json()
+// IMPORTANT: raw MUST be before express.json()
 app.post("/api/payments/webhook", express.raw({ type: "*/*" }), (req, res, next) => {
-  // hand off to your payments router (it must have a POST /webhook handler)
   return (paymentsRouter as any)(req, res, next);
 });
 
 /* ------------------------------ Common middleware ------------------------------ */
 app.use(cookieParser());
 
-// Request logger (helps diagnose 500s fast)
+// Request logger
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
   next();
@@ -129,42 +276,45 @@ app.use((req, _res, next) => {
 
 app.use(
   helmet({
-    // Good defaults; we’ll override CSP below
+    // Good defaults; strict CSP below is only for /api
     crossOriginResourcePolicy: { policy: "same-site" },
   })
 );
 
+/**
+ * ✅ Strict CSP ONLY for /api routes (so it doesn't break the SPA)
+ */
+const apiCsp = helmet.contentSecurityPolicy({
+  directives: {
+    defaultSrc: ["'none'"],
+    baseUri: ["'none'"],
+    frameAncestors: ["'none'"],
+    formAction: ["'none'"],
+    scriptSrc: ["'none'"],
+    styleSrc: ["'none'"],
+    imgSrc: ["'none'"],
+    connectSrc: ["'self'"],
+    upgradeInsecureRequests: [],
+  },
+});
 
-app.use(
-  helmet.contentSecurityPolicy({
-    directives: {
-      defaultSrc: ["'none'"],
-      baseUri: ["'none'"],
-      frameAncestors: ["'none'"],
-      formAction: ["'none'"],
-      scriptSrc: ["'none'"],
-      styleSrc: ["'none'"],
-      imgSrc: ["'none'"],
-      connectSrc: ["'self'"], // keep if you need same-origin calls
-      upgradeInsecureRequests: [],
-    },
-  })
-);
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api")) return apiCsp(req, res, next);
+  return next();
+});
 
-// If you serve over HTTPS (you should), enable HSTS *in production only*
+// HSTS in production only
 if (process.env.NODE_ENV === "production") {
   app.use(
     helmet.hsts({
-      maxAge: 60 * 60 * 24 * 365, // 1 year
+      maxAge: 60 * 60 * 24 * 365,
       includeSubDomains: true,
-      preload: false, // set true only when you're 100% ready
+      preload: false,
     })
   );
 }
 
-
-// ---------------- Permissions-Policy ----------------
-// For an API host, deny all powerful features.
+// Permissions-Policy
 const PERMISSIONS_POLICY =
   "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), " +
   "display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), " +
@@ -177,7 +327,6 @@ app.use((_, res, next) => {
   res.setHeader("Permissions-Policy", PERMISSIONS_POLICY);
   next();
 });
-
 
 app.use(express.json({ limit: "2mb" }));
 
@@ -233,10 +382,6 @@ app.use("/api/cart", cartRouter);
 
 /* ------------------------------ Other routes ------------------------------ */
 app.use("/api/purchase-orders", purchaseOrdersRouter);
-
-// ⚠️ This looks suspicious: purchaseOrderDeliveryOtpRouter is mounted under /api/orders in your original.
-// If that router is really for purchase-orders, mount it correctly; otherwise keep as-is.
-// app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
 app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
 
 app.use("/api", availabiltyRouter);
@@ -265,24 +410,268 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "30d", index: false }));
 app.use("/api/uploads", uploadsRouter);
 
+/* ------------------------------ Serve Frontend (SPA) + SEO endpoints ------------------------------ */
+
+const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {
+  for (const d of dirs) {
+    if (!d) continue;
+    const dir = String(d);
+    const indexFile = path.join(dir, "index.html");
+    try {
+      if (fs.existsSync(indexFile)) return dir;
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+};
+
+// Try env first, then common monorepo locations.
+const UI_DIST_DIR = pickFirstExistingDir([
+  process.env.UI_DIST_DIR, // ✅ recommended in prod
+  path.resolve(process.cwd(), "../ui/dist"), // monorepo: /api -> ../ui/dist
+  path.resolve(process.cwd(), "ui/dist"), // if ui is nested
+  path.resolve(process.cwd(), "dist"), // if you copy dist here
+  path.resolve(process.cwd(), "public"), // alternative
+]);
+
+/* ------------------------------ robots.txt + sitemap.xml ALWAYS (not dependent on UI build) ------------------------------ */
+
+// robots.txt (serve from dist if present, else default)
+app.get("/robots.txt", (req, res) => {
+  const origin = getSiteOrigin(req);
+
+  if (UI_DIST_DIR) {
+    const p = path.join(UI_DIST_DIR, "robots.txt");
+    if (fs.existsSync(p)) return res.sendFile(p);
+  }
+
+  res
+    .status(200)
+    .type("text/plain")
+    .send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
+});
+
+// sitemap.xml (dynamic)
+let sitemapCache: { xml: string; at: number } | null = null;
+const SITEMAP_TTL_MS = 10 * 60 * 1000;
+
+app.get("/sitemap.xml", async (req, res) => {
+  try {
+    const now = Date.now();
+    if (sitemapCache && now - sitemapCache.at < SITEMAP_TTL_MS) {
+      res.setHeader("Content-Type", "application/xml; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=300");
+      return res.status(200).send(sitemapCache.xml);
+    }
+
+    const origin = getSiteOrigin(req);
+
+    const products = await prisma.product.findMany({
+      where: { isDeleted: false },
+      select: { id: true, updatedAt: true },
+      orderBy: { updatedAt: "desc" },
+      take: 5000,
+    });
+
+    const xml =
+      `<?xml version="1.0" encoding="UTF-8"?>\n` +
+      `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+      products
+        .map((p) => {
+          const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
+          const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : "";
+          return (
+            `  <url>\n` +
+            `    <loc>${escapeHtml(loc)}</loc>\n` +
+            (lastmod ? `    <lastmod>${escapeHtml(lastmod)}</lastmod>\n` : "") +
+            `  </url>`
+          );
+        })
+        .join("\n") +
+      `\n</urlset>\n`;
+
+    sitemapCache = { xml, at: now };
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.status(200).send(xml);
+  } catch (e: any) {
+    console.error("sitemap.xml error:", e?.message ?? e);
+    return res.status(500).type("text/plain").send("sitemap error");
+  }
+});
+
+/**
+ * ✅ Bot-friendly /product/:id HTML
+ * - Bots OR __seo=1 get real title + JSON-LD Product
+ * - Humans (no __seo=1) fall through to SPA when UI_DIST_DIR exists
+ *
+ * ✅ CRITICAL: Vary by User-Agent so caches never mix bot/human HTML
+ */
+app.get("/product/:id", async (req, res, next) => {
+  // ✅ prevents CDN/proxy caching the SPA HTML for Googlebot (or vice versa)
+  res.setHeader("Vary", "User-Agent");
+
+  try {
+    const forceSeo = String(req.query.__seo ?? "") === "1";
+    const wantsSeo = forceSeo || isBot(req);
+
+    // Humans: let SPA handle it if UI is present
+    if (!wantsSeo) {
+      if (UI_DIST_DIR) return next();
+      return res.status(404).type("text/plain").send("Not Found");
+    }
+
+    // Bots: never cache (keeps titles fresh)
+    res.setHeader("Cache-Control", "no-store");
+
+    const origin = getSiteOrigin(req);
+    const id = String(req.params.id || "").trim();
+    const canonical = `${origin}/product/${encodeURIComponent(id)}`;
+
+    const row = await prisma.product.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        retailPrice: true,
+        inStock: true,
+        imagesJson: true,
+        brand: { select: { name: true } },
+
+        // ✅ your Product -> variants relation field is ProductVariant (not "variants")
+        ProductVariant: {
+          select: { imagesJson: true, retailPrice: true },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+      },
+    });
+
+    if (!row) {
+      res.setHeader("X-DaySpring-SEO", "product-404");
+      return res.status(404).type("text/html").send(
+        buildProductHtml({
+          title: "Product not found",
+          description: "This product does not exist on DaySpring.",
+          canonical,
+          imageUrl: "",
+          price: null,
+          inStock: false,
+          brandName: null,
+        })
+      );
+    }
+
+    const title = normalizeWhitespace(String(row.title ?? "Product"));
+    const desc =
+      normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
+      `Buy ${title} on DaySpring.`;
+
+    const productImgs = Array.isArray(row.imagesJson) ? row.imagesJson : [];
+    const v0 = Array.isArray((row as any).ProductVariant)
+      ? (row as any).ProductVariant[0]
+      : null;
+    const variantImgs = v0 && Array.isArray(v0.imagesJson) ? v0.imagesJson : [];
+
+    const imgRaw = String(productImgs[0] ?? variantImgs[0] ?? "").trim();
+    const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
+
+    const pRetail =
+      row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
+        ? Number(row.retailPrice)
+        : null;
+
+    const vRetail =
+      v0?.retailPrice != null && Number.isFinite(Number(v0.retailPrice))
+        ? Number(v0.retailPrice)
+        : null;
+
+    const priceRaw = pRetail ?? vRetail ?? null;
+
+    res.setHeader("X-DaySpring-SEO", forceSeo ? "product-force" : "product-bot");
+
+    return res.status(200).type("text/html").send(
+      buildProductHtml({
+        title,
+        description: desc,
+        canonical,
+        imageUrl: imgAbs || "",
+        price: priceRaw,
+        inStock: row.inStock !== false,
+        brandName: row.brand?.name ?? null,
+      })
+    );
+  } catch (e: any) {
+    console.error("SEO product route error:", e?.message ?? e);
+    return next(e);
+  }
+});
+
+
+
+if (UI_DIST_DIR) {
+  console.log("Serving SPA from:", UI_DIST_DIR);
+
+  // Serve built assets
+  app.use(
+    express.static(UI_DIST_DIR, {
+      index: false,
+      maxAge: process.env.NODE_ENV === "production" ? "1h" : 0,
+    })
+  );
+
+  // SPA fallback: any non-API route returns index.html
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) return next();
+
+    // ✅ protect product routes from cache poisoning (very important with UA-based SEO)
+    if (req.path.startsWith("/product/")) {
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Vary", "User-Agent");
+    }
+
+    return res.sendFile(path.join(UI_DIST_DIR, "index.html"));
+  });
+} else {
+  console.warn(
+    "UI_DIST_DIR not found (no index.html). SPA routes like /product/:id will 404 unless served elsewhere."
+  );
+}
+
 /* ------------------------------ 404 handler ------------------------------ */
 app.use((req, res) => {
-  res.status(404).json({ error: "Not Found", path: req.originalUrl });
+  if (req.path.startsWith("/api")) {
+    return res.status(404).json({ error: "Not Found", path: req.originalUrl });
+  }
+  return res.status(404).send("Not Found");
 });
 
 /* ------------------------------ Error handler ------------------------------ */
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("UNHANDLED ERROR:", err);
-  res.status(500).json({ error: "Internal server error", message: err?.message ?? String(err) });
+
+import { ZodError } from "zod";
+
+app.use((err: any, _req: any, res: any, _next: any) => {
+  console.error(err);
+
+  if (err instanceof ZodError) {
+    return res.status(400).json({
+      error: "Invalid request",
+      detail: err.issues.map((i) => i.message).join(", "),
+    });
+  }
+
+  return res.status(500).json({
+    error: "Something went wrong",
+    detail: "Please try again later.",
+  });
 });
 
-const PORT = Number(process.env.PORT ?? 8080);
 
-// ✅ safest default for local dev + docker
-// use 0.0.0.0 so it binds all interfaces (works in Docker/Railway too)
+const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST || "0.0.0.0";
 
 app.listen(PORT, HOST, () => {
   console.log(`API on http://${HOST}:${PORT}`);
 });
-
