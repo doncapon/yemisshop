@@ -7,7 +7,7 @@ import path from "path";
 import helmet from "helmet";
 import * as fs from "fs";
 
-// ✅ Prisma (adjust import path if needed)
+// ✅ Prisma (adjust if your prisma export differs)
 import { prisma } from "./lib/prisma.js";
 
 // Routers
@@ -87,12 +87,6 @@ function isBot(req: express.Request) {
   return BOT_UA.test(ua);
 }
 
-// ✅ allow forcing SEO HTML for debugging: ?__seo=1
-function shouldServeSeo(req: express.Request) {
-  const forced = String((req.query as any)?.__seo ?? "").trim() === "1";
-  return forced || isBot(req);
-}
-
 function escapeHtml(s: string) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -107,11 +101,7 @@ function normalizeWhitespace(s: string) {
 }
 
 function getSiteOrigin(req: express.Request) {
-  const env =
-    process.env.APP_URL ||
-    process.env.FRONTEND_URL ||
-    "https://dayspringhouse.com";
-
+  const env = process.env.APP_URL || process.env.FRONTEND_URL || "https://dayspringhouse.com";
   if (/^https?:\/\//i.test(env)) return env.replace(/\/$/, "");
 
   const proto = req.headers["x-forwarded-proto"]
@@ -144,10 +134,11 @@ function buildProductHtml(params: {
   inStock?: boolean;
   brandName?: string | null;
 }) {
-  const safeTitle = escapeHtml(params.title);
-  const safeDesc = escapeHtml(params.description);
-  const safeCanonical = escapeHtml(params.canonical);
-  const safeImg = params.imageUrl ? escapeHtml(params.imageUrl) : "";
+  const titleEsc = escapeHtml(params.title);
+  const descEsc = escapeHtml(params.description);
+  const canonicalEsc = escapeHtml(params.canonical);
+  const imgEsc = params.imageUrl ? escapeHtml(params.imageUrl) : "";
+  const brandName = params.brandName ? String(params.brandName) : "";
 
   const price =
     typeof params.price === "number" && Number.isFinite(params.price) && params.price > 0
@@ -165,9 +156,7 @@ function buildProductHtml(params: {
     description: params.description,
     url: params.canonical,
     ...(params.imageUrl ? { image: [params.imageUrl] } : {}),
-    ...(params.brandName
-      ? { brand: { "@type": "Brand", name: params.brandName } }
-      : {}),
+    ...(brandName ? { brand: { "@type": "Brand", name: brandName } } : {}),
     ...(price
       ? {
           offers: {
@@ -186,21 +175,21 @@ function buildProductHtml(params: {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>${safeTitle} | DaySpring</title>
-  <meta name="description" content="${safeDesc}" />
-  <link rel="canonical" href="${safeCanonical}" />
+  <title>${titleEsc} | DaySpring</title>
+  <meta name="description" content="${descEsc}" />
+  <link rel="canonical" href="${canonicalEsc}" />
 
   <meta property="og:site_name" content="DaySpring" />
   <meta property="og:type" content="product" />
-  <meta property="og:title" content="${safeTitle} | DaySpring" />
-  <meta property="og:description" content="${safeDesc}" />
-  <meta property="og:url" content="${safeCanonical}" />
-  ${safeImg ? `<meta property="og:image" content="${safeImg}" />` : ""}
+  <meta property="og:title" content="${titleEsc} | DaySpring" />
+  <meta property="og:description" content="${descEsc}" />
+  <meta property="og:url" content="${canonicalEsc}" />
+  ${imgEsc ? `<meta property="og:image" content="${imgEsc}" />` : ""}
 
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="${safeTitle} | DaySpring" />
-  <meta name="twitter:description" content="${safeDesc}" />
-  ${safeImg ? `<meta name="twitter:image" content="${safeImg}" />` : ""}
+  <meta name="twitter:title" content="${titleEsc} | DaySpring" />
+  <meta name="twitter:description" content="${descEsc}" />
+  ${imgEsc ? `<meta name="twitter:image" content="${imgEsc}" />` : ""}
 
   <script type="application/ld+json">${escapeHtml(JSON.stringify(jsonLd))}</script>
 </head>
@@ -267,9 +256,7 @@ app.use(
   })
 );
 
-/**
- * ✅ Strict CSP ONLY for /api routes (otherwise it breaks the SPA).
- */
+// Strict CSP ONLY for /api routes (otherwise it breaks SPA)
 const apiCsp = helmet.contentSecurityPolicy({
   directives: {
     defaultSrc: ["'none'"],
@@ -289,6 +276,7 @@ app.use((req, res, next) => {
   return next();
 });
 
+// HSTS in production
 if (process.env.NODE_ENV === "production") {
   app.use(
     helmet.hsts({
@@ -330,10 +318,7 @@ app.use("/api/admin/categories", adminCategoriesRouter);
 app.use("/api/admin/brands", adminBrandsRouter);
 app.use("/api/admin/attributes", adminAttributesRouter);
 app.use("/api/admin/products", adminProductsRouter);
-
-// ✅ mount supplier-offers in ONE canonical place
 app.use("/api/admin", adminSupplierOffersRouter);
-
 app.use("/api/admin/suppliers", adminSuppliers);
 app.use("/api/admin/order-activities", adminActivitiesRouter);
 app.use("/api/admin/orders", adminOrdersRouter);
@@ -396,7 +381,6 @@ app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "30d", index: false })
 app.use("/api/uploads", uploadsRouter);
 
 /* ------------------------------ Serve Frontend (SPA) ------------------------------ */
-
 const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {
   for (const d of dirs) {
     if (!d) continue;
@@ -423,7 +407,6 @@ const UI_DIST_DIR =
 if (UI_DIST_DIR) {
   console.log("Serving SPA from:", UI_DIST_DIR);
 
-  // robots.txt
   app.get("/robots.txt", (req, res) => {
     const p = path.join(UI_DIST_DIR, "robots.txt");
     if (fs.existsSync(p)) return res.sendFile(p);
@@ -432,7 +415,6 @@ if (UI_DIST_DIR) {
     res.type("text/plain").send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
   });
 
-  // sitemap.xml (cached)
   let sitemapCache: { xml: string; at: number } | null = null;
   const SITEMAP_TTL_MS = 10 * 60 * 1000;
 
@@ -440,7 +422,8 @@ if (UI_DIST_DIR) {
     try {
       const now = Date.now();
       if (sitemapCache && now - sitemapCache.at < SITEMAP_TTL_MS) {
-        return res.type("application/xml").send(sitemapCache.xml);
+        res.type("application/xml").send(sitemapCache.xml);
+        return;
       }
 
       const origin = getSiteOrigin(req);
@@ -452,20 +435,23 @@ if (UI_DIST_DIR) {
         take: 5000,
       });
 
+      const urls = products.map((p: any) => {
+        const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
+        const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : undefined;
+        return { loc, lastmod };
+      });
+
       const xml =
         `<?xml version="1.0" encoding="UTF-8"?>\n` +
         `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-        products
-          .map((p: any) => {
-            const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
-            const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : "";
-            return (
+        urls
+          .map(
+            (u) =>
               `  <url>\n` +
-              `    <loc>${escapeHtml(loc)}</loc>\n` +
-              (lastmod ? `    <lastmod>${escapeHtml(lastmod)}</lastmod>\n` : "") +
+              `    <loc>${escapeHtml(u.loc)}</loc>\n` +
+              (u.lastmod ? `    <lastmod>${escapeHtml(u.lastmod)}</lastmod>\n` : "") +
               `  </url>`
-            );
-          })
+          )
           .join("\n") +
         `\n</urlset>\n`;
 
@@ -477,88 +463,96 @@ if (UI_DIST_DIR) {
     }
   });
 
-app.get("/product/:id", async (req, res, next) => {
-  try {
-    const forceSeo = String(req.query.__seo ?? "") === "1";
-    if (!forceSeo && !isBot(req)) return next();
+  /**
+   * ✅ Bot-friendly product HTML
+   * - bots OR ?__seo=1 get real HTML (not SPA shell)
+   * - humans get SPA
+   */
+  app.get("/product/:id", async (req, res, next) => {
+    try {
+      const forceSeo = String(req.query.__seo ?? "") === "1";
+      if (!forceSeo && !isBot(req)) return next();
 
-    const id = String(req.params.id || "").trim();
-    if (!id) return next();
+      const id = String(req.params.id || "").trim();
+      if (!id) return next();
 
-    const row: any = await prisma.product.findUnique({
-      where: { id } as any,
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        retailPrice: true,
-        price: true,
-        inStock: true,
-        imagesJson: true,
-        brand: { select: { name: true } },
-        variants: { select: { imagesJson: true }, take: 1 },
-      } as any,
-    });
+      const row: any = await prisma.product.findUnique({
+        where: { id } as any,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          retailPrice: true,
+          inStock: true,
+          imagesJson: true,
+          brand: { select: { name: true } },
+          variants: {
+            select: { imagesJson: true, retailPrice: true },
+            take: 1,
+          },
+        } as any,
+      });
 
-    const origin = getSiteOrigin(req);
-    const canonical = `${origin}/product/${encodeURIComponent(id)}`;
+      const origin = getSiteOrigin(req);
+      const canonical = `${origin}/product/${encodeURIComponent(id)}`;
 
-    if (!row) {
-      res.setHeader("X-DaySpring-SEO", "product-404");
       res.setHeader("Cache-Control", "no-store");
-      return res.status(404).type("text/html").send(
+
+      if (!row) {
+        res.setHeader("X-DaySpring-SEO", "product-404");
+        return res.status(404).type("text/html").send(
+          buildProductHtml({
+            title: "Product not found",
+            description: "This product does not exist on DaySpring.",
+            canonical,
+            imageUrl: "",
+            price: null,
+            inStock: false,
+            brandName: null,
+          })
+        );
+      }
+
+      const title = normalizeWhitespace(String(row.title ?? "Product"));
+      const desc =
+        normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
+        `Buy ${title} on DaySpring.`;
+
+      const images: string[] = Array.isArray(row.imagesJson) ? row.imagesJson : [];
+      const variantImg =
+        Array.isArray(row.variants?.[0]?.imagesJson) ? row.variants[0].imagesJson[0] : "";
+
+      const imgRaw = images[0] || variantImg || "";
+      const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
+
+      // ✅ Only fields that exist in your schema:
+      const priceRaw =
+        row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
+          ? Number(row.retailPrice)
+          : row.variants?.[0]?.retailPrice != null && Number.isFinite(Number(row.variants[0].retailPrice))
+            ? Number(row.variants[0].retailPrice)
+            : null;
+
+      res.setHeader("X-DaySpring-SEO", forceSeo ? "product-force" : "product-bot");
+
+      return res.status(200).type("text/html").send(
         buildProductHtml({
-          title: "Product not found",
-          description: "This product does not exist on DaySpring.",
+          title,
+          description: desc,
           canonical,
-          imageUrl: "",
-          price: null,
-          inStock: false,
-          brandName: null,
+          imageUrl: imgAbs || "",
+          price: priceRaw,
+          inStock: row.inStock !== false,
+          brandName: row.brand?.name ?? null,
         })
       );
+    } catch (e: any) {
+      console.error("Bot product HTML error:", e?.message ?? e);
+      return next(e);
     }
+  });
 
-    const title = normalizeWhitespace(String(row.title ?? "Product"));
-    const desc =
-      normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
-      `Buy ${title} on DaySpring.`;
-
-    const images: string[] = Array.isArray(row.imagesJson) ? row.imagesJson : [];
-    const variantImg =
-      Array.isArray(row.variants?.[0]?.imagesJson) ? row.variants[0].imagesJson[0] : "";
-
-    const imgRaw = images[0] || variantImg || "";
-    const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
-
-    const priceRaw =
-      row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
-        ? Number(row.retailPrice)
-        : row.price != null && Number.isFinite(Number(row.price))
-          ? Number(row.price)
-          : null;
-
-    res.setHeader("X-DaySpring-SEO", forceSeo ? "product-force" : "product-bot");
-    res.setHeader("Cache-Control", "no-store");
-
-    return res.status(200).type("text/html").send(
-      buildProductHtml({
-        title,
-        description: desc,
-        canonical,
-        imageUrl: imgAbs,
-        price: priceRaw,
-        inStock: row.inStock !== false,
-        brandName: row.brand?.name ?? null,
-      })
-    );
-  } catch (e) {
-    return next(e);
-  }
-});
-
-
-  // Serve UI assets
+  // Serve UI static assets
   app.use(
     express.static(UI_DIST_DIR, {
       index: false,
@@ -572,7 +566,7 @@ app.get("/product/:id", async (req, res, next) => {
     return res.sendFile(path.join(UI_DIST_DIR, "index.html"));
   });
 } else {
-  console.warn("UI_DIST_DIR not found (no index.html). SPA routes like /product/:id will 404.");
+  console.warn("UI_DIST_DIR not found (no index.html). SPA routes may 404 unless served elsewhere.");
 }
 
 /* ------------------------------ 404 handler ------------------------------ */
