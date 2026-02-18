@@ -39,6 +39,5 @@ export function setSeo(input: {
     script,
   });
 
-  // ✅ return cleanup so callers can dispose on unmount/change
   return () => entry.dispose();
 }
