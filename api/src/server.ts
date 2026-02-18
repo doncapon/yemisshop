@@ -83,7 +83,6 @@ const allowedOrigins = [
   "https://dayspringhouse.com",
   "https://www.dayspringhouse.com",
   "http://localhost:5173",
-  
 ]
   .filter(Boolean)
   .map((x) => normalizeOrigin(String(x)));
@@ -129,27 +128,34 @@ app.use((req, _res, next) => {
 
 app.use(
   helmet({
-    // Good defaults; we’ll override CSP below
+    // Good defaults; we’ll override CSP below (only for /api)
     crossOriginResourcePolicy: { policy: "same-site" },
   })
 );
 
+/**
+ * ✅ IMPORTANT (Option A):
+ * Your existing CSP was global and blocks ALL scripts/styles/images, which breaks the SPA.
+ * So we apply that strict CSP ONLY to /api routes.
+ */
+const apiCsp = helmet.contentSecurityPolicy({
+  directives: {
+    defaultSrc: ["'none'"],
+    baseUri: ["'none'"],
+    frameAncestors: ["'none'"],
+    formAction: ["'none'"],
+    scriptSrc: ["'none'"],
+    styleSrc: ["'none'"],
+    imgSrc: ["'none'"],
+    connectSrc: ["'self'"], // keep if you need same-origin calls
+    upgradeInsecureRequests: [],
+  },
+});
 
-app.use(
-  helmet.contentSecurityPolicy({
-    directives: {
-      defaultSrc: ["'none'"],
-      baseUri: ["'none'"],
-      frameAncestors: ["'none'"],
-      formAction: ["'none'"],
-      scriptSrc: ["'none'"],
-      styleSrc: ["'none'"],
-      imgSrc: ["'none'"],
-      connectSrc: ["'self'"], // keep if you need same-origin calls
-      upgradeInsecureRequests: [],
-    },
-  })
-);
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api")) return apiCsp(req, res, next);
+  return next();
+});
 
 // If you serve over HTTPS (you should), enable HSTS *in production only*
 if (process.env.NODE_ENV === "production") {
@@ -161,7 +167,6 @@ if (process.env.NODE_ENV === "production") {
     })
   );
 }
-
 
 // ---------------- Permissions-Policy ----------------
 // For an API host, deny all powerful features.
@@ -177,7 +182,6 @@ app.use((_, res, next) => {
   res.setHeader("Permissions-Policy", PERMISSIONS_POLICY);
   next();
 });
-
 
 app.use(express.json({ limit: "2mb" }));
 
@@ -236,7 +240,6 @@ app.use("/api/purchase-orders", purchaseOrdersRouter);
 
 // ⚠️ This looks suspicious: purchaseOrderDeliveryOtpRouter is mounted under /api/orders in your original.
 // If that router is really for purchase-orders, mount it correctly; otherwise keep as-is.
-// app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
 app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
 
 app.use("/api", availabiltyRouter);
@@ -265,9 +268,68 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "30d", index: false }));
 app.use("/api/uploads", uploadsRouter);
 
+/* ------------------------------ Serve Frontend (SPA) ------------------------------ */
+/**
+ * ✅ Option A: Serve the Vite build from this same Express server.
+ *
+ * You must ensure the UI build exists at runtime (index.html present),
+ * e.g. copy ui/dist into the deployed container / filesystem.
+ */
+const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {
+  for (const d of dirs) {
+    if (!d) continue;
+    const dir = String(d);
+    const indexFile = path.join(dir, "index.html");
+    try {
+      if (fs.existsSync(indexFile)) return dir;
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+};
+
+// Try env first, then common monorepo locations.
+const UI_DIST_DIR =
+  pickFirstExistingDir([
+    process.env.UI_DIST_DIR,                   // ✅ recommended in prod
+    path.resolve(process.cwd(), "../ui/dist"), // monorepo: /api -> ../ui/dist
+    path.resolve(process.cwd(), "ui/dist"),    // if ui is nested
+    path.resolve(process.cwd(), "dist"),       // if you copy dist here
+    path.resolve(process.cwd(), "public"),     // alternative
+  ]);
+
+if (UI_DIST_DIR) {
+  console.log("Serving SPA from:", UI_DIST_DIR);
+
+  // Serve assets
+  app.use(
+    express.static(UI_DIST_DIR, {
+      index: false, // we handle index.html via fallback below
+      maxAge: process.env.NODE_ENV === "production" ? "1h" : 0,
+    })
+  );
+
+  // SPA fallback: any non-API route should return index.html
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) return next();
+    return res.sendFile(path.join(UI_DIST_DIR, "index.html"));
+  });
+} else {
+  console.warn(
+    "UI_DIST_DIR not found (no index.html). SPA routes like /product/:id will 404 unless served elsewhere."
+  );
+}
+
 /* ------------------------------ 404 handler ------------------------------ */
 app.use((req, res) => {
-  res.status(404).json({ error: "Not Found", path: req.originalUrl });
+  // ✅ keep API 404s as JSON
+  if (req.path.startsWith("/api")) {
+    return res.status(404).json({ error: "Not Found", path: req.originalUrl });
+  }
+
+  // If SPA is not mounted (UI_DIST_DIR missing), non-api will reach here.
+  return res.status(404).send("Not Found");
 });
 
 /* ------------------------------ Error handler ------------------------------ */
@@ -285,4 +347,3 @@ const HOST = process.env.HOST || "0.0.0.0";
 app.listen(PORT, HOST, () => {
   console.log(`API on http://${HOST}:${PORT}`);
 });
-
