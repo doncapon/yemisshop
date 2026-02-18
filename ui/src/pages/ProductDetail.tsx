@@ -89,23 +89,23 @@ type ProductWire = {
   variants?: VariantWire[];
   offers?: OfferWire[];
   attributes?:
-  | {
-    options?: Array<{
-      attributeId: string;
-      valueId: string;
-      attribute?: { id: string; name: string };
-      value?: { id: string; name: string };
-      attributeName?: string;
-      valueName?: string;
-    }>;
-    texts?: Array<{
-      attributeId: string;
-      value: string;
-      attribute?: { id: string; name: string };
-      attributeName?: string;
-    }>;
-  }
-  | null;
+    | {
+        options?: Array<{
+          attributeId: string;
+          valueId: string;
+          attribute?: { id: string; name: string };
+          value?: { id: string; name: string };
+          attributeName?: string;
+          valueName?: string;
+        }>;
+        texts?: Array<{
+          attributeId: string;
+          value: string;
+          attribute?: { id: string; name: string };
+          attributeName?: string;
+        }>;
+      }
+    | null;
 };
 
 type ValueState = {
@@ -174,26 +174,26 @@ function normalizeVariants(p: any): VariantWire[] {
     imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
     options: Array.isArray(v.options)
       ? v.options
-        .map((o: any) => ({
-          attributeId: String(o.attributeId ?? o.attribute?.id ?? ""),
-          valueId: String(o.valueId ?? o.value?.id ?? ""),
-          unitPrice: readOptionUnit(o),
-          attribute: o.attribute
-            ? {
-              id: String(o.attribute.id),
-              name: String(o.attribute.name),
-              type: o.attribute.type,
-            }
-            : undefined,
-          value: o.value
-            ? {
-              id: String(o.value.id),
-              name: String(o.value.name),
-              code: o.value.code ?? null,
-            }
-            : undefined,
-        }))
-        .filter((o: any) => o.attributeId && o.valueId)
+          .map((o: any) => ({
+            attributeId: String(o.attributeId ?? o.attribute?.id ?? ""),
+            valueId: String(o.valueId ?? o.value?.id ?? ""),
+            unitPrice: readOptionUnit(o),
+            attribute: o.attribute
+              ? {
+                  id: String(o.attribute.id),
+                  name: String(o.attribute.name),
+                  type: o.attribute.type,
+                }
+              : undefined,
+            value: o.value
+              ? {
+                  id: String(o.value.id),
+                  name: String(o.value.name),
+                  code: o.value.code ?? null,
+                }
+              : undefined,
+          }))
+          .filter((o: any) => o.attributeId && o.valueId)
       : [],
   }));
 }
@@ -416,8 +416,8 @@ function upsertCartLineLS(input: {
     idx >= 0
       ? idx
       : cart.findIndex(
-        (x: any) => String(x?.productId ?? "") === pid && (x?.variantId ?? null) === vid
-      );
+          (x: any) => String(x?.productId ?? "") === pid && (x?.variantId ?? null) === vid
+        );
 
   if (safeIdx >= 0) {
     const prevQty = Math.max(0, Number(cart[safeIdx]?.qty) || 0);
@@ -475,12 +475,6 @@ function shallowEqualSelected(a: Record<string, string>, b: Record<string, strin
     if (String(a?.[k] ?? "") !== String(b?.[k] ?? "")) return false;
   }
   return true;
-}
-
-function buildEmptySelection(axes: Array<{ id: string }>) {
-  const out: Record<string, string> = {};
-  for (const ax of axes) out[ax.id] = "";
-  return out;
 }
 
 function buildSelectionFromVariant(
@@ -640,8 +634,8 @@ export default function ProductDetail() {
       const v = Number.isFinite(Number(s?.marginPercent))
         ? Number(s.marginPercent)
         : Number.isFinite(Number(s?.pricingMarkupPercent))
-          ? Number(s.pricingMarkupPercent)
-          : NaN;
+        ? Number(s.pricingMarkupPercent)
+        : NaN;
 
       return Math.max(0, Number.isFinite(v) ? v : 0);
     },
@@ -756,7 +750,9 @@ export default function ProductDetail() {
         id: String(x?.id ?? ""),
         title: String(x?.title ?? ""),
         retailPrice:
-          x?.retailPrice != null && Number.isFinite(Number(x.retailPrice)) ? Number(x.retailPrice) : null,
+          x?.retailPrice != null && Number.isFinite(Number(x.retailPrice))
+            ? Number(x.retailPrice)
+            : null,
         imagesJson: Array.isArray(x?.imagesJson) ? x.imagesJson : [],
         inStock: x?.inStock !== false,
       })) as SimilarProductWire[];
@@ -1000,20 +996,6 @@ export default function ProductDetail() {
     });
   }, [product?.id, axes, baseDefaults, cheapestOverallVariantSelection]);
 
-  const isSelectionCompatible = React.useCallback(
-    (draft: Record<string, string>) => {
-      const entries = Object.entries(draft).filter(([, v]) => !!String(v || "").trim());
-      if (!entries.length) return true;
-
-      if (!variantPairSetsScoped.length) return true;
-
-      return variantPairSetsScoped.some(({ set }) =>
-        entries.every(([aid, vid]) => set.has(`${aid}:${vid}`))
-      );
-    },
-    [variantPairSetsScoped]
-  );
-
   const getFilteredValuesForAttribute = React.useCallback(
     (attrId: string) => {
       const axis = axes.find((a) => a.id === attrId);
@@ -1235,8 +1217,7 @@ export default function ProductDetail() {
       supplierId: chosen?.supplierId ?? null,
       supplierName: chosen?.supplierName ?? null,
       offerId: chosen?.offerId ?? null,
-      final:
-        retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
+      final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
       matchedVariant: matched,
       exactMatch: true,
       exactSellable: sellable,
@@ -1244,8 +1225,8 @@ export default function ProductDetail() {
         bestVariant != null
           ? "VARIANT_OFFER"
           : bestBase != null
-            ? "BASE_OFFER_FALLBACK"
-            : "RETAIL_FALLBACK",
+          ? "BASE_OFFER_FALLBACK"
+          : "RETAIL_FALLBACK",
     };
   }, [
     product?.offers,
@@ -1355,8 +1336,8 @@ export default function ProductDetail() {
         sellableVariants.length > 0
           ? "This combination is not available (no supplier offer). Try a different set of options."
           : canBuyBase
-            ? "Only base is available right now."
-            : "No available offers for this product right now.",
+          ? "Only base is available right now."
+          : "No available offers for this product right now.",
       mode: "VARIANT" as const,
       variantId: null as string | null,
     };
@@ -1667,7 +1648,16 @@ export default function ProductDetail() {
       { productId: product.id, variantId },
       { title: "Added to cart", duration: 3500, maxItems: 4 }
     );
-  }, [product, purchaseMeta, selected, computed.final, computed.supplierId, computed.offerId, axes, queryClient]);
+  }, [
+    product,
+    purchaseMeta,
+    selected,
+    computed.final,
+    computed.supplierId,
+    computed.offerId,
+    axes,
+    queryClient,
+  ]);
 
   React.useEffect(() => {
     if (!showZoom) return;
@@ -1736,7 +1726,8 @@ export default function ProductDetail() {
   }, []);
 
   /* ---------------- SEO (dynamic) ---------------- */
-  // 1) Compute SEO values (PURE computation)
+  // ✅ This is what makes Google see the product title as your page title.
+  //    (Google still decides what to display, but this is the correct setup.)
   const seo = React.useMemo(() => {
     const fallbackTitle = "DaySpring House — Shop";
 
@@ -1765,10 +1756,8 @@ export default function ProductDetail() {
         ? absUrl(String(product.imagesJson[0]))
         : "";
 
-    const price =
-      typeof product.retailPrice === "number" && Number.isFinite(product.retailPrice)
-        ? product.retailPrice
-        : null;
+    // Use computed final price if available (stronger than raw product.retailPrice)
+    const price = Number.isFinite(Number(computed?.final)) && Number(computed.final) > 0 ? Number(computed.final) : null;
 
     const jsonLd = {
       "@context": "https://schema.org",
@@ -1779,16 +1768,16 @@ export default function ProductDetail() {
       ...(img ? { image: [img] } : {}),
       ...(price != null
         ? {
-          offers: {
-            "@type": "Offer",
-            priceCurrency: "NGN",
-            price: String(price),
-            availability: product.inStock
-              ? "https://schema.org/InStock"
-              : "https://schema.org/OutOfStock",
-            url: canonical,
-          },
-        }
+            offers: {
+              "@type": "Offer",
+              priceCurrency: "NGN",
+              price: String(price),
+              availability: (totalStockQty ?? 0) > 0
+                ? "https://schema.org/InStock"
+                : "https://schema.org/OutOfStock",
+              url: canonical,
+            },
+          }
         : {}),
     };
 
@@ -1804,20 +1793,20 @@ export default function ProductDetail() {
     product?.id,
     product?.title,
     product?.description,
-    product?.inStock,
-    product?.retailPrice,
     JSON.stringify(product?.imagesJson ?? []),
     SITE_ORIGIN,
     absUrl,
+    computed?.final,
+    totalStockQty,
   ]);
 
+  // Optional but nice: make tab title sensible while loading/error
   React.useEffect(() => {
     if (productQ.isLoading) document.title = "Loading product… | DaySpring House";
     else if (productQ.isError || !product) document.title = "Product not found | DaySpring House";
   }, [productQ.isLoading, productQ.isError, product?.id]);
 
-
-  // 2) Apply SEO (SIDE EFFECT + cleanup)
+  // Apply SEO head tags (and cleanup when product changes)
   React.useEffect(() => {
     const dispose = setSeo({
       title: seo.title,
@@ -1829,21 +1818,25 @@ export default function ProductDetail() {
         { property: "og:url", content: seo.canonical },
         { property: "og:type", content: seo.ogType },
         ...(seo.ogImage ? [{ property: "og:image", content: seo.ogImage }] : []),
+
+        // Optional but helpful:
+        { property: "twitter:card", content: "summary_large_image" },
+        { property: "twitter:title", content: seo.title },
+        { property: "twitter:description", content: seo.description },
+        ...(seo.ogImage ? [{ property: "twitter:image", content: seo.ogImage }] : []),
       ],
       jsonLd: seo.jsonLd
         ? { id: product?.id ? `product-${product.id}` : "page", data: seo.jsonLd }
         : undefined,
     });
 
-    return dispose; // ✅ cleanup previous head tags when product changes/unmounts
+    return dispose;
   }, [seo.title, seo.description, seo.canonical, seo.ogImage, seo.jsonLd, product?.id]);
 
   /* ---------------- Render ---------------- */
   if (productQ.isLoading) {
     return (
       <SiteLayout>
-
-
         <div className="max-w-6xl mx-auto p-6">
           <div className={`${cardCls} p-5`}>Loading product…</div>
         </div>
@@ -1854,8 +1847,6 @@ export default function ProductDetail() {
   if (productQ.isError || !product) {
     return (
       <SiteLayout>
-
-
         <div className="max-w-6xl mx-auto p-6">
           <div className={`${cardCls} p-5 text-rose-600`}>
             Could not load product.
@@ -1891,7 +1882,9 @@ export default function ProductDetail() {
             type="button"
             onClick={() => onChange("")}
             className={`px-2.5 py-1.5 rounded-xl border text-sm md:text-base ${silverBorder}
-            ${!value ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "bg-white hover:bg-zinc-50"} ${silverShadowSm}`}
+            ${
+              !value ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "bg-white hover:bg-zinc-50"
+            } ${silverShadowSm}`}
           >
             No {axis.name.toLowerCase()}
           </button>
@@ -1907,7 +1900,11 @@ export default function ProductDetail() {
                 disabled={st.disabled}
                 onClick={() => onChange(opt.id)}
                 className={`px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2 ${silverBorder} ${silverShadowSm}
-                ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "bg-white hover:bg-zinc-50"}
+                ${
+                  active
+                    ? "ring-2 ring-fuchsia-500 border-fuchsia-500"
+                    : "bg-white hover:bg-zinc-50"
+                }
                 ${st.disabled ? "opacity-60 cursor-not-allowed hover:bg-white" : ""}`}
               >
                 <span className={st.disabled ? "line-through" : ""}>{opt.name}</span>
@@ -1945,8 +1942,8 @@ export default function ProductDetail() {
               st.disabled && st.reason
                 ? `${opt.name} — ${st.reason}`
                 : st.stock > 0
-                  ? `${opt.name} (${st.stock})`
-                  : opt.name;
+                ? `${opt.name} (${st.stock})`
+                : opt.name;
 
             return (
               <SelectItem key={opt.id} value={opt.id} disabled={st.disabled}>
@@ -1973,6 +1970,7 @@ export default function ProductDetail() {
   const currentSrc = images[mainIndex];
   const mainIsBroken = !!brokenByIndex[mainIndex];
   const showMainImg = !!currentSrc && !mainIsBroken;
+
   return (
     <SiteLayout>
       <div className="bg-gradient-to-b from-zinc-50 to-white">
@@ -1998,10 +1996,8 @@ export default function ProductDetail() {
           </div>
         </div>
 
-        {/* --- rest of your JSX stays exactly the same from here down --- */}
-        {/* I’m keeping your layout untouched (only SEO + hook bug fixes above). */}
-
         <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-[360px]:gap-5">
+          {/* LEFT: images + description */}
           <div className="space-y-3 md:space-y-5">
             <div className="relative mx-auto w-full sm:max-w-[92%]">
               <div
@@ -2011,10 +2007,10 @@ export default function ProductDetail() {
                   isCoarsePointer
                     ? undefined
                     : () => {
-                      setShowZoom(true);
-                      setPaused(true);
-                      updateZoomAnchor();
-                    }
+                        setShowZoom(true);
+                        setPaused(true);
+                        updateZoomAnchor();
+                      }
                 }
                 onMouseLeave={isCoarsePointer ? undefined : () => { setShowZoom(false); setPaused(false); }}
                 onMouseMove={isCoarsePointer ? undefined : onMouseMove}
@@ -2023,7 +2019,7 @@ export default function ProductDetail() {
                   <img
                     ref={mainImgRef}
                     src={currentSrc}
-                    alt=""
+                    alt={product.title || "Product image"}
                     className="w-full h-full object-cover cursor-zoom-in"
                     onLoad={handleImageLoad}
                     onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
@@ -2088,8 +2084,11 @@ export default function ProductDetail() {
                       <span
                         key={i}
                         onClick={() => setMainIndex(i)}
-                        className={`h-1.5 w-1.5 rounded-full cursor-pointer ${i === mainIndex ? "bg-fuchsia-600" : "bg-white/80 border border-zinc-200/70"
-                          }`}
+                        className={`h-1.5 w-1.5 rounded-full cursor-pointer ${
+                          i === mainIndex
+                            ? "bg-fuchsia-600"
+                            : "bg-white/80 border border-zinc-200/70"
+                        }`}
                       />
                     ))}
                   </div>
@@ -2122,8 +2121,11 @@ export default function ProductDetail() {
                         src={u}
                         alt=""
                         onClick={() => setMainIndex(absoluteIndex)}
-                        className={`w-20 h-16 sm:w-24 sm:h-20 max-[360px]:w-[68px] max-[360px]:h-[54px] rounded-xl object-cover select-none cursor-pointer ${silverBorder} ${silverShadowSm} ${isActive ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "hover:opacity-90 bg-white"
-                          }`}
+                        className={`w-20 h-16 sm:w-24 sm:h-20 max-[360px]:w-[68px] max-[360px]:h-[54px] rounded-xl object-cover select-none cursor-pointer ${silverBorder} ${silverShadowSm} ${
+                          isActive
+                            ? "ring-2 ring-fuchsia-500 border-fuchsia-500"
+                            : "hover:opacity-90 bg-white"
+                        }`}
                         onLoad={() => setBrokenByIndex((prev) => ({ ...prev, [absoluteIndex]: false }))}
                         onError={() => setBrokenByIndex((prev) => ({ ...prev, [absoluteIndex]: true }))}
                       />
@@ -2150,12 +2152,188 @@ export default function ProductDetail() {
             </div>
           </div>
 
-          {/* RIGHT COLUMN + rest of file: unchanged from your original */}
-          {/* ... keep your remaining JSX exactly as-is ... */}
+          {/* RIGHT: product info + variant pickers + actions */}
+          <div className="space-y-4 md:space-y-5">
+            <div className={`${cardCls} p-4 md:p-5`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">
+                    {product.title}
+                  </h1>
+                  {product.brand?.name ? (
+                    <div className="mt-1 text-sm text-zinc-600">
+                      Brand: <span className="font-medium">{product.brand.name}</span>
+                    </div>
+                  ) : null}
+                  <div className="mt-2 text-2xl md:text-3xl font-bold text-zinc-900">
+                    {priceLabel}
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-500">
+                    {computed.source === "VARIANT_OFFER"
+                      ? "Price from variant offer"
+                      : computed.source === "BASE_OFFER"
+                      ? "Price from base offer"
+                      : computed.source === "CHEAPEST_OFFER"
+                      ? "Price from cheapest available offer"
+                      : "Retail price"}
+                  </div>
+                </div>
 
-          {/* NOTE: The rest of your original file is long; you can paste it below unchanged.
-              If you'd like, tell me and I’ll return the *entire* remainder too,
-              but the only required edits were already applied above. */}
+                <div className="text-right">
+                  <div className="text-xs text-zinc-500">Total stock</div>
+                  <div className="text-sm font-semibold">{Math.max(0, totalStockQty)}</div>
+                </div>
+              </div>
+
+              {purchaseMeta.helperNote ? (
+                <div className="mt-3 text-sm text-zinc-700">
+                  <span className="inline-flex rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
+                    {purchaseMeta.helperNote}
+                  </span>
+                </div>
+              ) : null}
+
+              {/* Variant pickers (if any axes) */}
+              {axes.length > 0 && (
+                <div className="mt-4 space-y-4">
+                  {axes.map((axis) => (
+                    <div key={axis.id} className="space-y-2">
+                      <div className="text-sm font-semibold text-zinc-800">{axis.name}</div>
+                      <VariantAxisPicker
+                        axis={axis}
+                        value={String(selected?.[axis.id] ?? "")}
+                        onChange={(next) => setSelected((prev) => ({ ...prev, [axis.id]: next }))}
+                      />
+                    </div>
+                  ))}
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelected({ ...baseDefaults })}
+                      className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    >
+                      Reset to base
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setSelected({})}
+                      className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    >
+                      Clear selections
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="mt-5 flex flex-col sm:flex-row gap-3">
+                <button
+                  type="button"
+                  onClick={handleAddToCart}
+                  disabled={purchaseMeta.disableAddToCart}
+                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white ${
+                    purchaseMeta.disableAddToCart
+                      ? "bg-zinc-300 cursor-not-allowed"
+                      : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                  }`}
+                >
+                  Add to cart
+                </button>
+
+                <Link
+                  to="/cart"
+                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-center bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                >
+                  View cart
+                </Link>
+              </div>
+
+              {computed.supplierName ? (
+                <div className="mt-3 text-xs text-zinc-500">
+                  Supplier: <span className="font-medium text-zinc-700">{computed.supplierName}</span>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Mobile description card */}
+            <div className={`md:hidden ${cardCls} p-4`}>
+              <h2 className="text-base font-semibold mb-1">Description</h2>
+              <p className="text-sm text-zinc-700 whitespace-pre-line">
+                {product.description || "No description yet."}
+              </p>
+            </div>
+
+            {/* Similar products */}
+            {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
+              <div className={`${cardCls} p-4 md:p-5`}>
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-base font-semibold">Similar products</h2>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => scrollSimilarBy(-1)}
+                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    >
+                      ‹
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => scrollSimilarBy(1)}
+                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                    >
+                      ›
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  ref={similarRef}
+                  className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
+                  style={{ scrollbarWidth: "thin" as any }}
+                >
+                  {similarQ.data.map((sp, idx) => {
+                    const priceFromOffer = (similarOfferQs as any)?.[idx]?.data?.supplierPrice ?? null;
+                    const basePrice =
+                      priceFromOffer != null && Number.isFinite(Number(priceFromOffer))
+                        ? Number(priceFromOffer)
+                        : sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice))
+                        ? Number(sp.retailPrice)
+                        : null;
+
+                    const showPrice = basePrice != null ? NGN.format(applyMargin(basePrice, marginPercent)) : "—";
+                    const img = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
+
+                    return (
+                      <Link
+                        key={sp.id}
+                        to={`/product/${sp.id}`}
+                        className={`min-w-[220px] max-w-[220px] rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} hover:opacity-95`}
+                      >
+                        <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
+                          {img ? (
+                            <img src={img} alt={sp.title} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">
+                              No image
+                            </div>
+                          )}
+                        </div>
+                        <div className="p-3">
+                          <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
+                          <div className="mt-1 text-sm font-bold">{showPrice}</div>
+                          <div className="mt-1 text-xs text-zinc-500">
+                            {sp.inStock === false ? "Out of stock" : "Available"}
+                          </div>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </SiteLayout>
