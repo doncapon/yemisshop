@@ -7,7 +7,7 @@ import path from "path";
 import helmet from "helmet";
 import * as fs from "fs";
 
-// ✅ Prisma (adjust path if yours differs)
+// ✅ Prisma (adjust import path if needed)
 import { prisma } from "./lib/prisma.js";
 
 // Routers
@@ -77,7 +77,7 @@ import adminUsersRouter from "./routes/adminUsers.js";
 const app = express();
 app.set("trust proxy", 1);
 
-/* -------------------- SEO helpers -------------------- */
+/* -------------------- SEO helpers (Option A) -------------------- */
 
 const BOT_UA =
   /(googlebot|bingbot|duckduckbot|yandexbot|baiduspider|slurp|facebookexternalhit|twitterbot|linkedinbot|pinterest|whatsapp|telegrambot|discordbot)/i;
@@ -85,6 +85,12 @@ const BOT_UA =
 function isBot(req: express.Request) {
   const ua = String(req.headers["user-agent"] || "");
   return BOT_UA.test(ua);
+}
+
+// ✅ allow forcing SEO HTML for debugging: ?__seo=1
+function shouldServeSeo(req: express.Request) {
+  const forced = String((req.query as any)?.__seo ?? "").trim() === "1";
+  return forced || isBot(req);
 }
 
 function escapeHtml(s: string) {
@@ -101,7 +107,11 @@ function normalizeWhitespace(s: string) {
 }
 
 function getSiteOrigin(req: express.Request) {
-  const env = process.env.APP_URL || process.env.FRONTEND_URL || "https://dayspringhouse.com";
+  const env =
+    process.env.APP_URL ||
+    process.env.FRONTEND_URL ||
+    "https://dayspringhouse.com";
+
   if (/^https?:\/\//i.test(env)) return env.replace(/\/$/, "");
 
   const proto = req.headers["x-forwarded-proto"]
@@ -125,72 +135,80 @@ function resolveAbsoluteImage(req: express.Request, raw?: string | null): string
   return `${origin}/${s}`;
 }
 
-type SeoVars = {
+function buildProductHtml(params: {
   title: string;
   description: string;
   canonical: string;
-  ogType: string;
-  ogTitle: string;
-  ogDescription: string;
-  ogUrl: string;
-  ogImage: string; // "" allowed (we will remove tag)
-  twTitle: string;
-  twDescription: string;
-  twImage: string; // "" allowed (we will remove tag)
-};
+  imageUrl?: string;
+  price?: number | null;
+  inStock?: boolean;
+  brandName?: string | null;
+}) {
+  const safeTitle = escapeHtml(params.title);
+  const safeDesc = escapeHtml(params.description);
+  const safeCanonical = escapeHtml(params.canonical);
+  const safeImg = params.imageUrl ? escapeHtml(params.imageUrl) : "";
 
-function injectSeoIntoIndex(html: string, vars: SeoVars) {
-  let out = html;
+  const price =
+    typeof params.price === "number" && Number.isFinite(params.price) && params.price > 0
+      ? String(params.price)
+      : "";
 
-  // <title>...</title>
-  out = out.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtml(vars.title)}</title>`);
+  const availability = params.inStock
+    ? "https://schema.org/InStock"
+    : "https://schema.org/OutOfStock";
 
-  // meta description (by data-seo marker)
-  out = out.replace(
-    /<meta[^>]*data-seo="description"[^>]*>/i,
-    (tag) => tag.replace(/content="[^"]*"/i, `content="${escapeHtml(vars.description)}"`)
-  );
-
-  // canonical link
-  out = out.replace(
-    /<link[^>]*data-seo="canonical"[^>]*>/i,
-    (tag) => tag.replace(/href="[^"]*"/i, `href="${escapeHtml(vars.canonical)}"`)
-  );
-
-  // OG
-  const setOg = (key: string, value: string) => {
-    const re = new RegExp(`<meta[^>]*data-seo="${key}"[^>]*>`, "i");
-    out = out.replace(re, (tag) => tag.replace(/content="[^"]*"/i, `content="${escapeHtml(value)}"`));
+  const jsonLd: any = {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    name: params.title,
+    description: params.description,
+    url: params.canonical,
+    ...(params.imageUrl ? { image: [params.imageUrl] } : {}),
+    ...(params.brandName
+      ? { brand: { "@type": "Brand", name: params.brandName } }
+      : {}),
+    ...(price
+      ? {
+          offers: {
+            "@type": "Offer",
+            priceCurrency: "NGN",
+            price,
+            availability,
+            url: params.canonical,
+          },
+        }
+      : {}),
   };
 
-  setOg("og:type", vars.ogType);
-  setOg("og:title", vars.ogTitle);
-  setOg("og:description", vars.ogDescription);
-  setOg("og:url", vars.ogUrl);
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${safeTitle} | DaySpring</title>
+  <meta name="description" content="${safeDesc}" />
+  <link rel="canonical" href="${safeCanonical}" />
 
-  // OG image: if empty, remove tag
-  if (vars.ogImage) {
-    setOg("og:image", vars.ogImage);
-  } else {
-    out = out.replace(/<meta[^>]*data-seo="og:image"[^>]*>\s*/i, "");
-  }
+  <meta property="og:site_name" content="DaySpring" />
+  <meta property="og:type" content="product" />
+  <meta property="og:title" content="${safeTitle} | DaySpring" />
+  <meta property="og:description" content="${safeDesc}" />
+  <meta property="og:url" content="${safeCanonical}" />
+  ${safeImg ? `<meta property="og:image" content="${safeImg}" />` : ""}
 
-  // Twitter
-  const setTw = (key: string, value: string) => {
-    const re = new RegExp(`<meta[^>]*data-seo="${key}"[^>]*>`, "i");
-    out = out.replace(re, (tag) => tag.replace(/content="[^"]*"/i, `content="${escapeHtml(value)}"`));
-  };
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="${safeTitle} | DaySpring" />
+  <meta name="twitter:description" content="${safeDesc}" />
+  ${safeImg ? `<meta name="twitter:image" content="${safeImg}" />` : ""}
 
-  setTw("twitter:title", vars.twTitle);
-  setTw("twitter:description", vars.twDescription);
-
-  if (vars.twImage) {
-    setTw("twitter:image", vars.twImage);
-  } else {
-    out = out.replace(/<meta[^>]*data-seo="twitter:image"[^>]*>\s*/i, "");
-  }
-
-  return out;
+  <script type="application/ld+json">${escapeHtml(JSON.stringify(jsonLd))}</script>
+</head>
+<body>
+  <noscript>DaySpring product page. Enable JavaScript to view the full experience.</noscript>
+  <div id="root"></div>
+</body>
+</html>`;
 }
 
 /* -------------------- CORS -------------------- */
@@ -237,6 +255,7 @@ app.post("/api/payments/webhook", express.raw({ type: "*/*" }), (req, res, next)
 /* ------------------------------ Common middleware ------------------------------ */
 app.use(cookieParser());
 
+// Request logger
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
   next();
@@ -280,6 +299,7 @@ if (process.env.NODE_ENV === "production") {
   );
 }
 
+// Permissions-Policy
 const PERMISSIONS_POLICY =
   "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), " +
   "display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), " +
@@ -310,7 +330,10 @@ app.use("/api/admin/categories", adminCategoriesRouter);
 app.use("/api/admin/brands", adminBrandsRouter);
 app.use("/api/admin/attributes", adminAttributesRouter);
 app.use("/api/admin/products", adminProductsRouter);
+
+// ✅ mount supplier-offers in ONE canonical place
 app.use("/api/admin", adminSupplierOffersRouter);
+
 app.use("/api/admin/suppliers", adminSuppliers);
 app.use("/api/admin/order-activities", adminActivitiesRouter);
 app.use("/api/admin/orders", adminOrdersRouter);
@@ -345,6 +368,7 @@ app.use("/api/cart", cartRouter);
 /* ------------------------------ Other routes ------------------------------ */
 app.use("/api/purchase-orders", purchaseOrdersRouter);
 app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
+
 app.use("/api", availabiltyRouter);
 app.use("/api/banks", banks);
 app.use("/api/settings", settings);
@@ -399,124 +423,148 @@ const UI_DIST_DIR =
 if (UI_DIST_DIR) {
   console.log("Serving SPA from:", UI_DIST_DIR);
 
-  const INDEX_PATH = path.join(UI_DIST_DIR, "index.html");
-  let INDEX_CACHE: string | null = null;
+  // robots.txt
+  app.get("/robots.txt", (req, res) => {
+    const p = path.join(UI_DIST_DIR, "robots.txt");
+    if (fs.existsSync(p)) return res.sendFile(p);
 
-  const readIndex = () => {
-    if (INDEX_CACHE) return INDEX_CACHE;
-    INDEX_CACHE = fs.readFileSync(INDEX_PATH, "utf8");
-    return INDEX_CACHE;
-  };
-
-  const defaultSeo = (req: express.Request): SeoVars => {
     const origin = getSiteOrigin(req);
-    return {
-      title: "DaySpring — Shop products in Nigeria",
-      description: "Buy quality products on DaySpring. Fast delivery and trusted suppliers.",
-      canonical: `${origin}/`,
-      ogType: "website",
-      ogTitle: "DaySpring House — Shop",
-      ogDescription:
-        "DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely.",
-      ogUrl: `${origin}/`,
-      ogImage: `${origin}/og-image.jpg`,
-      twTitle: "DaySpring House — Shop",
-      twDescription:
-        "DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely.",
-      twImage: `${origin}/og-image.jpg`,
-    };
-  };
+    res.type("text/plain").send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
+  });
+
+  // sitemap.xml (cached)
+  let sitemapCache: { xml: string; at: number } | null = null;
+  const SITEMAP_TTL_MS = 10 * 60 * 1000;
+
+  app.get("/sitemap.xml", async (req, res) => {
+    try {
+      const now = Date.now();
+      if (sitemapCache && now - sitemapCache.at < SITEMAP_TTL_MS) {
+        return res.type("application/xml").send(sitemapCache.xml);
+      }
+
+      const origin = getSiteOrigin(req);
+
+      const products = await prisma.product.findMany({
+        where: { isDeleted: false as any } as any,
+        select: { id: true, updatedAt: true } as any,
+        orderBy: { updatedAt: "desc" } as any,
+        take: 5000,
+      });
+
+      const xml =
+        `<?xml version="1.0" encoding="UTF-8"?>\n` +
+        `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+        products
+          .map((p: any) => {
+            const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
+            const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : "";
+            return (
+              `  <url>\n` +
+              `    <loc>${escapeHtml(loc)}</loc>\n` +
+              (lastmod ? `    <lastmod>${escapeHtml(lastmod)}</lastmod>\n` : "") +
+              `  </url>`
+            );
+          })
+          .join("\n") +
+        `\n</urlset>\n`;
+
+      sitemapCache = { xml, at: now };
+      res.type("application/xml").send(xml);
+    } catch (e: any) {
+      console.error("sitemap.xml error:", e?.message ?? e);
+      res.status(500).type("text/plain").send("sitemap error");
+    }
+  });
 
   /**
-   * ✅ SEO render for product pages
-   * - runs for bots OR when you add ?__seo=1 for debugging
+   * ✅ Bot/forced SEO product HTML
+   * - Bots (or ?__seo=1) get real HTML with real title (from DB)
+   * - Browsers get normal SPA index.html via fallback
    */
   app.get("/product/:id", async (req, res, next) => {
-    const force = String(req.query.__seo ?? "") === "1";
-    if (!force && !isBot(req)) return next();
-
     try {
+      if (!shouldServeSeo(req)) return next();
+
       const id = String(req.params.id || "").trim();
-      const origin = getSiteOrigin(req);
-      const canonical = `${origin}/product/${encodeURIComponent(id)}`;
+      if (!id) return next();
 
-      const base = defaultSeo(req);
-
-      const row: any = await prisma.product.findFirst({
-        where: { id, isDeleted: false as any } as any,
+      const row: any = await prisma.product.findUnique({
+        where: { id } as any,
         select: {
           id: true,
           title: true,
           description: true,
-          inStock: true,
           retailPrice: true,
+          price: true, // legacy fallback if exists
+          inStock: true,
           imagesJson: true,
           brand: { select: { name: true } },
           variants: { select: { imagesJson: true }, take: 1 },
         } as any,
       });
 
-      const tpl = readIndex();
+      const origin = getSiteOrigin(req);
+      const canonical = `${origin}/product/${encodeURIComponent(String(id))}`;
+
+      // mark response so you can test quickly
+      res.setHeader("x-dayspring-seo", "1");
+      res.setHeader("cache-control", "public, max-age=60");
 
       if (!row) {
-        const html404 = injectSeoIntoIndex(tpl, {
-          ...base,
-          title: "Product not found | DaySpring",
-          description: "This product does not exist on DaySpring.",
-          canonical,
-          ogType: "website",
-          ogTitle: "Product not found | DaySpring",
-          ogDescription: "This product does not exist on DaySpring.",
-          ogUrl: canonical,
-          // keep default images
-          ogImage: base.ogImage,
-          twTitle: "Product not found | DaySpring",
-          twDescription: "This product does not exist on DaySpring.",
-          twImage: base.twImage,
-        });
-
-        res.setHeader("x-dayspring-seo", "product:not-found");
-        return res.status(404).type("text/html").send(html404);
+        return res
+          .status(404)
+          .type("text/html")
+          .send(
+            buildProductHtml({
+              title: "Product not found",
+              description: "This product does not exist on DaySpring.",
+              canonical,
+              imageUrl: "",
+              price: null,
+              inStock: false,
+              brandName: null,
+            })
+          );
       }
 
-      const titleBase = normalizeWhitespace(String(row.title ?? "Product"));
+      const title = normalizeWhitespace(String(row.title ?? "Product"));
       const desc =
         normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
-        `Buy ${titleBase} on DaySpring.`;
+        `Buy ${title} on DaySpring.`;
 
       const images: string[] = Array.isArray(row.imagesJson) ? row.imagesJson : [];
       const variantImg =
         Array.isArray(row.variants?.[0]?.imagesJson) ? row.variants[0].imagesJson[0] : "";
 
       const imgRaw = images[0] || variantImg || "";
-      const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : base.ogImage;
+      const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
 
-      const pageTitle = `${titleBase} | DaySpring`;
+      const priceRaw =
+        row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
+          ? Number(row.retailPrice)
+          : row.price != null && Number.isFinite(Number(row.price))
+            ? Number(row.price)
+            : null;
 
-      const html = injectSeoIntoIndex(tpl, {
-        ...base,
-        title: pageTitle,
+      const html = buildProductHtml({
+        title,
         description: desc,
-        canonical,
-        ogType: "product",
-        ogTitle: pageTitle,
-        ogDescription: desc,
-        ogUrl: canonical,
-        ogImage: imgAbs,
-        twTitle: pageTitle,
-        twDescription: desc,
-        twImage: imgAbs,
+        canonical: `${origin}/product/${encodeURIComponent(String(row.id))}`,
+        imageUrl: imgAbs || "",
+        price: priceRaw,
+        inStock: row.inStock !== false,
+        brandName: row.brand?.name ?? null,
       });
 
-      res.setHeader("x-dayspring-seo", "product");
       return res.status(200).type("text/html").send(html);
     } catch (e: any) {
-      console.error("SEO /product/:id error:", e?.message ?? e);
+      console.error("SEO product HTML error:", e?.message ?? e);
       return next();
     }
   });
 
-  // Serve assets
+  // Serve UI assets
   app.use(
     express.static(UI_DIST_DIR, {
       index: false,
@@ -527,10 +575,10 @@ if (UI_DIST_DIR) {
   // SPA fallback
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) return next();
-    return res.sendFile(INDEX_PATH);
+    return res.sendFile(path.join(UI_DIST_DIR, "index.html"));
   });
 } else {
-  console.warn("UI_DIST_DIR not found (no index.html).");
+  console.warn("UI_DIST_DIR not found (no index.html). SPA routes like /product/:id will 404.");
 }
 
 /* ------------------------------ 404 handler ------------------------------ */
