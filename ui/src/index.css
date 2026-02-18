@@ -254,11 +254,26 @@ html {
   font-size: 110%;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 510px) {
   html {
-    font-size: 150%;
+    font-size: 130%;
   }
 }
+
+
+@media (max-width: 410px) {
+  body {
+    zoom: 0.867; /* reduce by 1/3 */
+  }
+}
+
+@media (max-width: 210px) {
+  body {
+    zoom: 0.567; /* reduce by 1/3 */
+  }
+}
+
+
 
 /* ===========================
    ✅ GLOBAL: stop “page drift”

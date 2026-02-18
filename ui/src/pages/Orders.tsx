@@ -486,14 +486,27 @@ function orderServiceFee(o: OrderRow): number {
     (o as any).service_fee,
     (o as any).commsTotal,
     (o as any).comms,
+
+    // ✅ add common “profit/margin/fee” names
+    (o as any).platformFee,
+    (o as any).platformFeeTotal,
+    (o as any).platform_fee,
+    (o as any).platform_fee_total,
+    (o as any).margin,
+    (o as any).marginTotal,
+    (o as any).margin_total,
+    (o as any).commission,
+    (o as any).commissionTotal,
+    (o as any).commission_total,
   ];
 
   for (const v of candidates) {
     const n = fmtN(v);
-    if (n > 0) return n;
+    if (n !== 0) return n;
   }
   return 0;
 }
+
 
 function canRequestRefundAsCustomer(details: OrderRow, latestPayment: PaymentRow | null): boolean {
   const st = String(details.status || "").toUpperCase();
@@ -1073,22 +1086,59 @@ export default function OrdersPage() {
   const grossProfit = useMemo(() => {
     if (!isMetricsRole) return 0;
 
+    // ✅ If API has a real (non-zero) number, use it.
     const apiRes: any = profitRangeQ.data;
     if (apiRes) {
       const raw = fmtN(apiRes.grossProfit);
-      if (Number.isFinite(raw) && raw !== 0) return raw;
-
       const safe = fmtN(apiRes.grossProfitSafe);
-      return safe;
+      const apiVal = raw !== 0 ? raw : safe !== 0 ? safe : 0;
+      if (apiVal !== 0) return apiVal;
+      // else: fall through to client-side calculation
     }
 
+    // ✅ Client-side fallback: try multiple ways to infer profit
     let acc = 0;
+
     for (const o of filteredSorted) {
       const realized = isPaidStatus(o.status) || fmtN(o.paidAmount) > 0;
       if (!realized) continue;
-      const svc = orderServiceFee(o);
-      if (svc !== 0) acc += svc;
+
+      // 1) Prefer explicit metrics if present
+      const m: any = o.metrics || {};
+      const directProfit = fmtN(m.profit ?? m.grossProfit);
+      if (directProfit !== 0) {
+        acc += directProfit;
+        continue;
+      }
+
+      // 2) Revenue - COGS if present
+      const rev = fmtN(m.revenue);
+      const cogs = fmtN(m.cogs);
+      if (rev !== 0 && cogs !== 0) {
+        acc += rev - cogs;
+        continue;
+      }
+
+      // 3) Service/platform fee as “profit”
+      const fee = orderServiceFee(o);
+      if (fee !== 0) {
+        acc += fee;
+        continue;
+      }
+
+      // 4) If you have purchaseOrders supplier amounts, estimate profit = total - supplierAmounts
+      const total = fmtN(o.total);
+      const supplierTotals = (o.purchaseOrders || []).reduce((s, po) => {
+        // supplierAmount is best; else subtotal
+        return s + fmtN((po as any).supplierAmount ?? (po as any).subtotal);
+      }, 0);
+
+      if (total !== 0 && supplierTotals !== 0) {
+        acc += total - supplierTotals;
+        continue;
+      }
     }
+
     return acc;
   }, [isMetricsRole, profitRangeQ.data, filteredSorted]);
 
@@ -1282,7 +1332,7 @@ export default function OrdersPage() {
     });
   };
 
-    // ---------------- Customer Refund (SHOPPER) ----------------
+  // ---------------- Customer Refund (SHOPPER) ----------------
   const submitCustomerRefund = async (draft: RefundDraft) => {
     // payload: keep it flexible for your API
     const payload: any = {
@@ -1388,18 +1438,16 @@ export default function OrdersPage() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
-                    draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                  }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                    }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "ALL" }))}
                 >
                   All items
                 </button>
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
-                    draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                  }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                    }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "SOME" }))}
                 >
                   Select items

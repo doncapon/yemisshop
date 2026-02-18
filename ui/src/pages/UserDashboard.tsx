@@ -811,7 +811,7 @@ function GlassCard(props: {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35 }}
-      className={`overflow-visible rounded-2xl border border-zinc-200/60 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-4 sm:p-5 ${
+      className={`overflow-visible rounded-2xl border border-zinc-200/60 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-4 sm:p-5 lg:p-6 ${
         props.className || ""
       }`}
     >
@@ -889,6 +889,34 @@ function PaymentBadgeInline({ status }: { status: string | undefined }) {
       ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
       : "bg-amber-500/10 text-amber-700 border-amber-600/20";
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] sm:text-xs border ${tone}`}>{s}</span>;
+}
+
+/* --------- Nicer status for recent orders (desktop neatness) --------- */
+function prettyStatus(s?: string) {
+  const v = String(s || "").trim();
+  if (!v) return "UNKNOWN";
+  return v.replace(/_/g, " ").replace(/\s+/g, " ").toUpperCase();
+}
+
+function OrderStatusChip({ status }: { status: string }) {
+  const s = prettyStatus(status);
+  const tone =
+    s === "PAID" || s === "COMPLETED" || s === "DELIVERED"
+      ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
+      : s === "FAILED" || s === "CANCELLED"
+      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+      : s === "SHIPPED" || s === "PROCESSING" || s === "AWAITING FULFILLMENT"
+      ? "bg-cyan-500/10 text-cyan-700 border-cyan-600/20"
+      : "bg-amber-500/10 text-amber-700 border-amber-600/20";
+
+  return (
+    <span
+      className={`inline-flex max-w-full items-center rounded-full border px-2.5 py-0.5 text-[11px] sm:text-xs ${tone}`}
+      title={s}
+    >
+      <span className="truncate">{s}</span>
+    </span>
+  );
 }
 
 /* ---------------------- Page ---------------------- */
@@ -1131,9 +1159,9 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
         </div>
 
         {/* Content grid */}
-        <div className="px-4 md:px-8 pb-10 grid items-start gap-5 sm:gap-6 min-[1024px]:grid-cols-[360px_1fr]">
+        <div className="px-4 md:px-8 pb-12 grid items-start gap-6 lg:gap-8 lg:grid-cols-[380px_minmax(0,1fr)]">
           {/* Left rail */}
-          <div className="min-w-0 space-y-5 sm:space-y-6 min-[1024px]:sticky min-[1024px]:top-6 min-[1024px]:self-start">
+          <div className="min-w-0 space-y-6 lg:space-y-7 lg:sticky lg:top-6 lg:self-start">
             {/* ✅ Admin impersonation panel */}
             {viewerIsAdmin && (
               <GlassCard
@@ -1629,45 +1657,48 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
               ) : ordersQ.data && ordersQ.data.length > 0 ? (
                 <div className="grid gap-3">
                   {ordersQ.data.map((o) => (
-                    <motion.div
-                      key={o.id}
-                      whileHover={{ scale: 1.005 }}
-                      className="border rounded-2xl p-3 sm:p-4 bg-white flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4"
-                    >
-                      <div className="text-[11px] sm:text-xs sm:w-28 shrink-0 flex items-center justify-between sm:block">
-                        <div className="text-zinc-500">{dateFmt(o.createdAt)}</div>
-                        <div className="font-medium sm:mt-1">{o.status}</div>
-                      </div>
-
-                      <div className="flex-1 text-[12px] sm:text-sm min-w-0">
-                        <div className="font-semibold">{ngn.format(o.total)}</div>
-                        <div className="text-zinc-500 mt-1 truncate">
-                          {o.items.length === 0
-                            ? "No items"
-                            : o.items.length === 1
-                            ? o.items[0].title
-                            : `${o.items[0].title} + ${o.items.length - 1} more`}
+                    <motion.div key={o.id} whileHover={{ scale: 1.005 }} className="border rounded-2xl p-3 sm:p-4 bg-white">
+                      <div className="grid gap-3 md:gap-4 md:grid-cols-[140px_minmax(0,1fr)_240px] md:items-center">
+                        {/* Left: date + status pill */}
+                        <div className="flex items-center justify-between md:block md:justify-start min-w-0">
+                          <div className="text-[11px] sm:text-xs text-zinc-500">{dateFmt(o.createdAt)}</div>
+                          <div className="md:mt-2 min-w-0">
+                            <OrderStatusChip status={o.status} />
+                          </div>
                         </div>
-                      </div>
 
-                      <div className="sm:ml-auto flex items-center justify-between sm:justify-end gap-3">
-                        {!isViewingOtherUser ? (
-                          <Link to={`/orders?open=${o.id}`} className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline">
-                            Details
-                          </Link>
-                        ) : (
-                          <span className="text-[12px] sm:text-sm text-zinc-500">—</span>
-                        )}
+                        {/* Middle: amount + items */}
+                        <div className="min-w-0">
+                          <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">{ngn.format(o.total)}</div>
+                          <div className="mt-1 text-[12px] sm:text-sm text-zinc-600 truncate">
+                            {o.items.length === 0
+                              ? "No items"
+                              : o.items.length === 1
+                              ? o.items[0].title
+                              : `${o.items[0].title} + ${o.items.length - 1} more`}
+                          </div>
+                        </div>
 
-                        <motion.button
-                          whileHover={{ y: -1 }}
-                          className="text-[12px] sm:text-sm rounded-full border px-3 py-1.5 bg-white hover:bg-zinc-50 transition disabled:opacity-50"
-                          onClick={() => buyAgain(o.id)}
-                          disabled={rebuyingId === o.id || isViewingOtherUser}
-                          title={isViewingOtherUser ? "Disabled in admin view" : "Re-add all items from this order to your cart"}
-                        >
-                          {rebuyingId === o.id ? "Adding…" : "Buy again"}
-                        </motion.button>
+                        {/* Right: actions */}
+                        <div className="flex items-center justify-between md:justify-end gap-3">
+                          {!isViewingOtherUser ? (
+                            <Link to={`/orders?open=${o.id}`} className="text-[12px] sm:text-sm text-fuchsia-700 hover:underline">
+                              Details
+                            </Link>
+                          ) : (
+                            <span className="text-[12px] sm:text-sm text-zinc-500">—</span>
+                          )}
+
+                          <motion.button
+                            whileHover={{ y: -1 }}
+                            className="text-[12px] sm:text-sm rounded-full border px-3 py-1.5 bg-white hover:bg-zinc-50 transition disabled:opacity-50"
+                            onClick={() => buyAgain(o.id)}
+                            disabled={rebuyingId === o.id || isViewingOtherUser}
+                            title={isViewingOtherUser ? "Disabled in admin view" : "Re-add all items from this order to your cart"}
+                          >
+                            {rebuyingId === o.id ? "Adding…" : "Buy again"}
+                          </motion.button>
+                        </div>
                       </div>
                     </motion.div>
                   ))}
