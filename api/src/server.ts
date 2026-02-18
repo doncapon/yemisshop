@@ -7,6 +7,9 @@ import path from "path";
 import helmet from "helmet";
 import * as fs from "fs";
 
+// ✅ Prisma (adjust path if yours differs)
+import { prisma } from "./lib/prisma.js";
+
 // Routers
 import authRouter from "./routes/auth.js";
 import authSessionRouter from "./routes/authSessions.js";
@@ -74,6 +77,134 @@ import adminUsersRouter from "./routes/adminUsers.js";
 const app = express();
 app.set("trust proxy", 1);
 
+/* -------------------- SEO helpers (Option A) -------------------- */
+
+const BOT_UA =
+  /(googlebot|bingbot|duckduckbot|yandexbot|baiduspider|slurp|facebookexternalhit|twitterbot|linkedinbot|pinterest|whatsapp|telegrambot|discordbot)/i;
+
+function isBot(req: express.Request) {
+  const ua = String(req.headers["user-agent"] || "");
+  return BOT_UA.test(ua);
+}
+
+function escapeHtml(s: string) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function normalizeWhitespace(s: string) {
+  return String(s ?? "").replace(/\s+/g, " ").trim();
+}
+
+function getSiteOrigin(req: express.Request) {
+  // Prefer your canonical domain if set
+  const env =
+    process.env.APP_URL ||
+    process.env.FRONTEND_URL ||
+    "https://dayspringhouse.com";
+
+  if (/^https?:\/\//i.test(env)) return env.replace(/\/$/, "");
+
+  const proto = req.headers["x-forwarded-proto"]
+    ? String(req.headers["x-forwarded-proto"]).split(",")[0].trim()
+    : req.protocol;
+
+  const host = req.headers["x-forwarded-host"]
+    ? String(req.headers["x-forwarded-host"]).split(",")[0].trim()
+    : req.get("host");
+
+  return `${proto}://${host}`.replace(/\/$/, "");
+}
+
+function resolveAbsoluteImage(req: express.Request, raw?: string | null): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  if (/^(https?:\/\/|data:|blob:)/i.test(s)) return s;
+  if (s.startsWith("//")) return `${req.protocol}:${s}`;
+  const origin = getSiteOrigin(req);
+  if (s.startsWith("/")) return `${origin}${s}`;
+  return `${origin}/${s}`;
+}
+
+function buildProductHtml(params: {
+  title: string;
+  description: string;
+  canonical: string;
+  imageUrl?: string;
+  price?: number | null;
+  inStock?: boolean;
+  brandName?: string | null;
+}) {
+  const title = escapeHtml(params.title);
+  const desc = escapeHtml(params.description);
+  const canonical = escapeHtml(params.canonical);
+  const img = params.imageUrl ? escapeHtml(params.imageUrl) : "";
+  const brand = params.brandName ? escapeHtml(params.brandName) : "";
+
+  const price =
+    typeof params.price === "number" && Number.isFinite(params.price) && params.price > 0
+      ? String(params.price)
+      : "";
+
+  const availability = params.inStock
+    ? "https://schema.org/InStock"
+    : "https://schema.org/OutOfStock";
+
+  const jsonLd: any = {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    name: params.title,
+    description: params.description,
+    url: params.canonical,
+    ...(params.imageUrl ? { image: [params.imageUrl] } : {}),
+    ...(brand ? { brand: { "@type": "Brand", name: params.brandName } } : {}),
+    ...(price
+      ? {
+          offers: {
+            "@type": "Offer",
+            priceCurrency: "NGN",
+            price,
+            availability,
+            url: params.canonical,
+          },
+        }
+      : {}),
+  };
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${title} | DaySpring</title>
+  <meta name="description" content="${desc}" />
+  <link rel="canonical" href="${canonical}" />
+
+  <meta property="og:site_name" content="DaySpring" />
+  <meta property="og:type" content="product" />
+  <meta property="og:title" content="${title} | DaySpring" />
+  <meta property="og:description" content="${desc}" />
+  <meta property="og:url" content="${canonical}" />
+  ${img ? `<meta property="og:image" content="${img}" />` : ""}
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="${title} | DaySpring" />
+  <meta name="twitter:description" content="${desc}" />
+  ${img ? `<meta name="twitter:image" content="${img}" />` : ""}
+
+  <script type="application/ld+json">${escapeHtml(JSON.stringify(jsonLd))}</script>
+</head>
+<body>
+  <noscript>DaySpring product page. Enable JavaScript to view the full experience.</noscript>
+  <div id="root"></div>
+</body>
+</html>`;
+}
+
 /* -------------------- CORS -------------------- */
 const normalizeOrigin = (s: string) => s.replace(/\/$/, "");
 
@@ -113,7 +244,6 @@ app.options("*", cors(corsOptions));
 /* ------------------------------ Webhook raw body (before json) ------------------------------ */
 // IMPORTANT: if you verify signatures, raw MUST be before express.json()
 app.post("/api/payments/webhook", express.raw({ type: "*/*" }), (req, res, next) => {
-  // hand off to your payments router (it must have a POST /webhook handler)
   return (paymentsRouter as any)(req, res, next);
 });
 
@@ -135,8 +265,7 @@ app.use(
 
 /**
  * ✅ IMPORTANT (Option A):
- * Your existing CSP was global and blocks ALL scripts/styles/images, which breaks the SPA.
- * So we apply that strict CSP ONLY to /api routes.
+ * Strict CSP ONLY for /api routes (otherwise it breaks the SPA).
  */
 const apiCsp = helmet.contentSecurityPolicy({
   directives: {
@@ -147,7 +276,7 @@ const apiCsp = helmet.contentSecurityPolicy({
     scriptSrc: ["'none'"],
     styleSrc: ["'none'"],
     imgSrc: ["'none'"],
-    connectSrc: ["'self'"], // keep if you need same-origin calls
+    connectSrc: ["'self'"],
     upgradeInsecureRequests: [],
   },
 });
@@ -157,19 +286,18 @@ app.use((req, res, next) => {
   return next();
 });
 
-// If you serve over HTTPS (you should), enable HSTS *in production only*
+// If you serve over HTTPS, enable HSTS in production only
 if (process.env.NODE_ENV === "production") {
   app.use(
     helmet.hsts({
-      maxAge: 60 * 60 * 24 * 365, // 1 year
+      maxAge: 60 * 60 * 24 * 365,
       includeSubDomains: true,
-      preload: false, // set true only when you're 100% ready
+      preload: false,
     })
   );
 }
 
 // ---------------- Permissions-Policy ----------------
-// For an API host, deny all powerful features.
 const PERMISSIONS_POLICY =
   "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), " +
   "display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), " +
@@ -237,9 +365,6 @@ app.use("/api/cart", cartRouter);
 
 /* ------------------------------ Other routes ------------------------------ */
 app.use("/api/purchase-orders", purchaseOrdersRouter);
-
-// ⚠️ This looks suspicious: purchaseOrderDeliveryOtpRouter is mounted under /api/orders in your original.
-// If that router is really for purchase-orders, mount it correctly; otherwise keep as-is.
 app.use("/api/orders", purchaseOrderDeliveryOtpRouter);
 
 app.use("/api", availabiltyRouter);
@@ -271,7 +396,6 @@ app.use("/api/uploads", uploadsRouter);
 /* ------------------------------ Serve Frontend (SPA) ------------------------------ */
 /**
  * ✅ Option A: Serve the Vite build from this same Express server.
- *
  * You must ensure the UI build exists at runtime (index.html present),
  * e.g. copy ui/dist into the deployed container / filesystem.
  */
@@ -302,10 +426,168 @@ const UI_DIST_DIR =
 if (UI_DIST_DIR) {
   console.log("Serving SPA from:", UI_DIST_DIR);
 
+  /**
+   * ✅ robots.txt
+   * If ui/dist has robots.txt, serve it; else serve a safe default.
+   */
+  app.get("/robots.txt", (req, res) => {
+    const p = path.join(UI_DIST_DIR, "robots.txt");
+    if (fs.existsSync(p)) return res.sendFile(p);
+
+    const origin = getSiteOrigin(req);
+    res.type("text/plain").send(
+      `User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`
+    );
+  });
+
+  /**
+   * ✅ sitemap.xml (generated, cached)
+   * This helps Google discover /product/:id URLs.
+   */
+  let sitemapCache: { xml: string; at: number } | null = null;
+  const SITEMAP_TTL_MS = 10 * 60 * 1000;
+
+  app.get("/sitemap.xml", async (req, res) => {
+    try {
+      const now = Date.now();
+      if (sitemapCache && now - sitemapCache.at < SITEMAP_TTL_MS) {
+        res.type("application/xml").send(sitemapCache.xml);
+        return;
+      }
+
+      const origin = getSiteOrigin(req);
+
+      // Best-effort: only index LIVE products if you have status; otherwise include all non-deleted.
+      // If your Product model doesn't have some of these fields, remove them from where.
+      const products = await prisma.product.findMany({
+        where: {
+          isDeleted: false as any,
+          // status: "LIVE" as any, // uncomment if your schema supports it
+        } as any,
+        select: { id: true, updatedAt: true } as any,
+        orderBy: { updatedAt: "desc" } as any,
+        take: 5000,
+      });
+
+      const urls = products.map((p: any) => {
+        const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
+        const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : undefined;
+        return { loc, lastmod };
+      });
+
+      const xml =
+        `<?xml version="1.0" encoding="UTF-8"?>\n` +
+        `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+        urls
+          .map(
+            (u) =>
+              `  <url>\n` +
+              `    <loc>${escapeHtml(u.loc)}</loc>\n` +
+              (u.lastmod ? `    <lastmod>${escapeHtml(u.lastmod)}</lastmod>\n` : "") +
+              `  </url>`
+          )
+          .join("\n") +
+        `\n</urlset>\n`;
+
+      sitemapCache = { xml, at: now };
+      res.type("application/xml").send(xml);
+    } catch (e: any) {
+      console.error("sitemap.xml error:", e?.message ?? e);
+      res.status(500).type("text/plain").send("sitemap error");
+    }
+  });
+
+  /**
+   * ✅ Bot-friendly product HTML (critical for Google showing real product title instead of "ui")
+   * - Only serves HTML to bots
+   * - Humans still get SPA index.html
+   */
+  app.get("/product/:id", async (req, res, next) => {
+    try {
+      if (!isBot(req)) return next();
+
+      const id = String(req.params.id || "").trim();
+      if (!id) return next();
+
+      // Fetch minimal product fields for meta
+      const row: any = await prisma.product.findUnique({
+        where: { id } as any,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          retailPrice: true,
+          price: true, // legacy fallback
+          inStock: true,
+          imagesJson: true,
+          brand: { select: { name: true } },
+          variants: {
+            select: { imagesJson: true },
+            take: 1,
+          },
+        } as any,
+      });
+
+      if (!row) {
+        // Bot 404 (still HTML)
+        const origin = getSiteOrigin(req);
+        res.status(404).type("text/html").send(
+          buildProductHtml({
+            title: "Product not found",
+            description: "This product does not exist on DaySpring.",
+            canonical: `${origin}/product/${encodeURIComponent(id)}`,
+            imageUrl: "",
+            price: null,
+            inStock: false,
+            brandName: null,
+          })
+        );
+        return;
+      }
+
+      const origin = getSiteOrigin(req);
+      const canonical = `${origin}/product/${encodeURIComponent(String(row.id))}`;
+
+      const title = normalizeWhitespace(String(row.title ?? "Product"));
+      const desc =
+        normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
+        `Buy ${title} on DaySpring.`;
+
+      const images: string[] = Array.isArray(row.imagesJson) ? row.imagesJson : [];
+      const variantImg =
+        Array.isArray(row.variants?.[0]?.imagesJson) ? row.variants[0].imagesJson[0] : "";
+
+      const imgRaw = images[0] || variantImg || "";
+      const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
+
+      const priceRaw =
+        row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
+          ? Number(row.retailPrice)
+          : row.price != null && Number.isFinite(Number(row.price))
+            ? Number(row.price)
+            : null;
+
+      const html = buildProductHtml({
+        title,
+        description: desc,
+        canonical,
+        imageUrl: imgAbs || "",
+        price: priceRaw,
+        inStock: row.inStock !== false,
+        brandName: row.brand?.name ?? null,
+      });
+
+      res.status(200).type("text/html").send(html);
+    } catch (e: any) {
+      console.error("Bot product HTML error:", e?.message ?? e);
+      return next();
+    }
+  });
+
   // Serve assets
   app.use(
     express.static(UI_DIST_DIR, {
-      index: false, // we handle index.html via fallback below
+      index: false,
       maxAge: process.env.NODE_ENV === "production" ? "1h" : 0,
     })
   );
@@ -323,12 +605,9 @@ if (UI_DIST_DIR) {
 
 /* ------------------------------ 404 handler ------------------------------ */
 app.use((req, res) => {
-  // ✅ keep API 404s as JSON
   if (req.path.startsWith("/api")) {
     return res.status(404).json({ error: "Not Found", path: req.originalUrl });
   }
-
-  // If SPA is not mounted (UI_DIST_DIR missing), non-api will reach here.
   return res.status(404).send("Not Found");
 });
 
@@ -339,9 +618,6 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 });
 
 const PORT = Number(process.env.PORT ?? 8080);
-
-// ✅ safest default for local dev + docker
-// use 0.0.0.0 so it binds all interfaces (works in Docker/Railway too)
 const HOST = process.env.HOST || "0.0.0.0";
 
 app.listen(PORT, HOST, () => {

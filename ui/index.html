@@ -1,58 +1,51 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
 
-    <!-- ✅ Vite: files in /public are served at the site root -->
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="manifest" href="/manifest.webmanifest" />
+<head>
+  <meta charset="UTF-8" />
 
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- ✅ Vite: files in /public are served at the site root -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/manifest.webmanifest" />
 
-    <!-- ✅ Primary SEO -->
-    <title>DaySpring House — Shop</title>
-    <meta
-      name="description"
-      content="DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely."
-    />
-    <meta name="application-name" content="DaySpring House" />
-    <meta name="theme-color" content="#ffffff" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-    <!-- ✅ Canonical (SPA default; product pages can override later with React head tags) -->
-    <link rel="canonical" href="https://dayspringhouse.com/" />
+  <!-- ✅ Primary SEO -->
+  <title>DaySpring — Shop products in Nigeria</title>
+  <meta name="description" content="Buy quality products on DaySpring. Fast delivery and trusted suppliers." />
 
-    <!-- ✅ Open Graph -->
-    <meta property="og:site_name" content="DaySpring House" />
-    <meta property="og:type" content="website" />
-    <meta property="og:title" content="DaySpring House — Shop" />
-    <meta
-      property="og:description"
-      content="DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely."
-    />
-    <meta property="og:url" content="https://dayspringhouse.com/" />
-    <!-- If you have a social preview image, add it in /public and uncomment:
+  <meta name="application-name" content="DaySpring House" />
+  <meta name="theme-color" content="#ffffff" />
+
+  <!-- ✅ Canonical (SPA default; product pages can override later with React head tags) -->
+  <link rel="canonical" href="https://dayspringhouse.com/" />
+
+  <!-- ✅ Open Graph -->
+  <meta property="og:site_name" content="DaySpring House" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="DaySpring House — Shop" />
+  <meta property="og:description"
+    content="DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely." />
+  <meta property="og:url" content="https://dayspringhouse.com/" />
+  <!-- If you have a social preview image, add it in /public and uncomment:
     <meta property="og:image" content="https://dayspringhouse.com/og-image.jpg" />
     -->
 
-    <!-- ✅ Twitter -->
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="DaySpring House — Shop" />
-    <meta
-      name="twitter:description"
-      content="DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely."
-    />
-    <!-- <meta name="twitter:image" content="https://dayspringhouse.com/og-image.jpg" /> -->
+  <!-- ✅ Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="DaySpring House — Shop" />
+  <meta name="twitter:description"
+    content="DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely." />
+  <!-- <meta name="twitter:image" content="https://dayspringhouse.com/og-image.jpg" /> -->
 
-    <!-- ✅ Structured data (helps Google show correct site name) -->
-    <script type="application/ld+json">
+  <!-- ✅ Structured data (helps Google show correct site name) -->
+  <script type="application/ld+json">
       {"@context":"https://schema.org","@type":"WebSite","name":"DaySpring House","url":"https://dayspringhouse.com","potentialAction":{"@type":"SearchAction","target":"https://dayspringhouse.com/?q={search_term_string}","query-input":"required name=search_term_string"}}
     </script>
 
-    <!-- ✅ Your CSP (updated to allow the JSON-LD inline script via hash) -->
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="
+  <!-- ✅ Your CSP (updated to allow the JSON-LD inline script via hash) -->
+  <meta http-equiv="Content-Security-Policy" content="
         default-src 'self';
         base-uri 'self';
         object-src 'none';
@@ -64,14 +57,14 @@
         script-src 'self' https://js.paystack.co 'sha256-Crr0k6ehqLlwP6rZg5dzQbxqTcCHFGnFZyNBFv3d/tw=';
         connect-src 'self' https://api.dayspringhouse.com https://api.paystack.co;
         upgrade-insecure-requests
-      "
-    />
-  </head>
+      " />
+</head>
 
-  <body>
-    <div id="root"></div>
-    <div id="modal-root"></div>
+<body>
+  <div id="root"></div>
+  <div id="modal-root"></div>
 
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
 </html>
