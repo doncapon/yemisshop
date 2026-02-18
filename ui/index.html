@@ -11,40 +11,36 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <!-- ✅ Primary SEO -->
-  <title>DaySpring — Shop products in Nigeria</title>
-  <meta name="description" content="Buy quality products on DaySpring. Fast delivery and trusted suppliers." />
+  <!-- ✅ Primary SEO (server will replace placeholders for /product/:id bots) -->
+  <title>__DS_TITLE__</title>
+  <meta name="description" content="__DS_DESC__" />
 
   <meta name="application-name" content="DaySpring House" />
   <meta name="theme-color" content="#ffffff" />
 
-  <!-- ✅ Canonical (SPA default; product pages can override later with React head tags) -->
-  <link rel="canonical" href="https://dayspringhouse.com/" />
+  <!-- ✅ Canonical -->
+  <link rel="canonical" href="__DS_CANONICAL__" />
 
   <!-- ✅ Open Graph -->
   <meta property="og:site_name" content="DaySpring House" />
-  <meta property="og:type" content="website" />
-  <meta property="og:title" content="DaySpring House — Shop" />
-  <meta property="og:description"
-    content="DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely." />
-  <meta property="og:url" content="https://dayspringhouse.com/" />
-  <!-- If you have a social preview image, add it in /public and uncomment:
-    <meta property="og:image" content="https://dayspringhouse.com/og-image.jpg" />
-    -->
+  <meta property="og:type" content="__DS_OG_TYPE__" />
+  <meta property="og:title" content="__DS_OG_TITLE__" />
+  <meta property="og:description" content="__DS_OG_DESC__" />
+  <meta property="og:url" content="__DS_OG_URL__" />
+  <meta property="og:image" content="__DS_OG_IMAGE__" />
 
   <!-- ✅ Twitter -->
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="DaySpring House — Shop" />
-  <meta name="twitter:description"
-    content="DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely." />
-  <!-- <meta name="twitter:image" content="https://dayspringhouse.com/og-image.jpg" /> -->
+  <meta name="twitter:title" content="__DS_TW_TITLE__" />
+  <meta name="twitter:description" content="__DS_TW_DESC__" />
+  <meta name="twitter:image" content="__DS_TW_IMAGE__" />
 
-  <!-- ✅ Structured data (helps Google show correct site name) -->
+  <!-- ✅ Structured data (kept static to avoid CSP hash issues) -->
   <script type="application/ld+json">
       {"@context":"https://schema.org","@type":"WebSite","name":"DaySpring House","url":"https://dayspringhouse.com","potentialAction":{"@type":"SearchAction","target":"https://dayspringhouse.com/?q={search_term_string}","query-input":"required name=search_term_string"}}
     </script>
 
-  <!-- ✅ Your CSP (updated to allow the JSON-LD inline script via hash) -->
+  <!-- ✅ Your CSP (unchanged) -->
   <meta http-equiv="Content-Security-Policy" content="
         default-src 'self';
         base-uri 'self';

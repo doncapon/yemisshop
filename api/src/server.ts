@@ -102,11 +102,7 @@ function normalizeWhitespace(s: string) {
 
 function getSiteOrigin(req: express.Request) {
   // Prefer your canonical domain if set
-  const env =
-    process.env.APP_URL ||
-    process.env.FRONTEND_URL ||
-    "https://dayspringhouse.com";
-
+  const env = process.env.APP_URL || process.env.FRONTEND_URL || "https://dayspringhouse.com";
   if (/^https?:\/\//i.test(env)) return env.replace(/\/$/, "");
 
   const proto = req.headers["x-forwarded-proto"]
@@ -130,79 +126,49 @@ function resolveAbsoluteImage(req: express.Request, raw?: string | null): string
   return `${origin}/${s}`;
 }
 
-function buildProductHtml(params: {
-  title: string;
-  description: string;
-  canonical: string;
-  imageUrl?: string;
-  price?: number | null;
-  inStock?: boolean;
-  brandName?: string | null;
-}) {
-  const title = escapeHtml(params.title);
-  const desc = escapeHtml(params.description);
-  const canonical = escapeHtml(params.canonical);
-  const img = params.imageUrl ? escapeHtml(params.imageUrl) : "";
-  const brand = params.brandName ? escapeHtml(params.brandName) : "";
-
-  const price =
-    typeof params.price === "number" && Number.isFinite(params.price) && params.price > 0
-      ? String(params.price)
-      : "";
-
-  const availability = params.inStock
-    ? "https://schema.org/InStock"
-    : "https://schema.org/OutOfStock";
-
-  const jsonLd: any = {
-    "@context": "https://schema.org",
-    "@type": "Product",
-    name: params.title,
-    description: params.description,
-    url: params.canonical,
-    ...(params.imageUrl ? { image: [params.imageUrl] } : {}),
-    ...(brand ? { brand: { "@type": "Brand", name: params.brandName } } : {}),
-    ...(price
-      ? {
-          offers: {
-            "@type": "Offer",
-            priceCurrency: "NGN",
-            price,
-            availability,
-            url: params.canonical,
-          },
-        }
-      : {}),
+function applyPlaceholders(
+  templateHtml: string,
+  vars: {
+    title: string;
+    desc: string;
+    canonical: string;
+    ogType: string;
+    ogTitle: string;
+    ogDesc: string;
+    ogUrl: string;
+    ogImage: string;
+    twTitle: string;
+    twDesc: string;
+    twImage: string;
+  }
+) {
+  // Important: escape values for HTML attributes/text
+  const safe = {
+    title: escapeHtml(vars.title),
+    desc: escapeHtml(vars.desc),
+    canonical: escapeHtml(vars.canonical),
+    ogType: escapeHtml(vars.ogType),
+    ogTitle: escapeHtml(vars.ogTitle),
+    ogDesc: escapeHtml(vars.ogDesc),
+    ogUrl: escapeHtml(vars.ogUrl),
+    ogImage: escapeHtml(vars.ogImage),
+    twTitle: escapeHtml(vars.twTitle),
+    twDesc: escapeHtml(vars.twDesc),
+    twImage: escapeHtml(vars.twImage),
   };
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>${title} | DaySpring</title>
-  <meta name="description" content="${desc}" />
-  <link rel="canonical" href="${canonical}" />
-
-  <meta property="og:site_name" content="DaySpring" />
-  <meta property="og:type" content="product" />
-  <meta property="og:title" content="${title} | DaySpring" />
-  <meta property="og:description" content="${desc}" />
-  <meta property="og:url" content="${canonical}" />
-  ${img ? `<meta property="og:image" content="${img}" />` : ""}
-
-  <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="${title} | DaySpring" />
-  <meta name="twitter:description" content="${desc}" />
-  ${img ? `<meta name="twitter:image" content="${img}" />` : ""}
-
-  <script type="application/ld+json">${escapeHtml(JSON.stringify(jsonLd))}</script>
-</head>
-<body>
-  <noscript>DaySpring product page. Enable JavaScript to view the full experience.</noscript>
-  <div id="root"></div>
-</body>
-</html>`;
+  return templateHtml
+    .replaceAll("__DS_TITLE__", safe.title)
+    .replaceAll("__DS_DESC__", safe.desc)
+    .replaceAll("__DS_CANONICAL__", safe.canonical)
+    .replaceAll("__DS_OG_TYPE__", safe.ogType)
+    .replaceAll("__DS_OG_TITLE__", safe.ogTitle)
+    .replaceAll("__DS_OG_DESC__", safe.ogDesc)
+    .replaceAll("__DS_OG_URL__", safe.ogUrl)
+    .replaceAll("__DS_OG_IMAGE__", safe.ogImage)
+    .replaceAll("__DS_TW_TITLE__", safe.twTitle)
+    .replaceAll("__DS_TW_DESC__", safe.twDesc)
+    .replaceAll("__DS_TW_IMAGE__", safe.twImage);
 }
 
 /* -------------------- CORS -------------------- */
@@ -416,91 +382,49 @@ const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {
 // Try env first, then common monorepo locations.
 const UI_DIST_DIR =
   pickFirstExistingDir([
-    process.env.UI_DIST_DIR,                   // ✅ recommended in prod
+    process.env.UI_DIST_DIR, // ✅ recommended in prod
     path.resolve(process.cwd(), "../ui/dist"), // monorepo: /api -> ../ui/dist
-    path.resolve(process.cwd(), "ui/dist"),    // if ui is nested
-    path.resolve(process.cwd(), "dist"),       // if you copy dist here
-    path.resolve(process.cwd(), "public"),     // alternative
+    path.resolve(process.cwd(), "ui/dist"), // if ui is nested
+    path.resolve(process.cwd(), "dist"), // if you copy dist here
+    path.resolve(process.cwd(), "public"), // alternative
   ]);
 
 if (UI_DIST_DIR) {
   console.log("Serving SPA from:", UI_DIST_DIR);
 
-  /**
-   * ✅ robots.txt
-   * If ui/dist has robots.txt, serve it; else serve a safe default.
-   */
-  app.get("/robots.txt", (req, res) => {
-    const p = path.join(UI_DIST_DIR, "robots.txt");
-    if (fs.existsSync(p)) return res.sendFile(p);
+  // Cache index.html template (contains placeholders)
+  const INDEX_PATH = path.join(UI_DIST_DIR, "index.html");
+  let INDEX_CACHE: string | null = null;
 
+  const readIndexTemplate = () => {
+    if (INDEX_CACHE) return INDEX_CACHE;
+    INDEX_CACHE = fs.readFileSync(INDEX_PATH, "utf8");
+    return INDEX_CACHE;
+  };
+
+  const defaultSeo = (req: express.Request) => {
     const origin = getSiteOrigin(req);
-    res.type("text/plain").send(
-      `User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`
-    );
-  });
+    return {
+      title: "DaySpring — Shop products in Nigeria",
+      desc: "Buy quality products on DaySpring. Fast delivery and trusted suppliers.",
+      canonical: `${origin}/`,
+      ogType: "website",
+      ogTitle: "DaySpring House — Shop",
+      ogDesc:
+        "DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely.",
+      ogUrl: `${origin}/`,
+      ogImage: `${origin}/og-image.jpg`, // if missing, it's okay; change to a real image if you have one
+      twTitle: "DaySpring House — Shop",
+      twDesc:
+        "DaySpring House — shop quality products in Nigeria. Browse our catalogue, add to cart, and checkout securely.",
+      twImage: `${origin}/og-image.jpg`,
+    };
+  };
 
   /**
-   * ✅ sitemap.xml (generated, cached)
-   * This helps Google discover /product/:id URLs.
-   */
-  let sitemapCache: { xml: string; at: number } | null = null;
-  const SITEMAP_TTL_MS = 10 * 60 * 1000;
-
-  app.get("/sitemap.xml", async (req, res) => {
-    try {
-      const now = Date.now();
-      if (sitemapCache && now - sitemapCache.at < SITEMAP_TTL_MS) {
-        res.type("application/xml").send(sitemapCache.xml);
-        return;
-      }
-
-      const origin = getSiteOrigin(req);
-
-      // Best-effort: only index LIVE products if you have status; otherwise include all non-deleted.
-      // If your Product model doesn't have some of these fields, remove them from where.
-      const products = await prisma.product.findMany({
-        where: {
-          isDeleted: false as any,
-          // status: "LIVE" as any, // uncomment if your schema supports it
-        } as any,
-        select: { id: true, updatedAt: true } as any,
-        orderBy: { updatedAt: "desc" } as any,
-        take: 5000,
-      });
-
-      const urls = products.map((p: any) => {
-        const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
-        const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : undefined;
-        return { loc, lastmod };
-      });
-
-      const xml =
-        `<?xml version="1.0" encoding="UTF-8"?>\n` +
-        `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-        urls
-          .map(
-            (u) =>
-              `  <url>\n` +
-              `    <loc>${escapeHtml(u.loc)}</loc>\n` +
-              (u.lastmod ? `    <lastmod>${escapeHtml(u.lastmod)}</lastmod>\n` : "") +
-              `  </url>`
-          )
-          .join("\n") +
-        `\n</urlset>\n`;
-
-      sitemapCache = { xml, at: now };
-      res.type("application/xml").send(xml);
-    } catch (e: any) {
-      console.error("sitemap.xml error:", e?.message ?? e);
-      res.status(500).type("text/plain").send("sitemap error");
-    }
-  });
-
-  /**
-   * ✅ Bot-friendly product HTML (critical for Google showing real product title instead of "ui")
-   * - Only serves HTML to bots
-   * - Humans still get SPA index.html
+   * ✅ Bot-friendly SEO for product pages:
+   * Serve the SAME index.html, but with placeholders replaced for bots.
+   * Humans still get SPA index.html.
    */
   app.get("/product/:id", async (req, res, next) => {
     try {
@@ -509,77 +433,81 @@ if (UI_DIST_DIR) {
       const id = String(req.params.id || "").trim();
       if (!id) return next();
 
-      // Fetch minimal product fields for meta
-      const row: any = await prisma.product.findUnique({
-        where: { id } as any,
+      const origin = getSiteOrigin(req);
+      const canonical = `${origin}/product/${encodeURIComponent(id)}`;
+
+      // Fetch minimal fields for SEO.
+      // Use findFirst + isDeleted guard to avoid indexing deleted products.
+      const row: any = await prisma.product.findFirst({
+        where: { id, isDeleted: false as any } as any,
         select: {
           id: true,
           title: true,
           description: true,
+          inStock: true,
           retailPrice: true,
           price: true, // legacy fallback
-          inStock: true,
           imagesJson: true,
           brand: { select: { name: true } },
-          variants: {
-            select: { imagesJson: true },
-            take: 1,
-          },
+          variants: { select: { imagesJson: true }, take: 1 },
         } as any,
       });
 
+      const tpl = readIndexTemplate();
+      const base = defaultSeo(req);
+
       if (!row) {
-        // Bot 404 (still HTML)
-        const origin = getSiteOrigin(req);
-        res.status(404).type("text/html").send(
-          buildProductHtml({
-            title: "Product not found",
-            description: "This product does not exist on DaySpring.",
-            canonical: `${origin}/product/${encodeURIComponent(id)}`,
-            imageUrl: "",
-            price: null,
-            inStock: false,
-            brandName: null,
-          })
-        );
-        return;
+        const html404 = applyPlaceholders(tpl, {
+          ...base,
+          title: "Product not found | DaySpring",
+          desc: "This product does not exist on DaySpring.",
+          canonical,
+          ogType: "website",
+          ogTitle: "Product not found | DaySpring",
+          ogDesc: "This product does not exist on DaySpring.",
+          ogUrl: canonical,
+          // keep default image
+          ogImage: base.ogImage,
+          twTitle: "Product not found | DaySpring",
+          twDesc: "This product does not exist on DaySpring.",
+          twImage: base.twImage,
+        });
+
+        return res.status(404).type("text/html").send(html404);
       }
 
-      const origin = getSiteOrigin(req);
-      const canonical = `${origin}/product/${encodeURIComponent(String(row.id))}`;
-
-      const title = normalizeWhitespace(String(row.title ?? "Product"));
+      const titleBase = normalizeWhitespace(String(row.title ?? "Product"));
       const desc =
         normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
-        `Buy ${title} on DaySpring.`;
+        `Buy ${titleBase} on DaySpring.`;
 
       const images: string[] = Array.isArray(row.imagesJson) ? row.imagesJson : [];
       const variantImg =
         Array.isArray(row.variants?.[0]?.imagesJson) ? row.variants[0].imagesJson[0] : "";
 
       const imgRaw = images[0] || variantImg || "";
-      const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
+      const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : base.ogImage;
 
-      const priceRaw =
-        row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
-          ? Number(row.retailPrice)
-          : row.price != null && Number.isFinite(Number(row.price))
-            ? Number(row.price)
-            : null;
+      const pageTitle = `${titleBase} | DaySpring`;
 
-      const html = buildProductHtml({
-        title,
-        description: desc,
+      const html = applyPlaceholders(tpl, {
+        ...base,
+        title: pageTitle,
+        desc,
         canonical,
-        imageUrl: imgAbs || "",
-        price: priceRaw,
-        inStock: row.inStock !== false,
-        brandName: row.brand?.name ?? null,
+        ogType: "product",
+        ogTitle: pageTitle,
+        ogDesc: desc,
+        ogUrl: canonical,
+        ogImage: imgAbs,
+        twTitle: pageTitle,
+        twDesc: desc,
+        twImage: imgAbs,
       });
 
-      res.status(200).type("text/html").send(html);
+      return res.status(200).type("text/html").send(html);
     } catch (e: any) {
-      console.error("Bot product HTML error:", e?.message ?? e);
+      console.error("Bot SEO /product/:id error:", e?.message ?? e);
       return next();
     }
   });
@@ -595,7 +523,7 @@ if (UI_DIST_DIR) {
   // SPA fallback: any non-API route should return index.html
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) return next();
-    return res.sendFile(path.join(UI_DIST_DIR, "index.html"));
+    return res.sendFile(INDEX_PATH);
   });
 } else {
   console.warn(
