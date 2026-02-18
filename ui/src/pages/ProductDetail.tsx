@@ -15,7 +15,6 @@ import {
 } from "../components/Select";
 
 import { showMiniCartToast } from "../components/cart/MiniCartToast";
-import { useEffect } from "react";
 import { setSeo } from "../seo/head";
 
 /* ---------------- Types ---------------- */
@@ -737,64 +736,6 @@ export default function ProductDetail() {
         attributes: normalizeAttributesIntoProductWire(p),
       };
 
-      // after you have `product` loaded:
-      useEffect(() => {
-        if (!product?.id) return;
-
-        const site = "https://dayspringhouse.com";
-        const url = `${site}/product/${product.id}`;
-
-        const title = `${product.title} | DaySpring`;
-        const desc =
-          (product.description ? String(product.description) : "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 155) || `Buy ${product.title} on DaySpring.`;
-
-        const img =
-          Array.isArray(product.imagesJson) && product.imagesJson.length > 0
-            ? String(product.imagesJson[0])
-            : "";
-
-        // Your API returns retailPrice already computed for display
-        const price = typeof product.retailPrice === "number" ? product.retailPrice : null;
-
-        setSeo({
-          title,
-          description: desc,
-          canonical: url,
-          og: [
-            { property: "og:title", content: title },
-            { property: "og:description", content: desc },
-            { property: "og:url", content: url },
-            { property: "og:type", content: "product" },
-            ...(img ? [{ property: "og:image", content: img }] : []),
-          ],
-          jsonLd: {
-            id: `product-${product.id}`,
-            data: {
-              "@context": "https://schema.org",
-              "@type": "Product",
-              name: product.title,
-              description: desc,
-              url,
-              ...(img ? { image: [img] } : {}),
-              offers: price
-                ? {
-                  "@type": "Offer",
-                  priceCurrency: "NGN",
-                  price: String(price),
-                  availability: product.inStock
-                    ? "https://schema.org/InStock"
-                    : "https://schema.org/OutOfStock",
-                  url,
-                }
-                : undefined,
-            },
-          },
-        });
-      }, [product?.id]);
-
 
       // ✅ Best + Cheapest offers
       const cheapestBaseOffer = pickBestOffer({ offers, kind: "BASE" });
@@ -844,6 +785,70 @@ export default function ProductDetail() {
   });
 
   const product = productQ.data?.product;
+  React.useEffect(() => {
+    if (!product?.id) return;
+
+    const site = "https://dayspringhouse.com";
+    const url = `${site}/product/${product.id}`;
+
+    const title = `${product.title} | DaySpring`;
+    const desc =
+      (product.description ? String(product.description) : "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 155) || `Buy ${product.title} on DaySpring.`;
+
+    const img =
+      Array.isArray(product.imagesJson) && product.imagesJson.length > 0
+        ? String(product.imagesJson[0])
+        : "";
+
+    const price = typeof product.retailPrice === "number" ? product.retailPrice : null;
+
+    setSeo({
+      title,
+      description: desc,
+      canonical: url,
+      og: [
+        { property: "og:title", content: title },
+        { property: "og:description", content: desc },
+        { property: "og:url", content: url },
+        { property: "og:type", content: "product" },
+        ...(img ? [{ property: "og:image", content: img }] : []),
+      ],
+      jsonLd: {
+        id: `product-${product.id}`,
+        data: {
+          "@context": "https://schema.org",
+          "@type": "Product",
+          name: product.title,
+          description: desc,
+          url,
+          ...(img ? { image: [img] } : {}),
+          offers: price
+            ? {
+              "@type": "Offer",
+              priceCurrency: "NGN",
+              price: String(price),
+              availability: product.inStock
+                ? "https://schema.org/InStock"
+                : "https://schema.org/OutOfStock",
+              url,
+            }
+            : undefined,
+        },
+      },
+    });
+  }, [
+    product?.id,
+    product?.title,
+    product?.description,
+    product?.inStock,
+    product?.retailPrice,
+    // keep stable: stringify is fine for small arrays
+    JSON.stringify(product?.imagesJson ?? []),
+  ]);
+
   const stockByVariantId = productQ.data?.stockByVariantId ?? {};
   const totalStockQty = productQ.data?.totalStockQty ?? 0;
 
@@ -1470,10 +1475,15 @@ export default function ProductDetail() {
   ]);
 
   /* ---------------- Images / Zoom ---------------- */
-  const images = React.useMemo(
-    () => (product?.imagesJson?.length ? product.imagesJson! : ["/placeholder.svg"]),
-    [product]
-  );
+  function isUrlish(s?: string) {
+    return !!s && /^(https?:\/\/|data:image\/|\/)/i.test(s);
+  }
+
+  const images = React.useMemo(() => {
+    const arr = Array.isArray(product?.imagesJson) ? product!.imagesJson! : [];
+    // keep only valid-ish urls
+    return arr.map(String).filter((u) => isUrlish(u));
+  }, [product?.imagesJson]);
 
   const currentSelectionQty = React.useMemo(() => {
     if (purchaseMeta.mode === "BASE") return baseStockQty;
@@ -1634,6 +1644,8 @@ export default function ProductDetail() {
 
   const mainImgRef = React.useRef<HTMLImageElement | null>(null);
   const [imgBox, setImgBox] = React.useState({ w: 0, h: 0 });
+  const [brokenByIndex, setBrokenByIndex] = React.useState<Record<number, boolean>>({});
+
   const [naturalSize, setNaturalSize] = React.useState({ w: 0, h: 0 });
   const [hoverPx, setHoverPx] = React.useState({ x: 0, y: 0 });
   const [showZoom, setShowZoom] = React.useState(false);
@@ -1680,7 +1692,10 @@ export default function ProductDetail() {
     const img = e.currentTarget;
     setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
     setImgBox({ w: img.clientWidth, h: img.clientHeight });
+
+    setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: false }));
   }
+
 
   function onMouseMove(e: React.MouseEvent) {
     const img = mainImgRef.current;
@@ -1739,6 +1754,12 @@ export default function ProductDetail() {
       queryClient.invalidateQueries({ queryKey: ["cart"] });
       window.dispatchEvent(new Event("cart:updated"));
     }
+
+    React.useEffect(() => {
+      setMainIndex(0);
+      setBrokenByIndex({});
+    }, [product?.id]);
+
 
     const { attrNameById, valueNameByAttrId } = buildLabelMaps(axes);
     const selectedOptionsLabeled = selectedOptionsWire.map(({ attributeId, valueId }) => ({
@@ -1941,6 +1962,24 @@ export default function ProductDetail() {
     );
   }
 
+
+  function NoImageBox({ className = "" }: { className?: string }) {
+    return (
+      <div
+        className={`w-full h-full flex items-center justify-center text-center ${className}`}
+        aria-label="No image"
+      >
+        <div className="px-6 py-8">
+          <div className="text-sm font-medium text-zinc-700">No image</div>
+          <div className="mt-1 text-xs text-zinc-500">This product has no photos yet.</div>
+        </div>
+      </div>
+    );
+  }
+
+  const currentSrc = images[mainIndex];
+  const mainIsBroken = !!brokenByIndex[mainIndex];
+  const showMainImg = !!currentSrc && !mainIsBroken;
   return (
     <SiteLayout>
       <div className="bg-gradient-to-b from-zinc-50 to-white">
@@ -1985,14 +2024,35 @@ export default function ProductDetail() {
                 onMouseMove={isCoarsePointer ? undefined : onMouseMove}
 
               >
-                <img
-                  ref={mainImgRef}
-                  src={images[mainIndex]}
-                  alt={product.title}
-                  className="w-full h-full object-cover cursor-zoom-in"
-                  onLoad={handleImageLoad}
-                  onError={(e) => (e.currentTarget.style.opacity = "0.25")}
-                />
+                <div
+                  className={`rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadow}`}
+                  style={{ aspectRatio: "1 / 1" }}
+                  onMouseEnter={
+                    isCoarsePointer
+                      ? undefined
+                      : () => {
+                        setShowZoom(true);
+                        setPaused(true);
+                        updateZoomAnchor();
+                      }
+                  }
+                  onMouseLeave={isCoarsePointer ? undefined : () => { setShowZoom(false); setPaused(false); }}
+                  onMouseMove={isCoarsePointer ? undefined : onMouseMove}
+                >
+                  {showMainImg ? (
+                    <img
+                      ref={mainImgRef}
+                      src={currentSrc}
+                      alt=""              // ✅ removed alt text like Catalog
+                      className="w-full h-full object-cover cursor-zoom-in"
+                      onLoad={handleImageLoad}
+                      onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
+                    />
+                  ) : (
+                    <NoImageBox className="bg-zinc-50" />
+                  )}
+                </div>
+
               </div>
 
               <span
@@ -2002,9 +2062,7 @@ export default function ProductDetail() {
               </span>
 
 
-              {showZoom &&
-                hasBox &&
-                zoomAnchor &&
+              {showZoom && hasBox && zoomAnchor && showMainImg &&
                 createPortal(
                   <div
                     className={`hidden md:block rounded-xl overflow-hidden pointer-events-none z-[9999] bg-white ${silverBorder} ${silverShadow}`}
@@ -2061,48 +2119,50 @@ export default function ProductDetail() {
                 </>
               )}
             </div>
-
-            <div
-              className="flex items-center justify-center gap-2"
-              onMouseEnter={() => setPaused(true)}
-              onMouseLeave={() => setPaused(false)}
-            >
-              <button
-                type="button"
-                onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-                className={`rounded-full px-2.5 py-1.5 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                aria-label="Previous thumbnails"
+            {images.length > 0 && (
+              <div
+                className="flex items-center justify-center gap-2"
+                onMouseEnter={() => setPaused(true)}
+                onMouseLeave={() => setPaused(false)}
               >
-                ‹
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+                  className={`rounded-full px-2.5 py-1.5 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                  aria-label="Previous thumbnails"
+                >
+                  ‹
+                </button>
 
-              <div className="flex gap-2">
-                {visibleThumbs.map((u, i) => {
-                  const absoluteIndex = thumbStart + i;
-                  const isActive = absoluteIndex === mainIndex;
-                  return (
-                    <img
-                      key={`${u}:${absoluteIndex}`}
-                      src={u}
-                      alt={`thumb-${absoluteIndex}`}
-                      onClick={() => setMainIndex(absoluteIndex)}
-                      className={`w-20 h-16 sm:w-24 sm:h-20 max-[360px]:w-[68px] max-[360px]:h-[54px] rounded-xl object-cover select-none cursor-pointer ${silverBorder} ${silverShadowSm} ${isActive ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "hover:opacity-90 bg-white"
-                        }`}
-                      onError={(e) => (e.currentTarget.style.opacity = "0.25")}
-                    />
-                  );
-                })}
+                <div className="flex gap-2">
+                  {visibleThumbs.map((u, i) => {
+                    const absoluteIndex = thumbStart + i;
+                    const isActive = absoluteIndex === mainIndex;
+                    return (
+                      <img
+                        key={`${u}:${absoluteIndex}`}
+                        src={u}
+                        alt="" // ✅ blank alt
+                        onClick={() => setMainIndex(absoluteIndex)}
+                        className={`w-20 h-16 sm:w-24 sm:h-20 max-[360px]:w-[68px] max-[360px]:h-[54px] rounded-xl object-cover select-none cursor-pointer ${silverBorder} ${silverShadowSm} ${isActive ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "hover:opacity-90 bg-white"
+                          }`}
+                        onLoad={() => setBrokenByIndex((prev) => ({ ...prev, [absoluteIndex]: false }))}
+                        onError={() => setBrokenByIndex((prev) => ({ ...prev, [absoluteIndex]: true }))}
+                      />
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setMainIndex((i) => (i + 1) % images.length)}
+                  className={`rounded-full px-2 py-1 text-sm max-[360px]:px-1.5 max-[360px]:py-0.5 bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                  aria-label="Next thumbnails"
+                >
+                  ›
+                </button>
               </div>
-
-              <button
-                type="button"
-                onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                className={`rounded-full px-2 py-1 text-sm max-[360px]:px-1.5 max-[360px]:py-0.5 bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                aria-label="Next thumbnails"
-              >
-                ›
-              </button>
-            </div>
+            )}
 
             <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
               <h2 className="text-base font-semibold mb-1">Description</h2>
@@ -2313,7 +2373,8 @@ export default function ProductDetail() {
                   style={{ scrollSnapType: "x mandatory" as any }}
                 >
                   {(similarQ.data || []).map((sp, idx) => {
-                    const img = (sp.imagesJson || [])[0] || "/placeholder.svg";
+                    const img = (sp.imagesJson || []).map(String).find((u) => isUrlish(u)) || "";
+                    const hasImg = !!img;
 
                     const supplierMin = similarOfferQs[idx]?.data?.supplierPrice ?? null;
                     const computedRetail =
@@ -2334,12 +2395,21 @@ export default function ProductDetail() {
                         style={{ scrollSnapAlign: "start" as any }}
                       >
                         <div className="relative bg-zinc-100" style={{ aspectRatio: "4 / 3" }}>
-                          <img
-                            src={img}
-                            alt={sp.title}
-                            className="absolute inset-0 w-full h-full object-cover"
-                            onError={(e) => (e.currentTarget.style.opacity = "0.25")}
-                          />
+                          {hasImg ? (
+                            <img
+                              src={img}
+                              alt=""  // ✅ blank alt like Catalog
+                              className="absolute inset-0 w-full h-full object-cover"
+                              onError={(e) => {
+                                // if it breaks, hide img and let background + NoImage show
+                                e.currentTarget.style.display = "none";
+                              }}
+                            />
+                          ) : (
+                            <div className="absolute inset-0">
+                              <NoImageBox className="bg-zinc-50" />
+                            </div>
+                          )}
                           <span
                             className={`absolute left-2 top-2 inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-medium border ${silverShadowSm} ${sp.inStock !== false
                               ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
