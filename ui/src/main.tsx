@@ -12,18 +12,10 @@ import { head } from "./seo/head"; // ✅ use the SAME head instance
 const qc =new QueryClient({
   defaultOptions: {
     queries: {
-      // ✅ prevents tab-switch refetch
       refetchOnWindowFocus: false,
-
-      // ✅ also prevents network reconnect refetch surprise
       refetchOnReconnect: false,
-
-      // ✅ fresh when you LAND on a page/component
-      // use "always" if you want it to fetch even if cached
-      refetchOnMount: "always",
-
-      // optional – reduce noisy retries
-      retry: 1,
+      // optional: reduces "random" refetching
+      staleTime: 60_000,
     },
   },
 });

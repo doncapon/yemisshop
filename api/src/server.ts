@@ -124,25 +124,18 @@ function getSiteOrigin(req: express.Request) {
  */
 app.use(
   helmet({
-    // ✅ allow external images to render (picsum, cloudinary, etc.)
+    // ✅ allows cross-origin <img> to render (picsum, cloudinary etc.)
     crossOriginEmbedderPolicy: false,
 
-    // optional but sane for typical SPAs
-    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+    // ✅ IMPORTANT: don't apply global CSP to the SPA (Vite/React/admin UI can break subtly)
+    // You already apply strict CSP for /api routes below via `apiCsp`.
+    contentSecurityPolicy: false,
 
-    // keep your CORP as you wanted
+    // keep this if you want; it doesn't control outbound images
     crossOriginResourcePolicy: { policy: "same-site" },
-
-    // your CSP with permissive img-src for https
-    contentSecurityPolicy: {
-      useDefaults: true,
-      directives: {
-        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-        "img-src": ["'self'", "data:", "blob:", "https:"],
-      },
-    },
   })
 );
+
 
 function resolveAbsoluteImage(req: express.Request, raw?: string | null): string {
   const s = String(raw ?? "").trim();
