@@ -147,8 +147,8 @@ function buildProductHtml(params: {
 
   const price =
     typeof params.price === "number" &&
-    Number.isFinite(params.price) &&
-    params.price > 0
+      Number.isFinite(params.price) &&
+      params.price > 0
       ? String(params.price)
       : "";
 
@@ -166,16 +166,20 @@ function buildProductHtml(params: {
     ...(brand ? { brand: { "@type": "Brand", name: params.brandName } } : {}),
     ...(price
       ? {
-          offers: {
-            "@type": "Offer",
-            priceCurrency: "NGN",
-            price,
-            availability,
-            url: params.canonical,
-          },
-        }
+        offers: {
+          "@type": "Offer",
+          priceCurrency: "NGN",
+          price,
+          availability,
+          url: params.canonical,
+        },
+      }
       : {}),
   };
+
+  // ✅ IMPORTANT: do NOT HTML-escape JSON-LD, or crawlers/tools can’t parse it properly.
+  // Only make it safe against accidental "</script>" issues by escaping "<".
+  const jsonLdSafe = JSON.stringify(jsonLd).replace(/</g, "\\u003c");
 
   return `<!doctype html>
 <html lang="en">
@@ -198,9 +202,7 @@ function buildProductHtml(params: {
   <meta name="twitter:description" content="${desc}" />
   ${img ? `<meta name="twitter:image" content="${img}" />` : ""}
 
-  <script type="application/ld+json">${escapeHtml(
-    JSON.stringify(jsonLd)
-  )}</script>
+  <script type="application/ld+json">${jsonLdSafe}</script>
 </head>
 <body>
   <noscript>DaySpring product page. Enable JavaScript to view the full experience.</noscript>
