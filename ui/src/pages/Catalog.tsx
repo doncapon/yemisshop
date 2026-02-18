@@ -352,6 +352,63 @@ function pickBestAndCheapestOffer(
   };
 }
 
+
+function getApiOrigin(): string {
+  const base = String((api as any)?.defaults?.baseURL || "").trim();
+
+  // If baseURL is absolute (http/https), use its origin
+  if (/^https?:\/\//i.test(base)) {
+    try {
+      return new URL(base).origin;
+    } catch {
+      return window.location.origin;
+    }
+  }
+
+  // If baseURL is relative like "/api", we cannot infer API host from it.
+  // In dev, images should be served by the API server (usually 8080).
+  // Use VITE_API_URL if available, otherwise fall back to window origin.
+  const env = (import.meta as any)?.env;
+  const fromEnv = String(env?.VITE_API_URL || env?.VITE_API_ORIGIN || "").trim();
+  if (fromEnv && /^https?:\/\//i.test(fromEnv)) {
+    try {
+      return new URL(fromEnv).origin;
+    } catch { }
+  }
+
+  return window.location.origin;
+}
+
+
+const API_ORIGIN = getApiOrigin();
+
+function resolveImageUrl(input?: string | null): string | undefined {
+  const s = String(input ?? "").trim();
+  if (!s) return undefined;
+
+  // already good
+  if (/^(https?:\/\/|data:|blob:)/i.test(s)) return s;
+
+  // protocol-relative
+  if (s.startsWith("//")) return `${window.location.protocol}${s}`;
+
+  if (s.startsWith("/")) {
+    if (s.startsWith("/uploads/")) return `${API_ORIGIN}${s}`;
+    if (s.startsWith("/api/uploads/")) return `${API_ORIGIN}${s}`;
+    return `${window.location.origin}${s}`;
+  }
+
+
+  // relative path like "uploads/x.jpg" or "api/uploads/x.jpg"
+  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) {
+    return `${API_ORIGIN}/${s}`;
+  }
+
+  // fallback: assume same origin
+  return `${window.location.origin}/${s}`;
+}
+
+
 /**
  * Main: display retail price
  * ✅ Now follows orders.ts logic: choose "best" within +2% band (fallback to cheapest)
@@ -475,6 +532,38 @@ function readCart(): Array<{ productId: string; variantId?: string | null; qty: 
   } catch {
     return [];
   }
+}
+
+
+function normalizeImages(val: any): string[] {
+  if (!val) return [];
+
+  // already an array of strings
+  if (Array.isArray(val)) return val.map(String).map((s) => s.trim()).filter(Boolean);
+
+  // common: JSON string
+  if (typeof val === "string") {
+    const s = val.trim();
+    if (!s) return [];
+
+    // try JSON parse: '["/uploads/a.jpg"]'
+    if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith('"') && s.endsWith('"'))) {
+      try {
+        const parsed = JSON.parse(s);
+        return normalizeImages(parsed);
+      } catch {
+        // fall through
+      }
+    }
+
+    // comma/newline-separated
+    return s
+      .split(/[\n,]/g)
+      .map((t) => t.trim())
+      .filter(Boolean);
+  }
+
+  return [];
 }
 
 /* ---------------- Purchased counts (for relevance sort) ---------------- */
@@ -778,7 +867,7 @@ export default function Catalog() {
                   // keeping your original shape; if you want strict typing, change to `price: variantRetail`
                   unitPrice: variantRetail as any,
                   inStock: v.inStock === true,
-                  imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+                  imagesJson: normalizeImages(v.imagesJson),
                   offers: Array.isArray(v.offers)
                     ? v.offers.map((o: any) => ({
                       id: String(o.id),
@@ -842,7 +931,7 @@ export default function Catalog() {
               retailPrice: productRetail as any,
               offersFrom: Number.isFinite(Number(x.offersFrom)) ? Number(x.offersFrom) : null,
               inStock: x.inStock === true,
-              imagesJson: Array.isArray(x.imagesJson) ? x.imagesJson : [],
+              imagesJson: normalizeImages((x as any).imagesJson),
               categoryId: x.categoryId ?? x.category?.id ?? null,
               categoryName,
               commissionPctInt: Number.isFinite(Number(x.commissionPctInt)) ? Number(x.commissionPctInt) : null,
@@ -1265,9 +1354,21 @@ export default function Catalog() {
   const [jumpVal, setJumpVal] = useState<string>('');
   useEffect(() => setJumpVal(''), [totalPages]);
 
+  // Track broken images per product tile (prevents DOM reuse "display:none" bug)
+  const [brokenImg, setBrokenImg] = useState<Record<string, boolean>>({});
+  const markBroken = (key: string) =>
+    setBrokenImg((m) => (m[key] ? m : { ...m, [key]: true }));
+
   useEffect(() => {
     qc.removeQueries({ queryKey: ['products'], exact: false });
   }, [qc]);
+
+  useEffect(() => {
+    console.log("sample imagesJson", productsQ.data?.[0]?.imagesJson);
+
+    setBrokenImg({});
+  }, [productsQ.data]);
+
 
   if (productsQ.isLoading)
     return (
@@ -1434,15 +1535,19 @@ export default function Catalog() {
 
                     const brand = getBrandName(p);
 
-                    const primaryImg =
+                    const primaryImgRaw =
                       p.imagesJson?.[0] ||
                       p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
                       undefined;
 
-                    const hoverImg =
+                    const hoverImgRaw =
                       p.imagesJson?.[1] ||
                       p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[1])?.imagesJson?.[1] ||
                       undefined;
+
+                    const primaryImg = resolveImageUrl(primaryImgRaw);
+                    const hoverImg = resolveImageUrl(hoverImgRaw);
+
 
                     const hasDifferentHover = !!hoverImg && hoverImg !== primaryImg;
 
@@ -1482,33 +1587,47 @@ export default function Catalog() {
                       >
                         <Link to={`/product/${p.id}`} className="block" onClick={() => bumpClick(p.id)}>
                           <div className="relative w-full h-28 sm:h-36 md:h-48 overflow-hidden">
-                            {primaryImg ? (
+                            {/* fallback behind */}
+                            <div className="absolute inset-0 grid place-items-center text-zinc-400 text-xs">
+                              No image
+                            </div>
+
+                            {primaryImg && !brokenImg[`p:${p.id}:${primaryImg}`] ? (
                               <>
                                 <img
+                                  key={`primary-${p.id}-${primaryImg}`}
                                   src={primaryImg}
-                                  alt={p.title}
-                                  className={`w-full h-full object-cover transition-opacity duration-300 ${hasDifferentHover ? 'opacity-100 group-hover:opacity-0' : 'opacity-100'
+                                  alt=""
+                                  loading="lazy"
+                                  onLoad={() => {
+                                    // optional: confirm it loaded
+                                    // console.log("loaded", primaryImg);
+                                  }}
+                                  onError={() => {
+                                    console.log("IMG FAILED", primaryImg); // ✅ THIS will tell you if CSP/404/etc
+                                    markBroken(`p:${p.id}:${primaryImg}`);
+                                  }}
+                                  className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${hasDifferentHover ? "opacity-100 group-hover:opacity-0" : "opacity-100"
                                     }`}
                                 />
-                                {hasDifferentHover && (
+
+                                {hasDifferentHover && hoverImg && !brokenImg[`h:${p.id}:${hoverImg}`] && (
                                   <img
+                                    key={`hover-${p.id}-${hoverImg}`}
                                     src={hoverImg}
-                                    alt={`${p.title} alt`}
+                                    alt=""
+                                    loading="lazy"
+                                    onError={() => {
+                                      console.log("HOVER IMG FAILED", hoverImg);
+                                      markBroken(`h:${p.id}:${hoverImg}`);
+                                    }}
                                     className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300 opacity-0 group-hover:opacity-100"
                                   />
                                 )}
                               </>
-                            ) : (
-                              <div className="w-full h-full grid place-items-center text-zinc-400">No image</div>
-                            )}
-
-                            <span
-                              className={`absolute left-2 top-2 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${badge.cls}`}
-                            >
-                              <CheckCircle2 size={12} />
-                              {badge.text}
-                            </span>
+                            ) : null}
                           </div>
+
                         </Link>
 
                         <div className="p-2.5 md:p-4">
@@ -1782,8 +1901,8 @@ export default function Catalog() {
                                   type="button"
                                   onClick={() => goTo(n)}
                                   className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
-                                      ? "bg-zinc-900 text-white border border-zinc-900"
-                                      : "bg-white hover:bg-zinc-50 silver-border hover:silver-hover"
+                                    ? "bg-zinc-900 text-white border border-zinc-900"
+                                    : "bg-white hover:bg-zinc-50 silver-border hover:silver-hover"
                                     }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
@@ -1918,10 +2037,15 @@ export default function Catalog() {
                           >
                             {p.imagesJson?.[0] ? (
                               <img
-                                src={p.imagesJson[0]}
-                                alt={p.title}
+                                src={resolveImageUrl(p.imagesJson?.[0])}
+                                alt=""
+                                aria-hidden="true"
+                                onError={(e) => e.currentTarget.remove()}
+
                                 className="w-16 h-16 object-cover rounded-xl silver-border"
                               />
+
+
                             ) : (
                               <div className="w-16 h-16 rounded-xl silver-border grid place-items-center text-base text-gray-500">
                                 —

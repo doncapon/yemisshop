@@ -83,7 +83,6 @@ const allowedOrigins = [
   "https://dayspringhouse.com",
   "https://www.dayspringhouse.com",
   "http://localhost:5173",
-  "http://127.0.0.1:5173",
   
 ]
   .filter(Boolean)
@@ -277,8 +276,13 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   res.status(500).json({ error: "Internal server error", message: err?.message ?? String(err) });
 });
 
-const port = Number(process.env.PORT ?? 8080);
-const host = "0.0.0.0";
-app.listen(port, host, () => {
-  console.log(`API on http://${host}:${port}`);
+const PORT = Number(process.env.PORT ?? 8080);
+
+// ✅ safest default for local dev + docker
+// use 0.0.0.0 so it binds all interfaces (works in Docker/Railway too)
+const HOST = process.env.HOST || "0.0.0.0";
+
+app.listen(PORT, HOST, () => {
+  console.log(`API on http://${HOST}:${PORT}`);
 });
+

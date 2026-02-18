@@ -571,10 +571,10 @@ function Card({
     tone === "primary"
       ? "border-primary-200"
       : tone === "emerald"
-      ? "border-emerald-200"
-      : tone === "amber"
-      ? "border-amber-200"
-      : "border-border";
+        ? "border-emerald-200"
+        : tone === "amber"
+          ? "border-amber-200"
+          : "border-border";
 
   return (
     <div
@@ -602,19 +602,19 @@ function CardHeader({
     tone === "primary"
       ? "from-primary-50 to-white"
       : tone === "emerald"
-      ? "from-emerald-50 to-white"
-      : tone === "amber"
-      ? "from-amber-50 to-white"
-      : "from-surface to-white";
+        ? "from-emerald-50 to-white"
+        : tone === "amber"
+          ? "from-amber-50 to-white"
+          : "from-surface to-white";
 
   const toneIcon =
     tone === "primary"
       ? "text-primary-600"
       : tone === "emerald"
-      ? "text-emerald-600"
-      : tone === "amber"
-      ? "text-amber-600"
-      : "text-ink-soft";
+        ? "text-emerald-600"
+        : tone === "amber"
+          ? "text-amber-600"
+          : "text-ink-soft";
 
   return (
     <div className={`flex items-center justify-between px-4 py-3 md:p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
@@ -634,9 +634,8 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${
-        props.className || ""
-      }`}
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""
+        }`}
     />
   );
 }
@@ -667,18 +666,28 @@ export default function Checkout() {
   const user = useAuthStore((s) => s.user);
   const bootstrap = useAuthStore((s) => s.bootstrap);
 
-  useEffect(() => {
-    if (!hydrated) {
-      bootstrap().catch(() => null);
-    }
-  }, [hydrated, bootstrap]);
+  const meQ = useQuery({
+    queryKey: ["auth", "me"],
+    enabled: hydrated,               // ✅ wait for hydration
+    queryFn: async () => {
+      const res = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
+      return (res.data?.data ?? res.data ?? null) as any;
+    },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
 
   useEffect(() => {
-    if (!hydrated) return;
-    if (!user?.id) {
+    if (!hydrated) return;            // ✅ don’t redirect before hydration
+    if (meQ.isLoading) return;
+
+    const status = (meQ.error as any)?.response?.status;
+    if (!meQ.data && status === 401) {
       nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
     }
-  }, [hydrated, user?.id, nav]);
+  }, [hydrated, meQ.isLoading, meQ.data, meQ.error, nav]);
+
 
   // Verification state
   const [checkingVerification, setCheckingVerification] = useState(true);
@@ -1245,7 +1254,7 @@ export default function Checkout() {
             </button>
             <button
               className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
-              onClick={() => {}}
+              onClick={() => { }}
               disabled
               title="Complete the steps above"
               type="button"
@@ -1259,6 +1268,15 @@ export default function Checkout() {
   };
 
   const showMarginInfo = publicSettingsQ.isLoading || publicSettingsQ.isError || marginPercent > 0;
+  if (meQ.isLoading) {
+    return (
+      <SiteLayout>
+        <div className="min-h-[70vh] grid place-items-center bg-bg-soft px-4">
+          <div className="text-sm text-ink-soft">Checking session…</div>
+        </div>
+      </SiteLayout>
+    );
+  }
 
   return (
     <SiteLayout>
@@ -1282,8 +1300,8 @@ export default function Checkout() {
                 {publicSettingsQ.isLoading
                   ? "Loading pricing settings…"
                   : publicSettingsQ.isError
-                  ? "Could not load margin settings — showing best-effort retail pricing."
-                  : `Margin applied: ${marginPercent}%`}
+                    ? "Could not load margin settings — showing best-effort retail pricing."
+                    : `Margin applied: ${marginPercent}%`}
               </p>
             )}
 
@@ -1553,8 +1571,8 @@ export default function Checkout() {
                   {createOrder.isPending
                     ? "Processing…"
                     : pricingQ.isLoading
-                    ? "Calculating prices…"
-                    : "Place order & Pay"}
+                      ? "Calculating prices…"
+                      : "Place order & Pay"}
                 </button>
 
                 {createOrder.isError && (

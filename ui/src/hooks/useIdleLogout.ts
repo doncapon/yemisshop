@@ -1,62 +1,68 @@
-// src/utils/useIdleLogout.ts
-import { useEffect, useMemo, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+// src/hooks/useIdleLogout.ts
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client";
-import { useAuthStore, type Role } from "../store/auth";
-
-type Options = {
-  shopperIdleMs?: number; // default 45 min
-  privilegedIdleMs?: number; // default 15 min
-  throttleMs?: number; // default 2000ms
-};
+import { useAuthStore } from "../store/auth";
 
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+const RETURN_TO_KEY = "auth:returnTo";
 
-function isAuthError(e: any) {
-  const status = e?.response?.status;
-  return status === 401 || status === 403;
+function isProtectedPath(p: string) {
+  return (
+    p === "/checkout" ||
+    p === "/orders" ||
+    p === "/wishlist" ||
+    p === "/profile" ||
+    p === "/dashboard" ||
+    p === "/customer-dashboard" ||
+    p === "/account/sessions" ||
+    p === "/admin" ||
+    p.startsWith("/admin/") ||
+    p === "/supplier" ||
+    p.startsWith("/supplier/") ||
+    p === "/rider" ||
+    p.startsWith("/u/")
+  );
 }
 
-export function useIdleLogout(opts?: Options) {
-  // ✅ Cookie-mode: no token; role comes from store (if present)
-  const role = useAuthStore((s) => s.user?.role);
+export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
+  const hydrated = useAuthStore((s) => s.hydrated);
+  const user = useAuthStore((s) => s.user);
   const clear = useAuthStore((s) => s.clear);
 
   const nav = useNavigate();
+  const loc = useLocation();
 
-  const shopperIdleMs = opts?.shopperIdleMs ?? 45 * 60 * 1000;
-  const privilegedIdleMs = opts?.privilegedIdleMs ?? 15 * 60 * 1000;
-  const throttleMs = opts?.throttleMs ?? 2000;
+  const timerRef = useRef<number | null>(null);
+  const [shouldKick, setShouldKick] = useState(false);
 
-  const idleMs = useMemo(() => {
-    const r = String(role || "").toUpperCase() as Role;
-    const privileged = r === "ADMIN" || r === "SUPER_ADMIN" || r === "SUPPLIER";
-    return privileged ? privilegedIdleMs : shopperIdleMs;
-  }, [role, privilegedIdleMs, shopperIdleMs]);
-
-  const timeoutRef = useRef<number | null>(null);
-  const lastActivityRef = useRef<number>(Date.now());
-  const lastResetRef = useRef<number>(0);
-  const loggingOutRef = useRef<boolean>(false);
-
-  // ✅ Track cookie auth state locally
-  const authedRef = useRef<boolean>(false);
-
+  // Arm / re-arm the timer based on activity
   useEffect(() => {
-    let cancelled = false;
+    if (!hydrated) return;
+    if (!user?.id) return;
 
-    const clearTimer = () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
-      loggingOutRef.current = false;
+    const reset = () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => setShouldKick(true), timeoutMs) as any;
     };
 
-    const serverLogoutAndRedirect = async () => {
-      if (loggingOutRef.current) return;
-      loggingOutRef.current = true;
+    reset();
 
+    const events = ["mousemove", "mousedown", "keydown", "scroll", "touchstart"];
+    events.forEach((ev) => window.addEventListener(ev, reset, { passive: true }));
+
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+      events.forEach((ev) => window.removeEventListener(ev, reset as any));
+    };
+  }, [hydrated, user?.id, timeoutMs]);
+
+  // ✅ IMPORTANT: navigation happens ONLY here (effect), never during render
+  useEffect(() => {
+    if (!shouldKick) return;
+    if (!hydrated) return;
+
+    (async () => {
       try {
         await api.post("/api/auth/logout", {}, AXIOS_COOKIE_CFG);
       } catch {
@@ -64,119 +70,18 @@ export function useIdleLogout(opts?: Options) {
       }
 
       clear();
-      try {
-        localStorage.removeItem("cart");
-        localStorage.removeItem("auth");
-      } catch {
-        //
-      }
 
-      nav("/login?reason=idle", { replace: true });
-    };
+      const path = `${loc.pathname}${loc.search}`;
 
-    const schedule = () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      // @ts-ignore
-      timeoutRef.current = setTimeout(async () => {
-        if (!authedRef.current) return; // safety
-        await serverLogoutAndRedirect();
-      }, idleMs) as any;
-    };
-
-    const markActivity = () => {
-      if (!authedRef.current) return;
-
-      const now = Date.now();
-      // Throttle resets (mousemove can be noisy)
-      if (now - lastResetRef.current < throttleMs) return;
-
-      lastResetRef.current = now;
-      lastActivityRef.current = now;
-
-      if (!loggingOutRef.current) schedule();
-    };
-
-    const onVisibility = () => {
-      if (!authedRef.current) return;
-
-      if (document.visibilityState === "visible") {
-        const now = Date.now();
-        const idleFor = now - lastActivityRef.current;
-
-        if (idleFor >= idleMs && !loggingOutRef.current) {
-          if (timeoutRef.current) clearTimeout(timeoutRef.current);
-          serverLogoutAndRedirect();
-        } else {
-          markActivity();
-        }
-      }
-    };
-
-    const attachListeners = () => {
-      const events: Array<keyof WindowEventMap> = [
-        "mousedown",
-        "mousemove",
-        "keydown",
-        "scroll",
-        "touchstart",
-        "wheel",
-      ];
-
-      for (const e of events) window.addEventListener(e, markActivity, { passive: true });
-      document.addEventListener("visibilitychange", onVisibility);
-
-      return () => {
-        for (const e of events) window.removeEventListener(e, markActivity as any);
-        document.removeEventListener("visibilitychange", onVisibility);
-      };
-    };
-
-    // ✅ Cookie auth check: only run idle logic when session exists
-    (async () => {
-      try {
-        await api.get("/api/profile/me", AXIOS_COOKIE_CFG);
-        if (cancelled) return;
-
-        authedRef.current = true;
-
-        // Initial schedule
-        lastActivityRef.current = Date.now();
-        lastResetRef.current = 0;
-        loggingOutRef.current = false;
-
-        schedule();
-        const detach = attachListeners();
-
-        // cleanup when effect re-runs/unmounts
-        const prevCleanup = cleanupRef.current;
-        cleanupRef.current = () => {
-          prevCleanup?.();
-          detach();
-          clearTimer();
-          authedRef.current = false;
-        };
-      } catch (e: any) {
-        // Not authenticated (or server down) -> disable idle logic
-        if (cancelled) return;
-
-        authedRef.current = false;
-        clearTimer();
-
-        // If backend explicitly says unauth, clear client state too
-        if (isAuthError(e)) {
-          clear();
-        }
+      // only save "from" if it’s protected; else just go login
+      if (isProtectedPath(loc.pathname)) {
+        try {
+          sessionStorage.setItem(RETURN_TO_KEY, path);
+        } catch {}
+        nav("/login", { replace: true, state: { from: path } });
+      } else {
+        nav("/login", { replace: true });
       }
     })();
-
-    return () => {
-      cancelled = true;
-      cleanupRef.current?.();
-      cleanupRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idleMs, throttleMs, clear, nav]);
-
-  // store cleanup between async attach
-  const cleanupRef = useRef<null | (() => void)>(null);
+  }, [shouldKick, hydrated, clear, nav, loc.pathname, loc.search]);
 }

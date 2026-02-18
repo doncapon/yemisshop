@@ -1,5 +1,5 @@
 // src/App.tsx
-import { Route, Routes, Navigate, Outlet, useParams } from "react-router-dom";
+import { Route, Routes, Navigate, Outlet, useParams, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useMemo } from "react";
 
 import Footer from "./components/Footer";
@@ -77,7 +77,6 @@ function SupplierLayoutShell() {
 /**
  * Admin "view as" wrappers.
  * These pass a userId param down so pages can optionally fetch/render for that user.
- * (Requires those pages to support a prop OR read route param; your current pages cast any)
  */
 function DashboardAsUser() {
   const { userId } = useParams<{ userId: string }>();
@@ -113,22 +112,19 @@ function HomeRoute() {
 }
 
 export default function App() {
-  const bootstrap = useAuthStore((s) => s.bootstrap);
   const user = useAuthStore((s) => s.user);
   const hydrated = useAuthStore((s) => s.hydrated);
 
   const isAuthed = !!user?.id;
   const roleNorm = normRole(user?.role);
 
-  useEffect(() => {
-    bootstrap();
-  }, [bootstrap]);
+  const nav = useNavigate();
+  const loc = useLocation();
 
   const riderAllowPrefixes = useMemo(() => ["/supplier/orders"], []);
 
   const RoleDashboard = useMemo(() => {
     const r = roleNorm;
-
     if (r === "ADMIN" || r === "SUPER_ADMIN") return AdminDashboard;
     if (r === "SUPPLIER") return SupplierDashboard;
     if (r === "SUPPLIER_RIDER") return () => <Navigate to="/supplier/orders" replace />;
@@ -137,10 +133,60 @@ export default function App() {
 
   useIdleLogout();
 
+  /**
+   * ✅ If the user is NOT authenticated and tries to access a protected area,
+   * send them to /login and keep where they were trying to go.
+   *
+   * IMPORTANT:
+   * - This MUST be inside useEffect (never navigate during render)
+   * - We also include ?from= so refresh still works
+   */
+  useEffect(() => {
+    if (!hydrated) return;
+    if (isAuthed) return;
+
+    const p = loc.pathname;
+
+    const isProtectedPath =
+      p === "/checkout" ||
+      p === "/orders" ||
+      p === "/wishlist" ||
+      p === "/profile" ||
+      p === "/dashboard" ||
+      p === "/customer-dashboard" ||
+      p === "/account/sessions" ||
+      p === "/admin" ||
+      p.startsWith("/admin/") ||
+      p === "/supplier" ||
+      p.startsWith("/supplier/") ||
+      p === "/rider" ||
+      p.startsWith("/u/"); // admin view-as
+
+    if (!isProtectedPath) return;
+
+    // already on login
+    if (p === "/login") return;
+
+    const target = `${loc.pathname}${loc.search}`;
+
+    // persist for refresh safety
+    try {
+      sessionStorage.setItem("auth:returnTo", target);
+    } catch {}
+
+    const qp = encodeURIComponent(target);
+
+    nav(`/login?from=${qp}`, {
+      replace: true,
+      state: { from: target },
+    });
+  }, [hydrated, isAuthed, loc.pathname, loc.search, nav]);
+
   return (
     <ModalProvider>
       <div className="min-h-screen flex flex-col">
         <AuthBootstrap />
+
         <main className="w-full flex-1 bg-slate-50">
           <div className="max-w-7xl mx-auto">
             <Toaster position="top-right" />
@@ -160,7 +206,10 @@ export default function App() {
               <Route path="/rider/accept" element={<RiderAcceptInvite />} />
 
               {/* ---------------- Auth ---------------- */}
-              <Route path="/login" element={hydrated && isAuthed ? <Navigate to="/" replace /> : <Login />} />
+              {/* ✅ IMPORTANT: Do NOT auto-redirect away from /login here.
+                  Login.tsx controls the “returnTo” redirect. */}
+              <Route path="/login" element={<Login />} />
+
               <Route path="/register" element={hydrated && isAuthed ? <Navigate to="/" replace /> : <Register />} />
               <Route
                 path="/register-supplier"

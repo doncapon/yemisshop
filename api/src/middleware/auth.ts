@@ -1,12 +1,12 @@
 // api/src/middleware/auth.ts
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
-import { getAccessTokenCookieName } from "../lib/authCookies.js";
 import { prisma } from "../lib/prisma.js";
 
 // ✅ Import policy helpers (kept; used lightly to avoid unused)
 import type { Role as PolicyRole } from "../lib/sessionPolicy.js";
 import { normRole as normPolicyRole } from "../lib/sessionPolicy.js";
+import { getAccessTokenCookieName } from "../lib/authCookies.js";
 
 type JwtPayload = {
   id?: string;              // some tokens

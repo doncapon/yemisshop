@@ -19,6 +19,42 @@ const MAX_IMAGES_PER_PRODUCT = 5;
 /* =========================================================
    Helpers
 ========================================================= */
+// ✅ Turn any stored image string into a public browser-loadable src.
+// Also provides fallback candidates (api host vs ui host).
+function imageSrcCandidates(input: any): string[] {
+  const raw = String(input ?? "").trim();
+  if (!raw) return [];
+
+  // allow data URLs
+  if (/^data:image\//i.test(raw)) return [raw];
+
+  // absolute: keep as-is but ALSO try to convert API host -> UI host if it contains /uploads/
+  if (/^https?:\/\//i.test(raw)) {
+    const u = raw;
+    // If it's pointing to the api subdomain, also try the UI domain version
+    // e.g. https://api.dayspringhouse.com/uploads/x.jpg -> https://dayspringhouse.com/uploads/x.jpg
+    const apiToUi = u.replace("://api.", "://");
+    return uniqStrings([u, apiToUi]);
+  }
+
+  // already rooted
+  if (raw.startsWith("/")) return [raw];
+
+  // common upload paths without leading slash
+  if (raw.startsWith("uploads/")) return [`/${raw}`];
+  if (raw.startsWith("public/uploads/")) return [`/${raw.replace(/^public\//, "")}`];
+
+  // last resort: if it looks like a file path
+  if (/\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i.test(raw)) return [`/${raw}`];
+
+  return [];
+}
+
+/** ✅ Returns FIRST candidate as "primary" src */
+function toPublicImageSrc(input: any): string | null {
+  const c = imageSrcCandidates(input);
+  return c.length ? c[0] : null;
+}
 
 function parseUrlList(s: string) {
   return String(s || "")
@@ -623,10 +659,10 @@ export default function SupplierEditProduct() {
       const attempts = offersOnly
         ? [`/api/supplier/products/${id}`, `/api/supplier/products/${id}?include=offer,variants,images,attributes`]
         : [
-            `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
-            `/api/supplier/products/${id}?include=offer,variants`,
-            `/api/supplier/products/${id}`,
-          ];
+          `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
+          `/api/supplier/products/${id}?include=offer,variants`,
+          `/api/supplier/products/${id}`,
+        ];
 
       let lastErr: any = null;
 
@@ -724,8 +760,8 @@ export default function SupplierEditProduct() {
     const dupExplain =
       dups.size > 0
         ? `Duplicate variant combinations found: ${labels.join(
-            " • "
-          )}. Please change options or remove one of the duplicate rows.`
+          " • "
+        )}. Please change options or remove one of the duplicate rows.`
         : null;
 
     const defaultExplain =
@@ -990,8 +1026,8 @@ export default function SupplierEditProduct() {
       const unitForInput = offersOnly
         ? activeUnitPrice
         : Number.isFinite(variantRetail) && variantRetail > 0
-        ? variantRetail
-        : baseP;
+          ? variantRetail
+          : baseP;
 
       return {
         id: uid("vr"),
@@ -1448,8 +1484,8 @@ export default function SupplierEditProduct() {
           imageOverLimit
             ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
             : baseComboWarn
-            ? baseComboWarn
-            : dupWarn || "Fix the errors above to save."
+              ? baseComboWarn
+              : dupWarn || "Fix the errors above to save."
         );
       }
 
@@ -1588,10 +1624,10 @@ export default function SupplierEditProduct() {
       const payload = stockOnlyUpdate
         ? buildStockOnlyPayload({ baseQty: baseQtyPreview, variantRows })
         : {
-            ...buildPayload(merged),
-            submitForReview: isLive && nonStockChangesRequireReview,
-            stockOnly: false,
-          };
+          ...buildPayload(merged),
+          submitForReview: isLive && nonStockChangesRequireReview,
+          stockOnly: false,
+        };
 
       const { data } = await api.patch(`/api/supplier/products/${id}`, payload, {
         withCredentials: true,
@@ -1690,8 +1726,8 @@ export default function SupplierEditProduct() {
                       imageOverLimit
                         ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
                         : baseComboWarn
-                        ? baseComboWarn
-                        : dupWarn || "Fix the errors above to save."
+                          ? baseComboWarn
+                          : dupWarn || "Fix the errors above to save."
                     );
                     return;
                   }
@@ -1702,10 +1738,10 @@ export default function SupplierEditProduct() {
                   imageOverLimit
                     ? `Remove extra images (max ${MAX_IMAGES_PER_PRODUCT}).`
                     : hasBaseComboConflict
-                    ? "Fix base combo vs variant combo conflict to save."
-                    : hasDuplicates || hasInvalidDefaultVariant
-                    ? "Fix duplicate/invalid combinations to save."
-                    : undefined
+                      ? "Fix base combo vs variant combo conflict to save."
+                      : hasDuplicates || hasInvalidDefaultVariant
+                        ? "Fix duplicate/invalid combinations to save."
+                        : undefined
                 }
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
@@ -1774,8 +1810,8 @@ export default function SupplierEditProduct() {
                   offersOnly
                     ? "Catalog product details are read-only. Set your offer price and stock."
                     : isLive
-                    ? "LIVE listing: Title/SKU/base price are locked. Stock updates are always allowed."
-                    : undefined
+                      ? "LIVE listing: Title/SKU/base price are locked. Stock updates are always allowed."
+                      : undefined
                 }
               >
                 <div className="space-y-3">
@@ -1929,9 +1965,8 @@ export default function SupplierEditProduct() {
 
                   {/* Attributes */}
                   <div
-                    className={`rounded-2xl border bg-white overflow-hidden ${
-                      hasBaseComboConflict ? "border-rose-300 ring-2 ring-rose-200" : ""
-                    }`}
+                    className={`rounded-2xl border bg-white overflow-hidden ${hasBaseComboConflict ? "border-rose-300 ring-2 ring-rose-200" : ""
+                      }`}
                   >
                     <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
                       <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Attributes</div>
@@ -1939,8 +1974,8 @@ export default function SupplierEditProduct() {
                         {offersOnly
                           ? "Catalog product attributes are read-only."
                           : isLive
-                          ? "LIVE listing: edits may require review."
-                          : "You can edit attributes freely while not LIVE."}
+                            ? "LIVE listing: edits may require review."
+                            : "You can edit attributes freely while not LIVE."}
                       </div>
 
                       {hasBaseComboConflict && (
@@ -1981,9 +2016,8 @@ export default function SupplierEditProduct() {
                                 value={val}
                                 onChange={(e) => setAttr(a.id, e.target.value)}
                                 disabled={!canEditAttributes}
-                                className={`w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60 ${
-                                  highlight ? "border-rose-300 ring-2 ring-rose-100" : ""
-                                }`}
+                                className={`w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60 ${highlight ? "border-rose-300 ring-2 ring-rose-100" : ""
+                                  }`}
                               >
                                 <option value="">— Select —</option>
                                 {(a.values || []).map((v: any) => (
@@ -2043,9 +2077,8 @@ export default function SupplierEditProduct() {
                 }
                 right={
                   <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer ${
-                      offersOnly ? "opacity-60 pointer-events-none" : ""
-                    }`}
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer ${offersOnly ? "opacity-60 pointer-events-none" : ""
+                      }`}
                     title={offersOnly ? "Catalog images are read-only." : undefined}
                   >
                     <ImagePlus size={16} /> Add files
@@ -2093,9 +2126,8 @@ export default function SupplierEditProduct() {
                         setImageUrls(capped.join("\n"));
                       }}
                       disabled={offersOnly}
-                      className={`w-full rounded-xl border px-3 py-2.5 text-xs bg-white min-h-[90px] disabled:opacity-60 ${
-                        imageOverLimit ? "border-rose-300" : ""
-                      }`}
+                      className={`w-full rounded-xl border px-3 py-2.5 text-xs bg-white min-h-[90px] disabled:opacity-60 ${imageOverLimit ? "border-rose-300" : ""
+                        }`}
                       placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
                     />
                     {!offersOnly && imageOverLimit && (
@@ -2115,14 +2147,31 @@ export default function SupplierEditProduct() {
                           <div key={u} className="rounded-xl border overflow-hidden bg-white">
                             <div className="aspect-[4/3] bg-zinc-100 relative">
                               <img
-                                src={u}
+                                src={toPublicImageSrc(u) ?? ""}
                                 alt=""
                                 className="w-full h-full object-cover"
                                 loading="lazy"
                                 onError={(e) => {
-                                  e.currentTarget.style.display = "none";
+                                  const img = e.currentTarget as HTMLImageElement;
+                                  const current = img.getAttribute("data-try") ?? "";
+                                  const list = imageSrcCandidates(u);
+
+                                  // if no current, we were using list[0]
+                                  const idx = current ? list.indexOf(current) : 0;
+                                  const next = list[idx + 1];
+
+                                  if (next) {
+                                    img.src = next;
+                                    img.setAttribute("data-try", next);
+                                    img.style.display = "block";
+                                    return;
+                                  }
+
+                                  // no more fallbacks
+                                  img.style.display = "none";
                                 }}
                               />
+
 
                               {!offersOnly && (
                                 <button
@@ -2221,8 +2270,8 @@ export default function SupplierEditProduct() {
                   offersOnly
                     ? "Catalog product: set price + qty for existing variants. You can’t create new combos."
                     : isLive
-                    ? "LIVE listing: update qty only. Prices/options are locked."
-                    : "Add/remove combos while not LIVE. Variants must have at least one option selected (DEFAULT is base-only)."
+                      ? "LIVE listing: update qty only. Prices/options are locked."
+                      : "Add/remove combos while not LIVE. Variants must have at least one option selected (DEFAULT is base-only)."
                 }
                 right={
                   <button
@@ -2279,9 +2328,8 @@ export default function SupplierEditProduct() {
                       return (
                         <div
                           key={row.id}
-                          className={`rounded-2xl border bg-white p-3 space-y-2 ${
-                            hasAnyIssue ? "border-rose-400 ring-2 ring-rose-200" : ""
-                          }`}
+                          className={`rounded-2xl border bg-white p-3 space-y-2 ${hasAnyIssue ? "border-rose-400 ring-2 ring-rose-200" : ""
+                            }`}
                         >
                           {/* option selects */}
                           <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
@@ -2292,9 +2340,8 @@ export default function SupplierEditProduct() {
                                   key={attr.id}
                                   value={valueId}
                                   onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${
-                                    hasAnyIssue ? "border-rose-300" : ""
-                                  }`}
+                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
+                                    }`}
                                   disabled={selectionLocked}
                                   title={
                                     selectionLocked
@@ -2330,11 +2377,10 @@ export default function SupplierEditProduct() {
                                   Qty: <b className="text-zinc-900">{rowQty}</b>
                                 </span>
                                 <span
-                                  className={`font-semibold px-2 py-0.5 rounded-full border ${
-                                    rowInStock
+                                  className={`font-semibold px-2 py-0.5 rounded-full border ${rowInStock
                                       ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                                       : "bg-rose-50 text-rose-700 border-rose-200"
-                                  }`}
+                                    }`}
                                 >
                                   {rowInStock ? "In stock" : "Out of stock"}
                                 </span>
@@ -2366,9 +2412,8 @@ export default function SupplierEditProduct() {
                                 inputMode="decimal"
                                 disabled={priceLocked}
                                 readOnly={priceLocked}
-                                className={`w-28 rounded-xl border px-3 py-2 text-xs bg-white ${
-                                  hasAnyIssue ? "border-rose-300" : ""
-                                } ${priceLocked ? "opacity-60" : ""}`}
+                                className={`w-28 rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
+                                  } ${priceLocked ? "opacity-60" : ""}`}
                                 placeholder="e.g. 25000"
                                 title={priceLocked ? "LIVE listing: variant price is locked." : "Set this variant unit price."}
                               />
@@ -2378,9 +2423,8 @@ export default function SupplierEditProduct() {
                                 value={row.availableQty}
                                 onChange={(e) => updateVariantQty(row.id, e.target.value)}
                                 inputMode="numeric"
-                                className={`w-24 rounded-xl border px-3 py-2 text-xs bg-white ${
-                                  hasAnyIssue ? "border-rose-300" : ""
-                                }`}
+                                className={`w-24 rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
+                                  }`}
                                 placeholder="e.g. 5"
                               />
 
@@ -2388,19 +2432,18 @@ export default function SupplierEditProduct() {
                                 type="button"
                                 onClick={() => removeVariantRow(row.id)}
                                 disabled={disableRemove}
-                                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${
-                                  disableRemove
+                                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${disableRemove
                                     ? "bg-zinc-50 text-zinc-400 border-zinc-200 cursor-not-allowed"
                                     : "bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200"
-                                }`}
+                                  }`}
                                 title={
                                   offersOnly
                                     ? row.variantOfferId
                                       ? "Remove your variant offer for this variant."
                                       : "Nothing to remove."
                                     : isLive && row.isExisting
-                                    ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
-                                    : undefined
+                                      ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
+                                      : undefined
                                 }
                               >
                                 <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
@@ -2520,8 +2563,8 @@ export default function SupplierEditProduct() {
                       imageOverLimit
                         ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
                         : baseComboWarn
-                        ? baseComboWarn
-                        : dupWarn || "Fix the errors above to save."
+                          ? baseComboWarn
+                          : dupWarn || "Fix the errors above to save."
                     );
                     return;
                   }
@@ -2532,10 +2575,10 @@ export default function SupplierEditProduct() {
                   imageOverLimit
                     ? `Remove extra images (max ${MAX_IMAGES_PER_PRODUCT}).`
                     : hasBaseComboConflict
-                    ? "Fix base combo vs variant combo conflict to save."
-                    : hasDuplicates || hasInvalidDefaultVariant
-                    ? "Fix duplicate/invalid combinations to save."
-                    : undefined
+                      ? "Fix base combo vs variant combo conflict to save."
+                      : hasDuplicates || hasInvalidDefaultVariant
+                        ? "Fix duplicate/invalid combinations to save."
+                        : undefined
                 }
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}

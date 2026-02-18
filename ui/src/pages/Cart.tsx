@@ -84,7 +84,6 @@ type QuotePayload = {
 
 type PublicSettings = {
   marginPercent?: number | string | null;
-  // future-proof: allow different shapes
   commerce?: { marginPercent?: number | string | null } | null;
   pricing?: { marginPercent?: number | string | null } | null;
 };
@@ -96,6 +95,38 @@ const ngn = new Intl.NumberFormat("en-NG", {
 });
 
 /* ---------------- Helpers: numbers ---------------- */
+
+// Vite only exposes env vars prefixed with VITE_
+// So set VITE_API_URL in your .env / hosting provider.
+const API_ORIGIN =
+  String((import.meta as any)?.env?.VITE_API_URL || (import.meta as any)?.env?.API_URL || "")
+    .trim()
+    .replace(/\/+$/, "") || "https://api.dayspringhouse.com";
+
+function resolveImageUrl(input?: string | null): string | undefined {
+  const s = String(input ?? "").trim();
+  if (!s) return undefined;
+
+  // already absolute or special
+  if (/^(https?:\/\/|data:|blob:)/i.test(s)) return s;
+
+  // protocol-relative
+  if (s.startsWith("//")) return `${window.location.protocol}${s}`;
+
+  // absolute paths
+  if (s.startsWith("/")) {
+    // If it's uploads (or api/uploads), serve from API
+    if (s.startsWith("/uploads/") || s.startsWith("/api/uploads/")) return `${API_ORIGIN}${s}`;
+    // otherwise assume same origin (UI)
+    return `${window.location.origin}${s}`;
+  }
+
+  // relative uploads paths
+  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) return `${API_ORIGIN}/${s}`;
+
+  // fallback: same origin
+  return `${window.location.origin}/${s}`;
+}
 
 const asInt = (v: any, d = 0) => {
   const n = Number(v);
@@ -206,7 +237,7 @@ function normalizeCartShape(parsed: any[]): CartItem[] {
       unitPrice: Number.isFinite(unitPrice) ? unitPrice : 0,
       totalPrice: Number.isFinite(totalPrice) ? totalPrice : 0,
       selectedOptions,
-      image: typeof it.image === "string" ? it.image : undefined,
+      image: typeof it.image === "string" ? (resolveImageUrl(it.image) ?? undefined) : undefined,
     } as CartItem;
   });
 }
@@ -227,7 +258,8 @@ function saveCart(items: CartItem[]) {
   localStorage.setItem("cart", JSON.stringify(items));
 }
 
-const sameLine = (a: CartItem, b: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) => lineKeyFor(a) === lineKeyFor(b);
+const sameLine = (a: CartItem, b: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) =>
+  lineKeyFor(a) === lineKeyFor(b);
 
 const isBaseLine = (it: CartItem) => {
   if (it.variantId) return false;
@@ -340,11 +372,16 @@ async function hydrateLinePrice(line: CartItem): Promise<CartItem> {
     }
 
     if (!(unit > 0)) {
-      const offersSrc = [...(Array.isArray(p.supplierOffers) ? p.supplierOffers : []), ...(Array.isArray(p.offers) ? p.offers : [])];
+      const offersSrc = [
+        ...(Array.isArray(p.supplierOffers) ? p.supplierOffers : []),
+        ...(Array.isArray(p.offers) ? p.offers : []),
+      ];
 
       const fromVariants =
         Array.isArray(p.variants) &&
-        p.variants.flatMap((v: any) => (Array.isArray(v.offers) ? v.offers.map((o: any) => ({ ...o, variantId: v.id })) : []));
+        p.variants.flatMap((v: any) =>
+          Array.isArray(v.offers) ? v.offers.map((o: any) => ({ ...o, variantId: v.id })) : []
+        );
 
       const allOffers = [...offersSrc, ...(Array.isArray(fromVariants) ? fromVariants : [])];
 
@@ -430,7 +467,10 @@ function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null
     const allocsRaw = toArray<any>(x?.allocations ?? x?.splits ?? x?.items ?? x?.parts);
     const allocations = allocsRaw.map(normalizeAlloc).filter((a) => a.qty > 0 && a.unitPrice >= 0);
 
-    const lineTotal = asMoney(x?.lineTotal ?? x?.total ?? allocations.reduce((s, a) => s + asMoney(a.lineTotal, 0), 0), 0);
+    const lineTotal = asMoney(
+      x?.lineTotal ?? x?.total ?? allocations.reduce((s, a) => s + asMoney(a.lineTotal, 0), 0),
+      0
+    );
 
     const qtyPriced = Math.max(0, asInt(x?.qtyPriced ?? allocations.reduce((s, a) => s + asInt(a.qty, 0), 0), 0));
 
@@ -525,7 +565,10 @@ async function fetchPricingQuoteForCart(cart: CartItem[]): Promise<QuotePayload 
 
   for (const a of attempts) {
     try {
-      const res = a.method === "post" ? await api.post(a.url, a.body) : await api.get(a.url, { params: { items: JSON.stringify(items) } });
+      const res =
+        a.method === "post"
+          ? await api.post(a.url, a.body)
+          : await api.get(a.url, { params: { items: JSON.stringify(items) } });
       const normalized = normalizeQuoteResponse(res, cart);
       if (normalized) return normalized;
     } catch {
@@ -620,6 +663,18 @@ export default function Cart() {
       return changed ? next : prev;
     });
   }, [cart]);
+
+  useEffect(() => {
+    setCart((prev) => {
+      const next = prev.map((it) => ({
+        ...it,
+        image: resolveImageUrl(it.image) ?? it.image,
+      }));
+      saveCart(next);
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const publicSettingsQ = useQuery({
     queryKey: ["settings", "public:v1"],
@@ -861,14 +916,18 @@ export default function Cart() {
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
+  // ✅ Common “tap reliability” class for all interactive controls
+  const tap =
+    "touch-manipulation [-webkit-tap-highlight-color:transparent]";
+
   if (visibleCart.length === 0) {
     return (
       <SiteLayout>
         <div className="min-h-[88vh] bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden grid place-items-center px-4">
-          <div className="pointer-events-none absolute -top-24 -left-24 size-80 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
-          <div className="pointer-events-none absolute -bottom-28 -right-24 size-96 rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
+          <div className="pointer-events-none -z-10 absolute -top-24 -left-24 size-80 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
+          <div className="pointer-events-none -z-10 absolute -bottom-28 -right-24 size-96 rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
 
-          <div className="max-w-md w-full text-center">
+          <div className="max-w-md w-full text-center relative z-10">
             <div className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
               <span className="inline-block size-1.5 rounded-full bg-white/90" />
               Your cart is empty
@@ -877,7 +936,7 @@ export default function Cart() {
             <p className="mt-1 text-ink-soft">Browse our catalogue and add items to your cart. They’ll show up here for checkout.</p>
             <Link
               to="/"
-              className="mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200 transition"
+              className={`${tap} mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200 transition`}
             >
               Go shopping
             </Link>
@@ -892,30 +951,37 @@ export default function Cart() {
 
   return (
     <SiteLayout>
-      <div className="bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden">
-        <div className="pointer-events-none absolute -top-28 -left-24 size-96 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
-        <div className="pointer-events-none absolute -bottom-32 -right-28 size-[28rem] rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
+      <div className="bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden isolate">
+        {/* ✅ Put blobs behind EVERYTHING and never intercept taps */}
+        <div className="pointer-events-none -z-10 absolute -top-28 -left-24 size-96 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
+        <div className="pointer-events-none -z-10 absolute -bottom-32 -right-28 size-[28rem] rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
 
-        <div className="relative max-w-6xl mx-auto px-4 md:px-6 py-6 sm:py-8">
-          <div className="mb-5 sm:mb-6 text-center md:text-left">
+        {/* ✅ tighter padding for ultra-small screens + ensure content is above blobs */}
+        <div className="relative z-10 max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-5 sm:py-8 max-[360px]:px-2 max-[360px]:py-4">
+          <div className="mb-4 sm:mb-6 text-center md:text-left">
             <span className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
               <span className="inline-block size-1.5 rounded-full bg-white/90" />
               Review &amp; edit
             </span>
-            <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-ink">Your cart</h1>
-            <p className="text-sm text-ink-soft">
+
+            {/* ✅ smaller headline on ultra-small */}
+            <h1 className="mt-3 text-[26px] sm:text-3xl font-extrabold tracking-tight text-ink max-[360px]:text-[22px]">
+              Your cart
+            </h1>
+
+            <p className="text-sm max-[360px]:text-[12px] text-ink-soft">
               Prices shown are <span className="font-medium">retail</span> (supplier offers + margin).
             </p>
 
             {(topBannerLoading || !!pricingWarning) && (
-              <div className="mt-3 inline-flex items-center gap-2 rounded-full border bg-white/70 px-3 py-1 text-[12px] text-ink-soft">
+              <div className="mt-3 inline-flex items-center gap-2 rounded-full border bg-white/70 px-3 py-1 text-[12px] max-[360px]:text-[11px] text-ink-soft">
                 <span className={`inline-block size-2 rounded-full ${topBannerLoading ? "bg-amber-400 animate-pulse" : "bg-rose-400"}`} />
                 {topBannerText}
               </div>
             )}
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-5 sm:gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-4 sm:gap-6">
             {/* LEFT: Items */}
             <section className="space-y-3 sm:space-y-4">
               {visibleCart.map((it) => {
@@ -926,7 +992,11 @@ export default function Cart() {
                 const currentQty = Math.max(1, Number(it.qty) || 1);
 
                 const fallbackUnit =
-                  asMoney(it.unitPrice, 0) > 0 ? asMoney(it.unitPrice, 0) : currentQty > 0 ? asMoney(it.totalPrice, 0) / currentQty : 0;
+                  asMoney(it.unitPrice, 0) > 0
+                    ? asMoney(it.unitPrice, 0)
+                    : currentQty > 0
+                      ? asMoney(it.totalPrice, 0) / currentQty
+                      : 0;
 
                 const hasQuote = !!ql && (ql.lineTotal > 0 || ql.allocations.length > 0);
                 const hasRetailLine = !!rl && rl.retailLineTotal > 0;
@@ -1006,36 +1076,42 @@ export default function Cart() {
                 return (
                   <article
                     key={k}
-                    className="group rounded-2xl border border-white/60 bg-white/75 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)] p-4 sm:p-5"
+                    className="group rounded-2xl border border-white/60 bg-white/75 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)]
+                               p-3 sm:p-5 max-[360px]:p-3 overflow-hidden relative z-10"
                   >
-                    {/* ✅ MOBILE-NEAT: stack on mobile, row on sm+ */}
+                    {/* stack on mobile, row on sm+ */}
                     <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4">
                       {/* Thumbnail */}
-                      <div className="shrink-0 w-20 h-20 rounded-xl border overflow-hidden bg-white self-start">
-                        {it.image ? (
+                      <div className="shrink-0 w-16 h-16 sm:w-20 sm:h-20 max-[360px]:w-14 max-[360px]:h-14 rounded-xl border overflow-hidden bg-white self-start relative">
+                        <div className="absolute inset-0 grid place-items-center text-[11px] text-ink-soft">No image</div>
+
+                        {resolveImageUrl(it.image) && (
                           <img
-                            src={it.image}
-                            alt={it.title}
-                            className="w-full h-full object-cover"
-                            onError={(e) => (((e.currentTarget as HTMLImageElement).style.display = "none"), void 0)}
+                            src={resolveImageUrl(it.image)}
+                            alt=""
+                            aria-hidden="true"
+                            className="relative w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).style.display = "none";
+                            }}
                           />
-                        ) : (
-                          <div className="w-full h-full grid place-items-center text-[11px] text-ink-soft">No image</div>
                         )}
                       </div>
 
                       {/* Text */}
                       <div className="flex-1 min-w-0">
-                        {/* ✅ MOBILE-NEAT HEADER: title row, then badges+remove row */}
                         <div className="min-w-0">
-                          <div className="flex items-start justify-between gap-3">
-                            <h3 className="font-semibold text-ink text-[15px] sm:text-base leading-snug truncate" title={it.title}>
+                          <div className="flex items-start justify-between gap-2">
+                            <h3
+                              className="font-semibold text-ink text-[14px] sm:text-base leading-snug truncate"
+                              title={it.title}
+                            >
                               {it.title}
                             </h3>
 
-                            {/* ✅ Remove never overlaps */}
                             <button
-                              className="shrink-0 whitespace-nowrap text-[12px] sm:text-sm text-rose-600 hover:underline rounded-lg px-2 py-1 hover:bg-rose-500/10 transition"
+                              type="button"
+                              className={`${tap} shrink-0 whitespace-nowrap text-[12px] sm:text-sm text-rose-600 hover:underline rounded-lg px-2 py-1 hover:bg-rose-500/10 transition`}
                               onClick={() => remove(it)}
                               aria-label={`Remove ${it.title}`}
                               title="Remove item"
@@ -1047,7 +1123,9 @@ export default function Cart() {
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">{kindLabel}</span>
                             {!!splitBadge && (
-                              <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">{splitBadge}</span>
+                              <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">
+                                {splitBadge}
+                              </span>
                             )}
                             {pricingQ.isFetching && (
                               <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">
@@ -1057,13 +1135,12 @@ export default function Cart() {
                           </div>
 
                           {!!it.selectedOptions?.length && (
-                            <div className="mt-2 text-[12px] sm:text-xs text-ink-soft leading-snug">
+                            <div className="mt-2 text-[12px] max-[360px]:text-[11px] sm:text-xs text-ink-soft leading-snug break-words">
                               {it.selectedOptions.map((o) => `${o.attribute}: ${o.value}`).join(" • ")}
                             </div>
                           )}
 
-                          {/* ✅ compact meta block */}
-                          <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] sm:text-xs text-ink-soft">
+                          <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] max-[360px]:text-[11px] sm:text-xs text-ink-soft">
                             <div>
                               Unit: <span className="font-medium text-ink">{unitText}</span>
                               {hasRetailLine && rl.retailMinUnit !== rl.retailMaxUnit ? (
@@ -1074,16 +1151,13 @@ export default function Cart() {
                             {!!helperText && <div className="text-[11px]">{helperText}</div>}
 
                             {pools?.hasVariantSpecific && isBaseLine(it) && (
-                              <div className="text-[11px]">
-                                Base pool. Variants use their own pools.
-                              </div>
+                              <div className="text-[11px]">Base pool. Variants use their own pools.</div>
                             )}
                           </div>
 
-                          {/* breakdown toggle */}
                           {hasRetailLine && (rl.allocationsRetail?.length ?? 0) > 0 && (
                             <button
-                              className="mt-2 text-[11px] text-primary-700 hover:underline"
+                              className={`${tap} mt-2 text-[11px] text-primary-700 hover:underline`}
                               onClick={() => setExpanded((p) => ({ ...p, [k]: !p[k] }))}
                               type="button"
                             >
@@ -1092,13 +1166,13 @@ export default function Cart() {
                           )}
                         </div>
 
-                        {/* breakdown */}
                         {hasRetailLine && isExpanded && (rl.allocationsRetail?.length ?? 0) > 0 && (
                           <div className="mt-3 rounded-xl border bg-white/70 p-3 text-xs">
                             <div className="flex items-center justify-between text-ink-soft">
                               <span>Supplier split (retail)</span>
                               <span className="font-medium text-ink">{ngn.format(asMoney(rl.retailLineTotal, 0))}</span>
                             </div>
+
                             <div className="mt-2 space-y-1">
                               {rl.allocationsRetail
                                 .filter((a) => a.qty > 0)
@@ -1125,14 +1199,14 @@ export default function Cart() {
                           </div>
                         )}
 
-                        {/* ✅ MOBILE-NEAT FOOTER: quantity + total stack cleanly */}
+                        {/* quantity + total */}
                         <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                          {/* Quantity controls */}
                           <div className="flex items-center justify-between sm:justify-start gap-3">
                             <div className="flex items-center rounded-xl border border-border bg-white overflow-hidden shadow-sm">
                               <button
+                                type="button"
                                 aria-label="Decrease quantity"
-                                className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
+                                className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 active:scale-[0.98] transition`}
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={dec}
                               >
@@ -1157,13 +1231,14 @@ export default function Cart() {
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
                                 }}
-                                className="w-16 text-center outline-none px-2 py-2 bg-white"
+                                className="w-14 sm:w-16 max-[360px]:w-12 text-center outline-none px-2 py-2 max-[360px]:py-1.5 bg-white"
                                 aria-label="Quantity"
                               />
 
                               <button
+                                type="button"
                                 aria-label="Increase quantity"
-                                className="px-3 py-2 hover:bg-black/5 active:scale-[0.98] transition"
+                                className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 active:scale-[0.98] transition`}
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={inc}
                               >
@@ -1171,13 +1246,14 @@ export default function Cart() {
                               </button>
                             </div>
 
-                            <span className="text-xs text-ink-soft">Qty</span>
+                            <span className="text-xs max-[360px]:text-[11px] text-ink-soft">Qty</span>
                           </div>
 
-                          {/* Line total */}
-                          <div className="sm:ml-auto rounded-xl border bg-white/70 px-3 py-2 text-right">
+                          <div className="sm:ml-auto rounded-xl border bg-white/70 px-3 py-2 text-right min-w-[140px] max-[360px]:min-w-[0]">
                             <div className="text-[11px] text-ink-soft">Line total</div>
-                            <div className="text-lg font-semibold tracking-tight">{ngn.format(lineTotal)}</div>
+                            <div className="text-[18px] sm:text-lg font-semibold tracking-tight break-words">
+                              {ngn.format(lineTotal)}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1188,25 +1264,25 @@ export default function Cart() {
             </section>
 
             {/* RIGHT: Summary */}
-            <aside className="lg:sticky lg:top-6 h-max">
-              <div className="rounded-2xl border border-white/60 bg-white/70 backdrop-blur p-5 shadow-[0_6px_30px_rgba(0,0,0,0.06)]">
-                <h2 className="text-lg font-semibold text-ink">Order summary</h2>
+            <aside className="lg:sticky lg:top-6 h-max relative z-10">
+              <div className="rounded-2xl border border-white/60 bg-white/70 backdrop-blur p-4 sm:p-5 max-[360px]:p-3 shadow-[0_6px_30px_rgba(0,0,0,0.06)] overflow-hidden">
+                <h2 className="text-lg max-[360px]:text-base font-semibold text-ink">Order summary</h2>
 
-                {/* ✅ neat rows on mobile: label wraps, value never overlaps */}
-                <div className="mt-4 grid gap-3 text-[13px] sm:text-sm">
-                  <div className="grid grid-cols-[1fr_auto] items-start gap-4">
+                {/* ✅ prevent overlap on tiny screens */}
+                <div className="mt-4 grid gap-3 text-[13px] max-[360px]:text-[12px] sm:text-sm">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
                     <span className="text-ink-soft leading-tight">Items</span>
                     <span className="font-semibold text-ink whitespace-nowrap text-right">{visibleCart.length}</span>
                   </div>
 
-                  <div className="grid grid-cols-[1fr_auto] items-start gap-4">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
                     <span className="text-ink-soft leading-tight">
                       Subtotal <span className="text-[11px]">(retail)</span>
                     </span>
                     <span className="font-semibold text-ink whitespace-nowrap text-right">{ngn.format(total)}</span>
                   </div>
 
-                  <div className="grid grid-cols-[1fr_auto] items-start gap-4">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
                     <span className="text-ink-soft leading-tight">Shipping</span>
                     <span className="font-semibold text-ink text-right leading-tight">
                       Calculated
@@ -1216,27 +1292,26 @@ export default function Cart() {
                   </div>
                 </div>
 
-                {/* ✅ Total: stack on mobile so it never crushes */}
                 <div className="mt-5 pt-4 border-t border-white/50">
                   <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                     <span className="font-semibold text-ink">Total</span>
-                    <span className="text-[28px] sm:text-2xl font-extrabold tracking-tight text-ink whitespace-nowrap">
+
+                    {/* ✅ allow wrap on ultra-small (no more crushing/overflow) */}
+                    <span className="text-[26px] sm:text-2xl max-[360px]:text-[22px] font-extrabold tracking-tight text-ink break-words">
                       {ngn.format(total)}
                     </span>
-
                   </div>
 
                   {!canCheckout && <p className="mt-2 text-[12px] text-rose-600">{cartBlockingReason}</p>}
                   {pricingWarning && <p className="mt-2 text-[12px] text-rose-600">{pricingWarning}</p>}
 
-                  {/* ✅ Button never wraps: “Checkout” on mobile */}
                   <Link
                     to={canCheckout && !pricingWarning ? "/checkout" : "#"}
                     onClick={(e) => {
                       if (!canCheckout || !!pricingWarning) e.preventDefault();
                     }}
-                    className={`mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 font-semibold shadow-sm transition whitespace-nowrap
-        ${canCheckout && !pricingWarning
+                    className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition
+                      ${canCheckout && !pricingWarning
                         ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
                         : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
                       }`}
@@ -1248,7 +1323,7 @@ export default function Cart() {
 
                   <Link
                     to="/"
-                    className="mt-3 w-full inline-flex items-center justify-center rounded-xl border border-border bg-white px-4 py-3 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition"
+                    className={`${tap} mt-3 w-full inline-flex items-center justify-center rounded-xl border border-border bg-white px-4 py-3 max-[360px]:py-2.5 text-ink hover:bg-black/5 focus:outline-none focus:ring-4 focus:ring-primary-50 transition`}
                   >
                     Continue shopping
                   </Link>
@@ -1257,8 +1332,9 @@ export default function Cart() {
                 </div>
               </div>
 
-
-              <p className="mt-3 text-[11px] text-ink-soft text-center">Taxes &amp; shipping are shown at checkout. You can update addresses there.</p>
+              <p className="mt-3 text-[11px] text-ink-soft text-center">
+                Taxes &amp; shipping are shown at checkout. You can update addresses there.
+              </p>
             </aside>
           </div>
         </div>
