@@ -5,7 +5,7 @@ const normalizeBase = (s: string) => s.trim().replace(/\/+$/, "");
 const isDev = import.meta.env.DEV;
 
 // Only use VITE_API_URL in production builds
-const PROD_BASE = normalizeBase(String(import.meta.env.VITE_API_URL ?? ""));
+const PROD_BASE = normalizeBase(String(import.meta.env.VITE_API_URL ?? ""))||  "/api";
 
 // ✅ DEV: same-origin so Vite proxy + cookies work
 // ✅ PROD: absolute URL from env
