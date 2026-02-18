@@ -147,8 +147,8 @@ function buildProductHtml(params: {
 
   const price =
     typeof params.price === "number" &&
-      Number.isFinite(params.price) &&
-      params.price > 0
+    Number.isFinite(params.price) &&
+    params.price > 0
       ? String(params.price)
       : "";
 
@@ -166,14 +166,14 @@ function buildProductHtml(params: {
     ...(brand ? { brand: { "@type": "Brand", name: params.brandName } } : {}),
     ...(price
       ? {
-        offers: {
-          "@type": "Offer",
-          priceCurrency: "NGN",
-          price,
-          availability,
-          url: params.canonical,
-        },
-      }
+          offers: {
+            "@type": "Offer",
+            priceCurrency: "NGN",
+            price,
+            availability,
+            url: params.canonical,
+          },
+        }
       : {}),
   };
 
@@ -423,161 +423,182 @@ const UI_DIST_DIR = pickFirstExistingDir([
   path.resolve(process.cwd(), "public"), // alternative
 ]);
 
-if (UI_DIST_DIR) {
-  console.log("Serving SPA from:", UI_DIST_DIR);
+/* ------------------------------ robots.txt + sitemap.xml ALWAYS (not dependent on UI build) ------------------------------ */
 
-  // robots.txt (serve from dist if present, else default)
-  app.get("/robots.txt", (req, res) => {
+// robots.txt (serve from dist if present, else default)
+app.get("/robots.txt", (req, res) => {
+  const origin = getSiteOrigin(req);
+
+  if (UI_DIST_DIR) {
     const p = path.join(UI_DIST_DIR, "robots.txt");
     if (fs.existsSync(p)) return res.sendFile(p);
+  }
+
+  res
+    .status(200)
+    .type("text/plain")
+    .send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
+});
+
+// sitemap.xml (dynamic)
+let sitemapCache: { xml: string; at: number } | null = null;
+const SITEMAP_TTL_MS = 10 * 60 * 1000;
+
+app.get("/sitemap.xml", async (req, res) => {
+  try {
+    const now = Date.now();
+    if (sitemapCache && now - sitemapCache.at < SITEMAP_TTL_MS) {
+      res.setHeader("Content-Type", "application/xml; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=300");
+      return res.status(200).send(sitemapCache.xml);
+    }
 
     const origin = getSiteOrigin(req);
-    res.type("text/plain").send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`);
-  });
 
-  // sitemap.xml (simple + cached)
-  let sitemapCache: { xml: string; at: number } | null = null;
-  const SITEMAP_TTL_MS = 10 * 60 * 1000;
+    const products = await prisma.product.findMany({
+      where: { isDeleted: false },
+      select: { id: true, updatedAt: true },
+      orderBy: { updatedAt: "desc" },
+      take: 5000,
+    });
 
-  app.get("/sitemap.xml", async (req, res) => {
-    try {
-      const now = Date.now();
-      if (sitemapCache && now - sitemapCache.at < SITEMAP_TTL_MS) {
-        res.type("application/xml").send(sitemapCache.xml);
-        return;
-      }
+    const xml =
+      `<?xml version="1.0" encoding="UTF-8"?>\n` +
+      `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+      products
+        .map((p) => {
+          const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
+          const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : "";
+          return (
+            `  <url>\n` +
+            `    <loc>${escapeHtml(loc)}</loc>\n` +
+            (lastmod ? `    <lastmod>${escapeHtml(lastmod)}</lastmod>\n` : "") +
+            `  </url>`
+          );
+        })
+        .join("\n") +
+      `\n</urlset>\n`;
 
-      const origin = getSiteOrigin(req);
+    sitemapCache = { xml, at: now };
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.status(200).send(xml);
+  } catch (e: any) {
+    console.error("sitemap.xml error:", e?.message ?? e);
+    return res.status(500).type("text/plain").send("sitemap error");
+  }
+});
 
-      const products = await prisma.product.findMany({
-        where: {
-          isDeleted: false,
-          // status: "PUBLISHED", // uncomment if you ONLY want published indexed
-        },
-        select: { id: true, updatedAt: true },
-        orderBy: { updatedAt: "desc" },
-        take: 5000,
-      });
+/**
+ * ✅ Bot-friendly /product/:id HTML
+ * - Bots OR __seo=1 get real title + JSON-LD Product
+ * - Humans (no __seo=1) fall through to SPA when UI_DIST_DIR exists
+ *
+ * ✅ CRITICAL: Vary by User-Agent so caches never mix bot/human HTML
+ */
+app.get("/product/:id", async (req, res, next) => {
+  // ✅ prevents CDN/proxy caching the SPA HTML for Googlebot (or vice versa)
+  res.setHeader("Vary", "User-Agent");
 
-      const xml =
-        `<?xml version="1.0" encoding="UTF-8"?>\n` +
-        `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-        products
-          .map((p) => {
-            const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
-            const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : "";
-            return (
-              `  <url>\n` +
-              `    <loc>${escapeHtml(loc)}</loc>\n` +
-              (lastmod ? `    <lastmod>${escapeHtml(lastmod)}</lastmod>\n` : "") +
-              `  </url>`
-            );
-          })
-          .join("\n") +
-        `\n</urlset>\n`;
+  try {
+    const forceSeo = String(req.query.__seo ?? "") === "1";
+    const wantsSeo = forceSeo || isBot(req);
 
-      sitemapCache = { xml, at: now };
-      res.type("application/xml").send(xml);
-    } catch (e: any) {
-      console.error("sitemap.xml error:", e?.message ?? e);
-      res.status(500).type("text/plain").send("sitemap error");
+    // Humans: let SPA handle it if UI is present
+    if (!wantsSeo) {
+      if (UI_DIST_DIR) return next();
+      return res.status(404).type("text/plain").send("Not Found");
     }
-  });
 
-  /**
-   * ✅ Bot-friendly /product/:id HTML
-   * - Bots OR __seo=1 get real title + JSON-LD Product
-   * - Humans (no __seo=1) fall through to SPA
-   */
-  app.get("/product/:id", async (req, res, next) => {
-    try {
-      const forceSeo = String(req.query.__seo ?? "") === "1";
-      if (!forceSeo && !isBot(req)) return next();
+    // Bots: never cache (keeps titles fresh)
+    res.setHeader("Cache-Control", "no-store");
 
-      // Never cache this (prevents stale titles in crawlers / proxies)
-      res.setHeader("Cache-Control", "no-store");
+    const origin = getSiteOrigin(req);
+    const id = String(req.params.id || "").trim();
+    const canonical = `${origin}/product/${encodeURIComponent(id)}`;
 
-      const origin = getSiteOrigin(req);
-      const id = String(req.params.id || "").trim();
-      const canonical = `${origin}/product/${encodeURIComponent(id)}`;
+    const row = await prisma.product.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        retailPrice: true,
+        inStock: true,
+        imagesJson: true,
+        brand: { select: { name: true } },
 
-      const row = await prisma.product.findUnique({
-        where: { id },
-        select: {
-          id: true,
-          title: true,
-          description: true,
-          retailPrice: true, // ✅ exists in your schema (mapped to DB "price")
-          inStock: true,
-          imagesJson: true,
-          brand: { select: { name: true } },
-
-          // ✅ your Product -> variants relation field is ProductVariant (not "variants")
-          ProductVariant: {
-            select: { imagesJson: true, retailPrice: true },
-            orderBy: { createdAt: "desc" },
-            take: 1,
-          },
+        // ✅ your Product -> variants relation field is ProductVariant (not "variants")
+        ProductVariant: {
+          select: { imagesJson: true, retailPrice: true },
+          orderBy: { createdAt: "desc" },
+          take: 1,
         },
-      });
+      },
+    });
 
-      if (!row) {
-        res.setHeader("X-DaySpring-SEO", "product-404");
-        return res.status(404).type("text/html").send(
-          buildProductHtml({
-            title: "Product not found",
-            description: "This product does not exist on DaySpring.",
-            canonical,
-            imageUrl: "",
-            price: null,
-            inStock: false,
-            brandName: null,
-          })
-        );
-      }
-
-      const title = normalizeWhitespace(String(row.title ?? "Product"));
-      const desc =
-        normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
-        `Buy ${title} on DaySpring.`;
-
-      const productImgs = Array.isArray(row.imagesJson) ? row.imagesJson : [];
-      const v0 = Array.isArray((row as any).ProductVariant) ? (row as any).ProductVariant[0] : null;
-      const variantImgs = v0 && Array.isArray(v0.imagesJson) ? v0.imagesJson : [];
-
-      const imgRaw = String(productImgs[0] ?? variantImgs[0] ?? "").trim();
-      const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
-
-      const pRetail =
-        row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
-          ? Number(row.retailPrice)
-          : null;
-
-      const vRetail =
-        v0?.retailPrice != null && Number.isFinite(Number(v0.retailPrice))
-          ? Number(v0.retailPrice)
-          : null;
-
-      const priceRaw = pRetail ?? vRetail ?? null;
-
-      res.setHeader("X-DaySpring-SEO", forceSeo ? "product-force" : "product-bot");
-
-      return res.status(200).type("text/html").send(
+    if (!row) {
+      res.setHeader("X-DaySpring-SEO", "product-404");
+      return res.status(404).type("text/html").send(
         buildProductHtml({
-          title,
-          description: desc,
+          title: "Product not found",
+          description: "This product does not exist on DaySpring.",
           canonical,
-          imageUrl: imgAbs || "",
-          price: priceRaw,
-          inStock: row.inStock !== false,
-          brandName: row.brand?.name ?? null,
+          imageUrl: "",
+          price: null,
+          inStock: false,
+          brandName: null,
         })
       );
-    } catch (e: any) {
-      console.error("SEO product route error:", e?.message ?? e);
-      return next(e);
     }
-  });
+
+    const title = normalizeWhitespace(String(row.title ?? "Product"));
+    const desc =
+      normalizeWhitespace(String(row.description ?? "")).slice(0, 155) ||
+      `Buy ${title} on DaySpring.`;
+
+    const productImgs = Array.isArray(row.imagesJson) ? row.imagesJson : [];
+    const v0 = Array.isArray((row as any).ProductVariant)
+      ? (row as any).ProductVariant[0]
+      : null;
+    const variantImgs = v0 && Array.isArray(v0.imagesJson) ? v0.imagesJson : [];
+
+    const imgRaw = String(productImgs[0] ?? variantImgs[0] ?? "").trim();
+    const imgAbs = imgRaw ? resolveAbsoluteImage(req, imgRaw) : "";
+
+    const pRetail =
+      row.retailPrice != null && Number.isFinite(Number(row.retailPrice))
+        ? Number(row.retailPrice)
+        : null;
+
+    const vRetail =
+      v0?.retailPrice != null && Number.isFinite(Number(v0.retailPrice))
+        ? Number(v0.retailPrice)
+        : null;
+
+    const priceRaw = pRetail ?? vRetail ?? null;
+
+    res.setHeader("X-DaySpring-SEO", forceSeo ? "product-force" : "product-bot");
+
+    return res.status(200).type("text/html").send(
+      buildProductHtml({
+        title,
+        description: desc,
+        canonical,
+        imageUrl: imgAbs || "",
+        price: priceRaw,
+        inStock: row.inStock !== false,
+        brandName: row.brand?.name ?? null,
+      })
+    );
+  } catch (e: any) {
+    console.error("SEO product route error:", e?.message ?? e);
+    return next(e);
+  }
+});
+
+if (UI_DIST_DIR) {
+  console.log("Serving SPA from:", UI_DIST_DIR);
 
   // Serve built assets
   app.use(
@@ -590,6 +611,13 @@ if (UI_DIST_DIR) {
   // SPA fallback: any non-API route returns index.html
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) return next();
+
+    // ✅ protect product routes from cache poisoning (very important with UA-based SEO)
+    if (req.path.startsWith("/product/")) {
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Vary", "User-Agent");
+    }
+
     return res.sendFile(path.join(UI_DIST_DIR, "index.html"));
   });
 } else {
