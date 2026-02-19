@@ -97,11 +97,12 @@ function IconNavLink({
       aria-label={label}
       title={label}
     >
-      <span className="inline-flex items-center justify-center">{icon}</span>
+      <span className="inline-flex items-center justify-center pointer-events-none">{icon}</span>
 
       {count > 0 && (
         <span
           className="
+            pointer-events-none
             absolute -top-1 -right-1
             grid place-items-center
             rounded-full bg-fuchsia-600 text-white font-semibold leading-none
@@ -214,11 +215,12 @@ export default function Navbar() {
     // persist returnTo (refresh-safe)
     try {
       sessionStorage.setItem("auth:returnTo", target);
-    } catch {}
+    } catch { }
 
     // attempt backend logout (cookie clear)
     try {
-      await api.post("/api/auth/logout", {}, AXIOS_COOKIE_CFG);
+      // ✅ FIX: baseURL is /api already, so DO NOT prefix /api here
+      await api.post("/auth/logout", {}, AXIOS_COOKIE_CFG);
     } catch {
       // ignore: we still clear local state
     }
@@ -245,6 +247,10 @@ export default function Navbar() {
   const showSupplierNav = isLoggedIn && isSupplier && !isRider;
   const showRiderNav = isLoggedIn && isRider;
 
+  // ✅ MOBILE: show Cart icon always for anyone who isn't supplier/rider
+  // (guests can still use cart)
+  const showCartMobile = !isSupplier && !isRider;
+
   // ✅ prevent background scroll when drawer is open
   useEffect(() => {
     if (!mobileMoreOpen) return;
@@ -264,7 +270,8 @@ export default function Navbar() {
     if (!st.user?.id) return;
 
     try {
-      const { data } = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
+      // ✅ FIX: baseURL is /api already
+      const { data } = await api.get("/auth/me", AXIOS_COOKIE_CFG);
       if (data?.id) {
         useAuthStore.setState({ user: data });
       }
@@ -298,14 +305,14 @@ export default function Navbar() {
       queryKey: ["wishlist"],
       queryFn: async () => {
         try {
-          const { data } = await api.get("/api/wishlist", AXIOS_COOKIE_CFG);
+          const { data } = await api.get("/wishlist", AXIOS_COOKIE_CFG);
           if (Array.isArray((data as any)?.items)) return (data as any).items;
           if (Array.isArray((data as any)?.data)) return (data as any).data;
           if (Array.isArray(data)) return data;
           return [];
         } catch (e: any) {
           if (isAuthError(e)) return [];
-          const { data } = await api.get("/api/favorites/mine", AXIOS_COOKIE_CFG);
+          const { data } = await api.get("/favorites/mine", AXIOS_COOKIE_CFG);
           if (Array.isArray((data as any)?.items)) return (data as any).items;
           if (Array.isArray((data as any)?.data)) return (data as any).data;
           if (Array.isArray(data)) return data;
@@ -328,7 +335,7 @@ export default function Navbar() {
               aria-label="DaySpring home"
               title="DaySpring"
             >
-              <span className="block origin-left scale-[0.92] xs:scale-95 sm:scale-100">
+              <span className="block origin-left scale-[0.92] xs:scale-95 sm:scale-100 pointer-events-none">
                 <DaySpringLogo size={28} />
               </span>
             </Link>
@@ -367,8 +374,9 @@ export default function Navbar() {
                         to="/cart"
                         icon={<ShoppingCart size={18} />}
                         label="Cart"
-                        badgeCount={cartCount.distinct}
+                        badgeCount={cartCount.totalQty}
                       />
+
                       <IconNavLink
                         to="/wishlist"
                         end
@@ -583,20 +591,23 @@ export default function Navbar() {
             <div className="md:hidden flex items-center gap-2 shrink-0">
               <NotificationsBell placement="navbar" />
 
-              {showBuyerNav && (
+              {/* ✅ Cart ALWAYS visible on mobile (swap with wishlist) */}
+              {showCartMobile && (
                 <NavLink
-                  to="/wishlist"
-                  onTouchStart={prefetchWishlist}
-                  onMouseEnter={prefetchWishlist}
+                  to="/cart"
                   className={({ isActive }) =>
-                    `inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${
-                      isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
+                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
                     }`
                   }
-                  aria-label="Wishlist"
-                  title="Wishlist"
+                  aria-label="Cart"
+                  title="Cart"
                 >
-                  <Heart size={18} />
+                  <ShoppingCart size={18} className="pointer-events-none" />
+                  {Number(cartCount?.totalQty || 0) > 0 && (
+                    <span className="pointer-events-none absolute -top-1 -right-1 min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
+                      {cartCount.totalQty > 9 ? "9+" : cartCount.totalQty}
+                    </span>
+                  )}
                 </NavLink>
               )}
 
@@ -607,7 +618,7 @@ export default function Navbar() {
                 onClick={() => setMobileMoreOpen(true)}
                 title="Menu"
               >
-                <Menu size={18} />
+                <Menu size={18} className="pointer-events-none" />
               </button>
             </div>
           </div>
@@ -616,6 +627,7 @@ export default function Navbar() {
         {/* Mobile drawer */}
         {mobileMoreOpen && (
           <div className="md:hidden">
+            {/* ✅ ensure overlay never blocks clicks accidentally when closed (only rendered when open) */}
             <div className="fixed inset-0 z-40 bg-black/60" onClick={() => setMobileMoreOpen(false)} />
             <div className="fixed inset-y-0 right-0 z-50 w-[88vw] max-w-sm bg-white border-l border-zinc-200 shadow-2xl flex flex-col">
               <div className="px-4 py-3 border-b border-zinc-100 flex items-center justify-between shrink-0 relative">
@@ -656,34 +668,28 @@ export default function Navbar() {
                         }}
                       />
 
+                      {/* ✅ Wishlist moved INTO drawer (swapped out of top bar) */}
                       {showBuyerNav && (
-                        <>
-                          <MobileMenuButton
-                            icon={<ShoppingCart size={18} />}
-                            label="Cart"
-                            onClick={() => {
-                              setMobileMoreOpen(false);
-                              nav("/cart");
-                            }}
-                            right={
-                              cartCount.totalQty > 0 ? (
-                                <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-fuchsia-600 text-[10px] font-semibold text-white flex items-center justify-center">
-                                  {cartCount.totalQty > 9 ? "9+" : cartCount.totalQty}
-                                </span>
-                              ) : null
-                            }
-                          />
+                        <MobileMenuButton
+                          icon={<Heart size={18} />}
+                          label="Wishlist"
+                          onClick={() => {
+                            prefetchWishlist();
+                            setMobileMoreOpen(false);
+                            nav("/wishlist");
+                          }}
+                        />
+                      )}
 
-                          <MobileMenuButton
-                            icon={<Heart size={18} />}
-                            label="Wishlist"
-                            onClick={() => {
-                              prefetchWishlist();
-                              setMobileMoreOpen(false);
-                              nav("/wishlist");
-                            }}
-                          />
-                        </>
+                      {showBuyerNav && (
+                        <MobileMenuButton
+                          icon={<Package size={18} />}
+                          label="Orders"
+                          onClick={() => {
+                            setMobileMoreOpen(false);
+                            nav("/orders");
+                          }}
+                        />
                       )}
 
                       {showSupplierNav && (
@@ -790,16 +796,6 @@ export default function Navbar() {
                               nav("/account/sessions");
                             }}
                           />
-                          {!isSupplier && (
-                            <MobileMenuButton
-                              icon={<Package size={18} />}
-                              label="Purchase history"
-                              onClick={() => {
-                                setMobileMoreOpen(false);
-                                nav("/orders");
-                              }}
-                            />
-                          )}
                           <MobileMenuButton icon={<LogOut size={18} />} label="Logout" variant="danger" onClick={logout} />
                         </>
                       )}
