@@ -1878,16 +1878,7 @@ export default function ProductDetail() {
     if (useChips) {
       return (
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => onChange("")}
-            className={`px-2.5 py-1.5 rounded-xl border text-sm md:text-base ${silverBorder}
-            ${
-              !value ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "bg-white hover:bg-zinc-50"
-            } ${silverShadowSm}`}
-          >
-            No {axis.name.toLowerCase()}
-          </button>
+        
 
           {axis.values.map((opt) => {
             const st = states[opt.id] ?? { exists: true, stock: 0, disabled: false };

@@ -1604,7 +1604,6 @@ export default function Catalog() {
                                     // console.log("loaded", primaryImg);
                                   }}
                                   onError={() => {
-                                    console.log("IMG FAILED", primaryImg); // ✅ THIS will tell you if CSP/404/etc
                                     markBroken(`p:${p.id}:${primaryImg}`);
                                   }}
                                   className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${hasDifferentHover ? "opacity-100 group-hover:opacity-0" : "opacity-100"
