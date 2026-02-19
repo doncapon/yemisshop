@@ -1407,6 +1407,13 @@ export default function Catalog() {
   const anyActiveFilter =
     selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly;
   const hasSearch = !!query.trim();
+  const tap =
+    "touch-manipulation select-none [-webkit-tap-highlight-color:transparent]";
+
+  const stopTap = (e: any) => {
+    // Don't cancel the click — just stop it bubbling to any parent/Link handlers
+    e.stopPropagation?.();
+  };
 
   return (
     <SiteLayout>
@@ -1705,37 +1712,41 @@ export default function Catalog() {
                                   Choose opts.
                                 </Link>
                               ) : currentQty > 0 ? (
-                                <div className="inline-flex items-center gap-0.5">
+                                <div className="inline-flex items-center gap-1 relative z-30 pointer-events-auto">
                                   <button
                                     type="button"
+                                    onPointerDown={stopTap}
+                                    onTouchStart={stopTap}
                                     onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
+                                      stopTap(e);
                                       setCartQty(p, currentQty - 1);
                                     }}
-                                    className="w-6 h-6 md:w-7 md:h-7 rounded-full bg-white text-[13px] flex items-center justify-center text-zinc-700 active:scale-95 transition silver-border hover:silver-hover"
+                                    className={`${tap} w-9 h-9 md:w-7 md:h-7 rounded-full bg-white text-[14px] flex items-center justify-center text-zinc-700 active:scale-95 transition silver-border hover:silver-hover`}
                                     aria-label="Decrease quantity"
                                   >
-
-                                    -
+                                    −
                                   </button>
-                                  <span className="min-w-[16px] text-center text-[10px] font-semibold text-zinc-800">
+
+                                  <span className="min-w-[18px] text-center text-[11px] font-semibold text-zinc-800">
                                     {currentQty}
                                   </span>
+
                                   <button
                                     type="button"
+                                    onPointerDown={stopTap}
+                                    onTouchStart={stopTap}
                                     onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      canIncrement && setCartQty(p, currentQty + 1);
+                                      stopTap(e);
+                                      if (canIncrement) setCartQty(p, currentQty + 1);
                                     }}
                                     disabled={!allowQuickAdd || !canIncrement}
-                                    className="w-6 h-6 md:w-7 md:h-7 rounded-full border border-zinc-900 bg-zinc-900 text-white text-[13px] flex items-center justify-center disabled:opacity-40 active:scale-95 transition"
+                                    className={`${tap} w-9 h-9 md:w-7 md:h-7 rounded-full border border-zinc-900 bg-zinc-900 text-white text-[14px] flex items-center justify-center disabled:opacity-40 active:scale-95 transition`}
                                     aria-label="Increase quantity"
                                   >
                                     +
                                   </button>
                                 </div>
+
                               ) : (
                                 <button
                                   type="button"

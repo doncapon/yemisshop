@@ -256,7 +256,9 @@ function loadCart(): CartItem[] {
 
 function saveCart(items: CartItem[]) {
   localStorage.setItem("cart", JSON.stringify(items));
+  window.dispatchEvent(new Event("cart:updated")); // ✅ tells navbar badge to refresh
 }
+
 
 const sameLine = (a: CartItem, b: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) =>
   lineKeyFor(a) === lineKeyFor(b);
