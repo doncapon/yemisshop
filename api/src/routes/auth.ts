@@ -66,7 +66,13 @@ async function issueAndEmailEmailVerification(userId: string, email: string) {
   });
 
   // ✅ MUST hit API route (this router), not UI.
-  const verifyUrl = `${API_BASE_URL}/auth/verify-email?token=${encodeURIComponent(token)}`;
+  let verifyUrl;
+  if (process.env.NODE_ENV === "development") {
+    verifyUrl = `${API_BASE_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+
+  } else {
+    verifyUrl = `${API_BASE_URL}/auth/verify-email?token=${encodeURIComponent(token)}`;
+  }
 
   await sendVerifyEmail(email, verifyUrl);
 }
@@ -174,9 +180,9 @@ router.post(
     const roleNorm = String(user.role || "").replace(/[\s-]/g, "").toUpperCase();
     const ttlDays =
       roleNorm === "ADMIN" ||
-      roleNorm === "SUPER_ADMIN" ||
-      roleNorm === "SUPPLIER" ||
-      roleNorm === "SUPPLIER_RIDER"
+        roleNorm === "SUPER_ADMIN" ||
+        roleNorm === "SUPPLIER" ||
+        roleNorm === "SUPPLIER_RIDER"
         ? 7
         : 30;
 
@@ -428,8 +434,8 @@ router.get("/verify-email", async (req, res) => {
   // - Use FRONTEND_URL for redirecting users back to the UI (NOT the API domain).
   // - Keep APP_URL free to mean whatever you want, but FRONTEND_URL should be the UI origin.
   const UI_URL = String(
-      process.env.APP_URL || // fallback for older envs
-      "https://dayspringhouse.com",
+    process.env.APP_URL || // fallback for older envs
+    "https://dayspringhouse.com",
   ).replace(/\/$/, "");
 
   const redirectUi = (params: Record<string, string>) => {

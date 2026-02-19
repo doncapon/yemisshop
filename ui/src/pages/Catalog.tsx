@@ -1707,10 +1707,16 @@ export default function Catalog() {
                               ) : currentQty > 0 ? (
                                 <div className="inline-flex items-center gap-0.5">
                                   <button
-                                    onClick={() => setCartQty(p, currentQty - 1)}
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setCartQty(p, currentQty - 1);
+                                    }}
                                     className="w-6 h-6 md:w-7 md:h-7 rounded-full bg-white text-[13px] flex items-center justify-center text-zinc-700 active:scale-95 transition silver-border hover:silver-hover"
                                     aria-label="Decrease quantity"
                                   >
+
                                     -
                                   </button>
                                   <span className="min-w-[16px] text-center text-[10px] font-semibold text-zinc-800">
@@ -1732,8 +1738,13 @@ export default function Catalog() {
                                 </div>
                               ) : (
                                 <button
+                                  type="button"
                                   disabled={!allowQuickAdd}
-                                  onClick={() => setCartQty(p, 1)}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setCartQty(p, 1);
+                                  }}
                                   className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] md:text-xs border transition ${allowQuickAdd
                                     ? 'bg-zinc-900 text-white border-zinc-900 hover:opacity-90'
                                     : 'bg-white text-zinc-400 border-zinc-200 cursor-not-allowed'

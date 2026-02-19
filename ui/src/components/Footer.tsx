@@ -15,7 +15,7 @@ export default function Footer() {
                 DS
               </span>
               <span className="font-semibold tracking-tight text-[14px] sm:text-lg truncate">
-                DaySpring
+                DaySpringHouse
               </span>
             </Link>
           </div>
@@ -100,7 +100,7 @@ export default function Footer() {
                     </Link>
                   </li>
 
-                  {/* ✅ Fix: allow email to wrap nicely on mobile */}
+                  {/* Email */}
                   <li className="min-w-0">
                     <a
                       href="mailto:support@dayspringhouse.com"
@@ -164,13 +164,18 @@ export default function Footer() {
                 >
                   <input
                     type="email"
+                    inputMode="email"
+                    autoComplete="email"
                     placeholder="you@example.com"
-                    className="border rounded-xl px-3 py-2 text-[12px] sm:text-sm w-full outline-none focus:ring-2 ring-primary-300 bg-white"
                     required
+                    // ✅ IMPORTANT: iOS Safari auto-zooms inputs < 16px.
+                    // Set 16px on mobile to prevent viewport zoom/jump when keyboard opens.
+                    className="border rounded-xl px-3 py-2 w-full outline-none focus:ring-2 ring-primary-300 bg-white text-base sm:text-sm"
                   />
                   <button
                     type="submit"
-                    className="rounded-xl px-3 py-2 text-[12px] sm:text-sm bg-primary-600 text-white hover:bg-primary-700 transition w-full sm:w-auto font-semibold"
+                    // Keep button visually aligned with the input (also 16px on mobile)
+                    className="rounded-xl px-3 py-2 bg-primary-600 text-white hover:bg-primary-700 transition w-full sm:w-auto font-semibold text-base sm:text-sm"
                   >
                     Subscribe
                   </button>
