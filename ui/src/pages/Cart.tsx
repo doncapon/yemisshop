@@ -258,6 +258,7 @@ function saveCart(items: CartItem[]) {
   localStorage.setItem("cart", JSON.stringify(items));
 }
 
+
 const sameLine = (a: CartItem, b: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) =>
   lineKeyFor(a) === lineKeyFor(b);
 
@@ -628,8 +629,14 @@ export default function Cart() {
   }, []);
 
   useEffect(() => {
-    saveCart(cart);
-  }, [cart]);
+  saveCart(cart);
+
+  // ✅ fire AFTER commit so Navbar can safely setState
+  queueMicrotask(() => {
+    window.dispatchEvent(new Event("cart:updated"));
+  });
+}, [cart]);
+
 
   useEffect(() => {
     setQtyDraft((prev) => {
@@ -670,7 +677,6 @@ export default function Cart() {
         ...it,
         image: resolveImageUrl(it.image) ?? it.image,
       }));
-      saveCart(next);
       return next;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
