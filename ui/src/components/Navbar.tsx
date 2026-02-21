@@ -249,8 +249,7 @@ export default function Navbar() {
 
   // ✅ MOBILE: show Cart icon always for anyone who isn't supplier/rider
   // (guests can still use cart)
-  const showCartMobile = !isSupplier && !isRider;
-
+  const showCartMobile = isLoggedIn && !isSupplier && !isRider;
   // ✅ prevent background scroll when drawer is open
   useEffect(() => {
     if (!mobileMoreOpen) return;
