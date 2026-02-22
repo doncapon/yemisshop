@@ -46,16 +46,28 @@ function normRole(role: unknown) {
   return r;
 }
 
+/**
+ * ✅ Click-away hook with a stable internal handler.
+ * - Uses a ref to the latest onAway callback to avoid re-binding document listeners on each render.
+ */
 function useClickAway<T extends HTMLElement>(onAway: () => void) {
   const ref = useRef<T | null>(null);
+  const onAwayRef = useRef(onAway);
+
+  useEffect(() => {
+    onAwayRef.current = onAway;
+  }, [onAway]);
+
   useEffect(() => {
     function onDoc(e: MouseEvent) {
-      if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) onAway();
+      const el = ref.current;
+      if (!el) return;
+      if (!el.contains(e.target as Node)) onAwayRef.current?.();
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, [onAway]);
+  }, []);
+
   return ref;
 }
 
@@ -171,7 +183,10 @@ export default function Navbar() {
 
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useClickAway<HTMLDivElement>(() => setMenuOpen(false));
+
+  // ✅ Stable click-away close (prevents re-binding churn)
+  const closeUserMenu = useCallback(() => setMenuOpen(false), []);
+  const menuRef = useClickAway<HTMLDivElement>(closeUserMenu);
 
   const userRole = (user?.role ?? null) as Role | null;
   const userEmail = user?.email ?? null;
@@ -214,13 +229,14 @@ export default function Navbar() {
     const target = `${loc.pathname}${loc.search}`;
     try {
       sessionStorage.setItem("auth:returnTo", target);
-    } catch { }
+    } catch {}
 
     const qp = encodeURIComponent(target);
 
     // ✅ Go to login with return path
     await performLogout(`/login?from=${qp}`);
   }, [loc.pathname, loc.search]);
+
   const brandHref = isRider ? "/supplier/orders" : "/";
 
   // ✅ close drawer on navigation
@@ -236,9 +252,9 @@ export default function Navbar() {
   const showRiderNav = isLoggedIn && isRider;
 
   // ✅ MOBILE: show Cart icon always for anyone who isn't supplier/rider
-  // (guests can still use cart)
-  // ✅ MOBILE: show Cart icon ONLY when logged in (and not supplier/rider)
-  const showCartMobile = !isSupplier && !isRider;  // ✅ prevent background scroll when drawer is open
+  const showCartMobile = !isSupplier && !isRider;
+
+  // ✅ prevent background scroll when drawer is open
   useEffect(() => {
     if (!mobileMoreOpen) return;
     const prev = document.documentElement.style.overflow;
@@ -248,22 +264,39 @@ export default function Navbar() {
     };
   }, [mobileMoreOpen]);
 
+  /**
+   * ✅ Forced logout flag (DO NOT early return before hooks!)
+   * This avoids React hook order mismatch that can freeze the UI when this flag flips mid-session.
+   */
+  const [forced, setForced] = useState(() => {
+    try {
+      return sessionStorage.getItem("auth:forcedLogout") === "1";
+    } catch {
+      return false;
+    }
+  });
 
-  const forced = (() => {
-    try { return sessionStorage.getItem("auth:forcedLogout") === "1"; } catch { return false; }
-  })();
-  if (forced) return;
+  // optional: respond to changes (e.g. another tab sets it)
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "auth:forcedLogout") setForced(e.newValue === "1");
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   /**
    * ✅ Session verification (SAFE)
    */
   const verifySession = useCallback(async () => {
+    if (forced) return;
+
     const st = useAuthStore.getState();
     if (!st.hydrated) return;
     if (!st.user?.id) return;
 
     try {
-      // ✅ FIX: baseURL is /api already
+      // ✅ baseURL is /api already
       const { data } = await api.get("/auth/me", AXIOS_COOKIE_CFG);
       if (data?.id) {
         useAuthStore.setState({ user: data });
@@ -275,7 +308,7 @@ export default function Navbar() {
         setMobileMoreOpen(false);
       }
     }
-  }, []);
+  }, [forced]);
 
   // ✅ Re-check on navigation
   useEffect(() => {
@@ -315,6 +348,9 @@ export default function Navbar() {
       staleTime: 15_000,
     });
   }, [qc]);
+
+  // ✅ OK to return AFTER hooks
+  if (forced) return null;
 
   return (
     <>
@@ -592,7 +628,8 @@ export default function Navbar() {
                 <NavLink
                   to="/cart"
                   className={({ isActive }) =>
-                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
+                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${
+                      isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
                     }`
                   }
                   aria-label="Cart"
@@ -623,7 +660,6 @@ export default function Navbar() {
         {/* Mobile drawer */}
         {mobileMoreOpen && (
           <div className="md:hidden">
-            {/* ✅ ensure overlay never blocks clicks accidentally when closed (only rendered when open) */}
             <div className="fixed inset-0 z-40 bg-black/60" onClick={() => setMobileMoreOpen(false)} />
             <div className="fixed inset-y-0 right-0 z-50 w-[88vw] max-w-sm bg-white border-l border-zinc-200 shadow-2xl flex flex-col">
               <div className="px-4 py-3 border-b border-zinc-100 flex items-center justify-between shrink-0 relative">
@@ -664,7 +700,6 @@ export default function Navbar() {
                         }}
                       />
 
-                      {/* ✅ Wishlist moved INTO drawer (swapped out of top bar) */}
                       {showBuyerNav && (
                         <MobileMenuButton
                           icon={<Heart size={18} />}
