@@ -8,6 +8,7 @@ import { useAuthStore } from "../store/auth";
 import { useModal } from "../components/ModalProvider";
 import SiteLayout from "../layouts/SiteLayout.js";
 import { getAttribution } from "../utils/attribution.js";
+import { loadCartRaw, saveCartRaw } from "../utils/cartStorage.js";
 
 /* ----------------------------- Config ----------------------------- */
 const VERIFY_PATH = "/verify";
@@ -695,10 +696,42 @@ export default function Checkout() {
   const [phoneOk, setPhoneOk] = useState<boolean>(false);
   const [showNotVerified, setShowNotVerified] = useState<boolean>(false);
 
-  // CART — normalize & persist
-  const [cart, setCart] = useState<CartLine[]>(() => readCart());
+
+  const [cart, setCart] = useState<CartLine[]>(() => {
+    const raw = loadCartRaw();
+    // your existing normalize mapping logic can stay, just map from raw:
+    try {
+      const arr: any[] = Array.isArray(raw) ? raw : [];
+      return arr.map((x) => {
+        const unit = num(x.unitPrice, num(x.price, 0));
+        const qty = Math.max(1, num(x.qty, 1));
+
+        const rawKind = x.kind === "BASE" || x.kind === "VARIANT" ? x.kind : undefined;
+        const inferredKind: "BASE" | "VARIANT" = rawKind ?? (x.variantId ? "VARIANT" : "BASE");
+        const selectedOptions = normalizeSelectedOptions(x.selectedOptions);
+
+        return {
+          kind: inferredKind,
+          productId: String(x.productId),
+          title: String(x.title ?? ""),
+          qty,
+          unitPrice: unit,
+          variantId: x.variantId ?? null,
+          selectedOptions,
+          totalPrice: num(x.totalPrice, unit * qty),
+          image: x.image ?? null,
+          supplierId: x.supplierId ?? null,
+          offerId: x.offerId ? String(x.offerId) : undefined,
+        } as CartLine;
+      });
+    } catch {
+      return [];
+    }
+  });
+
   useEffect(() => {
-    writeCart(cart);
+    // persist to v2 storage, and delete legacy key
+    saveCartRaw(cart);
   }, [cart]);
 
   // ✅ Public settings (marginPercent)
@@ -1146,8 +1179,7 @@ export default function Checkout() {
     },
     onSuccess: (resp) => {
       const orderId = (resp as any)?.data?.id;
-      localStorage.removeItem("cart");
-      window.dispatchEvent(new Event("cart:updated"));
+      saveCartRaw([]);
 
       nav(`/payment?orderId=${orderId}`, {
         state: {

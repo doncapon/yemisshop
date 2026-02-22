@@ -414,6 +414,7 @@ model ProductVariant {
   product               Product                @relation("Product_ProductVariants", fields: [productId], references: [id], onDelete: Cascade)
   options               ProductVariantOption[] @relation("Variant_ProductVariantOptions")
   supplierVariantOffers SupplierVariantOffer[]
+  cartItems             CartItem[]
 
   @@index([productId])
   @@index([productId, isActive])
@@ -437,56 +438,57 @@ model ProductVariantOption {
 }
 
 model Product {
-  id                    String                   @id @default(cuid())
-  title                 String
-  description           String
-  retailPrice           Decimal?                 @map("price") @db.Decimal(10, 2)
-  sku                   String
-  inStock               Boolean                  @default(true)
-  status                String                   @default("PUBLISHED")
-  imagesJson            String[]
-  userId                String?
-  brandId               String?
-  categoryId            String?
-  categoryName          String?
-  communicationCost     Decimal?                 @db.Decimal(10, 2)
-  supplierTypeOverride  SupplierType?
-  commissionPctInt      Int?
-  availableQty          Int                      @default(0)
-  isDeleted             Boolean                  @default(false)
-  deletedAt             DateTime?
-  createdAt             DateTime                 @default(now())
-  updatedAt             DateTime                 @updatedAt
-  ownerId               String?
-  autoPrice             Decimal?                 @db.Decimal(10, 2)
-  priceMode             ProductPriceMode         @default(AUTO)
-  createdById           String?
-  supplierId            String?
-  updatedById           String?
+  id                   String           @id @default(cuid())
+  title                String
+  description          String
+  retailPrice          Decimal?         @map("price") @db.Decimal(10, 2)
+  sku                  String
+  inStock              Boolean          @default(true)
+  status               String           @default("PUBLISHED")
+  imagesJson           String[]
+  userId               String?
+  brandId              String?
+  categoryId           String?
+  categoryName         String?
+  communicationCost    Decimal?         @db.Decimal(10, 2)
+  supplierTypeOverride SupplierType?
+  commissionPctInt     Int?
+  availableQty         Int              @default(0)
+  isDeleted            Boolean          @default(false)
+  deletedAt            DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+  ownerId              String?
+  autoPrice            Decimal?         @db.Decimal(10, 2)
+  priceMode            ProductPriceMode @default(AUTO)
+  createdById          String?
+  supplierId           String?
+  updatedById          String?
 
-  Favorite              Favorite[]
-  orderItems            OrderItem[]
+  Favorite   Favorite[]
+  orderItems OrderItem[]
 
-  brand                 Brand?                   @relation(fields: [brandId], references: [id])
-  category              Category?                @relation(fields: [categoryId], references: [id])
-  createdBy             User?                    @relation("ProductCreatedBy", fields: [createdById], references: [id])
-  owner                 User?                    @relation("ProductOwner", fields: [ownerId], references: [id])
-  supplier              Supplier?                @relation("ProductSupplier", fields: [supplierId], references: [id])
-  updatedBy             User?                    @relation("ProductUpdatedBy", fields: [updatedById], references: [id])
-  user                  User?                    @relation("ProductUser", fields: [userId], references: [id])
+  brand     Brand?    @relation(fields: [brandId], references: [id])
+  category  Category? @relation(fields: [categoryId], references: [id])
+  createdBy User?     @relation("ProductCreatedBy", fields: [createdById], references: [id])
+  owner     User?     @relation("ProductOwner", fields: [ownerId], references: [id])
+  supplier  Supplier? @relation("ProductSupplier", fields: [supplierId], references: [id])
+  updatedBy User?     @relation("ProductUpdatedBy", fields: [updatedById], references: [id])
+  user      User?     @relation("ProductUser", fields: [userId], references: [id])
 
-  attributeOptions      ProductAttributeOption[] @relation("Product_ProductAttributeOptions")
-  ProductAttributeText  ProductAttributeText[]
-  ProductVariant        ProductVariant[]         @relation("Product_ProductVariants")
+  attributeOptions     ProductAttributeOption[] @relation("Product_ProductAttributeOptions")
+  ProductAttributeText ProductAttributeText[]
+  ProductVariant       ProductVariant[]         @relation("Product_ProductVariants")
 
   supplierProductOffers SupplierProductOffer[]
   supplierVariantOffers SupplierVariantOffer[]
   Wishlist              Wishlist[]
+  cartItems             CartItem[]
 
   hasPendingChanges Boolean @default(false)
 
-  offerChangeRequests  SupplierOfferChangeRequest[] @relation("Product_OfferChangeRequests")
-  productChangeRequests ProductChangeRequest[]      @relation("Product_ProductChangeRequests")
+  offerChangeRequests   SupplierOfferChangeRequest[] @relation("Product_OfferChangeRequests")
+  productChangeRequests ProductChangeRequest[]       @relation("Product_ProductChangeRequests")
 
   @@unique([sku, isDeleted])
   @@index([brandId])
@@ -540,21 +542,21 @@ model SupplierOfferChangeRequest {
   requestedAt       DateTime @default(now())
 
   reviewedByUserId String?
-  reviewedAt      DateTime?
-  reviewNote      String?
+  reviewedAt       DateTime?
+  reviewNote       String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   supplier Supplier @relation("Supplier_OfferChangeRequests", fields: [supplierId], references: [id], onDelete: Cascade)
-  product  Product  @relation("Product_OfferChangeRequests",  fields: [productId],  references: [id], onDelete: Cascade)
+  product  Product  @relation("Product_OfferChangeRequests", fields: [productId], references: [id], onDelete: Cascade)
 
-  supplierProductOffer SupplierProductOffer? @relation("BaseOffer_ChangeRequests",    fields: [supplierProductOfferId], references: [id], onDelete: SetNull)
+  supplierProductOffer SupplierProductOffer? @relation("BaseOffer_ChangeRequests", fields: [supplierProductOfferId], references: [id], onDelete: SetNull)
   supplierVariantOffer SupplierVariantOffer? @relation("VariantOffer_ChangeRequests", fields: [supplierVariantOfferId], references: [id], onDelete: SetNull)
 
   // ✅ these MATCH the User model back-relations you already have
   requestedBy User? @relation("OfferChangeRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
-  reviewedBy  User? @relation("OfferChangeReviewedBy",  fields: [reviewedByUserId],  references: [id], onDelete: SetNull)
+  reviewedBy  User? @relation("OfferChangeReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
 
   @@index([supplierId])
   @@index([productId])
@@ -571,10 +573,10 @@ enum ProductChangeStatus {
 }
 
 model ProductChangeRequest {
-  id        String              @id @default(cuid())
-  productId String
+  id         String              @id @default(cuid())
+  productId  String
   supplierId String?
-  status    ProductChangeStatus @default(PENDING)
+  status     ProductChangeStatus @default(PENDING)
 
   proposedPatch   Json
   currentSnapshot Json?
@@ -583,16 +585,16 @@ model ProductChangeRequest {
   requestedAt       DateTime @default(now())
 
   reviewedByUserId String?
-  reviewedAt        DateTime?
-  reviewNote        String?
-  rejectionReason   String?
-  effectiveAt       DateTime?
+  reviewedAt       DateTime?
+  reviewNote       String?
+  rejectionReason  String?
+  effectiveAt      DateTime?
 
   product  Product   @relation("Product_ProductChangeRequests", fields: [productId], references: [id], onDelete: Cascade)
   supplier Supplier? @relation("Supplier_ProductChangeRequests", fields: [supplierId], references: [id], onDelete: SetNull)
 
   requestedBy User? @relation("ProductChangeRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
-  reviewedBy  User? @relation("ProductChangeReviewedBy",  fields: [reviewedByUserId],  references: [id], onDelete: SetNull)
+  reviewedBy  User? @relation("ProductChangeReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
 
   @@index([status, requestedAt])
   @@index([productId, status])
@@ -740,7 +742,7 @@ model User {
   address         Address? @relation("UserPrimaryAddress", fields: [addressId], references: [id])
   shippingAddress Address? @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
 
-  orderOtpRequests OrderOtpRequest[] @relation("UserOtpRequests")
+  orderOtpRequests OrderOtpRequest[]          @relation("UserOtpRequests")
   deliveryOtps     PurchaseOrderDeliveryOtp[]
 
   refundsRequested Refund[] @relation("RefundRequestedBy")
@@ -749,6 +751,8 @@ model User {
   sessions UserSession[]
 
   notifications Notification[]
+
+  carts Cart[]
 
   refundRequestsAsCustomer RefundRequest[] @relation("RefundRequestCustomer")
   refundRequestsResolved   RefundRequest[] @relation("RefundRequestResolvedBy")
@@ -768,7 +772,7 @@ model User {
 }
 
 model AnalyticsEvent {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   userId    String?
   sessionId String?
   orderId   String?
@@ -865,8 +869,8 @@ model Supplier {
   refundRequests RefundRequest[]
   disputeCases   DisputeCase[]
 
-  offerChangeRequests  SupplierOfferChangeRequest[] @relation("Supplier_OfferChangeRequests")
-  productChangeRequests ProductChangeRequest[]      @relation("Supplier_ProductChangeRequests")
+  offerChangeRequests   SupplierOfferChangeRequest[] @relation("Supplier_OfferChangeRequests")
+  productChangeRequests ProductChangeRequest[]       @relation("Supplier_ProductChangeRequests")
 
   @@index([status])
   @@index([isPayoutEnabled])
@@ -874,22 +878,22 @@ model Supplier {
 }
 
 model SupplierReview {
-  id              String   @id @default(cuid())
+  id              String @id @default(cuid())
   supplierId      String
   userId          String
   purchaseOrderId String
 
-  rating     Int
-  comment    String?
-  createdAt  DateTime @default(now())
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
 
-  supplier     Supplier      @relation(fields: [supplierId], references: [id], onDelete: Cascade)
-  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  supplier      Supplier      @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   purchaseOrder PurchaseOrder @relation("PurchaseOrderToSupplierReviews", fields: [purchaseOrderId], references: [id], onDelete: Cascade)
 
+  @@unique([purchaseOrderId, userId])
   @@index([supplierId, createdAt])
   @@index([purchaseOrderId])
-  @@unique([purchaseOrderId, userId])
 }
 
 model Order {
@@ -928,7 +932,7 @@ model Order {
   purchaseOrders PurchaseOrder[]
   refunds        Refund[]
 
-  otpRequests OrderOtpRequest[] @relation("OrderOtpRequests")
+  otpRequests  OrderOtpRequest[]          @relation("OrderOtpRequests")
   deliveryOtps PurchaseOrderDeliveryOtp[]
 
   allocations SupplierPaymentAllocation[] @relation("OrderAllocations")
@@ -942,7 +946,7 @@ model Order {
   utmContent  String?
   utmTerm     String?
 
-  gclid String?
+  gclid  String?
   fbclid String?
 
   referrerUrl String?
@@ -999,9 +1003,9 @@ model OrderItem {
   chosenSupplierProductOffer SupplierProductOffer? @relation("OrderItemChosenSupplierProductOffer", fields: [chosenSupplierProductOfferId], references: [id])
   chosenSupplierVariantOffer SupplierVariantOffer? @relation("OrderItemChosenSupplierVariantOffer", fields: [chosenSupplierVariantOfferId], references: [id])
 
-  order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product?        @relation(fields: [productId], references: [id])
-  variant ProductVariant? @relation("VariantOrderItems", fields: [variantId], references: [id])
+  order   Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product?         @relation(fields: [productId], references: [id])
+  variant ProductVariant?  @relation("VariantOrderItems", fields: [variantId], references: [id])
   profit  OrderItemProfit? @relation("OrderItem_Profit")
 
   purchaseOrderItems PurchaseOrderItem[]
@@ -1054,8 +1058,8 @@ model Payment {
   order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
   supplier   Supplier?   @relation("SupplierPayments", fields: [supplierId], references: [id])
 
-  events      PaymentEvent[]
-  allocations SupplierPaymentAllocation[]
+  events              PaymentEvent[]
+  allocations         SupplierPaymentAllocation[]
   purchaseEventSentAt DateTime?
 
   @@index([supplierId])
@@ -1167,7 +1171,7 @@ model SupplierProductOffer {
   variantOffers SupplierVariantOffer[]
 
   pendingChangeId String?
-  changeRequests SupplierOfferChangeRequest[] @relation("BaseOffer_ChangeRequests")
+  changeRequests  SupplierOfferChangeRequest[] @relation("BaseOffer_ChangeRequests")
 
   @@unique([supplierId, productId], name: "supplierId_productId")
   @@index([productId])
@@ -1306,15 +1310,15 @@ model Wishlist {
 }
 
 model Otp {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   userId     String?
   identifier String?
   codeHash   String
-  attempts   Int      @default(0)
+  attempts   Int       @default(0)
   channel    String?
   expiresAt  DateTime
   consumedAt DateTime?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
 
   @@index([identifier, createdAt])
 }
@@ -1329,11 +1333,11 @@ model EmailVerifyToken {
 }
 
 model ProductAttributeText {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   productId   String
   attributeId String
   value       String
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
   attribute   Attribute @relation(fields: [attributeId], references: [id])
   product     Product   @relation(fields: [productId], references: [id])
 
@@ -1370,21 +1374,21 @@ model Setting {
 }
 
 model Coupon {
-  id           String   @id @default(cuid())
-  code         String   @unique @db.VarChar(50)
-  description  String?  @db.VarChar(255)
+  id           String        @id @default(cuid())
+  code         String        @unique @db.VarChar(50)
+  description  String?       @db.VarChar(255)
   type         CouponType
-  value        Decimal  @db.Decimal(12, 2)
-  maxDiscount  Decimal? @db.Decimal(12, 2)
-  minSubtotal  Decimal? @db.Decimal(12, 2)
+  value        Decimal       @db.Decimal(12, 2)
+  maxDiscount  Decimal?      @db.Decimal(12, 2)
+  minSubtotal  Decimal?      @db.Decimal(12, 2)
   startsAt     DateTime?
   expiresAt    DateTime?
   usageLimit   Int?
   perUserLimit Int?
-  timesUsed    Int      @default(0)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  timesUsed    Int           @default(0)
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
   orders       OrderCoupon[]
 }
 
@@ -1434,8 +1438,8 @@ model CatalogRequest {
   createdAt    DateTime             @default(now())
   updatedAt    DateTime             @updatedAt
 
-  reviewedBy User?     @relation("CatalogRequestReviewedBy", fields: [reviewedById], references: [id])
-  supplier   Supplier  @relation(fields: [supplierId], references: [id])
+  reviewedBy User?    @relation("CatalogRequestReviewedBy", fields: [reviewedById], references: [id])
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
 
   @@index([status, type])
   @@index([supplierId, createdAt])
@@ -1518,4 +1522,58 @@ enum SupplierPaymentStatus {
   PAID
   FAILED
   HELD
+}
+
+enum CartStatus {
+  ACTIVE
+  CHECKED_OUT
+  ABANDONED
+}
+
+enum CartItemKind {
+  BASE
+  VARIANT
+}
+
+model Cart {
+  id        String     @id @default(cuid())
+  userId    String
+  status    CartStatus @default(ACTIVE)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+
+  @@index([userId])
+  @@index([userId, status])
+}
+
+model CartItem {
+  id        String  @id @default(cuid())
+  cartId    String
+  productId String
+  variantId String?
+
+  kind       CartItemKind
+  optionsKey String @default("")
+  qty        Int    @default(1)
+
+  selectedOptions Json?
+  titleSnapshot   String?
+  imageSnapshot   String?
+  unitPriceCache  Decimal? @db.Decimal(10, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cart    Cart            @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+
+  @@unique([cartId, productId, kind, optionsKey], name: "cart_line_base_unique")
+  @@unique([cartId, productId, variantId, kind, optionsKey], name: "cart_line_variant_unique")
+  @@index([cartId])
+  @@index([productId])
+  @@index([variantId])
 }

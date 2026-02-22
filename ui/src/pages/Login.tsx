@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client";
-import { useAuthStore, type Role } from "../store/auth";
+import { mergeGuestCartIntoUserCart, useAuthStore, type Role } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout";
 import DaySpringLogo from "../components/brand/DayspringLogo";
 
@@ -140,7 +140,6 @@ export default function Login() {
 
   // ✅ Compact mobile: collapse verification panel by default
   const [verifyPanelOpen, setVerifyPanelOpen] = useState(true);
-
   const nav = useNavigate();
   const loc = useLocation();
 
@@ -167,7 +166,7 @@ export default function Login() {
     let ssFrom: string | null = null;
     try {
       ssFrom = safeReturnTo(sessionStorage.getItem(RETURN_TO_KEY));
-    } catch {}
+    } catch { }
 
     return stateFrom || qpFrom || ssFrom || null;
   }, [loc.state, loc.search]);
@@ -182,7 +181,7 @@ export default function Login() {
     if (!returnToRef.current) return;
     try {
       sessionStorage.setItem(RETURN_TO_KEY, returnToRef.current);
-    } catch {}
+    } catch { }
   }, [computedReturnTo]); // (computedReturnTo triggers this once when it becomes available)
 
   // ✅ If already logged in (cookie session restored), bounce away
@@ -271,13 +270,18 @@ export default function Login() {
       // ✅ Cookie is already set by backend. We only store profile for UI.
       setUser(profile);
       setNeedsVerification(needsVer);
+      try {
+        mergeGuestCartIntoUserCart(String(profile.id));
+      } catch { }
 
+      queueMicrotask(() => window.dispatchEvent(new Event("cart:updated")));
+      
       // (Optional/backward-compatible) Keep verify session token for OTP endpoints.
       try {
         localStorage.setItem("verifyEmail", profile.email);
         if (vt) localStorage.setItem("verifyToken", vt);
         else localStorage.removeItem("verifyToken");
-      } catch {}
+      } catch { }
 
       // ✅ If backend says verification is needed but still returned 200,
       // stay on login and show the verification panel instead of redirecting away.
@@ -306,7 +310,7 @@ export default function Login() {
       // ✅ clear stored returnTo AFTER we’ve decided target
       try {
         sessionStorage.removeItem(RETURN_TO_KEY);
-      } catch {}
+      } catch { }
 
       // also clear the ref so future manual /login doesn’t reuse old value
       returnToRef.current = null;
@@ -331,7 +335,7 @@ export default function Login() {
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
           if (vt) localStorage.setItem("verifyToken", vt);
-        } catch {}
+        } catch { }
 
         setVerifyPanelOpen(true);
         setCooldown(1);

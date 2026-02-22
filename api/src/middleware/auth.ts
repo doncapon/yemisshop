@@ -1,5 +1,5 @@
 // api/src/middleware/auth.ts
-import type { Request, Response, NextFunction, RequestHandler } from "express";
+import type { Request, Response, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma.js";
 
@@ -9,8 +9,8 @@ import { normRole as normPolicyRole } from "../lib/sessionPolicy.js";
 import { getAccessTokenCookieName } from "../lib/authCookies.js";
 
 type JwtPayload = {
-  id?: string;              // some tokens
-  sub?: string;             // standard JWT subject (common)
+  id?: string;
+  sub?: string;
   email?: string;
   role?: PolicyRole | string;
   k?: "access" | "verify" | string;
@@ -83,12 +83,18 @@ function isRevoked(row: { revokedAt: Date | null } | null) {
 // throttle lastSeen updates to reduce DB writes
 const LAST_SEEN_THROTTLE_MS = 60_000;
 
+/**
+ * ✅ IMPORTANT FIX:
+ * You create sessions in prisma.userSession, so we must validate sid against that table.
+ */
 async function assertSessionIfPresent(decoded: JwtPayload) {
   const sid = decoded.sid ? String(decoded.sid) : "";
   if (!sid) return;
 
-  // Your schema might be Session or AuthSession.
-  const sessionModel: any = (prisma as any).session || (prisma as any).authSession;
+  // ✅ Prefer userSession (your actual model), fall back to older names
+  const sessionModel: any =
+    (prisma as any).userSession || (prisma as any).session || (prisma as any).authSession;
+
   if (!sessionModel?.findUnique) return; // if model doesn't exist, don't block login
 
   const userId = String(decoded.id ?? decoded.sub ?? "");
@@ -110,9 +116,7 @@ async function assertSessionIfPresent(decoded: JwtPayload) {
   const last = row.lastSeenAt ? new Date(row.lastSeenAt).getTime() : 0;
   if (Date.now() - last > LAST_SEEN_THROTTLE_MS) {
     // best-effort update, do not fail request
-    sessionModel
-      .update({ where: { id: sid }, data: { lastSeenAt: new Date() } })
-      .catch(() => null);
+    sessionModel.update({ where: { id: sid }, data: { lastSeenAt: new Date() } }).catch(() => null);
   }
 }
 

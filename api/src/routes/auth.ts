@@ -11,7 +11,7 @@ import { signJwt, signAccessJwt } from "../lib/jwt.js";
 import { requireAuth, requireVerifySession } from "../middleware/auth.js";
 import { issueOtp, verifyOtp } from "../lib/otp.js";
 import { Prisma, SupplierType } from "@prisma/client";
-import { setAccessTokenCookie, clearAccessTokenCookie } from "../lib/authCookies.js";
+import { setAccessTokenCookie, clearAccessTokenCookie, clearAuthCookies, getAccessTokenCookieName } from "../lib/authCookies.js";
 
 // ---------------- ENV / constants ----------------
 const APP_URL = process.env.APP_URL || "http://localhost:5173";
@@ -211,10 +211,39 @@ router.post(
 
 
 // ---------------- LOGOUT ----------------
+// ---------------- LOGOUT ----------------
 router.post(
   "/logout",
-  wrap(async (_req, res) => {
-    clearAccessTokenCookie(res);
+  wrap(async (req, res) => {
+    // ✅ revoke session in DB so cookie cannot be used again
+    try {
+      const cookieName = getAccessTokenCookieName();
+      const token = (req as any)?.cookies?.[cookieName] ? String((req as any).cookies[cookieName]) : "";
+
+      if (token) {
+        const secret =
+          process.env.ACCESS_JWT_SECRET || process.env.JWT_SECRET || "CHANGE_ME_DEV_SECRET";
+
+        const decoded = jwt.verify(token, secret) as any;
+
+        const sid = decoded?.sid ? String(decoded.sid) : "";
+        const uid = String(decoded?.id ?? decoded?.sub ?? "");
+
+        if (sid && uid) {
+          await prisma.userSession.updateMany({
+            where: { id: sid, userId: uid, revokedAt: null },
+            data: { revokedAt: new Date() } as any,
+          });
+        }
+      }
+    } catch {
+      // ignore (cookie still cleared)
+    }
+
+    // ✅ clear auth cookies (robust across paths/domains/samesite/secure)
+    clearAuthCookies(res);
+
+    res.setHeader("Cache-Control", "no-store");
     return res.json({ ok: true });
   })
 );

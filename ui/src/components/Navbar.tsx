@@ -27,6 +27,7 @@ import {
   Settings,
   ClipboardList,
 } from "lucide-react";
+import { performLogout } from "../utils/logout";
 
 type Role = "ADMIN" | "SUPER_ADMIN" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
@@ -211,29 +212,15 @@ export default function Navbar() {
     setMobileMoreOpen(false);
 
     const target = `${loc.pathname}${loc.search}`;
-
-    // persist returnTo (refresh-safe)
     try {
       sessionStorage.setItem("auth:returnTo", target);
     } catch { }
 
-    // attempt backend logout (cookie clear)
-    try {
-      // ✅ FIX: baseURL is /api already, so DO NOT prefix /api here
-      await api.post("/auth/logout", {}, AXIOS_COOKIE_CFG);
-    } catch {
-      // ignore: we still clear local state
-    }
-
-    // clear local state + cached queries
-    useAuthStore.setState({ user: null } as any);
-    qc.clear();
-
-    // hard redirect so everything remounts cleanly after cookie clear
     const qp = encodeURIComponent(target);
-    window.location.assign(`/login?from=${qp}`);
-  }, [qc, loc.pathname, loc.search]);
 
+    // ✅ Go to login with return path
+    await performLogout(`/login?from=${qp}`);
+  }, [loc.pathname, loc.search]);
   const brandHref = isRider ? "/supplier/orders" : "/";
 
   // ✅ close drawer on navigation
@@ -244,13 +231,14 @@ export default function Navbar() {
 
   const showShopNav = !isLoggedIn || (!isSupplier && !isSuperAdmin && !isRider);
   const showBuyerNav = isLoggedIn && !isSupplier && !isRider; // includes admins
+  const showCartDesktop = !isSupplier && !isRider;
   const showSupplierNav = isLoggedIn && isSupplier && !isRider;
   const showRiderNav = isLoggedIn && isRider;
 
   // ✅ MOBILE: show Cart icon always for anyone who isn't supplier/rider
   // (guests can still use cart)
-  const showCartMobile = isLoggedIn && !isSupplier && !isRider;
-  // ✅ prevent background scroll when drawer is open
+  // ✅ MOBILE: show Cart icon ONLY when logged in (and not supplier/rider)
+  const showCartMobile = !isSupplier && !isRider;  // ✅ prevent background scroll when drawer is open
   useEffect(() => {
     if (!mobileMoreOpen) return;
     const prev = document.documentElement.style.overflow;
@@ -259,6 +247,12 @@ export default function Navbar() {
       document.documentElement.style.overflow = prev;
     };
   }, [mobileMoreOpen]);
+
+
+  const forced = (() => {
+    try { return sessionStorage.getItem("auth:forcedLogout") === "1"; } catch { return false; }
+  })();
+  if (forced) return;
 
   /**
    * ✅ Session verification (SAFE)
@@ -367,15 +361,18 @@ export default function Navbar() {
                     <IconNavLink to="/customer-dashboard" end icon={<User size={18} />} label="Customer dashboard" />
                   )}
 
+                  {!showRiderNav && showCartDesktop && (
+                    <IconNavLink
+                      to="/cart"
+                      icon={<ShoppingCart size={18} />}
+                      label="Cart"
+                      badgeCount={cartCount.totalQty}
+                    />
+                  )}
+
+                  {/* Buyer-only links */}
                   {showBuyerNav && (
                     <>
-                      <IconNavLink
-                        to="/cart"
-                        icon={<ShoppingCart size={18} />}
-                        label="Cart"
-                        badgeCount={cartCount.totalQty}
-                      />
-
                       <IconNavLink
                         to="/wishlist"
                         end

@@ -29,6 +29,12 @@ import {
 import { motion } from "framer-motion";
 import SiteLayout from "../layouts/SiteLayout";
 
+// at top
+import { loadCartRaw, saveCartRaw } from "../utils/cartStorage";
+import { performLogout } from "../utils/logout";
+
+// replace mergeIntoLocalCart with this:
+type LocalCartItem = { productId: string; qty: number };
 /* ---------------------- Types ---------------------- */
 type Role = "ADMIN" | "SUPER_ADMIN" | "SUPER_USER" | "SHOPPER" | "SUPPLIER" | "SUPPLIER_RIDER";
 
@@ -81,14 +87,14 @@ type OrderLite = {
   id: string;
   createdAt: string;
   status:
-    | "PENDING"
-    | "PAID"
-    | "SHIPPED"
-    | "DELIVERED"
-    | "CANCELLED"
-    | "FAILED"
-    | "PROCESSING"
-    | string;
+  | "PENDING"
+  | "PAID"
+  | "SHIPPED"
+  | "DELIVERED"
+  | "CANCELLED"
+  | "FAILED"
+  | "PROCESSING"
+  | string;
   total: number;
   items: OrderLiteItem[];
   trackingUrl?: string | null;
@@ -122,8 +128,6 @@ type RecentTransaction = {
   };
 };
 
-type LocalCartItem = { productId: string; qty: number };
-
 type AdminUserLite = {
   id: string;
   email: string;
@@ -155,15 +159,43 @@ function normRole(r: any) {
 }
 
 /* ---------------------- Local cart merge ---------------------- */
+
 function mergeIntoLocalCart(items: LocalCartItem[]) {
   try {
-    const key = "cart";
-    const curr: LocalCartItem[] = JSON.parse(localStorage.getItem(key) || "[]");
-    const byId = new Map<string, number>();
-    for (const it of curr) byId.set(it.productId, (byId.get(it.productId) || 0) + (it.qty || 0));
-    for (const it of items) byId.set(it.productId, (byId.get(it.productId) || 0) + (it.qty || 0));
-    const merged: LocalCartItem[] = Array.from(byId.entries()).map(([productId, qty]) => ({ productId, qty }));
-    localStorage.setItem(key, JSON.stringify(merged));
+    const curr = Array.isArray(loadCartRaw()) ? loadCartRaw() : [];
+
+    // merge by productId ONLY (good enough for buy-again base items)
+    // If you want variant-aware later, we can enhance with variantId/options.
+    const byPid = new Map<string, any>();
+
+    for (const x of curr) {
+      const pid = String(x?.productId ?? "");
+      if (!pid) continue;
+      byPid.set(pid, { ...x });
+    }
+
+    for (const it of items) {
+      const pid = String(it.productId ?? "");
+      if (!pid) continue;
+
+      const prev = byPid.get(pid);
+      const prevQty = Math.max(0, Number(prev?.qty) || 0);
+      const addQty = Math.max(0, Number(it.qty) || 0);
+
+      if (prev) {
+        byPid.set(pid, { ...prev, qty: Math.max(1, prevQty + addQty) });
+      } else {
+        byPid.set(pid, {
+          kind: "BASE",
+          productId: pid,
+          variantId: null,
+          qty: Math.max(1, addQty || 1),
+          selectedOptions: [],
+        });
+      }
+    }
+
+    saveCartRaw(Array.from(byPid.values()));
   } catch {
     /* noop */
   }
@@ -579,13 +611,13 @@ function useRecentTransactions(limit: number, targetUserId: string | null, onAut
 
             const payment = p
               ? {
-                  id: String(p.id),
-                  reference: p.reference ?? null,
-                  status: String(p.status),
-                  channel: p.channel ?? null,
-                  provider: p.provider ?? null,
-                  createdAt: String(p.createdAt || createdAt),
-                }
+                id: String(p.id),
+                reference: p.reference ?? null,
+                status: String(p.status),
+                channel: p.channel ?? null,
+                provider: p.provider ?? null,
+                createdAt: String(p.createdAt || createdAt),
+              }
               : undefined;
 
             return {
@@ -613,13 +645,13 @@ function useRecentTransactions(limit: number, targetUserId: string | null, onAut
             const payment =
               p && (p.id || p.reference || p.status)
                 ? {
-                    id: String(p.id ?? ""),
-                    reference: p.reference ?? null,
-                    status: String(p.status ?? orderStatus),
-                    channel: p.channel ?? null,
-                    provider: p.provider ?? null,
-                    createdAt: String(p.createdAt || createdAt),
-                  }
+                  id: String(p.id ?? ""),
+                  reference: p.reference ?? null,
+                  status: String(p.status ?? orderStatus),
+                  channel: p.channel ?? null,
+                  provider: p.provider ?? null,
+                  createdAt: String(p.createdAt || createdAt),
+                }
                 : undefined;
 
             return { orderId, createdAt, total, orderStatus, payment };
@@ -811,9 +843,8 @@ function GlassCard(props: {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35 }}
-      className={`overflow-visible rounded-2xl border border-zinc-200/60 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-4 sm:p-5 lg:p-6 ${
-        props.className || ""
-      }`}
+      className={`overflow-visible rounded-2xl border border-zinc-200/60 bg-white/70 backdrop-blur-md shadow-[0_8px_30px_rgb(0,0,0,0.08)] p-4 sm:p-5 lg:p-6 ${props.className || ""
+        }`}
     >
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2 min-w-0">
@@ -836,14 +867,14 @@ function Stat(props: { label: string; value: string; icon?: React.ReactNode; acc
     props.accent === "emerald"
       ? "ring-emerald-400/25 text-emerald-700"
       : props.accent === "cyan"
-      ? "ring-cyan-400/25 text-cyan-700"
-      : "ring-violet-400/25 text-violet-700";
+        ? "ring-cyan-400/25 text-cyan-700"
+        : "ring-violet-400/25 text-violet-700";
   const iconBg =
     props.accent === "emerald"
       ? "from-emerald-400/20 to-emerald-500/20 text-emerald-600"
       : props.accent === "cyan"
-      ? "from-cyan-400/20 to-cyan-500/20 text-cyan-600"
-      : "from-violet-400/20 to-violet-500/20 text-violet-600";
+        ? "from-cyan-400/20 to-cyan-500/20 text-cyan-600"
+        : "from-violet-400/20 to-violet-500/20 text-violet-600";
 
   return (
     <motion.div whileHover={{ y: -2 }} className={`p-3 sm:p-4 rounded-2xl border bg-white ring-1 ${ring} shadow-sm`}>
@@ -866,12 +897,12 @@ function StatusPill({ label, count }: { label: string; count: number }) {
     label === "PAID"
       ? "bg-emerald-100 text-emerald-700 border-emerald-200"
       : label === "PENDING"
-      ? "bg-amber-100 text-amber-700 border-amber-200"
-      : label === "SHIPPED" || label === "DELIVERED" || label === "PROCESSING"
-      ? "bg-cyan-100 text-cyan-700 border-cyan-200"
-      : label === "FAILED" || label === "CANCELLED"
-      ? "bg-rose-100 text-rose-700 border-rose-200"
-      : "bg-zinc-100 text-zinc-700 border-zinc-200";
+        ? "bg-amber-100 text-amber-700 border-amber-200"
+        : label === "SHIPPED" || label === "DELIVERED" || label === "PROCESSING"
+          ? "bg-cyan-100 text-cyan-700 border-cyan-200"
+          : label === "FAILED" || label === "CANCELLED"
+            ? "bg-rose-100 text-rose-700 border-rose-200"
+            : "bg-zinc-100 text-zinc-700 border-zinc-200";
   return (
     <span className={`inline-flex items-center gap-2 text-[11px] sm:text-xs px-2.5 py-1 rounded-full border ${tone}`}>
       <b className="font-semibold">{label}</b>
@@ -886,8 +917,8 @@ function PaymentBadgeInline({ status }: { status: string | undefined }) {
     s === "PAID"
       ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
       : s === "FAILED" || s === "CANCELLED"
-      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
-      : "bg-amber-500/10 text-amber-700 border-amber-600/20";
+        ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+        : "bg-amber-500/10 text-amber-700 border-amber-600/20";
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] sm:text-xs border ${tone}`}>{s}</span>;
 }
 
@@ -904,10 +935,10 @@ function OrderStatusChip({ status }: { status: string }) {
     s === "PAID" || s === "COMPLETED" || s === "DELIVERED"
       ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
       : s === "FAILED" || s === "CANCELLED"
-      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
-      : s === "SHIPPED" || s === "PROCESSING" || s === "AWAITING FULFILLMENT"
-      ? "bg-cyan-500/10 text-cyan-700 border-cyan-600/20"
-      : "bg-amber-500/10 text-amber-700 border-amber-600/20";
+        ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+        : s === "SHIPPED" || s === "PROCESSING" || s === "AWAITING FULFILLMENT"
+          ? "bg-cyan-500/10 text-cyan-700 border-cyan-600/20"
+          : "bg-amber-500/10 text-amber-700 border-amber-600/20";
 
   return (
     <span
@@ -1018,8 +1049,8 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
       const items = Array.isArray(res.data?.data?.items)
         ? res.data.data.items
         : Array.isArray(res.data?.items)
-        ? res.data.items
-        : [];
+          ? res.data.items
+          : [];
 
       const toCart = items.map((it: any) => ({
         productId: it.productId ?? it.product?.id ?? it.id,
@@ -1262,9 +1293,8 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                           <button
                             key={u.id}
                             type="button"
-                            className={`w-full text-left rounded-2xl border px-3 py-2 bg-white hover:bg-zinc-50 transition ${
-                              active ? "ring-2 ring-cyan-200 border-cyan-200" : "border-zinc-200"
-                            }`}
+                            className={`w-full text-left rounded-2xl border px-3 py-2 bg-white hover:bg-zinc-50 transition ${active ? "ring-2 ring-cyan-200 border-cyan-200" : "border-zinc-200"
+                              }`}
                             onClick={() => startImpersonation(u.id)}
                             title="View dashboard (read-only)"
                           >
@@ -1368,11 +1398,10 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                       <span className="text-zinc-500">Address:</span>{" "}
                       <span className="font-mono">
                         {me?.address
-                          ? `${me.address.houseNumber ?? ""} ${me.address.streetName ?? ""}, ${me.address.city ?? ""} ${
-                              me.address.state ?? ""
+                          ? `${me.address.houseNumber ?? ""} ${me.address.streetName ?? ""}, ${me.address.city ?? ""} ${me.address.state ?? ""
                             } ${me.address.postCode ?? ""} ${me.address.country ?? ""}`
-                              .replace(/\s+/g, " ")
-                              .trim() || "—"
+                            .replace(/\s+/g, " ")
+                            .trim() || "—"
                           : "—"}
                       </span>
                     </div>
@@ -1380,13 +1409,11 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                       <span className="text-zinc-500">Shipping:</span>{" "}
                       <span className="font-mono">
                         {me?.shippingAddress
-                          ? `${me.shippingAddress.houseNumber ?? ""} ${me.shippingAddress.streetName ?? ""}, ${
-                              me.shippingAddress.city ?? ""
-                            } ${me.shippingAddress.state ?? ""} ${me.shippingAddress.postCode ?? ""} ${
-                              me.shippingAddress.country ?? ""
+                          ? `${me.shippingAddress.houseNumber ?? ""} ${me.shippingAddress.streetName ?? ""}, ${me.shippingAddress.city ?? ""
+                            } ${me.shippingAddress.state ?? ""} ${me.shippingAddress.postCode ?? ""} ${me.shippingAddress.country ?? ""
                             }`
-                              .replace(/\s+/g, " ")
-                              .trim() || "—"
+                            .replace(/\s+/g, " ")
+                            .trim() || "—"
                           : "—"}
                       </span>
                     </div>
@@ -1541,10 +1568,9 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                 className="w-full text-[12px] sm:text-sm rounded-full border px-4 py-2 bg-white hover:bg-zinc-50 transition inline-flex items-center justify-center gap-2"
                 onClick={async () => {
                   try {
-                    await logoutM.mutateAsync();
+                    await performLogout("/login", nav);
                   } catch {
-                    /* ignore */
-                  } finally {
+                    // fallback
                     qc.clear();
                     nav("/login");
                   }
@@ -1674,8 +1700,8 @@ export default function UserDashboard(props: { adminUserId?: string } = {}) {
                             {o.items.length === 0
                               ? "No items"
                               : o.items.length === 1
-                              ? o.items[0].title
-                              : `${o.items[0].title} + ${o.items.length - 1} more`}
+                                ? o.items[0].title
+                                : `${o.items[0].title} + ${o.items.length - 1} more`}
                           </div>
                         </div>
 
