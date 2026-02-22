@@ -1426,16 +1426,491 @@ export default function Catalog() {
                   })}
                 </div>
 
-                {/* Pagination (UNCHANGED from your file) */}
-                {/* ... keep your pagination + refine drawer exactly as-is ... */}
+                {/* Pagination (kept same as your draft) */}
+                <div className="mt-5 md:mt-8">
+                  {/* Mobile */}
+                  <div className="md:hidden rounded-2xl bg-white/85 backdrop-blur p-3 shadow-sm silver-border">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
+                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
+                        </div>
+                        <div className="text-[11px] text-zinc-500">
+                          Page {currentPage} / {totalPages}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-4 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => goTo(1)}
+                        disabled={currentPage <= 1}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 disabled:opacity-40 silver-border hover:silver-hover active:scale-[0.99] transition"
+                      >
+                        First
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goTo(currentPage - 1)}
+                        disabled={currentPage <= 1}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 disabled:opacity-40 silver-border hover:silver-hover active:scale-[0.99] transition"
+                      >
+                        Prev
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goTo(currentPage + 1)}
+                        disabled={currentPage >= totalPages}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 disabled:opacity-40 silver-border hover:silver-hover active:scale-[0.99] transition"
+                      >
+                        Next
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goTo(totalPages)}
+                        disabled={currentPage >= totalPages}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 disabled:opacity-40 silver-border hover:silver-hover active:scale-[0.99] transition"
+                      >
+                        Last
+                      </button>
+                    </div>
+
+                    <form
+                      className="mt-3 flex items-center gap-2"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const n = Number(jumpVal);
+                        if (Number.isFinite(n)) goTo(n);
+                      }}
+                    >
+                      <label className="text-[11px] font-semibold tracking-tight text-zinc-700 shrink-0">Go to</label>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        min={1}
+                        max={totalPages}
+                        value={jumpVal}
+                        onChange={(e) => setJumpVal(e.target.value)}
+                        placeholder={`${currentPage}`}
+                        className="h-9 w-full min-w-0 rounded-xl px-3 text-[12px] font-semibold bg-white silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+                        aria-label="Jump to page"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
+                        className="h-9 shrink-0 rounded-xl px-4 text-[12px] font-semibold bg-zinc-900 text-white disabled:opacity-40 active:scale-[0.99] transition"
+                      >
+                        Go
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* Desktop */}
+                  <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm text-zinc-600">
+                      Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                      <form
+                        className="flex items-center gap-2"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const n = Number(jumpVal);
+                          if (Number.isFinite(n)) goTo(n);
+                        }}
+                      >
+                        <label className="text-sm text-zinc-700">Go to</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={totalPages}
+                          value={jumpVal}
+                          onChange={(e) => setJumpVal(e.target.value)}
+                          className="w-20 rounded-xl px-3 py-1.5 bg-white silver-border"
+                          aria-label="Jump to page"
+                        />
+                        <button
+                          type="submit"
+                          className="px-3 py-1.5 rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
+                          disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
+                        >
+                          Go
+                        </button>
+                      </form>
+
+                      <div className="flex items-center gap-1 sm:gap-2">
+                        <button
+                          type="button"
+                          className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
+                          onClick={() => goTo(1)}
+                          disabled={currentPage <= 1}
+                        >
+                          First
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
+                          onClick={() => goTo(currentPage - 1)}
+                          disabled={currentPage <= 1}
+                        >
+                          Prev
+                        </button>
+
+                        <div className="hidden sm:flex items-center gap-1">
+                          {pagesDesktop.map((n, idx) => {
+                            const prev = pagesDesktop[idx - 1];
+                            const showEllipsis = prev != null && n - prev > 1;
+                            return (
+                              <span key={`d-${n}`} className="inline-flex items-center">
+                                {showEllipsis && <span className="px-1 text-sm text-zinc-500">…</span>}
+                                <button
+                                  type="button"
+                                  onClick={() => goTo(n)}
+                                  className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
+                                    ? "bg-zinc-900 text-white border border-zinc-900"
+                                    : "bg-white hover:bg-zinc-50 silver-border hover:silver-hover"
+                                    }`}
+                                  aria-current={n === currentPage ? "page" : undefined}
+                                >
+                                  {n}
+                                </button>
+                              </span>
+                            );
+                          })}
+                        </div>
+
+                        <button
+                          type="button"
+                          className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
+                          onClick={() => goTo(currentPage + 1)}
+                          disabled={currentPage >= totalPages}
+                        >
+                          Next
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-1 sm:px-3 sm:py-1.5 text-[10px] sm:text-xs rounded-xl bg-white hover:bg-zinc-50 disabled:opacity-50 silver-border hover:silver-hover"
+                          onClick={() => goTo(totalPages)}
+                          disabled={currentPage >= totalPages}
+                        >
+                          Last
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </>
             )}
           </section>
         </div>
       </div>
 
-      {/* ✅ keep the rest of your drawer/pagination exactly as you already had */}
-      {/* (I didn’t change it to avoid breaking your UI.) */}
+      {/* Refine Drawer */}
+      {refineOpen && (
+        <motion.div
+          className="fixed inset-0 z-50"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+        >
+          <div className="absolute inset-0 bg-black/40" onClick={closeRefine} />
+
+          <motion.div
+            className="absolute inset-y-0 right-0 w-[88%] max-w-sm bg-white rounded-tl-3xl rounded-bl-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 silver-border-grad"
+            initial={{ x: "100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "100%" }}
+            transition={{ type: "spring", stiffness: 260, damping: 28 }}
+          >
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-zinc-900">Refine</h3>
+                <p className="text-[11px] text-zinc-600">Search, sort, page size, and filters.</p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeRefine}
+                className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-zinc-100 text-zinc-700 active:scale-95 transition"
+                aria-label="Close refine panel"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Search */}
+            <div className="relative">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+                <input
+                  ref={inputRef}
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setShowSuggest(true);
+                    setActiveIdx(0);
+                  }}
+                  onFocus={() => query && setShowSuggest(true)}
+                  onKeyDown={(e) => {
+                    if (!showSuggest || suggestions.length === 0) return;
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setActiveIdx((i) => Math.max(i - 1, 0));
+                    } else if (e.key === "Enter") {
+                      e.preventDefault();
+                      const pick = suggestions[activeIdx];
+                      if (pick) {
+                        closeRefine();
+                        nav(`/product/${pick.id}`);
+                      }
+                      setShowSuggest(false);
+                    } else if (e.key === "Escape") {
+                      setShowSuggest(false);
+                    }
+                  }}
+                  placeholder="Search products, brands, or categories…"
+                  className="rounded-2xl pl-9 pr-4 py-2.5 w-full bg-white/90 backdrop-blur transition silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+                  aria-label="Search products"
+                />
+              </div>
+
+              {showSuggest && query && suggestions.length > 0 && (
+                <div
+                  ref={suggestRef}
+                  className="mt-2 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden silver-border-grad"
+                >
+                  <ul className="max-h-[45vh] overflow-auto p-2">
+                    {suggestions.map((p, i) => {
+                      const active = i === activeIdx;
+                      const minPrice = priceForFiltering(p);
+
+                      return (
+                        <li key={p.id} className="mb-2 last:mb-0">
+                          <button
+                            type="button"
+                            className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
+                              }`}
+                            onClick={() => {
+                              closeRefine();
+                              nav(`/product/${p.id}`);
+                            }}
+                          >
+                            {p.imagesJson?.[0] ? (
+                              <img
+                                src={resolveImageUrl(p.imagesJson?.[0])}
+                                alt=""
+                                aria-hidden="true"
+                                onError={(e) => e.currentTarget.remove()}
+                                className="w-16 h-16 object-cover rounded-xl silver-border"
+                              />
+                            ) : (
+                              <div className="w-16 h-16 rounded-xl silver-border grid place-items-center text-base text-gray-500">
+                                —
+                              </div>
+                            )}
+
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold truncate">{p.title}</div>
+                              <div className="text-xs opacity-80 truncate">
+                                {ngn.format(minPrice || 0)}
+                                {p.categoryName ? ` • ${p.categoryName}` : ""}
+                                {p.brand?.name ? ` • ${p.brand.name}` : ""}
+                              </div>
+                            </div>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            {/* Sort + Per page */}
+            <div className="grid grid-cols-1 gap-3">
+              <div className="text-sm inline-flex items-center gap-2">
+                <ArrowUpDown size={16} className="text-zinc-600" />
+                <label className="opacity-70 min-w-[44px]">Sort</label>
+                <select
+                  value={sortKey}
+                  onChange={(e) => setSortKey(e.target.value as any)}
+                  className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
+                >
+                  <option value="relevance">Relevance</option>
+                  <option value="price-asc">Price: Low → High</option>
+                  <option value="price-desc">Price: High → Low</option>
+                </select>
+              </div>
+
+              <div className="text-sm inline-flex items-center gap-2">
+                <LayoutGrid size={16} className="text-zinc-600" />
+                <label className="opacity-70 min-w-[72px]">Per page</label>
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value) as 6 | 9 | 12)}
+                  className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
+                >
+                  <option value={6}>6</option>
+                  <option value={9}>9</option>
+                  <option value={12}>12</option>
+                </select>
+              </div>
+            </div>
+
+            {/* In-stock + clear */}
+            <div className="flex items-center justify-between gap-3">
+              <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
+                <input
+                  type="checkbox"
+                  checked={inStockOnly}
+                  onChange={(e) => setInStockOnly(e.target.checked)}
+                  className="h-4 w-4 rounded border-zinc-300"
+                />
+                In stock
+              </label>
+
+              {(anyActiveFilter || hasSearch) && (
+                <button
+                  type="button"
+                  className="text-[12px] font-medium text-fuchsia-700 hover:underline"
+                  onClick={() => {
+                    setQuery("");
+                    setShowSuggest(false);
+                    clearFilters();
+                  }}
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
+
+            {/* Categories */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-[12px] font-semibold text-zinc-800">Categories</h4>
+                <button
+                  className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                  onClick={() => setSelectedCategories([])}
+                  disabled={selectedCategories.length === 0}
+                >
+                  Reset
+                </button>
+              </div>
+              <ul className="space-y-1.5">
+                {categories.length === 0 && <Shimmer />}
+                {categories.map((c) => {
+                  const checked = selectedCategories.includes(c.id);
+                  return (
+                    <li key={c.id}>
+                      <button
+                        onClick={() => toggleCategory(c.id)}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                          ? "bg-zinc-900 text-white"
+                          : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                          }`}
+                      >
+                        <span className="truncate">{c.name}</span>
+                        <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                          ({c.count})
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+
+            {/* Brands */}
+            {brands.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-[12px] font-semibold text-zinc-800">Brands</h4>
+                  <button
+                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    onClick={() => setSelectedBrands([])}
+                    disabled={selectedBrands.length === 0}
+                  >
+                    Reset
+                  </button>
+                </div>
+                <ul className="space-y-1.5">
+                  {brands.map((b) => {
+                    const checked = selectedBrands.includes(b.name);
+                    return (
+                      <li key={b.name}>
+                        <button
+                          onClick={() => toggleBrand(b.name)}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                            }`}
+                        >
+                          <span className="truncate">{b.name}</span>
+                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            ({b.count})
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
+            {/* Price */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-[12px] font-semibold text-zinc-800">Price</h4>
+                <button
+                  className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                  onClick={() => setSelectedBucketIdxs([])}
+                  disabled={selectedBucketIdxs.length === 0}
+                >
+                  Reset
+                </button>
+              </div>
+              <ul className="space-y-1.5">
+                {visiblePriceBuckets.length === 0 && <Shimmer />}
+                {visiblePriceBuckets.map(({ bucket, idx, count }) => {
+                  const checked = selectedBucketIdxs.includes(idx);
+                  return (
+                    <li key={bucket.label}>
+                      <button
+                        onClick={() => toggleBucket(idx)}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                          ? "bg-zinc-900 text-white"
+                          : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                          }`}
+                      >
+                        <span>{bucket.label}</span>
+                        <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                          ({count})
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+
+            <div className="pt-2 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={closeRefine}
+                className="w-full rounded-2xl px-4 py-2.5 bg-zinc-900 text-white font-semibold active:scale-[0.98] transition"
+              >
+                Done
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
     </SiteLayout>
   );
 }
