@@ -1,5 +1,11 @@
-// api/src/services/shipping/quoteShippingForCart.ts
-import { PrismaClient, Prisma, DeliveryServiceLevel, ShippingParcelClass, ShippingQuoteStatus, ShippingRateSource } from "@prisma/client";
+import {
+  PrismaClient,
+  Prisma,
+  DeliveryServiceLevel,
+  ShippingParcelClass,
+  ShippingQuoteStatus,
+  ShippingRateSource,
+} from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -89,8 +95,10 @@ function inferParcelClass(args: {
   return ShippingParcelClass.STANDARD;
 }
 
-export async function quoteShippingForCart(input: QuoteShippingInput): Promise<QuoteShippingResult> {
-  const serviceLevel = input.serviceLevel ?? "STANDARD";
+export async function quoteShippingForCart(
+  input: QuoteShippingInput
+): Promise<QuoteShippingResult> {
+  const serviceLevel: DeliveryServiceLevel = input.serviceLevel ?? "STANDARD";
 
   const cart = await prisma.cart.findUnique({
     where: { id: input.cartId },
@@ -123,15 +131,27 @@ export async function quoteShippingForCart(input: QuoteShippingInput): Promise<Q
 
   // ✅ enforce one-supplier cart for this flow
   const supplierIds = Array.from(
-    new Set(cart.items.map((i) => i.product.supplierId).filter(Boolean))
+    new Set(
+      cart.items
+        .map((i) => i.product.supplierId)
+        .filter((id): id is string => !!id)
+    )
   );
   if (supplierIds.length !== 1) {
     throw new Error("This quote function supports one-supplier carts only");
   }
-  const supplierId = supplierIds[0]!;
+  const supplierId = supplierIds[0];
 
   const supplier = cart.items[0]!.product.supplier;
-  const pickupAddress = supplier.pickupAddress ?? supplier.registeredAddress ?? null;
+
+  if (!supplier) {
+    throw new Error(
+      "Supplier record missing for products in cart; cannot quote shipping."
+    );
+  }
+
+  const pickupAddress =
+    supplier.pickupAddress ?? supplier.registeredAddress ?? null;
   if (!pickupAddress) {
     throw new Error("Supplier pickup/registered address missing");
   }
@@ -147,7 +167,7 @@ export async function quoteShippingForCart(input: QuoteShippingInput): Promise<Q
       (v?.weightGrams ?? p.weightGrams ?? line.product.weightGrams ?? 0) || 0;
 
     const lengthCm = toNum(v?.lengthCm ?? p.lengthCm ?? null) || 0;
-    const widthCm  = toNum(v?.widthCm ?? p.widthCm ?? null) || 0;
+    const widthCm = toNum(v?.widthCm ?? p.widthCm ?? null) || 0;
     const heightCm = toNum(v?.heightCm ?? p.heightCm ?? null) || 0;
 
     const isFragile = v?.isFragileOverride ?? p.isFragile ?? false;
@@ -182,17 +202,27 @@ export async function quoteShippingForCart(input: QuoteShippingInput): Promise<Q
   });
 
   // Aggregate totals
-  const totalActualWeightGrams = lineSnapshots.reduce((s, x) => s + x.actualWeightGrams, 0);
-  const totalVolumetricWeightGrams = lineSnapshots.reduce((s, x) => s + x.volumetricWeightGrams, 0);
-  const chargeableWeightGrams = Math.max(totalActualWeightGrams, totalVolumetricWeightGrams);
+  const totalActualWeightGrams = lineSnapshots.reduce(
+    (s, x) => s + x.actualWeightGrams,
+    0
+  );
+  const totalVolumetricWeightGrams = lineSnapshots.reduce(
+    (s, x) => s + x.volumetricWeightGrams,
+    0
+  );
+  const chargeableWeightGrams = Math.max(
+    totalActualWeightGrams,
+    totalVolumetricWeightGrams
+  );
 
   // Determine overall parcel class (most restrictive wins)
-  const parcelClass: ShippingParcelClass =
-    lineSnapshots.some((x) => x.parcelClass === "BULKY")
-      ? "BULKY"
-      : lineSnapshots.some((x) => x.parcelClass === "FRAGILE")
-      ? "FRAGILE"
-      : "STANDARD";
+  const parcelClass: ShippingParcelClass = lineSnapshots.some(
+    (x) => x.parcelClass === "BULKY"
+  )
+    ? "BULKY"
+    : lineSnapshots.some((x) => x.parcelClass === "FRAGILE")
+    ? "FRAGILE"
+    : "STANDARD";
 
   // Find zone by destination state/lga
   const zones = await prisma.shippingZone.findMany({
@@ -206,13 +236,18 @@ export async function quoteShippingForCart(input: QuoteShippingInput): Promise<Q
   let matchedZone: (typeof zones)[number] | null = null;
 
   for (const zone of zones) {
-    const states = Array.isArray(zone.statesJson) ? (zone.statesJson as unknown[]) : [];
-    const lgas = Array.isArray(zone.lgasJson) ? (zone.lgasJson as unknown[]) : [];
+    const states = Array.isArray(zone.statesJson)
+      ? (zone.statesJson as unknown[])
+      : [];
+    const lgas = Array.isArray(zone.lgasJson)
+      ? (zone.lgasJson as unknown[])
+      : [];
 
     const statesNorm = states.map((x) => String(x).toLowerCase().trim());
     const lgasNorm = lgas.map((x) => String(x).toLowerCase().trim());
 
-    const stateMatch = statesNorm.length === 0 || statesNorm.includes(dstState);
+    const stateMatch =
+      statesNorm.length === 0 || statesNorm.includes(dstState);
     const lgaMatch = lgasNorm.length === 0 || lgasNorm.includes(dstLga);
 
     if (stateMatch && lgaMatch) {
@@ -222,7 +257,11 @@ export async function quoteShippingForCart(input: QuoteShippingInput): Promise<Q
   }
 
   if (!matchedZone) {
-    throw new Error(`No shipping zone configured for destination state=${destination.state ?? ""} lga=${destination.lga ?? ""}`);
+    throw new Error(
+      `No shipping zone configured for destination state=${
+        destination.state ?? ""
+      } lga=${destination.lga ?? ""}`
+    );
   }
 
   // Find matching rate card
@@ -234,7 +273,10 @@ export async function quoteShippingForCart(input: QuoteShippingInput): Promise<Q
       serviceLevel,
       parcelClass,
       minWeightGrams: { lte: chargeableWeightGrams },
-      OR: [{ maxWeightGrams: null }, { maxWeightGrams: { gt: chargeableWeightGrams } }],
+      OR: [
+        { maxWeightGrams: null },
+        { maxWeightGrams: { gt: chargeableWeightGrams } },
+      ],
       AND: [
         { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
         { OR: [{ endsAt: null }, { endsAt: { gte: now } }] },
@@ -263,12 +305,17 @@ export async function quoteShippingForCart(input: QuoteShippingInput): Promise<Q
   const shippingFee = baseFee + (perKgFee > 0 ? perKgFee * chargeableKg : 0);
 
   // Optional product-level free shipping override (all lines must be freeShipping)
-  const allFreeShipping = cart.items.every((line) => line.product.freeShipping === true);
+  const allFreeShipping = cart.items.every(
+    (line) => line.product.freeShipping === true
+  );
 
-  const totalFeeRaw =
-    allFreeShipping
-      ? 0
-      : shippingFee + remoteSurcharge + fuelSurcharge + rateHandling + supplierHandling;
+  const totalFeeRaw = allFreeShipping
+    ? 0
+    : shippingFee +
+      remoteSurcharge +
+      fuelSurcharge +
+      rateHandling +
+      supplierHandling;
 
   const shippingFeeFinal = allFreeShipping ? 0 : shippingFee;
   const totalFee = Math.max(0, totalFeeRaw);
@@ -295,9 +342,15 @@ export async function quoteShippingForCart(input: QuoteShippingInput): Promise<Q
 
       currency: rate.currency || "NGN",
       shippingFee: new Prisma.Decimal(shippingFeeFinal.toFixed(2)),
-      remoteSurcharge: new Prisma.Decimal((allFreeShipping ? 0 : remoteSurcharge).toFixed(2)),
-      fuelSurcharge: new Prisma.Decimal((allFreeShipping ? 0 : fuelSurcharge).toFixed(2)),
-      handlingFee: new Prisma.Decimal((allFreeShipping ? 0 : (rateHandling + supplierHandling)).toFixed(2)),
+      remoteSurcharge: new Prisma.Decimal(
+        (allFreeShipping ? 0 : remoteSurcharge).toFixed(2)
+      ),
+      fuelSurcharge: new Prisma.Decimal(
+        (allFreeShipping ? 0 : fuelSurcharge).toFixed(2)
+      ),
+      handlingFee: new Prisma.Decimal(
+        (allFreeShipping ? 0 : rateHandling + supplierHandling).toFixed(2)
+      ),
       insuranceFee: new Prisma.Decimal("0.00"),
       totalFee: new Prisma.Decimal(totalFee.toFixed(2)),
 
@@ -324,9 +377,18 @@ export async function quoteShippingForCart(input: QuoteShippingInput): Promise<Q
           qty: x.qty,
 
           weightGrams: x.weightGrams || null,
-          lengthCm: x.lengthCm != null ? new Prisma.Decimal(x.lengthCm.toFixed(2)) : null,
-          widthCm: x.widthCm != null ? new Prisma.Decimal(x.widthCm.toFixed(2)) : null,
-          heightCm: x.heightCm != null ? new Prisma.Decimal(x.heightCm.toFixed(2)) : null,
+          lengthCm:
+            x.lengthCm != null
+              ? new Prisma.Decimal(x.lengthCm.toFixed(2))
+              : null,
+          widthCm:
+            x.widthCm != null
+              ? new Prisma.Decimal(x.widthCm.toFixed(2))
+              : null,
+          heightCm:
+            x.heightCm != null
+              ? new Prisma.Decimal(x.heightCm.toFixed(2))
+              : null,
 
           actualWeightGrams: x.actualWeightGrams,
           volumetricWeightGrams: x.volumetricWeightGrams,
