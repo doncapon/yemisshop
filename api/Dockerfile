@@ -33,6 +33,8 @@ COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/package-lock.json ./package-lock.json
 
+RUN npm run seed:shipping
+
 COPY start.sh ./start.sh
 RUN chmod +x ./start.sh
 
