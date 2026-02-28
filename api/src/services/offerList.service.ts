@@ -18,19 +18,20 @@ export type OfferListRow = {
   model: "PRODUCT_OFFER" | "VARIANT_OFFER";
 };
 
+// Returns canonical offers (base + variants) for the given products
 export async function fetchOffersByProducts(productIds: string[]) {
   const ids = (productIds || []).map(String).filter(Boolean);
   if (!ids.length) return [];
 
   // Schema-aligned:
-  // - SupplierProductOffer: basePrice
-  // - SupplierVariantOffer: unitPrice (full unit price; no priceBump concept)
+  // - SupplierProductOffer: basePrice (1:1 with Product)
+  // - SupplierVariantOffer: unitPrice (1:1 with ProductVariant)
+  // Supplier info comes via Product.supplierId / Product.supplier
   const bases = await prisma.supplierProductOffer.findMany({
     where: { productId: { in: ids } },
     select: {
       id: true,
       productId: true,
-      supplierId: true,
 
       basePrice: true,
       currency: true,
@@ -39,13 +40,18 @@ export async function fetchOffersByProducts(productIds: string[]) {
       isActive: true,
       leadDays: true,
 
-      supplier: { select: { id: true, name: true } },
+      // get supplier via product
+      product: {
+        select: {
+          supplierId: true,
+          supplier: { select: { id: true, name: true } },
+        },
+      },
 
       variantOffers: {
         select: {
           id: true,
           productId: true,
-          supplierId: true,
           variantId: true,
 
           unitPrice: true,
@@ -65,6 +71,8 @@ export async function fetchOffersByProducts(productIds: string[]) {
 
   for (const b of bases) {
     const basePrice = asNumber(b.basePrice, 0);
+    const supplierId = b.product?.supplierId ?? null;
+    const supplierName = b.product?.supplier?.name ?? null;
 
     // BASE row
     out.push({
@@ -72,13 +80,13 @@ export async function fetchOffersByProducts(productIds: string[]) {
       model: "PRODUCT_OFFER",
 
       productId: b.productId,
-      supplierId: b.supplierId,
-      supplierName: b.supplier?.name,
+      supplierId,
+      supplierName,
 
       variantId: null,
       variantSku: null,
 
-      offerPrice: basePrice, // ✅ base offer uses basePrice
+      offerPrice: basePrice, // base offer uses basePrice
 
       currency: b.currency ?? "NGN",
       availableQty: b.availableQty ?? 0,
@@ -87,7 +95,7 @@ export async function fetchOffersByProducts(productIds: string[]) {
       inStock: !!b.inStock,
     });
 
-    // VARIANT rows (no bumps; unitPrice is already the full price)
+    // VARIANT rows (unitPrice is the full variant price)
     for (const v of b.variantOffers || []) {
       const unitPrice = asNumber(v.unitPrice, 0);
 
@@ -96,13 +104,13 @@ export async function fetchOffersByProducts(productIds: string[]) {
         model: "VARIANT_OFFER",
 
         productId: v.productId ?? b.productId,
-        supplierId: v.supplierId ?? b.supplierId,
-        supplierName: b.supplier?.name,
+        supplierId,
+        supplierName,
 
         variantId: v.variantId,
         variantSku: v.variant?.sku ?? null,
 
-        offerPrice: unitPrice, // ✅ variant offer uses unitPrice (full unit price)
+        offerPrice: unitPrice,
 
         currency: v.currency ?? b.currency ?? "NGN",
         availableQty: v.availableQty ?? 0,
