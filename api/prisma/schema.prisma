@@ -1457,7 +1457,7 @@ model PurchaseOrderItem {
 
 model SupplierProductOffer {
   id        String @id @default(cuid())
-  productId String @unique
+  productId String
 
   basePrice Decimal @db.Decimal(10, 2)
   currency  String  @default("NGN")
