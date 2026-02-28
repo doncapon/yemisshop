@@ -1,2 +1,2 @@
 -- DropIndex
-DROP INDEX "SupplierProductOffer_productId_key";
+DROP INDEX IF EXISTS "SupplierProductOffer_productId_key";

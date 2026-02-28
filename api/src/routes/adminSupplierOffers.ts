@@ -422,6 +422,13 @@ router.post(
     });
     if (!product) return res.status(404).json({ error: "Product not found" });
 
+    const supplierId = String(product.supplierId ?? "");
+    if (!supplierId) {
+      return res
+        .status(409)
+        .json({ error: "This product has no supplierId configured." });
+    }
+
     // accept supplierId but validate it matches product
     await assertSupplierMatchesProduct(productId, parsed.supplierId ?? null);
 
@@ -437,12 +444,16 @@ router.post(
       return res.status(400).json({ error: "price must be greater than 0" });
     }
 
-    const supplierMeta = { supplierId: String(product.supplierId), supplierName: product.supplier?.name ?? null };
+    const supplierMeta = {
+      supplierId,
+      supplierName: product.supplier?.name ?? null,
+    };
 
     // ---------------- BASE ----------------
     if (kind === "BASE" || !variantId) {
       const data = {
         productId,
+        supplierId, // ✅ REQUIRED now
         basePrice: toDecimal(price),
         currency: parsed.currency ?? "NGN",
         availableQty: qty,
@@ -451,9 +462,9 @@ router.post(
         inStock,
       };
 
-      // 🔧 productId is NOT unique anymore → manual upsert
+      // 🔧 productId is NOT unique anymore → but there should be at most one per product+supplier
       const existing = await prisma.supplierProductOffer.findFirst({
-        where: { productId },
+        where: { productId, supplierId },
         select: { id: true },
       });
 
@@ -480,12 +491,14 @@ router.post(
       select: { id: true, productId: true },
     });
     if (!variant || String(variant.productId) !== productId) {
-      return res.status(400).json({ error: "variantId does not belong to this product" });
+      return res
+        .status(400)
+        .json({ error: "variantId does not belong to this product" });
     }
 
     // Link to base if exists; DO NOT create base automatically
     const base = await prisma.supplierProductOffer.findFirst({
-      where: { productId },
+      where: { productId, supplierId },
       select: { id: true, currency: true },
     });
 
@@ -495,6 +508,7 @@ router.post(
         productId,
         variantId: String(variantId),
         supplierProductOfferId: base?.id ?? null,
+        supplierId, // ✅ keep variant offer tied to same supplier
         unitPrice: toDecimal(price),
         currency: parsed.currency ?? base?.currency ?? "NGN",
         availableQty: qty,
@@ -505,6 +519,7 @@ router.post(
       update: {
         productId,
         supplierProductOfferId: base?.id ?? null,
+        supplierId, // ✅ keep in sync on update too
         unitPrice: toDecimal(price),
         currency: parsed.currency ?? base?.currency ?? "NGN",
         availableQty: qty,
@@ -519,9 +534,8 @@ router.post(
 
     await recomputeProductStockTx(prisma as any, productId);
     return res.status(201).json({ data: toDtoVariant(created, supplierMeta) });
-  })
+  }),
 );
-
 /**
  * PATCH /api/admin/supplier-offers/:id
  * id: base:<id> | variant:<id>
@@ -541,12 +555,16 @@ router.patch(
 
       if (parsedId.kind === "LEGACY") {
         return res.status(400).json({
-          error: "Legacy offer id received. Use base:<id> or variant:<id> with the new 2-table system.",
+          error:
+            "Legacy offer id received. Use base:<id> or variant:<id> with the new 2-table system.",
         });
       }
 
       // helper: is this specific offer row referenced in any order item?
-      async function assertOfferRowNotUsedInOrdersOrThrow(kind: "BASE" | "VARIANT", rawId: string) {
+      async function assertOfferRowNotUsedInOrdersOrThrow(
+        kind: "BASE" | "VARIANT",
+        rawId: string,
+      ) {
         const hit = await prisma.orderItem.findFirst({
           where:
             kind === "BASE"
@@ -557,7 +575,7 @@ router.patch(
 
         if (hit) {
           const err: any = new Error(
-            "Cannot convert/delete this offer because it has been used in orders. You can still PATCH price/qty/isActive on the same row."
+            "Cannot convert/delete this offer because it has been used in orders. You can still PATCH price/qty/isActive on the same row.",
           );
           err.statusCode = 409;
           throw err;
@@ -579,6 +597,7 @@ router.patch(
             leadDays: true,
             isActive: true,
             inStock: true,
+            supplierId: true,
           },
         });
         if (!existing) return res.status(404).json({ error: "Base offer not found" });
@@ -593,7 +612,10 @@ router.patch(
 
         await assertSupplierMatchesProduct(productId, patch.supplierId ?? null);
 
-        const supplierMeta = { supplierId: String(product.supplierId), supplierName: product.supplier?.name ?? null };
+        const supplierMeta = {
+          supplierId: String(product.supplierId),
+          supplierName: product.supplier?.name ?? null,
+        };
 
         // OPTIONAL convert BASE -> VARIANT if variantId provided
         const wantsConvertToVariant = !!patch.variantId;
@@ -607,26 +629,41 @@ router.patch(
             select: { id: true, productId: true },
           });
           if (!variant || String(variant.productId) !== productId) {
-            return res.status(400).json({ error: "variantId does not belong to this product" });
+            return res
+              .status(400)
+              .json({ error: "variantId does not belong to this product" });
           }
+
+          const supplierId = String(product.supplierId);
 
           // create/replace VARIANT by unique variantId
           const nextPrice =
-            patch.price !== undefined ? Number(patch.price) : existing.basePrice != null ? Number(existing.basePrice) : 0;
+            patch.price !== undefined
+              ? Number(patch.price)
+              : existing.basePrice != null
+                ? Number(existing.basePrice)
+                : 0;
 
           if (!Number.isFinite(nextPrice) || nextPrice <= 0) {
             return res.status(400).json({ error: "price must be greater than 0" });
           }
 
           const nextQty =
-            patch.availableQty !== undefined ? Number(patch.availableQty) : Number(existing.availableQty ?? 0);
+            patch.availableQty !== undefined
+              ? Number(patch.availableQty)
+              : Number(existing.availableQty ?? 0);
 
-          const nextIsActive = patch.isActive !== undefined ? !!patch.isActive : !!existing.isActive;
+          const nextIsActive =
+            patch.isActive !== undefined ? !!patch.isActive : !!existing.isActive;
           const nextInStock = !!nextIsActive && nextQty > 0;
 
           const nextCurrency = patch.currency ?? existing.currency ?? "NGN";
           const nextLeadDays =
-            patch.leadDays !== undefined ? (patch.leadDays == null ? null : patch.leadDays) : existing.leadDays ?? null;
+            patch.leadDays !== undefined
+              ? patch.leadDays == null
+                ? null
+                : patch.leadDays
+              : existing.leadDays ?? null;
 
           const moved = await prisma.$transaction(async (tx) => {
             const created = await tx.supplierVariantOffer.upsert({
@@ -635,6 +672,7 @@ router.patch(
                 productId,
                 variantId: targetVariantId,
                 supplierProductOfferId: null,
+                supplierId, // ✅ set supplier on variant offer
                 unitPrice: toDecimal(nextPrice),
                 currency: nextCurrency,
                 availableQty: nextQty,
@@ -645,6 +683,7 @@ router.patch(
               update: {
                 productId,
                 supplierProductOfferId: null,
+                supplierId, // ✅ keep supplier in sync
                 unitPrice: toDecimal(nextPrice),
                 currency: nextCurrency,
                 availableQty: nextQty,
@@ -676,17 +715,26 @@ router.patch(
 
         if (patch.price !== undefined) {
           const p = Number(patch.price);
-          if (!Number.isFinite(p) || p <= 0) return res.status(400).json({ error: "price must be greater than 0" });
+          if (!Number.isFinite(p) || p <= 0) {
+            return res.status(400).json({ error: "price must be greater than 0" });
+          }
           data.basePrice = toDecimal(p);
         }
 
-        if (patch.availableQty !== undefined) data.availableQty = Math.max(0, Math.trunc(Number(patch.availableQty)));
-        if (patch.leadDays !== undefined) data.leadDays = patch.leadDays == null ? null : patch.leadDays;
+        if (patch.availableQty !== undefined) {
+          data.availableQty = Math.max(0, Math.trunc(Number(patch.availableQty)));
+        }
+        if (patch.leadDays !== undefined) {
+          data.leadDays = patch.leadDays == null ? null : patch.leadDays;
+        }
         if (patch.isActive !== undefined) data.isActive = !!patch.isActive;
 
         const nextQty =
-          data.availableQty !== undefined ? Number(data.availableQty) : Number(existing.availableQty ?? 0);
-        const nextActive = data.isActive !== undefined ? !!data.isActive : !!existing.isActive;
+          data.availableQty !== undefined
+            ? Number(data.availableQty)
+            : Number(existing.availableQty ?? 0);
+        const nextActive =
+          data.isActive !== undefined ? !!data.isActive : !!existing.isActive;
         data.inStock = !!nextActive && nextQty > 0;
 
         const updated = await prisma.supplierProductOffer.update({
@@ -732,7 +780,11 @@ router.patch(
 
       await assertSupplierMatchesProduct(productId, patch.supplierId ?? null);
 
-      const supplierMeta = { supplierId: String(product.supplierId), supplierName: product.supplier?.name ?? null };
+      const supplierMeta = {
+        supplierId: String(product.supplierId),
+        supplierName: product.supplier?.name ?? null,
+      };
+      const supplierId = String(product.supplierId);
 
       // convert VARIANT -> BASE if caller explicitly sends variantId: null
       const rawVariantId = (req.body as any)?.variantId;
@@ -751,27 +803,37 @@ router.patch(
                 : 0;
 
         const nextPrice = Number(nextPriceRaw);
-        if (!Number.isFinite(nextPrice) || nextPrice <= 0) return res.status(400).json({ error: "price must be greater than 0" });
+        if (!Number.isFinite(nextPrice) || nextPrice <= 0) {
+          return res.status(400).json({ error: "price must be greater than 0" });
+        }
 
         const nextQty =
-          patch.availableQty !== undefined ? Number(patch.availableQty) : Number(existing.availableQty ?? 0);
+          patch.availableQty !== undefined
+            ? Number(patch.availableQty)
+            : Number(existing.availableQty ?? 0);
 
-        const nextIsActive = patch.isActive !== undefined ? !!patch.isActive : !!existing.isActive;
+        const nextIsActive =
+          patch.isActive !== undefined ? !!patch.isActive : !!existing.isActive;
         const nextInStock = !!nextIsActive && nextQty > 0;
 
         const nextCurrency = patch.currency ?? existing.currency ?? "NGN";
         const nextLeadDays =
-          patch.leadDays !== undefined ? (patch.leadDays == null ? null : patch.leadDays) : existing.leadDays ?? null;
+          patch.leadDays !== undefined
+            ? patch.leadDays == null
+              ? null
+              : patch.leadDays
+            : existing.leadDays ?? null;
 
         const moved = await prisma.$transaction(async (tx) => {
-          // 🔧 productId is NOT unique anymore → manual upsert
+          // 🔧 productId is NOT unique anymore → manual upsert, but supplierId is required
           const existingBase = await tx.supplierProductOffer.findFirst({
-            where: { productId },
+            where: { productId, supplierId },
             select: { id: true },
           });
 
           const baseData = {
             productId,
+            supplierId, // ✅ REQUIRED on SupplierProductOffer
             basePrice: toDecimal(nextPrice),
             currency: nextCurrency,
             availableQty: nextQty,
@@ -833,16 +895,26 @@ router.patch(
       if (patch.currency) data.currency = patch.currency;
 
       const incomingPrice =
-        patch.price !== undefined ? patch.price : patch.unitPrice !== undefined ? patch.unitPrice : undefined;
+        patch.price !== undefined
+          ? patch.price
+          : patch.unitPrice !== undefined
+            ? patch.unitPrice
+            : undefined;
 
       if (incomingPrice !== undefined) {
         const p = Number(incomingPrice);
-        if (!Number.isFinite(p) || p <= 0) return res.status(400).json({ error: "price must be greater than 0" });
+        if (!Number.isFinite(p) || p <= 0) {
+          return res.status(400).json({ error: "price must be greater than 0" });
+        }
         data.unitPrice = toDecimal(p);
       }
 
-      if (patch.availableQty !== undefined) data.availableQty = Math.max(0, Math.trunc(Number(patch.availableQty)));
-      if (patch.leadDays !== undefined) data.leadDays = patch.leadDays == null ? null : patch.leadDays;
+      if (patch.availableQty !== undefined) {
+        data.availableQty = Math.max(0, Math.trunc(Number(patch.availableQty)));
+      }
+      if (patch.leadDays !== undefined) {
+        data.leadDays = patch.leadDays == null ? null : patch.leadDays;
+      }
       if (patch.isActive !== undefined) data.isActive = !!patch.isActive;
 
       // allow changing variantId (must belong to same product)
@@ -852,22 +924,28 @@ router.patch(
           select: { id: true, productId: true },
         });
         if (!variant || String(variant.productId) !== productId) {
-          return res.status(400).json({ error: "variantId does not belong to this product" });
+          return res
+            .status(400)
+            .json({ error: "variantId does not belong to this product" });
         }
         data.variantId = String(patch.variantId);
       }
 
-      // keep link independent unless base exists
+      // keep link independent unless base exists (use same supplierId)
       const base = await prisma.supplierProductOffer.findFirst({
-        where: { productId },
+        where: { productId, supplierId },
         select: { id: true },
       });
       data.supplierProductOfferId = base?.id ?? null;
       data.productId = productId;
+      data.supplierId = supplierId; // ✅ keep variant's supplier in sync
 
       const nextQty =
-        data.availableQty !== undefined ? Number(data.availableQty) : Number(existing.availableQty ?? 0);
-      const nextActive = data.isActive !== undefined ? !!data.isActive : !!existing.isActive;
+        data.availableQty !== undefined
+          ? Number(data.availableQty)
+          : Number(existing.availableQty ?? 0);
+      const nextActive =
+        data.isActive !== undefined ? !!data.isActive : !!existing.isActive;
       data.inStock = !!nextActive && nextQty > 0;
 
       let updated: any;
@@ -878,7 +956,11 @@ router.patch(
           include: { variant: { select: { id: true, sku: true, productId: true } } },
         });
       } catch (e: any) {
-        if (e?.code === "P2002") return res.status(409).json({ error: "Duplicate variant offer for this variantId." });
+        if (e?.code === "P2002") {
+          return res
+            .status(409)
+            .json({ error: "Duplicate variant offer for this variantId." });
+        }
         throw e;
       }
 
@@ -894,10 +976,11 @@ router.patch(
       if (err instanceof z.ZodError) {
         return res.status(400).json({ error: "Invalid payload", details: err.issues });
       }
-      if (err?.statusCode) return res.status(err.statusCode).json({ error: err.message });
+      if (err?.statusCode)
+        return res.status(err.statusCode).json({ error: err.message });
       next(err);
     }
-  })
+  }),
 );
 
 router.delete(

@@ -544,12 +544,17 @@ router.get("/:id", requireAuth, async (req: any, res) => {
  * PUT /api/supplier/catalog/offers/base
  * Supplier edits the canonical base offer for THEIR product.
  */
+/**
+ * PUT /api/supplier/catalog/offers/base
+ * Supplier edits the canonical base offer for THEIR product.
+ */
 router.put("/offers/base", requireAuth, async (req: any, res) => {
   const role = req.user?.role;
   const userId = String(req.user?.id ?? "").trim();
   if (!userId) return res.status(401).json({ error: "Unauthorized" });
-  if (!isSupplier(role))
+  if (!isSupplier(role)) {
     return res.status(403).json({ error: "Supplier access required" });
+  }
 
   const s = await getSupplierForUser(userId);
   if (!s?.id) return res.status(403).json({ error: "Supplier not found" });
@@ -582,9 +587,12 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
       .json({ error: "You can only edit offers for your own products" });
   }
 
-  // Canonical base offer is 1:1 with productId
+  // Canonical base offer is 1:1 per (productId, supplierId)
   const existing = await prisma.supplierProductOffer.findFirst({
-    where: { productId: body.productId },
+    where: {
+      productId: body.productId,
+      supplierId, // ✅ now exists in your schema
+    },
     select: {
       id: true,
       productId: true,
@@ -600,10 +608,12 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
     },
   });
 
+  // ---------------- CREATE NEW OFFER ----------------
   if (!existing) {
     const created = await prisma.supplierProductOffer.create({
       data: {
         productId: body.productId,
+        supplierId, // ✅ REQUIRED by your model
         basePrice: body.basePrice,
         availableQty: body.availableQty,
         leadDays: body.leadDays ?? null,
@@ -629,6 +639,7 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
     return res.json({ data: created, meta: { reviewQueued: false } });
   }
 
+  // ---------------- UPDATE EXISTING OFFER ----------------
   const immediateChanged =
     (existing.availableQty ?? 0) !== body.availableQty ||
     sameBool(existing.inStock, body.inStock) === false;

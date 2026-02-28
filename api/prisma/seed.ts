@@ -854,19 +854,19 @@ function supplierUnitPriceFromVariantRetail(
   return new Prisma.Decimal(val);
 }
 
-/**
- * ✅ Fixed: no upsert on non-unique productId
- */
+
 async function ensureBaseOfferForProduct(args: {
   productId: string;
   retail: number;
+  supplierId: string;
 }) {
-  const { productId, retail } = args;
+  const { productId, retail, supplierId } = args;
 
   const availableQty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
 
+  // One base offer per (productId, supplierId)
   const existing = await prisma.supplierProductOffer.findFirst({
-    where: { productId },
+    where: { productId, supplierId },
     select: { id: true, availableQty: true, productId: true },
   });
 
@@ -874,6 +874,7 @@ async function ensureBaseOfferForProduct(args: {
     const created = await prisma.supplierProductOffer.create({
       data: {
         productId,
+        supplierId,
         basePrice: supplierBaseFromRetail(retail),
         availableQty,
         inStock: availableQty > 0,
@@ -890,6 +891,7 @@ async function ensureBaseOfferForProduct(args: {
   const updated = await prisma.supplierProductOffer.update({
     where: { id: existing.id },
     data: {
+      supplierId,
       basePrice: supplierBaseFromRetail(retail),
       availableQty,
       inStock: availableQty > 0,
@@ -1443,6 +1445,7 @@ async function seedProducts(args: {
     const baseOffer = await ensureBaseOfferForProduct({
       productId: product.id,
       retail: item.retail,
+      supplierId
     });
 
     if (wantsVariants) {

@@ -918,6 +918,9 @@ model Supplier {
 
   // ✅ NEW: pickup / fulfillment defaults
   pickupAddressId String?
+
+  supplierProductOffers SupplierProductOffer[]
+
   pickupAddress   Address? @relation("SupplierPickupAddress", fields: [pickupAddressId], references: [id])
 
   pickupContactName  String?
@@ -1456,8 +1459,9 @@ model PurchaseOrderItem {
 }
 
 model SupplierProductOffer {
-  id        String @id @default(cuid())
-  productId String
+  id         String @id @default(cuid())
+  productId  String
+  supplierId String   // ✅ added back here
 
   basePrice Decimal @db.Decimal(10, 2)
   currency  String  @default("NGN")
@@ -1471,7 +1475,8 @@ model SupplierProductOffer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id])
 
   variantOffers    SupplierVariantOffer[]
   orderItemsChosen OrderItem[]                  @relation("OrderItemChosenSupplierProductOffer")
@@ -1479,6 +1484,7 @@ model SupplierProductOffer {
   changeRequests   SupplierOfferChangeRequest[] @relation("BaseOffer_ChangeRequests")
 
   @@index([productId])
+  @@index([supplierId])
   @@index([isActive, inStock])
 }
 
@@ -1497,6 +1503,8 @@ model SupplierVariantOffer {
 
   isActive Boolean @default(true)
   inStock  Boolean @default(true)
+
+   supplierId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
