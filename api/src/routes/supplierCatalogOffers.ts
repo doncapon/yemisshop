@@ -96,16 +96,19 @@ function socrIf(name: string, value: any) {
  * Also avoids compile-time Prisma type errors by using tx as any, BUT keeps runtime safe
  * by only setting fields that exist in the DMMF.
  */
-async function queuePendingChangeRequest(tx: any, args: {
-  supplierId: string;
-  productId: string;
-  scope: "BASE_OFFER" | "VARIANT_OFFER";
-  supplierProductOfferId?: string;
-  supplierVariantOfferId?: string;
-  patch: any;
-  snapshot: any;
-  requestedByUserId: string;
-}) {
+async function queuePendingChangeRequest(
+  tx: any,
+  args: {
+    supplierId: string;
+    productId: string;
+    scope: "BASE_OFFER" | "VARIANT_OFFER";
+    supplierProductOfferId?: string;
+    supplierVariantOfferId?: string;
+    patch: any;
+    snapshot: any;
+    requestedByUserId: string;
+  }
+) {
   const model = (tx as any).supplierOfferChangeRequest;
   if (!model?.findFirst) return null;
 
@@ -280,7 +283,9 @@ router.get("/products", requireAuth, async (req: any, res) => {
             isActive: true,
             inStock: true,
             currency: true,
+            createdAt: true,
             updatedAt: true,
+            pendingChangeId: true,
           },
           take: 1, // defensive, in case of legacy duplicates
         },
@@ -409,6 +414,9 @@ router.get("/:id", requireAuth, async (req: any, res) => {
           isActive: true,
           leadDays: true,
           availableQty: true,
+          createdAt: true,
+          updatedAt: true,
+          pendingChangeId: true,
         },
         take: 1,
       },
@@ -532,8 +540,6 @@ router.get("/:id", requireAuth, async (req: any, res) => {
   });
 });
 
-
-
 /**
  * PUT /api/supplier/catalog/offers/base
  * Supplier edits the canonical base offer for THEIR product.
@@ -577,17 +583,20 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
   }
 
   // Canonical base offer is 1:1 with productId
-  const existing = await prisma.supplierProductOffer.findUnique({
+  const existing = await prisma.supplierProductOffer.findFirst({
     where: { productId: body.productId },
     select: {
       id: true,
+      productId: true,
       basePrice: true,
       availableQty: true,
       leadDays: true,
       isActive: true,
       inStock: true,
       currency: true,
+      createdAt: true,
       updatedAt: true,
+      pendingChangeId: true,
     },
   });
 
@@ -611,7 +620,9 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
         isActive: true,
         inStock: true,
         currency: true,
+        createdAt: true,
         updatedAt: true,
+        pendingChangeId: true,
       },
     });
 
@@ -662,7 +673,9 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
           isActive: true,
           inStock: true,
           currency: true,
+          createdAt: true,
           updatedAt: true,
+          pendingChangeId: true,
         },
       });
     }
@@ -757,7 +770,7 @@ router.put("/offers/variant", requireAuth, async (req: any, res) => {
   }
 
   // Base offer must exist for this product
-  const baseOffer = await prisma.supplierProductOffer.findUnique({
+  const baseOffer = await prisma.supplierProductOffer.findFirst({
     where: { productId: body.productId },
     select: { id: true },
   });
@@ -949,7 +962,7 @@ router.delete("/offers/base/:productId", requireAuth, async (req: any, res) => {
     return res.status(404).json({ error: "Product not found" });
   }
 
-  const base = await prisma.supplierProductOffer.findUnique({
+  const base = await prisma.supplierProductOffer.findFirst({
     where: { productId },
     select: { id: true },
   });

@@ -529,12 +529,6 @@ async function maybeDeactivateIfPayoutNotReadyTx(
   return forceNonPurchasable(offerInput);
 }
 
-/* ------------------------- Offers helpers (schema-aligned) ---------------------- */
-/**
- * Prisma schema note:
- * - SupplierProductOffer is UNIQUE by productId (no supplierId field).
- * - SupplierVariantOffer is UNIQUE by variantId (no supplierId field).
- */
 async function upsertSupplierProductOffer(
   tx: Prisma.TransactionClient,
   supplierId: string, // still used for payout readiness checks (product supplier)
@@ -564,31 +558,41 @@ async function upsertSupplierProductOffer(
   isActive = guarded.isActive !== false; // default true unless explicitly false
   inStock = guarded.inStock !== false;
 
-  const offer = await tx.supplierProductOffer.upsert({
-    where: { productId }, // ✅ unique
-    update: {
-      basePrice: toDecimal(basePrice),
-      currency,
-      inStock,
-      isActive,
-      leadDays,
-      availableQty: Math.max(0, Math.trunc(availableQty ?? 0)),
-    },
-    create: {
-      productId,
-      basePrice: toDecimal(basePrice),
-      currency,
-      inStock,
-      isActive,
-      leadDays,
-      availableQty: Math.max(0, Math.trunc(availableQty ?? 0)),
-    },
+  const qtyInt = Math.max(0, Math.trunc(availableQty ?? 0));
+
+  const data: any = {
+    basePrice: toDecimal(basePrice),
+    currency,
+    inStock,
+    isActive,
+    leadDays,
+    availableQty: qtyInt,
+  };
+
+  // 🔧 productId is not unique anymore → manual upsert
+  const existing = await tx.supplierProductOffer.findFirst({
+    where: { productId },
+    select: { id: true },
   });
+
+  let offer;
+  if (existing) {
+    offer = await tx.supplierProductOffer.update({
+      where: { id: existing.id },
+      data,
+    });
+  } else {
+    offer = await tx.supplierProductOffer.create({
+      data: {
+        productId,
+        ...data,
+      },
+    });
+  }
 
   await refreshProductAutoPriceIfAutoMode(tx, productId);
   return offer;
 }
-
 /* -------------------------- Attributes writer --------------------------- */
 
 async function writeProductAttributes(
@@ -1874,9 +1878,18 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       }
 
       // ✅ Load existing base offer (schema: unique by productId)
-      const existingBaseOffer = await tx.supplierProductOffer.findUnique({
+      // ✅ Load existing base offer (productId is NOT unique anymore → use findFirst)
+      const existingBaseOffer = await tx.supplierProductOffer.findFirst({
         where: { productId: id },
-        select: { id: true, basePrice: true, currency: true, inStock: true, isActive: true, leadDays: true, availableQty: true },
+        select: {
+          id: true,
+          basePrice: true,
+          currency: true,
+          inStock: true,
+          isActive: true,
+          leadDays: true,
+          availableQty: true,
+        },
       });
 
       const nextBaseQty = pickQty(
