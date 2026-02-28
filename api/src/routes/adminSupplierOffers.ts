@@ -441,26 +441,33 @@ router.post(
 
     // ---------------- BASE ----------------
     if (kind === "BASE" || !variantId) {
-      const upserted = await prisma.supplierProductOffer.upsert({
-        where: { productId }, // ✅ unique in your schema
-        create: {
-          productId,
-          basePrice: toDecimal(price),
-          currency: parsed.currency ?? "NGN",
-          availableQty: qty,
-          leadDays: parsed.leadDays == null ? null : parsed.leadDays,
-          isActive,
-          inStock,
-        },
-        update: {
-          basePrice: toDecimal(price),
-          currency: parsed.currency ?? "NGN",
-          availableQty: qty,
-          leadDays: parsed.leadDays == null ? null : parsed.leadDays,
-          isActive,
-          inStock,
-        },
+      const data = {
+        productId,
+        basePrice: toDecimal(price),
+        currency: parsed.currency ?? "NGN",
+        availableQty: qty,
+        leadDays: parsed.leadDays == null ? null : parsed.leadDays,
+        isActive,
+        inStock,
+      };
+
+      // 🔧 productId is NOT unique anymore → manual upsert
+      const existing = await prisma.supplierProductOffer.findFirst({
+        where: { productId },
+        select: { id: true },
       });
+
+      let upserted;
+      if (existing) {
+        upserted = await prisma.supplierProductOffer.update({
+          where: { id: existing.id },
+          data,
+        });
+      } else {
+        upserted = await prisma.supplierProductOffer.create({
+          data,
+        });
+      }
 
       await recomputeProductStockTx(prisma as any, productId);
       return res.status(201).json({ data: toDtoBase(upserted, supplierMeta) });
@@ -477,8 +484,8 @@ router.post(
     }
 
     // Link to base if exists; DO NOT create base automatically
-    const base = await prisma.supplierProductOffer.findUnique({
-      where: { productId }, // unique
+    const base = await prisma.supplierProductOffer.findFirst({
+      where: { productId },
       select: { id: true, currency: true },
     });
 
@@ -757,36 +764,53 @@ router.patch(
           patch.leadDays !== undefined ? (patch.leadDays == null ? null : patch.leadDays) : existing.leadDays ?? null;
 
         const moved = await prisma.$transaction(async (tx) => {
-          const createdBase = await tx.supplierProductOffer.upsert({
+          // 🔧 productId is NOT unique anymore → manual upsert
+          const existingBase = await tx.supplierProductOffer.findFirst({
             where: { productId },
-            create: {
-              productId,
-              basePrice: toDecimal(nextPrice),
-              currency: nextCurrency,
-              availableQty: nextQty,
-              leadDays: nextLeadDays,
-              isActive: nextIsActive,
-              inStock: nextInStock,
-            },
-            update: {
-              basePrice: toDecimal(nextPrice),
-              currency: nextCurrency,
-              availableQty: nextQty,
-              leadDays: nextLeadDays,
-              isActive: nextIsActive,
-              inStock: nextInStock,
-            },
-            select: {
-              id: true,
-              productId: true,
-              basePrice: true,
-              currency: true,
-              availableQty: true,
-              leadDays: true,
-              isActive: true,
-              inStock: true,
-            },
+            select: { id: true },
           });
+
+          const baseData = {
+            productId,
+            basePrice: toDecimal(nextPrice),
+            currency: nextCurrency,
+            availableQty: nextQty,
+            leadDays: nextLeadDays,
+            isActive: nextIsActive,
+            inStock: nextInStock,
+          };
+
+          let createdBase;
+          if (existingBase) {
+            createdBase = await tx.supplierProductOffer.update({
+              where: { id: existingBase.id },
+              data: baseData,
+              select: {
+                id: true,
+                productId: true,
+                basePrice: true,
+                currency: true,
+                availableQty: true,
+                leadDays: true,
+                isActive: true,
+                inStock: true,
+              },
+            });
+          } else {
+            createdBase = await tx.supplierProductOffer.create({
+              data: baseData,
+              select: {
+                id: true,
+                productId: true,
+                basePrice: true,
+                currency: true,
+                availableQty: true,
+                leadDays: true,
+                isActive: true,
+                inStock: true,
+              },
+            });
+          }
 
           await tx.supplierVariantOffer.delete({ where: { id: existing.id } });
           return createdBase;
@@ -834,7 +858,7 @@ router.patch(
       }
 
       // keep link independent unless base exists
-      const base = await prisma.supplierProductOffer.findUnique({
+      const base = await prisma.supplierProductOffer.findFirst({
         where: { productId },
         select: { id: true },
       });
@@ -1045,7 +1069,7 @@ router.post(
         },
       });
 
-      const base = await tx.supplierProductOffer.findUnique({
+      const base = await tx.supplierProductOffer.findFirst({
         where: { productId },
         select: { id: true },
       });
