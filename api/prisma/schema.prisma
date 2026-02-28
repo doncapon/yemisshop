@@ -491,8 +491,8 @@ model Product {
   updatedById String?
 
   // ✅ CHANGE: REQUIRED supplier (one supplier per product)
-  supplierId String
-  supplier   Supplier @relation("ProductSupplier", fields: [supplierId], references: [id])
+  supplierId String?
+  supplier   Supplier? @relation("ProductSupplier", fields: [supplierId], references: [id])
 
   brand     Brand     @relation(fields: [brandId], references: [id])
   category  Category? @relation(fields: [categoryId], references: [id])
