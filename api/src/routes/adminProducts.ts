@@ -1,5 +1,12 @@
 // api/src/routes/adminProducts.ts
-import express, { Router, type Request, type Response, type NextFunction, type RequestHandler } from "express";
+import express, {
+  Router,
+  type Request,
+  type Response,
+  type NextFunction,
+  type RequestHandler,
+} from "express";
+import crypto from "crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { requireAdmin, requireAuth, requireSuperAdmin } from "../middleware/auth.js";
 import { z } from "zod";
@@ -148,17 +155,6 @@ function isValidProductStatus(s: string) {
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
-type OfferInput = {
-  supplierId: string;
-  unitPrice: number | string; // NGN
-  variantId?: string | null;
-  inStock?: boolean;
-  isActive?: boolean;
-  availableQty?: number | string;
-  leadDays?: number | string | null;
-  currency?: string;
-};
-
 type NormalizedVariantOption = {
   attributeId: string;
   valueId: string;
@@ -242,13 +238,58 @@ function buildSkuFromTitle(title: string) {
   return out || `PRODUCT-${Date.now()}`;
 }
 
-async function ensureUniqueProductSku(tx: any, desired: string, excludeProductId?: string) {
+/**
+ * ✅ REQUIRED: SKU must be derived from Supplier + Brand + Title
+ * (Uses IDs to avoid extra DB lookups; stable, collision-resistant via short hash)
+ */
+function makeSkuFromSupplierBrandTitle(input: { supplierId: string; brandId: string; title: string }) {
+  const supplierId = String(input.supplierId || "").trim();
+  const brandId = String(input.brandId || "").trim();
+  const title = String(input.title || "").trim();
+
+  const supplierShort = skuSafePart(supplierId).slice(0, 8) || "SUP";
+  const brandShort = skuSafePart(brandId).slice(0, 8) || "BR";
+  const titleSlug = skuSafePart(title).slice(0, 30) || "ITEM";
+
+  const sig = `${supplierId}|${brandId}|${title.toLowerCase()}`;
+  const hash6 = crypto.createHash("sha1").update(sig).digest("hex").slice(0, 6).toUpperCase();
+
+  const sku = `SUP-${supplierShort}-BR-${brandShort}-${titleSlug}-${hash6}`;
+  return skuSafePart(sku).slice(0, 80) || `PRODUCT-${Date.now()}`;
+}
+
+/**
+ * ✅ Supplier+Brand-aware SKU uniqueness helper.
+ * - If supplierId and brandId are provided and fields exist, enforce uniqueness in that scope.
+ * - If either is missing, it gracefully falls back (best-effort) without crashing.
+ * - If Product has isDeleted, uniqueness is enforced within isDeleted=false slice.
+ */
+async function ensureUniqueProductSku(
+  tx: any,
+  desired: string,
+  opts?: { excludeProductId?: string; brandId?: string | null | undefined; supplierId?: string | null | undefined }
+) {
+  const excludeProductId = opts?.excludeProductId;
+  const brandId = (opts?.brandId ?? null) ? String(opts?.brandId).trim() : null;
+  const supplierId = (opts?.supplierId ?? null) ? String(opts?.supplierId).trim() : null;
+
   let base = skuSafePart(desired);
   if (!base) base = `PRODUCT-${Date.now()}`;
 
   const exists = async (sku: string) => {
     const where: any = { sku };
+
+    // if schema has isDeleted, keep uniqueness in the "active" slice
+    if (hasProductScalarField("isDeleted")) where.isDeleted = false;
+
+    // supplier-aware if provided and schema has supplierId
+    if (supplierId && hasProductScalarField("supplierId")) where.supplierId = supplierId;
+
+    // brand-aware if provided and schema has brandId
+    if (brandId && hasProductScalarField("brandId")) where.brandId = brandId;
+
     if (excludeProductId) where.id = { not: excludeProductId };
+
     const hit = await tx.product.findFirst({ where, select: { id: true } });
     return !!hit;
   };
@@ -263,6 +304,43 @@ async function ensureUniqueProductSku(tx: any, desired: string, excludeProductId
   }
 
   return candidate;
+}
+
+/**
+ * ✅ Friendly duplicate guard for the DB unique constraint.
+ * Works whether your DB is:
+ * - @@unique([brandId, sku, isDeleted])  OR
+ * - @@unique([supplierId, brandId, sku, isDeleted])
+ */
+async function assertNoDuplicateSupplierBrandSkuTx(
+  tx: Tx,
+  args: { supplierId?: string | null; brandId?: string | null; sku?: string | null; excludeProductId?: string }
+) {
+  const sku = String(args.sku ?? "").trim();
+  const brandId = args.brandId != null ? String(args.brandId).trim() : "";
+  const supplierId = args.supplierId != null ? String(args.supplierId).trim() : "";
+
+  if (!sku) return;
+
+  const where: any = {
+    sku,
+    ...(hasProductScalarField("isDeleted") ? { isDeleted: false } : {}),
+    ...(args.excludeProductId ? { id: { not: args.excludeProductId } } : {}),
+  };
+
+  // Only include these if the fields exist and values exist
+  if (brandId && hasProductScalarField("brandId")) where.brandId = brandId;
+  if (supplierId && hasProductScalarField("supplierId")) where.supplierId = supplierId;
+
+  const hit = await (tx as any).product.findFirst({ where, select: { id: true } });
+  if (hit?.id) {
+    const err: any = new Error("A product with this Supplier, Brand and SKU already exists.");
+    err.statusCode = 409;
+    err.code = "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU";
+    err.meta = { existingProductId: String(hit.id), supplierId: supplierId || null, brandId: brandId || null, sku };
+    err.userMessage = "This supplier already has a product for that brand/title combination. Please change title, brand, or supplier.";
+    throw err;
+  }
 }
 
 /* -------------------- Retail price auto-calc (SAFE) -------------------- */
@@ -364,7 +442,8 @@ async function getSupplierLinkedUserId(supplierId: string): Promise<string | nul
   });
 
   const uid =
-    (hasSupplierScalarField("userId") && s?.userId ? String(s.userId) : null) ?? (s?.user?.id ? String(s.user.id) : null);
+    (hasSupplierScalarField("userId") && s?.userId ? String(s.userId) : null) ??
+    (s?.user?.id ? String(s.user.id) : null);
 
   return uid ?? null;
 }
@@ -499,6 +578,26 @@ async function writeAttributesAndVariants(
   const basePrice = base?.retailPrice != null ? Number(base.retailPrice) : 0;
 
   if (variants) {
+    // ✅ Determine which attributeIds are used by variants (variant dimensions)
+    const variantAttrIds = new Set<string>();
+    for (const v of variants) {
+      for (const o of v.options || []) {
+        if (o?.attributeId) variantAttrIds.add(String(o.attributeId));
+      }
+    }
+
+    // ✅ Build base combo key from product-level attributeSelections (SELECT only)
+    const baseComboKey = buildBaseComboKeyFromAttributeSelections({
+      attributeSelections,
+      variantAttributeIds: variantAttrIds,
+    });
+
+    // ✅ Enforce: unique variant combos AND base combo != any variant combo
+    assertUniqueVariantCombosAndNoBaseConflict({
+      variants,
+      baseComboKey,
+    });
+
     const existing = await tx.productVariant.findMany({
       where: { productId },
       select: { id: true },
@@ -599,17 +698,24 @@ const MoneyLike = z.union([z.number(), z.string().trim().regex(/^\d+(\.\d+)?$/)]
 export const CreateProductSchema = z.object({
   title: z.string().trim().min(1),
   description: z.string().trim().min(1),
+
+  // NOTE: sku is accepted but will be overridden by supplier+brand+title policy
   sku: z.string().trim().optional(),
+
   retailPrice: MoneyLike.optional(),
 
   status: z.string().optional(),
   inStock: z.boolean().optional(),
   imagesJson: z.array(z.string()).optional(),
 
-  brandId: z.string().trim().min(1).nullable().optional(),
+  brandId: z.string().trim().min(1), // ✅ required in schema
   categoryId: z.string().trim().min(1).nullable().optional(),
 
-  supplierId: z.string().trim().min(1).nullable().optional(),
+  // ✅ REQUIRED: one supplier per product
+  supplierId: z.string().trim().min(1),
+
+  // ✅ NEW
+  shippingCost: MoneyLike.optional(),
 
   communicationCost: MoneyLike.nullable().optional(),
 
@@ -623,7 +729,7 @@ const NumLikeNullable = z.preprocess((v) => (v === "" ? undefined : v), z.coerce
 
 const emptyToNull = (v: any) => (v === "" ? null : v);
 
-const SupplierIdUpdate = z.preprocess(emptyToNull, z.union([z.string().min(1), z.null()])).optional();
+const SupplierIdUpdate = z.preprocess((v) => (v === "" || v == null ? undefined : v), z.string().min(1)).optional();
 
 const NullableIdUpdate = z.preprocess(emptyToNull, z.string().min(1).nullable()).optional();
 
@@ -636,8 +742,10 @@ const UpdateProductSchema = z
 
     retailPrice: NumLikeOptional,
 
+    // NOTE: sku is accepted but will be overridden by supplier+brand+title policy
     sku: z.string().optional(),
-    status: z.string().optional(), // validated downstream if used
+
+    status: z.string().optional(),
     inStock: z.boolean().optional(),
 
     categoryId: NullableIdUpdate,
@@ -646,6 +754,9 @@ const UpdateProductSchema = z
     imagesJson: z.array(z.string()).optional(),
 
     communicationCost: NumLikeNullable,
+
+    // ✅ NEW
+    shippingCost: NumLikeOptional,
 
     attributeSelections: z.array(z.any()).optional(),
   })
@@ -917,6 +1028,7 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     ...(hasProductScalarField("inStock") ? { inStock: true } : {}),
     ...(hasProductScalarField("imagesJson") ? { imagesJson: true } : {}),
     ...(hasProductScalarField("retailPrice") ? { retailPrice: true } : {}),
+    ...(hasProductScalarField("shippingCost") ? { shippingCost: true } : {}),
     ...(hasProductScalarField("autoPrice") ? { autoPrice: true } : {}),
     ...(hasProductScalarField("priceMode") ? { priceMode: true } : {}),
     ...(hasProductScalarField("categoryId") ? { categoryId: true } : {}),
@@ -992,31 +1104,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     };
   }
 
-  // include supplierOffers (list) - schema-safe (kept)
-  if (
-    includeSet.has("supplierOffers") &&
-    PRODUCT_SUPPLIER_OFFERS_REL &&
-    hasProductRelationField(PRODUCT_SUPPLIER_OFFERS_REL)
-  ) {
-    const offerModelName = String(getProductField(PRODUCT_SUPPLIER_OFFERS_REL)?.type ?? "");
-    const offerSelect: any = { id: true };
-
-    if (offerModelName) {
-      if (hasScalar(offerModelName, "productId")) offerSelect.productId = true;
-      if (hasScalar(offerModelName, "supplierId")) offerSelect.supplierId = true;
-      if (hasScalar(offerModelName, "variantId")) offerSelect.variantId = true;
-      if (hasScalar(offerModelName, "isActive")) offerSelect.isActive = true;
-      if (hasScalar(offerModelName, "inStock")) offerSelect.inStock = true;
-      if (hasScalar(offerModelName, "availableQty")) offerSelect.availableQty = true;
-      if (hasScalar(offerModelName, "offerPrice")) offerSelect.offerPrice = true;
-      if (hasScalar(offerModelName, "unitPrice")) offerSelect.unitPrice = true;
-      if (hasScalar(offerModelName, "basePrice")) offerSelect.basePrice = true;
-      if (hasScalar(offerModelName, "currency")) offerSelect.currency = true;
-    }
-
-    select[PRODUCT_SUPPLIER_OFFERS_REL] = { select: offerSelect };
-  }
-
   const items = await prisma.product.findMany({
     where,
     select,
@@ -1059,7 +1146,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
         } as any,
         select: {
           productId: true,
-          supplierId: true,
           ...(getModelField("SupplierProductOffer", "basePrice") ? { basePrice: true } : {}),
         } as any,
       })
@@ -1084,7 +1170,6 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
         select: {
           variantId: true,
           productId: true,
-          supplierId: true,
           ...(getModelField("SupplierVariantOffer", "unitPrice") ? { unitPrice: true } : {}),
         } as any,
       })
@@ -1158,11 +1243,7 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       const variantsArr = (out?.variants ?? out?.[PRODUCT_VARIANTS_REL as any] ?? []) as any[];
       if (Array.isArray(variantsArr)) {
         const prodRetailFallback =
-          out.retailPrice != null
-            ? Number(out.retailPrice)
-            : out.price != null
-              ? Number(out.price)
-              : null;
+          out.retailPrice != null ? Number(out.retailPrice) : out.price != null ? Number(out.price) : null;
 
         for (const v of variantsArr) {
           const bestUnit = v?.id ? bestUnitByVariantId.get(String(v.id)) ?? null : null;
@@ -1179,12 +1260,7 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
           }
 
           // ✅ fallback if supplier-derived is missing AND stored retail is missing/invalid
-          const curVarRetail =
-            v.retailPrice != null
-              ? Number(v.retailPrice)
-              : v.price != null
-                ? Number(v.price)
-                : null;
+          const curVarRetail = v.retailPrice != null ? Number(v.retailPrice) : v.price != null ? Number(v.price) : null;
 
           const curValid = curVarRetail != null && Number.isFinite(curVarRetail) && curVarRetail > 0;
 
@@ -1200,6 +1276,9 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       const normalizedOffers = normalizeSupplierOffersForApiResponse(out);
       if (normalizedOffers !== undefined) out.supplierOffers = normalizedOffers;
     }
+
+    const productSupplierId = (out as any).supplierId ? String((out as any).supplierId) : null;
+    out.bestSupplierId = productSupplierId;
 
     return out;
   });
@@ -1280,18 +1359,10 @@ async function computeHasLiveEligibleOffer(productId: string): Promise<boolean> 
 }
 
 // ✅ This is the endpoint your frontend calls:
-router.get(
-  "/",
-  requireAdmin,
-  wrap(async (req, res) => listProductsCore(req, res, null))
-);
+router.get("/", requireAdmin, wrap(async (req, res) => listProductsCore(req, res, null)));
 
 // ✅ This is the endpoint AdminDashboard.tsx calls:
-router.get(
-  "/published",
-  requireAdmin,
-  wrap(async (req, res) => listProductsCore(req, res, "PUBLISHED"))
-);
+router.get("/published", requireAdmin, wrap(async (req, res) => listProductsCore(req, res, "PUBLISHED")));
 
 /* --------------------- Status / Approve / Reject --------------------- */
 
@@ -1350,18 +1421,12 @@ router.post(
     if (mustHaveOffer) {
       const ok = await computeHasLiveEligibleOffer(id);
       if (!ok) {
-        return res
-          .status(400)
-          .json({ error: "Cannot go-live: no active in-stock offer with price/qty found." });
+        return res.status(400).json({ error: "Cannot go-live: no active in-stock offer with price/qty found." });
       }
     }
 
     // ✅ FIX: prefer LIVE first; fallback to PUBLISHED only if LIVE isn't in the enum
-    const nextStatus = isValidProductStatus("LIVE")
-      ? "LIVE"
-      : isValidProductStatus("PUBLISHED")
-      ? "PUBLISHED"
-      : null;
+    const nextStatus = isValidProductStatus("LIVE") ? "LIVE" : isValidProductStatus("PUBLISHED") ? "PUBLISHED" : null;
 
     if (!nextStatus) {
       return res.status(400).json({ error: "Schema does not support LIVE/PUBLISHED status" });
@@ -1382,9 +1447,6 @@ router.post(
     });
   })
 );
-
-
-
 
 router.post(
   "/:productId/reject",
@@ -1449,6 +1511,10 @@ const hasProductWritableField = (name: string) => {
   return !!f && (f.kind === "scalar" || f.kind === "enum");
 };
 
+function isPrismaUniqueErr(e: any) {
+  return e && typeof e === "object" && e.code === "P2002";
+}
+
 export const createProductHandler = wrap(async (req, res) => {
   const parsed = CreateProductSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
@@ -1457,131 +1523,151 @@ export const createProductHandler = wrap(async (req, res) => {
 
   const body = parsed.data;
 
-  const supplierId = extractSupplierIdFromBody(req.body) ?? body.supplierId ?? undefined;
+  const supplierId = String(body.supplierId).trim();
+  if (!supplierId) return res.status(400).json({ error: "Supplier is required" });
+
+  const brandIdNorm = body.brandId != null && String(body.brandId).trim() ? String(body.brandId).trim() : null;
+  if (!brandIdNorm) return res.status(400).json({ error: "Brand is required" });
 
   const autoRetail = computeRetailPriceAuto(req.body, body);
-  const nextRetail =
-    body.retailPrice != null ?
-      body.retailPrice
-      : autoRetail !== undefined
-        ? autoRetail
+  const nextRetail = body.retailPrice != null ? body.retailPrice : autoRetail !== undefined ? autoRetail : undefined;
+
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      const adminMode = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
+
+      // ✅ SKU is ALWAYS computed from Supplier + Brand + Title (ignore body.sku)
+      const computedSku = makeSkuFromSupplierBrandTitle({
+        supplierId,
+        brandId: brandIdNorm,
+        title: body.title,
+      });
+
+      const finalSku = await ensureUniqueProductSku(tx, computedSku, { brandId: brandIdNorm, supplierId });
+      await assertNoDuplicateSupplierBrandSkuTx(tx as any, { supplierId, brandId: brandIdNorm, sku: finalSku });
+
+      const data: any = {
+        title: body.title,
+        description: body.description,
+        sku: finalSku,
+        status: body.status ?? "PUBLISHED",
+        inStock: body.inStock ?? true,
+        imagesJson: body.imagesJson ?? [],
+
+        ...(nextRetail !== undefined ? { retailPrice: toDecimal(nextRetail) } : {}),
+        ...(nextRetail !== undefined && adminMode ? { priceMode: adminMode } : {}),
+        ...(body.shippingCost !== undefined ? { shippingCost: toDecimal(body.shippingCost) } : {}),
+        ...(body.communicationCost !== undefined
+          ? { communicationCost: body.communicationCost == null ? null : toDecimal(body.communicationCost) }
+          : {}),
+        ...(body.brandId !== undefined ? { brandId: body.brandId } : {}),
+        ...(body.categoryId !== undefined ? { categoryId: body.categoryId } : {}),
+      };
+
+      if (data.status && !isValidProductStatus(String(data.status).toUpperCase())) {
+        throw new Error("Invalid status for Product enum");
+      }
+
+      if (supplierId) {
+        const supExists = await (tx as any).supplier.findUnique({
+          where: { id: String(supplierId) },
+          select: { id: true },
+        });
+        if (!supExists) throw new Error("Supplier not found");
+
+        if (hasProductScalarField("supplierId")) data.supplierId = String(supplierId);
+
+        const linkedUserId = await getSupplierLinkedUserId(String(supplierId));
+        if (linkedUserId) {
+          if (hasProductScalarField("userId")) data.userId = linkedUserId;
+          if (hasProductScalarField("ownerId")) data.ownerId = linkedUserId;
+        }
+      }
+
+      if (nextRetail !== undefined) {
+        const adminMode2 = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
+        if (adminMode2) data.priceMode = adminMode2;
+        if (hasProductScalarField("autoPrice")) data.autoPrice = null;
+      }
+
+      const product = await (tx as any).product.create({
+        data,
+        select: {
+          id: true,
+          title: true,
+          sku: true,
+          status: true,
+          inStock: true,
+          retailPrice: true,
+          autoPrice: true,
+          priceMode: true,
+          imagesJson: true,
+          categoryId: true,
+          brandId: true,
+          supplierId: true,
+          shippingCost: true,
+          communicationCost: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      // ✅ IMPORTANT: compute the product retail numeric fallback ONCE
+      const productRetailNum =
+        nextRetail !== undefined ? Number(nextRetail) : product.retailPrice != null ? Number(product.retailPrice) : 0;
+
+      // ✅ IMPORTANT: default variant.retailPrice if missing/null/undefined
+      const variantsWithDefaultRetail = Array.isArray((body as any).variants)
+        ? (body as any).variants.map((v: any) => {
+          const raw = v?.retailPrice ?? v?.price;
+          const n = raw == null ? null : Number(raw);
+          const hasValid = n != null && Number.isFinite(n) && n > 0;
+
+          return {
+            ...v,
+            retailPrice: hasValid ? n : productRetailNum,
+          };
+        })
         : undefined;
 
-  const created = await prisma.$transaction(async (tx) => {
-    const adminMode = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
-    const desiredSku = String(body.sku ?? "").trim() ? skuSafePart(body.sku) : buildSkuFromTitle(body.title);
-
-    // ✅ normalize + ensure unique
-    const finalSku = await ensureUniqueProductSku(tx, desiredSku);
-
-    const data: any = {
-      title: body.title,
-      description: body.description,
-      sku: finalSku,
-      status: body.status ?? "PUBLISHED",
-      inStock: body.inStock ?? true,
-      imagesJson: body.imagesJson ?? [],
-
-      ...(nextRetail !== undefined ? { retailPrice: toDecimal(nextRetail) } : {}),
-      ...(nextRetail !== undefined && adminMode ? { priceMode: adminMode } : {}),
-
-      ...(body.communicationCost !== undefined
-        ? { communicationCost: body.communicationCost == null ? null : toDecimal(body.communicationCost) }
-        : {}),
-      ...(body.brandId !== undefined ? { brandId: body.brandId } : {}),
-      ...(body.categoryId !== undefined ? { categoryId: body.categoryId } : {}),
-    };
-
-    if (data.status && !isValidProductStatus(String(data.status).toUpperCase())) {
-      throw new Error("Invalid status for Product enum");
-    }
-
-    if (supplierId) {
-      const supExists = await (tx as any).supplier.findUnique({
-        where: { id: String(supplierId) },
-        select: { id: true },
-      });
-      if (!supExists) throw new Error("Supplier not found");
-
-      if (hasProductScalarField("supplierId")) data.supplierId = String(supplierId);
-
-      const linkedUserId = await getSupplierLinkedUserId(String(supplierId));
-      if (linkedUserId) {
-        if (hasProductScalarField("userId")) data.userId = linkedUserId;
-        if (hasProductScalarField("ownerId")) data.ownerId = linkedUserId;
+      if (Array.isArray(body.attributeSelections) && body.attributeSelections.length) {
+        // ✅ PASS variants into writer AND ensure missing retailPrice is defaulted
+        await writeAttributesAndVariants(
+          tx as any,
+          String(product.id),
+          body.attributeSelections as any,
+          variantsWithDefaultRetail
+        );
       }
-    }
 
-    if (nextRetail !== undefined) {
-      const adminMode2 = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
-      if (adminMode2) data.priceMode = adminMode2;
-      if (hasProductScalarField("autoPrice")) data.autoPrice = null;
-    }
-
-    const product = await (tx as any).product.create({
-      data,
-      select: {
-        id: true,
-        title: true,
-        sku: true,
-        status: true,
-        inStock: true,
-        retailPrice: true,
-        autoPrice: true,
-        priceMode: true,
-        imagesJson: true,
-        categoryId: true,
-        brandId: true,
-        supplierId: true,
-        communicationCost: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+      return product;
     });
 
-    // ✅ IMPORTANT: compute the product retail numeric fallback ONCE
-    const productRetailNum =
-      nextRetail !== undefined
-        ? Number(nextRetail)
-        : product.retailPrice != null
-          ? Number(product.retailPrice)
-          : 0;
-
-    // ✅ IMPORTANT: default variant.retailPrice if missing/null/undefined
-    const variantsWithDefaultRetail = Array.isArray((body as any).variants)
-      ? (body as any).variants.map((v: any) => {
-        const raw = v?.retailPrice ?? v?.price;
-        const n = raw == null ? null : Number(raw);
-        const hasValid = n != null && Number.isFinite(n) && n > 0;
-
-        return {
-          ...v,
-          retailPrice: hasValid ? n : productRetailNum,
-        };
-      })
-      : undefined;
-
-    if (Array.isArray(body.attributeSelections) && body.attributeSelections.length) {
-      // ✅ PASS variants into writer AND ensure missing retailPrice is defaulted
-      await writeAttributesAndVariants(
-        tx as any,
-        String(product.id),
-        body.attributeSelections as any,
-        variantsWithDefaultRetail
-      );
+    return res.json({
+      data: {
+        ...created,
+        retailPrice: created.retailPrice != null ? Number(created.retailPrice) : null,
+        autoPrice: created.autoPrice != null ? Number(created.autoPrice) : null,
+        communicationCost: (created as any).communicationCost != null ? Number((created as any).communicationCost) : null,
+      },
+    });
+  } catch (e: any) {
+    if (isPrismaUniqueErr(e) || e?.code === "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU") {
+      return res.status(409).json({
+        error: "A product with this Supplier, Brand and SKU already exists.",
+        code: "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU",
+        userMessage: "This supplier already has a product for that brand/title combination. Please change title, brand, or supplier.",
+        meta: (e as any)?.meta ?? undefined,
+      });
     }
-
-    return product;
-  });
-
-  return res.json({
-    data: {
-      ...created,
-      retailPrice: created.retailPrice != null ? Number(created.retailPrice) : null,
-      autoPrice: created.autoPrice != null ? Number(created.autoPrice) : null,
-      communicationCost: (created as any).communicationCost != null ? Number((created as any).communicationCost) : null,
-    },
-  });
+    const status = Number(e?.statusCode) || 500;
+    return res.status(status).json({
+      error: e?.message || "Internal Server Error",
+      code: e?.code,
+      userMessage: e?.userMessage,
+      meta: e?.meta,
+    });
+  }
 });
 
 router.post("/", createProductHandler);
@@ -1598,117 +1684,201 @@ export const updateProductHandler = wrap(async (req, res) => {
   const body = parsed.data;
 
   const supplierIdFromBody = extractSupplierIdFromBody(req.body);
-  const supplierId = supplierIdFromBody !== undefined ? supplierIdFromBody : body.supplierId;
+  const supplierIdIncoming = supplierIdFromBody !== undefined ? supplierIdFromBody : body.supplierId;
 
   const autoRetail = computeRetailPriceAuto(req.body, body);
   const nextRetail =
-    body.price != null ? body.price : body.retailPrice != null ? body.retailPrice : autoRetail !== undefined ? autoRetail : undefined;
+    (body as any).price != null
+      ? (body as any).price
+      : body.retailPrice != null
+        ? body.retailPrice
+        : autoRetail !== undefined
+          ? autoRetail
+          : undefined;
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const data: any = {
-      ...(body.title !== undefined ? { title: body.title } : {}),
-      ...(body.description !== undefined ? { description: body.description } : {}),
-      ...(nextRetail !== undefined ? { retailPrice: toDecimal(nextRetail) } : {}),
-      ...(body.sku !== undefined
-        ? String(body.sku ?? "").trim()
-          ? { sku: skuSafePart(body.sku) }
-          : {}
-        : {}),
-      ...(body.status !== undefined ? { status: String(body.status).trim().toUpperCase() } : {}),
-      ...(body.inStock !== undefined ? { inStock: body.inStock } : {}),
-      ...(body.imagesJson !== undefined ? { imagesJson: body.imagesJson } : {}),
-      ...(body.communicationCost !== undefined
-        ? { communicationCost: body.communicationCost == null ? null : toDecimal(body.communicationCost) }
-        : {}),
-      ...(body.categoryId !== undefined ? { categoryId: body.categoryId } : {}),
-      ...(body.brandId !== undefined ? { brandId: body.brandId } : {}),
-    };
-
-    if (nextRetail !== undefined) {
-      const adminMode = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
-      if (adminMode) data.priceMode = adminMode;
-      if (hasProductWritableField("autoPrice")) data.autoPrice = null;
-    }
-
-    if (data.status !== undefined && !isValidProductStatus(String(data.status))) {
-      throw new Error("Invalid status for Product enum");
-    }
-
-    if (supplierId === null) {
-      if (hasProductScalarField("supplierId")) data.supplierId = null;
-    } else if (supplierId) {
-      const supExists = await (tx as any).supplier.findUnique({
-        where: { id: String(supplierId) },
-        select: { id: true },
-      });
-      if (!supExists) throw new Error("Supplier not found");
-
-      if (hasProductScalarField("supplierId")) data.supplierId = String(supplierId);
-
-      const linkedUserId = await getSupplierLinkedUserId(String(supplierId));
-      if (linkedUserId) {
-        if (hasProductScalarField("userId")) data.userId = linkedUserId;
-        if (hasProductScalarField("ownerId")) data.ownerId = linkedUserId;
-      }
-    }
-
-    // generate SKU if missing and title updated
-    if (body.title !== undefined) {
-      const current = await tx.product.findUnique({
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      // ✅ read current row first (needed for supplier+brand+title sku)
+      const current = await (tx as any).product.findUnique({
         where: { id },
-        select: { sku: true, title: true },
+        select: {
+          id: true,
+          sku: true,
+          title: true,
+          ...(hasProductScalarField("brandId") ? { brandId: true } : {}),
+          ...(hasProductScalarField("supplierId") ? { supplierId: true } : {}),
+          ...(hasProductScalarField("isDeleted") ? { isDeleted: true } : {}),
+        },
       });
 
-      const currentSku = String(current?.sku ?? "").trim();
-      if (!currentSku) {
-        const gen = buildSkuFromTitle(String(body.title ?? current?.title ?? ""));
-        const unique = await ensureUniqueProductSku(tx, gen, id);
-        data.sku = unique;
+      if (!current) {
+        const err: any = new Error("Product not found");
+        err.statusCode = 404;
+        throw err;
       }
-    }
 
-    const product = await (tx as any).product.update({
-      where: { id },
-      data,
-      select: {
-        id: true,
-        title: true,
-        status: true,
-        sku: true,
-        inStock: true,
-        retailPrice: true,
-        autoPrice: true,
-        priceMode: true,
-        imagesJson: true,
-        categoryId: true,
-        brandId: true,
-        supplierId: true,
-        communicationCost: true,
-        updatedAt: true,
-      },
+      const nextBrandId =
+        body.brandId !== undefined
+          ? body.brandId == null
+            ? null
+            : String(body.brandId).trim()
+          : (current as any).brandId ?? null;
+
+      const nextSupplierId =
+        supplierIdIncoming !== undefined
+          ? String(supplierIdIncoming || "").trim()
+          : (current as any).supplierId
+            ? String((current as any).supplierId).trim()
+            : "";
+
+      // brandId is required in your schema; enforce at API boundary on update too
+      if (!nextBrandId) {
+        const err: any = new Error("brandId is required");
+        err.statusCode = 400;
+        err.code = "BRAND_REQUIRED";
+        throw err;
+      }
+      if (!nextSupplierId) {
+        const err: any = new Error("supplierId is required");
+        err.statusCode = 400;
+        err.code = "SUPPLIER_REQUIRED";
+        throw err;
+      }
+
+      const data: any = {
+        ...(body.title !== undefined ? { title: body.title } : {}),
+        ...(body.description !== undefined ? { description: body.description } : {}),
+        ...(nextRetail !== undefined ? { retailPrice: toDecimal(nextRetail) } : {}),
+        ...(body.shippingCost !== undefined ? { shippingCost: toDecimal(body.shippingCost) } : {}),
+        ...(body.status !== undefined ? { status: String(body.status).trim().toUpperCase() } : {}),
+        ...(body.inStock !== undefined ? { inStock: body.inStock } : {}),
+        ...(body.imagesJson !== undefined ? { imagesJson: body.imagesJson } : {}),
+        ...(body.communicationCost !== undefined
+          ? { communicationCost: body.communicationCost == null ? null : toDecimal(body.communicationCost) }
+          : {}),
+        ...(body.categoryId !== undefined ? { categoryId: body.categoryId } : {}),
+        ...(body.brandId !== undefined ? { brandId: body.brandId } : {}),
+      };
+
+      if (nextRetail !== undefined) {
+        const adminMode = hasProductWritableField("priceMode") ? pickAdminPriceModeValue() : null;
+        if (adminMode) data.priceMode = adminMode;
+        if (hasProductWritableField("autoPrice")) data.autoPrice = null;
+      }
+
+      if (data.status !== undefined && !isValidProductStatus(String(data.status))) {
+        throw new Error("Invalid status for Product enum");
+      }
+
+      if (nextSupplierId) {
+        const supExists = await (tx as any).supplier.findUnique({
+          where: { id: String(nextSupplierId) },
+          select: { id: true },
+        });
+        if (!supExists) throw new Error("Supplier not found");
+
+        if (hasProductScalarField("supplierId")) data.supplierId = String(nextSupplierId);
+
+        const linkedUserId = await getSupplierLinkedUserId(String(nextSupplierId));
+        if (linkedUserId) {
+          if (hasProductScalarField("userId")) data.userId = linkedUserId;
+          if (hasProductScalarField("ownerId")) data.ownerId = linkedUserId;
+        }
+      }
+
+      // ✅ SKU policy: ALWAYS recompute from supplier+brand+title when any of these change,
+      // and ALSO if caller attempts to send `sku` (we override it).
+      const nextTitle =
+        body.title !== undefined ? String(body.title ?? "").trim() : String((current as any).title ?? "").trim();
+
+      const mustRecomputeSku =
+        body.title !== undefined || body.brandId !== undefined || supplierIdIncoming !== undefined || body.sku !== undefined;
+
+      if (mustRecomputeSku) {
+        const computed = makeSkuFromSupplierBrandTitle({
+          supplierId: nextSupplierId,
+          brandId: nextBrandId,
+          title: nextTitle,
+        });
+
+        const unique = await ensureUniqueProductSku(tx, computed, {
+          excludeProductId: id,
+          brandId: nextBrandId,
+          supplierId: nextSupplierId,
+        });
+
+        data.sku = unique;
+
+        await assertNoDuplicateSupplierBrandSkuTx(tx as any, {
+          supplierId: nextSupplierId,
+          brandId: nextBrandId,
+          sku: unique,
+          excludeProductId: id,
+        });
+      }
+
+      const product = await (tx as any).product.update({
+        where: { id },
+        data,
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          sku: true,
+          inStock: true,
+          retailPrice: true,
+          autoPrice: true,
+          priceMode: true,
+          imagesJson: true,
+          categoryId: true,
+          brandId: true,
+          shippingCost: true,
+          supplierId: true,
+          communicationCost: true,
+          updatedAt: true,
+        },
+      });
+
+      if (Array.isArray(body.attributeSelections)) {
+        await writeAttributesAndVariants(tx as any, String(product.id), body.attributeSelections as any, undefined);
+      }
+
+      return product;
     });
 
-    if (Array.isArray(body.attributeSelections)) {
-      await writeAttributesAndVariants(tx as any, String(product.id), body.attributeSelections as any, undefined);
+    return res.json({
+      data: {
+        ...updated,
+        retailPrice: updated.retailPrice != null ? Number(updated.retailPrice) : null,
+        shippingCost: updated.shippingCost != null ? Number(updated.shippingCost) : 0,
+        autoPrice: updated.autoPrice != null ? Number(updated.autoPrice) : null,
+        communicationCost: (updated as any).communicationCost != null ? Number((updated as any).communicationCost) : null,
+      },
+    });
+  } catch (e: any) {
+    if (isPrismaUniqueErr(e) || e?.code === "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU") {
+      return res.status(409).json({
+        error: "A product with this Supplier, Brand and SKU already exists.",
+        code: "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU",
+        userMessage: "This supplier already has a product for that brand/title combination. Please change title, brand, or supplier.",
+        meta: (e as any)?.meta ?? undefined,
+      });
     }
-
-    return product;
-  });
-
-  return res.json({
-    data: {
-      ...updated,
-      retailPrice: updated.retailPrice != null ? Number(updated.retailPrice) : null,
-      autoPrice: updated.autoPrice != null ? Number(updated.autoPrice) : null,
-      communicationCost: (updated as any).communicationCost != null ? Number((updated as any).communicationCost) : null,
-    },
-  });
+    const status = Number(e?.statusCode) || 500;
+    return res.status(status).json({
+      error: e?.message || "Internal Server Error",
+      code: e?.code,
+      userMessage: e?.userMessage,
+      meta: e?.meta,
+    });
+  }
 });
 
 router.put("/:id", updateProductHandler);
 router.patch("/:id", updateProductHandler);
 
 /* --------------------- Variants bulk (NO BUMPS) --------------------- */
+/* (UNCHANGED BELOW — your variants bulk endpoint and remaining routes stay the same) */
 
 function normalizeNullableId(raw: any): string | null {
   if (raw == null) return null;
@@ -1737,6 +1907,77 @@ function pickAttrId(o: any): string | null {
 
 function pickValueId(o: any): string | null {
   return normalizeNullableId(o?.valueId ?? o?.attributeValueId ?? o?.value?.id ?? o?.attributeValue?.id);
+}
+
+function comboKeyFromOptions(opts: Array<{ attributeId: string; valueId: string }>) {
+  return (opts || [])
+    .filter((o) => o?.attributeId && o?.valueId)
+    .map((o) => `${String(o.attributeId)}::${String(o.valueId)}`)
+    .sort()
+    .join("||");
+}
+
+/**
+ * "Base combo" = product-level SELECT attributeSelections (single valueId per attributeId)
+ * but only for attributeIds that appear in variant options (variant dimensions).
+ */
+function buildBaseComboKeyFromAttributeSelections(args: {
+  attributeSelections?: Array<{ attributeId: string; valueId?: string; valueIds?: string[]; text?: string }>;
+  variantAttributeIds: Set<string>;
+}) {
+  const { attributeSelections, variantAttributeIds } = args;
+
+  if (!attributeSelections?.length) return "";
+
+  const basePairs: Array<{ attributeId: string; valueId: string }> = [];
+
+  for (const sel of attributeSelections) {
+    const aid = String(sel?.attributeId ?? "").trim();
+    if (!aid) continue;
+
+    // Only consider SELECT-like selections (single valueId)
+    const vid = sel?.valueId != null ? String(sel.valueId).trim() : "";
+    if (!vid) continue;
+
+    // Only compare base-vs-variant on attributes that are used by variants
+    if (!variantAttributeIds.has(aid)) continue;
+
+    basePairs.push({ attributeId: aid, valueId: vid });
+  }
+
+  return comboKeyFromOptions(basePairs);
+}
+
+function assertUniqueVariantCombosAndNoBaseConflict(args: {
+  variants?: Array<{ options: Array<{ attributeId: string; valueId: string }> }>;
+  baseComboKey: string;
+}) {
+  const { variants, baseComboKey } = args;
+
+  const seen = new Set<string>();
+
+  for (const v of variants || []) {
+    const k = comboKeyFromOptions(v?.options || []);
+    if (!k) continue;
+
+    // ✅ variant-vs-base
+    if (baseComboKey && k === baseComboKey) {
+      const err: any = new Error("Variant combo cannot match the base combo.");
+      err.statusCode = 409;
+      err.code = "DUPLICATE_BASE_VARIANT_COMBO";
+      throw err;
+    }
+
+    // ✅ variant-vs-variant
+    if (seen.has(k)) {
+      const err: any = new Error("Duplicate variant combination. Each variant combo must be unique.");
+      err.statusCode = 409;
+      err.code = "DUPLICATE_VARIANT_COMBO";
+      throw err;
+    }
+
+    seen.add(k);
+  }
 }
 
 function normalizeVariantsPayloadForDb(variantsRaw: any[]) {
@@ -1845,6 +2086,50 @@ router.post(
       });
       const baseRetail = baseProduct?.retailPrice != null ? Number(baseProduct.retailPrice) : 0;
 
+      // ✅ Build base combo key from DB productAttributeOption (SELECT attributes)
+      // Only for attributeIds that appear in incoming variants
+      const incomingVariantAttrIds = new Set<string>();
+      for (const v of variants as any[]) {
+        for (const o of (v?.options || [])) {
+          if (o?.attributeId) incomingVariantAttrIds.add(String(o.attributeId));
+        }
+      }
+
+      let baseComboKey = "";
+      if (incomingVariantAttrIds.size) {
+        const baseOpts = await tx.productAttributeOption.findMany({
+          where: { productId, attributeId: { in: Array.from(incomingVariantAttrIds) } },
+          select: { attributeId: true, valueId: true },
+        });
+
+        baseComboKey = comboKey(
+          baseOpts.map((o: any) => ({ attributeId: String(o.attributeId), valueId: String(o.valueId) }))
+        );
+      }
+
+      // ✅ Validate incoming: (1) no duplicate variant combos, (2) no variant combo equals base combo
+      const seenIncoming = new Set<string>();
+      for (const v of variants as any[]) {
+        const k = comboKey(v?.options || []);
+        if (!k) continue;
+
+        if (baseComboKey && k === baseComboKey) {
+          const err: any = new Error("Variant combo cannot match the base combo.");
+          err.statusCode = 409;
+          err.code = "DUPLICATE_BASE_VARIANT_COMBO";
+          throw err;
+        }
+
+        if (seenIncoming.has(k)) {
+          const err: any = new Error("Duplicate variant combination in request. Each variant combo must be unique.");
+          err.statusCode = 409;
+          err.code = "DUPLICATE_VARIANT_COMBO";
+          throw err;
+        }
+
+        seenIncoming.add(k);
+      }
+
       const existingByCombo = new Map<string, string>();
       for (const ev of existing || []) {
         const opts = (optionsRel && (ev as any)?.[optionsRel]) || [];
@@ -1915,6 +2200,8 @@ router.post(
         const created = await tx.productVariant.create({ data });
         keptIds.add(String(created.id));
 
+        if (k) existingByCombo.set(k, String(created.id));
+
         if (Array.isArray(v.options) && v.options.length) {
           await tx.productVariantOption.createMany({
             data: v.options.map((o: any) => {
@@ -1982,40 +2269,6 @@ router.post(
   })
 );
 
-/* -------------------------------------------------------------------------- */
-/* Go-live / Publish helper                                                    */
-/* -------------------------------------------------------------------------- */
-
-router.post(
-  "/:id/go-live",
-  requireSuperAdmin,
-  wrap(async (req, res) => {
-    const id = requiredString(req.params.id);
-
-    const mustHaveOffer = String((req.query as any)?.requireOffer ?? "1") !== "0";
-    if (mustHaveOffer) {
-      const ok = await computeHasLiveEligibleOffer(id);
-      if (!ok) return res.status(400).json({ error: "Cannot go-live: no active in-stock offer with price/qty found." });
-    }
-
-    const nextStatus = isValidProductStatus("PUBLISHED") ? "PUBLISHED" : isValidProductStatus("LIVE") ? "LIVE" : null;
-    if (!nextStatus) return res.status(400).json({ error: "Schema does not support PUBLISHED/LIVE status" });
-
-    const updated = await prisma.product.update({
-      where: { id },
-      data: { status: nextStatus } as any,
-      select: { id: true, status: true, retailPrice: true, autoPrice: true, priceMode: true, title: true },
-    });
-
-    return res.json({
-      data: {
-        ...updated,
-        autoPrice: updated.autoPrice != null ? Number(updated.autoPrice) : null,
-        retailPrice: computeDisplayPrice(updated),
-      },
-    });
-  })
-);
 
 /* -------------------------------------------------------------------------- */
 /* Delete product                                                              */
@@ -2130,6 +2383,7 @@ router.get(
       ...(hasProductScalarField("description") ? { description: true } : {}),
       ...(hasProductScalarField("status") ? { status: true } : {}),
       ...(hasProductScalarField("inStock") ? { inStock: true } : {}),
+      ...(hasProductScalarField("shippingCost") ? { shippingCost: true } : {}),
       ...(hasProductScalarField("imagesJson") ? { imagesJson: true } : {}),
       ...(hasProductScalarField("retailPrice") ? { retailPrice: true } : {}),
       ...(hasProductScalarField("autoPrice") ? { autoPrice: true } : {}),
@@ -2237,6 +2491,7 @@ router.get(
     const out: any = {
       ...product,
       attributes,
+      shippingCost: (product as any).shippingCost != null ? Number((product as any).shippingCost) : 0,
       autoPrice: (product as any).autoPrice != null ? Number((product as any).autoPrice) : null,
       communicationCost: (product as any).communicationCost != null ? Number((product as any).communicationCost) : null,
       retailPrice: computeDisplayPrice(product),
@@ -2272,18 +2527,16 @@ router.get(
             ? { basePrice: decimalGtZeroFilter("SupplierProductOffer", "basePrice") }
             : {}),
         } as any,
-        select: { basePrice: true, supplierId: true },
+        select: { basePrice: true },
       });
 
       let bestSupplierBasePrice: number | null = null;
-      let bestSupplierBaseSupplierId: string | null = null;
 
       for (const o of baseOffers as any[]) {
         const n = Number((o as any).basePrice);
         if (!Number.isFinite(n)) continue;
         if (bestSupplierBasePrice == null || n < bestSupplierBasePrice) {
           bestSupplierBasePrice = n;
-          bestSupplierBaseSupplierId = String((o as any).supplierId);
         }
       }
 
@@ -2299,11 +2552,11 @@ router.get(
               ? { unitPrice: decimalGtZeroFilter("SupplierVariantOffer", "unitPrice") }
               : {}),
           } as any,
-          select: { variantId: true, unitPrice: true, supplierId: true },
+          select: { variantId: true, unitPrice: true },
         })
         : [];
 
-      const bestUnitByVariantId = new Map<string, { unit: number; supplierId: string }>();
+      const bestUnitByVariantId = new Map<string, number>();
 
       for (const o of variantOffers as any[]) {
         const vid = String((o as any).variantId);
@@ -2311,14 +2564,14 @@ router.get(
         if (!Number.isFinite(n)) continue;
 
         const cur = bestUnitByVariantId.get(vid);
-        if (!cur || n < cur.unit) {
-          bestUnitByVariantId.set(vid, { unit: n, supplierId: String((o as any).supplierId) });
+        if (cur == null || n < cur) {
+          bestUnitByVariantId.set(vid, n);
         }
       }
 
-      // cheapest variant unit across all combos
+      // cheapest variant unit across all variants
       let cheapestVariantUnitPrice: number | null = null;
-      for (const { unit } of bestUnitByVariantId.values()) {
+      for (const unit of bestUnitByVariantId.values()) {
         if (cheapestVariantUnitPrice == null || unit < cheapestVariantUnitPrice) {
           cheapestVariantUnitPrice = unit;
         }
@@ -2329,7 +2582,6 @@ router.get(
 
       // attach to product
       out.bestSupplierBasePrice = bestSupplierBasePrice;
-      out.bestSupplierBaseSupplierId = bestSupplierBaseSupplierId;
       out.bestSupplierBaseRetail = baseRetailFromSupplier;
       out.cheapestVariantUnitPrice = cheapestVariantUnitPrice;
       out.cheapestVariantRetailPrice = cheapestVariantRetailPrice;
@@ -2344,16 +2596,12 @@ router.get(
       const attachTo = (arr: any[]) => {
         for (const v of arr) {
           const vid = v?.id ? String(v.id) : "";
-          const best = vid ? bestUnitByVariantId.get(vid) ?? null : null;
+          const bestUnit = vid ? bestUnitByVariantId.get(vid) ?? null : null;
 
-          const unit = best?.unit ?? null;
-          const supplierId = best?.supplierId ?? null;
-
-          const effectiveUnit = unit ?? bestSupplierBasePrice ?? null;
+          const effectiveUnit = bestUnit ?? bestSupplierBasePrice ?? null;
           const variantRetail = applySupplierMarkup(effectiveUnit);
 
           v.bestSupplierUnitPrice = effectiveUnit;
-          v.bestSupplierUnitSupplierId = supplierId ?? (bestSupplierBaseSupplierId ?? null);
 
           if (variantRetail != null) {
             v.retailPrice = variantRetail;

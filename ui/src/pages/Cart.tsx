@@ -614,7 +614,7 @@ export default function Cart() {
       }
 
       if (isAuthed) {
-        loadCart().catch(() => {});
+        loadCart().catch(() => { });
         return;
       }
 
@@ -752,20 +752,57 @@ export default function Cart() {
     }, 0);
   };
 
-  const computedCapForLine = (_item: CartItem): number | undefined => {
-    // same logic as your earlier version; leaving as “no cap” if no availability payload
+  const computedCapForLine = (item: CartItem): number | undefined => {
     const data = availabilityQ.data as AvailabilityPayload | undefined;
     if (!data) return undefined;
-    return undefined;
+
+    const exactKey = availKeyFor(item.productId, item.variantId ?? null);
+    const exactLine = data.lines?.[exactKey];
+
+    // 1) Exact line availability wins (best for one-supplier-per-product setup)
+    if (exactLine && Number.isFinite(Number(exactLine.totalAvailable))) {
+      return Math.max(0, Math.floor(Number(exactLine.totalAvailable) || 0));
+    }
+
+    // 2) Fallback to product pool if exact line is missing
+    const pool = data.products?.[String(item.productId)];
+    if (!pool) return undefined;
+
+    // Variant line → prefer variant-specific pool
+    if (item.variantId) {
+      const vCap = Number(pool.perVariantTotals?.[String(item.variantId)] ?? NaN);
+      if (Number.isFinite(vCap)) return Math.max(0, Math.floor(vCap));
+
+      // if no explicit variant pool exists, fallback to generic pool
+      if (Number.isFinite(Number(pool.genericTotal))) {
+        return Math.max(0, Math.floor(Number(pool.genericTotal) || 0));
+      }
+
+      return undefined;
+    }
+
+    // Base line (non-variant)
+    // If product has variant-specific offers only, use genericTotal for base line.
+    // If not, productTotal is the best fallback.
+    if (pool.hasVariantSpecific) {
+      return Math.max(0, Math.floor(Number(pool.genericTotal) || 0));
+    }
+
+    return Math.max(0, Math.floor(Number(pool.productTotal) || 0));
   };
 
   const clampToMax = (item: CartItem, wantQty: number) => {
-    const data = availabilityQ.data as AvailabilityPayload | undefined;
     const desired = Math.max(1, Math.floor(Number(wantQty) || 1));
-    if (!data) return desired;
+    const cap = computedCapForLine(item);
 
-    // keep your existing cap logic if you want; default: allow desired
-    return desired;
+    // no availability known → allow desired
+    if (cap == null || !Number.isFinite(cap)) return desired;
+
+    // If cap is 0, keep qty input at 1 (user can remove via Remove button)
+    if (cap <= 0) return 1;
+
+    // Snap back to max when user enters above it
+    return Math.min(desired, cap);
   };
 
   // ✅ helper: write current guest cart state to cartModel storage
@@ -820,7 +857,7 @@ export default function Cart() {
           await serverSetQty(target, clamped);
           await loadCart();
         } catch {
-          await loadCart().catch(() => {});
+          await loadCart().catch(() => { });
         }
       } else {
         // ✅ persist guest immediately (no race)
@@ -846,7 +883,7 @@ export default function Cart() {
           await serverSetQty(target, 0);
           await loadCart();
         } catch {
-          await loadCart().catch(() => {});
+          await loadCart().catch(() => { });
         }
       } else {
         // ✅ persist guest immediately (so last item removal works)
@@ -936,13 +973,13 @@ export default function Cart() {
                 const rl = quoteRetail?.linesRetail?.[k];
 
                 const currentQty = Math.max(1, Number(it.qty) || 1);
-
+                const maxQty = computedCapForLine(it);
                 const fallbackUnit =
                   asMoney(it.unitPrice, 0) > 0
                     ? asMoney(it.unitPrice, 0)
                     : currentQty > 0
-                    ? asMoney(it.totalPrice, 0) / currentQty
-                    : 0;
+                      ? asMoney(it.totalPrice, 0) / currentQty
+                      : 0;
 
                 const hasQuote = !!ql && (ql.lineTotal > 0 || ql.allocations.length > 0);
                 const hasRetailLine = !!rl && rl.retailLineTotal > 0;
@@ -950,8 +987,8 @@ export default function Cart() {
                 const lineTotal = hasRetailLine
                   ? rl.retailLineTotal
                   : hasQuote
-                  ? applyMargin(asMoney(ql.lineTotal, 0), marginPercent)
-                  : asMoney(it.totalPrice, 0);
+                    ? applyMargin(asMoney(ql.lineTotal, 0), marginPercent)
+                    : asMoney(it.totalPrice, 0);
 
                 const unitText = (() => {
                   if (!hasRetailLine) return fallbackUnit > 0 ? ngn.format(fallbackUnit) : "Pending";
@@ -964,16 +1001,16 @@ export default function Cart() {
                   hasQuote && ql.allocations.filter((a) => a.qty > 0).length > 1
                     ? "Split across suppliers"
                     : hasQuote && ql.allocations.length === 1
-                    ? "Single supplier"
-                    : "";
+                      ? "Single supplier"
+                      : "";
 
                 const kindLabel = isBaseLine(it)
                   ? "Base"
                   : it.variantId
-                  ? "Variant"
-                  : it.selectedOptions?.length
-                  ? "Configured"
-                  : "Item";
+                    ? "Variant"
+                    : it.selectedOptions?.length
+                      ? "Configured"
+                      : "Item";
 
                 const isExpanded = !!expanded[k];
 
@@ -1154,8 +1191,14 @@ export default function Cart() {
                               </button>
                             </div>
 
-                            <span className="text-xs max-[360px]:text-[11px] text-ink-soft">Qty</span>
-                          </div>
+                            <div className="text-xs max-[360px]:text-[11px] text-ink-soft leading-tight">
+                              <div>Qty</div>
+                              {typeof maxQty === "number" && Number.isFinite(maxQty) && (
+                                <div className="text-[10px]">
+                                  Max: <span className="font-medium text-ink">{Math.max(0, maxQty)}</span>
+                                </div>
+                              )}
+                            </div>                          </div>
 
                           <div className="sm:ml-auto rounded-xl border bg-white/70 px-3 py-2 text-right min-w-[140px] max-[360px]:min-w-[0]">
                             <div className="text-[11px] text-ink-soft">Line total</div>

@@ -7,6 +7,7 @@ const prisma = new PrismaClient();
 /* ----------------------------------------------------------------------------
   Config (env)
 ---------------------------------------------------------------------------- */
+
 const SUPER_EMAIL = process.env.SUPERADMIN_EMAIL || "superadmin@example.com";
 const SUPER_PASS = process.env.SUPERADMIN_PASSWORD || "SuperAdmin123!";
 const SUPER_FIRST = process.env.SUPERADMIN_FIRSTNAME || "Super";
@@ -17,18 +18,25 @@ const SUPPLIER_PASS = process.env.SEED_SUPPLIER_PASSWORD || "Supplier123!";
 const SUPPLIER_FIRST = process.env.SEED_SUPPLIER_FIRSTNAME || "Seed";
 const SUPPLIER_LAST = process.env.SEED_SUPPLIER_LASTNAME || "Supplier";
 
-const PRODUCT_COUNT = 5;
-const BASE_ONLY_COUNT = 3; // 3 base-only, 2 variant
+/** ✅ requirements */
+const LIVE_PRODUCTS_TOTAL = 30;
+const PENDING_PRODUCTS_TOTAL = 3;
 
-// offers
-const MIN_OFFERS_PER_PRODUCT = 3;
-const MAX_OFFERS_PER_PRODUCT = 5;
+// Variant mix
+const LIVE_VARIANT_FRACTION = 0.35;
+const PENDING_VARIANT_FRACTION = 0.34;
 
+// Inventory
 const MIN_AVAILABLE = 10;
 const MAX_AVAILABLE = 40;
 
+// Brands per "base product title"
+const MIN_BRANDS_PER_BASE = 2;
+const MAX_BRANDS_PER_BASE = 4;
+
 const log = (...a: any[]) => console.log("[seed]", ...a);
 const randInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+const chance = (p: number) => Math.random() < p;
 
 function pics(seed: string | number) {
   return [
@@ -41,10 +49,54 @@ function toDec(n: number) {
   return new Prisma.Decimal(Math.round(n * 100) / 100);
 }
 
+function toDec1(n: number) {
+  return new Prisma.Decimal(Math.round(n * 10) / 10);
+}
+
+function toDec2(n: number) {
+  return new Prisma.Decimal(Math.round(n * 100) / 100);
+}
+
 function pick<T>(arr: T[], n: number) {
   const copy = [...arr];
   copy.sort(() => Math.random() - 0.5);
   return copy.slice(0, Math.max(0, Math.min(n, copy.length)));
+}
+
+function uniqSlugBase(s: string) {
+  return String(s)
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 48);
+}
+
+/**
+ * ✅ Supplier-level uniqueness for "base products":
+ * one supplier should not get duplicate occurrences of the same (title + brandId)
+ */
+function productKeyForSupplier(title: string, brandId: string) {
+  return `${uniqSlugBase(title)}::${String(brandId)}`;
+}
+
+function pickSupplierForItem(
+  suppliers: { id: string }[],
+  usedBySupplier: Map<string, Set<string>>,
+  title: string,
+  brandId: string
+) {
+  const key = productKeyForSupplier(title, brandId);
+
+  const shuffled = [...suppliers].sort(() => Math.random() - 0.5);
+  for (const s of shuffled) {
+    const set = usedBySupplier.get(s.id) ?? new Set<string>();
+    if (!set.has(key)) return s.id;
+  }
+
+  return suppliers[randInt(0, suppliers.length - 1)].id;
 }
 
 /* ----------------------------------------------------------------------------
@@ -60,6 +112,7 @@ async function ensureCoreSettings() {
         { key: "profitMode", value: "accurate", isPublic: false },
         { key: "serviceFeeBaseNGN", value: "1000", isPublic: false },
         { key: "platformBaseFeeNGN", value: "100", isPublic: false },
+        { key: "pricingMarkupPercent", value: "10", isPublic: true },
       ],
       skipDuplicates: true,
     });
@@ -102,9 +155,13 @@ async function ensureSuperAdmin() {
       streetName: "Leadership Ave",
       city: "Abuja",
       state: "FCT",
-      postCode: "",
-      town: "",
+      lga: "Abuja Municipal",
+      postCode: "900001",
+      town: "Wuse",
       country: "Nigeria",
+      isValidated: true,
+      validationSource: "seed",
+      validatedAt: new Date(),
     },
   });
 
@@ -133,8 +190,8 @@ async function ensureSuperAdmin() {
 /* ----------------------------------------------------------------------------
   Supplier user + suppliers
 ---------------------------------------------------------------------------- */
-async function ensureSupplierUserAndMainSupplier() {
-  log("Ensuring Supplier user + Supplier exists…");
+async function ensureSupplierUserAndSuppliers() {
+  log("Ensuring Supplier user + Suppliers exist…");
 
   const existingUser = await prisma.user.findUnique({
     where: { email: SUPPLIER_EMAIL },
@@ -151,7 +208,13 @@ async function ensureSupplierUserAndMainSupplier() {
         streetName: "Supplier Road",
         city: "Lagos",
         state: "Lagos",
+        lga: "Ikeja",
+        town: "Ikeja",
+        postCode: "100271",
         country: "Nigeria",
+        isValidated: true,
+        validationSource: "seed",
+        validatedAt: new Date(),
       },
     });
 
@@ -180,57 +243,179 @@ async function ensureSupplierUserAndMainSupplier() {
     log(`Supplier user already present: ${SUPPLIER_EMAIL}`);
   }
 
-  // Ensure Supplier row linked to this user (Supplier.userId is unique)
-  const supplierName = "Seed Main Supplier";
+  const makeSupplierAddresses = async (seedName: string, state: string, city: string, lga: string) => {
+    const reg = await prisma.address.create({
+      data: {
+        houseNumber: String(randInt(2, 55)),
+        streetName: `${seedName} Registered St`,
+        city,
+        state,
+        lga,
+        town: lga,
+        postCode: `${randInt(100000, 999999)}`,
+        country: "Nigeria",
+        isValidated: true,
+        validationSource: "seed",
+        validatedAt: new Date(),
+      },
+    });
+
+    const pickup = await prisma.address.create({
+      data: {
+        houseNumber: String(randInt(1, 40)),
+        streetName: `${seedName} Pickup Hub`,
+        city,
+        state,
+        lga,
+        town: lga,
+        postCode: `${randInt(100000, 999999)}`,
+        country: "Nigeria",
+        landmark: "Near main junction",
+        directionsNote: "Call pickup contact before arrival",
+        isValidated: true,
+        validationSource: "seed",
+        validatedAt: new Date(),
+      },
+    });
+
+    return { reg, pickup };
+  };
+
+  // Main supplier (Lagos)
+  const mainName = "Seed Main Supplier";
+  const mainAddrs = await makeSupplierAddresses(mainName, "Lagos", "Lagos", "Ikeja");
+
   const mainSupplier = await prisma.supplier.upsert({
-    where: { name: supplierName },
+    where: { name: mainName },
     update: {
       userId,
       type: "ONLINE",
       status: "ACTIVE",
       contactEmail: SUPPLIER_EMAIL,
       whatsappPhone: "+2348100000002",
+
+      registeredAddressId: mainAddrs.reg.id,
+      pickupAddressId: mainAddrs.pickup.id,
+
+      pickupContactName: "Seed Main Dispatch",
+      pickupContactPhone: "+2348100000002",
+      pickupInstructions: "Pickup between 9am and 5pm",
+
+      shippingEnabled: true,
+      shipsNationwide: true,
+      defaultLeadDays: 2,
+      sameDayCutoffHour: 14,
+      handlingFee: toDec2(80), // reduced
+
+      supportsDoorDelivery: true,
+      supportsPickupPoint: chance(0.4),
+
+      bankVerificationStatus: "VERIFIED",
+      isPayoutEnabled: true,
     },
     create: {
-      name: supplierName,
+      name: mainName,
       userId,
       type: "ONLINE",
       status: "ACTIVE",
       contactEmail: SUPPLIER_EMAIL,
       whatsappPhone: "+2348100000002",
+
+      registeredAddressId: mainAddrs.reg.id,
+      pickupAddressId: mainAddrs.pickup.id,
+
+      pickupContactName: "Seed Main Dispatch",
+      pickupContactPhone: "+2348100000002",
+      pickupInstructions: "Pickup between 9am and 5pm",
+
+      shippingEnabled: true,
+      shipsNationwide: true,
+      defaultLeadDays: 2,
+      sameDayCutoffHour: 14,
+      handlingFee: toDec2(80), // reduced
+
+      supportsDoorDelivery: true,
+      supportsPickupPoint: chance(0.4),
+
+      bankVerificationStatus: "VERIFIED",
+      isPayoutEnabled: true,
     },
     select: { id: true, name: true },
   });
 
-  log(`Main supplier ensured (with creds): ${mainSupplier.name}`);
+  const otherDefs = [
+    { name: "Seed Supplier A", state: "Lagos", city: "Lagos", lga: "Surulere", type: "PHYSICAL" as const },
+    { name: "Seed Supplier B", state: "Oyo", city: "Ibadan", lga: "Ibadan North", type: "ONLINE" as const },
+    { name: "Seed Supplier C", state: "Rivers", city: "Port Harcourt", lga: "Port Harcourt", type: "PHYSICAL" as const },
+    { name: "Seed Supplier D", state: "FCT", city: "Abuja", lga: "Abuja Municipal", type: "ONLINE" as const },
+  ];
 
-  // 4 other suppliers (no creds)
-  const otherNames = ["Seed Supplier A", "Seed Supplier B", "Seed Supplier C", "Seed Supplier D"];
   const others: { id: string; name: string }[] = [];
-  for (const n of otherNames) {
+
+  for (const def of otherDefs) {
+    const addrs = await makeSupplierAddresses(def.name, def.state, def.city, def.lga);
+
     const s = await prisma.supplier.upsert({
-      where: { name: n },
-      update: {},
-      create: {
-        name: n,
-        type: n.includes("A") || n.includes("C") ? "PHYSICAL" : "ONLINE",
+      where: { name: def.name },
+      update: {
+        type: def.type,
         status: "ACTIVE",
-        contactEmail: `${n.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
+        contactEmail: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
         whatsappPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
+
+        registeredAddressId: addrs.reg.id,
+        pickupAddressId: addrs.pickup.id,
+
+        pickupContactName: `${def.name} Dispatch`,
+        pickupContactPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
+        pickupInstructions: "Pickup weekdays 9am–4pm",
+
+        shippingEnabled: true,
+        shipsNationwide: true,
+        defaultLeadDays: randInt(1, 4),
+        sameDayCutoffHour: 13,
+        handlingFee: toDec2(randInt(0, 150)), // reduced
+
+        supportsDoorDelivery: true,
+        supportsPickupPoint: chance(0.35),
+      },
+      create: {
+        name: def.name,
+        type: def.type,
+        status: "ACTIVE",
+        contactEmail: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
+        whatsappPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
+
+        registeredAddressId: addrs.reg.id,
+        pickupAddressId: addrs.pickup.id,
+
+        pickupContactName: `${def.name} Dispatch`,
+        pickupContactPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
+        pickupInstructions: "Pickup weekdays 9am–4pm",
+
+        shippingEnabled: true,
+        shipsNationwide: true,
+        defaultLeadDays: randInt(1, 4),
+        sameDayCutoffHour: 13,
+        handlingFee: toDec2(randInt(0, 150)), // reduced
+
+        supportsDoorDelivery: true,
+        supportsPickupPoint: chance(0.35),
       },
       select: { id: true, name: true },
     });
+
     others.push(s);
   }
 
-  log(`Other suppliers ensured (no creds): ${others.length}`);
-  return { mainSupplier, suppliers: [mainSupplier, ...others] };
+  log(`Suppliers ensured: ${1 + others.length}`);
+  return { suppliers: [mainSupplier, ...others], mainSupplier, supplierUserId: userId };
 }
 
 /* ----------------------------------------------------------------------------
-  Categories + brands (minimal)
+  Categories + brands
 ---------------------------------------------------------------------------- */
-async function ensureCategoriesAndBrands() {
+async function ensureCategories() {
   const cat = await prisma.category.upsert({
     where: { name: "Seed Category" },
     update: { isActive: true },
@@ -238,20 +423,51 @@ async function ensureCategoriesAndBrands() {
     select: { id: true },
   });
 
-  const brand = await prisma.brand.upsert({
-    where: { slug: "seed-brand" },
+  const cat2 = await prisma.category.upsert({
+    where: { name: "Seed Category 2" },
     update: { isActive: true },
-    create: { name: "Seed Brand", slug: "seed-brand", logoUrl: "https://picsum.photos/seed/seed-brand/160/160", isActive: true },
+    create: { name: "Seed Category 2", slug: "seed-category-2", isActive: true, position: 2 },
     select: { id: true },
   });
 
-  return { cat, brand };
+  return [cat, cat2];
+}
+
+async function ensureBrands() {
+  const names = [
+    "Seed Brand",
+    "Seed Brand Alpha",
+    "Seed Brand Beta",
+    "Seed Brand Gamma",
+    "Seed Brand Delta",
+    "Seed Brand Epsilon",
+    "Seed Brand Zeta",
+    "Seed Brand Omega",
+    "Seed Brand Nova",
+    "Seed Brand Prime",
+  ];
+
+  const out: { id: string; name: string; slug: string }[] = [];
+  for (const n of names) {
+    const slug = uniqSlugBase(n);
+    const b = await prisma.brand.upsert({
+      where: { slug },
+      update: { isActive: true, name: n },
+      create: {
+        name: n,
+        slug,
+        logoUrl: `https://picsum.photos/seed/${slug}/160/160`,
+        isActive: true,
+      },
+      select: { id: true, name: true, slug: true },
+    });
+    out.push(b);
+  }
+  return out;
 }
 
 /* ----------------------------------------------------------------------------
-  Attributes (only what we need for 2 variant products)
-  Color (Red, Blue, Black)
-  Size (S, M, L)
+  Attributes
 ---------------------------------------------------------------------------- */
 type SeedAttr = { name: string; type?: string; values: { name: string; code?: string }[] };
 
@@ -284,7 +500,6 @@ async function ensureAttributes() {
   }[] = [];
 
   for (const a of attrs) {
-    // Attribute has no unique name, so do findFirst then create if missing
     let attr = await prisma.attribute.findFirst({
       where: { name: a.name },
       select: { id: true, name: true },
@@ -296,7 +511,6 @@ async function ensureAttributes() {
         select: { id: true, name: true },
       });
     } else {
-      // keep it active
       await prisma.attribute.update({
         where: { id: attr.id },
         data: { isActive: true, type: a.type ?? "SELECT" },
@@ -332,9 +546,6 @@ async function ensureAttributes() {
   return out;
 }
 
-/* ----------------------------------------------------------------------------
-  Product attribute options (allow selection in UI)
----------------------------------------------------------------------------- */
 async function ensureProductAttributeOptions(productId: string, attrs: Awaited<ReturnType<typeof ensureAttributes>>) {
   for (const a of attrs) {
     for (const v of a.values) {
@@ -350,13 +561,118 @@ async function ensureProductAttributeOptions(productId: string, attrs: Awaited<R
 }
 
 /* ----------------------------------------------------------------------------
-  Variants creation (schema-compliant)
+  Shipping parcel helpers
+---------------------------------------------------------------------------- */
+type ParcelSeed = {
+  weightGrams: number;
+  lengthCm: number;
+  widthCm: number;
+  heightCm: number;
+  isFragile: boolean;
+  isBulky: boolean;
+  shippingClass: "STANDARD" | "FRAGILE" | "BULKY";
+};
+
+function parcelForTitle(title: string): ParcelSeed {
+  const t = title.toLowerCase();
+
+  if (t.includes("kettle")) {
+    return {
+      weightGrams: randInt(1200, 2200),
+      lengthCm: randInt(20, 28),
+      widthCm: randInt(18, 24),
+      heightCm: randInt(20, 30),
+      isFragile: true,
+      isBulky: false,
+      shippingClass: "FRAGILE",
+    };
+  }
+
+  if (t.includes("speaker") || t.includes("blender") || t.includes("toaster") || t.includes("fan")) {
+    return {
+      weightGrams: randInt(1500, 4000),
+      lengthCm: randInt(22, 40),
+      widthCm: randInt(18, 32),
+      heightCm: randInt(18, 45),
+      isFragile: true,
+      isBulky: chance(0.35),
+      shippingClass: chance(0.35) ? "BULKY" : "FRAGILE",
+    };
+  }
+
+  if (t.includes("sneakers") || t.includes("backpack")) {
+    return {
+      weightGrams: randInt(700, 1800),
+      lengthCm: randInt(25, 40),
+      widthCm: randInt(18, 28),
+      heightCm: randInt(12, 24),
+      isFragile: false,
+      isBulky: false,
+      shippingClass: "STANDARD",
+    };
+  }
+
+  if (t.includes("headphones") || t.includes("mouse") || t.includes("keyboard") || t.includes("router")) {
+    return {
+      weightGrams: randInt(250, 1500),
+      lengthCm: randInt(14, 46),
+      widthCm: randInt(10, 18),
+      heightCm: randInt(4, 12),
+      isFragile: chance(0.25),
+      isBulky: false,
+      shippingClass: chance(0.25) ? "FRAGILE" : "STANDARD",
+    };
+  }
+
+  if (t.includes("mug") || t.includes("lamp")) {
+    return {
+      weightGrams: randInt(350, 1400),
+      lengthCm: randInt(12, 30),
+      widthCm: randInt(12, 25),
+      heightCm: randInt(12, 35),
+      isFragile: true,
+      isBulky: false,
+      shippingClass: "FRAGILE",
+    };
+  }
+
+  return {
+    weightGrams: randInt(200, 1200),
+    lengthCm: randInt(10, 30),
+    widthCm: randInt(8, 24),
+    heightCm: randInt(3, 18),
+    isFragile: false,
+    isBulky: false,
+    shippingClass: "STANDARD",
+  };
+}
+
+function variantParcelOverride(base: ParcelSeed) {
+  const w = Math.max(100, base.weightGrams + randInt(-120, 220));
+  const l = Math.max(5, base.lengthCm + randInt(-2, 3));
+  const wd = Math.max(5, base.widthCm + randInt(-2, 3));
+  const h = Math.max(2, base.heightCm + randInt(-2, 3));
+
+  return {
+    weightGrams: w,
+    lengthCm: toDec2(l),
+    widthCm: toDec2(wd),
+    heightCm: toDec2(h),
+    isFragileOverride: base.isFragile || chance(0.05),
+    isBulkyOverride: base.isBulky || chance(0.05),
+    shippingClassOverride: (base.isBulky ? "BULKY" : base.isFragile ? "FRAGILE" : "STANDARD") as string,
+  };
+}
+
+/* ----------------------------------------------------------------------------
+  Variants creation
 ---------------------------------------------------------------------------- */
 async function createVariantsForProduct(args: {
   productId: string;
   skuBase: string;
   retail: number;
   attrs: Awaited<ReturnType<typeof ensureAttributes>>;
+  productParcel: ParcelSeed;
 }) {
   const { productId, skuBase, retail, attrs } = args;
 
@@ -367,166 +683,154 @@ async function createVariantsForProduct(args: {
   const values1 = color.values.slice(0, 3);
   const values2 = size.values.slice(0, 3);
 
+  const combos: Array<{ c: string; s: string }> = [];
+  for (const c of values1) for (const s of values2) combos.push({ c: c.id, s: s.id });
+
+  const want = randInt(3, 6);
+  const chosen = pick(combos, want);
+
+  const seen = new Set<string>();
+  const chosenUnique = chosen.filter((x) => {
+    const k = `${x.c}:${x.s}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+
   const createdVariants: { id: string; sku: string | null; retailPrice: Prisma.Decimal | null }[] = [];
 
   let idx = 1;
-  for (const v1 of values1) {
-    for (const v2 of values2) {
-      const vSku = `${skuBase}-V${String(idx).padStart(2, "0")}`;
-      idx++;
+  for (const combo of chosenUnique) {
+    const vSku = `${skuBase}-V${String(idx).padStart(2, "0")}`;
+    idx++;
 
-      const variantRetail = Math.max(500, retail + randInt(-200, 600));
+    // Slightly higher variant price spread for clearer price separation
+    const variantRetail = Math.max(900, retail + randInt(-100, 1200));
+    const override = variantParcelOverride(args.productParcel);
 
-      const variant = await prisma.productVariant.create({
-        data: {
-          productId,
-          sku: vSku,
-          retailPrice: toDec(variantRetail), // maps to "price" column
-          inStock: true,
-          imagesJson: pics(vSku) as any,
-          isActive: true,
-          availableQty: 0,
-          options: {
-            create: [
-              // ✅ schema has NO priceBump on ProductVariantOption
-              { attributeId: color.attributeId, valueId: v1.id },
-              { attributeId: size.attributeId, valueId: v2.id },
-            ],
-          },
+    const variant = await prisma.productVariant.create({
+      data: {
+        productId,
+        sku: vSku,
+        retailPrice: toDec(variantRetail),
+
+        // ✅ Always set complete parcel data on variants (shipping-safe)
+        weightGrams: override.weightGrams,
+        lengthCm: override.lengthCm,
+        widthCm: override.widthCm,
+        heightCm: override.heightCm,
+        isFragileOverride: override.isFragileOverride,
+        isBulkyOverride: override.isBulkyOverride,
+        shippingClassOverride: override.shippingClassOverride,
+
+        inStock: true,
+        imagesJson: pics(vSku) as any,
+        isActive: true,
+        availableQty: 0,
+        options: {
+          create: [
+            { attributeId: color.attributeId, valueId: combo.c },
+            { attributeId: size.attributeId, valueId: combo.s },
+          ],
         },
-        select: { id: true, sku: true, retailPrice: true },
-      });
+      },
+      select: { id: true, sku: true, retailPrice: true },
+    });
 
-      createdVariants.push(variant);
-    }
+    createdVariants.push(variant);
   }
 
   return createdVariants;
 }
 
 /* ----------------------------------------------------------------------------
-  Supplier offers
-  - SupplierProductOffer.basePrice
-  - SupplierVariantOffer.unitPrice (full unit price now)
+  Offers
 ---------------------------------------------------------------------------- */
+
 function supplierBaseFromRetail(retail: number): Prisma.Decimal {
-  // base: ~55%–85% of retail
-  const pct = 0.55 + Math.random() * 0.3;
+  const pct = 0.5 + Math.random() * 0.25; // 50%–75% (more margin, bigger visible difference)
   const val = Math.max(300, Math.round(retail * pct));
   return new Prisma.Decimal(val);
 }
 
 function supplierUnitPriceFromVariantRetail(variantRetail: number): Prisma.Decimal {
-  // supplier unit price= ~55%–90% of variant retail
-  const pct = 0.55 + Math.random() * 0.35;
+  const pct = 0.5 + Math.random() * 0.28; // 50%–78%
   const val = Math.max(300, Math.round(variantRetail * pct));
   return new Prisma.Decimal(val);
 }
 
-async function ensureSupplierOffersForProduct(args: {
+async function ensureBaseOfferForProduct(args: { productId: string; retail: number }) {
+  const { productId, retail } = args;
+
+  const availableQty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
+
+  const offer = await prisma.supplierProductOffer.upsert({
+    where: { productId },
+    update: {
+      basePrice: supplierBaseFromRetail(retail),
+      availableQty,
+      inStock: availableQty > 0,
+      isActive: true,
+      leadDays: randInt(1, 7),
+      currency: "NGN",
+    },
+    create: {
+      productId,
+      basePrice: supplierBaseFromRetail(retail),
+      availableQty,
+      inStock: availableQty > 0,
+      isActive: true,
+      leadDays: randInt(1, 7),
+      currency: "NGN",
+    },
+    select: { id: true, availableQty: true, productId: true },
+  });
+
+  return offer;
+}
+
+async function ensureVariantOffersForVariants(args: {
   productId: string;
-  retail: number;
-  suppliers: { id: string }[];
+  variants: { id: string; retailPrice: Prisma.Decimal | null }[];
+  baseOfferId: string;
 }) {
-  const { productId, retail, suppliers } = args;
+  const { productId, variants, baseOfferId } = args;
 
-  const supplierCount = randInt(MIN_OFFERS_PER_PRODUCT, Math.min(MAX_OFFERS_PER_PRODUCT, suppliers.length));
-  const chosenSuppliers = pick(suppliers, supplierCount);
+  for (const v of variants) {
+    if (!chance(0.6)) continue;
 
-  const baseOffers: { supplierId: string; offerId: string }[] = [];
+    const vr = Number(v.retailPrice ?? 0) || 0;
+    if (vr <= 0) continue;
 
-  for (const s of chosenSuppliers) {
-    const base = await prisma.supplierProductOffer.upsert({
-      where: { supplierId_productId: { supplierId: s.id, productId } },
+    const qty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
+
+    await prisma.supplierVariantOffer.upsert({
+      where: { variantId: v.id },
       update: {
-        basePrice: supplierBaseFromRetail(retail),
-        availableQty: randInt(MIN_AVAILABLE, MAX_AVAILABLE),
-        inStock: true,
+        productId,
+        supplierProductOfferId: baseOfferId,
+        unitPrice: supplierUnitPriceFromVariantRetail(vr),
+        availableQty: qty,
+        inStock: qty > 0,
         isActive: true,
-        leadDays: randInt(1, 10),
+        leadDays: randInt(1, 9),
         currency: "NGN",
       },
       create: {
-        supplierId: s.id,
         productId,
-        basePrice: supplierBaseFromRetail(retail),
-        availableQty: randInt(MIN_AVAILABLE, MAX_AVAILABLE),
-        inStock: true,
+        variantId: v.id,
+        supplierProductOfferId: baseOfferId,
+        unitPrice: supplierUnitPriceFromVariantRetail(vr),
+        availableQty: qty,
+        inStock: qty > 0,
         isActive: true,
-        leadDays: randInt(1, 10),
+        leadDays: randInt(1, 9),
         currency: "NGN",
       },
       select: { id: true },
     });
-
-    baseOffers.push({ supplierId: s.id, offerId: base.id });
   }
 
-  // product availability = sum of active+inStock base offers
-  const agg = await prisma.supplierProductOffer.aggregate({
-    _sum: { availableQty: true },
-    where: { productId, isActive: true, inStock: true },
-  });
-
-  const sum = Number(agg._sum.availableQty || 0);
-
-  await prisma.product.update({
-    where: { id: productId },
-    data: { availableQty: sum, inStock: sum > 0 },
-  });
-
-  return baseOffers;
-}
-
-async function ensureSupplierVariantOffersForVariants(args: {
-  productId: string;
-  variants: { id: string; retailPrice: Prisma.Decimal | null }[];
-  baseOffers: { supplierId: string; offerId: string }[];
-}) {
-  const { productId, variants, baseOffers } = args;
-
-  // For each supplier base offer, create variant offers for ~60% of variants
-  for (const b of baseOffers) {
-    const sample = variants.filter(() => Math.random() < 0.6);
-
-    for (const v of sample) {
-      const vr = Number(v.retailPrice ?? 0) || 0;
-      if (vr <= 0) continue;
-
-      try {
-        await prisma.supplierVariantOffer.upsert({
-          where: { supplierId_variantId: { supplierId: b.supplierId, variantId: v.id } },
-          update: {
-            productId,
-            supplierProductOfferId: b.offerId,
-            unitPrice: supplierUnitPriceFromVariantRetail(vr), // ✅ full unit price now
-            availableQty: randInt(MIN_AVAILABLE, MAX_AVAILABLE),
-            inStock: true,
-            isActive: true,
-            leadDays: randInt(1, 12),
-            currency: "NGN",
-          },
-          create: {
-            supplierId: b.supplierId,
-            productId,
-            variantId: v.id,
-            supplierProductOfferId: b.offerId,
-            unitPrice: supplierUnitPriceFromVariantRetail(vr), // ✅ full unit price now
-            availableQty: randInt(MIN_AVAILABLE, MAX_AVAILABLE),
-            inStock: true,
-            isActive: true,
-            leadDays: randInt(1, 12),
-            currency: "NGN",
-          },
-          select: { id: true },
-        });
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  // Recompute each variant availability from variant offers
   for (const v of variants) {
     const agg = await prisma.supplierVariantOffer.aggregate({
       _sum: { availableQty: true },
@@ -541,124 +845,520 @@ async function ensureSupplierVariantOffersForVariants(args: {
   }
 }
 
+async function recomputeProductAvailability(productId: string) {
+  const base = await prisma.supplierProductOffer.findUnique({
+    where: { productId },
+    select: { availableQty: true, isActive: true, inStock: true },
+  });
+
+  const baseQty = base?.isActive && base?.inStock ? Number(base.availableQty ?? 0) : 0;
+
+  const varAgg = await prisma.supplierVariantOffer.aggregate({
+    _sum: { availableQty: true },
+    where: { productId, isActive: true, inStock: true },
+  });
+
+  const variantQty = Number(varAgg._sum.availableQty ?? 0);
+  const total = Math.max(0, Math.trunc(baseQty + variantQty));
+
+  await prisma.product.update({
+    where: { id: productId },
+    data: { availableQty: total, inStock: total > 0 },
+  });
+}
+
 /* ----------------------------------------------------------------------------
-  Seed Products
+  Shipping setup
 ---------------------------------------------------------------------------- */
-async function seedProducts(args: {
-  superAdminId: string;
-  catId: string;
-  brandId: string;
-  suppliers: { id: string }[];
-  attrs: Awaited<ReturnType<typeof ensureAttributes>>;
-}) {
-  const { superAdminId, catId, brandId, suppliers, attrs } = args;
+async function ensureShippingSetup() {
+  log("Ensuring shipping zones + rate cards...");
 
-  log(`Seeding ${PRODUCT_COUNT} LIVE products (${BASE_ONLY_COUNT} simple, ${PRODUCT_COUNT - BASE_ONLY_COUNT} variant)…`);
+  const zones = [
+    {
+      code: "LAGOS_LOCAL",
+      name: "Lagos Local",
+      statesJson: ["Lagos"],
+      lgasJson: [
+        "Ikeja",
+        "Eti-Osa",
+        "Surulere",
+        "Kosofe",
+        "Alimosho",
+        "Mushin",
+        "Lagos Island",
+        "Lagos Mainland",
+      ],
+      priority: 10,
+    },
+    {
+      code: "SW_NEAR",
+      name: "South West (Near)",
+      statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
+      lgasJson: null,
+      priority: 20,
+    },
+    {
+      code: "SOUTH_REGIONAL",
+      name: "South (Regional)",
+      statesJson: [
+        "Abia",
+        "Anambra",
+        "Akwa Ibom",
+        "Bayelsa",
+        "Cross River",
+        "Delta",
+        "Edo",
+        "Ebonyi", // ✅ added
+        "Enugu",
+        "Imo",
+        "Rivers",
+      ],
+      lgasJson: null,
+      priority: 30,
+    },
+    {
+      code: "NORTH_REGIONAL",
+      name: "North (Regional)",
+      statesJson: [
+        "FCT",
+        "Abuja",
+        "Federal Capital Territory", // ✅ aliases
+        "Kaduna",
+        "Kano",
+        "Plateau",
+        "Nasarawa",
+        "Benue",
+        "Niger",
+        "Kwara",
+        "Borno",
+        "Bauchi",
+        "Adamawa",
+        "Sokoto",
+        "Kebbi",
+        "Zamfara",
+        "Katsina",
+        "Jigawa",
+        "Yobe",
+        "Taraba",
+        "Gombe",
+        "Kogi",
+      ],
+      lgasJson: null,
+      priority: 40,
+    },
+    // ✅ fallback to avoid misses during seeding/dev if state normalization is imperfect
+    {
+      code: "NIGERIA_FALLBACK",
+      name: "Nigeria Fallback",
+      statesJson: null,
+      lgasJson: null,
+      priority: 999,
+    },
+  ];
 
-  const titles = [
+  const zoneByCode = new Map<string, string>();
+
+  for (const z of zones) {
+    const zone = await prisma.shippingZone.upsert({
+      where: { code: z.code },
+      update: {
+        name: z.name,
+        country: "Nigeria",
+        statesJson: z.statesJson as any,
+        lgasJson: z.lgasJson as any,
+        isActive: true,
+        priority: z.priority,
+      },
+      create: {
+        code: z.code,
+        name: z.name,
+        country: "Nigeria",
+        statesJson: z.statesJson as any,
+        lgasJson: z.lgasJson as any,
+        isActive: true,
+        priority: z.priority,
+      },
+      select: { id: true, code: true },
+    });
+
+    zoneByCode.set(zone.code, zone.id);
+  }
+
+  await prisma.shippingRateCard.deleteMany({
+    where: { zoneId: { in: [...zoneByCode.values()] } },
+  });
+
+  const bands = [
+    { min: 0, max: 1000 },
+    { min: 1000, max: 3000 },
+    { min: 3000, max: 5000 },
+    { min: 5000, max: 10000 },
+    { min: 10000, max: null },
+  ];
+
+  // ✅ Reduced costs significantly vs your previous version
+  const zonePricing: Record<string, { base: number; perKg: number; remote: number; fallback?: boolean }> = {
+    LAGOS_LOCAL: { base: 900, perKg: 180, remote: 0 },
+    SW_NEAR: { base: 1400, perKg: 260, remote: 120 },
+    SOUTH_REGIONAL: { base: 1900, perKg: 360, remote: 220 },
+    NORTH_REGIONAL: { base: 2400, perKg: 480, remote: 300 },
+    NIGERIA_FALLBACK: { base: 3500, perKg: 650, remote: 500, fallback: true },
+  };
+
+  for (const [code, zoneId] of zoneByCode.entries()) {
+    const p = zonePricing[code];
+
+    for (const b of bands) {
+      const heavyAdder = b.min >= 5000 ? 350 : 0;
+      const fragileAdder = b.min >= 5000 ? 450 : 0;
+      const bulkyAdder = b.min >= 5000 ? 600 : 0;
+
+      await prisma.shippingRateCard.create({
+        data: {
+          zoneId,
+          serviceLevel: "STANDARD",
+          parcelClass: "STANDARD",
+          minWeightGrams: b.min,
+          maxWeightGrams: b.max,
+          volumetricDivisor: 5000,
+          baseFee: toDec2(p.base + heavyAdder),
+          perKgFee: toDec2(p.perKg),
+          remoteSurcharge: toDec2(p.remote),
+          fuelSurcharge: toDec2(p.fallback ? 180 : 70),
+          handlingFee: toDec2(p.fallback ? 150 : 50),
+          currency: "NGN",
+          etaMinDays: code === "LAGOS_LOCAL" ? 1 : code === "SW_NEAR" ? 2 : code === "NIGERIA_FALLBACK" ? 4 : 3,
+          etaMaxDays: code === "LAGOS_LOCAL" ? 2 : code === "SW_NEAR" ? 4 : code === "NIGERIA_FALLBACK" ? 8 : 6,
+          isActive: true,
+        },
+      });
+
+      await prisma.shippingRateCard.create({
+        data: {
+          zoneId,
+          serviceLevel: "STANDARD",
+          parcelClass: "FRAGILE",
+          minWeightGrams: b.min,
+          maxWeightGrams: b.max,
+          volumetricDivisor: 5000,
+          baseFee: toDec2(p.base + 300 + fragileAdder),
+          perKgFee: toDec2(p.perKg + 70),
+          remoteSurcharge: toDec2(p.remote),
+          fuelSurcharge: toDec2(p.fallback ? 220 : 90),
+          handlingFee: toDec2(p.fallback ? 220 : 120),
+          currency: "NGN",
+          etaMinDays: code === "LAGOS_LOCAL" ? 1 : code === "SW_NEAR" ? 2 : code === "NIGERIA_FALLBACK" ? 4 : 3,
+          etaMaxDays: code === "LAGOS_LOCAL" ? 2 : code === "SW_NEAR" ? 4 : code === "NIGERIA_FALLBACK" ? 9 : 7,
+          isActive: true,
+        },
+      });
+
+      await prisma.shippingRateCard.create({
+        data: {
+          zoneId,
+          serviceLevel: "STANDARD",
+          parcelClass: "BULKY",
+          minWeightGrams: b.min,
+          maxWeightGrams: b.max,
+          volumetricDivisor: 4000,
+          baseFee: toDec2(p.base + 550 + bulkyAdder),
+          perKgFee: toDec2(p.perKg + 110),
+          remoteSurcharge: toDec2(p.remote + 80),
+          fuelSurcharge: toDec2(p.fallback ? 260 : 110),
+          handlingFee: toDec2(p.fallback ? 260 : 150),
+          currency: "NGN",
+          etaMinDays: code === "LAGOS_LOCAL" ? 1 : code === "SW_NEAR" ? 2 : code === "NIGERIA_FALLBACK" ? 5 : 4,
+          etaMaxDays: code === "LAGOS_LOCAL" ? 3 : code === "SW_NEAR" ? 5 : code === "NIGERIA_FALLBACK" ? 10 : 8,
+          isActive: true,
+        },
+      });
+    }
+  }
+
+  log("Shipping zones + rate cards ensured.");
+}
+
+/* ----------------------------------------------------------------------------
+  Product generation
+---------------------------------------------------------------------------- */
+function baseTitlesPool() {
+  return [
     "Seed Kettle",
     "Seed Headphones",
     "Seed T-Shirt",
     "Seed Sneakers",
     "Seed Speaker",
+    "Seed Blender",
+    "Seed Wristwatch",
+    "Seed Backpack",
+    "Seed Phone Case",
+    "Seed Desk Lamp",
+    "Seed Water Bottle",
+    "Seed Power Bank",
+    "Seed Fan",
+    "Seed Toaster",
+    "Seed Mouse",
+    "Seed Keyboard",
+    "Seed Charger",
+    "Seed Router",
+    "Seed Extension Cable",
+    "Seed Mug",
   ];
+}
 
-  for (let i = 1; i <= PRODUCT_COUNT; i++) {
-    const title = `${titles[i - 1]} #${i}`;
-    const sku = `SEED-LIVE-${String(i).padStart(3, "0")}`;
-    const retail = 4500 + i * 300;
+async function seedProducts(args: {
+  superAdminId: string;
+  categories: { id: string }[];
+  brands: { id: string; name: string; slug: string }[];
+  suppliers: { id: string }[];
+  attrs: Awaited<ReturnType<typeof ensureAttributes>>;
+}) {
+  const { superAdminId, categories, brands, suppliers, attrs } = args;
+
+  const liveTargets = LIVE_PRODUCTS_TOTAL;
+  const pendingTargets = PENDING_PRODUCTS_TOTAL;
+
+  log(`Seeding ${liveTargets} LIVE products, ${pendingTargets} PENDING products…`);
+  if (brands.length < 4) throw new Error("Need at least 4 brands to satisfy 2–4 brands per base product.");
+
+  const plan: Array<{ status: "LIVE" | "PENDING"; title: string; brandId: string; sku: string; retail: number }> = [];
+
+  const titles = baseTitlesPool();
+  let liveCount = 0;
+  let globalIndex = 1;
+
+  // ✅ Increased retail more aggressively for clearer difference vs shipping
+  for (const t of titles) {
+    if (liveCount >= liveTargets) break;
+
+    const nBrands = randInt(MIN_BRANDS_PER_BASE, MAX_BRANDS_PER_BASE);
+    const chosenBrands = pick(brands, nBrands);
+
+    for (const b of chosenBrands) {
+      if (liveCount >= liveTargets) break;
+
+      const sku = `SEED-LIVE-${String(globalIndex).padStart(3, "0")}`;
+      const retail = 9000 + globalIndex * 450; // was much lower before
+
+      plan.push({ status: "LIVE", title: t, brandId: b.id, sku, retail });
+
+      liveCount++;
+      globalIndex++;
+    }
+  }
+
+  for (let i = 1; i <= pendingTargets; i++) {
+    const title = `Seed Pending Product #${i}`;
+    const b = brands[(i - 1) % brands.length];
+    const sku = `SEED-PEND-${String(i).padStart(3, "0")}`;
+    const retail = 6500 + i * 500; // increased
+    plan.push({ status: "PENDING", title, brandId: b.id, sku, retail });
+  }
+
+  const usedBySupplier = new Map<string, Set<string>>();
+
+  for (const item of plan) {
+    const categoryId = categories[randInt(0, categories.length - 1)].id;
+
+    const supplierId = pickSupplierForItem(suppliers, usedBySupplier, item.title, item.brandId);
+    const key = productKeyForSupplier(item.title, item.brandId);
+    const set = usedBySupplier.get(supplierId) ?? new Set<string>();
+    set.add(key);
+    usedBySupplier.set(supplierId, set);
 
     const existing = await prisma.product.findFirst({
-      where: { sku, isDeleted: false },
+      where: { brandId: item.brandId, sku: item.sku, isDeleted: false },
       select: { id: true },
     });
+
+    const parcel = parcelForTitle(item.title);
 
     const product = existing
       ? await prisma.product.update({
           where: { id: existing.id },
           data: {
-            title,
-            description: "Seeded LIVE product for dev/testing.",
-            retailPrice: toDec(retail),
-            inStock: true,
-            status: "LIVE",
-            imagesJson: pics(sku) as any,
+            title: item.title,
+            description:
+              item.status === "LIVE" ? "Seeded LIVE product for dev/testing." : "Seeded PENDING product for dev/testing.",
+            retailPrice: toDec(item.retail),
+            sku: item.sku,
+            status: item.status,
+            imagesJson: pics(`${item.sku}-${item.brandId}`) as any,
             isDeleted: false,
             availableQty: 0,
-            category: { connect: { id: catId } },
-            brand: { connect: { id: brandId } },
+            inStock: true,
+
+            shippingCost: toDec2(0),
+            weightGrams: parcel.weightGrams,
+            lengthCm: toDec2(parcel.lengthCm),
+            widthCm: toDec2(parcel.widthCm),
+            heightCm: toDec2(parcel.heightCm),
+            isFragile: parcel.isFragile,
+            isBulky: parcel.isBulky,
+            shippingClass: parcel.shippingClass,
+            freeShipping: false,
+
+            supplier: { connect: { id: supplierId } },
+            category: { connect: { id: categoryId } },
+            brand: { connect: { id: item.brandId } },
 
             owner: { connect: { id: superAdminId } },
             createdBy: { connect: { id: superAdminId } },
             updatedBy: { connect: { id: superAdminId } },
           },
-          select: { id: true },
+          select: { id: true, sku: true },
         })
       : await prisma.product.create({
           data: {
-            title,
-            description: "Seeded LIVE product for dev/testing.",
-            retailPrice: toDec(retail),
-            sku,
-            inStock: true,
-            status: "LIVE",
-            imagesJson: pics(sku) as any,
+            title: item.title,
+            description:
+              item.status === "LIVE" ? "Seeded LIVE product for dev/testing." : "Seeded PENDING product for dev/testing.",
+            retailPrice: toDec(item.retail),
+            sku: item.sku,
+            status: item.status,
+            imagesJson: pics(`${item.sku}-${item.brandId}`) as any,
             isDeleted: false,
             availableQty: 0,
-            category: { connect: { id: catId } },
-            brand: { connect: { id: brandId } },
+            inStock: true,
+
+            shippingCost: toDec2(0),
+            weightGrams: parcel.weightGrams,
+            lengthCm: toDec2(parcel.lengthCm),
+            widthCm: toDec2(parcel.widthCm),
+            heightCm: toDec2(parcel.heightCm),
+            isFragile: parcel.isFragile,
+            isBulky: parcel.isBulky,
+            shippingClass: parcel.shippingClass,
+            freeShipping: false,
+
+            supplier: { connect: { id: supplierId } },
+            category: { connect: { id: categoryId } },
+            brand: { connect: { id: item.brandId } },
 
             owner: { connect: { id: superAdminId } },
             createdBy: { connect: { id: superAdminId } },
             updatedBy: { connect: { id: superAdminId } },
           },
-          select: { id: true },
+          select: { id: true, sku: true },
         });
 
-    const isVariantProduct = i > BASE_ONLY_COUNT;
+    const wantsVariants = item.status === "LIVE" ? chance(LIVE_VARIANT_FRACTION) : chance(PENDING_VARIANT_FRACTION);
 
-    if (isVariantProduct) {
-      // Ensure attribute options for variant products
+    await prisma.supplierVariantOffer.deleteMany({ where: { productId: product.id } });
+    await prisma.productVariant.deleteMany({ where: { productId: product.id } });
+    await prisma.supplierProductOffer.deleteMany({ where: { productId: product.id } });
+
+    const baseOffer = await ensureBaseOfferForProduct({ productId: product.id, retail: item.retail });
+
+    if (wantsVariants) {
       await ensureProductAttributeOptions(product.id, attrs);
 
-      // wipe variants for deterministic seed
-      await prisma.productVariant.deleteMany({ where: { productId: product.id } });
-
-      // create variants
-      const createdVariants = await createVariantsForProduct({
+      const variants = await createVariantsForProduct({
         productId: product.id,
-        skuBase: sku,
-        retail,
+        skuBase: item.sku,
+        retail: item.retail,
         attrs,
+        productParcel: parcel,
       });
 
-      // base offers 3–5 suppliers
-      const baseOffers = await ensureSupplierOffersForProduct({
+      await ensureVariantOffersForVariants({
         productId: product.id,
-        retail,
-        suppliers,
+        variants,
+        baseOfferId: baseOffer.id,
       });
-
-      // variant offers using unitPrice
-      await ensureSupplierVariantOffersForVariants({
-        productId: product.id,
-        variants: createdVariants,
-        baseOffers,
-      });
-    } else {
-      // base-only: just base offers 3–5 suppliers
-      await ensureSupplierOffersForProduct({
-        productId: product.id,
-        retail,
-        suppliers,
-      });
-
-      // optional: ensure no variants
-      await prisma.productVariant.deleteMany({ where: { productId: product.id } });
     }
+
+    await recomputeProductAvailability(product.id);
   }
 
   log("Products seeded.");
+}
+
+/* ----------------------------------------------------------------------------
+  Validation (shipping readiness)
+---------------------------------------------------------------------------- */
+async function validateSeedShippingReadiness() {
+  log("Validating shipping readiness...");
+
+  const badProducts = await prisma.product.findMany({
+    where: {
+      isDeleted: false,
+      OR: [
+        { weightGrams: null as any },
+        { lengthCm: null as any },
+        { widthCm: null as any },
+        { heightCm: null as any },
+        { shippingClass: null as any },
+      ],
+    },
+    select: { id: true, title: true, sku: true },
+    take: 20,
+  });
+
+  if (badProducts.length) {
+    throw new Error(
+      `Shipping validation failed: ${badProducts.length} product(s) missing parcel fields. ` +
+        `Examples: ${badProducts.map((p) => p.sku || p.id).join(", ")}`
+    );
+  }
+
+  const badVariants = await prisma.productVariant.findMany({
+    where: {
+      isActive: true,
+      OR: [
+        { weightGrams: null as any },
+        { lengthCm: null as any },
+        { widthCm: null as any },
+        { heightCm: null as any },
+        { shippingClassOverride: null as any },
+      ],
+    },
+    select: { id: true, sku: true },
+    take: 20,
+  });
+
+  if (badVariants.length) {
+    throw new Error(
+      `Shipping validation failed: ${badVariants.length} variant(s) missing parcel override fields. ` +
+        `Examples: ${badVariants.map((v) => v.sku || v.id).join(", ")}`
+    );
+  }
+
+  const badSuppliers = await prisma.supplier.findMany({
+    where: {
+      OR: [
+        { shippingEnabled: false },
+        { shipsNationwide: false },
+        { registeredAddressId: null as any },
+        { pickupAddressId: null as any },
+      ],
+    },
+    select: { id: true, name: true },
+    take: 20,
+  });
+
+  if (badSuppliers.length) {
+    throw new Error(
+      `Shipping validation failed: ${badSuppliers.length} supplier(s) not shipping-ready. ` +
+        `Examples: ${badSuppliers.map((s) => s.name).join(", ")}`
+    );
+  }
+
+  const zones = await prisma.shippingZone.findMany({
+    where: { isActive: true },
+    select: { id: true, code: true },
+  });
+
+  for (const z of zones) {
+    const count = await prisma.shippingRateCard.count({
+      where: { zoneId: z.id, isActive: true },
+    });
+    if (count === 0) {
+      throw new Error(`Shipping validation failed: zone ${z.code} has no active rate cards`);
+    }
+  }
+
+  log("Shipping readiness validation passed ✅");
 }
 
 /* ----------------------------------------------------------------------------
@@ -666,19 +1366,23 @@ async function seedProducts(args: {
 ---------------------------------------------------------------------------- */
 async function main() {
   await ensureCoreSettings();
+  await ensureShippingSetup();
 
   const superId = await ensureSuperAdmin();
-  const { suppliers } = await ensureSupplierUserAndMainSupplier();
-  const { cat, brand } = await ensureCategoriesAndBrands();
+  const { suppliers } = await ensureSupplierUserAndSuppliers();
+  const categories = await ensureCategories();
+  const brands = await ensureBrands();
   const attrs = await ensureAttributes();
 
   await seedProducts({
     superAdminId: superId,
-    catId: cat.id,
-    brandId: brand.id,
+    categories,
+    brands,
     suppliers,
     attrs,
   });
+
+  await validateSeedShippingReadiness();
 
   log("Seed complete.");
   log(`Super Admin: ${SUPER_EMAIL} / ${SUPER_PASS}`);

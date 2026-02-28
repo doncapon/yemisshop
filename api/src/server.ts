@@ -73,6 +73,7 @@ import privacyRouter from "./routes/privacy.js";
 import supplierCatalogOffers from "./routes/supplierCatalogOffers.js";
 import adminOfferChangeRequests from "./routes/adminOfferChangeRequests.js";
 import adminUsersRouter from "./routes/adminUsers.js";
+import checkoutShippingRouter from "./routes/checkoutShipping.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -395,7 +396,7 @@ app.use("/api/disputes", disputesRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/riders", ridersRouter);
 app.use("/api/privacy", privacyRouter);
-
+app.use("/api/checkout", checkoutShippingRouter);
 /* ------------------------------ Uploads ------------------------------ */
 const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.resolve(process.cwd(), "uploads");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });

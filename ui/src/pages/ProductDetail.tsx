@@ -18,6 +18,8 @@ import { upsertCartLine, toMiniCartRows, readCartLines } from "../utils/cartMode
 /* ---------------- Types ---------------- */
 type Brand = { id: string; name: string } | null;
 
+type SupplierLite = { id: string; name?: string | null } | null;
+
 /**
  * ✅ Conform to Prisma:
  * - ProductVariantOption has unitPrice (optional), NOT priceBump
@@ -31,7 +33,8 @@ type VariantOptionWire = {
 };
 
 /**
- * Offers wire: normalize from any backend shape.
+ * ✅ Schema-aligned offers wire (your current schema does NOT store supplierId on offers)
+ * We fallback to the product's required supplierId/supplier.name.
  */
 type OfferWire = {
   id: string;
@@ -65,6 +68,7 @@ type ProductWire = {
   inStock?: boolean;
   imagesJson?: string[];
   brand?: Brand;
+  supplier?: SupplierLite;
   variants?: VariantWire[];
   offers?: OfferWire[];
   attributes?:
@@ -115,7 +119,7 @@ const NGN = new Intl.NumberFormat("en-NG", {
   maximumFractionDigits: 2,
 });
 
-const toNum = (n: any, d = 0) => {
+const toNum = (n: unknown, d = 0) => {
   const v = Number(n);
   return Number.isFinite(v) ? v : d;
 };
@@ -129,10 +133,15 @@ function idOfOption(o: VariantOptionWire) {
 }
 
 function normalizeVariants(p: any): VariantWire[] {
-  const src: any[] = Array.isArray(p?.variants) ? p.variants : [];
+  // ✅ Support both Prisma relation names and legacy keys
+  const src: any[] = Array.isArray(p?.variants)
+    ? p.variants
+    : Array.isArray(p?.ProductVariant)
+      ? p.ProductVariant
+      : [];
 
   const readVariantRetail = (x: any) => {
-    const raw = x?.retailPrice ?? null;
+    const raw = x?.retailPrice ?? x?.price ?? null; // price is mapped from retailPrice in Prisma
     return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
   };
 
@@ -169,13 +178,18 @@ function offersFromSchema(p: any): OfferWire[] {
   const base: any[] = Array.isArray(p?.supplierProductOffers) ? p.supplierProductOffers : [];
   const vars: any[] = Array.isArray(p?.supplierVariantOffers) ? p.supplierVariantOffers : [];
 
+  // ✅ Current schema: offers are NOT supplier-keyed
+  // Use product.supplier as canonical supplier for display/grouping.
+  const fallbackSupplierId = String(p?.supplierId ?? p?.supplier?.id ?? "PRODUCT_SUPPLIER");
+  const fallbackSupplierName = p?.supplier?.name ? String(p.supplier.name) : null;
+
   const out: OfferWire[] = [];
 
   for (const o of base) {
     out.push({
       id: String(o.id),
-      supplierId: String(o.supplierId),
-      supplierName: o?.supplier?.name ? String(o.supplier.name) : null,
+      supplierId: fallbackSupplierId,
+      supplierName: fallbackSupplierName,
       productId: String(o.productId),
       variantId: null,
       currency: o?.currency ?? "NGN",
@@ -191,8 +205,8 @@ function offersFromSchema(p: any): OfferWire[] {
   for (const o of vars) {
     out.push({
       id: String(o.id),
-      supplierId: String(o.supplierId),
-      supplierName: o?.supplier?.name ? String(o.supplier.name) : null,
+      supplierId: fallbackSupplierId,
+      supplierName: fallbackSupplierName,
       productId: String(o.productId),
       variantId: String(o.variantId),
       currency: o?.currency ?? "NGN",
@@ -252,17 +266,25 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
     };
   }
 
-  const attrsArr: any[] = Array.isArray(p?.attributes) ? p.attributes : [];
-  const textsArr: any[] = Array.isArray(p?.attributeTexts) ? p.attributeTexts : [];
+  // ✅ Also support Prisma relation-shaped arrays from your schema
+  const attrsArr: any[] =
+    (Array.isArray(p?.attributes) && p.attributes) ||
+    (Array.isArray(p?.attributeOptions) && p.attributeOptions) ||
+    (Array.isArray(p?.ProductAttributeOption) && p.ProductAttributeOption) ||
+    [];
+  const textsArr: any[] =
+    (Array.isArray(p?.attributeTexts) && p.attributeTexts) ||
+    (Array.isArray(p?.ProductAttributeText) && p.ProductAttributeText) ||
+    [];
 
   const options = attrsArr
     .map((row: any) => {
-      const attributeId = String(row?.attributeId ?? "").trim();
-      const valueId = String(row?.valueId ?? "").trim();
+      const attributeId = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
+      const valueId = String(row?.valueId ?? row?.value?.id ?? "").trim();
       if (!attributeId || !valueId) return null;
 
-      const attributeName = row?.attributeName;
-      const valueName = row?.valueName;
+      const attributeName = row?.attribute?.name ?? row?.attributeName;
+      const valueName = row?.value?.name ?? row?.valueName;
 
       return {
         attributeId,
@@ -277,11 +299,11 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
 
   const texts = textsArr
     .map((t: any) => {
-      const attributeId = String(t?.attributeId ?? "").trim();
+      const attributeId = String(t?.attributeId ?? t?.attribute?.id ?? "").trim();
       const value = String(t?.value ?? "").trim();
       if (!attributeId || !value) return null;
 
-      const attributeName = t?.attributeName;
+      const attributeName = t?.attribute?.name ?? t?.attributeName;
 
       return {
         attributeId,
@@ -315,7 +337,13 @@ function normalizeBaseDefaultsFromAttributes(p: any): Record<string, string> {
     if (Object.keys(out).length) return out;
   }
 
-  const opts: any[] = Array.isArray(p?.attributes?.options) ? p.attributes.options : [];
+  const opts: any[] = Array.isArray(p?.attributes?.options)
+    ? p.attributes.options
+    : Array.isArray(p?.attributeOptions)
+      ? p.attributeOptions
+      : Array.isArray(p?.ProductAttributeOption)
+        ? p.ProductAttributeOption
+        : [];
   for (const row of opts) {
     const a = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
     const v = String(row?.valueId ?? row?.value?.id ?? "").trim();
@@ -434,7 +462,7 @@ function pickBestOffer(params: {
 
     const candidate: BestOfferPick = {
       offerId: String(o.id),
-      supplierId: String(o.supplierId),
+      supplierId: String(o.supplierId ?? "PRODUCT_SUPPLIER"),
       supplierName: o.supplierName ?? null,
       model: isVariant ? "VARIANT" : "BASE",
       variantId: o.variantId ? String(o.variantId) : null,
@@ -507,7 +535,8 @@ export default function ProductDetail() {
     queryKey: ["product", id],
     queryFn: async () => {
       const { data } = await api.get(`/api/products/${id}`, {
-        params: { include: "brand,variants,attributes,supplierProductOffers,supplierVariantOffers" },
+        // ✅ include supplier because current offer schema is not supplier-keyed
+        params: { include: "brand,supplier,variants,attributes,supplierProductOffers,supplierVariantOffers" },
       });
 
       const payload = (data as any)?.data ?? data ?? {};
@@ -557,7 +586,8 @@ export default function ProductDetail() {
       const sellableVariantIds = new Set(Object.keys(stockByVariantId));
 
       const readProductRetail = (x: any) => {
-        const raw = x?.retailPrice ?? null;
+        // Prisma maps retailPrice -> price column; API can return either name depending on serializer
+        const raw = x?.retailPrice ?? x?.price ?? null;
         return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
       };
 
@@ -569,6 +599,7 @@ export default function ProductDetail() {
         inStock: p.inStock !== false,
         imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
         brand: p.brand ? { id: String(p.brand.id), name: String(p.brand.name) } : null,
+        supplier: p.supplier ? { id: String(p.supplier.id), name: p.supplier.name ? String(p.supplier.name) : null } : null,
         variants,
         offers,
         attributes: normalizeAttributesIntoProductWire(p),
@@ -605,7 +636,11 @@ export default function ProductDetail() {
         id: String(x?.id ?? ""),
         title: String(x?.title ?? ""),
         retailPrice:
-          x?.retailPrice != null && Number.isFinite(Number(x.retailPrice)) ? Number(x.retailPrice) : null,
+          x?.retailPrice != null && Number.isFinite(Number(x.retailPrice))
+            ? Number(x.retailPrice)
+            : x?.price != null && Number.isFinite(Number(x.price))
+              ? Number(x.price)
+              : null,
         imagesJson: Array.isArray(x?.imagesJson) ? x.imagesJson : [],
         inStock: x?.inStock !== false,
       })) as SimilarProductWire[];
@@ -640,7 +675,6 @@ export default function ProductDetail() {
   }, [baseStockQty, variantStockQty]);
 
   const allVariants = product?.variants ?? [];
-
   const variantsForOptions = allVariants;
 
   const axes = React.useMemo(() => {
@@ -955,8 +989,8 @@ export default function ProductDetail() {
         mode: "BASE" as const,
         supplierPrice: chosenSupplier,
         final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
-        supplierId: null as string | null,
-        supplierName: null as string | null,
+        supplierId: product?.supplier?.id ?? null,
+        supplierName: product?.supplier?.name ?? null,
         offerId: null as string | null,
         matchedVariant: null as VariantWire | null,
         exactMatch: false,
@@ -1039,8 +1073,8 @@ export default function ProductDetail() {
     return {
       mode: "VARIANT" as const,
       supplierPrice: chosen?.unitPrice ?? null,
-      supplierId: chosen?.supplierId ?? null,
-      supplierName: chosen?.supplierName ?? null,
+      supplierId: chosen?.supplierId ?? product?.supplier?.id ?? null,
+      supplierName: chosen?.supplierName ?? product?.supplier?.name ?? null,
       offerId: chosen?.offerId ?? null,
       final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
       matchedVariant: matched,
@@ -1051,6 +1085,8 @@ export default function ProductDetail() {
   }, [
     product?.offers,
     product?.retailPrice,
+    product?.supplier?.id,
+    product?.supplier?.name,
     axes.length,
     selected,
     isAtBaseDefaults,
@@ -1076,22 +1112,42 @@ export default function ProductDetail() {
     }
 
     if (isAllEmptySelection(selected)) {
-      return { disableAddToCart: true, helperNote: "Choose base option, or select a valid variant combination.", mode: "VARIANT" as const, variantId: null as string | null };
+      return {
+        disableAddToCart: true,
+        helperNote: "Choose base option, or select a valid variant combination.",
+        mode: "VARIANT" as const,
+        variantId: null as string | null,
+      };
     }
 
     if (isAtBaseDefaults(selected)) {
       if (canBuyBase) {
-        return { disableAddToCart: false, helperNote: "Base product selected. Choose options to buy a specific variant.", mode: "BASE" as const, variantId: null as string | null };
+        return {
+          disableAddToCart: false,
+          helperNote: "Base product selected. Choose options to buy a specific variant.",
+          mode: "BASE" as const,
+          variantId: null as string | null,
+        };
       }
       if (variantStockQty > 0) {
-        return { disableAddToCart: true, helperNote: "Base offer is not available. This product is available as variants only — please select options.", mode: "BASE" as const, variantId: null as string | null };
+        return {
+          disableAddToCart: true,
+          helperNote: "Base offer is not available. This product is available as variants only — please select options.",
+          mode: "BASE" as const,
+          variantId: null as string | null,
+        };
       }
       return { disableAddToCart: true, helperNote: "Out of stock.", mode: "BASE" as const, variantId: null as string | null };
     }
 
     if (picked.length && exact.length > 0) {
       if (totalStockExact <= 0) {
-        return { disableAddToCart: true, helperNote: "This variant combo is out of stock (no active supplier offer). Try another combination.", mode: "VARIANT" as const, variantId: null as string | null };
+        return {
+          disableAddToCart: true,
+          helperNote: "This variant combo is out of stock (no active supplier offer). Try another combination.",
+          mode: "VARIANT" as const,
+          variantId: null as string | null,
+        };
       }
 
       const vid = computed.matchedVariant?.id ?? exact[0]?.id ?? null;
@@ -1102,7 +1158,9 @@ export default function ProductDetail() {
       const missingNames = axes.filter((a) => missingAxisIds.has(a.id)).map((a) => a.name);
       return {
         disableAddToCart: true,
-        helperNote: missingNames.length ? `Please also select: ${missingNames.join(", ")}.` : "This choice is incomplete. Please select the remaining options.",
+        helperNote: missingNames.length
+          ? `Please also select: ${missingNames.join(", ")}.`
+          : "This choice is incomplete. Please select the remaining options.",
         mode: "VARIANT" as const,
         variantId: null as string | null,
       };
@@ -1137,7 +1195,7 @@ export default function ProductDetail() {
   }
 
   const images = React.useMemo(() => {
-    const arr = Array.isArray(product?.imagesJson) ? product!.imagesJson! : [];
+    const arr = Array.isArray(product?.imagesJson) ? product.imagesJson : [];
     return arr.map(String).filter((u) => isUrlish(u));
   }, [product?.imagesJson]);
 
@@ -1159,7 +1217,10 @@ export default function ProductDetail() {
     const qty = currentSelectionQty;
 
     if (!purchaseMeta.disableAddToCart && qty > 0) {
-      return { text: `In stock${Number.isFinite(qty) ? ` • ${qty}` : ""}`, cls: "bg-emerald-600/10 text-emerald-700 border-emerald-600/20" };
+      return {
+        text: `In stock${Number.isFinite(qty) ? ` • ${qty}` : ""}`,
+        cls: "bg-emerald-600/10 text-emerald-700 border-emerald-600/20",
+      };
     }
 
     if (productAvailabilityMode === "NONE") return { text: "Out of stock", cls: "bg-rose-600/10 text-rose-700 border-rose-600/20" };
@@ -1479,7 +1540,10 @@ export default function ProductDetail() {
         enabled: !!sp.id,
         staleTime: 60_000,
         queryFn: async () => {
-          const { data } = await api.get(`/api/products/${sp.id}`, { params: { include: "offers" } });
+          const { data } = await api.get(`/api/products/${sp.id}`, {
+            // ✅ schema-aligned include
+            params: { include: "supplier,supplierProductOffers,supplierVariantOffers" },
+          });
           const payload = (data as any)?.data ?? data ?? {};
           const p = (payload as any)?.data ?? payload;
 
@@ -1542,6 +1606,7 @@ export default function ProductDetail() {
       description: desc,
       url: canonical,
       ...(img ? { image: [img] } : {}),
+      ...(product.brand?.name ? { brand: { "@type": "Brand", name: product.brand.name } } : {}),
       ...(price != null
         ? {
             offers: {
@@ -1561,6 +1626,7 @@ export default function ProductDetail() {
     product?.id,
     product?.title,
     product?.description,
+    product?.brand?.name,
     JSON.stringify(product?.imagesJson ?? []),
     SITE_ORIGIN,
     absUrl,
@@ -1753,7 +1819,14 @@ export default function ProductDetail() {
                         updateZoomAnchor();
                       }
                 }
-                onMouseLeave={isCoarsePointer ? undefined : () => { setShowZoom(false); setPaused(false); }}
+                onMouseLeave={
+                  isCoarsePointer
+                    ? undefined
+                    : () => {
+                        setShowZoom(false);
+                        setPaused(false);
+                      }
+                }
                 onMouseMove={isCoarsePointer ? undefined : onMouseMove}
               >
                 {showMainImg ? (
@@ -1776,7 +1849,10 @@ export default function ProductDetail() {
                 {availabilityBadge.text}
               </span>
 
-              {showZoom && hasBox && zoomAnchor && showMainImg &&
+              {showZoom &&
+                hasBox &&
+                zoomAnchor &&
+                showMainImg &&
                 createPortal(
                   <div
                     className={`hidden md:block rounded-xl overflow-hidden pointer-events-none z-[9999] bg-white ${silverBorder} ${silverShadow}`}
@@ -1836,7 +1912,11 @@ export default function ProductDetail() {
             </div>
 
             {images.length > 0 && (
-              <div className="flex items-center justify-center gap-2" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
+              <div
+                className="flex items-center justify-center gap-2"
+                onMouseEnter={() => setPaused(true)}
+                onMouseLeave={() => setPaused(false)}
+              >
                 <button
                   type="button"
                   onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
@@ -2027,7 +2107,9 @@ export default function ProductDetail() {
                         className={`min-w-[220px] max-w-[220px] rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} hover:opacity-95`}
                       >
                         <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
-                          {img ? <img src={img} alt={sp.title} className="w-full h-full object-cover" /> : (
+                          {img ? (
+                            <img src={img} alt={sp.title} className="w-full h-full object-cover" />
+                          ) : (
                             <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">No image</div>
                           )}
                         </div>

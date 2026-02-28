@@ -39,14 +39,14 @@ export default function Payment() {
     typeof state.total === 'number'
       ? state.total
       : state.total
-      ? Number(state.total) || undefined
-      : undefined;
+        ? Number(state.total) || undefined
+        : undefined;
   const estimatedServiceFeeTotal =
     typeof state.serviceFeeTotal === 'number'
       ? state.serviceFeeTotal
       : state.serviceFeeTotal
-      ? Number(state.serviceFeeTotal) || undefined
-      : undefined;
+        ? Number(state.serviceFeeTotal) || undefined
+        : undefined;
 
   const [loading, setLoading] = useState(false);
   const [init, setInit] = useState<InitResp | null>(null);
@@ -77,7 +77,13 @@ export default function Payment() {
         // ✅ Cookie auth: rely on httpOnly session cookie
         const { data } = await api.post<InitResp>(
           '/api/payments/init',
-          { orderId, channel: 'paystack' },
+          {
+            orderId,
+            channel: 'paystack',
+            ...(typeof estimatedTotal === 'number' && Number.isFinite(estimatedTotal)
+              ? { expectedTotal: estimatedTotal }
+              : {}),
+          },
           { withCredentials: true },
         );
 
@@ -92,7 +98,7 @@ export default function Payment() {
               at: new Date().toISOString(),
             }),
           );
-        } catch {}
+        } catch { }
 
         if (data.mode === 'paystack' && data.authorization_url) {
           if (localStorage.getItem(AUTO_REDIRECT_KEY) === '1') {
@@ -209,20 +215,19 @@ export default function Payment() {
     setAutoRedirect(v);
     try {
       localStorage.setItem(AUTO_REDIRECT_KEY, v ? '1' : '0');
-    } catch {}
+    } catch { }
   };
 
   // ---------- Hosted modal ----------
   const HostedCheckoutModal = () => {
     if (!init?.authorization_url) return null;
 
-    // pick what to show as "Total payable"
     const displayTotal =
-      typeof estimatedTotal === 'number' && estimatedTotal > 0
-        ? estimatedTotal
-        : typeof init.amount === 'number'
+      typeof init.amount === 'number' && init.amount > 0
         ? init.amount
-        : undefined;
+        : typeof estimatedTotal === 'number' && estimatedTotal > 0
+          ? estimatedTotal
+          : undefined;
 
     return (
       <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/50">
@@ -302,9 +307,9 @@ export default function Payment() {
                     {ngn.format(displayTotal)}
                   </div>
 
-                  {estimatedTotal &&
-                    init.amount &&
-                    estimatedTotal !== init.amount && (
+                  {typeof estimatedTotal === 'number' &&
+                    typeof init.amount === 'number' &&
+                    Math.abs(estimatedTotal - init.amount) > 1 && (
                       <div className="text-[10px] text-zinc-500 mt-1 leading-snug">
                         Includes estimated service &amp; gateway fees. Backend amount ({ngn.format(init.amount)}) will be reconciled on the receipt.
                       </div>
@@ -404,23 +409,31 @@ export default function Payment() {
 
               {(estimatedTotal !== undefined || (init.amount && init.currency)) && (
                 <div className="mt-4 rounded-xl border bg-zinc-50 p-3">
-                  {estimatedTotal !== undefined ? (
+                  {typeof init.amount === 'number' ? (
                     <>
                       <div className="text-[11px] text-zinc-500">Total payable</div>
                       <div className="text-lg font-semibold mt-1">
-                        {ngn.format(estimatedTotal)}
+                        {ngn.format(init.amount)}
                       </div>
-                      {estimatedServiceFeeTotal ? (
+
+                      {typeof estimatedTotal === 'number' && Math.abs(estimatedTotal - init.amount) > 1 ? (
+                        <div className="text-[11px] text-zinc-500 mt-1">
+                          Checkout estimate was {ngn.format(estimatedTotal)}. Final payable amount is from your order total (includes shipping and fees).
+                        </div>
+                      ) : estimatedServiceFeeTotal ? (
                         <div className="text-[11px] text-zinc-500 mt-1">
                           Includes estimated service &amp; gateway fees: {ngn.format(estimatedServiceFeeTotal)}
                         </div>
                       ) : null}
                     </>
-                  ) : (
-                    <div className="text-sm">
-                      <b>Amount:</b> {init.currency} {Number(init.amount).toLocaleString()}
-                    </div>
-                  )}
+                  ) : estimatedTotal !== undefined ? (
+                    <>
+                      <div className="text-[11px] text-zinc-500">Total payable</div>
+                      <div className="text-lg font-semibold mt-1">
+                        {ngn.format(estimatedTotal)}
+                      </div>
+                    </>
+                  ) : null}
                 </div>
               )}
 

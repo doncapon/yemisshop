@@ -601,63 +601,63 @@ export default function Catalog() {
 
           const variants: Variant[] = Array.isArray(x.variants)
             ? x.variants.map((v: any) => {
-                const vRetail = v.retailPrice != null ? decToNumber(v.retailPrice) : null;
+              const vRetail = v.retailPrice != null ? decToNumber(v.retailPrice) : null;
 
-                const vOffers: SupplierOfferLite[] = Array.isArray(v.offers)
-                  ? v.offers.map((o: any) => ({
-                      id: String(o.id),
-                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                      isActive: o.isActive === true,
-                      inStock: o.inStock === true,
-                      availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
-                      unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                      supplierRatingAvg:
-                        o.supplierRatingAvg != null
-                          ? decToNumber(o.supplierRatingAvg)
-                          : o.supplier?.ratingAvg != null
-                            ? decToNumber(o.supplier.ratingAvg)
-                            : null,
-                      supplierRatingCount:
-                        o.supplierRatingCount != null
-                          ? Number(o.supplierRatingCount)
-                          : o.supplier?.ratingCount != null
-                            ? Number(o.supplier.ratingCount)
-                            : null,
-                    }))
-                  : [];
+              const vOffers: SupplierOfferLite[] = Array.isArray(v.offers)
+                ? v.offers.map((o: any) => ({
+                  id: String(o.id),
+                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                  supplierRatingAvg:
+                    o.supplierRatingAvg != null
+                      ? decToNumber(o.supplierRatingAvg)
+                      : o.supplier?.ratingAvg != null
+                        ? decToNumber(o.supplier.ratingAvg)
+                        : null,
+                  supplierRatingCount:
+                    o.supplierRatingCount != null
+                      ? Number(o.supplierRatingCount)
+                      : o.supplier?.ratingCount != null
+                        ? Number(o.supplier.ratingCount)
+                        : null,
+                }))
+                : [];
 
-                return {
-                  id: String(v.id),
-                  sku: v.sku ?? null,
-                  retailPrice: vRetail,
-                  inStock: v.inStock === true,
-                  imagesJson: normalizeImages(v.imagesJson),
-                  offers: vOffers,
-                };
-              })
+              return {
+                id: String(v.id),
+                sku: v.sku ?? null,
+                retailPrice: vRetail,
+                inStock: v.inStock === true,
+                imagesJson: normalizeImages(v.imagesJson),
+                offers: vOffers,
+              };
+            })
             : [];
 
           const baseOffers: SupplierOfferLite[] = Array.isArray(x.supplierProductOffers)
             ? x.supplierProductOffers.map((o: any) => ({
-                id: String(o.id),
-                supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                isActive: o.isActive === true,
-                inStock: o.inStock === true,
-                availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
-                basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
-                supplierRatingAvg:
-                  o.supplierRatingAvg != null
-                    ? decToNumber(o.supplierRatingAvg)
-                    : o.supplier?.ratingAvg != null
-                      ? decToNumber(o.supplier.ratingAvg)
-                      : null,
-                supplierRatingCount:
-                  o.supplierRatingCount != null
-                    ? Number(o.supplierRatingCount)
-                    : o.supplier?.ratingCount != null
-                      ? Number(o.supplier.ratingCount)
-                      : null,
-              }))
+              id: String(o.id),
+              supplierId: o.supplierId ?? o.supplier?.id ?? null,
+              isActive: o.isActive === true,
+              inStock: o.inStock === true,
+              availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+              basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+              supplierRatingAvg:
+                o.supplierRatingAvg != null
+                  ? decToNumber(o.supplierRatingAvg)
+                  : o.supplier?.ratingAvg != null
+                    ? decToNumber(o.supplier.ratingAvg)
+                    : null,
+              supplierRatingCount:
+                o.supplierRatingCount != null
+                  ? Number(o.supplierRatingCount)
+                  : o.supplier?.ratingCount != null
+                    ? Number(o.supplier.ratingCount)
+                    : null,
+            }))
             : [];
 
           const catNameRaw = String(x.categoryName ?? x.category?.name ?? "").trim();
@@ -930,9 +930,8 @@ export default function Catalog() {
   }, [filtered, recScored, sortKey, inStockOnly, settingsMarginPct]);
 
   /* ---------------- Pagination ---------------- */
-
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<6 | 9 | 12>(9);
+  const [pageSize, setPageSize] = useState<8 | 12 | 16>(12);
 
   useEffect(() => {
     setPage(1);
@@ -1176,7 +1175,7 @@ export default function Catalog() {
         </div>
 
         {/* Context chips */}
-        {(hasSearch || anyActiveFilter || sortKey !== "relevance" || pageSize !== 9) && (
+        {(hasSearch || anyActiveFilter || sortKey !== "relevance" || pageSize !== 12) && (
           <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-700">
             {hasSearch && (
               <span className="rounded-full border bg-white/80 px-2.5 py-1 silver-border">
@@ -1196,7 +1195,7 @@ export default function Catalog() {
                 </span>
               </span>
             )}
-            {pageSize !== 9 && (
+            {pageSize !== 12 && (
               <span className="rounded-full border bg-white/80 px-2.5 py-1 silver-border">
                 Per page: <span className="font-semibold">{pageSize}</span>
               </span>
@@ -1212,218 +1211,476 @@ export default function Catalog() {
           </div>
         )}
 
+        {/* Desktop search (above products) */}
+        <div className="hidden md:block mt-3 mb-4">
+          <div className="relative max-w-2xl">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setShowSuggest(true);
+                setActiveIdx(0);
+              }}
+              onFocus={() => query && setShowSuggest(true)}
+              onKeyDown={(e) => {
+                if (!showSuggest || suggestions.length === 0) return;
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setActiveIdx((i) => Math.max(i - 1, 0));
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  const pick = suggestions[activeIdx];
+                  if (pick) nav(`/product/${pick.id}`);
+                  setShowSuggest(false);
+                } else if (e.key === "Escape") {
+                  setShowSuggest(false);
+                }
+              }}
+              placeholder="Search products, brands, or categories…"
+              className="w-full rounded-2xl pl-10 pr-4 py-2.5 bg-white/90 backdrop-blur silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+              aria-label="Search products"
+            />
+
+            {showSuggest && query && suggestions.length > 0 && (
+              <div
+                ref={suggestRef}
+                className="absolute left-0 right-0 mt-2 bg-white rounded-2xl shadow-2xl z-30 overflow-hidden silver-border-grad"
+              >
+                <ul className="max-h-[45vh] overflow-auto p-2">
+                  {suggestions.map((p, i) => {
+                    const active = i === activeIdx;
+                    const minPrice = priceForFiltering(p);
+
+                    return (
+                      <li key={p.id} className="mb-2 last:mb-0">
+                        <button
+                          type="button"
+                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
+                            }`}
+                          onClick={() => {
+                            setShowSuggest(false);
+                            nav(`/product/${p.id}`);
+                          }}
+                        >
+                          {p.imagesJson?.[0] ? (
+                            <img
+                              src={resolveImageUrl(p.imagesJson?.[0])}
+                              alt=""
+                              aria-hidden="true"
+                              onError={(e) => e.currentTarget.remove()}
+                              className="w-14 h-14 object-cover rounded-xl silver-border"
+                            />
+                          ) : (
+                            <div className="w-14 h-14 rounded-xl silver-border grid place-items-center text-base text-gray-500">
+                              —
+                            </div>
+                          )}
+
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold truncate">{p.title}</div>
+                            <div className="text-xs opacity-80 truncate">
+                              {ngn.format(minPrice || 0)}
+                              {p.categoryName ? ` • ${p.categoryName}` : ""}
+                              {p.brand?.name ? ` • ${p.brand.name}` : ""}
+                            </div>
+                          </div>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Body */}
-        <div className="mt-2">
+        {/* Body */}
+        <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
+          {/* Desktop left filters */}
+          <aside className="hidden md:block">
+            <div className="sticky top-24 rounded-2xl bg-white/90 p-4 silver-border-grad">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-zinc-900">Refine</h3>
+                {(anyActiveFilter || hasSearch) && (
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-fuchsia-700 hover:underline"
+                    onClick={() => {
+                      setQuery("");
+                      setShowSuggest(false);
+                      clearFilters();
+                    }}
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+
+              {/* Sort */}
+              <div className="mb-3">
+                <label className="mb-1 block text-xs font-medium text-zinc-700">Sort</label>
+                <select
+                  value={sortKey}
+                  onChange={(e) => setSortKey(e.target.value as SortKey)}
+                  className="w-full rounded-xl px-3 py-2 bg-white silver-border"
+                >
+                  <option value="relevance">Relevance</option>
+                  <option value="price-asc">Price: Low → High</option>
+                  <option value="price-desc">Price: High → Low</option>
+                </select>
+              </div>
+
+              {/* Per page */}
+              <div className="mb-3">
+                <label className="mb-1 block text-xs font-medium text-zinc-700">Per page</label>
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
+                  className="w-full rounded-xl px-3 py-2 bg-white silver-border"
+                >
+                  <option value={8}>8</option>
+                  <option value={12}>12</option>
+                  <option value={16}>16</option>
+                </select>
+              </div>
+
+              {/* In stock */}
+              <div className="mb-4">
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-800">
+                  <input
+                    type="checkbox"
+                    checked={inStockOnly}
+                    onChange={(e) => setInStockOnly(e.target.checked)}
+                    className="h-4 w-4 rounded border-zinc-300"
+                  />
+                  In stock
+                </label>
+              </div>
+
+              {/* Categories */}
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-semibold text-zinc-800">Categories</h4>
+                  <button
+                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    onClick={() => setSelectedCategories([])}
+                    disabled={selectedCategories.length === 0}
+                  >
+                    Reset
+                  </button>
+                </div>
+                <ul className="space-y-1.5 max-h-52 overflow-auto pr-1">
+                  {categories.length === 0 && <Shimmer />}
+                  {categories.map((c) => {
+                    const checked = selectedCategories.includes(c.id);
+                    return (
+                      <li key={c.id}>
+                        <button
+                          onClick={() => toggleCategory(c.id)}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                            }`}
+                        >
+                          <span className="truncate">{c.name}</span>
+                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            ({c.count})
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+
+              {/* Brands */}
+              {brands.length > 0 && (
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-xs font-semibold text-zinc-800">Brands</h4>
+                    <button
+                      className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                      onClick={() => setSelectedBrands([])}
+                      disabled={selectedBrands.length === 0}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <ul className="space-y-1.5 max-h-44 overflow-auto pr-1">
+                    {brands.map((b) => {
+                      const checked = selectedBrands.includes(b.name);
+                      return (
+                        <li key={b.name}>
+                          <button
+                            onClick={() => toggleBrand(b.name)}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                              }`}
+                          >
+                            <span className="truncate">{b.name}</span>
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({b.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {/* Price */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
+                  <button
+                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    onClick={() => setSelectedBucketIdxs([])}
+                    disabled={selectedBucketIdxs.length === 0}
+                  >
+                    Reset
+                  </button>
+                </div>
+                <ul className="space-y-1.5 max-h-56 overflow-auto pr-1">
+                  {visiblePriceBuckets.length === 0 && <Shimmer />}
+                  {visiblePriceBuckets.map(({ bucket, idx, count }) => {
+                    const checked = selectedBucketIdxs.includes(idx);
+                    return (
+                      <li key={bucket.label}>
+                        <button
+                          onClick={() => toggleBucket(idx)}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                            }`}
+                        >
+                          <span>{bucket.label}</span>
+                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            ({count})
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            </div>
+          </aside>
+
+
           <section className="mt-0 min-w-0">
             {sorted.length === 0 ? (
               <p className="text-sm text-zinc-600">No products match your filters.</p>
             ) : (
               <>
-                <div className="-mx-2 sm:mx-0 grid gap-1.5 sm:gap-3 md:gap-4 grid-cols-2 md:grid-cols-3">
-                  {pageItems.map((p) => {
-                    const fav = isFav(p.id);
-                    const bestPrice = priceForFiltering(p);
+                <div className="-mx-2 sm:mx-0 grid gap-1.5 sm:gap-3 md:gap-4 grid-cols-2 md:grid-cols-4">                  {pageItems.map((p) => {
+                  const fav = isFav(p.id);
+                  const bestPrice = priceForFiltering(p);
 
-                    const primaryImgRaw =
-                      p.imagesJson?.[0] ||
-                      p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
-                      undefined;
+                  const primaryImgRaw =
+                    p.imagesJson?.[0] ||
+                    p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
+                    undefined;
 
-                    const hoverImgRaw =
-                      p.imagesJson?.[1] ||
-                      p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[1])?.imagesJson?.[1] ||
-                      undefined;
+                  const hoverImgRaw =
+                    p.imagesJson?.[1] ||
+                    p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[1])?.imagesJson?.[1] ||
+                    undefined;
 
-                    const primaryImg = resolveImageUrl(primaryImgRaw);
-                    const hoverImg = resolveImageUrl(hoverImgRaw);
-                    const hasDifferentHover = !!hoverImg && hoverImg !== primaryImg;
+                  const primaryImg = resolveImageUrl(primaryImgRaw);
+                  const hoverImg = resolveImageUrl(hoverImgRaw);
+                  const hasDifferentHover = !!hoverImg && hoverImg !== primaryImg;
 
-                    const needsOptions = Array.isArray(p.variants) && p.variants.length > 0;
+                  const needsOptions = Array.isArray(p.variants) && p.variants.length > 0;
 
-                    const allOffers = collectAllOffers(p);
-                    const totalAvail = sumActivePositiveQty(allOffers) || null;
+                  const allOffers = collectAllOffers(p);
+                  const totalAvail = sumActivePositiveQty(allOffers) || null;
 
-                    const inCart = qtyInCart(cartSnapshot as any, p.id, null);
-                    const remaining = totalAvail == null ? null : Math.max(0, totalAvail - inCart);
+                  const inCart = qtyInCart(cartSnapshot as any, p.id, null);
+                  const remaining = totalAvail == null ? null : Math.max(0, totalAvail - inCart);
 
-                    const allowQuickAdd = productSellable(p, settingsMarginPct) && !needsOptions;
-                    const currentQty = inCart;
-                    const canIncrement = remaining == null ? allowQuickAdd : remaining > 0;
+                  const allowQuickAdd = productSellable(p, settingsMarginPct) && !needsOptions;
+                  const currentQty = inCart;
+                  const canIncrement = remaining == null ? allowQuickAdd : remaining > 0;
 
-                    const available = availableNow(p);
-                    const live = isLive(p);
+                  const available = availableNow(p);
+                  const live = isLive(p);
 
-                    const badge = !live
-                      ? { text: "Pending approval", cls: "bg-amber-600/10 text-amber-700 border border-amber-600/20" }
-                      : available
-                        ? { text: "In stock", cls: "bg-emerald-600/10 text-emerald-700 border border-emerald-600/20" }
-                        : { text: "Out of stock", cls: "bg-rose-600/10 text-rose-700 border border-rose-600/20" };
+                  const badge = !live
+                    ? { text: "Pending approval", cls: "bg-amber-600/10 text-amber-700 border border-amber-600/20" }
+                    : available
+                      ? { text: "In stock", cls: "bg-emerald-600/10 text-emerald-700 border border-emerald-600/20" }
+                      : { text: "Out of stock", cls: "bg-rose-600/10 text-rose-700 border border-rose-600/20" };
 
-                    return (
-                      <motion.article
-                        key={p.id}
-                        whileHover={{ y: -3 }}
-                        className="group w-full rounded-2xl bg-white/90 backdrop-blur overflow-hidden silver-border-grad silver-hover"
-                      >
-                        <Link to={`/product/${p.id}`} className="block">
-                          <div className="relative w-full h-28 sm:h-36 md:h-48 overflow-hidden">
-                            <div className="absolute inset-0 grid place-items-center text-zinc-400 text-xs">No image</div>
+                  return (
+                    <motion.article
+                      key={p.id}
+                      whileHover={{ y: -3 }}
+                      className="group w-full rounded-2xl bg-white/90 backdrop-blur overflow-hidden silver-border-grad silver-hover"
+                    >
+                      <Link to={`/product/${p.id}`} className="block">
+                        <div className="relative w-full h-28 sm:h-36 md:h-40 overflow-hidden">
+                          <div className="absolute inset-0 grid place-items-center text-zinc-400 text-xs">No image</div>
 
-                            {primaryImg && !brokenImg[`p:${p.id}:${primaryImg}`] ? (
-                              <>
+                          {primaryImg && !brokenImg[`p:${p.id}:${primaryImg}`] ? (
+                            <>
+                              <img
+                                key={`primary-${p.id}-${primaryImg}`}
+                                src={primaryImg}
+                                alt=""
+                                loading="lazy"
+                                onError={() => markBroken(`p:${p.id}:${primaryImg}`)}
+                                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${hasDifferentHover ? "opacity-100 group-hover:opacity-0" : "opacity-100"
+                                  }`}
+                              />
+
+                              {hasDifferentHover && hoverImg && !brokenImg[`h:${p.id}:${hoverImg}`] && (
                                 <img
-                                  key={`primary-${p.id}-${primaryImg}`}
-                                  src={primaryImg}
+                                  key={`hover-${p.id}-${hoverImg}`}
+                                  src={hoverImg}
                                   alt=""
                                   loading="lazy"
-                                  onError={() => markBroken(`p:${p.id}:${primaryImg}`)}
-                                  className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
-                                    hasDifferentHover ? "opacity-100 group-hover:opacity-0" : "opacity-100"
-                                  }`}
+                                  onError={() => markBroken(`h:${p.id}:${hoverImg}`)}
+                                  className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300 opacity-0 group-hover:opacity-100"
                                 />
+                              )}
+                            </>
+                          ) : null}
 
-                                {hasDifferentHover && hoverImg && !brokenImg[`h:${p.id}:${hoverImg}`] && (
-                                  <img
-                                    key={`hover-${p.id}-${hoverImg}`}
-                                    src={hoverImg}
-                                    alt=""
-                                    loading="lazy"
-                                    onError={() => markBroken(`h:${p.id}:${hoverImg}`)}
-                                    className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300 opacity-0 group-hover:opacity-100"
-                                  />
-                                )}
-                              </>
-                            ) : null}
+                          <div className="absolute left-2 top-2">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] ${badge.cls}`}>
+                              {badge.text}
+                            </span>
+                          </div>
+                        </div>
+                      </Link>
 
-                            <div className="absolute left-2 top-2">
-                              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] ${badge.cls}`}>
-                                {badge.text}
-                              </span>
-                            </div>
+                      <div className="p-2.5 md:p-4">
+                        <Link to={`/product/${p.id}`} className="block">
+                          <h3 className="font-semibold text-[12px] md:text-sm leading-tight text-zinc-900 line-clamp-1">
+                            {p.title}
+                          </h3>
+                          <div className="text-[10px] md:text-xs leading-tight text-zinc-500 line-clamp-1">
+                            {p.brand?.name ? `${p.brand.name} • ` : ""}
+                            {p.categoryName?.trim() || "Uncategorized"}
+                          </div>
+
+                          <div className="mt-0.5 flex items-center gap-1.5">
+                            <p className="text-sm md:text-base font-semibold">{ngn.format(bestPrice || 0)}</p>
                           </div>
                         </Link>
 
-                        <div className="p-2.5 md:p-4">
-                          <Link to={`/product/${p.id}`} className="block">
-                            <h3 className="font-semibold text-[12px] md:text-sm leading-tight text-zinc-900 line-clamp-1">
-                              {p.title}
-                            </h3>
-                            <div className="text-[10px] md:text-xs leading-tight text-zinc-500 line-clamp-1">
-                              {p.brand?.name ? `${p.brand.name} • ` : ""}
-                              {p.categoryName?.trim() || "Uncategorized"}
-                            </div>
+                        {Number(p.ratingCount) > 0 && (
+                          <div className="mt-1 text-[10px] md:text-[12px] leading-tight text-amber-700 inline-flex items-center gap-1">
+                            <Star size={14} />
+                            <span>
+                              {Number(p.ratingAvg).toFixed(1)} ({p.ratingCount})
+                            </span>
+                          </div>
+                        )}
 
-                            <div className="mt-0.5 flex items-center gap-1.5">
-                              <p className="text-sm md:text-base font-semibold">{ngn.format(bestPrice || 0)}</p>
-                            </div>
-                          </Link>
-
-                          {Number(p.ratingCount) > 0 && (
-                            <div className="mt-1 text-[10px] md:text-[12px] leading-tight text-amber-700 inline-flex items-center gap-1">
-                              <Star size={14} />
-                              <span>
-                                {Number(p.ratingAvg).toFixed(1)} ({p.ratingCount})
-                              </span>
-                            </div>
-                          )}
-
-                          {!isSupplier && (
-                            <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 relative z-20 pointer-events-auto">
-                              {/* wishlist */}
-                              <button
-                                type="button"
-                                aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
-                                className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full px-2 py-1 transition ${
-                                  fav
-                                    ? "bg-rose-50 text-rose-600 border border-rose-200"
-                                    : "bg-white text-zinc-700 silver-border hover:bg-zinc-50 hover:silver-hover"
+                        {!isSupplier && (
+                          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 relative z-20 pointer-events-auto">
+                            {/* wishlist */}
+                            <button
+                              type="button"
+                              aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
+                              className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full px-2 py-1 transition ${fav
+                                ? "bg-rose-50 text-rose-600 border border-rose-200"
+                                : "bg-white text-zinc-700 silver-border hover:bg-zinc-50 hover:silver-hover"
                                 }`}
-                                onClick={(e) => {
-                                  stopTap(e);
-                                  if (!isAuthed) {
-                                    openModal({ title: "Wishlist", message: "Please login to use the wishlist." });
-                                    return;
-                                  }
-                                  toggleFav.mutate({ productId: p.id });
-                                }}
-                                title={fav ? "Remove from wishlist" : "Add to wishlist"}
+                              onClick={(e) => {
+                                stopTap(e);
+                                if (!isAuthed) {
+                                  openModal({ title: "Wishlist", message: "Please login to use the wishlist." });
+                                  return;
+                                }
+                                toggleFav.mutate({ productId: p.id });
+                              }}
+                              title={fav ? "Remove from wishlist" : "Add to wishlist"}
+                            >
+                              {fav ? <Heart size={14} /> : <HeartOff size={14} />}
+                              <span>{fav ? "Wishlisted" : "Wishlist"}</span>
+                            </button>
+
+                            {needsOptions ? (
+                              <Link
+                                to={`/product/${p.id}`}
+                                className="inline-flex items-center gap-2 rounded-full px-2 py-1 text-[10px] md:text-xs border bg-zinc-500 text-white border-zinc-900 hover:opacity-90"
+                                onClick={(e) => e.stopPropagation?.()}
+                                aria-label="Choose options"
+                                title="Choose options"
                               >
-                                {fav ? <Heart size={14} /> : <HeartOff size={14} />}
-                                <span>{fav ? "Wishlisted" : "Wishlist"}</span>
-                              </button>
-
-                              {needsOptions ? (
-                                <Link
-                                  to={`/product/${p.id}`}
-                                  className="inline-flex items-center gap-2 rounded-full px-2 py-1 text-[10px] md:text-xs border bg-zinc-500 text-white border-zinc-900 hover:opacity-90"
-                                  onClick={(e) => e.stopPropagation?.()}
-                                  aria-label="Choose options"
-                                  title="Choose options"
-                                >
-                                  Choose opts.
-                                </Link>
-                              ) : currentQty > 0 ? (
-                                <div className="inline-flex items-center gap-1">
-                                  <button
-                                    type="button"
-                                    onPointerDown={stopTap}
-                                    onTouchStart={stopTap}
-                                    onClick={(e) => {
-                                      stopTap(e);
-                                      setCartQty(p, currentQty - 1);
-                                    }}
-                                    className={`${tap} w-9 h-9 md:w-7 md:h-7 rounded-full bg-white text-[14px] flex items-center justify-center text-zinc-700 active:scale-95 transition silver-border hover:silver-hover`}
-                                    aria-label="Decrease quantity"
-                                  >
-                                    −
-                                  </button>
-
-                                  <span className="min-w-[18px] text-center text-[11px] font-semibold text-zinc-800">
-                                    {currentQty}
-                                  </span>
-
-                                  <button
-                                    type="button"
-                                    onPointerDown={stopTap}
-                                    onTouchStart={stopTap}
-                                    onClick={(e) => {
-                                      stopTap(e);
-                                      if (canIncrement) setCartQty(p, currentQty + 1);
-                                    }}
-                                    disabled={!allowQuickAdd || !canIncrement}
-                                    className={`${tap} w-9 h-9 md:w-7 md:h-7 rounded-full border border-zinc-900 bg-zinc-900 text-white text-[14px] flex items-center justify-center disabled:opacity-40 active:scale-95 transition`}
-                                    aria-label="Increase quantity"
-                                  >
-                                    +
-                                  </button>
-                                </div>
-                              ) : (
+                                Choose opts.
+                              </Link>
+                            ) : currentQty > 0 ? (
+                              <div className="inline-flex items-center gap-1">
                                 <button
                                   type="button"
-                                  disabled={!allowQuickAdd}
                                   onPointerDown={stopTap}
                                   onTouchStart={stopTap}
                                   onClick={(e) => {
                                     stopTap(e);
-                                    setCartQty(p, 1);
+                                    setCartQty(p, currentQty - 1);
                                   }}
-                                  className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] md:text-xs border transition ${
-                                    allowQuickAdd
-                                      ? "bg-zinc-900 text-white border-zinc-900 hover:opacity-90"
-                                      : "bg-white text-zinc-400 border-zinc-200 cursor-not-allowed"
-                                  }`}
-                                  aria-label="Add to cart"
-                                  title={allowQuickAdd ? "Add to cart" : "Not available"}
+                                  className={`${tap} w-9 h-9 md:w-7 md:h-7 rounded-full bg-white text-[14px] flex items-center justify-center text-zinc-700 active:scale-95 transition silver-border hover:silver-hover`}
+                                  aria-label="Decrease quantity"
                                 >
-                                  Add to cart
+                                  −
                                 </button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </motion.article>
-                    );
-                  })}
+
+                                <span className="min-w-[18px] text-center text-[11px] font-semibold text-zinc-800">
+                                  {currentQty}
+                                </span>
+
+                                <button
+                                  type="button"
+                                  onPointerDown={stopTap}
+                                  onTouchStart={stopTap}
+                                  onClick={(e) => {
+                                    stopTap(e);
+                                    if (canIncrement) setCartQty(p, currentQty + 1);
+                                  }}
+                                  disabled={!allowQuickAdd || !canIncrement}
+                                  className={`${tap} w-9 h-9 md:w-7 md:h-7 rounded-full border border-zinc-900 bg-zinc-900 text-white text-[14px] flex items-center justify-center disabled:opacity-40 active:scale-95 transition`}
+                                  aria-label="Increase quantity"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={!allowQuickAdd}
+                                onPointerDown={stopTap}
+                                onTouchStart={stopTap}
+                                onClick={(e) => {
+                                  stopTap(e);
+                                  setCartQty(p, 1);
+                                }}
+                                className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] md:text-xs border transition ${allowQuickAdd
+                                  ? "bg-zinc-900 text-white border-zinc-900 hover:opacity-90"
+                                  : "bg-white text-zinc-400 border-zinc-200 cursor-not-allowed"
+                                  }`}
+                                aria-label="Add to cart"
+                                title={allowQuickAdd ? "Add to cart" : "Not available"}
+                              >
+                                Add to cart
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </motion.article>
+                  );
+                })}
                 </div>
 
                 {/* Pagination (kept same as your draft) */}
@@ -1609,251 +1866,216 @@ export default function Catalog() {
       </div>
 
       {/* Refine Drawer */}
-      {refineOpen && (
-        <motion.div
-          className="fixed inset-0 z-50"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-        >
-          <div className="absolute inset-0 bg-black/40" onClick={closeRefine} />
-
+      {
+        refineOpen && (
           <motion.div
-            className="absolute inset-y-0 right-0 w-[88%] max-w-sm bg-white rounded-tl-3xl rounded-bl-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 silver-border-grad"
-            initial={{ x: "100%" }}
-            animate={{ x: 0 }}
-            exit={{ x: "100%" }}
-            transition={{ type: "spring", stiffness: 260, damping: 28 }}
+            className="fixed inset-0 z-50"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
           >
-            <div className="flex items-center justify-between">
-              <div className="min-w-0">
-                <h3 className="text-base font-semibold text-zinc-900">Refine</h3>
-                <p className="text-[11px] text-zinc-600">Search, sort, page size, and filters.</p>
-              </div>
+            <div className="absolute inset-0 bg-black/40" onClick={closeRefine} />
 
-              <button
-                type="button"
-                onClick={closeRefine}
-                className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-zinc-100 text-zinc-700 active:scale-95 transition"
-                aria-label="Close refine panel"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* Search */}
-            <div className="relative">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
-                <input
-                  ref={inputRef}
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value);
-                    setShowSuggest(true);
-                    setActiveIdx(0);
-                  }}
-                  onFocus={() => query && setShowSuggest(true)}
-                  onKeyDown={(e) => {
-                    if (!showSuggest || suggestions.length === 0) return;
-                    if (e.key === "ArrowDown") {
-                      e.preventDefault();
-                      setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                    } else if (e.key === "ArrowUp") {
-                      e.preventDefault();
-                      setActiveIdx((i) => Math.max(i - 1, 0));
-                    } else if (e.key === "Enter") {
-                      e.preventDefault();
-                      const pick = suggestions[activeIdx];
-                      if (pick) {
-                        closeRefine();
-                        nav(`/product/${pick.id}`);
-                      }
-                      setShowSuggest(false);
-                    } else if (e.key === "Escape") {
-                      setShowSuggest(false);
-                    }
-                  }}
-                  placeholder="Search products, brands, or categories…"
-                  className="rounded-2xl pl-9 pr-4 py-2.5 w-full bg-white/90 backdrop-blur transition silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
-                  aria-label="Search products"
-                />
-              </div>
-
-              {showSuggest && query && suggestions.length > 0 && (
-                <div
-                  ref={suggestRef}
-                  className="mt-2 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden silver-border-grad"
-                >
-                  <ul className="max-h-[45vh] overflow-auto p-2">
-                    {suggestions.map((p, i) => {
-                      const active = i === activeIdx;
-                      const minPrice = priceForFiltering(p);
-
-                      return (
-                        <li key={p.id} className="mb-2 last:mb-0">
-                          <button
-                            type="button"
-                            className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
-                              }`}
-                            onClick={() => {
-                              closeRefine();
-                              nav(`/product/${p.id}`);
-                            }}
-                          >
-                            {p.imagesJson?.[0] ? (
-                              <img
-                                src={resolveImageUrl(p.imagesJson?.[0])}
-                                alt=""
-                                aria-hidden="true"
-                                onError={(e) => e.currentTarget.remove()}
-                                className="w-16 h-16 object-cover rounded-xl silver-border"
-                              />
-                            ) : (
-                              <div className="w-16 h-16 rounded-xl silver-border grid place-items-center text-base text-gray-500">
-                                —
-                              </div>
-                            )}
-
-                            <div className="min-w-0">
-                              <div className="text-sm font-semibold truncate">{p.title}</div>
-                              <div className="text-xs opacity-80 truncate">
-                                {ngn.format(minPrice || 0)}
-                                {p.categoryName ? ` • ${p.categoryName}` : ""}
-                                {p.brand?.name ? ` • ${p.brand.name}` : ""}
-                              </div>
-                            </div>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
+            <motion.div
+              className="absolute inset-y-0 right-0 w-[88%] max-w-sm bg-white rounded-tl-3xl rounded-bl-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 silver-border-grad"
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ type: "spring", stiffness: 260, damping: 28 }}
+            >
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <h3 className="text-base font-semibold text-zinc-900">Refine</h3>
+                  <p className="text-[11px] text-zinc-600">Search, sort, page size, and filters.</p>
                 </div>
-              )}
-            </div>
 
-            {/* Sort + Per page */}
-            <div className="grid grid-cols-1 gap-3">
-              <div className="text-sm inline-flex items-center gap-2">
-                <ArrowUpDown size={16} className="text-zinc-600" />
-                <label className="opacity-70 min-w-[44px]">Sort</label>
-                <select
-                  value={sortKey}
-                  onChange={(e) => setSortKey(e.target.value as any)}
-                  className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
-                >
-                  <option value="relevance">Relevance</option>
-                  <option value="price-asc">Price: Low → High</option>
-                  <option value="price-desc">Price: High → Low</option>
-                </select>
-              </div>
-
-              <div className="text-sm inline-flex items-center gap-2">
-                <LayoutGrid size={16} className="text-zinc-600" />
-                <label className="opacity-70 min-w-[72px]">Per page</label>
-                <select
-                  value={pageSize}
-                  onChange={(e) => setPageSize(Number(e.target.value) as 6 | 9 | 12)}
-                  className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
-                >
-                  <option value={6}>6</option>
-                  <option value={9}>9</option>
-                  <option value={12}>12</option>
-                </select>
-              </div>
-            </div>
-
-            {/* In-stock + clear */}
-            <div className="flex items-center justify-between gap-3">
-              <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
-                <input
-                  type="checkbox"
-                  checked={inStockOnly}
-                  onChange={(e) => setInStockOnly(e.target.checked)}
-                  className="h-4 w-4 rounded border-zinc-300"
-                />
-                In stock
-              </label>
-
-              {(anyActiveFilter || hasSearch) && (
                 <button
                   type="button"
-                  className="text-[12px] font-medium text-fuchsia-700 hover:underline"
-                  onClick={() => {
-                    setQuery("");
-                    setShowSuggest(false);
-                    clearFilters();
-                  }}
+                  onClick={closeRefine}
+                  className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-zinc-100 text-zinc-700 active:scale-95 transition"
+                  aria-label="Close refine panel"
                 >
-                  Clear all
-                </button>
-              )}
-            </div>
-
-            {/* Categories */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="text-[12px] font-semibold text-zinc-800">Categories</h4>
-                <button
-                  className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                  onClick={() => setSelectedCategories([])}
-                  disabled={selectedCategories.length === 0}
-                >
-                  Reset
+                  <X size={18} />
                 </button>
               </div>
-              <ul className="space-y-1.5">
-                {categories.length === 0 && <Shimmer />}
-                {categories.map((c) => {
-                  const checked = selectedCategories.includes(c.id);
-                  return (
-                    <li key={c.id}>
-                      <button
-                        onClick={() => toggleCategory(c.id)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                          ? "bg-zinc-900 text-white"
-                          : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
-                          }`}
-                      >
-                        <span className="truncate">{c.name}</span>
-                        <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
-                          ({c.count})
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
 
-            {/* Brands */}
-            {brands.length > 0 && (
+              {/* Search */}
+              <div className="relative">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+                  <input
+                    ref={inputRef}
+                    value={query}
+                    onChange={(e) => {
+                      setQuery(e.target.value);
+                      setShowSuggest(true);
+                      setActiveIdx(0);
+                    }}
+                    onFocus={() => query && setShowSuggest(true)}
+                    onKeyDown={(e) => {
+                      if (!showSuggest || suggestions.length === 0) return;
+                      if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                      } else if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setActiveIdx((i) => Math.max(i - 1, 0));
+                      } else if (e.key === "Enter") {
+                        e.preventDefault();
+                        const pick = suggestions[activeIdx];
+                        if (pick) {
+                          closeRefine();
+                          nav(`/product/${pick.id}`);
+                        }
+                        setShowSuggest(false);
+                      } else if (e.key === "Escape") {
+                        setShowSuggest(false);
+                      }
+                    }}
+                    placeholder="Search products, brands, or categories…"
+                    className="rounded-2xl pl-9 pr-4 py-2.5 w-full bg-white/90 backdrop-blur transition silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+                    aria-label="Search products"
+                  />
+                </div>
+
+                {showSuggest && query && suggestions.length > 0 && (
+                  <div
+                    ref={suggestRef}
+                    className="mt-2 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden silver-border-grad"
+                  >
+                    <ul className="max-h-[45vh] overflow-auto p-2">
+                      {suggestions.map((p, i) => {
+                        const active = i === activeIdx;
+                        const minPrice = priceForFiltering(p);
+
+                        return (
+                          <li key={p.id} className="mb-2 last:mb-0">
+                            <button
+                              type="button"
+                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
+                                }`}
+                              onClick={() => {
+                                closeRefine();
+                                nav(`/product/${p.id}`);
+                              }}
+                            >
+                              {p.imagesJson?.[0] ? (
+                                <img
+                                  src={resolveImageUrl(p.imagesJson?.[0])}
+                                  alt=""
+                                  aria-hidden="true"
+                                  onError={(e) => e.currentTarget.remove()}
+                                  className="w-16 h-16 object-cover rounded-xl silver-border"
+                                />
+                              ) : (
+                                <div className="w-16 h-16 rounded-xl silver-border grid place-items-center text-base text-gray-500">
+                                  —
+                                </div>
+                              )}
+
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold truncate">{p.title}</div>
+                                <div className="text-xs opacity-80 truncate">
+                                  {ngn.format(minPrice || 0)}
+                                  {p.categoryName ? ` • ${p.categoryName}` : ""}
+                                  {p.brand?.name ? ` • ${p.brand.name}` : ""}
+                                </div>
+                              </div>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              {/* Sort + Per page */}
+              <div className="grid grid-cols-1 gap-3">
+                <div className="text-sm inline-flex items-center gap-2">
+                  <ArrowUpDown size={16} className="text-zinc-600" />
+                  <label className="opacity-70 min-w-[44px]">Sort</label>
+                  <select
+                    value={sortKey}
+                    onChange={(e) => setSortKey(e.target.value as any)}
+                    className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
+                  >
+                    <option value="relevance">Relevance</option>
+                    <option value="price-asc">Price: Low → High</option>
+                    <option value="price-desc">Price: High → Low</option>
+                  </select>
+                </div>
+
+                <div className="text-sm inline-flex items-center gap-2">
+                  <LayoutGrid size={16} className="text-zinc-600" />
+                  <label className="opacity-70 min-w-[72px]">Per page</label>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
+                    className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
+                  >
+                    <option value={8}>8</option>
+                    <option value={12}>12</option>
+                    <option value={16}>16</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* In-stock + clear */}
+              <div className="flex items-center justify-between gap-3">
+                <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
+                  <input
+                    type="checkbox"
+                    checked={inStockOnly}
+                    onChange={(e) => setInStockOnly(e.target.checked)}
+                    className="h-4 w-4 rounded border-zinc-300"
+                  />
+                  In stock
+                </label>
+
+                {(anyActiveFilter || hasSearch) && (
+                  <button
+                    type="button"
+                    className="text-[12px] font-medium text-fuchsia-700 hover:underline"
+                    onClick={() => {
+                      setQuery("");
+                      setShowSuggest(false);
+                      clearFilters();
+                    }}
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+
+              {/* Categories */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-[12px] font-semibold text-zinc-800">Brands</h4>
+                  <h4 className="text-[12px] font-semibold text-zinc-800">Categories</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => setSelectedBrands([])}
-                    disabled={selectedBrands.length === 0}
+                    onClick={() => setSelectedCategories([])}
+                    disabled={selectedCategories.length === 0}
                   >
                     Reset
                   </button>
                 </div>
                 <ul className="space-y-1.5">
-                  {brands.map((b) => {
-                    const checked = selectedBrands.includes(b.name);
+                  {categories.length === 0 && <Shimmer />}
+                  {categories.map((c) => {
+                    const checked = selectedCategories.includes(c.id);
                     return (
-                      <li key={b.name}>
+                      <li key={c.id}>
                         <button
-                          onClick={() => toggleBrand(b.name)}
+                          onClick={() => toggleCategory(c.id)}
                           className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
                             ? "bg-zinc-900 text-white"
                             : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
                             }`}
                         >
-                          <span className="truncate">{b.name}</span>
+                          <span className="truncate">{c.name}</span>
                           <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
-                            ({b.count})
+                            ({c.count})
                           </span>
                         </button>
                       </li>
@@ -1861,56 +2083,93 @@ export default function Catalog() {
                   })}
                 </ul>
               </div>
-            )}
 
-            {/* Price */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="text-[12px] font-semibold text-zinc-800">Price</h4>
+              {/* Brands */}
+              {brands.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-[12px] font-semibold text-zinc-800">Brands</h4>
+                    <button
+                      className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                      onClick={() => setSelectedBrands([])}
+                      disabled={selectedBrands.length === 0}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <ul className="space-y-1.5">
+                    {brands.map((b) => {
+                      const checked = selectedBrands.includes(b.name);
+                      return (
+                        <li key={b.name}>
+                          <button
+                            onClick={() => toggleBrand(b.name)}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                              }`}
+                          >
+                            <span className="truncate">{b.name}</span>
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({b.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {/* Price */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-[12px] font-semibold text-zinc-800">Price</h4>
+                  <button
+                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    onClick={() => setSelectedBucketIdxs([])}
+                    disabled={selectedBucketIdxs.length === 0}
+                  >
+                    Reset
+                  </button>
+                </div>
+                <ul className="space-y-1.5">
+                  {visiblePriceBuckets.length === 0 && <Shimmer />}
+                  {visiblePriceBuckets.map(({ bucket, idx, count }) => {
+                    const checked = selectedBucketIdxs.includes(idx);
+                    return (
+                      <li key={bucket.label}>
+                        <button
+                          onClick={() => toggleBucket(idx)}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                            }`}
+                        >
+                          <span>{bucket.label}</span>
+                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            ({count})
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+
+              <div className="pt-2 flex items-center justify-between gap-3">
                 <button
-                  className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                  onClick={() => setSelectedBucketIdxs([])}
-                  disabled={selectedBucketIdxs.length === 0}
+                  type="button"
+                  onClick={closeRefine}
+                  className="w-full rounded-2xl px-4 py-2.5 bg-zinc-900 text-white font-semibold active:scale-[0.98] transition"
                 >
-                  Reset
+                  Done
                 </button>
               </div>
-              <ul className="space-y-1.5">
-                {visiblePriceBuckets.length === 0 && <Shimmer />}
-                {visiblePriceBuckets.map(({ bucket, idx, count }) => {
-                  const checked = selectedBucketIdxs.includes(idx);
-                  return (
-                    <li key={bucket.label}>
-                      <button
-                        onClick={() => toggleBucket(idx)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                          ? "bg-zinc-900 text-white"
-                          : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
-                          }`}
-                      >
-                        <span>{bucket.label}</span>
-                        <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
-                          ({count})
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-
-            <div className="pt-2 flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={closeRefine}
-                className="w-full rounded-2xl px-4 py-2.5 bg-zinc-900 text-white font-semibold active:scale-[0.98] transition"
-              >
-                Done
-              </button>
-            </div>
+            </motion.div>
           </motion.div>
-        </motion.div>
-      )}
-    </SiteLayout>
+        )
+      }
+    </SiteLayout >
   );
 }

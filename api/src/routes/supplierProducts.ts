@@ -1,6 +1,7 @@
 // api/src/routes/supplierProducts.ts
 import { Router } from "express";
 import { NotificationType, Prisma, PrismaClient } from "@prisma/client";
+import crypto from "crypto";
 import { z } from "zod";
 import { requireAuth, requireSupplier } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
@@ -25,12 +26,7 @@ const toDecimal = (v: Decimalish) => {
   return new Prisma.Decimal(String(v ?? 0));
 };
 
-async function safeNotifyAdmins(payload: {
-  type: NotificationType;
-  title: string;
-  body: string;
-  data?: any;
-}) {
+async function safeNotifyAdmins(payload: { type: NotificationType; title: string; body: string; data?: any }) {
   try {
     await notifyAdmins(payload as any);
   } catch (e) {
@@ -38,17 +34,152 @@ async function safeNotifyAdmins(payload: {
   }
 }
 
+/* ========================================================================== */
+/* Supplier+Brand+Title SKU policy                                             */
+/* ========================================================================== */
+
+function isPrismaUniqueErr(e: any) {
+  return e && typeof e === "object" && e.code === "P2002";
+}
+
+function skuSafePart(input: any) {
+  const s = String(input ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/&/g, " AND ")
+    .replace(/['"]/g, "")
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return s;
+}
+
+function hasScalarField(modelName: string, fieldName: string): boolean {
+  try {
+    const dmmf =
+      (prisma as any)?._dmmf?.datamodel ??
+      (prisma as any)?._baseDmmf?.datamodel ??
+      (prisma as any)?._engine?.dmmf?.datamodel ??
+      (Prisma as any)?.dmmf?.datamodel ??
+      null;
+
+    const model = dmmf?.models?.find((m: any) => m.name === modelName);
+    if (!model) return false;
+
+    return Boolean(model.fields?.some((f: any) => f.name === fieldName && f.kind === "scalar"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * ✅ SKU is ALWAYS computed from supplierId + brandId + title
+ * Uses IDs (no lookups), and includes a short hash to prevent collisions.
+ */
+function makeSkuFromSupplierBrandTitle(input: { supplierId: string; brandId: string; title: string }) {
+  const supplierId = String(input.supplierId || "").trim();
+  const brandId = String(input.brandId || "").trim();
+  const title = String(input.title || "").trim();
+
+  const supplierShort = skuSafePart(supplierId).slice(0, 8) || "SUP";
+  const brandShort = skuSafePart(brandId).slice(0, 8) || "BR";
+  const titleSlug = skuSafePart(title).slice(0, 30) || "ITEM";
+
+  const sig = `${supplierId}|${brandId}|${title.toLowerCase()}`;
+  const hash6 = crypto.createHash("sha1").update(sig).digest("hex").slice(0, 6).toUpperCase();
+
+  const sku = `SUP-${supplierShort}-BR-${brandShort}-${titleSlug}-${hash6}`;
+  return skuSafePart(sku).slice(0, 80) || `PRODUCT-${Date.now()}`;
+}
+
+/**
+ * ✅ Supplier+Brand-aware SKU uniqueness helper
+ * - Enforce uniqueness within supplier+brand (when fields exist).
+ * - If isDeleted exists, enforce uniqueness within isDeleted=false.
+ */
+async function ensureUniqueProductSku(
+  tx: Tx,
+  desired: string,
+  opts?: { excludeProductId?: string; brandId?: string | null | undefined; supplierId?: string | null | undefined }
+) {
+  const excludeProductId = opts?.excludeProductId;
+  const brandId = (opts?.brandId ?? null) ? String(opts?.brandId).trim() : null;
+  const supplierId = (opts?.supplierId ?? null) ? String(opts?.supplierId).trim() : null;
+
+  let base = skuSafePart(desired);
+  if (!base) base = `PRODUCT-${Date.now()}`;
+
+  const exists = async (sku: string) => {
+    const where: any = { sku };
+
+    if (hasScalarField("Product", "isDeleted")) where.isDeleted = false;
+
+    if (supplierId && hasScalarField("Product", "supplierId")) where.supplierId = supplierId;
+    if (brandId && hasScalarField("Product", "brandId")) where.brandId = brandId;
+
+    if (excludeProductId) where.id = { not: excludeProductId };
+
+    const hit = await (tx as any).product.findFirst({ where, select: { id: true } });
+    return !!hit;
+  };
+
+  let candidate = base;
+  let i = 1;
+
+  while (await exists(candidate)) {
+    i += 1;
+    candidate = `${base}-${i}`;
+    if (i > 2000) throw new Error("Exceeded SKU uniquifier attempts while generating unique product SKU");
+  }
+
+  return candidate;
+}
+
+/**
+ * ✅ Friendly guard for duplicates (Supplier + Brand + SKU) before Prisma throws.
+ * Works whether DB unique key is:
+ * - (brandId, sku, isDeleted) OR
+ * - (supplierId, brandId, sku, isDeleted)
+ */
+async function assertNoDuplicateSupplierBrandSkuTx(
+  tx: Tx,
+  args: { supplierId?: string | null; brandId?: string | null; sku?: string | null; excludeProductId?: string }
+) {
+  const sku = String(args.sku ?? "").trim();
+  const brandId = args.brandId != null ? String(args.brandId).trim() : "";
+  const supplierId = args.supplierId != null ? String(args.supplierId).trim() : "";
+
+  if (!sku) return;
+
+  const where: any = {
+    sku,
+    ...(hasScalarField("Product", "isDeleted") ? { isDeleted: false } : {}),
+    ...(args.excludeProductId ? { id: { not: args.excludeProductId } } : {}),
+  };
+
+  if (brandId && hasScalarField("Product", "brandId")) where.brandId = brandId;
+  if (supplierId && hasScalarField("Product", "supplierId")) where.supplierId = supplierId;
+
+  const hit = await (tx as any).product.findFirst({ where, select: { id: true } });
+  if (hit?.id) {
+    const err: any = new Error("A product with this Supplier, Brand and SKU already exists.");
+    err.statusCode = 409;
+    err.code = "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU";
+    err.meta = { existingProductId: String(hit.id), supplierId: supplierId || null, brandId: brandId || null, sku };
+    err.userMessage = "You already have a product for that brand/title. Please change title or brand.";
+    throw err;
+  }
+}
+
+/* ========================================================================== */
+/* Supplier context                                                            */
+/* ========================================================================== */
 
 type SupplierCtx =
   | {
     ok: true;
     supplierId: string;
-    supplier: {
-      id: string;
-      name?: string | null;
-      status?: any;
-      userId?: string | null;
-    };
+    supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
     impersonating: boolean;
   }
   | { ok: false; status: number; error: string };
@@ -62,11 +193,7 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
   if (isAdmin(role)) {
     const supplierId = String(req.query?.supplierId ?? "").trim();
     if (!supplierId) {
-      return {
-        ok: false,
-        status: 400,
-        error: "Missing supplierId query param for admin view",
-      };
+      return { ok: false, status: 400, error: "Missing supplierId query param for admin view" };
     }
 
     const supplier = await prisma.supplier.findUnique({
@@ -75,7 +202,6 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
     });
 
     if (!supplier) return { ok: false, status: 404, error: "Supplier not found" };
-
     return { ok: true, supplierId: supplier.id, supplier, impersonating: true };
   }
 
@@ -85,12 +211,7 @@ async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
       where: { userId },
       select: { id: true, name: true, status: true, userId: true },
     });
-    if (!supplier)
-      return {
-        ok: false,
-        status: 403,
-        error: "Supplier profile not found for this user",
-      };
+    if (!supplier) return { ok: false, status: 403, error: "Supplier profile not found for this user" };
 
     return { ok: true, supplierId: supplier.id, supplier, impersonating: false };
   }
@@ -105,7 +226,7 @@ const asNumber = (v: any) => {
 };
 
 /**
- * ✅ FIX: UI sometimes sends qty/quantity instead of availableQty.
+ * ✅ UI sometimes sends qty/quantity instead of availableQty.
  * We accept aliases at API boundary ONLY (DB/schema field names stay unchanged).
  */
 const pickQty = (...vals: any[]) => {
@@ -132,16 +253,7 @@ function slugSkuBase(title: string) {
     .slice(0, 40);
 }
 
-function randomSkuSuffix(len = 4) {
-  return Math.random().toString(36).slice(2, 2 + len).toUpperCase();
-}
-
-async function makeUniqueVariantSku(
-  tx: Tx,
-  desired: string | null | undefined,
-  seen: Set<string>,
-  fallbackBase: string
-) {
+async function makeUniqueVariantSku(tx: Tx, desired: string | null | undefined, seen: Set<string>, fallbackBase: string) {
   let base = (desired || "").trim();
   if (!base) base = fallbackBase;
 
@@ -168,13 +280,7 @@ function normalizeOptions(raw: any): Array<{ attributeId: string; valueId: strin
   const arr = Array.isArray(raw) ? raw : [];
 
   const pickAttributeId = (o: any) =>
-    String(
-      o?.attributeId ??
-      o?.attribute?.id ??
-      o?.attributeValue?.attributeId ??
-      o?.value?.attributeId ??
-      ""
-    ).trim();
+    String(o?.attributeId ?? o?.attribute?.id ?? o?.attributeValue?.attributeId ?? o?.value?.attributeId ?? "").trim();
 
   const pickValueId = (o: any) =>
     String(o?.valueId ?? o?.attributeValueId ?? o?.value?.id ?? o?.attributeValue?.id ?? "").trim();
@@ -204,16 +310,8 @@ function comboKey(options: Array<{ attributeId: string; valueId: string }>) {
 }
 
 /**
- * ✅ NEW: If UI sends "variants" as one-row-per-attribute (NOT real variant combos),
+ * ✅ If UI sends "variants" as one-row-per-attribute (NOT real variant combos),
  * collapse them into a single "base combo" stored on Product attributes.
- *
- * Pattern we detect:
- * - no variantId/id in rows
- * - no unitPrice provided per row
- * - no per-row qty provided (qty/availableQty/quantity absent)
- * - each row has exactly ONE option after normalization
- *
- * Then we return a combined option list (one value per attribute; last wins).
  */
 function collapseVariantsIntoBaseCombo(variants: any[]) {
   const rows = Array.isArray(variants) ? variants : [];
@@ -229,32 +327,19 @@ function collapseVariantsIntoBaseCombo(variants: any[]) {
     const sku = String(v?.sku ?? "").trim();
     if (sku) return { isBaseCombo: false as const, options: [] as any[] };
 
-    const unitPriceProvided =
-      v?.unitPrice !== undefined && v?.unitPrice !== null && String(v.unitPrice) !== "";
+    const unitPriceProvided = v?.unitPrice !== undefined && v?.unitPrice !== null && String(v.unitPrice) !== "";
     if (unitPriceProvided) return { isBaseCombo: false as const, options: [] as any[] };
 
-    const rowQtyProvided =
-      v?.availableQty !== undefined ||
-      v?.qty !== undefined ||
-      v?.quantity !== undefined;
-
-    // If they provided per-row qty, treat as real variants (not base combo)
+    const rowQtyProvided = v?.availableQty !== undefined || v?.qty !== undefined || v?.quantity !== undefined;
     if (rowQtyProvided) {
       const q = pickQty(v?.availableQty, v?.qty, v?.quantity);
       if (q != null) return { isBaseCombo: false as const, options: [] as any[] };
     }
 
     const opts = normalizeOptions(
-      v?.options ??
-      v?.optionSelections ??
-      v?.attributes ??
-      v?.attributeSelections ??
-      v?.variantOptions ??
-      v?.VariantOptions ??
-      []
+      v?.options ?? v?.optionSelections ?? v?.attributes ?? v?.attributeSelections ?? v?.variantOptions ?? v?.VariantOptions ?? []
     );
 
-    // must be exactly one option per row for this collapse mode
     if (opts.length !== 1) return { isBaseCombo: false as const, options: [] as any[] };
 
     const o = opts[0];
@@ -272,23 +357,14 @@ function collapseVariantsIntoBaseCombo(variants: any[]) {
   };
 }
 
-/**
- * ✅ NEW: Merge collapsed base-combo options into attributeSelections,
- * enforcing single value per attributeId for the combo.
- */
-function mergeBaseComboIntoAttributeSelections(
-  attributeSelections: any[],
-  comboOptions: Array<{ attributeId: string; valueId: string }>
-) {
+function mergeBaseComboIntoAttributeSelections(attributeSelections: any[], comboOptions: Array<{ attributeId: string; valueId: string }>) {
   const base = Array.isArray(attributeSelections) ? attributeSelections : [];
 
-  // Keep texts + multi-selects (unless overridden by combo for that attributeId)
   const comboAttrIds = new Set(comboOptions.map((o) => String(o.attributeId)));
 
   const out: any[] = [];
   const singles = new Map<string, string>();
 
-  // existing singles
   for (const sel of base) {
     const aid = String(sel?.attributeId ?? "").trim();
     if (!aid) continue;
@@ -299,19 +375,15 @@ function mergeBaseComboIntoAttributeSelections(
     }
 
     if (Array.isArray(sel?.valueIds) && sel.valueIds.length) {
-      // if this attributeId is part of the base-combo, we replace it with single valueId
       if (!comboAttrIds.has(aid)) {
         out.push({ attributeId: aid, valueIds: sel.valueIds.map((x: any) => String(x)).filter(Boolean) });
       }
       continue;
     }
 
-    if (sel?.valueId) {
-      singles.set(aid, String(sel.valueId));
-    }
+    if (sel?.valueId) singles.set(aid, String(sel.valueId));
   }
 
-  // combo overrides (last wins)
   for (const o of comboOptions) {
     const aid = String(o.attributeId).trim();
     const vid = String(o.valueId).trim();
@@ -319,10 +391,7 @@ function mergeBaseComboIntoAttributeSelections(
     singles.set(aid, vid);
   }
 
-  // write singles
-  for (const [attributeId, valueId] of singles.entries()) {
-    out.push({ attributeId, valueId });
-  }
+  for (const [attributeId, valueId] of singles.entries()) out.push({ attributeId, valueId });
 
   return out;
 }
@@ -355,30 +424,12 @@ function assertMaxImages(images: any) {
 }
 
 /* ------------------------- AUTO pricing helpers ------------------------- */
-
-function payoutReadySupplierWhere() {
-  const nonEmpty = { not: "" } as any;
-
-  return {
-    isPayoutEnabled: true,
-    AND: [
-      { accountNumber: { not: null } },
-      { accountNumber: nonEmpty },
-
-      { accountName: { not: null } },
-      { accountName: nonEmpty },
-
-      { bankCode: { not: null } },
-      { bankCode: nonEmpty },
-
-      { bankCountry: { not: null } },
-      { bankCountry: nonEmpty },
-
-      { bankVerificationStatus: "VERIFIED" },
-    ],
-  } as const;
-}
-
+/**
+ * Prisma schema note:
+ * - SupplierProductOffer is UNIQUE by productId (no supplierId field).
+ * - SupplierVariantOffer is UNIQUE by variantId (no supplierId field).
+ * - Product has REQUIRED supplierId (one supplier per product).
+ */
 async function refreshProductAutoPriceIfAutoMode(tx: Prisma.TransactionClient, productId: string) {
   const p = await tx.product.findUnique({
     where: { id: productId },
@@ -388,34 +439,26 @@ async function refreshProductAutoPriceIfAutoMode(tx: Prisma.TransactionClient, p
 
   if (String((p as any).priceMode ?? "AUTO").toUpperCase() !== "AUTO") return;
 
-  const agg = await tx.supplierProductOffer.aggregate({
+  const base = await tx.supplierProductOffer.findFirst({
     where: {
       productId,
       isActive: true,
       inStock: true,
       availableQty: { gt: 0 },
       basePrice: { gt: new Prisma.Decimal("0") },
-
-      // ✅ only payout-ready suppliers contribute to autoPrice
-      supplier: payoutReadySupplierWhere() as any,
-    },
-    _min: { basePrice: true },
+    } as any,
+    select: { basePrice: true },
   });
 
   await tx.product.update({
     where: { id: productId },
-    data: { autoPrice: agg._min.basePrice ?? null },
+    data: { autoPrice: base?.basePrice ?? null },
   });
 }
 
 /* ------------------------- Offer purchasable guard ------------------------ */
 
-function offerBecomesPurchasable(input: {
-  isActive?: boolean;
-  inStock?: boolean;
-  availableQty?: number;
-  basePrice?: number;
-}) {
+function offerBecomesPurchasable(input: { isActive?: boolean; inStock?: boolean; availableQty?: number; basePrice?: number }) {
   const isActive = input.isActive !== false;
   const inStock = input.inStock !== false;
   const qty = Math.max(0, Math.trunc(input.availableQty ?? 0));
@@ -445,9 +488,7 @@ async function isSupplierPayoutReadyTx(tx: Tx, supplierId: string): Promise<bool
 
   const nonEmpty = (v: any) => (typeof v === "string" ? v.trim().length > 0 : !!v);
 
-  const verified =
-    String(s.bankVerificationStatus ?? "").toUpperCase() === "VERIFIED" ||
-    !!(s as any).bankVerifiedAt;
+  const verified = String(s.bankVerificationStatus ?? "").toUpperCase() === "VERIFIED" || !!(s as any).bankVerifiedAt;
 
   if (!s.isPayoutEnabled) return false;
   if (!verified) return false;
@@ -458,57 +499,45 @@ async function isSupplierPayoutReadyTx(tx: Tx, supplierId: string): Promise<bool
   return true;
 }
 
-async function assertSupplierPayoutReadyForPurchasableOfferTx(
-  tx: Tx,
-  supplierId: string,
-  contextMsg: string
-) {
-  const s = await (tx as any).supplier.findUnique({
-    where: { id: supplierId },
-    select: {
-      id: true,
-      isPayoutEnabled: true,
-      bankVerificationStatus: true,
-      bankVerifiedAt: true,
-      accountNumber: true,
-      bankCode: true,
-      bankCountry: true,
-      accountName: true,
-    },
-  });
-
-  const ok = await isSupplierPayoutReadyTx(tx, supplierId);
-
-  if (!ok) {
-    const err: any = new Error(
-      `${contextMsg} Supplier payout not ready: ${JSON.stringify(
-        {
-          supplierId,
-          isPayoutEnabled: s?.isPayoutEnabled,
-          bankVerificationStatus: s?.bankVerificationStatus,
-          bankVerifiedAt: s?.bankVerifiedAt,
-          hasAccountNumber: !!(s?.accountNumber && String(s.accountNumber).trim()),
-          hasBankCode: !!(s?.bankCode && String(s.bankCode).trim()),
-          bankCountry: s?.bankCountry ?? null,
-          accountName: s?.accountName ?? null,
-        },
-        null,
-        2
-      )}`
-    );
-    err.statusCode = 400;
-    err.code = "SUPPLIER_PAYOUT_NOT_READY";
-    err.userMessage =
-      "Please complete and verify your bank details in Supplier Settings before activating offers with stock.";
-    throw err;
-  }
+/**
+ * ✅ SOFT payout guard:
+ * If offer would become purchasable but payout isn't ready:
+ * - do NOT throw
+ * - force isActive=false
+ * - add a warning (returned to client)
+ */
+function forceNonPurchasable<T extends { isActive?: boolean; inStock?: boolean }>(input: T): T {
+  return { ...input, isActive: false } as T;
 }
 
-/* ------------------------- Offers helpers (2-table) ---------------------- */
+async function maybeDeactivateIfPayoutNotReadyTx(
+  tx: Tx,
+  supplierId: string,
+  offerInput: { isActive?: boolean; inStock?: boolean; availableQty?: number; basePrice?: number },
+  contextMsg: string,
+  warnings: string[]
+) {
+  if (!offerBecomesPurchasable(offerInput)) return offerInput;
 
+  const ok = await isSupplierPayoutReadyTx(tx, supplierId);
+  if (ok) return offerInput;
+
+  warnings.push(
+    `${contextMsg}: supplier payout not ready. Saved, but deactivated (isActive=false) until bank details are verified.`
+  );
+
+  return forceNonPurchasable(offerInput);
+}
+
+/* ------------------------- Offers helpers (schema-aligned) ---------------------- */
+/**
+ * Prisma schema note:
+ * - SupplierProductOffer is UNIQUE by productId (no supplierId field).
+ * - SupplierVariantOffer is UNIQUE by variantId (no supplierId field).
+ */
 async function upsertSupplierProductOffer(
   tx: Prisma.TransactionClient,
-  supplierId: string,
+  supplierId: string, // still used for payout readiness checks (product supplier)
   productId: string,
   input: {
     basePrice: number | string | Prisma.Decimal;
@@ -517,33 +546,26 @@ async function upsertSupplierProductOffer(
     isActive?: boolean;
     leadDays?: number | null;
     availableQty?: number;
-  }
+  },
+  warnings: string[]
 ) {
-  const {
-    basePrice,
-    currency = "NGN",
-    inStock = true,
-    isActive = true,
-    leadDays = null,
-    availableQty = 0,
-  } = input;
+  let { basePrice, currency = "NGN", inStock = true, isActive = true, leadDays = null, availableQty = 0 } = input;
 
-  const basePriceNum =
-    basePrice instanceof Prisma.Decimal ? Number(basePrice) : Number(basePrice ?? 0);
+  const basePriceNum = basePrice instanceof Prisma.Decimal ? Number(basePrice) : Number(basePrice ?? 0);
 
-  if (
-    offerBecomesPurchasable({
-      isActive,
-      inStock,
-      availableQty: Math.max(0, Math.trunc(availableQty ?? 0)),
-      basePrice: basePriceNum,
-    })
-  ) {
-    await assertSupplierPayoutReadyForPurchasableOfferTx(tx as any, supplierId, "Cannot activate base offer.");
-  }
+  const guarded = await maybeDeactivateIfPayoutNotReadyTx(
+    tx as any,
+    supplierId,
+    { isActive, inStock, availableQty: Math.max(0, Math.trunc(availableQty ?? 0)), basePrice: basePriceNum },
+    "Base offer",
+    warnings
+  );
+
+  isActive = guarded.isActive !== false; // default true unless explicitly false
+  inStock = guarded.inStock !== false;
 
   const offer = await tx.supplierProductOffer.upsert({
-    where: { supplierId_productId: { supplierId, productId } },
+    where: { productId }, // ✅ unique
     update: {
       basePrice: toDecimal(basePrice),
       currency,
@@ -553,7 +575,6 @@ async function upsertSupplierProductOffer(
       availableQty: Math.max(0, Math.trunc(availableQty ?? 0)),
     },
     create: {
-      supplierId,
       productId,
       basePrice: toDecimal(basePrice),
       currency,
@@ -573,12 +594,7 @@ async function upsertSupplierProductOffer(
 async function writeProductAttributes(
   tx: Prisma.TransactionClient,
   productId: string,
-  attributeSelections?: Array<{
-    attributeId: string;
-    valueId?: string;
-    valueIds?: string[];
-    text?: string;
-  }>
+  attributeSelections?: Array<{ attributeId: string; valueId?: string; valueIds?: string[]; text?: string }>
 ) {
   if (!attributeSelections || !attributeSelections.length) return;
 
@@ -596,9 +612,7 @@ async function writeProductAttributes(
     }
 
     if (Array.isArray(sel.valueIds) && sel.valueIds.length) {
-      for (const vId of sel.valueIds) {
-        optionRows.push({ productId, attributeId: sel.attributeId, valueId: vId });
-      }
+      for (const vId of sel.valueIds) optionRows.push({ productId, attributeId: sel.attributeId, valueId: vId });
       continue;
     }
 
@@ -639,20 +653,12 @@ async function createOrGetVariantByCombo(
 
   const existing = await tx.productVariant.findMany({
     where: { productId },
-    select: {
-      id: true,
-      options: { select: { attributeId: true, valueId: true } },
-    } as any,
+    select: { id: true, options: { select: { attributeId: true, valueId: true } } } as any,
   });
 
   const existingMap = new Map<string, string>();
   for (const v of existing as any[]) {
-    const k = comboKey(
-      (v.options || []).map((o: any) => ({
-        attributeId: o.attributeId,
-        valueId: o.valueId,
-      }))
-    );
+    const k = comboKey((v.options || []).map((o: any) => ({ attributeId: o.attributeId, valueId: o.valueId })));
     if (k) existingMap.set(k, v.id);
   }
 
@@ -664,24 +670,12 @@ async function createOrGetVariantByCombo(
   const sku = await makeUniqueVariantSku(tx as any, desiredSku ?? null, seen, fallbackBase);
 
   const created = await tx.productVariant.create({
-    data: {
-      productId,
-      sku,
-      retailPrice: null,
-      inStock,
-      imagesJson: [],
-      availableQty: qty,
-    } as any,
+    data: { productId, sku, retailPrice: null, inStock, imagesJson: [], availableQty: qty } as any,
     select: { id: true },
   });
 
   await tx.productVariantOption.createMany({
-    data: cleanOptions.map((o) => ({
-      variantId: created.id,
-      attributeId: o.attributeId,
-      valueId: o.valueId,
-      unitPrice: null,
-    })),
+    data: cleanOptions.map((o) => ({ variantId: created.id, attributeId: o.attributeId, valueId: o.valueId, unitPrice: null })),
     skipDuplicates: true,
   });
 
@@ -702,21 +696,106 @@ function prefixVariantSkuWithProductName(productTitle: string, rawSku?: string |
   return `${prefix}-${clean}`;
 }
 
+
+function baseComboKeyFromAttributeSelections(attributeSelections: any[]) {
+  const sels = Array.isArray(attributeSelections) ? attributeSelections : [];
+
+  // Only SINGLE select combos matter for base-combo equivalence.
+  // (Ignore TEXT and MULTISELECT because variants are single valueId per attribute.)
+  const opts: Array<{ attributeId: string; valueId: string }> = [];
+
+  for (const sel of sels) {
+    const aid = String(sel?.attributeId ?? "").trim();
+    const vid = String(sel?.valueId ?? "").trim();
+    if (!aid || !vid) continue;
+    opts.push({ attributeId: aid, valueId: vid });
+  }
+
+  const clean = normalizeOptions(opts);
+  return clean.length ? comboKey(clean) : "";
+}
+
+async function baseComboKeyFromDbTx(tx: Prisma.TransactionClient, productId: string) {
+  const rows = await tx.productAttributeOption.findMany({
+    where: { productId },
+    select: { attributeId: true, valueId: true },
+  });
+
+  const opts = (rows || [])
+    .map((r) => ({
+      attributeId: String(r.attributeId ?? "").trim(),
+      valueId: String(r.valueId ?? "").trim(),
+    }))
+    .filter((o) => o.attributeId && o.valueId);
+
+  const clean = normalizeOptions(opts);
+  return clean.length ? comboKey(clean) : "";
+}
+
+function assertNoDuplicateVariantCombosAndNoBaseCollision(args: {
+  variants: any[];
+  baseComboKey: string; // "" means no base combo
+}) {
+  const { variants, baseComboKey } = args;
+
+  const rows = Array.isArray(variants) ? variants : [];
+  if (!rows.length) return;
+
+  const seen = new Map<string, number>(); // comboKey -> first index
+
+  for (let i = 0; i < rows.length; i++) {
+    const v = rows[i];
+
+    const opts = normalizeOptions(
+      v?.options ??
+      v?.optionSelections ??
+      v?.attributes ??
+      v?.attributeSelections ??
+      v?.variantOptions ??
+      v?.VariantOptions ??
+      []
+    );
+
+    // Ignore rows that don’t describe a combo (could be directId updates)
+    if (!opts.length) continue;
+
+    const ck = comboKey(opts);
+    if (!ck) continue;
+
+    // (2) base combo collision
+    if (baseComboKey && ck === baseComboKey) {
+      const err: any = new Error("Variant combo duplicates the base product combo.");
+      err.statusCode = 400;
+      err.code = "DUPLICATE_BASE_AND_VARIANT_COMBO";
+      err.userMessage =
+        "A variant option combination cannot be the same as the base product option combination. Remove the duplicate variant or change the base attributes.";
+      err.meta = { index: i, comboKey: ck };
+      throw err;
+    }
+
+    // (1) duplicate variants inside payload
+    const first = seen.get(ck);
+    if (first != null) {
+      const err: any = new Error("Duplicate variant combinations in request.");
+      err.statusCode = 400;
+      err.code = "DUPLICATE_VARIANT_COMBO";
+      err.userMessage =
+        "You have duplicate variant combinations. Each variant option combination must be unique.";
+      err.meta = { firstIndex: first, dupIndex: i, comboKey: ck };
+      throw err;
+    }
+    seen.set(ck, i);
+  }
+}
+
 /* ------------------------------- Schemas -------------------------------- */
 
 const zCoerceIntNonNegOpt = () =>
   z
-    .preprocess(
-      (v) => (v === "" || v == null ? undefined : Number(v)),
-      z.number().finite().transform((n) => Math.max(0, Math.trunc(n)))
-    )
+    .preprocess((v) => (v === "" || v == null ? undefined : Number(v)), z.number().finite().transform((n) => Math.max(0, Math.trunc(n))))
     .optional();
 
-const zCoerceIntNullableOpt = () =>
-  z
-    .preprocess((v) => (v === "" || v == null ? undefined : Number(v)), z.number().int())
-    .nullable()
-    .optional();
+const zCoerceIntNullableOpt = () => z.preprocess((v) => (v === "" || v == null ? undefined : Number(v)), z.number().int()).nullable().optional();
 
 const OfferSchema = z
   .object({
@@ -775,7 +854,7 @@ const CreateSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
   basePrice: z.union([z.number(), z.string()]),
-  sku: z.string().trim().min(1).nullable().optional(),
+  sku: z.string().trim().min(1).nullable().optional(), // ignored; SKU is computed
   inStock: z.boolean().optional(),
   categoryId: z.string().optional(),
   brandId: z.string().optional(),
@@ -809,7 +888,7 @@ const UpdateSchema = z
     title: z.string().min(1).optional(),
     description: z.string().optional(),
     basePrice: z.union([z.number(), z.string()]).optional(),
-    sku: z.string().min(1).optional(),
+    sku: z.string().min(1).optional(), // ignored; SKU is computed
     inStock: z.boolean().optional(),
     categoryId: z.string().nullable().optional(),
     brandId: z.string().nullable().optional(),
@@ -840,7 +919,6 @@ function modelHasField(modelName: string, fieldName: string) {
 }
 
 function supplierOfferOrderBy() {
-  // Prefer updatedAt > createdAt > none
   if (modelHasField("SupplierProductOffer", "updatedAt")) return { updatedAt: "desc" as const };
   if (modelHasField("SupplierProductOffer", "createdAt")) return { createdAt: "desc" as const };
   return undefined;
@@ -848,11 +926,7 @@ function supplierOfferOrderBy() {
 
 /* ------------------------------ Products ------------------------------ */
 /**
- * ✅ LIST
- * SupplierProducts table must show:
- *  - products owned/created by supplier
- *  - AND products the supplier has ever offered (base or variant offer)
- *  - de-duped to one row per Product (Prisma findMany already returns unique products)
+ * ✅ LIST (schema-aligned)
  */
 router.get("/", requireAuth, async (req, res) => {
   const ctx = await resolveSupplierContext(req);
@@ -867,17 +941,14 @@ router.get("/", requireAuth, async (req, res) => {
 
   const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD ?? 3);
 
-  // ✅ include: owned/created OR ever offered via base OR ever offered via variant
-  const ownershipOrOfferOr: any[] = [
+  const ownershipOr: any[] = [
     { supplierId: s.id } as any,
     ...(s.userId ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[]) : []),
-    { supplierProductOffers: { some: { supplierId: s.id } } } as any,
-    { supplierVariantOffers: { some: { supplierId: s.id } } } as any,
   ];
 
   const where: Prisma.ProductWhereInput = {
     isDeleted: false,
-    OR: ownershipOrOfferOr as any,
+    OR: ownershipOr as any,
     ...(status !== "ANY" ? { status: status as any } : {}),
     ...(q
       ? {
@@ -912,16 +983,8 @@ router.get("/", requireAuth, async (req, res) => {
         brandId: true,
         availableQty: true,
 
-        // ✅ show supplier's *latest* offer if any (active or inactive)
         supplierProductOffers: {
-          where: { supplierId: s.id },
-          select: {
-            basePrice: true,
-            currency: true,
-            inStock: true,
-            availableQty: true,
-            isActive: true,
-          },
+          select: { basePrice: true, currency: true, inStock: true, availableQty: true, isActive: true },
           ...(supplierOfferOrderBy() ? { orderBy: supplierOfferOrderBy() as any } : {}),
           take: 1,
         },
@@ -936,56 +999,51 @@ router.get("/", requireAuth, async (req, res) => {
 
   const productIds = items.map((p: any) => String(p.id));
 
-  const variantMin = await prisma.supplierVariantOffer.groupBy({
-    by: ["productId"],
-    where: {
-      supplierId: s.id,
-      productId: { in: productIds },
-      isActive: true,
-      inStock: true,
-      availableQty: { gt: 0 },
-      unitPrice: { gt: new Prisma.Decimal("0") },
-    } as any,
-    _min: { unitPrice: true },
-  });
+  // min unitPrice across variant offers per product
+  const variantMin = productIds.length
+    ? await prisma.supplierVariantOffer.groupBy({
+      by: ["productId"],
+      where: {
+        productId: { in: productIds },
+        isActive: true,
+        inStock: true,
+        availableQty: { gt: 0 },
+        unitPrice: { gt: new Prisma.Decimal("0") },
+      } as any,
+      _min: { unitPrice: true },
+    })
+    : [];
 
   const variantMinByProduct: Record<string, number> = {};
   for (const r of variantMin as any[]) {
     variantMinByProduct[String(r.productId)] = Number(r._min?.unitPrice ?? 0) || 0;
   }
 
-  // ✅ active/in-stock totals (used for row stock display)
   const [baseAgg, variantAgg] = await Promise.all([
-    prisma.supplierProductOffer.groupBy({
-      by: ["productId"],
-      where: {
-        supplierId: s.id,
-        productId: { in: productIds },
-        isActive: true,
-        inStock: true,
-      },
-      _sum: { availableQty: true },
-    }),
-    prisma.supplierVariantOffer.groupBy({
-      by: ["productId"],
-      where: {
-        supplierId: s.id,
-        productId: { in: productIds },
-        isActive: true,
-        inStock: true,
-      },
-      _sum: { availableQty: true },
-    }),
+    productIds.length
+      ? prisma.supplierProductOffer.groupBy({
+        by: ["productId"],
+        where: { productId: { in: productIds }, isActive: true, inStock: true },
+        _sum: { availableQty: true },
+      })
+      : Promise.resolve([] as any[]),
+    productIds.length
+      ? prisma.supplierVariantOffer.groupBy({
+        by: ["productId"],
+        where: { productId: { in: productIds }, isActive: true, inStock: true },
+        _sum: { availableQty: true },
+      })
+      : Promise.resolve([] as any[]),
   ]);
 
   const totalsByProduct: Record<string, number> = {};
-  for (const r of baseAgg) {
-    const pid = String((r as any).productId);
-    totalsByProduct[pid] = (totalsByProduct[pid] ?? 0) + Number((r as any)._sum.availableQty ?? 0);
+  for (const r of baseAgg as any[]) {
+    const pid = String(r.productId);
+    totalsByProduct[pid] = (totalsByProduct[pid] ?? 0) + Number(r._sum?.availableQty ?? 0);
   }
-  for (const r of variantAgg) {
-    const pid = String((r as any).productId);
-    totalsByProduct[pid] = (totalsByProduct[pid] ?? 0) + Number((r as any)._sum.availableQty ?? 0);
+  for (const r of variantAgg as any[]) {
+    const pid = String(r.productId);
+    totalsByProduct[pid] = (totalsByProduct[pid] ?? 0) + Number(r._sum?.availableQty ?? 0);
   }
 
   res.json({
@@ -995,23 +1053,15 @@ router.get("/", requireAuth, async (req, res) => {
       const pid = String(p.id);
       const offerQtyTotal = totalsByProduct[pid] ?? 0;
 
-      const availableQty =
-        offerQtyTotal > 0 ? offerQtyTotal : Number(offer?.availableQty ?? p.availableQty ?? 0);
-
-      const inStock =
-        offer != null ? availableQty > 0 || offer.inStock === true : Boolean(p.inStock);
+      const availableQty = offerQtyTotal > 0 ? offerQtyTotal : Number(offer?.availableQty ?? p.availableQty ?? 0);
+      const inStock = offer != null ? availableQty > 0 || offer.inStock === true : Boolean(p.inStock);
 
       const ownedBySupplier =
         String(p.supplierId ?? "") === String(s.id) ||
-        (s.userId &&
-          (String(p.ownerId ?? "") === String(s.userId) ||
-            String(p.userId ?? "") === String(s.userId)));
+        (s.userId && (String(p.ownerId ?? "") === String(s.userId) || String(p.userId ?? "") === String(s.userId)));
 
-      const baseOfferPrice =
-        offer?.basePrice != null && Number(offer.basePrice) > 0 ? Number(offer.basePrice) : 0;
-
+      const baseOfferPrice = offer?.basePrice != null && Number(offer.basePrice) > 0 ? Number(offer.basePrice) : 0;
       const variantFallbackPrice = variantMinByProduct[pid] ?? 0;
-
       const displayBasePrice = baseOfferPrice > 0 ? baseOfferPrice : variantFallbackPrice;
 
       return {
@@ -1048,11 +1098,19 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
     const payload = CreateSchema.parse(req.body ?? {});
     assertMaxImages(payload.imagesJson);
 
-    let sku = (payload.sku ?? "").trim();
-    if (!sku) {
-      const base = slugSkuBase(payload.title);
-      sku = `${base}-${randomSkuSuffix(4)}`.toUpperCase();
+    const brandIdNorm = payload.brandId ? String(payload.brandId).trim() : null;
+
+    // schema: Product.brandId is REQUIRED
+    if (!brandIdNorm) {
+      return res.status(400).json({ error: "brandId is required" });
     }
+
+    // ✅ SKU is ALWAYS computed from supplier + brand + title (ignore payload.sku)
+    const computedSkuBase = makeSkuFromSupplierBrandTitle({
+      supplierId: s.id,
+      brandId: brandIdNorm,
+      title: payload.title,
+    });
 
     // ✅ Start with provided selections/variants
     let attributeSelections = Array.isArray(payload.attributeSelections) ? payload.attributeSelections : [];
@@ -1064,6 +1122,10 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
       attributeSelections = mergeBaseComboIntoAttributeSelections(attributeSelections, collapsed.options);
       variants = []; // ✅ do NOT create variants/offers for this pattern
     }
+
+    // ✅ Enforce: no duplicate variant combos, and no base-combo == variant-combo
+    const baseComboKey = baseComboKeyFromAttributeSelections(attributeSelections);
+    assertNoDuplicateVariantCombosAndNoBaseCollision({ variants, baseComboKey });
 
     // ✅ base qty comes ONLY from base offer/top-level qty fields
     const baseQtyFromInputs =
@@ -1081,8 +1143,13 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
     const offerBasePrice = payload.offer?.basePrice ?? payload.basePrice;
 
-    // ✅ Run all DB writes in transaction, return created product
+    const warnings: string[] = [];
+
     const txResult = await prisma.$transaction(async (tx) => {
+      // ✅ supplier+brand aware unique SKU + friendly guard
+      const sku = await ensureUniqueProductSku(tx as any, computedSkuBase, { brandId: brandIdNorm, supplierId: s.id });
+      await assertNoDuplicateSupplierBrandSkuTx(tx as any, { supplierId: s.id, brandId: brandIdNorm, sku });
+
       const product = await tx.product.create({
         data: {
           title: payload.title,
@@ -1099,41 +1166,39 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
           supplierId: s.id,
 
           categoryId: payload.categoryId ?? null,
-          brandId: payload.brandId ?? null,
+          brandId: brandIdNorm,
 
           availableQty: baseQty,
 
-          // if you use AUTO mode, autoPrice is seeded from base offer
+          // AUTO mode seed
           autoPrice: toDecimal(offerBasePrice),
         } as any,
         select: { id: true, sku: true, title: true, status: true },
       });
 
-      const baseOffer = await upsertSupplierProductOffer(tx, s.id, product.id, {
-        basePrice: offerBasePrice,
-        currency: payload.offer?.currency ?? "NGN",
-        inStock,
-        isActive: payload.offer?.isActive ?? true,
-        leadDays: (payload.offer?.leadDays ?? null) as any,
-        availableQty: baseQty,
-      });
+      const baseOffer = await upsertSupplierProductOffer(
+        tx,
+        s.id,
+        product.id,
+        {
+          basePrice: offerBasePrice,
+          currency: payload.offer?.currency ?? "NGN",
+          inStock,
+          isActive: payload.offer?.isActive ?? true,
+          leadDays: (payload.offer?.leadDays ?? null) as any,
+          availableQty: baseQty,
+        },
+        warnings
+      );
 
-      // product-level attributes (includes collapsed base combo if any)
       await writeProductAttributes(tx, product.id, attributeSelections as any);
 
-      // ✅ Variant offers use FULL unitPrice (SupplierVariantOffer.unitPrice)
       if (Array.isArray(variants) && variants.length) {
         const productSkuBase = String(product.sku || slugSkuBase(product.title)).toUpperCase();
 
         for (const v of variants as any[]) {
           const opts = normalizeOptions(
-            v?.options ??
-            v?.optionSelections ??
-            v?.attributes ??
-            v?.attributeSelections ??
-            v?.variantOptions ??
-            v?.VariantOptions ??
-            []
+            v?.options ?? v?.optionSelections ?? v?.attributes ?? v?.attributeSelections ?? v?.variantOptions ?? v?.VariantOptions ?? []
           );
 
           const directId = String(v?.variantId ?? v?.id ?? "").trim();
@@ -1146,20 +1211,16 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
           const unitPriceNum = Number(asNumber(v?.unitPrice) ?? 0);
 
-          if (
-            offerBecomesPurchasable({
-              isActive: vIsActive,
-              inStock: !!vInStock,
-              availableQty: vQtyNonNeg,
-              basePrice: unitPriceNum,
-            })
-          ) {
-            await assertSupplierPayoutReadyForPurchasableOfferTx(
-              tx as any,
-              s.id,
-              "Cannot activate variant offer."
-            );
-          }
+          const guardedVar = await maybeDeactivateIfPayoutNotReadyTx(
+            tx as any,
+            s.id,
+            { isActive: !!vIsActive, inStock: !!vInStock, availableQty: vQtyNonNeg, basePrice: unitPriceNum },
+            "Variant offer",
+            warnings
+          );
+
+          const finalIsActive = guardedVar.isActive !== false;
+          const finalInStock = guardedVar.inStock !== false;
 
           let variantId: string | null = null;
 
@@ -1178,37 +1239,36 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
           if (!variantId) continue;
 
+          // ✅ schema: SupplierVariantOffer unique by variantId (NO supplierId field)
           await tx.supplierVariantOffer.upsert({
-            where: { supplierId_variantId: { supplierId: s.id, variantId } },
+            where: { variantId },
             update: {
               productId: product.id,
               supplierProductOfferId: baseOffer.id,
               unitPrice: toDecimal(unitPriceNum),
               currency: baseOffer.currency ?? "NGN",
               availableQty: vQtyNonNeg,
-              inStock: !!vInStock,
-              isActive: !!vIsActive,
+              inStock: !!finalInStock,
+              isActive: !!finalIsActive,
               leadDays: baseOffer.leadDays ?? null,
             },
             create: {
-              supplierId: s.id,
               productId: product.id,
               variantId,
               supplierProductOfferId: baseOffer.id,
               unitPrice: toDecimal(unitPriceNum),
               currency: baseOffer.currency ?? "NGN",
               availableQty: vQtyNonNeg,
-              inStock: !!vInStock,
-              isActive: !!vIsActive,
+              inStock: !!finalInStock,
+              isActive: !!finalIsActive,
               leadDays: baseOffer.leadDays ?? null,
             },
           });
         }
       }
 
-      // ✅ update product availableQty/inStock = base + active variant offers
       const variantAgg = await tx.supplierVariantOffer.aggregate({
-        where: { supplierId: s.id, productId: product.id, isActive: true },
+        where: { productId: product.id, isActive: true },
         _sum: { availableQty: true },
       });
 
@@ -1217,40 +1277,40 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
       const updated = await tx.product.update({
         where: { id: product.id },
-        data: {
-          availableQty: Math.max(0, Math.trunc(effectiveQty)) as any,
-          inStock: effectiveQty > 0,
-        } as any,
+        data: { availableQty: Math.max(0, Math.trunc(effectiveQty)) as any, inStock: effectiveQty > 0 } as any,
       });
 
       await refreshProductAutoPriceIfAutoMode(tx, product.id);
 
-      // ✅ Return the created/updated product row for response + notification
-      return {
-        product: updated,
-        hasVariants: Array.isArray(variants) && variants.length > 0,
-        skuUsed: sku,
-      };
+      return { product: updated, hasVariants: Array.isArray(variants) && variants.length > 0, skuUsed: sku, warnings };
     });
 
-    // ✅ Notify admins OUTSIDE transaction (no TDZ, no long transaction)
     await safeNotifyAdmins({
       type: NotificationType.PRODUCT_SUBMITTED,
       title: "New supplier product created",
-      body: `${s.name ?? "A supplier"} created a product: ${payload.title} (${txResult.product?.sku ?? txResult.skuUsed}).`,
+      body: `${s.name ?? "A supplier"} created a product: ${payload.title} (${(txResult.product as any)?.sku ?? txResult.skuUsed}).`,
       data: {
         supplierId: s.id,
         supplierName: s.name ?? null,
-        productId: txResult.product?.id ?? null,
-        sku: txResult.product?.sku ?? txResult.skuUsed,
+        productId: (txResult.product as any)?.id ?? null,
+        sku: (txResult.product as any)?.sku ?? txResult.skuUsed,
         status: (txResult.product as any)?.status ?? "PENDING",
         hasBaseOffer: true,
         hasVariants: txResult.hasVariants,
       },
     });
 
-    return res.status(201).json({ data: txResult.product });
+    return res.status(201).json({ data: txResult.product, warnings: txResult.warnings });
   } catch (e: any) {
+    if (isPrismaUniqueErr(e) || e?.code === "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU") {
+      return res.status(409).json({
+        error: "A product with this Supplier, Brand and SKU already exists.",
+        code: "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU",
+        userMessage: "You already have a product for that brand/title. Please change title or brand.",
+        meta: e?.meta,
+      });
+    }
+
     const status = Number(e?.statusCode) || 500;
     console.error("[supplier.products POST] error:", e);
     return res.status(status).json({
@@ -1261,11 +1321,8 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
   }
 });
 
-
 /* ============================================================
-   Eligibility endpoint (bulk)
-   GET /api/supplier/products/delete-eligibility?ids=...
-   - returns { data: { [productId]: { canDelete, reason } } }
+   Eligibility endpoint (bulk) — schema-aligned
 ============================================================ */
 router.get("/delete-eligibility", requireAuth, async (req: any, res) => {
   try {
@@ -1282,14 +1339,7 @@ router.get("/delete-eligibility", requireAuth, async (req: any, res) => {
 
     const products = await prisma.product.findMany({
       where: { id: { in: ids }, isDeleted: false } as any,
-      select: {
-        id: true,
-        title: true,
-        sku: true,
-        supplierId: true,
-        ownerId: true as any,
-        userId: true as any,
-      } as any,
+      select: { id: true, title: true, sku: true, supplierId: true, ownerId: true as any, userId: true as any } as any,
     });
 
     const byId: Record<string, { canDelete: boolean; reason?: string | null }> = {};
@@ -1300,9 +1350,7 @@ router.get("/delete-eligibility", requireAuth, async (req: any, res) => {
     for (const p of products as any[]) {
       const pid = String(p.id);
       const owned =
-        String(p.supplierId || "") === supplierId ||
-        String(p.ownerId || "") === userId ||
-        String(p.userId || "") === userId;
+        String(p.supplierId || "") === supplierId || String(p.ownerId || "") === userId || String(p.userId || "") === userId;
 
       if (!owned) {
         byId[pid] = { canDelete: false, reason: "You can’t delete this product because you don’t own it." };
@@ -1315,7 +1363,7 @@ router.get("/delete-eligibility", requireAuth, async (req: any, res) => {
 
     if (!ownedIds.length) return res.json({ data: byId });
 
-    // --- variant ids for order checks ---
+    // Orders by product or by variants
     const variants = await prisma.productVariant.findMany({
       where: { productId: { in: ownedIds } } as any,
       select: { id: true, productId: true },
@@ -1331,17 +1379,11 @@ router.get("/delete-eligibility", requireAuth, async (req: any, res) => {
       allVariantIds.push(vid);
     }
 
-    // --- orders check ---
     const hasOrdersByProduct: Record<string, boolean> = {};
     for (const pid of ownedIds) hasOrdersByProduct[pid] = false;
 
     const orderHits = await prisma.orderItem.findMany({
-      where: {
-        OR: [
-          { productId: { in: ownedIds } },
-          ...(allVariantIds.length ? [{ variantId: { in: allVariantIds } }] : []),
-        ],
-      } as any,
+      where: { OR: [{ productId: { in: ownedIds } }, ...(allVariantIds.length ? [{ variantId: { in: allVariantIds } }] : [])] } as any,
       select: { productId: true, variantId: true },
       take: 5000,
     });
@@ -1353,44 +1395,9 @@ router.get("/delete-eligibility", requireAuth, async (req: any, res) => {
       if (vid && variantToProduct[vid]) hasOrdersByProduct[variantToProduct[vid]] = true;
     }
 
-    // --- other suppliers offers check (ONLY other suppliers) ---
-    const hasOtherOffersByProduct: Record<string, boolean> = {};
-    for (const pid of ownedIds) hasOtherOffersByProduct[pid] = false;
-
-    const otherBase = await prisma.supplierProductOffer.findMany({
-      where: { productId: { in: ownedIds }, supplierId: { not: supplierId } } as any,
-      select: { productId: true },
-      take: 5000,
-    });
-    for (const r of otherBase as any[]) hasOtherOffersByProduct[String(r.productId)] = true;
-
-    const otherVarByProductId = await prisma.supplierVariantOffer.findMany({
-      where: { productId: { in: ownedIds }, supplierId: { not: supplierId } } as any,
-      select: { productId: true },
-      take: 5000,
-    });
-    for (const r of otherVarByProductId as any[]) hasOtherOffersByProduct[String(r.productId)] = true;
-
-    if (allVariantIds.length) {
-      const otherVarByVariantId = await prisma.supplierVariantOffer.findMany({
-        where: { variantId: { in: allVariantIds }, supplierId: { not: supplierId } } as any,
-        select: { variantId: true },
-        take: 5000,
-      });
-
-      for (const r of otherVarByVariantId as any[]) {
-        const vid = String(r.variantId || "");
-        const pid = vid ? variantToProduct[vid] : null;
-        if (pid) hasOtherOffersByProduct[pid] = true;
-      }
-    }
-
-    // --- final decision ---
     for (const pid of ownedIds) {
       if (hasOrdersByProduct[pid]) {
         byId[pid] = { canDelete: false, reason: "This product can’t be deleted because it already has orders." };
-      } else if (hasOtherOffersByProduct[pid]) {
-        byId[pid] = { canDelete: false, reason: "This product can’t be deleted because other suppliers already have offers on it." };
       } else {
         byId[pid] = { canDelete: true, reason: null };
       }
@@ -1413,7 +1420,6 @@ router.get("/:id", requireAuth, async (req, res) => {
 
   const productVariantsRel = "ProductVariant";
   const productBaseOffersRel = "supplierProductOffers";
-  const productVariantOffersRel = "supplierVariantOffers";
   const productBrandRel = "brand";
 
   const variantOptionsRel = "options";
@@ -1433,7 +1439,6 @@ router.get("/:id", requireAuth, async (req, res) => {
         },
       },
       [variantSupplierOffersRel]: {
-        where: { supplierId: s.id },
         select: {
           id: true,
           unitPrice: true,
@@ -1451,7 +1456,6 @@ router.get("/:id", requireAuth, async (req, res) => {
   };
 
   include[productBaseOffersRel] = {
-    where: { supplierId: s.id },
     select: {
       id: true,
       basePrice: true,
@@ -1469,6 +1473,7 @@ router.get("/:id", requireAuth, async (req, res) => {
 
   include[productBrandRel] = { select: { id: true, name: true } };
 
+  // Access control: supplier can see own product, or LIVE products (read-only viewing)
   const p = await prisma.product.findFirst({
     where: {
       id,
@@ -1476,13 +1481,7 @@ router.get("/:id", requireAuth, async (req, res) => {
       OR: [
         { supplierId: s.id } as any,
         ...(s.userId ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[]) : []),
-
-        { [productBaseOffersRel]: { some: { supplierId: s.id } } } as any,
-        { [productVariantOffersRel]: { some: { supplierId: s.id } } } as any,
-
-        {
-          AND: [{ status: "LIVE" as any }, { OR: [{ supplierId: { not: s.id } }, { supplierId: null }] } as any],
-        } as any,
+        { status: "LIVE" as any },
       ],
     },
     include,
@@ -1497,14 +1496,8 @@ router.get("/:id", requireAuth, async (req, res) => {
   const currency = myOffer?.currency ?? "NGN";
 
   let [attributeValues, attributeTexts] = await Promise.all([
-    prisma.productAttributeOption.findMany({
-      where: { productId: id },
-      select: { attributeId: true, valueId: true },
-    }),
-    prisma.productAttributeText.findMany({
-      where: { productId: id },
-      select: { attributeId: true, value: true },
-    }),
+    prisma.productAttributeOption.findMany({ where: { productId: id }, select: { attributeId: true, valueId: true } }),
+    prisma.productAttributeText.findMany({ where: { productId: id }, select: { attributeId: true, value: true } }),
   ]);
 
   if (!attributeValues.length) {
@@ -1547,19 +1540,10 @@ router.get("/:id", requireAuth, async (req, res) => {
   const attributeGuide = attrIds.map((attributeId: any) => {
     const a = attrById.get(attributeId);
     const values = (valsByAttr.get(attributeId) ?? [])
-      .map((v: any) => ({
-        id: String(v.id),
-        name: String(v.name ?? ""),
-        code: v.code ?? null,
-      }))
+      .map((v: any) => ({ id: String(v.id), name: String(v.name ?? ""), code: v.code ?? null }))
       .sort((x: any, y: any) => String(x.name).localeCompare(String(y.name)));
 
-    return {
-      attributeId,
-      attributeName: a?.name ?? attributeId,
-      attributeType: a?.type ?? null,
-      values,
-    };
+    return { attributeId, attributeName: a?.name ?? attributeId, attributeType: a?.type ?? null, values };
   });
 
   const attributeTextGuide = (attributeTexts as any[]).map((t: any) => {
@@ -1605,7 +1589,6 @@ router.get("/:id", requireAuth, async (req, res) => {
     data: {
       attributeGuide,
       attributeTextGuide,
-
       attributeValues,
       attributeTexts,
 
@@ -1640,6 +1623,12 @@ router.get("/:id", requireAuth, async (req, res) => {
   });
 });
 
+/* ------------------------------ DELETE /:id ------------------------------ */
+
+function getDelegate(tx: any, name: string) {
+  const d = (tx as any)?.[name];
+  return d && typeof d === "object" ? d : null;
+}
 
 router.delete("/:id", requireAuth, async (req: any, res) => {
   try {
@@ -1667,6 +1656,8 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
           id: true,
           title: true,
           sku: true,
+          ...(hasScalarField("Product", "brandId") ? { brandId: true } : {}),
+
           ...(hasSupplierId ? { supplierId: true } : {}),
           ...(hasOwnerId ? { ownerId: true } : {}),
           ...(hasUserId ? { userId: true } : {}),
@@ -1690,25 +1681,15 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
         throw err;
       }
 
-      // Variant ids (for order check + safety net checks + cleanup)
       const ProductVariant = getDelegate(tx, "productVariant");
       const variants = ProductVariant
-        ? await ProductVariant.findMany({
-          where: { productId },
-          select: { id: true, productId: true },
-        })
+        ? await ProductVariant.findMany({ where: { productId }, select: { id: true, productId: true } })
         : [];
 
       const variantIds = (variants as any[]).map((v) => String(v.id)).filter(Boolean);
 
-      // Orders check (block delete if ANY orders exist for product or its variants)
       const orderHit = await tx.orderItem.findFirst({
-        where: {
-          OR: [
-            { productId },
-            ...(variantIds.length ? [{ variantId: { in: variantIds } }] : []),
-          ],
-        },
+        where: { OR: [{ productId }, ...(variantIds.length ? [{ variantId: { in: variantIds } }] : [])] },
         select: { id: true },
       });
 
@@ -1718,79 +1699,35 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
         throw err;
       }
 
-      // Other supplier offers check
-      // ✅ Base offer by other supplier blocks
-      const otherBase = await tx.supplierProductOffer.findFirst({
-        where: { productId, supplierId: { not: supplierId } },
-        select: { id: true },
-      });
+      // schema: offers are NOT supplier-keyed; delete all offers for this product
+      await tx.supplierVariantOffer.deleteMany({ where: { productId } });
+      await tx.supplierProductOffer.deleteMany({ where: { productId } });
 
-      // ✅ Variant offer by other supplier blocks (productId path)
-      const otherVarByProductId = await tx.supplierVariantOffer.findFirst({
-        where: { productId, supplierId: { not: supplierId } } as any,
-        select: { id: true },
-      });
-
-      // ✅ Variant offer by other supplier blocks (variantId safety net)
-      const otherVarByVariantId =
-        !otherVarByProductId && variantIds.length
-          ? await tx.supplierVariantOffer.findFirst({
-            where: { variantId: { in: variantIds }, supplierId: { not: supplierId } } as any,
-            select: { id: true },
-          })
-          : null;
-
-      if (otherBase || otherVarByProductId || otherVarByVariantId) {
-        const err: any = new Error(
-          "This product can’t be deleted because other suppliers already have offers on it."
-        );
-        err.statusCode = 400;
-        throw err;
-      }
-
-      // ✅ Cleanup child tables
-      // offers for THIS supplier (safe even if 0)
-      await tx.supplierVariantOffer.deleteMany({ where: { productId, supplierId } });
-      await tx.supplierProductOffer.deleteMany({ where: { productId, supplierId } });
-
-      // variant option cleanup + variants
       const ProductVariantOption = getDelegate(tx, "productVariantOption");
       if (ProductVariantOption && variantIds.length) {
         await ProductVariantOption.deleteMany({ where: { variantId: { in: variantIds } } as any });
       }
-      if (ProductVariant) {
-        await ProductVariant.deleteMany({ where: { productId } });
-      }
+      if (ProductVariant) await ProductVariant.deleteMany({ where: { productId } });
 
-      // product attributes cleanup
       const ProductAttributeOption = getDelegate(tx, "productAttributeOption");
       if (ProductAttributeOption) await ProductAttributeOption.deleteMany({ where: { productId } });
 
       const ProductAttributeText = getDelegate(tx, "productAttributeText");
       if (ProductAttributeText) await ProductAttributeText.deleteMany({ where: { productId } });
 
-      // ✅ finally delete product (soft delete if available)
       if (hasIsDeleted) {
         await tx.product.update({ where: { id: productId }, data: { isDeleted: true } as any });
       } else {
         await tx.product.delete({ where: { id: productId } });
       }
 
-      // ✅ notify admins (best effort; do not fail delete)
       try {
         await notifyAdmins(
           {
             type: NotificationType.PRODUCT_DELETED,
             title: "Supplier product deleted",
-            body: `${supplierName ?? "A supplier"} deleted a product: ${(product as any).title} (${(product as any).sku
-              }).`,
-            data: {
-              supplierId,
-              supplierName,
-              productId,
-              sku: (product as any).sku ?? null,
-              title: (product as any).title ?? null,
-            },
+            body: `${supplierName ?? "A supplier"} deleted a product: ${(product as any).title} (${(product as any).sku}).`,
+            data: { supplierId, supplierName, productId, sku: (product as any).sku ?? null, title: (product as any).title ?? null },
           },
           tx
         );
@@ -1808,442 +1745,381 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
   }
 });
 
-
-
-/* ---------------- role helpers (match your style) ---------------- */
-
-function normRole(role: any): string {
-  return String(role ?? "").trim().toUpperCase();
-}
-const isRider = (role?: string) => normRole(role) === "SUPPLIER_RIDER";
-
-
-/* ---------------- schema helpers (like your file) ---------------- */
-
-function hasScalarField(modelName: string, fieldName: string): boolean {
-  try {
-    const dmmf =
-      (prisma as any)?._dmmf?.datamodel ??
-      (prisma as any)?._baseDmmf?.datamodel ??
-      (prisma as any)?._engine?.dmmf?.datamodel ??
-      (Prisma as any)?.dmmf?.datamodel ??
-      null;
-
-    const model = dmmf?.models?.find((m: any) => m.name === modelName);
-    if (!model) return false;
-
-    return Boolean(model.fields?.some((f: any) => f.name === fieldName && f.kind === "scalar"));
-  } catch {
-    return false;
-  }
-}
-
-// Safely get prisma delegate (like your getRefundDelegate style)
-function getDelegate(tx: any, name: string) {
-  const d = (tx as any)?.[name];
-  return d && typeof d === "object" ? d : null;
-}
-
-
-
-
-
-
-
 /* ------------------------------- PATCH ---------------------------------- */
 /**
- * (unchanged below — your existing PATCH logic remains)
+ * Kept behavior, but schema-aligned:
+ * - base offer unique by productId
+ * - variant offer unique by variantId
+ * - product is owned by supplierId (required)
  */
 router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
-  // ... keep your PATCH exactly as you already have it ...
-  // (I did not change it since your bug report is specifically POST duplication.)
   try {
-    // ---- YOUR EXISTING PATCH CONTENT ----
-    // (Paste your current PATCH body here unchanged)
-    try {
-      const s = await getSupplierForUser(req.user!.id);
-      if (!s) return res.status(403).json({ error: "Supplier profile not found for this user" });
+    const s = await getSupplierForUser(req.user!.id);
+    if (!s) return res.status(403).json({ error: "Supplier profile not found for this user" });
 
-      const id = requiredString(req.params.id);
+    const id = requiredString(req.params.id);
 
-      const incoming: any = req.body ?? {};
-      const base: any = incoming?.data ?? incoming?.product ?? incoming;
-      const payload = UpdateSchema.parse(base ?? {});
+    const incoming: any = req.body ?? {};
+    const base: any = incoming?.data ?? incoming?.product ?? incoming;
+    const payload = UpdateSchema.parse(base ?? {});
 
-      if (payload.imagesJson) assertMaxImages(payload.imagesJson);
+    if (payload.imagesJson) assertMaxImages(payload.imagesJson);
 
-      const stockOnlyFlag = payload.stockOnly === true || payload?.meta?.stockOnly === true;
+    const stockOnlyFlag = payload.stockOnly === true || payload?.meta?.stockOnly === true;
 
-      const product = await prisma.product.findFirst({
-        where: {
-          id,
-          isDeleted: false,
-          OR: [
-            { supplierId: s.id } as any,
-            { ownerId: req.user!.id } as any,
-            { userId: req.user!.id } as any,
-            { supplierProductOffers: { some: { supplierId: s.id } } } as any,
-            { supplierVariantOffers: { some: { supplierId: s.id } } } as any,
-          ],
-        },
-        select: {
-          id: true,
-          status: true,
-          sku: true,
-          title: true,
-          description: true,
-          categoryId: true,
-          brandId: true,
-          imagesJson: true,
-          communicationCost: true,
-          supplierId: true,
-          ownerId: true as any,
-          userId: true as any,
-        } as any,
+    const product = await prisma.product.findFirst({
+      where: {
+        id,
+        isDeleted: false,
+        OR: [{ supplierId: s.id } as any, { ownerId: req.user!.id } as any, { userId: req.user!.id } as any],
+      },
+      select: {
+        id: true,
+        status: true,
+        sku: true,
+        title: true,
+        description: true,
+        categoryId: true,
+        brandId: true,
+        imagesJson: true,
+        communicationCost: true,
+        supplierId: true,
+        ownerId: true as any,
+        userId: true as any,
+      } as any,
+    });
+
+    if (!product) return res.status(404).json({ error: "Not found" });
+
+    const ownedBySupplier =
+      String((product as any).supplierId ?? "") === String(s.id) ||
+      String((product as any).ownerId ?? "") === String(req.user!.id) ||
+      String((product as any).userId ?? "") === String(req.user!.id);
+
+    const statusUpper = String((product as any).status ?? "").toUpperCase();
+    const isLiveLocked = statusUpper === "LIVE" || statusUpper === "ACTIVE";
+
+    if (isLiveLocked) {
+      const incomingTitle = payload.title !== undefined ? String(payload.title ?? "").trim() : undefined;
+      const incomingSku = payload.sku !== undefined ? String(payload.sku ?? "").trim() : undefined;
+
+      const curTitle = String((product as any).title ?? "").trim();
+      const curSku = String((product as any).sku ?? "").trim();
+
+      const titleChanged = incomingTitle !== undefined && incomingTitle !== curTitle;
+      const skuChanged = incomingSku !== undefined && incomingSku !== curSku;
+
+      if (titleChanged || skuChanged) {
+        return res.status(400).json({
+          error: "This product is LIVE. Title and SKU are locked.",
+          code: "PRODUCT_LIVE_CORE_LOCKED",
+          userMessage: "This product is LIVE. Title and SKU can’t be changed.",
+        });
+      }
+    }
+
+    const triesCoreEdit =
+      payload.title !== undefined ||
+      payload.description !== undefined ||
+      payload.sku !== undefined ||
+      payload.categoryId !== undefined ||
+      payload.brandId !== undefined ||
+      payload.imagesJson !== undefined ||
+      payload.communicationCost !== undefined ||
+      payload.attributeSelections !== undefined;
+
+    if (!ownedBySupplier && triesCoreEdit) {
+      return res.status(403).json({
+        error: "Forbidden",
+        code: "SUPPLIER_DERIVED_PRODUCT_CORE_EDIT_FORBIDDEN",
+        userMessage:
+          "You can only edit your offers, variants and stock for this product. Core product details can’t be edited because you do not own the product.",
       });
+    }
 
-      if (!product) return res.status(404).json({ error: "Not found" });
+    const warnings: string[] = [];
 
-      const ownedBySupplier =
-        String((product as any).supplierId ?? "") === String(s.id) ||
-        String((product as any).ownerId ?? "") === String(req.user!.id) ||
-        String((product as any).userId ?? "") === String(req.user!.id);
+    const updated = await prisma.$transaction(async (tx) => {
+      // ✅ SKU policy: recompute from supplier+brand+title whenever title/brand changes OR caller attempts sku.
+      // (Only for ownedBySupplier + not stockOnly + not LIVE locked — LIVE lock already returned above)
+      if (ownedBySupplier && !stockOnlyFlag) {
+        const nextBrandId =
+          payload.brandId !== undefined ? (payload.brandId == null ? null : String(payload.brandId).trim()) : (product as any).brandId ?? null;
 
-      const statusUpper = String((product as any).status ?? "").toUpperCase();
-      const isLiveLocked = statusUpper === "LIVE" || statusUpper === "ACTIVE";
+        if (!nextBrandId) {
+          const err: any = new Error("brandId is required");
+          err.statusCode = 400;
+          err.code = "BRAND_REQUIRED";
+          throw err;
+        }
 
-      if (isLiveLocked) {
-        const incomingTitle =
-          payload.title !== undefined ? String(payload.title ?? "").trim() : undefined;
-        const incomingSku =
-          payload.sku !== undefined ? String(payload.sku ?? "").trim() : undefined;
+        const nextTitle = payload.title !== undefined ? String(payload.title ?? "").trim() : String((product as any).title ?? "").trim();
 
-        const curTitle = String((product as any).title ?? "").trim();
-        const curSku = String((product as any).sku ?? "").trim();
+        const mustRecomputeSku = payload.title !== undefined || payload.brandId !== undefined || payload.sku !== undefined;
 
-        const titleChanged = incomingTitle !== undefined && incomingTitle !== curTitle;
-        const skuChanged = incomingSku !== undefined && incomingSku !== curSku;
-
-        if (titleChanged || skuChanged) {
-          return res.status(400).json({
-            error: "This product is LIVE. Title and SKU are locked.",
-            code: "PRODUCT_LIVE_CORE_LOCKED",
-            userMessage: "This product is LIVE. Title and SKU can’t be changed.",
+        if (mustRecomputeSku) {
+          const computed = makeSkuFromSupplierBrandTitle({
+            supplierId: s.id,
+            brandId: nextBrandId,
+            title: nextTitle,
           });
+
+          const unique = await ensureUniqueProductSku(tx as any, computed, { excludeProductId: id, brandId: nextBrandId, supplierId: s.id });
+
+          // overwrite payload.sku (we don’t trust client sku)
+          (payload as any).sku = unique;
+
+          await assertNoDuplicateSupplierBrandSkuTx(tx as any, { supplierId: s.id, brandId: nextBrandId, sku: unique, excludeProductId: id });
         }
       }
 
+      // ✅ Load existing base offer (schema: unique by productId)
+      const existingBaseOffer = await tx.supplierProductOffer.findUnique({
+        where: { productId: id },
+        select: { id: true, basePrice: true, currency: true, inStock: true, isActive: true, leadDays: true, availableQty: true },
+      });
 
-      const triesCoreEdit =
-        payload.title !== undefined ||
-        payload.description !== undefined ||
-        payload.sku !== undefined ||
-        payload.categoryId !== undefined ||
-        payload.brandId !== undefined ||
-        payload.imagesJson !== undefined ||
-        payload.communicationCost !== undefined ||
-        payload.attributeSelections !== undefined;
+      const nextBaseQty = pickQty(
+        payload.offer?.availableQty,
+        (payload.offer as any)?.qty,
+        (payload.offer as any)?.quantity,
+        payload.availableQty,
+        (payload as any)?.qty,
+        (payload as any)?.quantity
+      );
 
-      if (!ownedBySupplier && triesCoreEdit) {
-        return res.status(403).json({
-          error: "Forbidden",
-          code: "SUPPLIER_DERIVED_PRODUCT_CORE_EDIT_FORBIDDEN",
-          userMessage:
-            "You can only edit your offers, variants and stock for this product. Core product details can’t be edited because you do not own the product.",
-        });
-      }
+      const nextBasePriceRaw = payload.offer?.basePrice ?? payload.basePrice;
+      const nextBasePriceNum = Number(
+        asNumber(nextBasePriceRaw) ?? (existingBaseOffer?.basePrice != null ? Number(existingBaseOffer.basePrice) : 0)
+      );
 
-      const updated = await prisma.$transaction(async (tx) => {
-        // Load existing base offer (may be null)
-        const existingBaseOffer = await tx.supplierProductOffer.findUnique({
-          where: { supplierId_productId: { supplierId: s.id, productId: id } },
-          select: { id: true, basePrice: true, currency: true, inStock: true, isActive: true, leadDays: true, availableQty: true },
-        });
+      const nextCurrency = payload.offer?.currency ?? existingBaseOffer?.currency ?? "NGN";
+      const nextIsActive = payload.offer?.isActive ?? existingBaseOffer?.isActive ?? true;
+      const nextInStock = payload.offer?.inStock ?? existingBaseOffer?.inStock ?? (nextBaseQty != null ? nextBaseQty > 0 : true);
+      const nextLeadDays = (payload.offer?.leadDays ?? existingBaseOffer?.leadDays ?? null) as any;
 
-        // Base offer fields (allow partial)
-        const nextBaseQty =
-          pickQty(
-            payload.offer?.availableQty,
-            (payload.offer as any)?.qty,
-            (payload.offer as any)?.quantity,
-            payload.availableQty,
-            (payload as any)?.qty,
-            (payload as any)?.quantity
-          );
+      const touchesBaseOffer =
+        payload.offer != null ||
+        payload.basePrice != null ||
+        payload.availableQty != null ||
+        (payload as any).qty != null ||
+        (payload as any).quantity != null;
 
-        const nextBasePriceRaw = payload.offer?.basePrice ?? payload.basePrice;
-        const nextBasePriceNum = Number(asNumber(nextBasePriceRaw) ?? (existingBaseOffer?.basePrice != null ? Number(existingBaseOffer.basePrice) : 0));
-        const nextCurrency = payload.offer?.currency ?? existingBaseOffer?.currency ?? "NGN";
-        const nextIsActive = payload.offer?.isActive ?? existingBaseOffer?.isActive ?? true;
-        const nextInStock =
-          payload.offer?.inStock ??
-          existingBaseOffer?.inStock ??
-          (nextBaseQty != null ? nextBaseQty > 0 : true);
-        const nextLeadDays = (payload.offer?.leadDays ?? existingBaseOffer?.leadDays ?? null) as any;
+      let baseOffer: any = existingBaseOffer;
 
-        // Only upsert base offer if user is actually changing base offer fields OR it already exists
-        const touchesBaseOffer =
-          payload.offer != null ||
-          payload.basePrice != null ||
-          payload.availableQty != null ||
-          (payload as any).qty != null ||
-          (payload as any).quantity != null;
+      if (touchesBaseOffer) {
+        const qty = Math.max(0, Math.trunc(nextBaseQty ?? existingBaseOffer?.availableQty ?? 0));
 
-        let baseOffer: any = existingBaseOffer;
-
-        if (touchesBaseOffer) {
-          const qty = Math.max(0, Math.trunc(nextBaseQty ?? existingBaseOffer?.availableQty ?? 0));
-
-          if (
-            offerBecomesPurchasable({
-              isActive: nextIsActive,
-              inStock: !!nextInStock,
-              availableQty: qty,
-              basePrice: nextBasePriceNum,
-            })
-          ) {
-            await assertSupplierPayoutReadyForPurchasableOfferTx(tx as any, s.id, "Cannot activate base offer.");
-          }
-
-          baseOffer = await upsertSupplierProductOffer(tx, s.id, id, {
+        baseOffer = await upsertSupplierProductOffer(
+          tx,
+          s.id,
+          id,
+          {
             basePrice: nextBasePriceNum,
             currency: nextCurrency,
             inStock: !!nextInStock,
             isActive: !!nextIsActive,
             leadDays: nextLeadDays,
             availableQty: qty,
-          });
+          },
+          warnings
+        );
+      }
+
+      if (ownedBySupplier && !stockOnlyFlag) {
+        const nextImages = payload.imagesJson ? normalizeImagesJson(payload.imagesJson) : undefined;
+
+        await tx.product.update({
+          where: { id },
+          data: {
+            ...(payload.title !== undefined ? { title: payload.title } : {}),
+            ...(payload.description !== undefined ? { description: payload.description ?? "" } : {}),
+            // ✅ SKU computed above, only written if we recomputed or client tried to change it
+            ...(payload.sku !== undefined ? { sku: payload.sku } : {}),
+            ...(payload.categoryId !== undefined ? { categoryId: payload.categoryId ?? null } : {}),
+            ...(payload.brandId !== undefined ? { brandId: payload.brandId ?? null } : {}),
+            ...(payload.communicationCost !== undefined
+              ? { communicationCost: payload.communicationCost == null ? null : toDecimal(payload.communicationCost) }
+              : {}),
+            ...(nextImages !== undefined ? { imagesJson: nextImages } : {}),
+          } as any,
+        });
+
+        if (payload.attributeSelections !== undefined) {
+          await writeProductAttributes(tx, id, payload.attributeSelections as any);
         }
+      }
 
-        // Core product update (owned only, not stockOnly)
-        if (ownedBySupplier && !stockOnlyFlag) {
-          const nextImages = payload.imagesJson ? normalizeImagesJson(payload.imagesJson) : undefined;
+      // ✅ Enforce: no duplicate variant combos, and no base-combo == variant-combo
+      const variantsIncoming = Array.isArray(payload.variants) ? payload.variants : [];
 
-          await tx.product.update({
-            where: { id },
-            data: {
-              ...(payload.title !== undefined ? { title: payload.title } : {}),
-              ...(payload.description !== undefined ? { description: payload.description ?? "" } : {}),
-              ...(payload.sku !== undefined ? { sku: payload.sku } : {}),
-              ...(payload.categoryId !== undefined ? { categoryId: payload.categoryId ?? null } : {}),
-              ...(payload.brandId !== undefined ? { brandId: payload.brandId ?? null } : {}),
-              ...(payload.communicationCost !== undefined
-                ? { communicationCost: payload.communicationCost == null ? null : toDecimal(payload.communicationCost) }
-                : {}),
-              ...(nextImages !== undefined ? { imagesJson: nextImages } : {}),
-            } as any,
-          });
+      let baseComboKey = "";
+      if (payload.attributeSelections !== undefined) {
+        // If client sent new base attributes, validate against those
+        baseComboKey = baseComboKeyFromAttributeSelections(payload.attributeSelections as any);
+      } else {
+        // Otherwise validate against existing base attributes in DB
+        baseComboKey = await baseComboKeyFromDbTx(tx, id);
+      }
 
-          if (payload.attributeSelections !== undefined) {
-            await writeProductAttributes(tx, id, payload.attributeSelections as any);
-          }
-        }
+      assertNoDuplicateVariantCombosAndNoBaseCollision({
+        variants: variantsIncoming,
+        baseComboKey,
+      });
 
-        // Variants / variant offers
-        const variants = Array.isArray(payload.variants) ? payload.variants : [];
+      const variants = Array.isArray(payload.variants) ? payload.variants : [];
 
-        if (variants.length) {
-          const pRow = await tx.product.findUnique({
-            where: { id },
-            select: { id: true, sku: true, title: true },
-          });
+      if (variants.length) {
+        const pRow = await tx.product.findUnique({ where: { id }, select: { id: true, sku: true, title: true } });
 
-          const productSkuBase = String(pRow?.sku || slugSkuBase(pRow?.title || "product")).toUpperCase();
-          for (const v of variants as any[]) {
-            const directId = String(v?.variantId ?? v?.id ?? "").trim();
+        const productSkuBase = String(pRow?.sku || slugSkuBase(pRow?.title || "product")).toUpperCase();
 
-            const opts = normalizeOptions(
-              v?.options ??
-              v?.optionSelections ??
-              v?.attributes ??
-              v?.attributeSelections ??
-              v?.variantOptions ??
-              v?.VariantOptions ??
-              []
-            );
+        for (const v of variants as any[]) {
+          const directId = String(v?.variantId ?? v?.id ?? "").trim();
 
-            // ignore phantom rows
-            if (!directId && !opts.length) continue;
+          const opts = normalizeOptions(
+            v?.options ?? v?.optionSelections ?? v?.attributes ?? v?.attributeSelections ?? v?.variantOptions ?? v?.VariantOptions ?? []
+          );
 
-            const vQty = pickQty(v?.availableQty, v?.qty, v?.quantity); // may be undefined
-            const vQtyProvided = vQty != null;
-            const vQtyNonNeg = Math.max(0, Math.trunc(vQty ?? 0));
+          if (!directId && !opts.length) continue;
 
-            const unitPriceProvided =
-              v?.unitPrice !== undefined && v?.unitPrice !== null && String(v.unitPrice) !== "";
-            const unitPriceNumMaybe = unitPriceProvided ? Number(asNumber(v?.unitPrice) ?? 0) : undefined;
+          const vQty = pickQty(v?.availableQty, v?.qty, v?.quantity);
+          const vQtyProvided = vQty != null;
+          const vQtyNonNeg = Math.max(0, Math.trunc(vQty ?? 0));
 
-            let variantId: string | null = null;
+          const unitPriceProvided = v?.unitPrice !== undefined && v?.unitPrice !== null && String(v.unitPrice) !== "";
+          const unitPriceNumMaybe = unitPriceProvided ? Number(asNumber(v?.unitPrice) ?? 0) : undefined;
 
-            if (directId) {
-              // ensure variant belongs to this product
-              const ok = await tx.productVariant.findFirst({
-                where: { id: directId, productId: id },
-                select: { id: true },
-              });
-              if (!ok) {
-                const e: any = new Error("Invalid variantId for this product");
-                e.statusCode = 400;
-                e.code = "INVALID_VARIANT";
-                throw e;
-              }
-              variantId = directId;
-            } else {
-              // create or get by combo (requires opts)
-              variantId = await createOrGetVariantByCombo(tx, {
-                productId: id,
-                productSkuBase,
-                desiredSku: prefixVariantSkuWithProductName(pRow?.title || "PRODUCT", v?.sku ?? null),
-                options: opts,
-                qty: vQtyNonNeg,
-                inStock: v?.inStock ?? (vQtyProvided ? vQtyNonNeg > 0 : true),
-              });
+          let variantId: string | null = null;
+
+          if (directId) {
+            const ok = await tx.productVariant.findFirst({ where: { id: directId, productId: id }, select: { id: true } });
+            if (!ok) {
+              const e: any = new Error("Invalid variantId for this product");
+              e.statusCode = 400;
+              e.code = "INVALID_VARIANT";
+              throw e;
             }
-
-            if (!variantId) continue;
-
-            // Load existing offer so we can:
-            // - avoid wiping unitPrice to 0 when UI doesn't send it
-            // - avoid wiping qty when UI doesn't send it
-            // - still enforce payout readiness when stock/active changes make it purchasable
-            const existingVarOffer = await tx.supplierVariantOffer.findUnique({
-              where: { supplierId_variantId: { supplierId: s.id, variantId } },
-              select: { unitPrice: true, availableQty: true, inStock: true, isActive: true },
-            });
-
-            const nextUnitPriceNum = unitPriceProvided
-              ? (unitPriceNumMaybe ?? 0)
-              : existingVarOffer?.unitPrice != null
-                ? Number(existingVarOffer.unitPrice)
-                : Number(baseOffer?.basePrice ?? 0);
-
-            const nextQty = vQtyProvided ? vQtyNonNeg : Number(existingVarOffer?.availableQty ?? 0);
-
-            const nextActive = (v?.isActive ?? existingVarOffer?.isActive ?? true) as boolean;
-
-            const nextStock = (v?.inStock ??
-              (vQtyProvided ? vQtyNonNeg > 0 : existingVarOffer?.inStock ?? true)) as boolean;
-
-            // ✅ enforce payout-ready only when offer becomes purchasable
-            if (
-              offerBecomesPurchasable({
-                isActive: nextActive,
-                inStock: nextStock,
-                availableQty: nextQty,
-                basePrice: nextUnitPriceNum, // ✅ uses existing/base if unitPrice not provided
-              })
-            ) {
-              await assertSupplierPayoutReadyForPurchasableOfferTx(
-                tx as any,
-                s.id,
-                "Cannot activate variant offer."
-              );
-            }
-
-            // If owned, mirror qty/inStock into ProductVariant too (keeps your variant table consistent)
-            if (ownedBySupplier && vQtyProvided) {
-              await tx.productVariant.update({
-                where: { id: variantId },
-                data: { availableQty: vQtyNonNeg, inStock: nextStock } as any,
-              });
-            }
-
-            await tx.supplierVariantOffer.upsert({
-              where: { supplierId_variantId: { supplierId: s.id, variantId } },
-              update: {
-                productId: id,
-                supplierProductOfferId: baseOffer?.id ?? null,
-
-                // ✅ only overwrite unitPrice if explicitly sent
-                ...(unitPriceProvided ? { unitPrice: toDecimal(nextUnitPriceNum) } : {}),
-
-                currency: nextCurrency,
-
-                // ✅ only overwrite qty if explicitly sent
-                ...(vQtyProvided ? { availableQty: nextQty } : {}),
-
-                inStock: nextStock,
-                isActive: nextActive,
-                leadDays: nextLeadDays ?? null,
-              } as any,
-              create: {
-                supplierId: s.id,
-                productId: id,
-                variantId,
-                supplierProductOfferId: baseOffer?.id ?? null,
-
-                // ✅ for new offers: default unitPrice to existing/base when not sent
-                unitPrice: toDecimal(nextUnitPriceNum),
-
-                currency: nextCurrency,
-                availableQty: nextQty,
-                inStock: nextStock,
-                isActive: nextActive,
-                leadDays: nextLeadDays ?? null,
-              } as any,
+            variantId = directId;
+          } else {
+            variantId = await createOrGetVariantByCombo(tx, {
+              productId: id,
+              productSkuBase,
+              desiredSku: prefixVariantSkuWithProductName(pRow?.title || "PRODUCT", v?.sku ?? null),
+              options: opts,
+              qty: vQtyNonNeg,
+              inStock: v?.inStock ?? (vQtyProvided ? vQtyNonNeg > 0 : true),
             });
           }
 
-        }
+          if (!variantId) continue;
 
-        // If owned: update Product.availableQty/inStock to reflect base+active variant offers (this supplier)
-        if (ownedBySupplier) {
-          const baseQty =
-            (baseOffer?.availableQty ?? existingBaseOffer?.availableQty ?? 0) as number;
-
-          const variantAgg = await tx.supplierVariantOffer.aggregate({
-            where: { supplierId: s.id, productId: id, isActive: true },
-            _sum: { availableQty: true },
+          // ✅ schema: SupplierVariantOffer unique by variantId (NO supplierId field)
+          const existingVarOffer = await tx.supplierVariantOffer.findUnique({
+            where: { variantId },
+            select: { unitPrice: true, availableQty: true, inStock: true, isActive: true },
           });
 
-          const variantQty = Number(variantAgg._sum?.availableQty ?? 0);
-          const effectiveQty = Math.max(0, Math.trunc(baseQty + variantQty));
+          const nextUnitPriceNum = unitPriceProvided
+            ? unitPriceNumMaybe ?? 0
+            : existingVarOffer?.unitPrice != null
+              ? Number(existingVarOffer.unitPrice)
+              : Number(baseOffer?.basePrice ?? 0);
 
-          await tx.product.update({
-            where: { id },
-            data: {
-              availableQty: effectiveQty as any,
-              inStock: effectiveQty > 0,
+          const nextQty = vQtyProvided ? vQtyNonNeg : Number(existingVarOffer?.availableQty ?? 0);
+
+          const nextActiveRaw = (v?.isActive ?? existingVarOffer?.isActive ?? true) as boolean;
+          const nextStockRaw = (v?.inStock ?? (vQtyProvided ? vQtyNonNeg > 0 : existingVarOffer?.inStock ?? true)) as boolean;
+
+          const guardedVar = await maybeDeactivateIfPayoutNotReadyTx(
+            tx as any,
+            s.id,
+            { isActive: !!nextActiveRaw, inStock: !!nextStockRaw, availableQty: nextQty, basePrice: nextUnitPriceNum },
+            "Variant offer",
+            warnings
+          );
+
+          const nextActive = guardedVar.isActive !== false;
+          const nextStock = guardedVar.inStock !== false;
+
+          if (ownedBySupplier && vQtyProvided) {
+            await tx.productVariant.update({ where: { id: variantId }, data: { availableQty: vQtyNonNeg, inStock: nextStock } as any });
+          }
+
+          await tx.supplierVariantOffer.upsert({
+            where: { variantId },
+            update: {
+              productId: id,
+              supplierProductOfferId: baseOffer?.id ?? null,
+              ...(unitPriceProvided ? { unitPrice: toDecimal(nextUnitPriceNum) } : {}),
+              currency: nextCurrency,
+              ...(vQtyProvided ? { availableQty: nextQty } : {}),
+              inStock: nextStock,
+              isActive: nextActive,
+              leadDays: nextLeadDays ?? null,
+            } as any,
+            create: {
+              productId: id,
+              variantId,
+              supplierProductOfferId: baseOffer?.id ?? null,
+              unitPrice: toDecimal(nextUnitPriceNum),
+              currency: nextCurrency,
+              availableQty: nextQty,
+              inStock: nextStock,
+              isActive: nextActive,
+              leadDays: nextLeadDays ?? null,
             } as any,
           });
-
-          await refreshProductAutoPriceIfAutoMode(tx, id);
         }
+      }
 
-        return tx.product.findUnique({ where: { id } });
-      });
+      if (ownedBySupplier) {
+        const baseQty = (baseOffer?.availableQty ?? existingBaseOffer?.availableQty ?? 0) as number;
 
+        const variantAgg = await tx.supplierVariantOffer.aggregate({
+          where: { productId: id, isActive: true },
+          _sum: { availableQty: true },
+        });
 
-      await safeNotifyAdmins({
-        type: NotificationType.PRODUCT_CHANGE_SUBMITTED,
-        title: "Supplier product updated",
-        body: `${s.name ?? "A supplier"} updated a product: ${(updated as any)?.title ?? (product as any)?.title ?? "Unknown"
-          } (${(updated as any)?.sku ?? (product as any)?.sku ?? id}).`,
-        data: {
-          supplierId: s.id,
-          supplierName: s.name ?? null,
-          productId: id,
-          sku: (updated as any)?.sku ?? (product as any)?.sku ?? null,
-          status: (updated as any)?.status ?? (product as any)?.status ?? null,
-          source: "supplierProducts.patch",
-        },
-      });
+        const variantQty = Number(variantAgg._sum?.availableQty ?? 0);
+        const effectiveQty = Math.max(0, Math.trunc(baseQty + variantQty));
 
-      return res.json({ data: updated });
-    } catch (e: any) {
-      const status = Number(e?.statusCode) || 500;
-      console.error("[supplier.products PATCH] error:", e);
-      res.status(status).json({
-        error: e?.message || "Internal Server Error",
-        code: e?.code,
-        userMessage: e?.userMessage,
+        await tx.product.update({ where: { id }, data: { availableQty: effectiveQty as any, inStock: effectiveQty > 0 } as any });
+
+        await refreshProductAutoPriceIfAutoMode(tx, id);
+      }
+
+      return tx.product.findUnique({ where: { id } });
+    });
+
+    await safeNotifyAdmins({
+      type: NotificationType.PRODUCT_CHANGE_SUBMITTED,
+      title: "Supplier product updated",
+      body: `${s.name ?? "A supplier"} updated a product: ${(updated as any)?.title ?? (product as any)?.title ?? "Unknown"} (${(updated as any)?.sku ?? (product as any)?.sku ?? id}).`,
+      data: {
+        supplierId: s.id,
+        supplierName: s.name ?? null,
+        productId: id,
+        sku: (updated as any)?.sku ?? (product as any)?.sku ?? null,
+        status: (updated as any)?.status ?? (product as any)?.status ?? null,
+        source: "supplierProducts.patch",
+      },
+    });
+
+    return res.json({ data: updated, warnings });
+  } catch (e: any) {
+    if (isPrismaUniqueErr(e) || e?.code === "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU") {
+      return res.status(409).json({
+        error: "A product with this Supplier, Brand and SKU already exists.",
+        code: "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU",
+        userMessage: "You already have a product for that brand/title. Please change title or brand.",
+        meta: e?.meta,
       });
     }
-    return res.status(501).json({ error: "PATCH omitted in this snippet; keep your existing implementation." });
-  } catch (e: any) {
+
     const status = Number(e?.statusCode) || 500;
     console.error("[supplier.products PATCH] error:", e);
-    res.status(status).json({
+    return res.status(status).json({
       error: e?.message || "Internal Server Error",
       code: e?.code,
       userMessage: e?.userMessage,

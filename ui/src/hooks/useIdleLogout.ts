@@ -1,6 +1,6 @@
 // src/hooks/useIdleLogout.ts
 import { useEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import api from "../api/client";
 import { useAuthStore } from "../store/auth";
 
@@ -30,10 +30,10 @@ export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
   const user = useAuthStore((s) => s.user);
   const clear = useAuthStore((s) => s.clear);
 
-  const nav = useNavigate();
   const loc = useLocation();
 
   const timerRef = useRef<number | null>(null);
+  const kickingRef = useRef(false); // ✅ prevents double fire
   const [shouldKick, setShouldKick] = useState(false);
 
   // Arm / re-arm the timer based on activity
@@ -42,6 +42,7 @@ export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
     if (!user?.id) return;
 
     const reset = () => {
+      if (kickingRef.current) return; // ✅ don't re-arm while logging out
       if (timerRef.current) window.clearTimeout(timerRef.current);
       timerRef.current = window.setTimeout(() => setShouldKick(true), timeoutMs) as any;
     };
@@ -57,10 +58,13 @@ export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
     };
   }, [hydrated, user?.id, timeoutMs]);
 
-  // ✅ IMPORTANT: navigation happens ONLY here (effect), never during render
+  // ✅ Idle logout + HARD redirect (full refresh)
   useEffect(() => {
     if (!shouldKick) return;
     if (!hydrated) return;
+    if (kickingRef.current) return;
+
+    kickingRef.current = true;
 
     (async () => {
       try {
@@ -69,19 +73,27 @@ export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
         // ignore
       }
 
-      clear();
+      try {
+        clear();
+      } catch {
+        // ignore
+      }
 
       const path = `${loc.pathname}${loc.search}`;
 
-      // only save "from" if it’s protected; else just go login
+      // keep return target only for protected pages
       if (isProtectedPath(loc.pathname)) {
         try {
           sessionStorage.setItem(RETURN_TO_KEY, path);
         } catch {}
-        nav("/login", { replace: true, state: { from: path } });
-      } else {
-        nav("/login", { replace: true });
       }
+
+      // ✅ HARD NAVIGATION (refresh-style) to login
+      const target = isProtectedPath(loc.pathname)
+        ? `/login?reason=idle&from=${encodeURIComponent(path)}`
+        : "/login?reason=idle";
+
+      window.location.replace(target);
     })();
-  }, [shouldKick, hydrated, clear, nav, loc.pathname, loc.search]);
+  }, [shouldKick, hydrated, clear, loc.pathname, loc.search]);
 }

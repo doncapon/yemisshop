@@ -167,7 +167,7 @@ function useModeratableProductsQuery(q: string) {
 
       const productIds = Array.from(new Set(baseRows.map((r) => r.id))).filter(Boolean);
 
-      // 2) Fetch supplier offers by productIds
+      // 2) Fetch supplier offers by productIds (still fetched for info badges, but NOT required for approval)
       let offersByProductId: Record<string, SupplierOfferLite[]> = {};
       if (productIds.length) {
         try {
@@ -300,7 +300,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
   const statusOf = (p: any) => normalizeStatus(p?.status);
   const isPublished = (p: any) => statusOf(p) === "PUBLISHED";
 
-  // ✅ eligible supplier offer = active + qty>0 + unit price > 0
+  // kept for informational pill only (NOT a constraint anymore)
   function hasEligibleSupplierOffer(p: any) {
     const offers: SupplierOfferLite[] = Array.isArray(p?.supplierOffers) ? p.supplierOffers : [];
     return offers.some((o) => {
@@ -512,19 +512,20 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {gridRows.map((p) => {
           const published = isPublished(p);
+
+          // ✅ NOT a constraint anymore; informational only
           const offersPresent = hasEligibleSupplierOffer(p);
+
           const ordersPresent = hasOrder(p.id);
           const checkingOrders = hasOrdersQ.isLoading;
 
-          // ✅ Approve only when ALL are satisfied
-          const disableApprove = !published || !offersPresent || checkingOrders;
+          // ✅ Approve only when: PUBLISHED + no orders + not currently checking
+          const disableApprove = !published || checkingOrders || ordersPresent;
 
           const approveTitle = checkingOrders
             ? "Checking orders…"
             : !published
             ? "Only PUBLISHED items can be approved"
-            : !offersPresent
-            ? "Needs at least one active supplier offer with quantity and price"
             : ordersPresent
             ? "Cannot approve: product already has orders"
             : "Approve product";
@@ -695,14 +696,16 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
                     Status: {productsQ.isLoading ? "…" : p?.status || "—"}
                   </span>
 
+                  {/* ✅ informational only now */}
                   <span
                     className={
                       offersPresent
                         ? "inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700"
-                        : "inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700"
+                        : "inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-50 text-slate-700"
                     }
+                    title="Supplier offer is informational only and does not block approval."
                   >
-                    Supplier offer: {productsQ.isLoading ? "…" : offersPresent ? "present" : "missing"}
+                    Supplier offer: {productsQ.isLoading ? "…" : offersPresent ? "present" : "none"}
                   </span>
 
                   <span

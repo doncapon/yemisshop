@@ -52,6 +52,7 @@ type Address = {
   city: string;
   state: string;
   country: string;
+  lga?: string; // ✅ add this
 };
 
 const EMPTY_ADDR: Address = {
@@ -62,6 +63,7 @@ const EMPTY_ADDR: Address = {
   city: "",
   state: "",
   country: "Nigeria",
+  lga: "", // ✅ add this
 };
 
 const ngn = new Intl.NumberFormat("en-NG", {
@@ -422,12 +424,16 @@ async function fetchPricingQuoteForCart(cart: CartLine[]): Promise<QuotePayload 
   return null;
 }
 
-/* ---------------- Public settings (marginPercent) ---------------- */
+/* ---------------- Public settings (marginPercent + shipping flags) ---------------- */
 
 type PublicSettings = {
   marginPercent?: number | string | null;
   commerce?: { marginPercent?: number | string | null } | null;
   pricing?: { marginPercent?: number | string | null } | null;
+
+  // ✅ NEW from /api/settings/public
+  shippingEnabled?: boolean | string | number | null;
+  shippingMode?: "DELIVERY" | "PICKUP_ONLY" | string | null;
 };
 
 async function fetchPublicSettings(): Promise<PublicSettings | null> {
@@ -465,6 +471,23 @@ function extractMarginPercent(s: PublicSettings | null | undefined): number {
   if (Number.isFinite(pricing)) return clampPct(pricing);
 
   return 0;
+}
+
+function extractShippingEnabled(s: PublicSettings | null | undefined): boolean {
+  if (!s) return true; // default ON
+  const v: any = (s as any).shippingEnabled;
+  if (v === undefined || v === null || v === "") return true;
+  if (typeof v === "boolean") return v;
+
+  const str = String(v).trim().toLowerCase();
+  if (["1", "true", "yes", "on", "enabled"].includes(str)) return true;
+  if (["0", "false", "no", "off", "disabled"].includes(str)) return false;
+  return true;
+}
+
+function extractShippingMode(s: PublicSettings | null | undefined): "DELIVERY" | "PICKUP_ONLY" {
+  const raw = String((s as any)?.shippingMode ?? "").trim().toUpperCase();
+  return raw === "PICKUP_ONLY" ? "PICKUP_ONLY" : "DELIVERY";
 }
 
 const applyMargin = (supplierUnit: number, marginPercent: number) => {
@@ -572,10 +595,10 @@ function Card({
     tone === "primary"
       ? "border-primary-200"
       : tone === "emerald"
-        ? "border-emerald-200"
-        : tone === "amber"
-          ? "border-amber-200"
-          : "border-border";
+      ? "border-emerald-200"
+      : tone === "amber"
+      ? "border-amber-200"
+      : "border-border";
 
   return (
     <div
@@ -603,19 +626,19 @@ function CardHeader({
     tone === "primary"
       ? "from-primary-50 to-white"
       : tone === "emerald"
-        ? "from-emerald-50 to-white"
-        : tone === "amber"
-          ? "from-amber-50 to-white"
-          : "from-surface to-white";
+      ? "from-emerald-50 to-white"
+      : tone === "amber"
+      ? "from-amber-50 to-white"
+      : "from-surface to-white";
 
   const toneIcon =
     tone === "primary"
       ? "text-primary-600"
       : tone === "emerald"
-        ? "text-emerald-600"
-        : tone === "amber"
-          ? "text-amber-600"
-          : "text-ink-soft";
+      ? "text-emerald-600"
+      : tone === "amber"
+      ? "text-amber-600"
+      : "text-ink-soft";
 
   return (
     <div className={`flex items-center justify-between px-4 py-3 md:p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
@@ -635,8 +658,9 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""
-        }`}
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${
+        props.className || ""
+      }`}
     />
   );
 }
@@ -650,6 +674,7 @@ function AddressPreview({ a }: { a: Address }) {
       <div>
         {a.town || ""} {a.city || ""} {a.postCode || ""}
       </div>
+      {!!a.lga && <div>LGA: {a.lga}</div>}
       <div>
         {a.state}, {a.country}
       </div>
@@ -669,7 +694,7 @@ export default function Checkout() {
 
   const meQ = useQuery({
     queryKey: ["auth", "me"],
-    enabled: hydrated,               // ✅ wait for hydration
+    enabled: hydrated, // ✅ wait for hydration
     queryFn: async () => {
       const res = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
       return (res.data?.data ?? res.data ?? null) as any;
@@ -680,7 +705,7 @@ export default function Checkout() {
   });
 
   useEffect(() => {
-    if (!hydrated) return;            // ✅ don’t redirect before hydration
+    if (!hydrated) return; // ✅ don’t redirect before hydration
     if (meQ.isLoading) return;
 
     const status = (meQ.error as any)?.response?.status;
@@ -689,17 +714,14 @@ export default function Checkout() {
     }
   }, [hydrated, meQ.isLoading, meQ.data, meQ.error, nav]);
 
-
   // Verification state
   const [checkingVerification, setCheckingVerification] = useState(true);
   const [emailOk, setEmailOk] = useState<boolean>(false);
   const [phoneOk, setPhoneOk] = useState<boolean>(false);
   const [showNotVerified, setShowNotVerified] = useState<boolean>(false);
 
-
   const [cart, setCart] = useState<CartLine[]>(() => {
     const raw = loadCartRaw();
-    // your existing normalize mapping logic can stay, just map from raw:
     try {
       const arr: any[] = Array.isArray(raw) ? raw : [];
       return arr.map((x) => {
@@ -730,11 +752,10 @@ export default function Checkout() {
   });
 
   useEffect(() => {
-    // persist to v2 storage, and delete legacy key
     saveCartRaw(cart);
   }, [cart]);
 
-  // ✅ Public settings (marginPercent)
+  // ✅ Public settings (marginPercent + shipping flags)
   const publicSettingsQ = useQuery({
     queryKey: ["settings", "public:v1"],
     staleTime: 5 * 60_000,
@@ -743,6 +764,8 @@ export default function Checkout() {
   });
 
   const marginPercent = useMemo(() => extractMarginPercent(publicSettingsQ.data), [publicSettingsQ.data]);
+  const shippingEnabled = useMemo(() => extractShippingEnabled(publicSettingsQ.data), [publicSettingsQ.data]);
+  const shippingMode = useMemo(() => extractShippingMode(publicSettingsQ.data), [publicSettingsQ.data]);
 
   // ✅ Supplier-split quote (supplier-cost)
   const pricingQ = useQuery({
@@ -850,9 +873,33 @@ export default function Checkout() {
     return "Some items could not be fully allocated across suppliers. Reduce quantities or try again.";
   }, [pricingQ.data]);
 
+  // ADDRESSES
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [profileErr, setProfileErr] = useState<string | null>(null);
+
+  const [homeAddr, setHomeAddr] = useState<Address>(EMPTY_ADDR);
+  const [shipAddr, setShipAddr] = useState<Address>(EMPTY_ADDR);
+
+  const [showHomeForm, setShowHomeForm] = useState(false);
+  const [showShipForm, setShowShipForm] = useState(false);
+  const [sameAsHome, setSameAsHome] = useState(true);
+
+  const [savingHome, setSavingHome] = useState(false);
+  const [savingShip, setSavingShip] = useState(false);
+
   // ✅ Authoritative fees from backend — keyed by RETAIL itemsSubtotal
   const serviceFeeQ = useQuery({
-    queryKey: ["checkout", "service-fee", { itemsSubtotal, units, productIds, supplierIds }],
+    queryKey: [
+      "checkout",
+      "service-fee",
+      {
+        itemsSubtotal,
+        units,
+        productIds,
+        supplierIds,
+        shipTo: sameAsHome ? homeAddr : shipAddr,
+      },
+    ],
     enabled: cart.length > 0,
     queryFn: async () => {
       const qs = new URLSearchParams();
@@ -872,15 +919,75 @@ export default function Checkout() {
         taxMode: String(data?.taxMode || "INCLUDED") as "INCLUDED" | "ADDED" | "NONE",
         taxRatePct: Number(data?.taxRatePct) || 0,
         vatAddOn: Number(data?.vatAddOn) || 0,
-
         serviceFeeBase: Number(data?.serviceFeeBase) || 0,
         serviceFeeComms: Number(data?.serviceFeeComms) || 0,
         serviceFeeGateway: Number(data?.serviceFeeGateway) || 0,
         serviceFeeTotal: Number(data?.serviceFeeTotal ?? data?.serviceFee) || 0,
+
+        // optional debug/display fields if your backend returns them
+        shippingMode: data?.shippingMode ? String(data.shippingMode) : undefined,
+        shippingLabel: data?.shippingLabel ? String(data.shippingLabel) : undefined,
       };
     },
     staleTime: 30_000,
     refetchOnWindowFocus: false,
+  });
+
+  const shippingAddressForQuote = sameAsHome ? homeAddr : shipAddr;
+
+  const shippingQ = useQuery({
+    queryKey: [
+      "checkout",
+      "shipping-fee-local:v1",
+      user?.id,
+      sameAsHome ? "home" : "ship",
+      JSON.stringify({
+        ...shippingAddressForQuote,
+        lga: (shippingAddressForQuote as any).lga ?? shippingAddressForQuote.town ?? "",
+      }),
+      cart.map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`).sort().join(","),
+    ],
+    enabled:
+      shippingEnabled && // ✅ disable entire shipping query when off
+      hydrated &&
+      !!user?.id &&
+      cart.length > 0 &&
+      !loadingProfile &&
+      !showHomeForm &&
+      (sameAsHome || !showShipForm),
+    refetchOnWindowFocus: false,
+    staleTime: 15_000,
+    retry: false,
+    queryFn: async () => {
+      const items = cart.map((it) => ({
+        productId: it.productId,
+        variantId: it.variantId ?? null,
+        qty: Math.max(1, asInt(it.qty, 1)),
+      }));
+
+      const payloadAddress = {
+        ...shippingAddressForQuote,
+        lga: (shippingAddressForQuote as any).lga ?? shippingAddressForQuote.town ?? "",
+      };
+
+      const { data } = await api.post(
+        "/api/checkout/shipping-fee-local",
+        {
+          items,
+          shippingAddress: payloadAddress,
+          serviceLevel: "STANDARD",
+        },
+        AXIOS_COOKIE_CFG
+      );
+
+      return {
+        shippingFee: Number(data?.shippingFee) || 0,
+        currency: String(data?.currency || "NGN"),
+        suppliers: Array.isArray(data?.suppliers) ? data.suppliers : [],
+        partial: !!data?.partial,
+        error: data?.error ? String(data.error) : null,
+      };
+    },
   });
 
   const fee = serviceFeeQ.data;
@@ -888,44 +995,29 @@ export default function Checkout() {
   const taxRatePct = fee?.taxRatePct ?? 0;
   const vatAddOn = fee?.vatAddOn ?? 0;
 
+  // ✅ if shipping is disabled, shippingFee is always 0
+  const shippingFee = shippingEnabled ? (shippingQ.data?.shippingFee ?? 0) : 0;
+
   const taxRate = useMemo(() => (Number.isFinite(taxRatePct) ? taxRatePct / 100 : 0), [taxRatePct]);
 
   // Display-only: VAT "included" estimate (when mode is INCLUDED)
   const estimatedVATIncluded = useMemo(() => {
     if (taxMode !== "INCLUDED" || taxRate <= 0) return 0;
-    const gross = itemsSubtotal; // includes VAT (per mode)
+    const gross = itemsSubtotal;
     const vat = gross - gross / (1 + taxRate);
     return round2(vat);
   }, [itemsSubtotal, taxMode, taxRate]);
 
   const serviceFeeTotal = fee?.serviceFeeTotal ?? 0;
 
-  // ✅ Matches backend: subtotal + vatAddOn (if ADDED) + serviceFeeTotal
-  const payableTotal = itemsSubtotal + (taxMode === "ADDED" ? vatAddOn : 0) + serviceFeeTotal;
-
-  // UI: per-line supplier breakdown toggle
+  const payableTotal = itemsSubtotal + shippingFee + (taxMode === "ADDED" ? vatAddOn : 0) + serviceFeeTotal;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-
-  // ADDRESSES
-  const [loadingProfile, setLoadingProfile] = useState(true);
-  const [profileErr, setProfileErr] = useState<string | null>(null);
-
-  const [homeAddr, setHomeAddr] = useState<Address>(EMPTY_ADDR);
-  const [shipAddr, setShipAddr] = useState<Address>(EMPTY_ADDR);
-
-  const [showHomeForm, setShowHomeForm] = useState(false);
-  const [showShipForm, setShowShipForm] = useState(false);
-  const [sameAsHome, setSameAsHome] = useState(true);
-
-  const [savingHome, setSavingHome] = useState(false);
-  const [savingShip, setSavingShip] = useState(false);
 
   // Verification + addresses load
   useEffect(() => {
     let mounted = true;
 
     (async () => {
-      // if auth not ready, wait (prevents flashing 401 -> modal)
       if (!hydrated) return;
       if (!user?.id) return;
 
@@ -941,11 +1033,8 @@ export default function Checkout() {
         setEmailOk(flags.emailOk);
         setPhoneOk(flags.phoneOk);
 
-        if (!flags.emailOk /* || !flags.phoneOk */) {
-          setShowNotVerified(true);
-        } else {
-          setShowNotVerified(false);
-        }
+        if (!flags.emailOk /* || !flags.phoneOk */) setShowNotVerified(true);
+        else setShowNotVerified(false);
 
         const h = data?.address ?? null;
         const saddr = data?.shippingAddress ?? (data as any)?.shipping_address ?? null;
@@ -959,7 +1048,6 @@ export default function Checkout() {
       } catch (e: any) {
         if (!mounted) return;
 
-        // Most common: not logged in / cookie not sent
         const status = e?.response?.status;
         if (status === 401) {
           nav("/login", { state: { from: { pathname: "/checkout" } }, replace: true });
@@ -994,7 +1082,6 @@ export default function Checkout() {
   const onChangeShip =
     (k: keyof Address) => (e: React.ChangeEvent<HTMLInputElement>) => setShipAddr((a) => ({ ...a, [k]: e.target.value }));
 
-  // ✅ Stronger client-side validation so we never hit server 500 for missing fields
   function validateAddress(a: Address, isShipping = false): string | null {
     const label = isShipping ? "Shipping" : "Home";
 
@@ -1005,9 +1092,6 @@ export default function Checkout() {
     if (!a.country.trim()) return `Enter ${label} address: country`;
     if (!a.postCode.trim()) return `Enter ${label} address: post code`;
 
-    // town can be optional, but if you want it required, uncomment:
-    // if (!a.town.trim()) return `Enter ${label} address: town`;
-
     return null;
   }
 
@@ -1015,10 +1099,7 @@ export default function Checkout() {
     const status = e?.response?.status;
     const raw = String(e?.response?.data?.error || e?.message || "").trim();
 
-    // If the server gives a meaningful 4xx validation message, show it.
     if ((status === 400 || status === 422) && raw && !/internal server error/i.test(raw)) return raw;
-
-    // Never show "Internal server error" to the user.
     if (status >= 500 || /internal server error/i.test(raw)) return fallback;
 
     return raw || fallback;
@@ -1086,16 +1167,24 @@ export default function Checkout() {
       if (!emailOk /* || !phoneOk */) throw new Error("Your email is not verified.");
       if (cart.length === 0) throw new Error("Your cart is empty");
 
-      // ✅ Ensure quote + fees are computed before creating order (prevents mismatch)
       if (pricingQ.isLoading) throw new Error("Calculating best supplier prices… Please try again in a moment.");
       if (pricingWarning) throw new Error(pricingWarning);
       if (serviceFeeQ.isLoading || !fee) throw new Error("Calculating fees… Please try again in a moment.");
 
-      // ✅ Don’t block order if cart cache is 0 but quote retail exists
+      // ✅ only require shipping quote when shipping is enabled
+      if (shippingEnabled) {
+        if (shippingQ.isLoading) throw new Error("Calculating shipping… Please try again in a moment.");
+        if (shippingQ.isError) throw new Error("Could not calculate shipping yet. Please check your address and try again.");
+        if (shippingQ.data?.error) throw new Error(shippingQ.data.error);
+
+        if (shippingQ.data?.partial) {
+          throw new Error("Shipping is only partially quoted. Please complete shipping zone/rate setup.");
+        }
+      }
+
       const bad = cart.find((l) => {
         const key = lineKeyFor(l);
-        const hasRetail =
-          !!quoteRetail?.linesRetail?.[key] && (quoteRetail?.linesRetail?.[key].retailLineTotal ?? 0) > 0;
+        const hasRetail = !!quoteRetail?.linesRetail?.[key] && (quoteRetail?.linesRetail?.[key].retailLineTotal ?? 0) > 0;
         const cachedUnit = num(l.unitPrice, num(l.price, 0));
         return cachedUnit <= 0 && !hasRetail;
       });
@@ -1105,6 +1194,8 @@ export default function Checkout() {
       if (vaHome) throw new Error(vaHome);
 
       const finalShip = sameAsHome ? homeAddr : shipAddr;
+
+      // ✅ always validate shipping address if it's different from home
       if (!sameAsHome) {
         const vaShip = validateAddress(finalShip, true);
         if (vaShip) throw new Error(vaShip);
@@ -1116,45 +1207,49 @@ export default function Checkout() {
         variantId: it.variantId || undefined,
         qty: Math.max(1, num(it.qty, 1)),
 
-        // ✅ send offerId if present
         offerId: it.offerId || undefined,
-
         selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : undefined,
 
-        // ✅ optional pass-through (harmless if backend ignores)
         kind: it.kind,
-
-        // helpful hints (harmless if backend ignores)
         supplierId: it.supplierId || undefined,
-
-        // cache (harmless if backend ignores)
         unitPriceCache: asMoney(it.unitPrice, asMoney(it.price, 0)),
       }));
 
       const at = getAttribution();
-      const payload = {
+      const payload: any = {
         items,
         shippingAddress: finalShip,
         attribution: at,
 
-        // ✅ Send EXACT backend-computed breakdown (do not recompute locally)
         serviceFeeBase: fee.serviceFeeBase ?? 0,
         serviceFeeComms: fee.serviceFeeComms ?? 0,
         serviceFeeGateway: fee.serviceFeeGateway ?? 0,
         serviceFeeTotal: fee.serviceFeeTotal ?? 0,
         serviceFee: fee.serviceFeeTotal ?? 0,
 
-        // ✅ snapshot (retail)
+        // ✅ shipping off => zero + disabled metadata
+        shippingFee: shippingEnabled ? shippingFee : 0,
+        shippingCurrency: shippingEnabled ? (shippingQ.data?.currency ?? "NGN") : "NGN",
+        shippingRateSource: shippingEnabled ? "FALLBACK_ZONE" : "DISABLED",
+        shippingBreakdownJson:
+          shippingEnabled && shippingQ.data
+            ? {
+                total: shippingFee,
+                currency: shippingQ.data.currency,
+                suppliers: shippingQ.data.suppliers,
+                partial: shippingQ.data.partial,
+              }
+            : null,
+        shippingMode: shippingEnabled ? shippingMode : "PICKUP_ONLY",
+
         itemsSubtotal,
         taxMode: fee.taxMode,
         taxRatePct: fee.taxRatePct,
         vatAddOn: fee.vatAddOn,
         total: payableTotal,
 
-        // ✅ margin snapshot (optional)
         marginPercent,
 
-        // quote snapshot (supplier cost) — optional
         quoteSubtotalSupplier: asMoney(quoteSubtotalSupplier, 0),
         quoteCurrency: (pricingQ.data as QuotePayload | null)?.currency ?? null,
       };
@@ -1169,7 +1264,6 @@ export default function Checkout() {
           throw new Error("Please login again.");
         }
 
-        // ✅ never show internal errors; prefer validation-friendly message
         const friendly = safeServerMessage(
           e,
           "We couldn’t place your order. Please review your address details and try again."
@@ -1286,7 +1380,7 @@ export default function Checkout() {
             </button>
             <button
               className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
-              onClick={() => { }}
+              onClick={() => {}}
               disabled
               title="Complete the steps above"
               type="button"
@@ -1315,7 +1409,6 @@ export default function Checkout() {
       <div className="bg-bg-soft bg-hero-radial">
         {!checkingVerification && showNotVerified && <NotVerifiedModal />}
 
-        {/* ✅ mobile: tighter padding + slightly smaller title/crumbs */}
         <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-5 sm:py-6 md:py-8">
           <div className="mb-4 md:mb-6">
             <nav className="flex items-center gap-2 text-xs sm:text-sm">
@@ -1332,9 +1425,16 @@ export default function Checkout() {
                 {publicSettingsQ.isLoading
                   ? "Loading pricing settings…"
                   : publicSettingsQ.isError
-                    ? "Could not load margin settings — showing best-effort retail pricing."
-                    : `Margin applied: ${marginPercent}%`}
+                  ? "Could not load margin settings — showing best-effort retail pricing."
+                  : `Margin applied: ${marginPercent}%`}
               </p>
+            )}
+
+            {!shippingEnabled && (
+              <div className="mt-2 text-xs sm:text-sm rounded-xl border bg-white/80 p-3 text-ink">
+                No extra shipping fee: delivery cost is already included in item prices. We’ll still deliver to the shipping
+                address you provide.
+              </div>
             )}
 
             {profileErr && (
@@ -1350,11 +1450,10 @@ export default function Checkout() {
             )}
           </div>
 
-          {/* ✅ mobile: reduce gap; desktop unchanged */}
           <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-4 sm:gap-5 md:gap-6">
-            {/* LEFT: Items / Addresses */}
             <section className="space-y-4 sm:space-y-5 md:space-y-6">
-              {/* Items card unchanged... */}
+              {/* Items card would go here if/when you add it */}
+
               {/* Home Address */}
               <Card tone="emerald" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
                 <CardHeader
@@ -1387,12 +1486,17 @@ export default function Checkout() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <Input value={homeAddr.town} onChange={onChangeHome("town")} placeholder="Town (optional)" />
-                      <Input value={homeAddr.city} onChange={onChangeHome("city")} placeholder="City *" />
+                      <Input value={homeAddr.lga || ""} onChange={onChangeHome("lga")} placeholder="LGA (optional)" />
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={homeAddr.city} onChange={onChangeHome("city")} placeholder="City *" />
                       <Input value={homeAddr.state} onChange={onChangeHome("state")} placeholder="State *" />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <Input value={homeAddr.country} onChange={onChangeHome("country")} placeholder="Country *" />
+                      <div />
                     </div>
 
                     <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 pt-1">
@@ -1420,12 +1524,16 @@ export default function Checkout() {
                 )}
               </Card>
 
-              {/* Shipping Address */}
+              {/* Shipping Address — ALWAYS SHOWN, even when shippingEnabled = false */}
               <Card tone="amber" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
                 <CardHeader
                   tone="amber"
                   title="Shipping address"
-                  subtitle="Where we’ll deliver your items."
+                  subtitle={
+                    shippingEnabled
+                      ? "Where we’ll deliver your items."
+                      : "We’ll deliver to this address. Shipping cost is already included in prices."
+                  }
                   icon={<IconTruck />}
                   action={
                     <label className="flex items-center gap-2 text-[11px] sm:text-sm">
@@ -1436,11 +1544,9 @@ export default function Checkout() {
                           const checked = e.target.checked;
 
                           if (checked) {
-                            // ✅ validate BEFORE calling server so we never show 500
                             const v = validateAddress(homeAddr, false);
                             if (v) {
                               openModal({ title: "Checkout", message: v });
-                              // keep it unchecked
                               setSameAsHome(false);
                               return;
                             }
@@ -1462,7 +1568,10 @@ export default function Checkout() {
                               }
                               openModal({
                                 title: "Checkout",
-                                message: safeServerMessage(err, "Failed to set shipping as home. Please check your address and try again."),
+                                message: safeServerMessage(
+                                  err,
+                                  "Failed to set shipping as home. Please check your address and try again."
+                                ),
                               });
                               setSameAsHome(false);
                             } finally {
@@ -1476,7 +1585,9 @@ export default function Checkout() {
                   }
                 />
                 {sameAsHome ? (
-                  <div className="px-4 py-3 md:p-4 text-[11px] sm:text-sm text-ink-soft">Using your Home address for shipping.</div>
+                  <div className="px-4 py-3 md:p-4 text-[11px] sm:text-sm text-ink-soft">
+                    Using your Home address for shipping.
+                  </div>
                 ) : loadingProfile ? (
                   <div className="px-4 py-3 md:p-4 text-[11px] sm:text-sm text-ink-soft">Loading…</div>
                 ) : showShipForm ? (
@@ -1490,12 +1601,17 @@ export default function Checkout() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <Input value={shipAddr.town} onChange={onChangeShip("town")} placeholder="Town (optional)" />
-                      <Input value={shipAddr.city} onChange={onChangeShip("city")} placeholder="City *" />
+                      <Input value={shipAddr.lga || ""} onChange={onChangeShip("lga")} placeholder="LGA (optional)" />
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input value={shipAddr.city} onChange={onChangeShip("city")} placeholder="City *" />
                       <Input value={shipAddr.state} onChange={onChangeShip("state")} placeholder="State *" />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <Input value={shipAddr.country} onChange={onChangeShip("country")} placeholder="Country *" />
+                      <div />
                     </div>
 
                     <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 pt-1">
@@ -1528,6 +1644,7 @@ export default function Checkout() {
                         <div>
                           {shipAddr.town || ""} {shipAddr.city || ""} {shipAddr.postCode || ""}
                         </div>
+                        {!!shipAddr.lga && <div>LGA: {shipAddr.lga}</div>}
                         <div>
                           {shipAddr.state}, {shipAddr.country}
                         </div>
@@ -1545,7 +1662,7 @@ export default function Checkout() {
               </Card>
             </section>
 
-            {/* RIGHT: Summary / Action (unchanged except it now receives friendly errors via mutation) */}
+            {/* RIGHT: Summary / Action */}
             <aside className="lg:sticky lg:top-6 h-max">
               <Card className="p-4 sm:p-5">
                 <h2 className="text-base sm:text-lg font-semibold text-ink">Order Summary</h2>
@@ -1572,16 +1689,45 @@ export default function Checkout() {
 
                   <div className="flex items-center justify-between">
                     <span className="text-ink-soft">Shipping</span>
-                    <span className="font-medium">Included</span>
+                    <span className="font-medium">
+                      {!shippingEnabled
+                        ? "Included in price"
+                        : shippingQ.isLoading
+                        ? "Calculating…"
+                        : shippingFee > 0
+                        ? ngn.format(shippingFee)
+                        : "Included"}
+                    </span>
                   </div>
+
+                  {shippingEnabled && shippingQ.isError && (
+                    <div className="mt-1 text-[11px] sm:text-xs text-danger">Could not compute shipping yet</div>
+                  )}
+
+                  {shippingEnabled && !!shippingQ.data?.error && (
+                    <div className="mt-2 text-[11px] sm:text-xs text-amber-700 border border-amber-200 bg-amber-50 px-2 py-1 rounded">
+                      {shippingQ.data.error}
+                    </div>
+                  )}
+
+                  {shippingEnabled && shippingQ.data?.partial && (
+                    <div className="mt-2 text-[11px] sm:text-xs text-amber-700 border border-amber-200 bg-amber-50 px-2 py-1 rounded">
+                      Shipping was quoted for some suppliers only. Total may increase after remaining supplier zones/rates are
+                      configured.
+                    </div>
+                  )}
 
                   <div className="mt-3 pt-3 border-t border-border">
                     <div className="flex items-center justify-between">
                       <span className="text-ink">Service fee</span>
                       <span className="font-semibold">{ngn.format(serviceFeeTotal)}</span>
                     </div>
-                    {serviceFeeQ.isLoading && <div className="mt-1 text-[11px] sm:text-xs text-ink-soft">Calculating fees…</div>}
-                    {serviceFeeQ.isError && <div className="mt-1 text-[11px] sm:text-xs text-danger">Failed to compute fees</div>}
+                    {serviceFeeQ.isLoading && (
+                      <div className="mt-1 text-[11px] sm:text-xs text-ink-soft">Calculating fees…</div>
+                    )}
+                    {serviceFeeQ.isError && (
+                      <div className="mt-1 text-[11px] sm:text-xs text-danger">Failed to compute fees</div>
+                    )}
                   </div>
                 </div>
 
@@ -1591,7 +1737,9 @@ export default function Checkout() {
                 </div>
 
                 {pricingWarning && (
-                  <p className="mt-3 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">{pricingWarning}</p>
+                  <p className="mt-3 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
+                    {pricingWarning}
+                  </p>
                 )}
 
                 <button
@@ -1600,11 +1748,7 @@ export default function Checkout() {
                   className="mt-4 sm:mt-5 w-full inline-flex items-center justify-center rounded-lg bg-accent-500 text-white px-4 py-2.5 font-medium hover:bg-accent-600 active:bg-accent-700 focus:outline-none focus:ring-4 focus:ring-accent-200 transition disabled:opacity-50 text-sm"
                   type="button"
                 >
-                  {createOrder.isPending
-                    ? "Processing…"
-                    : pricingQ.isLoading
-                      ? "Calculating prices…"
-                      : "Place order & Pay"}
+                  {createOrder.isPending ? "Processing…" : pricingQ.isLoading ? "Calculating prices…" : "Place order & Pay"}
                 </button>
 
                 {createOrder.isError && (

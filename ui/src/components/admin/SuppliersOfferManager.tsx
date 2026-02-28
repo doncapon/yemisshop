@@ -1,21 +1,29 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * SuppliersOfferManager.tsx
+ * SuppliersOfferManager.tsx (schema-aligned)
  *
- * ✅ Cookie auth (NO bearer tokens):
- * - All requests use credentials: "include"
- * - Removed all localStorage/sessionStorage token scanning
+ * ✅ Cookie auth (NO bearer tokens): credentials: "include"
  *
  * ✅ Uses ONLY these endpoints (no fallbacks):
- * - GET  /api/admin/products/:productId/supplier-offers
- * - POST /api/admin/products/:productId/supplier-offers
- * - PATCH /api/admin/supplier-offers/:id
+ * - GET    /api/admin/products/:productId/supplier-offers
+ * - POST   /api/admin/products/:productId/supplier-offers
+ * - PATCH  /api/admin/supplier-offers/:id
  * - DELETE /api/admin/supplier-offers/:id
  *
  * ✅ One price field in API payloads ONLY: `price`
  *   - BASE row:     price -> SupplierProductOffer.basePrice
- *   - VARIANT row:  price -> SupplierVariantOffer.unitPrice (FULL unit price)
+ *   - VARIANT row:  price -> SupplierVariantOffer.unitPrice
+ *
+ * ✅ YOUR SCHEMA reality:
+ * - Product has ONE supplierId (required)
+ * - SupplierProductOffer has NO supplierId
+ * - SupplierVariantOffer has NO supplierId
+ *
+ * 👉 Therefore:
+ * - NO supplier dropdown in UI
+ * - supplier is derived from the Product's supplier (read-only display)
+ * - Payloads OMIT supplierId (server should infer from product.supplierId)
  */
 
 type Supplier = {
@@ -38,7 +46,8 @@ type OfferApi = {
 
   productId: string;
 
-  supplierId: string;
+  // NOTE: these may still come back from legacy DTOs; we ignore for saving
+  supplierId?: string;
   supplierName?: string;
 
   variantId: string | null;
@@ -57,7 +66,7 @@ type OfferApi = {
 type Row = {
   rowKey: string;
 
-  /** Current backend offer id for this row (null if new / not saved yet) */
+  /** current backend offer id (null for unsaved) */
   offerId: string | null;
 
   /**
@@ -66,18 +75,10 @@ type Row = {
    */
   deleteOfferId: string | null;
 
-  supplierId: string;
   variantId: string | null;
-
   kind: OfferKind;
 
-  /**
-   * One editable price in UI:
-   *  - BASE row: basePrice
-   *  - VARIANT row: unitPrice (full)
-   *
-   * NOTE: internal number value (0 means blank in UI)
-   */
+  /** editable price; BASE uses basePrice, VARIANT uses unitPrice (full) */
   unitPrice: number;
 
   availableQty: number;
@@ -93,14 +94,16 @@ type Props = {
   productId: string;
 
   variants?: Variant[];
-  suppliers?: Supplier[];
 
-  // kept for compatibility; NOT used (cookie auth)
+  // kept for compatibility; ignored
+  suppliers?: Supplier[];
   token?: string | null;
 
   readOnly?: boolean;
 
+  // fixedSupplierId now ignored (supplier comes from product)
   fixedSupplierId?: string | null;
+
   defaultUnitCost?: number; // kept for compatibility; not used to auto-fill
   onSaved?: () => void;
 };
@@ -111,7 +114,8 @@ type VariantItem =
   | { kind: "BASE"; label: string }
   | { kind: "VARIANT"; v: Variant; label: string };
 
-function VariantComboBox({
+
+  function VariantComboBox({
   disabled,
   valueVariantId,
   items,
@@ -130,28 +134,29 @@ function VariantComboBox({
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
 
+  const selectedKey = valueVariantId ? `VARIANT:${valueVariantId}` : "BASE";
+
   const selectedLabel = useMemo(() => {
     if (!valueVariantId) {
       const base = items.find((x) => x.kind === "BASE");
       return base?.label ?? "— None (base offer) —";
     }
-    const found = items.find((x) => x.kind === "VARIANT" && x.v.id === valueVariantId) as
-      | Extract<VariantItem, { kind: "VARIANT" }>
-      | undefined;
-    return found?.label ?? "";
+    const found = items.find(
+      (x) => x.kind === "VARIANT" && x.v.id === valueVariantId
+    ) as Extract<VariantItem, { kind: "VARIANT" }> | undefined;
+
+    return found?.label ?? "— Select —";
   }, [items, valueVariantId]);
 
   useEffect(() => {
     if (!open) setQ("");
   }, [open]);
 
-  const filtered = useMemo(() => {
+  const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return items;
     return items.filter((x) => x.label.toLowerCase().includes(needle));
   }, [items, q]);
-
-  const shown = filtered;
 
   function choose(item: VariantItem) {
     if (item.kind === "BASE") onSelectBase();
@@ -161,23 +166,29 @@ function VariantComboBox({
 
   return (
     <div className="relative w-full min-w-[720px]">
+      {/* CLOSED BUTTON */}
       <button
         type="button"
         className={`w-full rounded-xl border px-3 py-2 text-left ${
-          disabled ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-white border-slate-300"
+          disabled
+            ? "bg-slate-100 border-slate-200 text-slate-500"
+            : "bg-white border-slate-300"
         }`}
         onClick={() => !disabled && setOpen((v) => !v)}
         disabled={disabled}
-        title={disabled ? "Select supplier first" : selectedLabel}
+        title={disabled ? "Locked" : selectedLabel}
       >
         <div className="flex items-start justify-between gap-2">
-          <span className="whitespace-normal break-words leading-snug">{selectedLabel || "— Select —"}</span>
+          <span className="whitespace-normal break-words leading-snug">
+            {selectedLabel || "— Select —"}
+          </span>
           <span className="text-slate-400">▾</span>
         </div>
       </button>
 
+      {/* DROPDOWN */}
       {open && !disabled ? (
-        <div className="absolute z-30 mt-2 w-[min(92vw,1400px)] max-w-none overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg">
+        <div className="absolute z-30 mt-2 w-[min(92vw,1400px)] max-w-none overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-lg">
           <div className="p-2">
             <input
               autoFocus
@@ -187,7 +198,7 @@ function VariantComboBox({
                 setActive(0);
               }}
               placeholder={placeholder}
-              className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
               onKeyDown={(e) => {
                 if (e.key === "Escape") setOpen(false);
                 if (e.key === "ArrowDown") {
@@ -205,26 +216,47 @@ function VariantComboBox({
                 }
               }}
             />
-            <div className="mt-2 text-xs text-slate-400">
-              Showing {shown.length} / {filtered.length}
-            </div>
+            <div className="mt-2 text-xs text-slate-400">Showing {shown.length}</div>
           </div>
 
-          <div className="max-h-[320px] overflow-auto">
+          <div className="max-h-[320px] overflow-auto bg-slate-900">
             {shown.length === 0 ? (
-              <div className="px-3 py-3 text-sm text-slate-500">No matches</div>
+              <div className="px-3 py-3 text-sm text-slate-400">No matches</div>
             ) : (
-              shown.map((item, idx) => (
-                <button
-                  key={item.kind === "BASE" ? "BASE" : item.v.id}
-                  type="button"
-                  className={`w-full px-3 py-2 text-left text-sm hover:bg-slate-50 ${idx === active ? "bg-slate-50" : ""}`}
-                  onMouseEnter={() => setActive(idx)}
-                  onClick={() => choose(item)}
-                >
-                  <div className="whitespace-normal break-words leading-snug">{item.label}</div>
-                </button>
-              ))
+              shown.map((item, idx) => {
+                const isSelected =
+                  (item.kind === "BASE" && selectedKey === "BASE") ||
+                  (item.kind === "VARIANT" &&
+                    selectedKey === `VARIANT:${item.v.id}`);
+
+                return (
+                  <button
+                    key={item.kind === "BASE" ? "BASE" : item.v.id}
+                    type="button"
+                    className={`w-full px-3 py-2 text-left text-sm transition
+                      ${
+                        idx === active
+                          ? "bg-slate-800 text-slate-100"
+                          : "bg-slate-900 text-slate-300"
+                      }
+                      hover:bg-slate-800 hover:text-slate-100`}
+                    onMouseEnter={() => setActive(idx)}
+                    onClick={() => choose(item)}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="whitespace-normal break-words leading-snug">
+                        {item.label}
+                      </div>
+
+                      {isSelected ? (
+                        <span className="shrink-0 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] text-emerald-200">
+                          Selected
+                        </span>
+                      ) : null}
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
         </div>
@@ -278,10 +310,6 @@ function formatNgn(n: number | null | undefined) {
   }
 }
 
-function comboKey(supplierId: string, variantId: string | null) {
-  return `${supplierId}::${variantId ?? "__BASE__"}`;
-}
-
 function safeNum(v: any, def = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : def;
@@ -332,13 +360,8 @@ function deriveKindFromOffer(o: OfferApi): OfferKind {
   return "BASE";
 }
 
-function makeBaseOfferMap(offers: OfferApi[]) {
-  const m = new Map<string, OfferApi>();
-  for (const o of offers) {
-    const k = deriveKindFromOffer(o);
-    if (k === "BASE") m.set(o.supplierId, { ...o, kind: "BASE" });
-  }
-  return m;
+function deriveInStock(isActive: boolean, availableQty: number) {
+  return !!isActive && Math.max(0, Math.trunc(Number(availableQty) || 0)) > 0;
 }
 
 /* -------------------------------- Component -------------------------------- */
@@ -346,12 +369,12 @@ function makeBaseOfferMap(offers: OfferApi[]) {
 export default function SuppliersOfferManager({
   productId,
   variants: variantsProp,
-  suppliers: suppliersProp,
-  // token prop ignored (cookie auth)
+  // suppliers/token ignored (schema: supplier is Product.supplierId)
+  suppliers: _suppliersIgnored,
   token: _tokenIgnored,
   readOnly,
-  fixedSupplierId,
-  defaultUnitCost: _defaultUnitCostIgnored, // kept for compatibility
+  fixedSupplierId: _fixedSupplierIdIgnored,
+  defaultUnitCost: _defaultUnitCostIgnored,
   onSaved,
 }: Props) {
   const [loading, setLoading] = useState(false);
@@ -361,9 +384,10 @@ export default function SuppliersOfferManager({
   const [productTitle, setProductTitle] = useState<string>("");
   const [productSku, setProductSku] = useState<string>("");
 
-  const [variants, setVariants] = useState<Variant[]>(variantsProp ?? []);
-  const [suppliers, setSuppliers] = useState<Supplier[]>(suppliersProp ?? []);
+  const [supplierId, setSupplierId] = useState<string>("");
+  const [supplierName, setSupplierName] = useState<string>("");
 
+  const [variants, setVariants] = useState<Variant[]>(variantsProp ?? []);
   const [offersLoaded, setOffersLoaded] = useState<OfferApi[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
 
@@ -372,7 +396,6 @@ export default function SuppliersOfferManager({
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => setVariants(variantsProp ?? []), [variantsProp]);
-  useEffect(() => setSuppliers(suppliersProp ?? []), [suppliersProp]);
 
   const canEdit = !readOnly && isEditingOffers;
 
@@ -384,67 +407,6 @@ export default function SuppliersOfferManager({
     return m;
   }, [variants]);
 
-  const suppliersById = useMemo(() => {
-    const m = new Map<string, Supplier>();
-    for (const s of suppliers) m.set(s.id, s);
-    return m;
-  }, [suppliers]);
-
-  const offersByCombo = useMemo(() => {
-    const m = new Map<string, OfferApi>();
-    for (const raw of offersLoaded) {
-      if (!raw?.supplierId) continue;
-      const o: OfferApi = { ...raw, kind: deriveKindFromOffer(raw) };
-      const vid = (o.variantId ?? null) as string | null;
-      m.set(comboKey(o.supplierId, vid), o);
-    }
-    return m;
-  }, [offersLoaded]);
-
-  // kept (not used for save logic, but harmless if referenced elsewhere)
-  const baseOfferBySupplier = useMemo(() => makeBaseOfferMap(offersLoaded), [offersLoaded]);
-
-  const baseRowCountBySupplier = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const r of rows) {
-      const sid = fixedSupplierId ?? r.supplierId;
-      if (!sid) continue;
-      if (r.variantId != null) continue;
-      m.set(sid, (m.get(sid) ?? 0) + 1);
-    }
-    return m;
-  }, [rows, fixedSupplierId]);
-
-  function hasOtherBaseRow(supplierId: string, rowKey: string) {
-    if (!supplierId) return false;
-    const count = baseRowCountBySupplier.get(supplierId) ?? 0;
-    if (count === 0) return false;
-
-    const selfIsBase = rows.some((r) => r.rowKey === rowKey && r.variantId == null);
-    return selfIsBase ? count > 1 : count > 0;
-  }
-
-  const usedVariantIdsBySupplier = useMemo(() => {
-    const m = new Map<string, Set<string>>();
-    for (const r of rows) {
-      const sid = fixedSupplierId ?? r.supplierId;
-      if (!sid) continue;
-      if (!r.variantId) continue;
-      const set = m.get(sid) ?? new Set<string>();
-      set.add(r.variantId);
-      m.set(sid, set);
-    }
-    return m;
-  }, [rows, fixedSupplierId]);
-
-  function isVariantUsedElsewhere(sid: string, variantId: string, rowKey: string) {
-    if (!sid || !variantId) return false;
-    return rows.some((r) => {
-      const rsid = fixedSupplierId ?? r.supplierId;
-      return r.rowKey !== rowKey && rsid === sid && r.variantId === variantId;
-    });
-  }
-
   const sanitizeVariantId = (raw: any): string | null => {
     const vid = normalizeId(raw);
     if (!vid) return null;
@@ -452,8 +414,18 @@ export default function SuppliersOfferManager({
     return allowedVariantIds.has(vid) ? vid : null;
   };
 
-  function deriveInStock(isActive: boolean, availableQty: number) {
-    return !!isActive && Math.max(0, Math.trunc(Number(availableQty) || 0)) > 0;
+  const baseRowCount = useMemo(() => rows.filter((r) => r.variantId == null).length, [rows]);
+
+  function hasOtherBaseRow(rowKey: string) {
+    const count = baseRowCount;
+    if (count === 0) return false;
+    const selfIsBase = rows.some((r) => r.rowKey === rowKey && r.variantId == null);
+    return selfIsBase ? count > 1 : count > 0;
+  }
+
+  function isVariantUsedElsewhere(variantId: string, rowKey: string) {
+    if (!variantId) return false;
+    return rows.some((r) => r.rowKey !== rowKey && r.variantId === variantId);
   }
 
   function offerToRow(raw: OfferApi): Row {
@@ -469,7 +441,6 @@ export default function SuppliersOfferManager({
       rowKey: o.id,
       offerId: o.id,
       deleteOfferId: null,
-      supplierId: o.supplierId,
       variantId: isVariant ? rawVid : null,
       kind: isVariant ? "VARIANT" : "BASE",
       unitPrice: Math.max(0, safeNum(price, 0)),
@@ -480,31 +451,29 @@ export default function SuppliersOfferManager({
     };
   }
 
-  function snapRowToCombo(rowKey: string, supplierId: string, variantId: string | null) {
+  function snapRowToVariant(rowKey: string, variantId: string | null) {
     if (variantId && allowedVariantIds.size > 0 && !allowedVariantIds.has(String(variantId))) {
       setError("Selected variant does not belong to this product.");
       variantId = null;
     }
 
-    const existing = supplierId ? offersByCombo.get(comboKey(supplierId, variantId)) : undefined;
+    // if backend already has this offer combo, hydrate from offersLoaded
+    const existing = offersLoaded.find((o) => {
+      const k = deriveKindFromOffer(o);
+      const vid = normalizeId(o.variantId);
+      return k === (variantId ? "VARIANT" : "BASE") && (variantId ? vid === variantId : !vid);
+    });
 
     setRows((prev) =>
       prev.map((r) => {
         if (r.rowKey !== rowKey) return r;
 
-        const currentSupplier = fixedSupplierId ?? r.supplierId;
-        const sameSupplier = String(currentSupplier || "") === String(supplierId || "");
         const sameVariant = (r.variantId ?? null) === (variantId ?? null);
-        if (sameSupplier && sameVariant) return r;
+        if (sameVariant) return r;
 
         if (existing) {
           const hydrated = offerToRow(existing);
-          return {
-            ...r,
-            ...hydrated,
-            rowKey: r.rowKey,
-            deleteOfferId: r.deleteOfferId ?? null,
-          };
+          return { ...r, ...hydrated, rowKey: r.rowKey, deleteOfferId: r.deleteOfferId ?? null };
         }
 
         const nextKind: OfferKind = variantId ? "VARIANT" : "BASE";
@@ -520,7 +489,6 @@ export default function SuppliersOfferManager({
           ...r,
           deleteOfferId: idToDelete ?? r.deleteOfferId ?? null,
           offerId: null,
-          supplierId,
           variantId,
           kind: nextKind,
           unitPrice: keptPrice,
@@ -544,41 +512,40 @@ export default function SuppliersOfferManager({
     setError("");
 
     try {
+      // ✅ need supplier info from product
       const productPromise = apiFetchJson<any>(
-        `/api/admin/products/${encodeURIComponent(productId)}?include=variants,ProductVariant,productVariants`,
+        `/api/admin/products/${encodeURIComponent(productId)}?include=variants,ProductVariant,productVariants,supplier`,
         { signal: ac.signal }
       );
-
-      const suppliersPromise =
-        !suppliersProp || suppliersProp.length === 0
-          ? apiFetchJson<any>(`/api/admin/suppliers`, { signal: ac.signal })
-          : Promise.resolve({ data: suppliersProp ?? [] } as any);
 
       const offersPromise = apiFetchJson<any>(
         `/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`,
         { signal: ac.signal }
       );
 
-      const [pRaw, sRaw, oRaw] = await Promise.all([productPromise, suppliersPromise, offersPromise]);
+      const [pRaw, oRaw] = await Promise.all([productPromise, offersPromise]);
 
       const p = pRaw ? unwrap<any>(pRaw) : null;
-      const s = unwrap<any>(sRaw);
       const o = unwrap<any>(oRaw);
 
       if (p) {
         setProductTitle(p?.title || "");
         setProductSku(p?.sku || "");
+
+        // schema: product.supplierId required
+        const sid = String(p?.supplierId || p?.supplier?.id || "").trim();
+        setSupplierId(sid);
+        setSupplierName(String(p?.supplier?.name || "").trim());
+
         setVariants(extractVariantsFromProduct(p));
       }
-
-      const suppliersArr: Supplier[] = Array.isArray(s) ? s : Array.isArray(s?.data) ? s.data : [];
-      if (suppliersArr) setSuppliers(suppliersArr);
 
       const offersArr: OfferApi[] = Array.isArray(o) ? o : Array.isArray(o?.data) ? o.data : [];
       const filteredOffers = (offersArr || [])
         .filter((of) => String(of?.productId) === String(productId))
         .map((of) => ({ ...of, kind: deriveKindFromOffer(of) }));
 
+      // If API returns variant offers for variants not included, merge them in
       const productVariants = p ? extractVariantsFromProduct(p) : [];
       const seededFromOffers: Variant[] = filteredOffers
         .filter((x) => deriveKindFromOffer(x) === "VARIANT" && x.variantId)
@@ -599,37 +566,35 @@ export default function SuppliersOfferManager({
       setOffersLoaded(filteredOffers);
 
       const backendRows = filteredOffers
-        .filter((x) => x?.id && x?.supplierId)
+        .filter((x) => x?.id)
         .map((x) => offerToRow(x));
 
       // Preserve current UI order
       setRows((prev) => {
         const byId = new Map<string, Row>();
-        const byCombo = new Map<string, Row>();
-
+        const byKindVid = new Map<string, Row>();
         for (const br of backendRows) {
           if (br.offerId) byId.set(br.offerId, br);
-          const k = comboKey(br.supplierId, br.variantId);
-          byCombo.set(k, br);
+          byKindVid.set(`${br.kind}::${br.variantId ?? "__BASE__"}`, br);
         }
 
         const usedIds = new Set<string>();
-        const usedCombos = new Set<string>();
+        const usedKeys = new Set<string>();
 
         const merged: Row[] = prev.map((r) => {
           const matchById = r.offerId ? byId.get(r.offerId) : undefined;
-          const matchByCombo = !matchById ? byCombo.get(comboKey(r.supplierId, r.variantId)) : undefined;
-          const match = matchById ?? matchByCombo;
+          const key = `${r.kind}::${r.variantId ?? "__BASE__"}`;
+          const matchByKey = !matchById ? byKindVid.get(key) : undefined;
+          const match = matchById ?? matchByKey;
 
           if (!match) return r;
 
           if (match.offerId) usedIds.add(match.offerId);
-          usedCombos.add(comboKey(match.supplierId, match.variantId));
+          usedKeys.add(`${match.kind}::${match.variantId ?? "__BASE__"}`);
 
           return {
             ...r,
             offerId: match.offerId,
-            supplierId: match.supplierId,
             variantId: match.variantId,
             kind: match.kind,
             unitPrice: match.unitPrice,
@@ -645,8 +610,9 @@ export default function SuppliersOfferManager({
         const tail: Row[] = [];
         for (const br of backendRows) {
           const idOk = br.offerId ? !usedIds.has(br.offerId) : true;
-          const comboOk = !usedCombos.has(comboKey(br.supplierId, br.variantId));
-          if (idOk && comboOk) tail.push(br);
+          const key = `${br.kind}::${br.variantId ?? "__BASE__"}`;
+          const keyOk = !usedKeys.has(key);
+          if (idOk && keyOk) tail.push(br);
         }
 
         return [...merged, ...tail];
@@ -671,7 +637,6 @@ export default function SuppliersOfferManager({
 
   function addRow() {
     const rowKey = `new-${Math.random().toString(16).slice(2)}`;
-    const startSupplierId = fixedSupplierId ?? "";
 
     const startQty = 0;
     const startIsActive = true;
@@ -680,7 +645,6 @@ export default function SuppliersOfferManager({
       rowKey,
       offerId: null,
       deleteOfferId: null,
-      supplierId: startSupplierId,
       variantId: null,
       kind: "BASE",
       unitPrice: 0,
@@ -701,11 +665,10 @@ export default function SuppliersOfferManager({
       return;
     }
 
-    const supplierName = suppliersById.get(row.supplierId)?.name || row.supplierId;
     const variantSku = row.variantId ? variantsById.get(row.variantId)?.sku : null;
 
     const ok = window.confirm(
-      `Delete this supplier offer?\n\nSupplier: ${supplierName}\nVariant: ${variantSku ?? "Base"}`
+      `Delete this offer?\n\nSupplier: ${supplierName || supplierId || "—"}\nVariant: ${variantSku ?? "Base"}`
     );
     if (!ok) return;
 
@@ -733,9 +696,8 @@ export default function SuppliersOfferManager({
       const replacing = rows.find((r) => !!r.deleteOfferId);
       if (replacing) {
         throw new Error(
-          "This product has order history, so offers cannot be deleted/replaced. " +
-            "Undo the supplier/variant combo change (select the original combo), " +
-            "or create a new row and leave the old one unchanged (or delete manually if allowed)."
+          "Offers cannot be auto-deleted/replaced here. " +
+          "Undo the variant change (select the original), or create a new row and leave the old one unchanged."
         );
       }
 
@@ -758,19 +720,16 @@ export default function SuppliersOfferManager({
           prev.map((r) =>
             r.rowKey === rowKey
               ? {
-                  ...r,
-                  offerId: newOfferId,
-                  deleteOfferId: null,
-                }
+                ...r,
+                offerId: newOfferId,
+                deleteOfferId: null,
+              }
               : r
           )
         );
       };
 
       for (const r of rows) {
-        const sid = fixedSupplierId ?? r.supplierId;
-        if (!sid) throw new Error("Each row must have a supplier selected.");
-
         const qty = Math.max(0, Math.trunc(Number(r.availableQty) || 0));
         const isActive = !!r.isActive;
 
@@ -781,10 +740,9 @@ export default function SuppliersOfferManager({
           r.leadDays === "" || r.leadDays == null ? null : Math.max(0, Math.trunc(Number(r.leadDays) || 0));
 
         if (r.variantId == null) {
-          // BASE
+          // BASE (schema: no supplierId field)
           if (r.offerId) {
             const payload = {
-              supplierId: sid,
               price,
               currency: "NGN",
               availableQty: qty,
@@ -797,7 +755,6 @@ export default function SuppliersOfferManager({
           } else {
             const payload = {
               kind: "BASE" as const,
-              supplierId: sid,
               variantId: null,
               price,
               currency: "NGN",
@@ -808,18 +765,18 @@ export default function SuppliersOfferManager({
 
             const out = await postOffer(payload);
             const dto = unwrap<any>(out);
-            const createdId: string | null = (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
+            const createdId: string | null =
+              (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
 
             setOfferId(r.rowKey, createdId);
           }
         } else {
-          // VARIANT
+          // VARIANT (schema: no supplierId field)
           const vid = sanitizeVariantId(r.variantId);
           if (!vid) throw new Error("Each VARIANT row must have a valid variant selected.");
 
           if (r.offerId) {
             const payload = {
-              supplierId: sid,
               variantId: vid,
               price,
               currency: "NGN",
@@ -833,7 +790,6 @@ export default function SuppliersOfferManager({
           } else {
             const payload = {
               kind: "VARIANT" as const,
-              supplierId: sid,
               variantId: vid,
               price,
               currency: "NGN",
@@ -844,7 +800,8 @@ export default function SuppliersOfferManager({
 
             const out = await postOffer(payload);
             const dto = unwrap<any>(out);
-            const createdId: string | null = (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
+            const createdId: string | null =
+              (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
 
             setOfferId(r.rowKey, createdId);
           }
@@ -864,11 +821,9 @@ export default function SuppliersOfferManager({
     if (!canEdit) return "Not in edit mode";
     if (saving || loading) return "Busy";
     if (rows.length === 0) return "No rows";
+    if (!supplierId) return "Product has no supplier";
 
     for (const r of rows) {
-      const sid = fixedSupplierId ?? r.supplierId;
-      if (!sid) return "Supplier is required";
-
       if (r.variantId != null) {
         const vid = sanitizeVariantId(r.variantId);
         if (!vid) return "Variant is required";
@@ -878,9 +833,21 @@ export default function SuppliersOfferManager({
       if (p <= 0) return "Price must be greater than 0";
     }
 
+    // only one BASE row
+    const baseRows = rows.filter((r) => r.variantId == null).length;
+    if (baseRows > 1) return "Only one BASE offer is allowed for this product";
+
+    // no duplicate variants
+    const seen = new Set<string>();
+    for (const r of rows) {
+      if (!r.variantId) continue;
+      if (seen.has(r.variantId)) return "Duplicate variant rows";
+      seen.add(r.variantId);
+    }
+
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, canEdit, saving, loading, fixedSupplierId]);
+  }, [rows, canEdit, saving, loading, supplierId]);
 
   const saveButtonDisabled = !!saveDisabledReason;
 
@@ -902,8 +869,26 @@ export default function SuppliersOfferManager({
         <div>
           <div className="text-lg font-semibold">Supplier offers</div>
           <div className="text-sm text-slate-500">
-            Link supplier offers to this product and its variants.
+            Offers for this product’s single supplier.
             {productTitle ? <span className="ml-2 text-slate-400">({productTitle})</span> : null}
+          </div>
+          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <div className="text-xs text-slate-500">Supplier</div>
+              <input
+                value={supplierName || supplierId || "—"}
+                readOnly
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
+              />
+            </div>
+            <div>
+              <div className="text-xs text-slate-500">Product SKU</div>
+              <input
+                value={productSku || "—"}
+                readOnly
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
+              />
+            </div>
           </div>
         </div>
 
@@ -912,11 +897,10 @@ export default function SuppliersOfferManager({
             <button
               type="button"
               onClick={() => setIsEditingOffers((v) => !v)}
-              className={`rounded-xl px-3 py-2 text-sm border ${
-                isEditingOffers
-                  ? "bg-amber-600 text-white border-amber-600 hover:bg-amber-700"
-                  : "bg-white border-slate-300 hover:bg-slate-50"
-              }`}
+              className={`rounded-xl px-3 py-2 text-sm border ${isEditingOffers
+                ? "bg-amber-600 text-white border-amber-600 hover:bg-amber-700"
+                : "bg-white border-slate-300 hover:bg-slate-50"
+                }`}
               disabled={loading || saving}
             >
               {isEditingOffers ? "Lock offers" : "Edit offers"}
@@ -939,10 +923,9 @@ export default function SuppliersOfferManager({
       ) : null}
 
       <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
-        <table className="min-w-[1500px] w-full border-collapse text-sm">
+        <table className="min-w-[1300px] w-full border-collapse text-sm">
           <thead className="bg-slate-50 text-slate-700">
             <tr>
-              <th className="px-3 py-2 text-left font-semibold w-[260px]">Supplier</th>
               <th className="px-3 py-2 text-left font-semibold w-[900px]">Variant</th>
               <th className="px-3 py-2 text-left font-semibold">Price</th>
               <th className="px-3 py-2 text-left font-semibold">Available</th>
@@ -955,25 +938,17 @@ export default function SuppliersOfferManager({
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td className="px-3 py-6 text-slate-500" colSpan={7}>
-                  {loading ? "Loading..." : "No supplier offers yet. Click Add row to create one."}
+                <td className="px-3 py-6 text-slate-500" colSpan={6}>
+                  {loading ? "Loading..." : "No offers yet. Click Add row to create one."}
                 </td>
               </tr>
             ) : (
               rows.map((r) => {
-                const supplierIdShown = fixedSupplierId ?? r.supplierId;
-                const supplierOk = !!supplierIdShown;
-
-                const baseDisabled = !!supplierIdShown && hasOtherBaseRow(supplierIdShown, r.rowKey);
-
-                const usedSet = supplierIdShown ? usedVariantIdsBySupplier.get(supplierIdShown) : undefined;
-                const usedOther = new Set<string>();
-                if (usedSet) for (const id of usedSet) if (id !== r.variantId) usedOther.add(id);
+                const baseDisabled = hasOtherBaseRow(r.rowKey);
 
                 const variantChoices = variants.filter((v) => {
-                  if (!supplierIdShown) return true;
                   if (r.variantId === v.id) return true;
-                  return !usedOther.has(v.id);
+                  return !isVariantUsedElsewhere(v.id, r.rowKey);
                 });
 
                 const items: VariantItem[] = [
@@ -990,74 +965,41 @@ export default function SuppliersOfferManager({
 
                 return (
                   <tr key={r.rowKey} className="border-t border-slate-200">
-                    {/* Supplier */}
-                    <td className="px-3 py-2">
-                      <select
-                        className="w-[260px] rounded-xl border border-slate-300 px-3 py-2"
-                        value={supplierIdShown}
-                        onChange={(e) => {
-                          const sid = e.target.value;
-                          const currentVid = r.variantId;
+                    {/* Variant */}
+                    <td className="px-3 py-2 w-[900px] min-w-[720px]">
+                      <VariantComboBox
+                        disabled={saving || !canEdit}
+                        valueVariantId={r.variantId}
+                        items={items}
+                        onSelectBase={() => {
+                          if (r.variantId == null) return;
 
-                          const nextVid =
-                            sid && currentVid && isVariantUsedElsewhere(sid, currentVid, r.rowKey) ? null : currentVid;
-
-                          snapRowToCombo(r.rowKey, sid, nextVid);
+                          if (hasOtherBaseRow(r.rowKey)) {
+                            setError("A BASE offer already exists. You can’t add another base row.");
+                            return;
+                          }
+                          snapRowToVariant(r.rowKey, null);
                         }}
-                        disabled={saving || !canEdit || !!fixedSupplierId}
-                      >
-                        <option value="">— Select supplier —</option>
-                        {suppliers.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name}
-                          </option>
-                        ))}
-                      </select>
+                        onSelectVariant={(vid) => {
+                          if (r.variantId === vid) return;
+
+                          if (isVariantUsedElsewhere(vid, r.rowKey)) {
+                            setError("This variant already has an offer row.");
+                            return;
+                          }
+
+                          snapRowToVariant(r.rowKey, vid);
+                        }}
+                      />
+
+                      {baseDisabled ? (
+                        <div className="mt-1 text-[11px] text-slate-400">BASE offer already exists.</div>
+                      ) : null}
 
                       {canEdit && r.deleteOfferId ? (
                         <div className="mt-1 text-[11px] text-amber-600">
                           Replacement pending (cannot auto-delete after orders)
                         </div>
-                      ) : null}
-                    </td>
-
-                    {/* Variant */}
-                    <td className="px-3 py-2 w-[900px] min-w-[720px]">
-                      <VariantComboBox
-                        disabled={saving || !canEdit || !supplierIdShown}
-                        valueVariantId={r.variantId}
-                        items={items}
-                        onSelectBase={() => {
-                          const sid = fixedSupplierId ?? r.supplierId;
-                          if (!sid) return;
-
-                          if (r.variantId == null) return;
-
-                          if (hasOtherBaseRow(sid, r.rowKey)) {
-                            setError("This supplier already has a BASE offer row. You can’t add another base row.");
-                            return;
-                          }
-                          snapRowToCombo(r.rowKey, sid, null);
-                        }}
-                        onSelectVariant={(vid) => {
-                          const sid = fixedSupplierId ?? r.supplierId;
-                          if (!sid) return;
-
-                          if (r.variantId === vid) return;
-
-                          if (isVariantUsedElsewhere(sid, vid, r.rowKey)) {
-                            setError("This variant combo is already used for this supplier.");
-                            return;
-                          }
-
-                          snapRowToCombo(r.rowKey, sid, vid);
-                        }}
-                      />
-
-                      {!supplierIdShown ? <div className="mt-1 text-xs text-amber-600">Select supplier first</div> : null}
-
-                      {baseDisabled ? (
-                        <div className="mt-1 text-[11px] text-slate-400">Base offer already exists for this supplier.</div>
                       ) : null}
                     </td>
 
@@ -1081,7 +1023,7 @@ export default function SuppliersOfferManager({
                             setRows((prev) => prev.map((x) => (x.rowKey === r.rowKey ? { ...x, unitPrice: 0 } : x)));
                           }
                         }}
-                        disabled={saving || !canEdit || !supplierOk}
+                        disabled={saving || !canEdit}
                       />
 
                       {priceNum > 0 ? (
@@ -1150,7 +1092,7 @@ export default function SuppliersOfferManager({
                     </td>
 
                     {/* Actions */}
-                    {canEdit && (
+                    {canEdit ? (
                       <td className="px-3 py-2">
                         <button
                           type="button"
@@ -1161,6 +1103,8 @@ export default function SuppliersOfferManager({
                           Delete
                         </button>
                       </td>
+                    ) : (
+                      <td className="px-3 py-2 text-slate-400">—</td>
                     )}
                   </tr>
                 );

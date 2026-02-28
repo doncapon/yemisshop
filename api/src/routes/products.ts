@@ -35,8 +35,8 @@ function toNum(d: any): number | null {
 /* -------------------------------------------------------------------------- */
 
 function getModelFields(modelName: string): Map<string, any> {
-  const m = Prisma.dmmf.datamodel.models.find((x:any) => x.name === modelName);
-  return new Map((m?.fields ?? []).map((f:any) => [f.name, f]));
+  const m = Prisma.dmmf.datamodel.models.find((x: any) => x.name === modelName);
+  return new Map((m?.fields ?? []).map((f: any) => [f.name, f]));
 }
 function hasScalar(modelName: string, fieldName: string) {
   const f = getModelFields(modelName).get(fieldName);
@@ -222,13 +222,24 @@ function supplierRatingSelect() {
   if (hasScalar(SUPPLIER_MODEL, "ratingCount")) sel.ratingCount = true;
   return sel;
 }
-
 function readSupplierRatingFromOffer(o: any): { supplierId: string; ratingAvg: number; ratingCount: number } {
-  const sid = String(o?.supplierId ?? o?.supplier?.id ?? "");
-  const avgRaw = o?.supplier?.ratingAvg;
-  const cntRaw = o?.supplier?.ratingCount;
+  const sid = String(
+    o?.supplierId ??
+    o?.supplier?.id ??
+    o?.product?.supplierId ??
+    o?.product?.supplier?.id ??
+    ""
+  );
 
-  const ratingAvg = toNum(avgRaw) ?? 0; // Decimal-safe
+  const avgRaw =
+    o?.supplier?.ratingAvg ??
+    o?.product?.supplier?.ratingAvg;
+
+  const cntRaw =
+    o?.supplier?.ratingCount ??
+    o?.product?.supplier?.ratingCount;
+
+  const ratingAvg = toNum(avgRaw) ?? 0;
   const ratingCount = Number(cntRaw ?? 0) || 0;
 
   return { supplierId: sid, ratingAvg, ratingCount };
@@ -465,21 +476,21 @@ router.get(
       variantIdsAll.push(String(v.id));
     }
 
-    /**
-     * ✅ Offers: restrict returned offers to payout-ready suppliers
-     */
+    // ---------------- Offers (schema-aligned) ----------------
+    // NOTE: SupplierProductOffer has NO supplierId in your schema.
+    //       SupplierVariantOffer has NO supplierId in your schema.
+    // We derive supplierId/name from Product.supplierId via relation.
+
     const baseOffers =
       needOffers
         ? await prisma.supplierProductOffer.findMany({
           where: {
-            productId: { in: ids },
+            productId: { in: ids }, // whatever your variable is
             isActive: true,
-            ...(offerSupplierPayoutReadyWhere(BASE_OFFER_MODEL, false) as any),
-          } as any,
+          },
           select: {
             id: true,
             productId: true,
-            supplierId: true,
             basePrice: true,
             inStock: true,
             isActive: true,
@@ -487,9 +498,43 @@ router.get(
             currency: true,
             leadDays: true,
 
-            ...(hasRelation(BASE_OFFER_MODEL, "supplier")
-              ? { supplier: { select: supplierRatingSelect() } }
-              : {}),
+            // ✅ derive supplier from product
+            product: {
+              select: {
+                supplierId: true,
+                supplier: { select: { id: true, name: true } },
+              },
+            },
+          },
+        })
+        : [];
+
+    const variantOffers =
+      needOffers
+        ? await prisma.supplierVariantOffer.findMany({
+          where: {
+            productId: { in: ids },
+            isActive: true,
+          },
+          select: {
+            id: true,
+            productId: true,
+            variantId: true,
+            supplierProductOfferId: true,
+            unitPrice: true,
+            inStock: true,
+            isActive: true,
+            availableQty: true,
+            currency: true,
+            leadDays: true,
+
+            // ✅ derive supplier from product
+            product: {
+              select: {
+                supplierId: true,
+                supplier: { select: { id: true, name: true } },
+              },
+            },
           },
         })
         : [];
@@ -505,8 +550,10 @@ router.get(
 
     for (const o of baseOffers as any[]) {
       const pid = String(o.productId);
-      const sid = String(o.supplierId);
-      const bp = toNum(o.basePrice) ?? 0;
+
+      // ratings (attach even if out of stock, but only if present)
+      const r = readSupplierRatingFromOffer(o);
+      const sid = r.supplierId; const bp = toNum(o.basePrice) ?? 0;
 
       if (!baseBySupplierByProduct.has(pid)) baseBySupplierByProduct.set(pid, new Map());
       baseBySupplierByProduct.get(pid)!.set(sid, bp);
@@ -525,45 +572,12 @@ router.get(
         }
       }
 
-      // ratings (attach even if out of stock, but only if present)
-      const r = readSupplierRatingFromOffer(o);
       if (r.supplierId) {
         const arr = ratingsByProduct.get(pid) ?? [];
         arr.push({ ratingAvg: r.ratingAvg, ratingCount: r.ratingCount });
         ratingsByProduct.set(pid, arr);
       }
     }
-
-    const variantOffers =
-      needOffers && variantIdsAll.length
-        ? await prisma.supplierVariantOffer.findMany({
-          where: {
-            variantId: { in: variantIdsAll },
-            isActive: true,
-            ...(offerSupplierPayoutReadyWhere(VAR_OFFER_MODEL, false) as any),
-          } as any,
-          select: {
-            id: true,
-            variantId: true,
-            supplierId: true,
-            inStock: true,
-            isActive: true,
-            availableQty: true,
-
-            // ✅ Schema: SupplierVariantOffer.unitPrice is the final unit price
-            unitPrice: true,
-
-            currency: true,
-            leadDays: true,
-            supplierProductOfferId: true,
-            productId: true,
-
-            ...(hasRelation(VAR_OFFER_MODEL, "supplier")
-              ? { supplier: { select: supplierRatingSelect() } }
-              : {}),
-          } as any,
-        })
-        : [];
 
     const variantOffersByVariant = new Map<string, any[]>();
     const variantQtyByProduct = new Map<string, number>();
@@ -594,6 +608,8 @@ router.get(
         }
       }
 
+
+
       // ✅ offersFrom compatibility: cheapest PURCHASABLE supplier offer
       // Use unitPrice if present, else fall back to base price for that supplier (NO bump math).
       // IMPORTANT: only count offers that are actually purchasable: inStock && qty>0
@@ -602,10 +618,11 @@ router.get(
         if (qty > 0) {
           const unit = toNum((o as any).unitPrice);
           let effective = unit != null && unit > 0 ? unit : null;
-
           if (effective == null) {
+            const r = readSupplierRatingFromOffer(o);
+
             const baseMap = baseBySupplierByProduct.get(pid) ?? new Map<string, number>();
-            const base = baseMap.get(String(o.supplierId));
+            const base = r.supplierId ? baseMap.get(r.supplierId) : undefined;
             if (base != null && base > 0) effective = base;
           }
 
@@ -810,7 +827,7 @@ router.get(
               const r = readSupplierRatingFromOffer(o);
               return {
                 id: String(o.id),
-                supplierId: String(o.supplierId),
+                supplierId: r.supplierId,
 
                 isActive: o.isActive === true,
                 inStock: o.inStock === true,
@@ -1034,7 +1051,6 @@ router.get(
           } as any,
           select: {
             id: true,
-            supplierId: true,
             productId: true,
             basePrice: true,
             currency: true,
@@ -1043,9 +1059,16 @@ router.get(
             isActive: true,
             leadDays: true,
 
-            ...(hasRelation(BASE_OFFER_MODEL, "supplier") ? { supplier: { select: supplierRatingSelect() } } : {}),
+            // ✅ derive supplier from product
+            product: {
+              select: {
+                supplierId: true,
+                supplier: { select: supplierRatingSelect() },
+              },
+            },
           },
         }),
+
         prisma.supplierVariantOffer.findMany({
           where: {
             productId: id,
@@ -1055,12 +1078,11 @@ router.get(
           select: {
             id: true,
             variantId: true,
-            supplierId: true,
             inStock: true,
             isActive: true,
             availableQty: true,
 
-            // ✅ schema: final unit price (no bump)
+            // ✅ schema: final unit price
             unitPrice: true,
 
             currency: true,
@@ -1068,12 +1090,18 @@ router.get(
             supplierProductOfferId: true,
             productId: true,
 
-            ...(hasRelation(VAR_OFFER_MODEL, "supplier") ? { supplier: { select: supplierRatingSelect() } } : {}),
+            // ✅ derive supplier from product
+            product: {
+              select: {
+                supplierId: true,
+                supplier: { select: supplierRatingSelect() },
+              },
+            },
           } as any,
         }),
       ]);
 
-      // For fallback only: if unitPrice missing, use basePrice (NO bump math).
+      // Fallback only: if unitPrice missing, use basePrice (NO bump math).
       const baseByOfferId = new Map<string, number>();
       const baseBySupplier = new Map<string, number>();
 
@@ -1082,11 +1110,14 @@ router.get(
       for (const bo of baseOffers as any[]) {
         const bp = bo.basePrice != null ? (toNum(bo.basePrice) ?? 0) : 0;
         baseByOfferId.set(String(bo.id), bp);
-        baseBySupplier.set(String(bo.supplierId), bp);
 
         const r = readSupplierRatingFromOffer(bo);
-        if (r.supplierId) ratingsAll.push({ ratingAvg: r.ratingAvg, ratingCount: r.ratingCount });
+        if (r.supplierId) {
+          baseBySupplier.set(r.supplierId, bp);
+          ratingsAll.push({ ratingAvg: r.ratingAvg, ratingCount: r.ratingCount });
+        }
       }
+
       for (const vo of variantOffers as any[]) {
         const r = readSupplierRatingFromOffer(vo);
         if (r.supplierId) ratingsAll.push({ ratingAvg: r.ratingAvg, ratingCount: r.ratingCount });
@@ -1094,34 +1125,12 @@ router.get(
 
       data.bestSupplierRating = pickBestRating(ratingsAll);
 
-      data.offers = [
-        ...baseOffers.map((o: any) => {
-          const r = readSupplierRatingFromOffer(o);
-          return {
-            id: String(o.id),
-            supplierId: String(o.supplierId),
-            productId: String(o.productId),
-            variantId: null,
-            currency: o.currency ?? "NGN",
-            inStock: o.inStock === true,
-            isActive: o.isActive === true,
-            availableQty: Number(o.availableQty ?? 0) || 0,
-            leadDays: o.leadDays ?? null,
-            basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
-            unitPrice: o.basePrice != null ? toNum(o.basePrice) : null, // ✅ so UI can always read unitPrice
-            model: "BASE",
-            supplier: {
-              id: r.supplierId,
-              ratingAvg: r.ratingAvg,
-              ratingCount: r.ratingCount,
-            },
-          };
-        }),
-
-        // ✅ ALSO expose schema-shaped arrays so frontend can read them directly
-        data.supplierProductOffers = baseOffers.map((o: any) => ({
+      // ✅ expose schema-shaped arrays separately (not inside data.offers array)
+      data.supplierProductOffers = baseOffers.map((o: any) => {
+        const r = readSupplierRatingFromOffer(o);
+        return {
           id: String(o.id),
-          supplierId: String(o.supplierId),
+          supplierId: r.supplierId,
           productId: String(o.productId),
 
           basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
@@ -1132,20 +1141,21 @@ router.get(
           isActive: o.isActive === true,
           leadDays: o.leadDays ?? null,
 
-          // ✅ include supplier name so ProductDetail can show it if needed
-          supplier: o.supplier
+          supplier: r.supplierId
             ? {
-              id: String(o.supplier.id ?? o.supplierId),
-              name: o.supplier.name ? String(o.supplier.name) : undefined,
-              ratingAvg: o.supplier.ratingAvg != null ? toNum(o.supplier.ratingAvg) : undefined,
-              ratingCount: Number(o.supplier.ratingCount ?? 0) || 0,
+              id: r.supplierId,
+              ratingAvg: r.ratingAvg,
+              ratingCount: r.ratingCount,
             }
             : undefined,
-        })),
+        };
+      });
 
-        data.supplierVariantOffers = variantOffers.map((o: any) => ({
+      data.supplierVariantOffers = variantOffers.map((o: any) => {
+        const r = readSupplierRatingFromOffer(o);
+        return {
           id: String(o.id),
-          supplierId: String(o.supplierId),
+          supplierId: r.supplierId,
           productId: String(o.productId),
           variantId: String(o.variantId),
 
@@ -1159,33 +1169,57 @@ router.get(
           isActive: o.isActive === true,
           leadDays: o.leadDays ?? null,
 
-          supplier: o.supplier
+          supplier: r.supplierId
             ? {
-              id: String(o.supplier.id ?? o.supplierId),
-              name: o.supplier.name ? String(o.supplier.name) : undefined,
-              ratingAvg: o.supplier.ratingAvg != null ? toNum(o.supplier.ratingAvg) : undefined,
-              ratingCount: Number(o.supplier.ratingCount ?? 0) || 0,
+              id: r.supplierId,
+              ratingAvg: r.ratingAvg,
+              ratingCount: r.ratingCount,
             }
             : undefined,
-        })),
+        };
+      });
 
+      // ✅ unified offers array for UI
+      data.offers = [
+        ...baseOffers.map((o: any) => {
+          const r = readSupplierRatingFromOffer(o);
+          return {
+            id: String(o.id),
+            supplierId: r.supplierId,
+            productId: String(o.productId),
+            variantId: null,
+            currency: o.currency ?? "NGN",
+            inStock: o.inStock === true,
+            isActive: o.isActive === true,
+            availableQty: Number(o.availableQty ?? 0) || 0,
+            leadDays: o.leadDays ?? null,
+            basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
+            unitPrice: o.basePrice != null ? toNum(o.basePrice) : null,
+            model: "BASE",
+            supplier: r.supplierId
+              ? {
+                id: r.supplierId,
+                ratingAvg: r.ratingAvg,
+                ratingCount: r.ratingCount,
+              }
+              : undefined,
+          };
+        }),
 
-        // ✅ NO bump math. Use unitPrice; if missing, fallback to supplier base price.
         ...variantOffers.map((o: any) => {
-          const unit = toNum((o as any).unitPrice);
+          const r = readSupplierRatingFromOffer(o);
 
+          const unit = toNum(o.unitPrice);
           const fallbackBase =
             baseByOfferId.get(String(o.supplierProductOfferId)) ??
-            baseBySupplier.get(String(o.supplierId)) ??
+            (r.supplierId ? baseBySupplier.get(r.supplierId) : undefined) ??
             0;
 
           const finalPrice = unit != null && unit > 0 ? unit : fallbackBase > 0 ? fallbackBase : null;
 
-          const r = readSupplierRatingFromOffer(o);
-
           return {
             id: String(o.id),
-            supplierId: String(o.supplierId),
+            supplierId: r.supplierId,
             productId: String(o.productId),
             variantId: o.variantId ? String(o.variantId) : null,
             currency: o.currency ?? "NGN",
@@ -1194,15 +1228,16 @@ router.get(
             availableQty: Number(o.availableQty ?? 0) || 0,
             leadDays: o.leadDays ?? null,
 
-            // ✅ final supplier variant unit price
-            unitPrice: finalPrice, // ✅ schema-consistent: SupplierVariantOffer.unitPrice
-
+            unitPrice: finalPrice,
             model: "VARIANT",
-            supplier: {
-              id: r.supplierId,
-              ratingAvg: r.ratingAvg,
-              ratingCount: r.ratingCount,
-            },
+
+            supplier: r.supplierId
+              ? {
+                id: r.supplierId,
+                ratingAvg: r.ratingAvg,
+                ratingCount: r.ratingCount,
+              }
+              : undefined,
           };
         }),
       ];
