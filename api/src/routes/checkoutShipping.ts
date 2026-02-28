@@ -189,14 +189,9 @@ router.post("/shipping-fee-local", requireAuth, async (req, res) => {
     for (const line of merged) {
       const product = productMap.get(line.productId)!;
       const variant = line.variantId ? variantMap.get(line.variantId)! : null;
-      const sid = product.supplierId;
 
-      if (!sid) {
-        // we already validated above, but keep this as runtime safety
-        return res.status(400).json({
-          error: `Product ${product.id} has no supplier; cannot compute shipping.`,
-        });
-      }
+      // we validated above that supplierId is present; assert for TS
+      const sid = product.supplierId as string;
 
       const arr = bySupplier.get(sid) || [];
       arr.push({ qty: line.qty, product, variant });
@@ -223,208 +218,208 @@ router.post("/shipping-fee-local", requireAuth, async (req, res) => {
           error: "Supplier record missing for product(s) in cart",
           totalFee: 0,
         });
-        continue;
-      }
+      } else {
+        const pickupAddress =
+          supplier.pickupAddress ?? supplier.registeredAddress ?? null;
 
-      const pickupAddress =
-        supplier.pickupAddress ?? supplier.registeredAddress ?? null;
+        if (!pickupAddress) {
+          supplierQuotes.push({
+            supplierId,
+            error: "Supplier pickup/registered address missing",
+            totalFee: 0,
+          });
+        } else {
+          const lineSnapshots = rows.map(({ qty, product, variant }) => {
+            const perUnitActual = Math.max(
+              0,
+              toNum(variant?.weightGrams ?? product.weightGrams ?? 0)
+            );
 
-      if (!pickupAddress) {
-        supplierQuotes.push({
-          supplierId,
-          error: "Supplier pickup/registered address missing",
-          totalFee: 0,
-        });
-        continue;
-      }
+            const lengthCm = toNum(variant?.lengthCm ?? product.lengthCm ?? 0);
+            const widthCm = toNum(variant?.widthCm ?? product.widthCm ?? 0);
+            const heightCm = toNum(variant?.heightCm ?? product.heightCm ?? 0);
 
-      const lineSnapshots = rows.map(({ qty, product, variant }) => {
-        const perUnitActual = Math.max(
-          0,
-          toNum(variant?.weightGrams ?? product.weightGrams ?? 0)
-        );
+            const perUnitVol = volumetricWeightGrams(
+              lengthCm,
+              widthCm,
+              heightCm,
+              5000
+            );
 
-        const lengthCm = toNum(variant?.lengthCm ?? product.lengthCm ?? 0);
-        const widthCm = toNum(variant?.widthCm ?? product.widthCm ?? 0);
-        const heightCm = toNum(variant?.heightCm ?? product.heightCm ?? 0);
+            const isFragile = !!(
+              variant?.isFragileOverride ?? product.isFragile ?? false
+            );
+            const isBulky = !!(
+              variant?.isBulkyOverride ?? product.isBulky ?? false
+            );
+            const shippingClass =
+              variant?.shippingClassOverride ?? product.shippingClass ?? null;
 
-        const perUnitVol = volumetricWeightGrams(
-          lengthCm,
-          widthCm,
-          heightCm,
-          5000
-        );
+            return {
+              productId: product.id,
+              variantId: variant?.id ?? null,
+              title: product.title,
+              qty,
+              freeShipping: product.freeShipping === true,
 
-        const isFragile = !!(
-          variant?.isFragileOverride ?? product.isFragile ?? false
-        );
-        const isBulky = !!(variant?.isBulkyOverride ?? product.isBulky ?? false);
-        const shippingClass =
-          variant?.shippingClassOverride ?? product.shippingClass ?? null;
+              actualWeightGrams: perUnitActual * qty,
+              volumetricWeightGrams: perUnitVol * qty,
+              chargeableWeightGrams: Math.max(perUnitActual, perUnitVol) * qty,
 
-        return {
-          productId: product.id,
-          variantId: variant?.id ?? null,
-          title: product.title,
-          qty,
-          freeShipping: product.freeShipping === true,
+              parcelClass: inferParcelClass({ isFragile, isBulky, shippingClass }),
+            };
+          });
 
-          actualWeightGrams: perUnitActual * qty,
-          volumetricWeightGrams: perUnitVol * qty,
-          chargeableWeightGrams: Math.max(perUnitActual, perUnitVol) * qty,
+          const totalActualWeightGrams = lineSnapshots.reduce(
+            (s, x) => s + x.actualWeightGrams,
+            0
+          );
+          const totalVolumetricWeightGrams = lineSnapshots.reduce(
+            (s, x) => s + x.volumetricWeightGrams,
+            0
+          );
+          const chargeableWeightGrams = Math.max(
+            totalActualWeightGrams,
+            totalVolumetricWeightGrams
+          );
 
-          parcelClass: inferParcelClass({ isFragile, isBulky, shippingClass }),
-        };
-      });
-
-      const totalActualWeightGrams = lineSnapshots.reduce(
-        (s, x) => s + x.actualWeightGrams,
-        0
-      );
-      const totalVolumetricWeightGrams = lineSnapshots.reduce(
-        (s, x) => s + x.volumetricWeightGrams,
-        0
-      );
-      const chargeableWeightGrams = Math.max(
-        totalActualWeightGrams,
-        totalVolumetricWeightGrams
-      );
-
-      const parcelClass =
-        lineSnapshots.some(
-          (x) => x.parcelClass === ShippingParcelClass.BULKY
-        )
-          ? ShippingParcelClass.BULKY
-          : lineSnapshots.some(
-              (x) => x.parcelClass === ShippingParcelClass.FRAGILE
+          const parcelClass =
+            lineSnapshots.some(
+              (x) => x.parcelClass === ShippingParcelClass.BULKY
             )
-          ? ShippingParcelClass.FRAGILE
-          : ShippingParcelClass.STANDARD;
+              ? ShippingParcelClass.BULKY
+              : lineSnapshots.some(
+                  (x) => x.parcelClass === ShippingParcelClass.FRAGILE
+                )
+              ? ShippingParcelClass.FRAGILE
+              : ShippingParcelClass.STANDARD;
 
-      // zone match
-      let matchedZone: (typeof zones)[number] | null = null;
+          // zone match
+          let matchedZone: (typeof zones)[number] | null = null;
 
-      for (const zone of zones) {
-        const states = Array.isArray(zone.statesJson)
-          ? (zone.statesJson as unknown[])
-          : [];
-        const lgas = Array.isArray(zone.lgasJson)
-          ? (zone.lgasJson as unknown[])
-          : [];
+          for (const zone of zones) {
+            const states = Array.isArray(zone.statesJson)
+              ? (zone.statesJson as unknown[])
+              : [];
+            const lgas = Array.isArray(zone.lgasJson)
+              ? (zone.lgasJson as unknown[])
+              : [];
 
-        const statesNorm = states.map((x) => String(x).toLowerCase().trim());
-        const lgasNorm = lgas.map((x) => String(x).toLowerCase().trim());
+            const statesNorm = states.map((x) => String(x).toLowerCase().trim());
+            const lgasNorm = lgas.map((x) => String(x).toLowerCase().trim());
 
-        const stateMatch =
-          statesNorm.length === 0 || statesNorm.includes(dstState);
-        const lgaMatch = lgasNorm.length === 0 || lgasNorm.includes(dstLga);
+            const stateMatch =
+              statesNorm.length === 0 || statesNorm.includes(dstState);
+            const lgaMatch = lgasNorm.length === 0 || lgasNorm.includes(dstLga);
 
-        if (stateMatch && lgaMatch) {
-          matchedZone = zone;
-          break;
+            if (stateMatch && lgaMatch) {
+              matchedZone = zone;
+              break;
+            }
+          }
+
+          if (!matchedZone) {
+            supplierQuotes.push({
+              supplierId,
+              error: `No shipping zone for destination state=${shippingAddress.state}${
+                dstLga ? ` lga=${dstLga}` : ""
+              }`,
+              totalFee: 0,
+            });
+          } else {
+            const now = new Date();
+
+            const rateCards = await prisma.shippingRateCard.findMany({
+              where: {
+                zoneId: matchedZone.id,
+                isActive: true,
+                serviceLevel,
+                parcelClass,
+                minWeightGrams: { lte: chargeableWeightGrams },
+                OR: [
+                  { maxWeightGrams: null },
+                  { maxWeightGrams: { gt: chargeableWeightGrams } },
+                ],
+                AND: [
+                  { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
+                  { OR: [{ endsAt: null }, { endsAt: { gte: now } }] },
+                ],
+              },
+              orderBy: [{ minWeightGrams: "desc" }],
+            });
+
+            const rate = rateCards[0];
+
+            if (!rate) {
+              supplierQuotes.push({
+                supplierId,
+                zoneCode: matchedZone.code,
+                zoneName: matchedZone.name,
+                error: `No rate card for ${serviceLevel}/${parcelClass}/${chargeableWeightGrams}g`,
+                totalFee: 0,
+              });
+            } else {
+              const chargeableKg = chargeableWeightGrams / 1000;
+
+              const baseFee = toNum(rate.baseFee);
+              const perKgFee = toNum(rate.perKgFee);
+              const remoteSurcharge = toNum(rate.remoteSurcharge);
+              const fuelSurcharge = toNum(rate.fuelSurcharge);
+              const rateHandling = toNum(rate.handlingFee);
+              const supplierHandling = toNum(supplier.handlingFee);
+
+              const shippingFee =
+                baseFee + (perKgFee > 0 ? perKgFee * chargeableKg : 0);
+              const allFreeShipping = lineSnapshots.every((x) => x.freeShipping);
+
+              const totalFeeRaw = allFreeShipping
+                ? 0
+                : shippingFee +
+                  remoteSurcharge +
+                  fuelSurcharge +
+                  rateHandling +
+                  supplierHandling;
+
+              const totalFee = Math.max(0, totalFeeRaw);
+
+              supplierQuotes.push({
+                supplierId,
+                zoneCode: matchedZone.code,
+                zoneName: matchedZone.name,
+                currency: rate.currency || "NGN",
+                serviceLevel,
+                etaMinDays: rate.etaMinDays ?? supplier.defaultLeadDays ?? null,
+                etaMaxDays: rate.etaMaxDays ?? supplier.defaultLeadDays ?? null,
+                weights: {
+                  actualWeightGrams: totalActualWeightGrams,
+                  volumetricWeightGrams: totalVolumetricWeightGrams,
+                  chargeableWeightGrams,
+                },
+                breakdown: {
+                  shippingFee: round2(allFreeShipping ? 0 : shippingFee),
+                  remoteSurcharge: round2(
+                    allFreeShipping ? 0 : remoteSurcharge
+                  ),
+                  fuelSurcharge: round2(allFreeShipping ? 0 : fuelSurcharge),
+                  handlingFee: round2(
+                    allFreeShipping ? 0 : rateHandling + supplierHandling
+                  ),
+                  insuranceFee: 0,
+                  totalFee: round2(totalFee),
+                },
+                items: lineSnapshots.map((x) => ({
+                  productId: x.productId,
+                  variantId: x.variantId,
+                  title: x.title,
+                  qty: x.qty,
+                })),
+              });
+
+              totalShippingFee += totalFee;
+            }
+          }
         }
       }
-
-      if (!matchedZone) {
-        supplierQuotes.push({
-          supplierId,
-          error: `No shipping zone for destination state=${shippingAddress.state}${
-            dstLga ? ` lga=${dstLga}` : ""
-          }`,
-          totalFee: 0,
-        });
-        continue;
-      }
-
-      const now = new Date();
-
-      const rateCards = await prisma.shippingRateCard.findMany({
-        where: {
-          zoneId: matchedZone.id,
-          isActive: true,
-          serviceLevel,
-          parcelClass,
-          minWeightGrams: { lte: chargeableWeightGrams },
-          OR: [
-            { maxWeightGrams: null },
-            { maxWeightGrams: { gt: chargeableWeightGrams } },
-          ],
-          AND: [
-            { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
-            { OR: [{ endsAt: null }, { endsAt: { gte: now } }] },
-          ],
-        },
-        orderBy: [{ minWeightGrams: "desc" }],
-      });
-
-      const rate = rateCards[0];
-
-      if (!rate) {
-        supplierQuotes.push({
-          supplierId,
-          zoneCode: matchedZone.code,
-          zoneName: matchedZone.name,
-          error: `No rate card for ${serviceLevel}/${parcelClass}/${chargeableWeightGrams}g`,
-          totalFee: 0,
-        });
-        continue;
-      }
-
-      const chargeableKg = chargeableWeightGrams / 1000;
-
-      const baseFee = toNum(rate.baseFee);
-      const perKgFee = toNum(rate.perKgFee);
-      const remoteSurcharge = toNum(rate.remoteSurcharge);
-      const fuelSurcharge = toNum(rate.fuelSurcharge);
-      const rateHandling = toNum(rate.handlingFee);
-      const supplierHandling = toNum(supplier.handlingFee);
-
-      const shippingFee =
-        baseFee + (perKgFee > 0 ? perKgFee * chargeableKg : 0);
-      const allFreeShipping = lineSnapshots.every((x) => x.freeShipping);
-
-      const totalFeeRaw = allFreeShipping
-        ? 0
-        : shippingFee +
-          remoteSurcharge +
-          fuelSurcharge +
-          rateHandling +
-          supplierHandling;
-
-      const totalFee = Math.max(0, totalFeeRaw);
-
-      supplierQuotes.push({
-        supplierId,
-        zoneCode: matchedZone.code,
-        zoneName: matchedZone.name,
-        currency: rate.currency || "NGN",
-        serviceLevel,
-        etaMinDays: rate.etaMinDays ?? supplier.defaultLeadDays ?? null,
-        etaMaxDays: rate.etaMaxDays ?? supplier.defaultLeadDays ?? null,
-        weights: {
-          actualWeightGrams: totalActualWeightGrams,
-          volumetricWeightGrams: totalVolumetricWeightGrams,
-          chargeableWeightGrams,
-        },
-        breakdown: {
-          shippingFee: round2(allFreeShipping ? 0 : shippingFee),
-          remoteSurcharge: round2(allFreeShipping ? 0 : remoteSurcharge),
-          fuelSurcharge: round2(allFreeShipping ? 0 : fuelSurcharge),
-          handlingFee: round2(
-            allFreeShipping ? 0 : rateHandling + supplierHandling
-          ),
-          insuranceFee: 0,
-          totalFee: round2(totalFee),
-        },
-        items: lineSnapshots.map((x) => ({
-          productId: x.productId,
-          variantId: x.variantId,
-          title: x.title,
-          qty: x.qty,
-        })),
-      });
-
-      totalShippingFee += totalFee;
     }
 
     const hasAnySuccess = supplierQuotes.some((q) => !q.error);
