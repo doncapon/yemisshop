@@ -104,7 +104,7 @@ type Props = {
   productId: string;
 
   variants?: Variant[];
-
+  refreshKey: number;
   // kept for compatibility; ignored
   suppliers?: Supplier[];
   token?: string | null;
@@ -178,6 +178,24 @@ function VariantComboBox({
     return found?.label ?? "— Select —";
   }, [items, valueVariantId, isBlank, placeholder]);
 
+
+  // Close when clicking outside
+  const boxRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    function handleClick(e: MouseEvent) {
+      if (!boxRef.current) return;
+      if (!boxRef.current.contains(e.target as Node)) {
+        onRequestClose();
+      }
+    }
+
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [isOpen, onRequestClose]);
+
   useEffect(() => {
     if (!isOpen) {
       setQ("");
@@ -228,7 +246,10 @@ function VariantComboBox({
 
       {/* DROPDOWN */}
       {isOpen && !disabled ? (
-        <div className="absolute z-30 mt-2 w-[min(92vw,1400px)] max-w-none overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-lg">
+        <div
+          ref={boxRef}
+          className="absolute z-30 mt-2 w-full max-w-full overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-lg"
+        >
           <div className="p-2">
             <input
               autoFocus
@@ -337,7 +358,9 @@ async function apiFetchJson<T>(
 
   if (!res.ok) {
     const msg =
-      body?.error || body?.message || `Request failed (${res.status}) for ${path}`;
+      body?.error ||
+      body?.message ||
+      `Request failed (${res.status}) for ${path}`;
     const err = new Error(msg) as any;
     err.status = res.status;
     throw err;
@@ -404,12 +427,22 @@ function extractVariantsFromProduct(p: any): Variant[] {
     .filter((v: Variant) => !!v.id);
 }
 
-function variantDisplay(productSku: string, v: Variant) {
-  const prefix = productSku ? `${productSku}-` : "";
-  const skuOrFallback =
-    v.sku && v.sku.trim() ? v.sku.trim() : v.id.slice(-6);
-  const skuPart = `${prefix}${skuOrFallback}`;
-  return v.label ? `${skuPart} — ${v.label}` : skuPart;
+function variantDisplay(_productSku: string, v: Variant) {
+  const normalize = (s: string) => s.replace(/\s*\/\s*/g, " - ");
+
+  // If variant has a human label, use it — but fix slashes
+  const cleanLabel = (v.label || "").trim();
+  if (cleanLabel) return normalize(cleanLabel);
+
+  // If label missing, use last SKU segment — also fix slashes
+  const raw = (v.sku || "").trim();
+  if (raw) {
+    const last = raw.split("-").pop() || raw;
+    return normalize(last.trim());
+  }
+
+  // fallback
+  return v.id ? v.id.slice(-6) : "Variant";
 }
 
 function deriveKindFromOffer(o: OfferApi): OfferKind {
@@ -434,6 +467,7 @@ export default function SuppliersOfferManager({
   suppliers: _suppliersIgnored,
   token: _tokenIgnored,
   readOnly,
+  refreshKey,
   fixedSupplierId: _fixedSupplierIdIgnored,
   defaultUnitCost: _defaultUnitCostIgnored,
   onSaved,
@@ -578,6 +612,7 @@ export default function SuppliersOfferManager({
   }
 
   async function load() {
+    console.log("got called");
     if (!productId) return;
 
     abortRef.current?.abort();
@@ -614,8 +649,6 @@ export default function SuppliersOfferManager({
         const sid = String(p?.supplierId || p?.supplier?.id || "").trim();
         setSupplierId(sid);
         setSupplierName(String(p?.supplier?.name || "").trim());
-
-        setVariants(extractVariantsFromProduct(p));
       }
 
       const offersArr: OfferApi[] = Array.isArray(o)
@@ -634,16 +667,48 @@ export default function SuppliersOfferManager({
         .map((x) => ({
           id: String(x.variantId),
           sku: x.variantSku != null ? String(x.variantSku) : null,
+          label: undefined, // offers don't know about human labels
         }));
 
-      const mergedVariants = (() => {
+      // ✅ Merge into existing variants, keeping any labels that already exist
+      setVariants((prev) => {
         const m = new Map<string, Variant>();
-        for (const v of productVariants) m.set(v.id, v);
-        for (const v of seededFromOffers) if (!m.has(v.id)) m.set(v.id, v);
-        return Array.from(m.values());
-      })();
 
-      if (mergedVariants.length > 0) setVariants(mergedVariants);
+        // 1) Start with what we already had (from ManageProducts props)
+        for (const v of prev || []) {
+          m.set(v.id, { ...v });
+        }
+
+        // 2) Merge product variants from backend (fill sku, don't clobber label)
+        for (const v of productVariants) {
+          const existing = m.get(v.id);
+          if (existing) {
+            m.set(v.id, {
+              ...existing,
+              sku: v.sku ?? existing.sku,
+              label: existing.label || v.label,
+            });
+          } else {
+            m.set(v.id, v);
+          }
+        }
+
+        // 3) Merge any extra variants we discover via offers
+        for (const v of seededFromOffers) {
+          const existing = m.get(v.id);
+          if (existing) {
+            m.set(v.id, {
+              ...existing,
+              sku: v.sku ?? existing.sku,
+              label: existing.label || v.label,
+            });
+          } else {
+            m.set(v.id, v);
+          }
+        }
+
+        return Array.from(m.values());
+      });
 
       setOffersLoaded(filteredOffers);
 
@@ -716,6 +781,10 @@ export default function SuppliersOfferManager({
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    load();
+  }, [refreshKey]);
 
   useEffect(() => {
     setIsEditingOffers(false);

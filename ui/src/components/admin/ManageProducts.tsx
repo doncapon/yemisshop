@@ -469,6 +469,8 @@ export function ManageProducts({
   const hasOrdersSupportRef = useRef<"unknown" | "supported" | "unsupported">("unknown");
   const hasOrdersProbeDoneRef = useRef(false);
 
+  const [refreshKey, setRefreshKey] = useState(0);
+
   /**
    * Keep search fully local; only sync to parent onBlur to avoid remount churn.
    */
@@ -1615,13 +1617,32 @@ export function ManageProducts({
     selectedAttrs: Record<string, string | string[]>,
     attrs: AttrDef[]
   ): string {
-    const parts = attrs.map((a) => {
-      const sel = selectedAttrs?.[a.id];
-      const valueId = typeof sel === "string" ? sel.trim() : "";
-      return `${a.id}:${valueId}`;
-    });
-    const allEmpty = parts.every((p) => p.endsWith(":"));
-    return allEmpty ? "" : parts.join("|");
+    const parts: string[] = [];
+
+    for (const a of attrs || []) {
+      const raw = selectedAttrs?.[a.id];
+
+      const vids = Array.isArray(raw)
+        ? raw
+        : raw != null
+          ? [raw]
+          : [];
+
+      const cleanVids = vids
+        .map((v) => String(v ?? "").trim())
+        .filter(Boolean);
+
+      if (!cleanVids.length) continue;
+
+      // ✅ attributeId-vid1-vid2-vid3
+      parts.push([a.id, ...cleanVids].join("-"));
+    }
+
+    // If nothing selected, treat as "no base combo"
+    if (!parts.length) return "";
+
+    // ✅ if multiple attrs: aid1-vid1 | aid2-vid2-vid3
+    return parts.join("|");
   }
 
   function findBaseVsVariantConflicts(
@@ -2243,6 +2264,8 @@ export function ManageProducts({
         ]);
       },
     });
+
+    setRefreshKey((prev) => prev + 1);
   }
 
   /* ---------------- Focus handoff ---------------- */
@@ -2359,52 +2382,57 @@ export function ManageProducts({
 
     return arr;
   }, [filteredRows, sort, statusRank]);
+  
 
-  /**
-   * OFFERABLE variants list from admin combos
-   */
-  const supplierVariants = useMemo(() => {
-    const skuByVariantId = new Map<string, string>();
+ const supplierVariants = useMemo(() => {
+  const skuByVariantId = new Map<string, string>();
 
-    const norm = (x: any) => {
-      if (x == null) return null;
-      const s = String(x).trim();
-      if (!s || s === "null" || s === "undefined") return null;
-      return s;
-    };
+  const norm = (x: any) => {
+    if (x == null) return null;
+    const s = String(x).trim();
+    if (!s || s === "null" || s === "undefined") return null;
+    return s;
+  };
 
-    for (const v of offerVariants || []) {
-      const vid = norm(v?.id) || norm(v?.variantId) || norm(v?.variant?.id) || norm(v?.id?.id) || norm(v?.variantId?.id);
-      const sku = String(v?.sku || "").trim();
-      if (vid && sku) skuByVariantId.set(vid, sku);
+  for (const v of offerVariants || []) {
+    const vid =
+      norm(v?.id) ||
+      norm(v?.variantId) ||
+      norm(v?.variant?.id) ||
+      norm(v?.id?.id) ||
+      norm(v?.variantId?.id);
+    const sku = String(v?.sku || "").trim();
+    if (vid && sku) skuByVariantId.set(vid, sku);
+  }
+
+  const rows = (variantRows || []).filter((r) => isRealVariantId(String(r?.id ?? "")));
+
+  const toLabelFromSelections = (r: VariantRow) => {
+    const parts: string[] = [];
+    for (const a of selectableAttrs || []) {
+      const valId = String(r?.selections?.[a.id] ?? "").trim();
+      if (!valId) continue;
+      const valName = a?.values?.find((vv) => String(vv.id) === valId)?.name;
+      parts.push(String(valName || "").trim() || valId);
     }
+    return parts.filter(Boolean).join(" / ");
+  };
 
-    const rows = (variantRows || []).filter((r) => isRealVariantId(String(r?.id ?? "")));
+  return rows
+    .map((r, index) => {
+      const vid = norm(r?.id);
+      if (!vid) return null;
 
-    const toLabelFromSelections = (r: VariantRow) => {
-      const parts: string[] = [];
-      for (const a of selectableAttrs || []) {
-        const valId = String(r?.selections?.[a.id] ?? "").trim();
-        if (!valId) continue;
-        const valName = a?.values?.find((vv) => String(vv.id) === valId)?.name;
-        parts.push(String(valName || "").trim() || valId);
-      }
-      return parts.filter(Boolean).join(" / ");
-    };
+      const serverSku = skuByVariantId.get(vid);
+      const labelFromSelections = toLabelFromSelections(r);
+      const label = serverSku || labelFromSelections || `Variant ${index + 1}`;
 
-    return rows
-      .map((r, index) => {
-        const vid = norm(r?.id);
-        if (!vid) return null;
-
-        const serverSku = skuByVariantId.get(vid);
-        const labelFromSelections = toLabelFromSelections(r);
-        const label = serverSku || labelFromSelections || `Variant ${index + 1}`;
-
-        return { id: vid, sku: serverSku || label, label };
-      })
-      .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
-  }, [variantRows, selectableAttrs, offerVariants]);
+      // NOTE: sku is the “suffix” piece here – SuppliersOfferManager
+      // will decide how to combine it with productSku.
+      return { id: vid, sku: serverSku || label, label };
+    })
+    .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
+}, [variantRows, selectableAttrs, offerVariants]);
 
   /* ---------------- Primary actions ---------------- */
 
@@ -2630,6 +2658,7 @@ export function ManageProducts({
           {editingId && offersProductId && (
             <div className="rounded-2xl border bg-white shadow-sm">
               <SuppliersOfferManager
+                refreshKey={refreshKey}
                 productId={offersProductId}
                 variants={supplierVariants}
                 suppliers={suppliersQ.data}
