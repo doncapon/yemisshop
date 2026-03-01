@@ -14,6 +14,7 @@ import { useAuthStore } from "../store/auth";
 
 // ✅ single source of truth (navbar/cart reads this)
 import { upsertCartLine, toMiniCartRows, readCartLines } from "../utils/cartModel";
+// (qtyInCart removed – we now key on optionsKey/kind for uniqueness)
 
 /* ---------------- Types ---------------- */
 type Brand = { id: string; name: string } | null;
@@ -1435,14 +1436,30 @@ export default function ProductDetail() {
     const AXIOS_COOKIE_CFG = { withCredentials: true as const };
     const isLoggedIn = !!useAuthStore.getState().user?.id;
 
+    // ✅ compute next local qty based on the **exact line**:
+    // productId + variantId + kind + optionsKey
+    const existingLines = (readCartLines() as any[]) || [];
+    const lineKind = variantId ? "VARIANT" : "BASE";
+
+    const existingForCombo = existingLines.find((ln) => {
+      return (
+        String(ln.productId) === String(product.id) &&
+        String(ln.variantId ?? null) === String(variantId ?? null) &&
+        String(ln.optionsKey ?? "") === optionsKey &&
+        String(ln.kind ?? lineKind) === lineKind
+      );
+    });
+
+    const nextQty = (existingForCombo?.qty ?? 0) + 1;
+
     if (isLoggedIn) {
-      // ✅ server write
+      // ✅ server write: treat POST as "add 1"
       await api.post(
         "/api/cart/items",
         {
           productId: product.id,
           variantId,
-          kind: variantId ? "VARIANT" : "BASE",
+          kind: lineKind,
           qty: 1,
           selectedOptions: selectedOptionsWire,
           optionsKey,
@@ -1457,9 +1474,9 @@ export default function ProductDetail() {
       upsertCartLine({
         productId: String(product.id),
         variantId: variantId ?? null,
-        kind: variantId ? "VARIANT" : "BASE",
+        kind: lineKind,
         optionsKey,
-        qty: 1,
+        qty: nextQty, // ⬅️ cumulative qty for this specific combo
         selectedOptions: selectedOptionsLabeled ?? [],
         titleSnapshot: product.title ?? null,
         imageSnapshot: primaryImg ?? null,
@@ -1469,8 +1486,8 @@ export default function ProductDetail() {
       window.dispatchEvent(new Event("cart:updated"));
 
       // ✅ Toast uses the full (server-mirrored) cart content, including this new addition
-      const lines = readCartLines();
-      const miniRows = toMiniCartRows(lines);
+      const linesAfter = readCartLines();
+      const miniRows = toMiniCartRows(linesAfter);
 
       showMiniCartToast({
         cart: miniRows,
@@ -1485,9 +1502,9 @@ export default function ProductDetail() {
     upsertCartLine({
       productId: String(product.id),
       variantId: variantId ?? null,
-      kind: variantId ? "VARIANT" : "BASE",
+      kind: lineKind,
       optionsKey,
-      qty: 1,
+      qty: nextQty, // ⬅️ cumulative qty for this specific combo
       selectedOptions: selectedOptionsLabeled ?? [],
       titleSnapshot: product.title ?? null,
       imageSnapshot: primaryImg ?? null,
@@ -1497,9 +1514,9 @@ export default function ProductDetail() {
     window.dispatchEvent(new Event("cart:updated"));
 
     // toast from actual storage (guaranteed to match navbar/cart page)
-    const lines = readCartLines();
+    const linesAfter = readCartLines();
     showMiniCartToast(
-      toMiniCartRows(lines),
+      toMiniCartRows(linesAfter),
       { productId: product.id, variantId: variantId ?? null },
       { title: "Added to cart", duration: 3500, maxItems: 4, mode: "add" }
     );

@@ -7,7 +7,7 @@ import api from "../api/client";
 import { useAuthStore } from "../store/auth";
 
 import { showMiniCartToast } from "../components/cart/MiniCartToast";
-import { upsertCartLine, readCartLines, toMiniCartRows } from "../utils/cartModel";
+import { upsertCartLine, readCartLines, toMiniCartRows, qtyInCart } from "../utils/cartModel";
 
 type WishlistItem = {
   id: string;
@@ -113,8 +113,13 @@ export default function Wishlist() {
             : (p.images[0] as any)?.url
           : null;
 
+      // compute next local qty for this base product
+      const existingLines = readCartLines();
+      const existingQty = qtyInCart(existingLines, productId, null);
+      const nextQty = existingQty + 1;
+
       if (isLoggedIn) {
-        // Server cart write
+        // Server cart write: treat POST as "add 1"
         await api.post(
           "/api/cart/items",
           {
@@ -132,13 +137,13 @@ export default function Wishlist() {
         );
       }
 
-      // Local mirror (for navbar badge / guest cart)
+      // Local mirror (for navbar badge / guest cart) using cumulative qty
       upsertCartLine({
         productId,
         variantId,
         kind: "BASE",
         optionsKey,
-        qty: 1,
+        qty: nextQty,
         selectedOptions: [],
         titleSnapshot: p.title ?? null,
         imageSnapshot: img ?? null,
@@ -149,8 +154,8 @@ export default function Wishlist() {
 
       // 🔥 Mini-cart toast: show the FULL cart (local mirror),
       // not just the one item we added
-      const lines = readCartLines();
-      const miniRows = toMiniCartRows(lines);
+      const linesAfter = readCartLines();
+      const miniRows = toMiniCartRows(linesAfter);
 
       showMiniCartToast(
         miniRows,

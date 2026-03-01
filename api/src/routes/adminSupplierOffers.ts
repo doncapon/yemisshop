@@ -1,4 +1,3 @@
-// api/src/routes/adminSupplierOffers.ts
 import express from "express";
 import { Prisma } from "@prisma/client";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
@@ -58,10 +57,6 @@ function parsePrefixedId(id: string): { kind: "BASE" | "VARIANT" | "LEGACY"; raw
 /**
  * Hard-delete safety:
  * Block deletes if product OR any of its variants have ever been used in orders.
- *
- * Implemented in a schema-safe way:
- * 1) Check orderItem.productId = productId
- * 2) Then, if variants exist for this product, check orderItem.variantId IN those ids
  */
 async function assertProductOffersDeletable(productId: string) {
   // 1) direct product usage
@@ -102,13 +97,7 @@ async function assertProductOffersDeletable(productId: string) {
 }
 
 /**
- * Supplier consistency:
- * - SupplierProductOffer HAS supplierId (required)
- * - SupplierVariantOffer HAS supplierId (required)
- * - Supplier is on Product (product.supplierId + product.supplier)
- *
- * We ACCEPT supplierId in requests for compatibility, validate it matches product.supplierId,
- * and we STORE it on both offer tables (kept in sync with Product).
+ * Supplier consistency check
  */
 async function assertSupplierMatchesProduct(productId: string, supplierIdMaybe?: string | null) {
   if (!supplierIdMaybe) return;
@@ -136,46 +125,46 @@ async function assertSupplierMatchesProduct(productId: string, supplierIdMaybe?:
 /**
  * PATCH BASE
  */
-const patchBaseSchema = z.object({
-  supplierId: z.string().min(1).optional(), // validated against Product.supplierId
+const patchBaseSchema = z
+  .object({
+    supplierId: z.string().min(1).optional(), // validated against Product.supplierId
 
-  price: coerceNumber(0).optional(), // maps to basePrice
-  currency: z.string().min(1).optional(),
-  availableQty: coerceInt(0).optional(),
-  leadDays: coerceInt(0).nullable().optional(),
-  isActive: coerceBool.optional(),
+    price: coerceNumber(0).optional(), // maps to basePrice
+    currency: z.string().min(1).optional(),
+    availableQty: coerceInt(0).optional(),
+    leadDays: coerceInt(0).nullable().optional(),
+    isActive: coerceBool.optional(),
 
-  // optional conversion request (BASE -> VARIANT) if caller sends variantId
-  variantId: z
-    .preprocess((v) => {
-      if (v === "" || v == null) return undefined;
-      return String(v);
-    }, z.string().min(1))
-    .optional(),
-});
+    // optional conversion request (BASE -> VARIANT) if caller sends variantId
+    variantId: z
+      .preprocess((v) => {
+        if (v === "" || v == null) return undefined;
+        return String(v);
+      }, z.string().min(1))
+      .optional(),
+  })
+  .passthrough();
 
 /**
  * PATCH VARIANT
+ *
+ * IMPORTANT: allow variantId: null so the UI can request VARIANT -> BASE conversion.
  */
-const patchVariantSchema = z.object({
-  supplierId: z.string().min(1).optional(),
+const patchVariantSchema = z
+  .object({
+    supplierId: z.string().min(1).optional(),
 
-  variantId: z
-    .preprocess((v) => {
-      if (v === "" || v == null) return undefined;
-      return String(v);
-    }, z.string().min(1))
-    .optional(),
+    // string id OR null (for convert-to-base). We *don't* preprocess null away.
+    variantId: z.string().min(1).nullable().optional(),
 
-  // allow explicit convert to BASE if caller sends variantId:null
-  // (handled by reading raw body in handler)
-  unitPrice: coerceNumber(0).optional(), // legacy name
-  price: coerceNumber(0).optional(), // preferred name
-  currency: z.string().min(1).optional(),
-  availableQty: coerceInt(0).optional(),
-  leadDays: coerceInt(0).nullable().optional(),
-  isActive: coerceBool.optional(),
-});
+    unitPrice: coerceNumber(0).optional(), // legacy name
+    price: coerceNumber(0).optional(), // preferred name
+    currency: z.string().min(1).optional(),
+    availableQty: coerceInt(0).optional(),
+    leadDays: coerceInt(0).nullable().optional(),
+    isActive: coerceBool.optional(),
+  })
+  .passthrough();
 
 /**
  * CREATE (single price field: `price`)
@@ -229,6 +218,7 @@ const createSchema = z
 function toDtoBase(
   base: any,
   supplierMeta?: { supplierId: string; supplierName?: string | null },
+  flags?: { hasOrders?: boolean },
 ) {
   const basePriceNum = base.basePrice != null ? Number(base.basePrice) : 0;
 
@@ -252,12 +242,15 @@ function toDtoBase(
     leadDays: base.leadDays ?? undefined,
     isActive: !!base.isActive,
     inStock: !!base.inStock,
+
+    hasOrders: !!flags?.hasOrders,
   };
 }
 
 function toDtoVariant(
   v: any,
   supplierMeta?: { supplierId: string; supplierName?: string | null },
+  flags?: { hasOrders?: boolean },
 ) {
   const unitPriceNum = v.unitPrice != null ? Number(v.unitPrice) : 0;
 
@@ -281,6 +274,8 @@ function toDtoVariant(
     leadDays: v.leadDays ?? undefined,
     isActive: !!v.isActive,
     inStock: !!v.inStock,
+
+    hasOrders: !!flags?.hasOrders,
   };
 }
 
@@ -362,11 +357,45 @@ const bulkOffersHandler = wrap(async (req, res) => {
     }),
   ]);
 
+  // ---- hasOrders flags ----
+  const baseIds = baseOffers.map((b) => b.id);
+  const variantIds = variantOffers.map((v) => v.id);
+
+  const [baseOrderRows, variantOrderRows] = await Promise.all([
+    baseIds.length
+      ? prisma.orderItem.findMany({
+          where: { chosenSupplierProductOfferId: { in: baseIds } },
+          select: { chosenSupplierProductOfferId: true },
+        })
+      : [],
+    variantIds.length
+      ? prisma.orderItem.findMany({
+          where: { chosenSupplierVariantOfferId: { in: variantIds } },
+          select: { chosenSupplierVariantOfferId: true },
+        })
+      : [],
+  ]);
+
+  const baseUsedSet = new Set(
+    baseOrderRows.map((o) => o.chosenSupplierProductOfferId),
+  );
+  const variantUsedSet = new Set(
+    variantOrderRows.map((o) => o.chosenSupplierVariantOfferId),
+  );
+
   const out: any[] = [];
-  for (const b of baseOffers as any[])
-    out.push(toDtoBase(b, supplierByProductId.get(String(b.productId))));
-  for (const v of variantOffers as any[])
-    out.push(toDtoVariant(v, supplierByProductId.get(String(v.productId))));
+  for (const b of baseOffers as any[]) {
+    const supplierMeta = supplierByProductId.get(String(b.productId));
+    out.push(
+      toDtoBase(b, supplierMeta, { hasOrders: baseUsedSet.has(b.id) }),
+    );
+  }
+  for (const v of variantOffers as any[]) {
+    const supplierMeta = supplierByProductId.get(String(v.productId));
+    out.push(
+      toDtoVariant(v, supplierMeta, { hasOrders: variantUsedSet.has(v.id) }),
+    );
+  }
 
   return res.json({ data: out });
 });
@@ -938,7 +967,7 @@ router.patch(
       if (patch.isActive !== undefined) data.isActive = !!patch.isActive;
 
       // allow changing variantId (must belong to same product)
-      if (patch.variantId) {
+      if (patch.variantId && typeof patch.variantId === "string") {
         const variant = await prisma.productVariant.findUnique({
           where: { id: String(patch.variantId) },
           select: { id: true, productId: true },

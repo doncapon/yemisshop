@@ -699,6 +699,7 @@ router.get(
               imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
               availableQty: vQty,
 
+              // 🔑 variant offers for Catalog.tsx (field name: offers)
               offers: needOffers
                 ? vOffers.map((o: any) => {
                     const r = readSupplierRatingFromOffer(o);
@@ -709,6 +710,8 @@ router.get(
                       inStock: o.inStock === true,
                       availableQty: Number(o.availableQty ?? 0) || 0,
                       unitPrice: o.unitPrice != null ? toNum(o.unitPrice) : null,
+                      supplierRatingAvg: r.ratingAvg,
+                      supplierRatingCount: r.ratingCount,
                       supplier: {
                         id: r.supplierId,
                         ratingAvg: r.ratingAvg,
@@ -723,19 +726,23 @@ router.get(
           })
         : [];
 
-      const attrs = attrByProduct.get(pid);
+    const attrs = attrByProduct.get(pid);
       const offersFrom = needOffers ? (offersFromByProduct.get(pid) ?? null) : null;
 
       const offerRetail = computeRetailFromOfferAndMargin(offersFrom, p.commissionPctInt);
       const retailOnly = computePublicDisplayPriceRetailOnly(p);
       const displayPrice = offerRetail != null ? offerRetail : retailOnly;
 
+      const rawRetail = p.retailPrice != null ? toNum(p.retailPrice) : null;
+
       return {
         id: pid,
         title: p.title,
         description: p.description,
 
-        retailPrice: displayPrice,
+        // 🔑 align with Catalog.tsx
+        retailPrice: rawRetail,
+        computedRetailPrice: displayPrice != null ? displayPrice : null,
         autoPrice: p.autoPrice != null ? toNum(p.autoPrice) : null,
         priceMode: p.priceMode ?? null,
 
@@ -754,9 +761,13 @@ router.get(
 
         offersFrom,
 
+        // 🔑 surface rating to align with Catalog.tsx (ratingAvg / ratingCount)
+        ratingAvg: bestProductRating?.ratingAvg ?? null,
+        ratingCount: bestProductRating?.ratingCount ?? null,
         bestSupplierRating: bestProductRating,
 
-        supplierOffers: needOffers
+        // 🔑 align with Catalog.tsx: supplierProductOffers
+        supplierProductOffers: needOffers
           ? (baseOffers as any[])
               .filter((o: any) => String(o.productId) === pid)
               .map((o: any) => {
@@ -768,11 +779,15 @@ router.get(
                   inStock: o.inStock === true,
                   availableQty: Number(o.availableQty ?? 0) || 0,
                   basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
-                  supplier: {
-                    id: r.supplierId,
-                    ratingAvg: r.ratingAvg,
-                    ratingCount: r.ratingCount,
-                  },
+                  supplierRatingAvg: r.ratingAvg,
+                  supplierRatingCount: r.ratingCount,
+                  supplier: r.supplierId
+                    ? {
+                        id: r.supplierId,
+                        ratingAvg: r.ratingAvg,
+                        ratingCount: r.ratingCount,
+                      }
+                    : undefined,
                 };
               })
           : [],
@@ -1078,6 +1093,8 @@ router.get(
           inStock: o.inStock === true,
           isActive: o.isActive === true,
           leadDays: o.leadDays ?? null,
+          supplierRatingAvg: r.ratingAvg,
+          supplierRatingCount: r.ratingCount,
           supplier: r.supplierId
             ? {
                 id: r.supplierId,
@@ -1104,6 +1121,8 @@ router.get(
           inStock: o.inStock === true,
           isActive: o.isActive === true,
           leadDays: o.leadDays ?? null,
+          supplierRatingAvg: r.ratingAvg,
+          supplierRatingCount: r.ratingCount,
           supplier: r.supplierId
             ? {
                 id: r.supplierId,
@@ -1130,6 +1149,8 @@ router.get(
             basePrice: o.basePrice != null ? toNum(o.basePrice) : null,
             unitPrice: o.basePrice != null ? toNum(o.basePrice) : null,
             model: "BASE",
+            supplierRatingAvg: r.ratingAvg,
+            supplierRatingCount: r.ratingCount,
             supplier: r.supplierId
               ? {
                   id: r.supplierId,
@@ -1164,6 +1185,8 @@ router.get(
             leadDays: o.leadDays ?? null,
             unitPrice: finalPrice,
             model: "VARIANT",
+            supplierRatingAvg: r.ratingAvg,
+            supplierRatingCount: r.ratingCount,
             supplier: r.supplierId
               ? {
                   id: r.supplierId,

@@ -1,4 +1,4 @@
-// api/src/routes/favourites.ts
+// api/src/routes/favorites.ts
 import { Router } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
@@ -96,8 +96,8 @@ async function getMarginPercentCached(): Promise<number> {
       Number.isFinite(vA as any)
         ? (vA as number)
         : Number.isFinite(vB as any)
-          ? (vB as number)
-          : 0
+        ? (vB as number)
+        : 0
     );
     cachedMargin = { v, at: now };
     return v;
@@ -204,13 +204,15 @@ router.get("/", async (req, res, next) => {
 });
 
 /**
- * Optional alias (if referenced elsewhere)
  * GET /api/favorites/mine
+ * ✅ Shape tailored for Catalog.tsx favourites badge:
+ *    returns { productIds: string[] }
  */
 router.get("/mine", async (req, res, next) => {
   try {
     const items = await buildFavoritesItems(req.user!.id);
-    return res.json({ items });
+    const productIds = items.map((it) => it.productId);
+    return res.json({ productIds });
   } catch (e) {
     next(e);
   }

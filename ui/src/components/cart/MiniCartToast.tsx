@@ -16,8 +16,22 @@ type ToastOpts = {
 type MiniCartOption = { attribute?: string; value?: string };
 
 export type MiniCartRow = {
+  // ✅ optional cart item id so we can uniquely separate rows if needed
+  id?: string;
+
   productId: string;
   variantId?: string | null;
+
+  // ✅ supplier info so items from different suppliers never merge
+  supplierId?: string | null;
+  supplierName?: string | null;
+
+  // ✅ base vs variant kind
+  kind?: "BASE" | "VARIANT";
+
+  // ✅ ensures different variant selections don’t collapse together
+  optionsKey?: string | null;
+
   title?: string;
   qty: number;
   unitPrice?: number;
@@ -84,9 +98,7 @@ export function showMiniCartToast(
         }
       : arg1;
 
-    window.dispatchEvent(
-      new CustomEvent<ToastPayload>(EVENT, { detail })
-    );
+    window.dispatchEvent(new CustomEvent<ToastPayload>(EVENT, { detail }));
   } catch {
     // never block add-to-cart
   }
@@ -141,6 +153,84 @@ function normalizePayload(d: ToastPayload | null | undefined) {
   return { cart, focus, opts: d?.opts };
 }
 
+/* ----------------------------------------------------------------------------
+ * Group cart rows by **productId + variantId + kind + supplierId + optionsKey (and id)**
+ * so:
+ * - Different suppliers never merge.
+ * - Different variant selections (optionsKey) never merge.
+ * -------------------------------------------------------------------------- */
+function groupCart(cart: MiniCartRow[]): MiniCartRow[] {
+  const map = new Map<
+    string,
+    MiniCartRow & {
+      qty: number;
+      _lastIndex: number;
+    }
+  >();
+
+  cart.forEach((row, index) => {
+    if (!row || !row.productId) return;
+
+    const kind = row.kind ?? (row.variantId ? "VARIANT" : "BASE");
+
+    // ✅ Build a highly specific key so “similar title” items but different suppliers
+    // or different option combos do not collapse.
+    const keyParts: string[] = [];
+
+    if (row.id) keyParts.push(`id:${row.id}`);
+    keyParts.push(`p:${row.productId}`);
+    keyParts.push(`v:${row.variantId ?? "base"}`);
+    keyParts.push(`k:${kind}`);
+    keyParts.push(`s:${row.supplierId ?? ""}`);
+    keyParts.push(`o:${row.optionsKey ?? ""}`);
+
+    const key = keyParts.join("|");
+
+    const rowQty = Math.max(1, Number(row.qty) || 0); // default to 1 if missing/0
+    const rowUnit = money(row.unitPrice ?? row.price);
+
+    const existing = map.get(key);
+    if (existing) {
+      // accumulate qty for the exact same line (same supplier/options combo)
+      existing.qty += rowQty;
+
+      // keep the most recent info for display
+      if (row.title) existing.title = row.title;
+      if (row.image) existing.image = row.image;
+      if (Array.isArray(row.selectedOptions) && row.selectedOptions.length) {
+        existing.selectedOptions = row.selectedOptions;
+      }
+      if (rowUnit) {
+        existing.unitPrice = rowUnit;
+        existing.price = rowUnit;
+      }
+
+      // also refresh supplier info if present
+      if (row.supplierId) existing.supplierId = row.supplierId;
+      if (row.supplierName) existing.supplierName = row.supplierName;
+      if (row.kind) existing.kind = row.kind;
+      if (row.optionsKey) existing.optionsKey = row.optionsKey;
+
+      existing._lastIndex = index;
+    } else {
+      map.set(key, {
+        ...row,
+        qty: rowQty,
+        unitPrice: row.unitPrice ?? row.price ?? rowUnit,
+        price: row.price ?? row.unitPrice ?? rowUnit,
+        kind,
+        _lastIndex: index,
+      });
+    }
+  });
+
+  // Sort by last index so "most recently touched" items are last,
+  // then clampCart() will pull them to the top.
+  return Array.from(map.values())
+    .sort((a, b) => a._lastIndex - b._lastIndex)
+    .map(({ _lastIndex, ...rest }) => rest);
+}
+
 export default function MiniCartToastHost() {
   const [open, setOpen] = React.useState(false);
   const [payload, setPayload] = React.useState<{
@@ -166,9 +256,7 @@ export default function MiniCartToastHost() {
   React.useEffect(() => {
     const onToast = (e: Event) => {
       const ce = e as CustomEvent<any>;
-      const { cart, focus, opts } = normalizePayload(
-        ce.detail as ToastPayload
-      );
+      const { cart, focus, opts } = normalizePayload(ce.detail as ToastPayload);
 
       // ✅ if merged cart is empty, close immediately
       if (!cart.length) {
@@ -195,6 +283,13 @@ export default function MiniCartToastHost() {
     return document.body;
   }, []);
 
+  // ✅ Always call this hook, even when payload is null
+  const groupedCart = React.useMemo(
+    () => groupCart(payload?.cart || []),
+    [payload?.cart]
+  );
+
+  // ✅ Guard AFTER all hooks
   if (!node || !payload) return null;
 
   const mode = payload.opts?.mode ?? "add";
@@ -203,10 +298,10 @@ export default function MiniCartToastHost() {
     (mode === "remove" ? "Removed from cart" : "Added to cart");
 
   const maxItems = Math.max(1, Number(payload.opts?.maxItems ?? 4));
-  const items = clampCart(payload.cart, maxItems);
+  const items = clampCart(groupedCart, maxItems);
 
-  // ✅ total quantity from *merged* cart (server + additions)
-  const totalQty = (payload.cart || []).reduce(
+  // ✅ total quantity from grouped cart
+  const totalQty = (groupedCart || []).reduce(
     (s, x) => s + Math.max(0, Number(x?.qty) || 0),
     0
   );
@@ -274,7 +369,7 @@ export default function MiniCartToastHost() {
 
               return (
                 <div
-                  key={`${it.productId}:${it.variantId ?? "base"}:${idx}`}
+                  key={`${it.productId}:${it.variantId ?? "base"}:${it.supplierId ?? "nosupp"}:${it.optionsKey ?? "noop"}:${idx}`}
                   className={`flex gap-3 rounded-xl border p-3 ${
                     isFocus
                       ? "border-fuchsia-400 bg-fuchsia-50/50"
@@ -285,13 +380,23 @@ export default function MiniCartToastHost() {
                     src={img}
                     alt={it.title || "Cart item"}
                     className="w-14 h-14 rounded-xl border object-cover"
-                    onError={(e) => ((e.currentTarget.style.opacity = "0.25"))}
+                    onError={(e) => (e.currentTarget.style.opacity = "0.25")}
                   />
 
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-semibold truncate">
                       {it.title || "Item"}
                     </div>
+
+                    {/* ✅ Supplier label so “same title, different supplier” is obvious */}
+                    {(it.supplierName || it.supplierId) && (
+                      <div className="mt-0.5 text-[11px] text-zinc-500">
+                        Supplier:{" "}
+                        <span className="font-medium">
+                          {it.supplierName ?? it.supplierId}
+                        </span>
+                      </div>
+                    )}
 
                     {Array.isArray(it.selectedOptions) &&
                       it.selectedOptions.length > 0 && (

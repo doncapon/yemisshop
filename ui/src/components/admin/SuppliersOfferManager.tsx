@@ -61,6 +61,9 @@ type OfferApi = {
   leadDays?: number | null;
   isActive?: boolean;
   inStock?: boolean;
+
+  // NEW: backend tells us if this offer has ever been used in orders
+  hasOrders?: boolean;
 };
 
 type Row = {
@@ -88,6 +91,13 @@ type Row = {
   inStock: boolean;
 
   leadDays: number | "" | null;
+
+  // NEW: true if this row has been used in orders (structurally locked)
+  hasOrders: boolean;
+
+  // NEW: UI-only flags
+  isBlank?: boolean; // "— Blank —" placeholder selected
+  isNew?: boolean; // never successfully saved yet
 };
 
 type Props = {
@@ -111,32 +121,52 @@ type Props = {
 /* ------------------------------ UI Combobox ------------------------------ */
 
 type VariantItem =
+  | { kind: "BLANK"; label: string }
   | { kind: "BASE"; label: string }
   | { kind: "VARIANT"; v: Variant; label: string };
 
-
-  function VariantComboBox({
+function VariantComboBox({
   disabled,
   valueVariantId,
   items,
   onSelectBase,
   onSelectVariant,
-  placeholder = "Search variant…",
+  onSelectBlank,
+  placeholder = "Select base or variant…",
+  isBlank,
+  hasError,
+  isOpen,
+  onRequestOpen,
+  onRequestClose,
 }: {
   disabled: boolean;
   valueVariantId: string | null;
   items: VariantItem[];
   onSelectBase: () => void;
   onSelectVariant: (variantId: string) => void;
+  onSelectBlank: () => void;
   placeholder?: string;
+  /** When true, show placeholder instead of a "selected" label */
+  isBlank: boolean;
+  /** When true, draw the combobox with an error (red) border */
+  hasError?: boolean;
+  /** Controlled open state so only one dropdown is open at a time */
+  isOpen: boolean;
+  onRequestOpen: () => void;
+  onRequestClose: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
 
-  const selectedKey = valueVariantId ? `VARIANT:${valueVariantId}` : "BASE";
+  const selectedKey = valueVariantId
+    ? `VARIANT:${valueVariantId}`
+    : isBlank
+      ? "UNSET"
+      : "BASE";
 
   const selectedLabel = useMemo(() => {
+    if (isBlank) return placeholder || "— Select —";
+
     if (!valueVariantId) {
       const base = items.find((x) => x.kind === "BASE");
       return base?.label ?? "— None (base offer) —";
@@ -146,11 +176,14 @@ type VariantItem =
     ) as Extract<VariantItem, { kind: "VARIANT" }> | undefined;
 
     return found?.label ?? "— Select —";
-  }, [items, valueVariantId]);
+  }, [items, valueVariantId, isBlank, placeholder]);
 
   useEffect(() => {
-    if (!open) setQ("");
-  }, [open]);
+    if (!isOpen) {
+      setQ("");
+      setActive(0);
+    }
+  }, [isOpen]);
 
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -159,9 +192,11 @@ type VariantItem =
   }, [items, q]);
 
   function choose(item: VariantItem) {
-    if (item.kind === "BASE") onSelectBase();
+    if (item.kind === "BLANK") onSelectBlank();
+    else if (item.kind === "BASE") onSelectBase();
     else onSelectVariant(item.v.id);
-    setOpen(false);
+
+    onRequestClose();
   }
 
   return (
@@ -169,12 +204,17 @@ type VariantItem =
       {/* CLOSED BUTTON */}
       <button
         type="button"
-        className={`w-full rounded-xl border px-3 py-2 text-left ${
-          disabled
-            ? "bg-slate-100 border-slate-200 text-slate-500"
+        className={`w-full rounded-xl border px-3 py-2 text-left ${disabled
+          ? "bg-slate-100 border-slate-200 text-slate-500"
+          : hasError
+            ? "bg-white border-red-500 ring-1 ring-red-300"
             : "bg-white border-slate-300"
-        }`}
-        onClick={() => !disabled && setOpen((v) => !v)}
+          }`}
+        onClick={() => {
+          if (disabled) return;
+          if (isOpen) onRequestClose();
+          else onRequestOpen();
+        }}
         disabled={disabled}
         title={disabled ? "Locked" : selectedLabel}
       >
@@ -187,7 +227,7 @@ type VariantItem =
       </button>
 
       {/* DROPDOWN */}
-      {open && !disabled ? (
+      {isOpen && !disabled ? (
         <div className="absolute z-30 mt-2 w-[min(92vw,1400px)] max-w-none overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-lg">
           <div className="p-2">
             <input
@@ -200,7 +240,7 @@ type VariantItem =
               placeholder={placeholder}
               className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
               onKeyDown={(e) => {
-                if (e.key === "Escape") setOpen(false);
+                if (e.key === "Escape") onRequestClose();
                 if (e.key === "ArrowDown") {
                   e.preventDefault();
                   setActive((a) => Math.min(a + 1, shown.length - 1));
@@ -216,28 +256,38 @@ type VariantItem =
                 }
               }}
             />
-            <div className="mt-2 text-xs text-slate-400">Showing {shown.length}</div>
+            <div className="mt-2 text-xs text-slate-400">
+              Showing {shown.length}
+            </div>
           </div>
 
           <div className="max-h-[320px] overflow-auto bg-slate-900">
             {shown.length === 0 ? (
-              <div className="px-3 py-3 text-sm text-slate-400">No matches</div>
+              <div className="px-3 py-3 text-sm text-slate-400">
+                No matches
+              </div>
             ) : (
               shown.map((item, idx) => {
                 const isSelected =
                   (item.kind === "BASE" && selectedKey === "BASE") ||
                   (item.kind === "VARIANT" &&
-                    selectedKey === `VARIANT:${item.v.id}`);
+                    selectedKey === `VARIANT:${item.v.id}`) ||
+                  (item.kind === "BLANK" && selectedKey === "UNSET");
 
                 return (
                   <button
-                    key={item.kind === "BASE" ? "BASE" : item.v.id}
+                    key={
+                      item.kind === "BASE"
+                        ? "BASE"
+                        : item.kind === "BLANK"
+                          ? "BLANK"
+                          : item.v.id
+                    }
                     type="button"
                     className={`w-full px-3 py-2 text-left text-sm transition
-                      ${
-                        idx === active
-                          ? "bg-slate-800 text-slate-100"
-                          : "bg-slate-900 text-slate-300"
+                      ${idx === active
+                        ? "bg-slate-800 text-slate-100"
+                        : "bg-slate-900 text-slate-300"
                       }
                       hover:bg-slate-800 hover:text-slate-100`}
                     onMouseEnter={() => setActive(idx)}
@@ -267,20 +317,27 @@ type VariantItem =
 
 /* ------------------------------ Cookie fetch helper ------------------------------ */
 
-async function apiFetchJson<T>(path: string, opts: RequestInit & { signal?: AbortSignal } = {}): Promise<T> {
+async function apiFetchJson<T>(
+  path: string,
+  opts: RequestInit & { signal?: AbortSignal } = {}
+): Promise<T> {
   const headers = new Headers(opts.headers || {});
   headers.set("Accept", "application/json");
-  if (!headers.has("Content-Type") && opts.body) headers.set("Content-Type", "application/json");
+  if (!headers.has("Content-Type") && opts.body)
+    headers.set("Content-Type", "application/json");
 
   const res = await fetch(path, { ...opts, headers, credentials: "include" });
 
   if (res.status === 401) throw new Error("Unauthorized");
 
-  const isJson = (res.headers.get("content-type") || "").includes("application/json");
+  const isJson = (res.headers.get("content-type") || "").includes(
+    "application/json"
+  );
   const body = isJson ? await res.json().catch(() => null) : null;
 
   if (!res.ok) {
-    const msg = body?.error || body?.message || `Request failed (${res.status}) for ${path}`;
+    const msg =
+      body?.error || body?.message || `Request failed (${res.status}) for ${path}`;
     const err = new Error(msg) as any;
     err.status = res.status;
     throw err;
@@ -304,7 +361,10 @@ function unwrap<T = any>(payload: any): T {
 function formatNgn(n: number | null | undefined) {
   if (n == null) return "—";
   try {
-    return new Intl.NumberFormat("en-NG", { style: "currency", currency: "NGN" }).format(n);
+    return new Intl.NumberFormat("en-NG", {
+      style: "currency",
+      currency: "NGN",
+    }).format(n);
   } catch {
     return `₦${Number(n).toFixed(2)}`;
   }
@@ -346,7 +406,8 @@ function extractVariantsFromProduct(p: any): Variant[] {
 
 function variantDisplay(productSku: string, v: Variant) {
   const prefix = productSku ? `${productSku}-` : "";
-  const skuOrFallback = v.sku && v.sku.trim() ? v.sku.trim() : v.id.slice(-6);
+  const skuOrFallback =
+    v.sku && v.sku.trim() ? v.sku.trim() : v.id.slice(-6);
   const skuPart = `${prefix}${skuOrFallback}`;
   return v.label ? `${skuPart} — ${v.label}` : skuPart;
 }
@@ -393,13 +454,19 @@ export default function SuppliersOfferManager({
 
   const [isEditingOffers, setIsEditingOffers] = useState(false);
 
+  // 🔑 Which row's combobox is currently open (to ensure only one at a time)
+  const [openRowKey, setOpenRowKey] = useState<string | null>(null);
+
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => setVariants(variantsProp ?? []), [variantsProp]);
 
   const canEdit = !readOnly && isEditingOffers;
 
-  const allowedVariantIds = useMemo(() => new Set((variants ?? []).map((v) => String(v.id))), [variants]);
+  const allowedVariantIds = useMemo(
+    () => new Set((variants ?? []).map((v) => String(v.id))),
+    [variants]
+  );
 
   const variantsById = useMemo(() => {
     const m = new Map<string, Variant>();
@@ -414,18 +481,18 @@ export default function SuppliersOfferManager({
     return allowedVariantIds.has(vid) ? vid : null;
   };
 
-  const baseRowCount = useMemo(() => rows.filter((r) => r.variantId == null).length, [rows]);
-
   function hasOtherBaseRow(rowKey: string) {
-    const count = baseRowCount;
-    if (count === 0) return false;
-    const selfIsBase = rows.some((r) => r.rowKey === rowKey && r.variantId == null);
-    return selfIsBase ? count > 1 : count > 0;
+    const baseRows = rows.filter((r) => !r.isBlank && r.variantId == null);
+    if (baseRows.length === 0) return false;
+    const selfIsBase = baseRows.some((r) => r.rowKey === rowKey);
+    return selfIsBase ? baseRows.length > 1 : baseRows.length > 0;
   }
 
   function isVariantUsedElsewhere(variantId: string, rowKey: string) {
     if (!variantId) return false;
-    return rows.some((r) => r.rowKey !== rowKey && r.variantId === variantId);
+    return rows.some(
+      (r) => r.rowKey !== rowKey && !r.isBlank && r.variantId === variantId
+    );
   }
 
   function offerToRow(raw: OfferApi): Row {
@@ -448,6 +515,9 @@ export default function SuppliersOfferManager({
       isActive,
       inStock: deriveInStock(isActive, qty),
       leadDays: o.leadDays ?? "",
+      hasOrders: !!o.hasOrders,
+      isBlank: false,
+      isNew: false,
     };
   }
 
@@ -469,11 +539,18 @@ export default function SuppliersOfferManager({
         if (r.rowKey !== rowKey) return r;
 
         const sameVariant = (r.variantId ?? null) === (variantId ?? null);
-        if (sameVariant) return r;
+        if (sameVariant && !r.isBlank) return r;
 
         if (existing) {
           const hydrated = offerToRow(existing);
-          return { ...r, ...hydrated, rowKey: r.rowKey, deleteOfferId: r.deleteOfferId ?? null };
+          return {
+            ...r,
+            ...hydrated,
+            rowKey: r.rowKey,
+            deleteOfferId: r.deleteOfferId ?? null,
+            isNew: false,
+            isBlank: false,
+          };
         }
 
         const nextKind: OfferKind = variantId ? "VARIANT" : "BASE";
@@ -483,12 +560,10 @@ export default function SuppliersOfferManager({
         const keptPrice = Math.max(0, safeNum(r.unitPrice, 0));
         const keptLead = r.leadDays ?? "";
 
-        const idToDelete = r.offerId ? r.offerId : null;
-
         return {
           ...r,
-          deleteOfferId: idToDelete ?? r.deleteOfferId ?? null,
-          offerId: null,
+          deleteOfferId: r.deleteOfferId ?? null,
+          offerId: r.offerId,
           variantId,
           kind: nextKind,
           unitPrice: keptPrice,
@@ -496,6 +571,7 @@ export default function SuppliersOfferManager({
           isActive: keptIsActive,
           inStock: deriveInStock(keptIsActive, keptQty),
           leadDays: keptLead,
+          isBlank: false,
         };
       })
     );
@@ -514,7 +590,9 @@ export default function SuppliersOfferManager({
     try {
       // ✅ need supplier info from product
       const productPromise = apiFetchJson<any>(
-        `/api/admin/products/${encodeURIComponent(productId)}?include=variants,ProductVariant,productVariants,supplier`,
+        `/api/admin/products/${encodeURIComponent(
+          productId
+        )}?include=variants,ProductVariant,productVariants,supplier`,
         { signal: ac.signal }
       );
 
@@ -540,7 +618,11 @@ export default function SuppliersOfferManager({
         setVariants(extractVariantsFromProduct(p));
       }
 
-      const offersArr: OfferApi[] = Array.isArray(o) ? o : Array.isArray(o?.data) ? o.data : [];
+      const offersArr: OfferApi[] = Array.isArray(o)
+        ? o
+        : Array.isArray(o?.data)
+          ? o.data
+          : [];
       const filteredOffers = (offersArr || [])
         .filter((of) => String(of?.productId) === String(productId))
         .map((of) => ({ ...of, kind: deriveKindFromOffer(of) }));
@@ -575,7 +657,10 @@ export default function SuppliersOfferManager({
         const byKindVid = new Map<string, Row>();
         for (const br of backendRows) {
           if (br.offerId) byId.set(br.offerId, br);
-          byKindVid.set(`${br.kind}::${br.variantId ?? "__BASE__"}`, br);
+          byKindVid.set(
+            `${br.kind}::${br.variantId ?? "__BASE__"}`,
+            br
+          );
         }
 
         const usedIds = new Set<string>();
@@ -602,8 +687,11 @@ export default function SuppliersOfferManager({
             isActive: match.isActive,
             inStock: match.inStock,
             leadDays: match.leadDays,
+            hasOrders: match.hasOrders,
             deleteOfferId: r.deleteOfferId ?? null,
             rowKey: r.rowKey,
+            isBlank: false,
+            isNew: false,
           };
         });
 
@@ -618,7 +706,11 @@ export default function SuppliersOfferManager({
         return [...merged, ...tail];
       });
     } catch (e: any) {
-      if (e?.name === "AbortError" || String(e?.message || "").toLowerCase().includes("aborted")) return;
+      if (
+        e?.name === "AbortError" ||
+        String(e?.message || "").toLowerCase().includes("aborted")
+      )
+        return;
       setError(e?.message || "Failed to load supplier offers.");
     } finally {
       setLoading(false);
@@ -627,6 +719,7 @@ export default function SuppliersOfferManager({
 
   useEffect(() => {
     setIsEditingOffers(false);
+    setOpenRowKey(null);
   }, [productId]);
 
   useEffect(() => {
@@ -634,6 +727,13 @@ export default function SuppliersOfferManager({
     return () => abortRef.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productId]);
+
+  // Close any open dropdown when we start/stop editing or during save/load
+  useEffect(() => {
+    if (loading || saving || !isEditingOffers) {
+      setOpenRowKey(null);
+    }
+  }, [loading, saving, isEditingOffers]);
 
   function addRow() {
     const rowKey = `new-${Math.random().toString(16).slice(2)}`;
@@ -652,9 +752,13 @@ export default function SuppliersOfferManager({
       isActive: startIsActive,
       inStock: deriveInStock(startIsActive, startQty),
       leadDays: "",
+      hasOrders: false,
+      isBlank: true,
+      isNew: true,
     };
 
     setRows((prev) => [newRow, ...prev]);
+    setOpenRowKey(rowKey);
   }
 
   async function deleteRow(row: Row) {
@@ -665,10 +769,13 @@ export default function SuppliersOfferManager({
       return;
     }
 
-    const variantSku = row.variantId ? variantsById.get(row.variantId)?.sku : null;
+    const variantSku = row.variantId
+      ? variantsById.get(row.variantId)?.sku
+      : null;
 
     const ok = window.confirm(
-      `Delete this offer?\n\nSupplier: ${supplierName || supplierId || "—"}\nVariant: ${variantSku ?? "Base"}`
+      `Delete this offer?\n\nSupplier: ${supplierName || supplierId || "—"
+      }\nVariant: ${variantSku ?? "Base"}`
     );
     if (!ok) return;
 
@@ -676,7 +783,10 @@ export default function SuppliersOfferManager({
     setError("");
 
     try {
-      await apiFetchJson(`/api/admin/supplier-offers/${encodeURIComponent(row.offerId)}`, { method: "DELETE" });
+      await apiFetchJson(
+        `/api/admin/supplier-offers/${encodeURIComponent(row.offerId)}`,
+        { method: "DELETE" }
+      );
       await load();
       onSaved?.();
     } catch (e: any) {
@@ -693,6 +803,12 @@ export default function SuppliersOfferManager({
     setError("");
 
     try {
+      // Block saves if any row has not chosen base/variant
+      const blankRow = rows.find((r) => r.isBlank);
+      if (blankRow) {
+        throw new Error("Each row must pick base or a variant before saving.");
+      }
+
       const replacing = rows.find((r) => !!r.deleteOfferId);
       if (replacing) {
         throw new Error(
@@ -702,17 +818,25 @@ export default function SuppliersOfferManager({
       }
 
       const patchOffer = async (offerId: string, payload: any) => {
-        return apiFetchJson<any>(`/api/admin/supplier-offers/${encodeURIComponent(offerId)}`, {
-          method: "PATCH",
-          body: JSON.stringify(payload),
-        });
+        return apiFetchJson<any>(
+          `/api/admin/supplier-offers/${encodeURIComponent(offerId)}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          }
+        );
       };
 
       const postOffer = async (payload: any) => {
-        return apiFetchJson<any>(`/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`, {
-          method: "POST",
-          body: JSON.stringify(payload),
-        });
+        return apiFetchJson<any>(
+          `/api/admin/products/${encodeURIComponent(
+            productId
+          )}/supplier-offers`,
+          {
+            method: "POST",
+            body: JSON.stringify(payload),
+          }
+        );
       };
 
       const setOfferId = (rowKey: string, newOfferId: string | null) => {
@@ -723,6 +847,7 @@ export default function SuppliersOfferManager({
                 ...r,
                 offerId: newOfferId,
                 deleteOfferId: null,
+                isNew: newOfferId ? false : r.isNew,
               }
               : r
           )
@@ -737,12 +862,17 @@ export default function SuppliersOfferManager({
         if (price <= 0) throw new Error("Price must be greater than 0.");
 
         const leadDays =
-          r.leadDays === "" || r.leadDays == null ? null : Math.max(0, Math.trunc(Number(r.leadDays) || 0));
+          r.leadDays === "" || r.leadDays == null
+            ? null
+            : Math.max(0, Math.trunc(Number(r.leadDays) || 0));
+
+        const isVariantOfferId = r.offerId?.startsWith("variant:");
 
         if (r.variantId == null) {
-          // BASE (schema: no supplierId field)
+          // BASE in UI
           if (r.offerId) {
-            const payload = {
+            // If this row currently points to a VARIANT offer, tell backend to convert it
+            const payload: any = {
               price,
               currency: "NGN",
               availableQty: qty,
@@ -750,9 +880,22 @@ export default function SuppliersOfferManager({
               leadDays,
             };
 
-            await patchOffer(r.offerId, payload);
-            setOfferId(r.rowKey, r.offerId);
+            if (isVariantOfferId) {
+              // ✅ triggers VARIANT -> BASE conversion in the backend
+              payload.variantId = null;
+            }
+
+            const res = await patchOffer(r.offerId, payload);
+
+            // For conversions, backend responds with { ok, converted: true, from, to, data }
+            const maybeTo =
+              res && typeof res === "object" && "to" in res && (res as any).to
+                ? String((res as any).to)
+                : null;
+
+            setOfferId(r.rowKey, maybeTo ?? r.offerId);
           } else {
+            // New BASE offer
             const payload = {
               kind: "BASE" as const,
               variantId: null,
@@ -766,42 +909,8 @@ export default function SuppliersOfferManager({
             const out = await postOffer(payload);
             const dto = unwrap<any>(out);
             const createdId: string | null =
-              (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
-
-            setOfferId(r.rowKey, createdId);
-          }
-        } else {
-          // VARIANT (schema: no supplierId field)
-          const vid = sanitizeVariantId(r.variantId);
-          if (!vid) throw new Error("Each VARIANT row must have a valid variant selected.");
-
-          if (r.offerId) {
-            const payload = {
-              variantId: vid,
-              price,
-              currency: "NGN",
-              availableQty: qty,
-              isActive,
-              leadDays,
-            };
-
-            await patchOffer(r.offerId, payload);
-            setOfferId(r.rowKey, r.offerId);
-          } else {
-            const payload = {
-              kind: "VARIANT" as const,
-              variantId: vid,
-              price,
-              currency: "NGN",
-              availableQty: qty,
-              isActive,
-              leadDays,
-            };
-
-            const out = await postOffer(payload);
-            const dto = unwrap<any>(out);
-            const createdId: string | null =
-              (dto?.data?.id ? String(dto.data.id) : null) ?? (dto?.id ? String(dto.id) : null);
+              (dto?.data?.id ? String(dto.data.id) : null) ??
+              (dto?.id ? String(dto.id) : null);
 
             setOfferId(r.rowKey, createdId);
           }
@@ -814,6 +923,7 @@ export default function SuppliersOfferManager({
       setError(e?.message || "Save failed.");
     } finally {
       setSaving(false);
+      setOpenRowKey(null);
     }
   }
 
@@ -822,6 +932,8 @@ export default function SuppliersOfferManager({
     if (saving || loading) return "Busy";
     if (rows.length === 0) return "No rows";
     if (!supplierId) return "Product has no supplier";
+
+    if (rows.some((r) => r.isBlank)) return "Each row must pick base or variant";
 
     for (const r of rows) {
       if (r.variantId != null) {
@@ -834,13 +946,13 @@ export default function SuppliersOfferManager({
     }
 
     // only one BASE row
-    const baseRows = rows.filter((r) => r.variantId == null).length;
+    const baseRows = rows.filter((r) => !r.isBlank && r.variantId == null).length;
     if (baseRows > 1) return "Only one BASE offer is allowed for this product";
 
     // no duplicate variants
     const seen = new Set<string>();
     for (const r of rows) {
-      if (!r.variantId) continue;
+      if (!r.variantId || r.isBlank) continue;
       if (seen.has(r.variantId)) return "Duplicate variant rows";
       seen.add(r.variantId);
     }
@@ -870,7 +982,9 @@ export default function SuppliersOfferManager({
           <div className="text-lg font-semibold">Supplier offers</div>
           <div className="text-sm text-slate-500">
             Offers for this product’s single supplier.
-            {productTitle ? <span className="ml-2 text-slate-400">({productTitle})</span> : null}
+            {productTitle ? (
+              <span className="ml-2 text-slate-400">({productTitle})</span>
+            ) : null}
           </div>
           <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
@@ -919,14 +1033,18 @@ export default function SuppliersOfferManager({
       </div>
 
       {error ? (
-        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+        <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {error}
+        </div>
       ) : null}
 
       <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200">
         <table className="min-w-[1300px] w-full border-collapse text-sm">
           <thead className="bg-slate-50 text-slate-700">
             <tr>
-              <th className="px-3 py-2 text-left font-semibold w-[900px]">Variant</th>
+              <th className="px-3 py-2 text-left font-semibold w-[900px]">
+                Variant
+              </th>
               <th className="px-3 py-2 text-left font-semibold">Price</th>
               <th className="px-3 py-2 text-left font-semibold">Available</th>
               <th className="px-3 py-2 text-left font-semibold">Active</th>
@@ -939,20 +1057,34 @@ export default function SuppliersOfferManager({
             {rows.length === 0 ? (
               <tr>
                 <td className="px-3 py-6 text-slate-500" colSpan={6}>
-                  {loading ? "Loading..." : "No offers yet. Click Add row to create one."}
+                  {loading
+                    ? "Loading..."
+                    : "No offers yet. Click Add row to create one."}
                 </td>
               </tr>
             ) : (
               rows.map((r) => {
                 const baseDisabled = hasOtherBaseRow(r.rowKey);
 
+                // variants that are not already used in other non-blank rows
                 const variantChoices = variants.filter((v) => {
                   if (r.variantId === v.id) return true;
                   return !isVariantUsedElsewhere(v.id, r.rowKey);
                 });
 
                 const items: VariantItem[] = [
-                  ...(baseDisabled ? [] : [{ kind: "BASE" as const, label: "— None (base offer) —" }]),
+                  {
+                    kind: "BLANK" as const,
+                    label: "— Blank (free / temporary) —",
+                  },
+                  ...(baseDisabled
+                    ? []
+                    : [
+                      {
+                        kind: "BASE" as const,
+                        label: "— None (base offer) —",
+                      },
+                    ]),
                   ...variantChoices.map((v) => ({
                     kind: "VARIANT" as const,
                     v,
@@ -961,21 +1093,27 @@ export default function SuppliersOfferManager({
                 ];
 
                 const priceNum = safeNum(r.unitPrice, 0);
-                const priceInputValue: string = priceNum <= 0 ? "" : String(priceNum);
+                const priceInputValue: string =
+                  priceNum <= 0 ? "" : String(priceNum);
+
+                const comboHasError =
+                  canEdit && !!r.isNew && !r.offerId; // 🔴 red border until first successful save
 
                 return (
                   <tr key={r.rowKey} className="border-t border-slate-200">
                     {/* Variant */}
                     <td className="px-3 py-2 w-[900px] min-w-[720px]">
                       <VariantComboBox
-                        disabled={saving || !canEdit}
+                        disabled={saving || !canEdit || r.hasOrders}
                         valueVariantId={r.variantId}
                         items={items}
                         onSelectBase={() => {
                           if (r.variantId == null) return;
 
                           if (hasOtherBaseRow(r.rowKey)) {
-                            setError("A BASE offer already exists. You can’t add another base row.");
+                            setError(
+                              "A BASE offer already exists. You can’t add another base row."
+                            );
                             return;
                           }
                           snapRowToVariant(r.rowKey, null);
@@ -990,10 +1128,41 @@ export default function SuppliersOfferManager({
 
                           snapRowToVariant(r.rowKey, vid);
                         }}
+                        onSelectBlank={() => {
+                          if (!canEdit) return;
+                          setRows((prev) =>
+                            prev.map((x) =>
+                              x.rowKey === r.rowKey
+                                ? {
+                                  ...x,
+                                  isBlank: true,
+                                  variantId: null,
+                                }
+                                : x
+                            )
+                          );
+                        }}
+                        placeholder="Select base or variant…"
+                        isBlank={!!r.isBlank}
+                        hasError={comboHasError}
+                        isOpen={openRowKey === r.rowKey}
+                        onRequestOpen={() => setOpenRowKey(r.rowKey)}
+                        onRequestClose={() => {
+                          if (openRowKey === r.rowKey) setOpenRowKey(null);
+                        }}
                       />
 
                       {baseDisabled ? (
-                        <div className="mt-1 text-[11px] text-slate-400">BASE offer already exists.</div>
+                        <div className="mt-1 text-[11px] text-slate-400">
+                          BASE offer already exists.
+                        </div>
+                      ) : null}
+
+                      {r.hasOrders ? (
+                        <div className="mt-1 text-[11px] text-amber-700">
+                          This offer has existing orders. Variant selection is
+                          locked.
+                        </div>
                       ) : null}
 
                       {canEdit && r.deleteOfferId ? (
@@ -1015,21 +1184,35 @@ export default function SuppliersOfferManager({
                           const next = raw === "" ? 0 : safeNum(raw, 0);
 
                           setRows((prev) =>
-                            prev.map((x) => (x.rowKey === r.rowKey ? { ...x, unitPrice: Math.max(0, next) } : x))
+                            prev.map((x) =>
+                              x.rowKey === r.rowKey
+                                ? { ...x, unitPrice: Math.max(0, next) }
+                                : x
+                            )
                           );
                         }}
                         onBlur={() => {
                           if (safeNum(r.unitPrice, 0) < 0) {
-                            setRows((prev) => prev.map((x) => (x.rowKey === r.rowKey ? { ...x, unitPrice: 0 } : x)));
+                            setRows((prev) =>
+                              prev.map((x) =>
+                                x.rowKey === r.rowKey
+                                  ? { ...x, unitPrice: 0 }
+                                  : x
+                              )
+                            );
                           }
                         }}
                         disabled={saving || !canEdit}
                       />
 
                       {priceNum > 0 ? (
-                        <div className="mt-1 text-xs text-slate-500">{formatNgn(priceNum)}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          {formatNgn(priceNum)}
+                        </div>
                       ) : (
-                        <div className="mt-1 text-xs text-slate-400">Enter price</div>
+                        <div className="mt-1 text-xs text-slate-400">
+                          Enter price
+                        </div>
                       )}
                     </td>
 
@@ -1045,12 +1228,24 @@ export default function SuppliersOfferManager({
                         onChange={(e) => {
                           const raw = e.target.value;
                           const n = raw === "" ? 0 : safeNum(raw, 0);
-                          const v = Math.max(0, Math.trunc(Number(n) || 0));
-                          const nextInStock = deriveInStock(!!r.isActive, v);
+                          const v = Math.max(
+                            0,
+                            Math.trunc(Number(n) || 0)
+                          );
+                          const nextInStock = deriveInStock(
+                            !!r.isActive,
+                            v
+                          );
 
                           setRows((prev) =>
                             prev.map((x) =>
-                              x.rowKey === r.rowKey ? { ...x, availableQty: v, inStock: nextInStock } : x
+                              x.rowKey === r.rowKey
+                                ? {
+                                  ...x,
+                                  availableQty: v,
+                                  inStock: nextInStock,
+                                }
+                                : x
                             )
                           );
                         }}
@@ -1065,11 +1260,20 @@ export default function SuppliersOfferManager({
                         checked={r.isActive}
                         onChange={(e) => {
                           const checked = e.target.checked;
-                          const nextInStock = deriveInStock(checked, r.availableQty);
+                          const nextInStock = deriveInStock(
+                            checked,
+                            r.availableQty
+                          );
 
                           setRows((prev) =>
                             prev.map((x) =>
-                              x.rowKey === r.rowKey ? { ...x, isActive: checked, inStock: nextInStock } : x
+                              x.rowKey === r.rowKey
+                                ? {
+                                  ...x,
+                                  isActive: checked,
+                                  inStock: nextInStock,
+                                }
+                                : x
                             )
                           );
                         }}
@@ -1084,8 +1288,17 @@ export default function SuppliersOfferManager({
                         className="w-[120px] rounded-xl border border-slate-300 px-3 py-2 text-right"
                         value={r.leadDays ?? ""}
                         onChange={(e) => {
-                          const v = e.target.value === "" ? "" : safeNum(e.target.value, 0);
-                          setRows((prev) => prev.map((x) => (x.rowKey === r.rowKey ? { ...x, leadDays: v } : x)));
+                          const v =
+                            e.target.value === ""
+                              ? ""
+                              : safeNum(e.target.value, 0);
+                          setRows((prev) =>
+                            prev.map((x) =>
+                              x.rowKey === r.rowKey
+                                ? { ...x, leadDays: v }
+                                : x
+                            )
+                          );
                         }}
                         disabled={saving || !canEdit}
                       />
@@ -1098,10 +1311,16 @@ export default function SuppliersOfferManager({
                           type="button"
                           onClick={() => deleteRow(r)}
                           className="rounded-xl border border-red-300 bg-white px-3 py-2 text-sm text-red-700 hover:bg-red-50 disabled:opacity-60"
-                          disabled={saving || !canEdit}
+                          disabled={saving || !canEdit || r.hasOrders}
                         >
                           Delete
                         </button>
+
+                        {r.hasOrders && (
+                          <div className="mt-1 text-[11px] text-amber-700">
+                            Locked because this offer has been used in orders.
+                          </div>
+                        )}
                       </td>
                     ) : (
                       <td className="px-3 py-2 text-slate-400">—</td>
@@ -1126,7 +1345,11 @@ export default function SuppliersOfferManager({
           </button>
 
           <div className="flex items-center gap-3">
-            {saveDisabledReason ? <div className="text-xs text-slate-500">{saveDisabledReason}</div> : null}
+            {saveDisabledReason ? (
+              <div className="text-xs text-slate-500">
+                {saveDisabledReason}
+              </div>
+            ) : null}
 
             <button
               type="button"
