@@ -474,15 +474,18 @@ function extractMarginPercent(s: PublicSettings | null | undefined): number {
 }
 
 function extractShippingEnabled(s: PublicSettings | null | undefined): boolean {
-  if (!s) return true; // default ON
-  const v: any = (s as any).shippingEnabled;
-  if (v === undefined || v === null || v === "") return true;
+  // Default: OFF unless explicitly enabled in settings
+  const v: any = s && (s as any).shippingEnabled;
+
+  if (v === undefined || v === null || v === "") return false;
   if (typeof v === "boolean") return v;
 
   const str = String(v).trim().toLowerCase();
   if (["1", "true", "yes", "on", "enabled"].includes(str)) return true;
   if (["0", "false", "no", "off", "disabled"].includes(str)) return false;
-  return true;
+
+  // Unknown value → be safe and treat as OFF
+  return false;
 }
 
 function extractShippingMode(s: PublicSettings | null | undefined): "DELIVERY" | "PICKUP_ONLY" {
