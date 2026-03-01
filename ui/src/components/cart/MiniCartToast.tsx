@@ -4,7 +4,6 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { ShoppingCart, X } from "lucide-react";
 
-
 type ToastMode = "add" | "remove";
 
 type ToastOpts = {
@@ -14,8 +13,8 @@ type ToastOpts = {
   mode?: ToastMode; // ✅ NEW
 };
 
-
 type MiniCartOption = { attribute?: string; value?: string };
+
 export type MiniCartRow = {
   productId: string;
   variantId?: string | null;
@@ -31,9 +30,18 @@ export type MiniCartRow = {
 type ToastFocus = { productId: string; variantId?: string | null };
 
 type ToastPayload = {
+  /**
+   * Full cart snapshot (e.g. server cart) – will be used as the base.
+   */
   cart?: MiniCartRow[];
-  // allow older/alternate shapes too (defensive)
+  /**
+   * Additional rows (e.g. just-added items). These are *appended* to `cart`
+   * when present so the toast shows server + new items.
+   */
   items?: MiniCartRow[];
+  /**
+   * Alias / legacy shape – also appended.
+   */
   rows?: MiniCartRow[];
 
   focus?: ToastFocus | null;
@@ -42,14 +50,42 @@ type ToastPayload = {
 
 const EVENT = "mini-cart-toast:v1";
 
+/* ----------------------------------------------------------------------------
+ * Public API: showMiniCartToast
+ *
+ * 1) Legacy usage (still works):
+ *    showMiniCartToast(cartRows, { productId, variantId }, opts)
+ *
+ * 2) New usage (server + additions merged in the toast):
+ *    showMiniCartToast({
+ *      cart: serverCartRows,
+ *      items: addedRows,   // or `rows`
+ *      focus: { productId, variantId },
+ *      opts: { ... },
+ *    });
+ * -------------------------------------------------------------------------- */
+export function showMiniCartToast(payload: ToastPayload): void;
 export function showMiniCartToast(
   cart: MiniCartRow[],
-  focus: ToastFocus,
+  focus?: ToastFocus | null,
   opts?: ToastOpts
-) {
+): void;
+export function showMiniCartToast(
+  arg1: MiniCartRow[] | ToastPayload,
+  arg2?: ToastFocus | null,
+  arg3?: ToastOpts
+): void {
   try {
+    const detail: ToastPayload = Array.isArray(arg1)
+      ? {
+          cart: arg1,
+          focus: arg2 ?? undefined,
+          opts: arg3,
+        }
+      : arg1;
+
     window.dispatchEvent(
-      new CustomEvent<ToastPayload>(EVENT, { detail: { cart, focus, opts } })
+      new CustomEvent<ToastPayload>(EVENT, { detail })
     );
   } catch {
     // never block add-to-cart
@@ -74,21 +110,33 @@ function money(n: any) {
   return Number.isFinite(v) ? v : 0;
 }
 
+/* ----------------------------------------------------------------------------
+ * Normalize event payload: merge server cart + added rows
+ * -------------------------------------------------------------------------- */
 function normalizePayload(d: ToastPayload | null | undefined) {
-  const cart =
-    (Array.isArray(d?.cart) && d?.cart) ||
-    (Array.isArray(d?.items) && d?.items) ||
-    (Array.isArray(d?.rows) && d?.rows) ||
-    [];
+  const base: MiniCartRow[] = Array.isArray(d?.cart) ? d!.cart : [];
+  const extras: MiniCartRow[] = [];
+
+  if (Array.isArray(d?.items)) extras.push(...d!.items);
+  if (Array.isArray(d?.rows)) extras.push(...d!.rows);
+
+  const cart: MiniCartRow[] = [...base, ...extras];
 
   // If focus is missing, derive from the most recent cart row (last item)
   const last = cart.length ? cart[cart.length - 1] : null;
+
   const focus: ToastFocus | null =
     d?.focus && typeof d.focus === "object" && (d.focus as any).productId
-      ? { productId: String((d.focus as any).productId), variantId: (d.focus as any).variantId ?? null }
+      ? {
+          productId: String((d.focus as any).productId),
+          variantId: (d.focus as any).variantId ?? null,
+        }
       : last?.productId
-        ? { productId: String(last.productId), variantId: last.variantId ?? null }
-        : null;
+      ? {
+          productId: String(last.productId),
+          variantId: last.variantId ?? null,
+        }
+      : null;
 
   return { cart, focus, opts: d?.opts };
 }
@@ -104,7 +152,7 @@ export default function MiniCartToastHost() {
   const timerRef = React.useRef<number | null>(null);
 
   const stopTimer = React.useCallback(() => {
-    if (timerRef.current) {
+    if (timerRef.current != null) {
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
     }
@@ -118,43 +166,29 @@ export default function MiniCartToastHost() {
   React.useEffect(() => {
     const onToast = (e: Event) => {
       const ce = e as CustomEvent<any>;
-      const d = ce.detail as any;
+      const { cart, focus, opts } = normalizePayload(
+        ce.detail as ToastPayload
+      );
 
-      // ✅ normalize incoming payload (prevents TS issues)
-      const cart: MiniCartRow[] = Array.isArray(d?.cart) ? (d.cart as MiniCartRow[]) : [];
-      const focus: ToastFocus | null =
-        d?.focus && typeof d.focus.productId === "string"
-          ? (d.focus as ToastFocus)
-          : null;
-      const opts: ToastOpts | undefined = d?.opts;
-
-      // ✅ if cart is empty, close immediately (your requirement)
-      if (cart.length === 0) {
+      // ✅ if merged cart is empty, close immediately
+      if (!cart.length) {
         setOpen(false);
         setPayload(null);
-        if (timerRef.current) {
-          window.clearTimeout(timerRef.current);
-          timerRef.current = null;
-        }
+        stopTimer();
         return;
       }
 
       setPayload({ cart, focus, opts });
       setOpen(true);
 
-      if (timerRef.current) window.clearTimeout(timerRef.current);
-
-      // ✅ default auto-close after 5 seconds
+      stopTimer();
       const duration = Math.max(800, Number(opts?.duration ?? 5000));
       timerRef.current = window.setTimeout(() => setOpen(false), duration);
     };
 
     window.addEventListener(EVENT, onToast as any);
     return () => window.removeEventListener(EVENT, onToast as any);
-  }, []);
-
-
-
+  }, [stopTimer]);
 
   const node = React.useMemo(() => {
     if (typeof document === "undefined") return null;
@@ -171,14 +205,19 @@ export default function MiniCartToastHost() {
   const maxItems = Math.max(1, Number(payload.opts?.maxItems ?? 4));
   const items = clampCart(payload.cart, maxItems);
 
+  // ✅ total quantity from *merged* cart (server + additions)
   const totalQty = (payload.cart || []).reduce(
     (s, x) => s + Math.max(0, Number(x?.qty) || 0),
     0
   );
 
-  const focusPid = payload.focus?.productId ? String(payload.focus.productId) : null;
+  const focusPid = payload.focus?.productId
+    ? String(payload.focus.productId)
+    : null;
   const focusVid =
-    payload.focus?.variantId !== undefined ? String(payload.focus.variantId ?? null) : null;
+    payload.focus?.variantId !== undefined
+      ? String(payload.focus.variantId ?? null)
+      : null;
 
   return createPortal(
     <div
@@ -186,16 +225,17 @@ export default function MiniCartToastHost() {
       aria-live="polite"
       aria-atomic="true"
     >
-
       <div
-        className={`pointer-events-auto w-[92vw] max-w-[420px] rounded-2xl border bg-white shadow-2xl overflow-hidden transition-all duration-200 ${open ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"
-          }`}
+        className={`pointer-events-auto w-[92vw] max-w-[420px] rounded-2xl border bg-white shadow-2xl overflow-hidden transition-all duration-200 ${
+          open ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"
+        }`}
       >
         <div
-          className={`p-4 border-b text-white ${mode === "remove"
-            ? "bg-gradient-to-r from-zinc-800 to-zinc-700"
-            : "bg-gradient-to-r from-fuchsia-600 to-pink-600"
-            }`}
+          className={`p-4 border-b text-white ${
+            mode === "remove"
+              ? "bg-gradient-to-r from-zinc-800 to-zinc-700"
+              : "bg-gradient-to-r from-fuchsia-600 to-pink-600"
+          }`}
         >
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -203,7 +243,9 @@ export default function MiniCartToastHost() {
                 <ShoppingCart size={18} />
                 <div className="font-semibold">{title}</div>
               </div>
-              <div className="text-xs text-white/90 mt-1">Cart items: {totalQty}</div>
+              <div className="text-xs text-white/90 mt-1">
+                Cart items: {totalQty}
+              </div>
             </div>
 
             <button
@@ -227,14 +269,17 @@ export default function MiniCartToastHost() {
               const isFocus =
                 !!payload.focus &&
                 String(it.productId) === String(payload.focus.productId) &&
-                String(it.variantId ?? null) === String(payload.focus.variantId ?? null);
-
+                String(it.variantId ?? null) ===
+                  String(payload.focus.variantId ?? null);
 
               return (
                 <div
                   key={`${it.productId}:${it.variantId ?? "base"}:${idx}`}
-                  className={`flex gap-3 rounded-xl border p-3 ${isFocus ? "border-fuchsia-400 bg-fuchsia-50/50" : "bg-white"
-                    }`}
+                  className={`flex gap-3 rounded-xl border p-3 ${
+                    isFocus
+                      ? "border-fuchsia-400 bg-fuchsia-50/50"
+                      : "bg-white"
+                  }`}
                 >
                   <img
                     src={img}
@@ -244,21 +289,33 @@ export default function MiniCartToastHost() {
                   />
 
                   <div className="min-w-0 flex-1">
-                    <div className="text-sm font-semibold truncate">{it.title || "Item"}</div>
+                    <div className="text-sm font-semibold truncate">
+                      {it.title || "Item"}
+                    </div>
 
-                    {Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0 && (
-                      <div className="text-[11px] text-zinc-600 mt-0.5 line-clamp-1">
-                        {it.selectedOptions
-                          .filter(Boolean)
-                          .map((o) => `${o.attribute ?? ""}${o.value ? `: ${o.value}` : ""}`)
-                          .filter((s) => s.trim())
-                          .join(" • ")}
-                      </div>
-                    )}
+                    {Array.isArray(it.selectedOptions) &&
+                      it.selectedOptions.length > 0 && (
+                        <div className="text-[11px] text-zinc-600 mt-0.5 line-clamp-1">
+                          {it.selectedOptions
+                            .filter(Boolean)
+                            .map(
+                              (o) =>
+                                `${o.attribute ?? ""}${
+                                  o.value ? `: ${o.value}` : ""
+                                }`
+                            )
+                            .filter((s) => s.trim())
+                            .join(" • ")}
+                        </div>
+                      )}
 
                     <div className="mt-1 flex items-center justify-between">
-                      <div className="text-[11px] text-zinc-600">Qty: {it.qty}</div>
-                      <div className="text-sm font-semibold">{NGN.format(line)}</div>
+                      <div className="text-[11px] text-zinc-600">
+                        Qty: {it.qty}
+                      </div>
+                      <div className="text-sm font-semibold">
+                        {NGN.format(line)}
+                      </div>
                     </div>
                   </div>
                 </div>

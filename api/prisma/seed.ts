@@ -287,7 +287,7 @@ async function ensureSupplierUserAndSuppliers() {
   };
 
   // Main supplier (Lagos)
-  const mainName = "Seed Main Supplier";
+  const mainName = "Main Household Supplier";
   const mainAddrs = await makeSupplierAddresses(mainName, "Lagos", "Lagos", "Ikeja");
 
   const mainSupplier = await prisma.supplier.upsert({
@@ -302,7 +302,7 @@ async function ensureSupplierUserAndSuppliers() {
       registeredAddressId: mainAddrs.reg.id,
       pickupAddressId: mainAddrs.pickup.id,
 
-      pickupContactName: "Seed Main Dispatch",
+      pickupContactName: "Main Dispatch",
       pickupContactPhone: "+2348100000002",
       pickupInstructions: "Pickup between 9am and 5pm",
 
@@ -310,7 +310,7 @@ async function ensureSupplierUserAndSuppliers() {
       shipsNationwide: true,
       defaultLeadDays: 2,
       sameDayCutoffHour: 14,
-      handlingFee: toDec2(80), // reduced
+      handlingFee: toDec2(80),
 
       supportsDoorDelivery: true,
       supportsPickupPoint: chance(0.4),
@@ -329,7 +329,7 @@ async function ensureSupplierUserAndSuppliers() {
       registeredAddressId: mainAddrs.reg.id,
       pickupAddressId: mainAddrs.pickup.id,
 
-      pickupContactName: "Seed Main Dispatch",
+      pickupContactName: "Main Dispatch",
       pickupContactPhone: "+2348100000002",
       pickupInstructions: "Pickup between 9am and 5pm",
 
@@ -337,7 +337,7 @@ async function ensureSupplierUserAndSuppliers() {
       shipsNationwide: true,
       defaultLeadDays: 2,
       sameDayCutoffHour: 14,
-      handlingFee: toDec2(80), // reduced
+      handlingFee: toDec2(80),
 
       supportsDoorDelivery: true,
       supportsPickupPoint: chance(0.4),
@@ -350,28 +350,28 @@ async function ensureSupplierUserAndSuppliers() {
 
   const otherDefs = [
     {
-      name: "Seed Supplier A",
+      name: "City Electronics Hub",
       state: "Lagos",
       city: "Lagos",
       lga: "Surulere",
       type: "PHYSICAL" as const,
     },
     {
-      name: "Seed Supplier B",
+      name: "Comfort Home Store",
       state: "Oyo",
       city: "Ibadan",
       lga: "Ibadan North",
       type: "ONLINE" as const,
     },
     {
-      name: "Seed Supplier C",
+      name: "Rivers Kitchen Outlet",
       state: "Rivers",
       city: "Port Harcourt",
       lga: "Port Harcourt",
       type: "PHYSICAL" as const,
     },
     {
-      name: "Seed Supplier D",
+      name: "Abuja Essentials",
       state: "FCT",
       city: "Abuja",
       lga: "Abuja Municipal",
@@ -382,38 +382,28 @@ async function ensureSupplierUserAndSuppliers() {
   const others: { id: string; name: string }[] = [];
 
   for (const def of otherDefs) {
-    const addrs = await makeSupplierAddresses(
-      def.name,
-      def.state,
-      def.city,
-      def.lga
-    );
+    const addrs = await makeSupplierAddresses(def.name, def.state, def.city, def.lga);
 
     const s = await prisma.supplier.upsert({
       where: { name: def.name },
       update: {
         type: def.type,
         status: "ACTIVE",
-        contactEmail: `${def.name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "")}@example.com`,
+        contactEmail: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
         whatsappPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
 
         registeredAddressId: addrs.reg.id,
         pickupAddressId: addrs.pickup.id,
 
         pickupContactName: `${def.name} Dispatch`,
-        pickupContactPhone: `+23481${randInt(
-          0,
-          9
-        )}${randInt(10000000, 99999999)}`,
+        pickupContactPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
         pickupInstructions: "Pickup weekdays 9am–4pm",
 
         shippingEnabled: true,
         shipsNationwide: true,
         defaultLeadDays: randInt(1, 4),
         sameDayCutoffHour: 13,
-        handlingFee: toDec2(randInt(0, 150)), // reduced
+        handlingFee: toDec2(randInt(0, 150)),
 
         supportsDoorDelivery: true,
         supportsPickupPoint: chance(0.35),
@@ -422,26 +412,21 @@ async function ensureSupplierUserAndSuppliers() {
         name: def.name,
         type: def.type,
         status: "ACTIVE",
-        contactEmail: `${def.name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "")}@example.com`,
+        contactEmail: `${def.name.toLowerCase().replace(/[^a-z0-9]+/g, "")}@example.com`,
         whatsappPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
 
         registeredAddressId: addrs.reg.id,
         pickupAddressId: addrs.pickup.id,
 
         pickupContactName: `${def.name} Dispatch`,
-        pickupContactPhone: `+23481${randInt(
-          0,
-          9
-        )}${randInt(10000000, 99999999)}`,
+        pickupContactPhone: `+23481${randInt(0, 9)}${randInt(10000000, 99999999)}`,
         pickupInstructions: "Pickup weekdays 9am–4pm",
 
         shippingEnabled: true,
         shipsNationwide: true,
         defaultLeadDays: randInt(1, 4),
         sameDayCutoffHour: 13,
-        handlingFee: toDec2(randInt(0, 150)), // reduced
+        handlingFee: toDec2(randInt(0, 150)),
 
         supportsDoorDelivery: true,
         supportsPickupPoint: chance(0.35),
@@ -464,45 +449,50 @@ async function ensureSupplierUserAndSuppliers() {
   Categories + brands
 ---------------------------------------------------------------------------- */
 async function ensureCategories() {
-  const cat = await prisma.category.upsert({
-    where: { name: "Seed Category" },
-    update: { isActive: true },
-    create: {
-      name: "Seed Category",
-      slug: "seed-category",
-      isActive: true,
-      position: 1,
-    },
-    select: { id: true },
-  });
+  // ✅ More realistic household categories
+  const defs = [
+    { name: "Kitchen & Dining", slug: "kitchen-dining", position: 1 },
+    { name: "Home & Living", slug: "home-living", position: 2 },
+    { name: "Electronics", slug: "electronics", position: 3 },
+    { name: "Appliances", slug: "appliances", position: 4 },
+  ];
 
-  const cat2 = await prisma.category.upsert({
-    where: { name: "Seed Category 2" },
-    update: { isActive: true },
-    create: {
-      name: "Seed Category 2",
-      slug: "seed-category-2",
-      isActive: true,
-      position: 2,
-    },
-    select: { id: true },
-  });
+  const out: { id: string }[] = [];
 
-  return [cat, cat2];
+  for (const def of defs) {
+    const cat = await prisma.category.upsert({
+      where: { name: def.name },
+      update: {
+        slug: def.slug,
+        isActive: true,
+        position: def.position,
+      },
+      create: {
+        name: def.name,
+        slug: def.slug,
+        isActive: true,
+        position: def.position,
+      },
+      select: { id: true },
+    });
+    out.push(cat);
+  }
+
+  return out;
 }
 
 async function ensureBrands() {
   const names = [
-    "Seed Brand",
-    "Seed Brand Alpha",
-    "Seed Brand Beta",
-    "Seed Brand Gamma",
-    "Seed Brand Delta",
-    "Seed Brand Epsilon",
-    "Seed Brand Zeta",
-    "Seed Brand Omega",
-    "Seed Brand Nova",
-    "Seed Brand Prime",
+    "BrightHome",
+    "Urban Living",
+    "KitchenPro",
+    "SoundWave",
+    "ComfortWear",
+    "Daily Essentials",
+    "SmartHouse",
+    "FreshStart",
+    "PrimeTech",
+    "CozyCorner",
   ];
 
   const out: { id: string; name: string; slug: string }[] = [];
@@ -622,6 +612,9 @@ async function ensureProductAttributeOptions(
   productId: string,
   attrs: Awaited<ReturnType<typeof ensureAttributes>>
 ) {
+  // ✅ Ensure each base product has at least one attribute assigned (and we
+  // seed all the options for simplicity). Per-product uniqueness is enforced
+  // by the @@unique([productId, attributeId, valueId]) constraint.
   for (const a of attrs) {
     for (const v of a.values) {
       try {
@@ -629,7 +622,7 @@ async function ensureProductAttributeOptions(
           data: { productId, attributeId: a.attributeId, valueId: v.id },
         });
       } catch {
-        // ignore dupes
+        // ignore dupes from re-seeding
       }
     }
   }
@@ -778,6 +771,7 @@ async function createVariantsForProduct(args: {
   const want = randInt(3, 6);
   const chosen = pick(combos, want);
 
+  // ✅ ensure attribute combos are unique within the product
   const seen = new Set<string>();
   const chosenUnique = chosen.filter((x) => {
     const k = `${x.c}:${x.s}`;
@@ -807,7 +801,7 @@ async function createVariantsForProduct(args: {
         sku: vSku,
         retailPrice: toDec(variantRetail),
 
-        // ✅ Always set complete parcel data on variants (shipping-safe)
+        // ✅ Always set complete parcel data on variants
         weightGrams: override.weightGrams,
         lengthCm: override.lengthCm,
         widthCm: override.widthCm,
@@ -841,19 +835,16 @@ async function createVariantsForProduct(args: {
 ---------------------------------------------------------------------------- */
 
 function supplierBaseFromRetail(retail: number): Prisma.Decimal {
-  const pct = 0.5 + Math.random() * 0.25; // 50%–75% (more margin, bigger visible difference)
+  const pct = 0.5 + Math.random() * 0.25; // 50%–75%
   const val = Math.max(300, Math.round(retail * pct));
   return new Prisma.Decimal(val);
 }
 
-function supplierUnitPriceFromVariantRetail(
-  variantRetail: number
-): Prisma.Decimal {
+function supplierUnitPriceFromVariantRetail(variantRetail: number): Prisma.Decimal {
   const pct = 0.5 + Math.random() * 0.28; // 50%–78%
   const val = Math.max(300, Math.round(variantRetail * pct));
   return new Prisma.Decimal(val);
 }
-
 
 async function ensureBaseOfferForProduct(args: {
   productId: string;
@@ -864,7 +855,7 @@ async function ensureBaseOfferForProduct(args: {
 
   const availableQty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
 
-  // One base offer per (productId, supplierId)
+  // ✅ One base offer per (productId, supplierId)
   const existing = await prisma.supplierProductOffer.findFirst({
     where: { productId, supplierId },
     select: { id: true, availableQty: true, productId: true },
@@ -909,8 +900,9 @@ async function ensureVariantOffersForVariants(args: {
   productId: string;
   variants: { id: string; retailPrice: Prisma.Decimal | null }[];
   baseOfferId: string;
+  supplierId: string;
 }) {
-  const { productId, variants, baseOfferId } = args;
+  const { productId, variants, baseOfferId, supplierId } = args;
 
   for (const v of variants) {
     if (!chance(0.6)) continue;
@@ -920,11 +912,13 @@ async function ensureVariantOffersForVariants(args: {
 
     const qty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
 
+    // ✅ One variant offer per variant (unique on variantId)
     await prisma.supplierVariantOffer.upsert({
       where: { variantId: v.id },
       update: {
         productId,
         supplierProductOfferId: baseOfferId,
+        supplierId,
         unitPrice: supplierUnitPriceFromVariantRetail(vr),
         availableQty: qty,
         inStock: qty > 0,
@@ -936,6 +930,7 @@ async function ensureVariantOffersForVariants(args: {
         productId,
         variantId: v.id,
         supplierProductOfferId: baseOfferId,
+        supplierId,
         unitPrice: supplierUnitPriceFromVariantRetail(vr),
         availableQty: qty,
         inStock: qty > 0,
@@ -947,6 +942,7 @@ async function ensureVariantOffersForVariants(args: {
     });
   }
 
+  // ✅ recompute per-variant availability (sum of active offers)
   for (const v of variants) {
     const agg = await prisma.supplierVariantOffer.aggregate({
       _sum: { availableQty: true },
@@ -962,16 +958,15 @@ async function ensureVariantOffersForVariants(args: {
 }
 
 /**
- * ✅ Fixed: use findFirst (where uses productId, not unique)
+ * ✅ Use first active base + all variant offers to compute product availability
  */
 async function recomputeProductAvailability(productId: string) {
   const base = await prisma.supplierProductOffer.findFirst({
-    where: { productId },
-    select: { availableQty: true, isActive: true, inStock: true },
+    where: { productId, isActive: true, inStock: true },
+    select: { availableQty: true },
   });
 
-  const baseQty =
-    base?.isActive && base?.inStock ? Number(base.availableQty ?? 0) : 0;
+  const baseQty = base ? Number(base.availableQty ?? 0) : 0;
 
   const varAgg = await prisma.supplierVariantOffer.aggregate({
     _sum: { availableQty: true },
@@ -1028,7 +1023,7 @@ async function ensureShippingSetup() {
         "Cross River",
         "Delta",
         "Edo",
-        "Ebonyi", // ✅ added
+        "Ebonyi",
         "Enugu",
         "Imo",
         "Rivers",
@@ -1042,7 +1037,7 @@ async function ensureShippingSetup() {
       statesJson: [
         "FCT",
         "Abuja",
-        "Federal Capital Territory", // ✅ aliases
+        "Federal Capital Territory",
         "Kaduna",
         "Kano",
         "Plateau",
@@ -1066,7 +1061,6 @@ async function ensureShippingSetup() {
       lgasJson: null,
       priority: 40,
     },
-    // ✅ fallback to avoid misses during seeding/dev if state normalization is imperfect
     {
       code: "NIGERIA_FALLBACK",
       name: "Nigeria Fallback",
@@ -1116,7 +1110,6 @@ async function ensureShippingSetup() {
     { min: 10000, max: null },
   ];
 
-  // ✅ Reduced costs significantly vs your previous version
   const zonePricing: Record<
     string,
     { base: number; perKg: number; remote: number; fallback?: boolean }
@@ -1246,28 +1239,30 @@ async function ensureShippingSetup() {
 /* ----------------------------------------------------------------------------
   Product generation
 ---------------------------------------------------------------------------- */
+
+// ✅ Realistic household product titles (no "Seed" prefix)
 function baseTitlesPool() {
   return [
-    "Seed Kettle",
-    "Seed Headphones",
-    "Seed T-Shirt",
-    "Seed Sneakers",
-    "Seed Speaker",
-    "Seed Blender",
-    "Seed Wristwatch",
-    "Seed Backpack",
-    "Seed Phone Case",
-    "Seed Desk Lamp",
-    "Seed Water Bottle",
-    "Seed Power Bank",
-    "Seed Fan",
-    "Seed Toaster",
-    "Seed Mouse",
-    "Seed Keyboard",
-    "Seed Charger",
-    "Seed Router",
-    "Seed Extension Cable",
-    "Seed Mug",
+    "Electric Kettle",
+    "Wireless Headphones",
+    "Cotton T-Shirt",
+    "Running Sneakers",
+    "Bluetooth Speaker",
+    "Kitchen Blender",
+    "Analog Wristwatch",
+    "Laptop Backpack",
+    "Silicone Phone Case",
+    "Desk Lamp",
+    "Insulated Water Bottle",
+    "Power Bank",
+    "Standing Fan",
+    "2-Slice Toaster",
+    "Wireless Mouse",
+    "Mechanical Keyboard",
+    "USB Wall Charger",
+    "Wi-Fi Router",
+    "Extension Cable",
+    "Ceramic Coffee Mug",
   ];
 }
 
@@ -1283,13 +1278,9 @@ async function seedProducts(args: {
   const liveTargets = LIVE_PRODUCTS_TOTAL;
   const pendingTargets = PENDING_PRODUCTS_TOTAL;
 
-  log(
-    `Seeding ${liveTargets} LIVE products, ${pendingTargets} PENDING products…`
-  );
+  log(`Seeding ${liveTargets} LIVE products, ${pendingTargets} PENDING products…`);
   if (brands.length < 4)
-    throw new Error(
-      "Need at least 4 brands to satisfy 2–4 brands per base product."
-    );
+    throw new Error("Need at least 4 brands to satisfy 2–4 brands per base product.");
 
   const plan: Array<{
     status: "LIVE" | "PENDING";
@@ -1303,7 +1294,7 @@ async function seedProducts(args: {
   let liveCount = 0;
   let globalIndex = 1;
 
-  // ✅ Increased retail more aggressively for clearer difference vs shipping
+  // LIVE products across a mix of brands (no duplicate base per supplier)
   for (const t of titles) {
     if (liveCount >= liveTargets) break;
 
@@ -1313,8 +1304,8 @@ async function seedProducts(args: {
     for (const b of chosenBrands) {
       if (liveCount >= liveTargets) break;
 
-      const sku = `SEED-LIVE-${String(globalIndex).padStart(3, "0")}`;
-      const retail = 9000 + globalIndex * 450; // was much lower before
+      const sku = `LIVE-${String(globalIndex).padStart(3, "0")}`;
+      const retail = 9000 + globalIndex * 450;
 
       plan.push({ status: "LIVE", title: t, brandId: b.id, sku, retail });
 
@@ -1323,25 +1314,23 @@ async function seedProducts(args: {
     }
   }
 
+  // PENDING products — also realistic titles, just flagged pending
   for (let i = 1; i <= pendingTargets; i++) {
-    const title = `Seed Pending Product #${i}`;
+    const baseTitle = titles[(i - 1) % titles.length];
+    const title = `${baseTitle} (Pending Review)`;
     const b = brands[(i - 1) % brands.length];
-    const sku = `SEED-PEND-${String(i).padStart(3, "0")}`;
-    const retail = 6500 + i * 500; // increased
+    const sku = `PEND-${String(i).padStart(3, "0")}`;
+    const retail = 6500 + i * 500;
     plan.push({ status: "PENDING", title, brandId: b.id, sku, retail });
   }
 
+  // ✅ used to enforce "no duplicate base (title+brand) per supplier"
   const usedBySupplier = new Map<string, Set<string>>();
 
   for (const item of plan) {
     const categoryId = categories[randInt(0, categories.length - 1)].id;
 
-    const supplierId = pickSupplierForItem(
-      suppliers,
-      usedBySupplier,
-      item.title,
-      item.brandId
-    );
+    const supplierId = pickSupplierForItem(suppliers, usedBySupplier, item.title, item.brandId);
     const key = productKeyForSupplier(item.title, item.brandId);
     const set = usedBySupplier.get(supplierId) ?? new Set<string>();
     set.add(key);
@@ -1361,8 +1350,8 @@ async function seedProducts(args: {
             title: item.title,
             description:
               item.status === "LIVE"
-                ? "Seeded LIVE product for dev/testing."
-                : "Seeded PENDING product for dev/testing.",
+                ? "Live product seeded for development and testing."
+                : "Pending product seeded for development and testing.",
             retailPrice: toDec(item.retail),
             sku: item.sku,
             status: item.status,
@@ -1396,8 +1385,8 @@ async function seedProducts(args: {
             title: item.title,
             description:
               item.status === "LIVE"
-                ? "Seeded LIVE product for dev/testing."
-                : "Seeded PENDING product for dev/testing.",
+                ? "Live product seeded for development and testing."
+                : "Pending product seeded for development and testing.",
             retailPrice: toDec(item.retail),
             sku: item.sku,
             status: item.status,
@@ -1427,11 +1416,15 @@ async function seedProducts(args: {
           select: { id: true, sku: true },
         });
 
+    // ✅ Ensure EVERY base product has attributes assigned, even if it has no variants
+    await ensureProductAttributeOptions(product.id, attrs);
+
     const wantsVariants =
       item.status === "LIVE"
         ? chance(LIVE_VARIANT_FRACTION)
         : chance(PENDING_VARIANT_FRACTION);
 
+    // clear existing offers/variants for this product before re-seeding
     await prisma.supplierVariantOffer.deleteMany({
       where: { productId: product.id },
     });
@@ -1445,12 +1438,10 @@ async function seedProducts(args: {
     const baseOffer = await ensureBaseOfferForProduct({
       productId: product.id,
       retail: item.retail,
-      supplierId
+      supplierId,
     });
 
     if (wantsVariants) {
-      await ensureProductAttributeOptions(product.id, attrs);
-
       const variants = await createVariantsForProduct({
         productId: product.id,
         skuBase: item.sku,
@@ -1463,6 +1454,7 @@ async function seedProducts(args: {
         productId: product.id,
         variants,
         baseOfferId: baseOffer.id,
+        supplierId,
       });
     }
 

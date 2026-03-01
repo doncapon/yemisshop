@@ -520,7 +520,7 @@ export function ModerationGrid({ search, setSearch, onApprove, onInspect }: Mode
           const checkingOrders = hasOrdersQ.isLoading;
 
           // ✅ Approve only when: PUBLISHED + no orders + not currently checking
-          const disableApprove = !published || checkingOrders || ordersPresent;
+          const disableApprove = !published || checkingOrders;
 
           const approveTitle = checkingOrders
             ? "Checking orders…"

@@ -318,8 +318,8 @@ function usePurchasedCounts(enabledOverride = true) {
         const orders: any[] = Array.isArray((data as any)?.data)
           ? (data as any).data
           : Array.isArray(data)
-            ? (data as any)
-            : [];
+          ? (data as any)
+          : [];
 
         const map: Record<string, number> = {};
         for (const o of orders) {
@@ -335,7 +335,11 @@ function usePurchasedCounts(enabledOverride = true) {
 
         return map;
       } catch (e: any) {
-        console.error("usePurchasedCounts /api/orders/mine failed:", e?.response?.status, e?.response?.data || e?.message);
+        console.error(
+          "usePurchasedCounts /api/orders/mine failed:",
+          e?.response?.status,
+          e?.response?.data || e?.message
+        );
         return {};
       }
     },
@@ -591,8 +595,8 @@ export default function Catalog() {
       const raw: any[] = Array.isArray(data)
         ? data
         : Array.isArray((data as any)?.data)
-          ? (data as any).data
-          : [];
+        ? (data as any).data
+        : [];
 
       const list: Product[] = (raw || [])
         .filter((x) => x && x.id != null)
@@ -601,63 +605,63 @@ export default function Catalog() {
 
           const variants: Variant[] = Array.isArray(x.variants)
             ? x.variants.map((v: any) => {
-              const vRetail = v.retailPrice != null ? decToNumber(v.retailPrice) : null;
+                const vRetail = v.retailPrice != null ? decToNumber(v.retailPrice) : null;
 
-              const vOffers: SupplierOfferLite[] = Array.isArray(v.offers)
-                ? v.offers.map((o: any) => ({
-                  id: String(o.id),
-                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                  isActive: o.isActive === true,
-                  inStock: o.inStock === true,
-                  availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
-                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                  supplierRatingAvg:
-                    o.supplierRatingAvg != null
-                      ? decToNumber(o.supplierRatingAvg)
-                      : o.supplier?.ratingAvg != null
-                        ? decToNumber(o.supplier.ratingAvg)
-                        : null,
-                  supplierRatingCount:
-                    o.supplierRatingCount != null
-                      ? Number(o.supplierRatingCount)
-                      : o.supplier?.ratingCount != null
-                        ? Number(o.supplier.ratingCount)
-                        : null,
-                }))
-                : [];
+                const vOffers: SupplierOfferLite[] = Array.isArray(v.offers)
+                  ? v.offers.map((o: any) => ({
+                      id: String(o.id),
+                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                      isActive: o.isActive === true,
+                      inStock: o.inStock === true,
+                      availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                      unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                      supplierRatingAvg:
+                        o.supplierRatingAvg != null
+                          ? decToNumber(o.supplierRatingAvg)
+                          : o.supplier?.ratingAvg != null
+                          ? decToNumber(o.supplier.ratingAvg)
+                          : null,
+                      supplierRatingCount:
+                        o.supplierRatingCount != null
+                          ? Number(o.supplierRatingCount)
+                          : o.supplier?.ratingCount != null
+                          ? Number(o.supplier.ratingCount)
+                          : null,
+                    }))
+                  : [];
 
-              return {
-                id: String(v.id),
-                sku: v.sku ?? null,
-                retailPrice: vRetail,
-                inStock: v.inStock === true,
-                imagesJson: normalizeImages(v.imagesJson),
-                offers: vOffers,
-              };
-            })
+                return {
+                  id: String(v.id),
+                  sku: v.sku ?? null,
+                  retailPrice: vRetail,
+                  inStock: v.inStock === true,
+                  imagesJson: normalizeImages(v.imagesJson),
+                  offers: vOffers,
+                };
+              })
             : [];
 
           const baseOffers: SupplierOfferLite[] = Array.isArray(x.supplierProductOffers)
             ? x.supplierProductOffers.map((o: any) => ({
-              id: String(o.id),
-              supplierId: o.supplierId ?? o.supplier?.id ?? null,
-              isActive: o.isActive === true,
-              inStock: o.inStock === true,
-              availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
-              basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
-              supplierRatingAvg:
-                o.supplierRatingAvg != null
-                  ? decToNumber(o.supplierRatingAvg)
-                  : o.supplier?.ratingAvg != null
+                id: String(o.id),
+                supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                isActive: o.isActive === true,
+                inStock: o.inStock === true,
+                availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                supplierRatingAvg:
+                  o.supplierRatingAvg != null
+                    ? decToNumber(o.supplierRatingAvg)
+                    : o.supplier?.ratingAvg != null
                     ? decToNumber(o.supplier.ratingAvg)
                     : null,
-              supplierRatingCount:
-                o.supplierRatingCount != null
-                  ? Number(o.supplierRatingCount)
-                  : o.supplier?.ratingCount != null
+                supplierRatingCount:
+                  o.supplierRatingCount != null
+                    ? Number(o.supplierRatingCount)
+                    : o.supplier?.ratingCount != null
                     ? Number(o.supplier.ratingCount)
                     : null,
-            }))
+              }))
             : [];
 
           const catNameRaw = String(x.categoryName ?? x.category?.name ?? "").trim();
@@ -668,7 +672,9 @@ export default function Catalog() {
             title: String(x.title ?? ""),
             description: x.description ?? "",
             retailPrice,
-            commissionPctInt: Number.isFinite(Number(x.commissionPctInt)) ? Number(x.commissionPctInt) : null,
+            commissionPctInt: Number.isFinite(Number(x.commissionPctInt))
+              ? Number(x.commissionPctInt)
+              : null,
             inStock: x.inStock === true,
             imagesJson: normalizeImages(x.imagesJson),
             categoryId: x.categoryId ?? x.category?.id ?? null,
@@ -697,6 +703,8 @@ export default function Catalog() {
     queryKey: ["favorites", "mine"],
     enabled: !isSupplier && isAuthed,
     retry: (count, e: any) => (Number(e?.response?.status) === 401 ? false : count < 2),
+    refetchOnWindowFocus: true,
+    staleTime: 0,
     queryFn: async () => {
       const { data } = await api.get("/api/favorites/mine", { withCredentials: true });
       return new Set((data as any)?.productIds || []);
@@ -730,6 +738,10 @@ export default function Catalog() {
       if (ctx?.prev) qc.setQueryData(["favorites", "mine"], ctx.prev);
       openModal({ title: "Wishlist", message: "Could not update wishlist. Please try again." });
     },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["favorites"] });
+      window.dispatchEvent(new Event("wishlist:updated"));
+    },
   });
 
   /* ---------------- Filters/sort ---------------- */
@@ -744,7 +756,10 @@ export default function Catalog() {
     return prices.length ? Math.max(...prices) : 0;
   }, [products, settingsMarginPct]);
 
-  const PRICE_BUCKETS = useMemo(() => generateDynamicPriceBuckets(maxPriceSeen, 1_000), [maxPriceSeen]);
+  const PRICE_BUCKETS = useMemo(
+    () => generateDynamicPriceBuckets(maxPriceSeen, 1_000),
+    [maxPriceSeen]
+  );
 
   useEffect(() => {
     setSelectedBucketIdxs([]);
@@ -795,8 +810,10 @@ export default function Catalog() {
 
     const baseForCategoryCounts = baseByQuery.filter((p) => {
       const price = priceForFiltering(p);
-      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const brandOk = activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
+      const priceOk =
+        activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
+      const brandOk =
+        activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
       return priceOk && brandOk;
     });
 
@@ -815,8 +832,10 @@ export default function Catalog() {
 
     const baseForBrandCounts = baseByQuery.filter((p) => {
       const price = priceForFiltering(p);
-      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? "uncategorized");
+      const priceOk =
+        activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
+      const catOk =
+        activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? "uncategorized");
       return priceOk && catOk;
     });
 
@@ -834,13 +853,15 @@ export default function Catalog() {
     );
 
     const baseForPriceCounts = baseByQuery.filter((p) => {
-      const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? "uncategorized");
-      const brandOk = activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
+      const catOk =
+        activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? "uncategorized");
+      const brandOk =
+        activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
       return catOk && brandOk;
     });
 
-    const priceCounts = PRICE_BUCKETS.map((b) =>
-      baseForPriceCounts.filter((p) => inBucket(priceForFiltering(p), b)).length
+    const priceCounts = PRICE_BUCKETS.map(
+      (b) => baseForPriceCounts.filter((p) => inBucket(priceForFiltering(p), b)).length
     );
 
     const visiblePriceBuckets = PRICE_BUCKETS.map((b, i) => ({
@@ -851,9 +872,12 @@ export default function Catalog() {
 
     let filteredCore = baseByQuery.filter((p) => {
       const price = priceForFiltering(p);
-      const catOk = activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? "uncategorized");
-      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const brandOk = activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
+      const catOk =
+        activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? "uncategorized");
+      const priceOk =
+        activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
+      const brandOk =
+        activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
       return catOk && priceOk && brandOk;
     });
 
@@ -984,9 +1008,7 @@ export default function Catalog() {
   const markBroken = (key: string) => setBrokenImg((m) => (m[key] ? m : { ...m, [key]: true }));
 
   /* =========================================================
-     Add to cart — FIXED for guest + authed
-     ✅ Guest: ONLY cartModel storage
-     ✅ Authed: server update + local mirror via cartModel
+     Add to cart — guest + authed
 ========================================================= */
 
   const setCartQty = async (p: Product, nextQty: number) => {
@@ -1012,7 +1034,7 @@ export default function Catalog() {
           unitPriceCache,
         });
 
-        // ✅ local mirror so navbar updates instantly (same as guest)
+        // ✅ local mirror so navbar/minicart update instantly
         upsertCartLine({
           productId: String(p.id),
           variantId: null,
@@ -1042,7 +1064,7 @@ export default function Catalog() {
         variantId: null,
         kind: "BASE",
         optionsKey,
-        qty, // cartModel should remove if qty <= 0
+        qty,
         selectedOptions: [],
         titleSnapshot: p.title ?? null,
         imageSnapshot: primaryImg ?? null,
@@ -1062,26 +1084,7 @@ export default function Catalog() {
     }
   };
 
-  /* ---------------- Render guards ---------------- */
-
-  if (productsQ.isLoading)
-    return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <MotionCircleLoader label="Loading products…" />
-      </div>
-    );
-
-  if (productsQ.error)
-    return (
-      <>
-        <div className="flex min-h-[60vh] items-center justify-center">
-          <MotionCircleLoader label="Loading products…" />
-        </div>
-        <p className="p-6 text-center text-rose-600">We are sorry, we are having technical issues</p>
-      </>
-    );
-
-  /* ---------------- UI small helpers ---------------- */
+  /* ---------------- UI helpers ---------------- */
 
   const toggleCategory = (id: string) =>
     setSelectedCategories((curr) => (curr.includes(id) ? curr.filter((x) => x !== id) : [...curr, id]));
@@ -1104,14 +1107,39 @@ export default function Catalog() {
   );
 
   const anyActiveFilter =
-    selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly;
+    selectedCategories.length > 0 ||
+    selectedBucketIdxs.length > 0 ||
+    selectedBrands.length > 0 ||
+    !inStockOnly;
 
   const hasSearch = !!query.trim();
-  const tap = "touch-manipulation select-none [-webkit-tap-highlight-color:transparent]";
 
-  const stopTap = (e: any) => {
-    e.stopPropagation?.();
+  // 🔒 safer click-stopper for buttons inside cards
+  const stopTap = (e: React.MouseEvent | React.TouchEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
   };
+
+  /* ---------------- Render guards ---------------- */
+
+  if (productsQ.isLoading)
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <MotionCircleLoader label="Loading products…" />
+      </div>
+    );
+
+  if (productsQ.error)
+    return (
+      <>
+        <div className="flex min-h-[60vh] items-center justify-center">
+          <MotionCircleLoader label="Loading products…" />
+        </div>
+        <p className="p-6 text-center text-rose-600">
+          We are sorry, we are having technical issues
+        </p>
+      </>
+    );
 
   return (
     <SiteLayout>
@@ -1139,7 +1167,9 @@ export default function Catalog() {
           <div className="mx-auto max-w-7xl px-4 md:px-8 pt-3 pb-4 md:py-10">
             <div className="flex items-start justify-between gap-6">
               <div className="min-w-0">
-                <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-zinc-900">Discover Products</h1>
+                <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-zinc-900">
+                  Discover Products
+                </h1>
                 <p className="mt-2 text-sm md:text-base text-zinc-600">
                   Fresh picks, smart sorting, and instant search—tailored for you.
                 </p>
@@ -1191,7 +1221,11 @@ export default function Catalog() {
               <span className="rounded-full border bg-white/80 px-2.5 py-1 silver-border">
                 Sort:{" "}
                 <span className="font-semibold">
-                  {sortKey === "price-asc" ? "Low → High" : sortKey === "price-desc" ? "High → Low" : "Relevance"}
+                  {sortKey === "price-asc"
+                    ? "Low → High"
+                    : sortKey === "price-desc"
+                    ? "High → Low"
+                    : "Relevance"}
                 </span>
               </span>
             )}
@@ -1211,7 +1245,7 @@ export default function Catalog() {
           </div>
         )}
 
-        {/* Desktop search (above products) */}
+        {/* Desktop search */}
         <div className="hidden md:block mt-3 mb-4">
           <div className="relative max-w-2xl">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
@@ -1260,8 +1294,9 @@ export default function Catalog() {
                       <li key={p.id} className="mb-2 last:mb-0">
                         <button
                           type="button"
-                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
-                            }`}
+                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
+                            active ? "bg-black/5" : ""
+                          }`}
                           onClick={() => {
                             setShowSuggest(false);
                             nav(`/product/${p.id}`);
@@ -1299,7 +1334,6 @@ export default function Catalog() {
           </div>
         </div>
 
-        {/* Body */}
         {/* Body */}
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
           {/* Desktop left filters */}
@@ -1383,13 +1417,18 @@ export default function Catalog() {
                       <li key={c.id}>
                         <button
                           onClick={() => toggleCategory(c.id)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
-                            }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                            checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                          }`}
                         >
                           <span className="truncate">{c.name}</span>
-                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                          <span
+                            className={`ml-2 text-[11px] ${
+                              checked ? "text-white/90" : "text-zinc-600"
+                            }`}
+                          >
                             ({c.count})
                           </span>
                         </button>
@@ -1419,13 +1458,18 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
-                              }`}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                            }`}
                           >
                             <span className="truncate">{b.name}</span>
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            <span
+                              className={`ml-2 text-[11px] ${
+                                checked ? "text-white/90" : "text-zinc-600"
+                              }`}
+                            >
                               ({b.count})
                             </span>
                           </button>
@@ -1456,13 +1500,18 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
-                            }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                            checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                          }`}
                         >
                           <span>{bucket.label}</span>
-                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                          <span
+                            className={`ml-2 text-[11px] ${
+                              checked ? "text-white/90" : "text-zinc-600"
+                            }`}
+                          >
                             ({count})
                           </span>
                         </button>
@@ -1474,223 +1523,249 @@ export default function Catalog() {
             </div>
           </aside>
 
-
+          {/* Products grid */}
           <section className="mt-0 min-w-0">
             {sorted.length === 0 ? (
               <p className="text-sm text-zinc-600">No products match your filters.</p>
             ) : (
               <>
-                <div className="-mx-2 sm:mx-0 grid gap-1.5 sm:gap-3 md:gap-4 grid-cols-2 md:grid-cols-4">                  {pageItems.map((p) => {
-                  const fav = isFav(p.id);
-                  const bestPrice = priceForFiltering(p);
+                <div className="-mx-2 sm:mx-0 grid gap-1.5 sm:gap-3 md:gap-4 grid-cols-2 md:grid-cols-4">
+                  {pageItems.map((p) => {
+                    const fav = isFav(p.id);
+                    const bestPrice = priceForFiltering(p);
 
-                  const primaryImgRaw =
-                    p.imagesJson?.[0] ||
-                    p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
-                    undefined;
+                    const primaryImgRaw =
+                      p.imagesJson?.[0] ||
+                      p.variants?.find(
+                        (v) => Array.isArray(v.imagesJson) && v.imagesJson[0]
+                      )?.imagesJson?.[0] ||
+                      undefined;
 
-                  const hoverImgRaw =
-                    p.imagesJson?.[1] ||
-                    p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[1])?.imagesJson?.[1] ||
-                    undefined;
+                    const hoverImgRaw =
+                      p.imagesJson?.[1] ||
+                      p.variants?.find(
+                        (v) => Array.isArray(v.imagesJson) && v.imagesJson[1]
+                      )?.imagesJson?.[1] ||
+                      undefined;
 
-                  const primaryImg = resolveImageUrl(primaryImgRaw);
-                  const hoverImg = resolveImageUrl(hoverImgRaw);
-                  const hasDifferentHover = !!hoverImg && hoverImg !== primaryImg;
+                    const primaryImg = resolveImageUrl(primaryImgRaw);
+                    const hoverImg = resolveImageUrl(hoverImgRaw);
+                    const hasDifferentHover = !!hoverImg && hoverImg !== primaryImg;
 
-                  const needsOptions = Array.isArray(p.variants) && p.variants.length > 0;
+                    const needsOptions = Array.isArray(p.variants) && p.variants.length > 0;
 
-                  const allOffers = collectAllOffers(p);
-                  const totalAvail = sumActivePositiveQty(allOffers) || null;
+                    const allOffers = collectAllOffers(p);
+                    const totalAvail = sumActivePositiveQty(allOffers) || null;
 
-                  const inCart = qtyInCart(cartSnapshot as any, p.id, null);
-                  const remaining = totalAvail == null ? null : Math.max(0, totalAvail - inCart);
+                    const inCart = qtyInCart(cartSnapshot as any, p.id, null);
+                    const remaining = totalAvail == null ? null : Math.max(0, totalAvail - inCart);
 
-                  const allowQuickAdd = productSellable(p, settingsMarginPct) && !needsOptions;
-                  const currentQty = inCart;
-                  const canIncrement = remaining == null ? allowQuickAdd : remaining > 0;
+                    const allowQuickAdd = productSellable(p, settingsMarginPct) && !needsOptions;
+                    const currentQty = inCart;
+                    const canIncrement = remaining == null ? allowQuickAdd : remaining > 0;
 
-                  const available = availableNow(p);
-                  const live = isLive(p);
+                    const available = availableNow(p);
+                    const live = isLive(p);
 
-                  const badge = !live
-                    ? { text: "Pending approval", cls: "bg-amber-600/10 text-amber-700 border border-amber-600/20" }
-                    : available
-                      ? { text: "In stock", cls: "bg-emerald-600/10 text-emerald-700 border border-emerald-600/20" }
-                      : { text: "Out of stock", cls: "bg-rose-600/10 text-rose-700 border border-rose-600/20" };
+                    const badge = !live
+                      ? {
+                          text: "Pending approval",
+                          cls: "bg-amber-600/10 text-amber-700 border border-amber-600/20",
+                        }
+                      : available
+                      ? {
+                          text: "In stock",
+                          cls: "bg-emerald-600/10 text-emerald-700 border border-emerald-600/20",
+                        }
+                      : {
+                          text: "Out of stock",
+                          cls: "bg-rose-600/10 text-rose-700 border border-rose-600/20",
+                        };
 
-                  return (
-                    <motion.article
-                      key={p.id}
-                      whileHover={{ y: -3 }}
-                      className="group w-full rounded-2xl bg-white/90 backdrop-blur overflow-hidden silver-border-grad silver-hover"
-                    >
-                      <Link to={`/product/${p.id}`} className="block">
-                        <div className="relative w-full h-28 sm:h-36 md:h-40 overflow-hidden">
-                          <div className="absolute inset-0 grid place-items-center text-zinc-400 text-xs">No image</div>
+                    return (
+                      <motion.article
+                        key={p.id}
+                        whileHover={{ y: -3 }}
+                        className="group w-full rounded-2xl bg-white/90 backdrop-blur overflow-hidden silver-border-grad silver-hover"
+                      >
+                        <Link to={`/product/${p.id}`} className="block">
+                          <div className="relative w-full h-28 sm:h-36 md:h-40 overflow-hidden">
+                            <div className="absolute inset-0 grid place-items-center text-zinc-400 text-xs">
+                              No image
+                            </div>
 
-                          {primaryImg && !brokenImg[`p:${p.id}:${primaryImg}`] ? (
-                            <>
-                              <img
-                                key={`primary-${p.id}-${primaryImg}`}
-                                src={primaryImg}
-                                alt=""
-                                loading="lazy"
-                                onError={() => markBroken(`p:${p.id}:${primaryImg}`)}
-                                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${hasDifferentHover ? "opacity-100 group-hover:opacity-0" : "opacity-100"
-                                  }`}
-                              />
-
-                              {hasDifferentHover && hoverImg && !brokenImg[`h:${p.id}:${hoverImg}`] && (
+                            {primaryImg && !brokenImg[`p:${p.id}:${primaryImg}`] ? (
+                              <>
                                 <img
-                                  key={`hover-${p.id}-${hoverImg}`}
-                                  src={hoverImg}
+                                  key={`primary-${p.id}-${primaryImg}`}
+                                  src={primaryImg}
                                   alt=""
                                   loading="lazy"
-                                  onError={() => markBroken(`h:${p.id}:${hoverImg}`)}
-                                  className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300 opacity-0 group-hover:opacity-100"
+                                  onError={() => markBroken(`p:${p.id}:${primaryImg}`)}
+                                  className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
+                                    hasDifferentHover
+                                      ? "opacity-100 group-hover:opacity-0"
+                                      : "opacity-100"
+                                  }`}
                                 />
-                              )}
-                            </>
-                          ) : null}
 
-                          <div className="absolute left-2 top-2">
-                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] ${badge.cls}`}>
-                              {badge.text}
-                            </span>
-                          </div>
-                        </div>
-                      </Link>
+                                {hasDifferentHover &&
+                                  hoverImg &&
+                                  !brokenImg[`h:${p.id}:${hoverImg}`] && (
+                                    <img
+                                      key={`hover-${p.id}-${hoverImg}`}
+                                      src={hoverImg}
+                                      alt=""
+                                      loading="lazy"
+                                      onError={() => markBroken(`h:${p.id}:${hoverImg}`)}
+                                      className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300 opacity-0 group-hover:opacity-100"
+                                    />
+                                  )}
+                              </>
+                            ) : null}
 
-                      <div className="p-2.5 md:p-4">
-                        <Link to={`/product/${p.id}`} className="block">
-                          <h3 className="font-semibold text-[12px] md:text-sm leading-tight text-zinc-900 line-clamp-1">
-                            {p.title}
-                          </h3>
-                          <div className="text-[10px] md:text-xs leading-tight text-zinc-500 line-clamp-1">
-                            {p.brand?.name ? `${p.brand.name} • ` : ""}
-                            {p.categoryName?.trim() || "Uncategorized"}
-                          </div>
-
-                          <div className="mt-0.5 flex items-center gap-1.5">
-                            <p className="text-sm md:text-base font-semibold">{ngn.format(bestPrice || 0)}</p>
-                          </div>
-                        </Link>
-
-                        {Number(p.ratingCount) > 0 && (
-                          <div className="mt-1 text-[10px] md:text-[12px] leading-tight text-amber-700 inline-flex items-center gap-1">
-                            <Star size={14} />
-                            <span>
-                              {Number(p.ratingAvg).toFixed(1)} ({p.ratingCount})
-                            </span>
-                          </div>
-                        )}
-
-                        {!isSupplier && (
-                          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 relative z-20 pointer-events-auto">
-                            {/* wishlist */}
-                            <button
-                              type="button"
-                              aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
-                              className={`inline-flex items-center gap-1 text-[10px] md:text-xs rounded-full px-2 py-1 transition ${fav
-                                ? "bg-rose-50 text-rose-600 border border-rose-200"
-                                : "bg-white text-zinc-700 silver-border hover:bg-zinc-50 hover:silver-hover"
-                                }`}
-                              onClick={(e) => {
-                                stopTap(e);
-                                if (!isAuthed) {
-                                  openModal({ title: "Wishlist", message: "Please login to use the wishlist." });
-                                  return;
-                                }
-                                toggleFav.mutate({ productId: p.id });
-                              }}
-                              title={fav ? "Remove from wishlist" : "Add to wishlist"}
-                            >
-                              {fav ? <Heart size={14} /> : <HeartOff size={14} />}
-                              <span>{fav ? "Wishlisted" : "Wishlist"}</span>
-                            </button>
-
-                            {needsOptions ? (
-                              <Link
-                                to={`/product/${p.id}`}
-                                className="inline-flex items-center gap-2 rounded-full px-2 py-1 text-[10px] md:text-xs border bg-zinc-500 text-white border-zinc-900 hover:opacity-90"
-                                onClick={(e) => e.stopPropagation?.()}
-                                aria-label="Choose options"
-                                title="Choose options"
+                            <div className="absolute left-2 top-2">
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] ${badge.cls}`}
                               >
-                                Choose opts.
-                              </Link>
-                            ) : currentQty > 0 ? (
-                              <div className="inline-flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onPointerDown={stopTap}
-                                  onTouchStart={stopTap}
-                                  onClick={(e) => {
-                                    stopTap(e);
-                                    setCartQty(p, currentQty - 1);
-                                  }}
-                                  className={`${tap} w-9 h-9 md:w-7 md:h-7 rounded-full bg-white text-[14px] flex items-center justify-center text-zinc-700 active:scale-95 transition silver-border hover:silver-hover`}
-                                  aria-label="Decrease quantity"
-                                >
-                                  −
-                                </button>
+                                {badge.text}
+                              </span>
+                            </div>
 
-                                <span className="min-w-[18px] text-center text-[11px] font-semibold text-zinc-800">
-                                  {currentQty}
-                                </span>
-
-                                <button
-                                  type="button"
-                                  onPointerDown={stopTap}
-                                  onTouchStart={stopTap}
-                                  onClick={(e) => {
-                                    stopTap(e);
-                                    if (canIncrement) setCartQty(p, currentQty + 1);
-                                  }}
-                                  disabled={!allowQuickAdd || !canIncrement}
-                                  className={`${tap} w-9 h-9 md:w-7 md:h-7 rounded-full border border-zinc-900 bg-zinc-900 text-white text-[14px] flex items-center justify-center disabled:opacity-40 active:scale-95 transition`}
-                                  aria-label="Increase quantity"
-                                >
-                                  +
-                                </button>
-                              </div>
-                            ) : (
+                            {/* ❤️ Wishlist overlay */}
+                            {!isSupplier && (
                               <button
                                 type="button"
-                                disabled={!allowQuickAdd}
-                                onPointerDown={stopTap}
-                                onTouchStart={stopTap}
+                                aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
+                                className={`absolute right-2 top-2 inline-flex items-center justify-center w-8 h-8 rounded-full text-xs shadow-sm border transition ${
+                                  fav
+                                    ? "bg-rose-600 text-white border-rose-600"
+                                    : "bg-white/90 text-zinc-700 border border-zinc-200 hover:bg-zinc-50"
+                                }`}
                                 onClick={(e) => {
-                                  stopTap(e);
-                                  setCartQty(p, 1);
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (!isAuthed) {
+                                    openModal({
+                                      title: "Wishlist",
+                                      message: "Please login to use the wishlist.",
+                                    });
+                                    return;
+                                  }
+                                  toggleFav.mutate({ productId: p.id });
                                 }}
-                                className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] md:text-xs border transition ${allowQuickAdd
-                                  ? "bg-zinc-900 text-white border-zinc-900 hover:opacity-90"
-                                  : "bg-white text-zinc-400 border-zinc-200 cursor-not-allowed"
-                                  }`}
-                                aria-label="Add to cart"
-                                title={allowQuickAdd ? "Add to cart" : "Not available"}
                               >
-                                Add to cart
+                                {fav ? <Heart size={16} /> : <HeartOff size={16} />}
                               </button>
                             )}
                           </div>
-                        )}
-                      </div>
-                    </motion.article>
-                  );
-                })}
+                        </Link>
+
+                        <div className="p-2.5 md:p-4">
+                          <Link to={`/product/${p.id}`} className="block">
+                            <h3 className="font-semibold text-[12px] md:text-sm leading-tight text-zinc-900 line-clamp-1">
+                              {p.title}
+                            </h3>
+                            <div className="text-[10px] md:text-xs leading-tight text-zinc-500 line-clamp-1">
+                              {p.brand?.name ? `${p.brand.name} • ` : ""}
+                              {p.categoryName?.trim() || "Uncategorized"}
+                            </div>
+
+                            <div className="mt-0.5 flex items-center gap-1.5">
+                              <p className="text-sm md:text-base font-semibold">
+                                {ngn.format(bestPrice || 0)}
+                              </p>
+                            </div>
+                          </Link>
+
+                          {Number(p.ratingCount) > 0 && (
+                            <div className="mt-1 text-[10px] md:text-[12px] leading-tight text-amber-700 inline-flex items-center gap-1">
+                              <Star size={14} />
+                              <span>
+                                {Number(p.ratingAvg).toFixed(1)} ({p.ratingCount})
+                              </span>
+                            </div>
+                          )}
+
+                          {!isSupplier && (
+                            <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 relative z-20">
+                              {needsOptions ? (
+                                <Link
+                                  to={`/product/${p.id}`}
+                                  className="inline-flex items-center gap-2 rounded-full px-2 py-1 text-[10px] md:text-xs border bg-zinc-500 text-white border-zinc-900 hover:opacity-90"
+                                  onClick={(e) => e.stopPropagation()}
+                                  aria-label="Choose options"
+                                  title="Choose options"
+                                >
+                                  Choose opts.
+                                </Link>
+                              ) : currentQty > 0 ? (
+                                <div className="inline-flex items-center gap-1 ml-auto">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      stopTap(e);
+                                      setCartQty(p, currentQty - 1);
+                                    }}
+                                    className="w-9 h-9 md:w-7 md:h-7 rounded-full bg-white text-[14px] flex items-center justify-center text-zinc-700 active:scale-95 transition silver-border hover:silver-hover"
+                                    aria-label="Decrease quantity"
+                                  >
+                                    −
+                                  </button>
+
+                                  <span className="min-w-[18px] text-center text-[11px] font-semibold text-zinc-800">
+                                    {currentQty}
+                                  </span>
+
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      stopTap(e);
+                                      if (canIncrement) setCartQty(p, currentQty + 1);
+                                    }}
+                                    disabled={!allowQuickAdd || !canIncrement}
+                                    className="w-9 h-9 md:w-7 md:h-7 rounded-full border border-zinc-900 bg-zinc-900 text-white text-[14px] flex items-center justify-center disabled:opacity-40 active:scale-95 transition"
+                                    aria-label="Increase quantity"
+                                  >
+                                    +
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={!allowQuickAdd}
+                                  onClick={(e) => {
+                                    stopTap(e);
+                                    setCartQty(p, 1);
+                                  }}
+                                  className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] md:text-xs border transition ${
+                                    allowQuickAdd
+                                      ? "bg-zinc-900 text-white border-zinc-900 hover:opacity-90"
+                                      : "bg-white text-zinc-400 border-zinc-200 cursor-not-allowed"
+                                  } ml-auto`}
+                                  aria-label="Add to cart"
+                                  title={allowQuickAdd ? "Add to cart" : "Not available"}
+                                >
+                                  Add to cart
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </motion.article>
+                    );
+                  })}
                 </div>
 
-                {/* Pagination (kept same as your draft) */}
+                {/* Pagination (same as before) */}
+                {/* Mobile */}
                 <div className="mt-5 md:mt-8">
-                  {/* Mobile */}
                   <div className="md:hidden rounded-2xl bg-white/85 backdrop-blur p-3 shadow-sm silver-border">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
-                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
+                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of{" "}
+                          {sorted.length}
                         </div>
                         <div className="text-[11px] text-zinc-500">
                           Page {currentPage} / {totalPages}
@@ -1741,7 +1816,9 @@ export default function Catalog() {
                         if (Number.isFinite(n)) goTo(n);
                       }}
                     >
-                      <label className="text-[11px] font-semibold tracking-tight text-zinc-700 shrink-0">Go to</label>
+                      <label className="text-[11px] font-semibold tracking-tight text-zinc-700 shrink-0">
+                        Go to
+                      </label>
                       <input
                         type="number"
                         inputMode="numeric"
@@ -1767,7 +1844,8 @@ export default function Catalog() {
                   {/* Desktop */}
                   <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm text-zinc-600">
-                      Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
+                      Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of{" "}
+                      {sorted.length} products
                     </div>
 
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
@@ -1822,14 +1900,17 @@ export default function Catalog() {
                             const showEllipsis = prev != null && n - prev > 1;
                             return (
                               <span key={`d-${n}`} className="inline-flex items-center">
-                                {showEllipsis && <span className="px-1 text-sm text-zinc-500">…</span>}
+                                {showEllipsis && (
+                                  <span className="px-1 text-sm text-zinc-500">…</span>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => goTo(n)}
-                                  className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
-                                    ? "bg-zinc-900 text-white border border-zinc-900"
-                                    : "bg-white hover:bg-zinc-50 silver-border hover:silver-hover"
-                                    }`}
+                                  className={`px-3 py-1.5 text-xs rounded-xl ${
+                                    n === currentPage
+                                      ? "bg-zinc-900 text-white border border-zinc-900"
+                                      : "bg-white hover:bg-zinc-50 silver-border hover:silver-hover"
+                                  }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
                                   {n}
@@ -1866,253 +1947,126 @@ export default function Catalog() {
       </div>
 
       {/* Refine Drawer */}
-      {
-        refineOpen && (
+      {refineOpen && (
+        <motion.div
+          className="fixed inset-0 z-50"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+        >
+          <div className="absolute inset-0 bg-black/40" onClick={closeRefine} />
+
           <motion.div
-            className="fixed inset-0 z-50"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            className="absolute inset-y-0 right-0 w-[88%] max-w-sm bg-white rounded-tl-3xl rounded-bl-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 silver-border-grad"
+            initial={{ x: "100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "100%" }}
+            transition={{ type: "spring", stiffness: 260, damping: 28 }}
           >
-            <div className="absolute inset-0 bg-black/40" onClick={closeRefine} />
-
-            <motion.div
-              className="absolute inset-y-0 right-0 w-[88%] max-w-sm bg-white rounded-tl-3xl rounded-bl-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 silver-border-grad"
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", stiffness: 260, damping: 28 }}
-            >
-              <div className="flex items-center justify-between">
-                <div className="min-w-0">
-                  <h3 className="text-base font-semibold text-zinc-900">Refine</h3>
-                  <p className="text-[11px] text-zinc-600">Search, sort, page size, and filters.</p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={closeRefine}
-                  className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-zinc-100 text-zinc-700 active:scale-95 transition"
-                  aria-label="Close refine panel"
-                >
-                  <X size={18} />
-                </button>
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-zinc-900">Refine</h3>
+                <p className="text-[11px] text-zinc-600">
+                  Search, sort, page size, and filters.
+                </p>
               </div>
 
-              {/* Search */}
+              <button
+                type="button"
+                onClick={closeRefine}
+                className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-zinc-100 text-zinc-700 active:scale-95 transition"
+                aria-label="Close refine panel"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Search in drawer */}
+            <div className="relative">
               <div className="relative">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
-                  <input
-                    ref={inputRef}
-                    value={query}
-                    onChange={(e) => {
-                      setQuery(e.target.value);
-                      setShowSuggest(true);
-                      setActiveIdx(0);
-                    }}
-                    onFocus={() => query && setShowSuggest(true)}
-                    onKeyDown={(e) => {
-                      if (!showSuggest || suggestions.length === 0) return;
-                      if (e.key === "ArrowDown") {
-                        e.preventDefault();
-                        setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                      } else if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        setActiveIdx((i) => Math.max(i - 1, 0));
-                      } else if (e.key === "Enter") {
-                        e.preventDefault();
-                        const pick = suggestions[activeIdx];
-                        if (pick) {
-                          closeRefine();
-                          nav(`/product/${pick.id}`);
-                        }
-                        setShowSuggest(false);
-                      } else if (e.key === "Escape") {
-                        setShowSuggest(false);
+                <Search
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+                  size={18}
+                />
+                <input
+                  ref={inputRef}
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setShowSuggest(true);
+                    setActiveIdx(0);
+                  }}
+                  onFocus={() => query && setShowSuggest(true)}
+                  onKeyDown={(e) => {
+                    if (!showSuggest || suggestions.length === 0) return;
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setActiveIdx((i) => Math.max(i - 1, 0));
+                    } else if (e.key === "Enter") {
+                      e.preventDefault();
+                      const pick = suggestions[activeIdx];
+                      if (pick) {
+                        closeRefine();
+                        nav(`/product/${pick.id}`);
                       }
-                    }}
-                    placeholder="Search products, brands, or categories…"
-                    className="rounded-2xl pl-9 pr-4 py-2.5 w-full bg-white/90 backdrop-blur transition silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
-                    aria-label="Search products"
-                  />
-                </div>
-
-                {showSuggest && query && suggestions.length > 0 && (
-                  <div
-                    ref={suggestRef}
-                    className="mt-2 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden silver-border-grad"
-                  >
-                    <ul className="max-h-[45vh] overflow-auto p-2">
-                      {suggestions.map((p, i) => {
-                        const active = i === activeIdx;
-                        const minPrice = priceForFiltering(p);
-
-                        return (
-                          <li key={p.id} className="mb-2 last:mb-0">
-                            <button
-                              type="button"
-                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
-                                }`}
-                              onClick={() => {
-                                closeRefine();
-                                nav(`/product/${p.id}`);
-                              }}
-                            >
-                              {p.imagesJson?.[0] ? (
-                                <img
-                                  src={resolveImageUrl(p.imagesJson?.[0])}
-                                  alt=""
-                                  aria-hidden="true"
-                                  onError={(e) => e.currentTarget.remove()}
-                                  className="w-16 h-16 object-cover rounded-xl silver-border"
-                                />
-                              ) : (
-                                <div className="w-16 h-16 rounded-xl silver-border grid place-items-center text-base text-gray-500">
-                                  —
-                                </div>
-                              )}
-
-                              <div className="min-w-0">
-                                <div className="text-sm font-semibold truncate">{p.title}</div>
-                                <div className="text-xs opacity-80 truncate">
-                                  {ngn.format(minPrice || 0)}
-                                  {p.categoryName ? ` • ${p.categoryName}` : ""}
-                                  {p.brand?.name ? ` • ${p.brand.name}` : ""}
-                                </div>
-                              </div>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                )}
-              </div>
-
-              {/* Sort + Per page */}
-              <div className="grid grid-cols-1 gap-3">
-                <div className="text-sm inline-flex items-center gap-2">
-                  <ArrowUpDown size={16} className="text-zinc-600" />
-                  <label className="opacity-70 min-w-[44px]">Sort</label>
-                  <select
-                    value={sortKey}
-                    onChange={(e) => setSortKey(e.target.value as any)}
-                    className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
-                  >
-                    <option value="relevance">Relevance</option>
-                    <option value="price-asc">Price: Low → High</option>
-                    <option value="price-desc">Price: High → Low</option>
-                  </select>
-                </div>
-
-                <div className="text-sm inline-flex items-center gap-2">
-                  <LayoutGrid size={16} className="text-zinc-600" />
-                  <label className="opacity-70 min-w-[72px]">Per page</label>
-                  <select
-                    value={pageSize}
-                    onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
-                    className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
-                  >
-                    <option value={8}>8</option>
-                    <option value={12}>12</option>
-                    <option value={16}>16</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* In-stock + clear */}
-              <div className="flex items-center justify-between gap-3">
-                <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
-                  <input
-                    type="checkbox"
-                    checked={inStockOnly}
-                    onChange={(e) => setInStockOnly(e.target.checked)}
-                    className="h-4 w-4 rounded border-zinc-300"
-                  />
-                  In stock
-                </label>
-
-                {(anyActiveFilter || hasSearch) && (
-                  <button
-                    type="button"
-                    className="text-[12px] font-medium text-fuchsia-700 hover:underline"
-                    onClick={() => {
-                      setQuery("");
                       setShowSuggest(false);
-                      clearFilters();
-                    }}
-                  >
-                    Clear all
-                  </button>
-                )}
+                    } else if (e.key === "Escape") {
+                      setShowSuggest(false);
+                    }
+                  }}
+                  placeholder="Search products, brands, or categories…"
+                  className="rounded-2xl pl-9 pr-4 py-2.5 w-full bg-white/90 backdrop-blur transition silver-border focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+                  aria-label="Search products"
+                />
               </div>
 
-              {/* Categories */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-[12px] font-semibold text-zinc-800">Categories</h4>
-                  <button
-                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => setSelectedCategories([])}
-                    disabled={selectedCategories.length === 0}
-                  >
-                    Reset
-                  </button>
-                </div>
-                <ul className="space-y-1.5">
-                  {categories.length === 0 && <Shimmer />}
-                  {categories.map((c) => {
-                    const checked = selectedCategories.includes(c.id);
-                    return (
-                      <li key={c.id}>
-                        <button
-                          onClick={() => toggleCategory(c.id)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
-                            }`}
-                        >
-                          <span className="truncate">{c.name}</span>
-                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
-                            ({c.count})
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
+              {showSuggest && query && suggestions.length > 0 && (
+                <div
+                  ref={suggestRef}
+                  className="mt-2 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden silver-border-grad"
+                >
+                  <ul className="max-h-[45vh] overflow-auto p-2">
+                    {suggestions.map((p, i) => {
+                      const active = i === activeIdx;
+                      const minPrice = priceForFiltering(p);
 
-              {/* Brands */}
-              {brands.length > 0 && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h4 className="text-[12px] font-semibold text-zinc-800">Brands</h4>
-                    <button
-                      className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                      onClick={() => setSelectedBrands([])}
-                      disabled={selectedBrands.length === 0}
-                    >
-                      Reset
-                    </button>
-                  </div>
-                  <ul className="space-y-1.5">
-                    {brands.map((b) => {
-                      const checked = selectedBrands.includes(b.name);
                       return (
-                        <li key={b.name}>
+                        <li key={p.id} className="mb-2 last:mb-0">
                           <button
-                            onClick={() => toggleBrand(b.name)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
-                              }`}
+                            type="button"
+                            className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
+                              active ? "bg-black/5" : ""
+                            }`}
+                            onClick={() => {
+                              closeRefine();
+                              nav(`/product/${p.id}`);
+                            }}
                           >
-                            <span className="truncate">{b.name}</span>
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
-                              ({b.count})
-                            </span>
+                            {p.imagesJson?.[0] ? (
+                              <img
+                                src={resolveImageUrl(p.imagesJson?.[0])}
+                                alt=""
+                                aria-hidden="true"
+                                onError={(e) => e.currentTarget.remove()}
+                                className="w-16 h-16 object-cover rounded-xl silver-border"
+                              />
+                            ) : (
+                              <div className="w-16 h-16 rounded-xl silver-border grid place-items-center text-base text-gray-500">
+                                —
+                              </div>
+                            )}
+
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold truncate">{p.title}</div>
+                              <div className="text-xs opacity-80 truncate">
+                                {ngn.format(minPrice || 0)}
+                                {p.categoryName ? ` • ${p.categoryName}` : ""}
+                                {p.brand?.name ? ` • ${p.brand.name}` : ""}
+                              </div>
+                            </div>
                           </button>
                         </li>
                       );
@@ -2120,35 +2074,140 @@ export default function Catalog() {
                   </ul>
                 </div>
               )}
+            </div>
 
-              {/* Price */}
+            {/* Sort + Per page */}
+            <div className="grid grid-cols-1 gap-3">
+              <div className="text-sm inline-flex items-center gap-2">
+                <ArrowUpDown size={16} className="text-zinc-600" />
+                <label className="opacity-70 min-w-[44px]">Sort</label>
+                <select
+                  value={sortKey}
+                  onChange={(e) => setSortKey(e.target.value as any)}
+                  className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
+                >
+                  <option value="relevance">Relevance</option>
+                  <option value="price-asc">Price: Low → High</option>
+                  <option value="price-desc">Price: High → Low</option>
+                </select>
+              </div>
+
+              <div className="text-sm inline-flex items-center gap-2">
+                <LayoutGrid size={16} className="text-zinc-600" />
+                <label className="opacity-70 min-w-[72px]">Per page</label>
+                <select
+                  value={pageSize}
+                  onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
+                  className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 silver-border"
+                >
+                  <option value={8}>8</option>
+                  <option value={12}>12</option>
+                  <option value={16}>16</option>
+                </select>
+              </div>
+            </div>
+
+            {/* In-stock + clear */}
+            <div className="flex items-center justify-between gap-3">
+              <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
+                <input
+                  type="checkbox"
+                  checked={inStockOnly}
+                  onChange={(e) => setInStockOnly(e.target.checked)}
+                  className="h-4 w-4 rounded border-zinc-300"
+                />
+                In stock
+              </label>
+
+              {(anyActiveFilter || hasSearch) && (
+                <button
+                  type="button"
+                  className="text-[12px] font-medium text-fuchsia-700 hover:underline"
+                  onClick={() => {
+                    setQuery("");
+                    setShowSuggest(false);
+                    clearFilters();
+                  }}
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
+
+            {/* Categories */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-[12px] font-semibold text-zinc-800">Categories</h4>
+                <button
+                  className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                  onClick={() => setSelectedCategories([])}
+                  disabled={selectedCategories.length === 0}
+                >
+                  Reset
+                </button>
+              </div>
+              <ul className="space-y-1.5">
+                {categories.length === 0 && <Shimmer />}
+                {categories.map((c) => {
+                  const checked = selectedCategories.includes(c.id);
+                  return (
+                    <li key={c.id}>
+                      <button
+                        onClick={() => toggleCategory(c.id)}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
+                          checked
+                            ? "bg-zinc-900 text-white"
+                            : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                        }`}
+                      >
+                        <span className="truncate">{c.name}</span>
+                        <span
+                          className={`ml-2 text-[11px] ${
+                            checked ? "text-white/90" : "text-zinc-600"
+                          }`}
+                        >
+                          ({c.count})
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+
+            {/* Brands */}
+            {brands.length > 0 && (
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-[12px] font-semibold text-zinc-800">Price</h4>
+                  <h4 className="text-[12px] font-semibold text-zinc-800">Brands</h4>
                   <button
                     className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => setSelectedBucketIdxs([])}
-                    disabled={selectedBucketIdxs.length === 0}
+                    onClick={() => setSelectedBrands([])}
+                    disabled={selectedBrands.length === 0}
                   >
                     Reset
                   </button>
                 </div>
                 <ul className="space-y-1.5">
-                  {visiblePriceBuckets.length === 0 && <Shimmer />}
-                  {visiblePriceBuckets.map(({ bucket, idx, count }) => {
-                    const checked = selectedBucketIdxs.includes(idx);
+                  {brands.map((b) => {
+                    const checked = selectedBrands.includes(b.name);
                     return (
-                      <li key={bucket.label}>
+                      <li key={b.name}>
                         <button
-                          onClick={() => toggleBucket(idx)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
-                            }`}
+                          onClick={() => toggleBrand(b.name)}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
+                            checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                          }`}
                         >
-                          <span>{bucket.label}</span>
-                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
-                            ({count})
+                          <span className="truncate">{b.name}</span>
+                          <span
+                            className={`ml-2 text-[11px] ${
+                              checked ? "text-white/90" : "text-zinc-600"
+                            }`}
+                          >
+                            ({b.count})
                           </span>
                         </button>
                       </li>
@@ -2156,20 +2215,61 @@ export default function Catalog() {
                   })}
                 </ul>
               </div>
+            )}
 
-              <div className="pt-2 flex items-center justify-between gap-3">
+            {/* Price */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-[12px] font-semibold text-zinc-800">Price</h4>
                 <button
-                  type="button"
-                  onClick={closeRefine}
-                  className="w-full rounded-2xl px-4 py-2.5 bg-zinc-900 text-white font-semibold active:scale-[0.98] transition"
+                  className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                  onClick={() => setSelectedBucketIdxs([])}
+                  disabled={selectedBucketIdxs.length === 0}
                 >
-                  Done
+                  Reset
                 </button>
               </div>
-            </motion.div>
+              <ul className="space-y-1.5">
+                {visiblePriceBuckets.length === 0 && <Shimmer />}
+                {visiblePriceBuckets.map(({ bucket, idx, count }) => {
+                  const checked = selectedBucketIdxs.includes(idx);
+                  return (
+                    <li key={bucket.label}>
+                      <button
+                        onClick={() => toggleBucket(idx)}
+                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
+                          checked
+                            ? "bg-zinc-900 text-white"
+                            : "bg-white hover:bg-black/5 text-zinc-800 silver-border hover:silver-hover"
+                        }`}
+                      >
+                        <span>{bucket.label}</span>
+                        <span
+                          className={`ml-2 text-[11px] ${
+                            checked ? "text-white/90" : "text-zinc-600"
+                          }`}
+                        >
+                          ({count})
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+
+            <div className="pt-2 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={closeRefine}
+                className="w-full rounded-2xl px-4 py-2.5 bg-zinc-900 text-white font-semibold active:scale-[0.98] transition"
+              >
+                Done
+              </button>
+            </div>
           </motion.div>
-        )
-      }
-    </SiteLayout >
+        </motion.div>
+      )}
+    </SiteLayout>
   );
 }

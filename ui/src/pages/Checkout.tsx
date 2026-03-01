@@ -473,18 +473,28 @@ function extractMarginPercent(s: PublicSettings | null | undefined): number {
   return 0;
 }
 
+/**
+ * ✅ Simple, opinionated rule:
+ *  - returns true only when value clearly means "enabled"
+ *  - returns false in ALL other cases (missing, null, error, weird)
+ */
 function extractShippingEnabled(s: PublicSettings | null | undefined): boolean {
-  // Default: OFF unless explicitly enabled in settings
-  const v: any = s && (s as any).shippingEnabled;
+  if (!s) return false;
 
-  if (v === undefined || v === null || v === "") return false;
-  if (typeof v === "boolean") return v;
+  const v: any = (s as any).shippingEnabled;
 
-  const str = String(v).trim().toLowerCase();
-  if (["1", "true", "yes", "on", "enabled"].includes(str)) return true;
-  if (["0", "false", "no", "off", "disabled"].includes(str)) return false;
+  if (v === true) return true;
+  if (v === false || v === 0) return false;
 
-  // Unknown value → be safe and treat as OFF
+  if (typeof v === "number") return v !== 0;
+
+  if (typeof v === "string") {
+    const str = v.trim().toLowerCase();
+    if (["true", "1", "yes", "on", "enabled"].includes(str)) return true;
+    if (["false", "0", "no", "off", "disabled"].includes(str)) return false;
+  }
+
+  // default: treat unknown values as "not enabled"
   return false;
 }
 
@@ -598,10 +608,10 @@ function Card({
     tone === "primary"
       ? "border-primary-200"
       : tone === "emerald"
-      ? "border-emerald-200"
-      : tone === "amber"
-      ? "border-amber-200"
-      : "border-border";
+        ? "border-emerald-200"
+        : tone === "amber"
+          ? "border-amber-200"
+          : "border-border";
 
   return (
     <div
@@ -629,19 +639,19 @@ function CardHeader({
     tone === "primary"
       ? "from-primary-50 to-white"
       : tone === "emerald"
-      ? "from-emerald-50 to-white"
-      : tone === "amber"
-      ? "from-amber-50 to-white"
-      : "from-surface to-white";
+        ? "from-emerald-50 to-white"
+        : tone === "amber"
+          ? "from-amber-50 to-white"
+          : "from-surface to-white";
 
   const toneIcon =
     tone === "primary"
       ? "text-primary-600"
       : tone === "emerald"
-      ? "text-emerald-600"
-      : tone === "amber"
-      ? "text-amber-600"
-      : "text-ink-soft";
+        ? "text-emerald-600"
+        : tone === "amber"
+          ? "text-amber-600"
+          : "text-ink-soft";
 
   return (
     <div className={`flex items-center justify-between px-4 py-3 md:p-4 border-b border-border bg-gradient-to-b ${toneBg}`}>
@@ -661,9 +671,8 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${
-        props.className || ""
-      }`}
+      className={`border border-border rounded-md px-3 py-2 bg-white text-ink placeholder:text-ink-soft focus:outline-none focus:ring-4 focus:ring-primary-100 text-sm md:text-base ${props.className || ""
+        }`}
     />
   );
 }
@@ -768,10 +777,13 @@ export default function Checkout() {
 
   const marginPercent = useMemo(() => extractMarginPercent(publicSettingsQ.data), [publicSettingsQ.data]);
 
-// 🔒 Hard-disable shipping for now, regardless of settings
-const shippingEnabled = false;
-const shippingMode: "DELIVERY" | "PICKUP_ONLY" = "PICKUP_ONLY";
+  // ✅ Shipping flags (simple)
+  const shippingEnabled: boolean =
+    publicSettingsQ.isSuccess && extractShippingEnabled(publicSettingsQ.data as PublicSettings | null);
 
+  const shippingMode: "DELIVERY" | "PICKUP_ONLY" = publicSettingsQ.isSuccess
+    ? extractShippingMode(publicSettingsQ.data as PublicSettings | null)
+    : "PICKUP_ONLY";
 
   // ✅ Supplier-split quote (supplier-cost)
   const pricingQ = useQuery({
@@ -866,7 +878,10 @@ const shippingMode: "DELIVERY" | "PICKUP_ONLY" = "PICKUP_ONLY";
 
   // Distinct ids (used mainly for display + passing through to backend)
   const productIds = useMemo(() => Array.from(new Set(cart.map((l) => l.productId))), [cart]);
-  const supplierIds = useMemo(() => Array.from(new Set(cart.map((l) => l.supplierId).filter(Boolean) as string[])), [cart]);
+  const supplierIds = useMemo(
+    () => Array.from(new Set(cart.map((l) => l.supplierId).filter(Boolean) as string[])),
+    [cart]
+  );
 
   // ✅ pricing warning: quote exists but some lines not fully priced
   const pricingWarning = useMemo(() => {
@@ -1240,11 +1255,11 @@ const shippingMode: "DELIVERY" | "PICKUP_ONLY" = "PICKUP_ONLY";
         shippingBreakdownJson:
           shippingEnabled && shippingQ.data
             ? {
-                total: shippingFee,
-                currency: shippingQ.data.currency,
-                suppliers: shippingQ.data.suppliers,
-                partial: shippingQ.data.partial,
-              }
+              total: shippingFee,
+              currency: shippingQ.data.currency,
+              suppliers: shippingQ.data.suppliers,
+              partial: shippingQ.data.partial,
+            }
             : null,
         shippingMode: shippingEnabled ? shippingMode : "PICKUP_ONLY",
 
@@ -1386,7 +1401,7 @@ const shippingMode: "DELIVERY" | "PICKUP_ONLY" = "PICKUP_ONLY";
             </button>
             <button
               className="px-4 py-2 rounded-lg bg-zinc-900 text-white hover:opacity-90 text-sm"
-              onClick={() => {}}
+              onClick={() => { }}
               disabled
               title="Complete the steps above"
               type="button"
@@ -1400,6 +1415,7 @@ const shippingMode: "DELIVERY" | "PICKUP_ONLY" = "PICKUP_ONLY";
   };
 
   const showMarginInfo = publicSettingsQ.isLoading || publicSettingsQ.isError || marginPercent > 0;
+
   if (meQ.isLoading) {
     return (
       <SiteLayout>
@@ -1409,6 +1425,10 @@ const shippingMode: "DELIVERY" | "PICKUP_ONLY" = "PICKUP_ONLY";
       </SiteLayout>
     );
   }
+
+  // ✅ Show the ribbon once settings have settled (success or error),
+  //    and only when shipping is NOT enabled.
+  const showShippingIncludedRibbon = !publicSettingsQ.isLoading && !shippingEnabled;
 
   return (
     <SiteLayout>
@@ -1431,16 +1451,9 @@ const shippingMode: "DELIVERY" | "PICKUP_ONLY" = "PICKUP_ONLY";
                 {publicSettingsQ.isLoading
                   ? "Loading pricing settings…"
                   : publicSettingsQ.isError
-                  ? "Could not load margin settings — showing best-effort retail pricing."
-                  : `Margin applied: ${marginPercent}%`}
+                    ? "Could not load margin settings — showing best-effort retail pricing."
+                    : `Margin applied: ${marginPercent}%`}
               </p>
-            )}
-
-            {!shippingEnabled && (
-              <div className="mt-2 text-xs sm:text-sm rounded-xl border bg-white/80 p-3 text-ink">
-                No extra shipping fee: delivery cost is already included in item prices. We’ll still deliver to the shipping
-                address you provide.
-              </div>
             )}
 
             {profileErr && (
@@ -1699,21 +1712,35 @@ const shippingMode: "DELIVERY" | "PICKUP_ONLY" = "PICKUP_ONLY";
                       {!shippingEnabled
                         ? "Included in price"
                         : shippingQ.isLoading
-                        ? "Calculating…"
-                        : shippingFee > 0
-                        ? ngn.format(shippingFee)
-                        : "Included"}
+                          ? "Calculating…"
+                          : shippingFee > 0
+                            ? ngn.format(shippingFee)
+                            : "Included"}
                     </span>
                   </div>
+
+                  {/* 🔹 Super-simple: if shipping is OFF, always show the ribbon here */}
+                  {!shippingEnabled && !publicSettingsQ.isLoading && (
+                    <div className="mt-1 text-[11px] sm:text-xs rounded-lg border border-dashed border-zinc-200 bg-zinc-50/90 px-3 py-2 text-ink-soft">
+                      No extra shipping fee: delivery cost is already included in item prices.
+                      We’ll still deliver to the shipping address you provide.
+                    </div>
+                  )}
 
                   {shippingEnabled && shippingQ.isError && (
                     <div className="mt-1 text-[11px] sm:text-xs text-danger">Could not compute shipping yet</div>
                   )}
 
-                  {shippingEnabled && !!shippingQ.data?.error && (
-                    <div className="mt-2 text-[11px] sm:text-xs text-amber-700 border border-amber-200 bg-amber-50 px-2 py-1 rounded">
-                      {shippingQ.data.error}
+                  {/* 🔹 Grey ribbon now lives here, directly under the Shipping row */}
+                  {showShippingIncludedRibbon && (
+                    <div className="mt-1 text-[11px] sm:text-xs rounded-lg border border-dashed border-zinc-200 bg-zinc-50/90 px-3 py-2 text-ink-soft">
+                      No extra shipping fee: delivery cost is already included in item prices. We’ll still deliver to the
+                      shipping address you provide.
                     </div>
+                  )}
+
+                  {shippingEnabled && shippingQ.isError && (
+                    <div className="mt-1 text-[11px] sm:text-xs text-danger">Could not compute shipping yet</div>
                   )}
 
                   {shippingEnabled && shippingQ.data?.partial && (

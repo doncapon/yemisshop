@@ -614,7 +614,7 @@ export default function Cart() {
       }
 
       if (isAuthed) {
-        loadCart().catch(() => { });
+        loadCart().catch(() => {});
         return;
       }
 
@@ -739,10 +739,21 @@ export default function Cart() {
     return { subtotalRetail: round2(subtotalRetail), linesRetail, currency: q.currency ?? null };
   }, [pricingQ.data, marginPercent]);
 
+  // 🔁 Subtotal shown to shopper now uses cached retail unit prices (Cart/Wishlist/Catalog aligned)
   const total = useMemo(() => {
-    if (quoteRetail && quoteRetail.subtotalRetail > 0) return quoteRetail.subtotalRetail;
-    return visibleCart.reduce((s, it) => s + (Number(it.totalPrice) || 0), 0);
-  }, [visibleCart, quoteRetail]);
+    return visibleCart.reduce((sum, it) => {
+      const qty = Math.max(1, Number(it.qty) || 1);
+      const cachedUnit =
+        asMoney(it.unitPrice, 0) > 0
+          ? asMoney(it.unitPrice, 0)
+          : qty > 0
+          ? asMoney(it.totalPrice, 0) / qty
+          : 0;
+
+      const lineTotal = round2(Math.max(0, cachedUnit) * qty);
+      return sum + lineTotal;
+    }, 0);
+  }, [visibleCart]);
 
   const sumOtherLinesQty = (productId: string, except: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) => {
     return cart.reduce((s, it) => {
@@ -830,7 +841,7 @@ export default function Cart() {
       const clamped = clampToMax(target, newQtyRaw);
 
       // optimistic UI
-      const nextCart = (prev: CartItem[]) =>
+      const nextCartFn = (prev: CartItem[]) =>
         prev.map((it) => {
           if (!sameLine(it, target)) return it;
 
@@ -848,7 +859,7 @@ export default function Cart() {
         });
 
       setCart((prev) => {
-        const updated = nextCart(prev);
+        const updated = nextCartFn(prev);
         return updated;
       });
 
@@ -857,11 +868,11 @@ export default function Cart() {
           await serverSetQty(target, clamped);
           await loadCart();
         } catch {
-          await loadCart().catch(() => { });
+          await loadCart().catch(() => {});
         }
       } else {
         // ✅ persist guest immediately (no race)
-        const updated = nextCart(cart);
+        const updated = nextCartFn(cart);
         persistGuestCartNow(updated);
         setCart(updated);
       }
@@ -883,7 +894,7 @@ export default function Cart() {
           await serverSetQty(target, 0);
           await loadCart();
         } catch {
-          await loadCart().catch(() => { });
+          await loadCart().catch(() => {});
         }
       } else {
         // ✅ persist guest immediately (so last item removal works)
@@ -953,7 +964,7 @@ export default function Cart() {
             </h1>
 
             <p className="text-sm max-[360px]:text-[12px] text-ink-soft">
-              Prices shown are <span className="font-medium">retail</span> (supplier offers + margin).
+              Prices shown are <span className="font-medium">retail</span> (same basis as catalogue &amp; wishlist).
             </p>
 
             {(topBannerLoading || !!pricingWarning) && (
@@ -974,43 +985,34 @@ export default function Cart() {
 
                 const currentQty = Math.max(1, Number(it.qty) || 1);
                 const maxQty = computedCapForLine(it);
-                const fallbackUnit =
+
+                // 💰 Display unit price (aligned with Catalog/Wishlist) from cached retail
+                const cachedUnit =
                   asMoney(it.unitPrice, 0) > 0
                     ? asMoney(it.unitPrice, 0)
                     : currentQty > 0
-                      ? asMoney(it.totalPrice, 0) / currentQty
-                      : 0;
+                    ? asMoney(it.totalPrice, 0) / currentQty
+                    : 0;
+
+                const displayUnit = Math.max(0, cachedUnit);
+                const displayLineTotal = round2(displayUnit * currentQty);
 
                 const hasQuote = !!ql && (ql.lineTotal > 0 || ql.allocations.length > 0);
-                const hasRetailLine = !!rl && rl.retailLineTotal > 0;
-
-                const lineTotal = hasRetailLine
-                  ? rl.retailLineTotal
-                  : hasQuote
-                    ? applyMargin(asMoney(ql.lineTotal, 0), marginPercent)
-                    : asMoney(it.totalPrice, 0);
-
-                const unitText = (() => {
-                  if (!hasRetailLine) return fallbackUnit > 0 ? ngn.format(fallbackUnit) : "Pending";
-                  if (rl.retailMinUnit === rl.retailMaxUnit) return ngn.format(rl.retailMinUnit);
-                  if (rl.retailMinUnit > 0 && rl.retailMaxUnit > 0) return `${ngn.format(rl.retailMinUnit)} – ${ngn.format(rl.retailMaxUnit)}`;
-                  return rl.retailAverageUnit > 0 ? ngn.format(rl.retailAverageUnit) : "Pending";
-                })();
 
                 const splitBadge =
                   hasQuote && ql.allocations.filter((a) => a.qty > 0).length > 1
                     ? "Split across suppliers"
                     : hasQuote && ql.allocations.length === 1
-                      ? "Single supplier"
-                      : "";
+                    ? "Single supplier"
+                    : "";
 
                 const kindLabel = isBaseLine(it)
                   ? "Base"
                   : it.variantId
-                    ? "Variant"
-                    : it.selectedOptions?.length
-                      ? "Configured"
-                      : "Item";
+                  ? "Variant"
+                  : it.selectedOptions?.length
+                  ? "Configured"
+                  : "Item";
 
                 const isExpanded = !!expanded[k];
 
@@ -1044,6 +1046,8 @@ export default function Cart() {
                   const clamped = await updateQty(it, nextQty);
                   setQtyDraft((p) => ({ ...p, [k]: String(clamped) }));
                 };
+
+                const unitText = displayUnit > 0 ? ngn.format(displayUnit) : "—";
 
                 return (
                   <article
@@ -1099,11 +1103,10 @@ export default function Cart() {
                           <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] max-[360px]:text-[11px] sm:text-xs text-ink-soft">
                             <div>
                               Unit: <span className="font-medium text-ink">{unitText}</span>
-                              {hasRetailLine && rl.retailMinUnit !== rl.retailMaxUnit ? <span className="ml-2 text-[11px]">(varies)</span> : null}
                             </div>
                           </div>
 
-                          {hasRetailLine && (rl.allocationsRetail?.length ?? 0) > 0 && (
+                          {rl && (rl.allocationsRetail?.length ?? 0) > 0 && (
                             <button
                               className={`${tap} mt-2 text-[11px] text-primary-700 hover:underline`}
                               onClick={() => setExpanded((p) => ({ ...p, [k]: !p[k] }))}
@@ -1114,7 +1117,7 @@ export default function Cart() {
                           )}
                         </div>
 
-                        {hasRetailLine && isExpanded && (rl.allocationsRetail?.length ?? 0) > 0 && (
+                        {rl && isExpanded && (rl.allocationsRetail?.length ?? 0) > 0 && (
                           <div className="mt-3 rounded-xl border bg-white/70 p-3 text-xs">
                             <div className="flex items-center justify-between text-ink-soft">
                               <span>Supplier split (retail)</span>
@@ -1132,7 +1135,9 @@ export default function Cart() {
                                         {a.qty} × {ngn.format(asMoney(a.retailUnitPrice, 0))}
                                       </div>
                                     </div>
-                                    <div className="font-semibold text-ink whitespace-nowrap">{ngn.format(asMoney(a.retailLineTotal, 0))}</div>
+                                    <div className="font-semibold text-ink whitespace-nowrap">
+                                      {ngn.format(asMoney(a.retailLineTotal, 0))}
+                                    </div>
                                   </div>
                                 ))}
                             </div>
@@ -1198,11 +1203,14 @@ export default function Cart() {
                                   Max: <span className="font-medium text-ink">{Math.max(0, maxQty)}</span>
                                 </div>
                               )}
-                            </div>                          </div>
+                            </div>
+                          </div>
 
                           <div className="sm:ml-auto rounded-xl border bg-white/70 px-3 py-2 text-right min-w-[140px] max-[360px]:min-w-[0]">
                             <div className="text-[11px] text-ink-soft">Line total</div>
-                            <div className="text-[18px] sm:text-lg font-semibold tracking-tight break-words">{ngn.format(lineTotal)}</div>
+                            <div className="text-[18px] sm:text-lg font-semibold tracking-tight break-words">
+                              {ngn.format(displayLineTotal)}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1256,9 +1264,10 @@ export default function Cart() {
                       if (!!pricingWarning) e.preventDefault();
                     }}
                     className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition
-                      ${!pricingWarning
-                        ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
-                        : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                      ${
+                        !pricingWarning
+                          ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
+                          : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
                       }`}
                     aria-disabled={!!pricingWarning}
                   >
@@ -1273,7 +1282,7 @@ export default function Cart() {
                     Continue shopping
                   </Link>
 
-                  <p className="mt-3 text-[11px] text-ink-soft">Totals above use live supplier offers.</p>
+                  <p className="mt-3 text-[11px] text-ink-soft">Totals above use the same retail basis as the catalogue.</p>
                 </div>
               </div>
 

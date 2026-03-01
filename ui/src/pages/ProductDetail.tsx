@@ -1399,7 +1399,7 @@ export default function ProductDetail() {
   const bgPosY = `${relY * 100}%`;
   const bgSize = `${EFFECTIVE_ZOOM * 100}%`;
 
-  /* ---------------- Add to cart (FIXED TO USE cartModel) ---------------- */
+  /* ---------------- Add to cart (server + local cartModel) ---------------- */
   const handleAddToCart = React.useCallback(async () => {
     if (!product) return;
     if (purchaseMeta.disableAddToCart) return;
@@ -1432,22 +1432,11 @@ export default function ProductDetail() {
       value: valueId ? valueNameByAttrId.get(attributeId)?.get(valueId) ?? "" : "",
     }));
 
-    const toastRow = {
-      productId: String(product.id),
-      variantId: variantId ?? null,
-      title: product.title ?? "",
-      qty: 1,
-      unitPrice: unitPriceClient,
-      totalPrice: unitPriceClient,
-      image: primaryImg ?? null,
-      selectedOptions: (selectedOptionsLabeled || []).map((o) => ({ attribute: o.attribute, value: o.value })),
-    };
-
     const AXIOS_COOKIE_CFG = { withCredentials: true as const };
     const isLoggedIn = !!useAuthStore.getState().user?.id;
 
     if (isLoggedIn) {
-      // server write
+      // ✅ server write
       await api.post(
         "/api/cart/items",
         {
@@ -1464,7 +1453,7 @@ export default function ProductDetail() {
         AXIOS_COOKIE_CFG
       );
 
-      // ✅ local mirror so navbar updates immediately (same storage as guest/cart page)
+      // ✅ local mirror so navbar/cart toast reads the same unified cartModel
       upsertCartLine({
         productId: String(product.id),
         variantId: variantId ?? null,
@@ -1479,11 +1468,16 @@ export default function ProductDetail() {
 
       window.dispatchEvent(new Event("cart:updated"));
 
-      showMiniCartToast(
-        [toastRow as any],
-        { productId: product.id, variantId: variantId ?? null },
-        { title: "Added to cart", duration: 3500, maxItems: 4, mode: "add" }
-      );
+      // ✅ Toast uses the full (server-mirrored) cart content, including this new addition
+      const lines = readCartLines();
+      const miniRows = toMiniCartRows(lines);
+
+      showMiniCartToast({
+        cart: miniRows,
+        focus: { productId: product.id, variantId: variantId ?? null },
+        opts: { title: "Added to cart", duration: 3500, maxItems: 4, mode: "add" },
+      });
+
       return;
     }
 
@@ -2087,7 +2081,11 @@ export default function ProductDetail() {
                   </div>
                 </div>
 
-                <div ref={similarRef} className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2" style={{ scrollbarWidth: "thin" as any }}>
+                <div
+                  ref={similarRef}
+                  className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
+                  style={{ scrollbarWidth: "thin" as any }}
+                >
                   {similarQ.data.map((sp, idx) => {
                     const priceFromOffer = (similarOfferQs as any)?.[idx]?.data?.supplierPrice ?? null;
                     const basePrice =

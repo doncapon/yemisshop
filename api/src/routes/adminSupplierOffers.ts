@@ -58,18 +58,43 @@ function parsePrefixedId(id: string): { kind: "BASE" | "VARIANT" | "LEGACY"; raw
 /**
  * Hard-delete safety:
  * Block deletes if product OR any of its variants have ever been used in orders.
+ *
+ * Implemented in a schema-safe way:
+ * 1) Check orderItem.productId = productId
+ * 2) Then, if variants exist for this product, check orderItem.variantId IN those ids
  */
 async function assertProductOffersDeletable(productId: string) {
-  const hit = await prisma.orderItem.findFirst({
-    where: {
-      OR: [{ productId }, { variant: { productId } }],
-    } as any,
+  // 1) direct product usage
+  const hitByProduct = await prisma.orderItem.findFirst({
+    where: { productId },
     select: { id: true },
   });
 
-  if (hit) {
+  if (hitByProduct) {
     const err: any = new Error(
-      "Cannot delete supplier offers: this product (or its variants) has been used in orders."
+      "Cannot delete supplier offers: this product has been used in orders.",
+    );
+    err.statusCode = 409;
+    throw err;
+  }
+
+  // 2) variant usage (if your order items attach via variantId)
+  const variants = await prisma.productVariant.findMany({
+    where: { productId },
+    select: { id: true },
+  });
+
+  if (!variants.length) return;
+
+  const variantIds = variants.map((v) => v.id);
+  const hitByVariant = await prisma.orderItem.findFirst({
+    where: { variantId: { in: variantIds } },
+    select: { id: true },
+  });
+
+  if (hitByVariant) {
+    const err: any = new Error(
+      "Cannot delete supplier offers: a variant of this product has been used in orders.",
     );
     err.statusCode = 409;
     throw err;
@@ -77,13 +102,13 @@ async function assertProductOffersDeletable(productId: string) {
 }
 
 /**
- * ✅ IMPORTANT (your current schema):
- * - SupplierProductOffer has NO supplierId and NO supplier relation
- * - SupplierVariantOffer has NO supplierId and NO supplier relation
+ * Supplier consistency:
+ * - SupplierProductOffer HAS supplierId (required)
+ * - SupplierVariantOffer HAS supplierId (required)
  * - Supplier is on Product (product.supplierId + product.supplier)
  *
- * So we ACCEPT supplierId in requests for compatibility, but we NEVER store it on offers.
- * We validate it matches product.supplierId if provided.
+ * We ACCEPT supplierId in requests for compatibility, validate it matches product.supplierId,
+ * and we STORE it on both offer tables (kept in sync with Product).
  */
 async function assertSupplierMatchesProduct(productId: string, supplierIdMaybe?: string | null) {
   if (!supplierIdMaybe) return;
@@ -110,10 +135,9 @@ async function assertSupplierMatchesProduct(productId: string, supplierIdMaybe?:
 
 /**
  * PATCH BASE
- * (supplierId exists in payload for legacy compatibility, but not stored)
  */
 const patchBaseSchema = z.object({
-  supplierId: z.string().min(1).optional(), // validated against Product.supplierId (not stored)
+  supplierId: z.string().min(1).optional(), // validated against Product.supplierId
 
   price: coerceNumber(0).optional(), // maps to basePrice
   currency: z.string().min(1).optional(),
@@ -132,10 +156,9 @@ const patchBaseSchema = z.object({
 
 /**
  * PATCH VARIANT
- * (supplierId exists in payload for legacy compatibility, but not stored)
  */
 const patchVariantSchema = z.object({
-  supplierId: z.string().min(1).optional(), // validated (not stored)
+  supplierId: z.string().min(1).optional(),
 
   variantId: z
     .preprocess((v) => {
@@ -146,7 +169,7 @@ const patchVariantSchema = z.object({
 
   // allow explicit convert to BASE if caller sends variantId:null
   // (handled by reading raw body in handler)
-  unitPrice: coerceNumber(0).optional(), // maps to unitPrice (legacy name)
+  unitPrice: coerceNumber(0).optional(), // legacy name
   price: coerceNumber(0).optional(), // preferred name
   currency: z.string().min(1).optional(),
   availableQty: coerceInt(0).optional(),
@@ -155,9 +178,7 @@ const patchVariantSchema = z.object({
 });
 
 /**
- * CREATE (✅ one price field only: `price`)
- * - kind optional
- * - supplierId accepted but not stored; must match product.supplierId
+ * CREATE (single price field: `price`)
  */
 const createSchema = z
   .object({
@@ -172,7 +193,7 @@ const createSchema = z
       }, z.string().min(1).nullable())
       .optional(),
 
-    price: coerceNumber(0), // ✅ single price field
+    price: coerceNumber(0),
     currency: z.string().min(1).default("NGN"),
     availableQty: coerceInt(0, 0).optional(),
     leadDays: coerceInt(0, 0).nullable().optional(),
@@ -205,7 +226,10 @@ const createSchema = z
 /* ----------------------------------------------------------------------------
  * Unified DTO (derived supplier from Product)
  * --------------------------------------------------------------------------*/
-function toDtoBase(base: any, supplierMeta?: { supplierId: string; supplierName?: string | null }) {
+function toDtoBase(
+  base: any,
+  supplierMeta?: { supplierId: string; supplierName?: string | null },
+) {
   const basePriceNum = base.basePrice != null ? Number(base.basePrice) : 0;
 
   return {
@@ -231,7 +255,10 @@ function toDtoBase(base: any, supplierMeta?: { supplierId: string; supplierName?
   };
 }
 
-function toDtoVariant(v: any, supplierMeta?: { supplierId: string; supplierName?: string | null }) {
+function toDtoVariant(
+  v: any,
+  supplierMeta?: { supplierId: string; supplierName?: string | null },
+) {
   const unitPriceNum = v.unitPrice != null ? Number(v.unitPrice) : 0;
 
   return {
@@ -268,8 +295,6 @@ router.use(requireAuth, requireAdmin);
 
 /**
  * Shared handler: GET bulk offers for many products
- *
- * ✅ Since offers have no supplier relation, we load supplier via Product.
  */
 const bulkOffersHandler = wrap(async (req, res) => {
   const productIdsRaw = String(req.query.productIds ?? "").trim();
@@ -281,8 +306,8 @@ const bulkOffersHandler = wrap(async (req, res) => {
           productIdsRaw
             .split(",")
             .map((s) => s.trim())
-            .filter(Boolean)
-        )
+            .filter(Boolean),
+        ),
       )
     : productIdSingle
       ? [productIdSingle]
@@ -301,7 +326,10 @@ const bulkOffersHandler = wrap(async (req, res) => {
     },
   });
 
-  const supplierByProductId = new Map<string, { supplierId: string; supplierName?: string | null }>();
+  const supplierByProductId = new Map<
+    string,
+    { supplierId: string; supplierName?: string | null }
+  >();
   for (const p of products) {
     supplierByProductId.set(String(p.id), {
       supplierId: String(p.supplierId),
@@ -335,8 +363,10 @@ const bulkOffersHandler = wrap(async (req, res) => {
   ]);
 
   const out: any[] = [];
-  for (const b of baseOffers as any[]) out.push(toDtoBase(b, supplierByProductId.get(String(b.productId))));
-  for (const v of variantOffers as any[]) out.push(toDtoVariant(v, supplierByProductId.get(String(v.productId))));
+  for (const b of baseOffers as any[])
+    out.push(toDtoBase(b, supplierByProductId.get(String(b.productId))));
+  for (const v of variantOffers as any[])
+    out.push(toDtoVariant(v, supplierByProductId.get(String(v.productId))));
 
   return res.json({ data: out });
 });
@@ -348,7 +378,6 @@ router.get("/supplier-offers", bulkOffersHandler);
 
 /**
  * Compatibility if mounted at /api/admin/supplier-offers
- * GET /api/admin/supplier-offers?productIds=a,b,c
  */
 router.get("/", bulkOffersHandler);
 
@@ -366,7 +395,10 @@ router.get(
     });
     if (!product) return res.status(404).json({ error: "Product not found" });
 
-    const supplierMeta = { supplierId: String(product.supplierId), supplierName: product.supplier?.name ?? null };
+    const supplierMeta = {
+      supplierId: String(product.supplierId),
+      supplierName: product.supplier?.name ?? null,
+    };
 
     const [baseOffers, variantOffers] = await Promise.all([
       prisma.supplierProductOffer.findMany({
@@ -398,17 +430,11 @@ router.get(
     for (const v of variantOffers as any[]) out.push(toDtoVariant(v, supplierMeta));
 
     return res.json({ data: out });
-  })
+  }),
 );
 
 /**
  * POST /api/admin/products/:productId/supplier-offers
- *
- * ✅ BASE:   { supplierId?(must match product), variantId:null, price, ... } => SupplierProductOffer.basePrice
- * ✅ VARIANT:{ supplierId?(must match product), variantId, price, ... }      => SupplierVariantOffer.unitPrice
- *
- * ❗ IMPORTANT POLICY:
- * - Variant offers NEVER create base offers automatically.
  */
 router.post(
   "/products/:productId/supplier-offers",
@@ -424,9 +450,9 @@ router.post(
 
     const supplierId = String(product.supplierId ?? "");
     if (!supplierId) {
-      return res
-        .status(409)
-        .json({ error: "This product has no supplierId configured." });
+      return res.status(409).json({
+        error: "This product has no supplierId configured.",
+      });
     }
 
     // accept supplierId but validate it matches product
@@ -453,7 +479,7 @@ router.post(
     if (kind === "BASE" || !variantId) {
       const data = {
         productId,
-        supplierId, // ✅ REQUIRED now
+        supplierId, // required
         basePrice: toDecimal(price),
         currency: parsed.currency ?? "NGN",
         availableQty: qty,
@@ -462,7 +488,7 @@ router.post(
         inStock,
       };
 
-      // 🔧 productId is NOT unique anymore → but there should be at most one per product+supplier
+      // At most one base offer per product+supplier
       const existing = await prisma.supplierProductOffer.findFirst({
         where: { productId, supplierId },
         select: { id: true },
@@ -485,7 +511,6 @@ router.post(
     }
 
     // ---------------- VARIANT ----------------
-    // VARIANT must belong to this product
     const variant = await prisma.productVariant.findUnique({
       where: { id: String(variantId) },
       select: { id: true, productId: true },
@@ -503,12 +528,12 @@ router.post(
     });
 
     const created = await prisma.supplierVariantOffer.upsert({
-      where: { variantId: String(variantId) }, // ✅ unique in your schema
+      where: { variantId: String(variantId) }, // unique in schema
       create: {
         productId,
         variantId: String(variantId),
         supplierProductOfferId: base?.id ?? null,
-        supplierId, // ✅ keep variant offer tied to same supplier
+        supplierId, // required
         unitPrice: toDecimal(price),
         currency: parsed.currency ?? base?.currency ?? "NGN",
         availableQty: qty,
@@ -519,7 +544,7 @@ router.post(
       update: {
         productId,
         supplierProductOfferId: base?.id ?? null,
-        supplierId, // ✅ keep in sync on update too
+        supplierId, // keep in sync
         unitPrice: toDecimal(price),
         currency: parsed.currency ?? base?.currency ?? "NGN",
         availableQty: qty,
@@ -536,16 +561,10 @@ router.post(
     return res.status(201).json({ data: toDtoVariant(created, supplierMeta) });
   }),
 );
+
 /**
  * PATCH /api/admin/supplier-offers/:id
  * id: base:<id> | variant:<id>
- *
- * ✅ TRUE PATCH: updates existing record (NO delete) unless doing explicit convert.
- * ✅ supplierId is accepted for compatibility but validated against Product.supplierId (never stored on offers).
- *
- * Conversion support (optional, matches your pasted file behavior):
- * - BASE + variantId => convert BASE -> VARIANT (delete base, create variant) (only if not used in orders)
- * - VARIANT + variantId:null => convert VARIANT -> BASE (delete variant, upsert base) (only if not used in orders)
  */
 router.patch(
   "/supplier-offers/:id",
@@ -612,8 +631,9 @@ router.patch(
 
         await assertSupplierMatchesProduct(productId, patch.supplierId ?? null);
 
+        const supplierId = String(product.supplierId);
         const supplierMeta = {
-          supplierId: String(product.supplierId),
+          supplierId,
           supplierName: product.supplier?.name ?? null,
         };
 
@@ -634,9 +654,6 @@ router.patch(
               .json({ error: "variantId does not belong to this product" });
           }
 
-          const supplierId = String(product.supplierId);
-
-          // create/replace VARIANT by unique variantId
           const nextPrice =
             patch.price !== undefined
               ? Number(patch.price)
@@ -672,7 +689,7 @@ router.patch(
                 productId,
                 variantId: targetVariantId,
                 supplierProductOfferId: null,
-                supplierId, // ✅ set supplier on variant offer
+                supplierId,
                 unitPrice: toDecimal(nextPrice),
                 currency: nextCurrency,
                 availableQty: nextQty,
@@ -683,7 +700,7 @@ router.patch(
               update: {
                 productId,
                 supplierProductOfferId: null,
-                supplierId, // ✅ keep supplier in sync
+                supplierId,
                 unitPrice: toDecimal(nextPrice),
                 currency: nextCurrency,
                 availableQty: nextQty,
@@ -711,6 +728,8 @@ router.patch(
 
         // TRUE PATCH update only
         const data: any = {};
+        data.supplierId = supplierId; // keep offer's supplier in sync
+
         if (patch.currency) data.currency = patch.currency;
 
         if (patch.price !== undefined) {
@@ -780,11 +799,11 @@ router.patch(
 
       await assertSupplierMatchesProduct(productId, patch.supplierId ?? null);
 
+      const supplierId = String(product.supplierId);
       const supplierMeta = {
-        supplierId: String(product.supplierId),
+        supplierId,
         supplierName: product.supplier?.name ?? null,
       };
-      const supplierId = String(product.supplierId);
 
       // convert VARIANT -> BASE if caller explicitly sends variantId: null
       const rawVariantId = (req.body as any)?.variantId;
@@ -825,7 +844,7 @@ router.patch(
             : existing.leadDays ?? null;
 
         const moved = await prisma.$transaction(async (tx) => {
-          // 🔧 productId is NOT unique anymore → manual upsert, but supplierId is required
+          // Upsert base per product+supplier
           const existingBase = await tx.supplierProductOffer.findFirst({
             where: { productId, supplierId },
             select: { id: true },
@@ -833,7 +852,7 @@ router.patch(
 
           const baseData = {
             productId,
-            supplierId, // ✅ REQUIRED on SupplierProductOffer
+            supplierId,
             basePrice: toDecimal(nextPrice),
             currency: nextCurrency,
             availableQty: nextQty,
@@ -891,6 +910,7 @@ router.patch(
 
       // TRUE PATCH update only
       const data: any = {};
+      data.supplierId = supplierId; // keep variant's supplier consistent
 
       if (patch.currency) data.currency = patch.currency;
 
@@ -931,14 +951,13 @@ router.patch(
         data.variantId = String(patch.variantId);
       }
 
-      // keep link independent unless base exists (use same supplierId)
+      // keep link to base if exists (per product+supplier)
       const base = await prisma.supplierProductOffer.findFirst({
         where: { productId, supplierId },
         select: { id: true },
       });
       data.supplierProductOfferId = base?.id ?? null;
       data.productId = productId;
-      data.supplierId = supplierId; // ✅ keep variant's supplier in sync
 
       const nextQty =
         data.availableQty !== undefined
@@ -990,7 +1009,8 @@ router.delete(
 
     if (parsedId.kind === "LEGACY") {
       return res.status(400).json({
-        error: "Legacy offer id received. Use base:<id> or variant:<id> with the new 2-table system.",
+        error:
+          "Legacy offer id received. Use base:<id> or variant:<id> with the new 2-table system.",
       });
     }
 
@@ -1058,7 +1078,7 @@ router.delete(
 
       await assertProductOffersDeletable(pid);
 
-      // detach any linked variant offers (nullable in your schema)
+      // detach any linked variant offers
       await tx.supplierVariantOffer.updateMany({
         where: { supplierProductOfferId: base.id },
         data: { supplierProductOfferId: null },
@@ -1088,8 +1108,12 @@ router.delete(
       return res.status((result as any).status).json({ error: (result as any).msg });
     }
 
-    return res.json({ ok: true, deleted: (result as any).deleted, productId: (result as any).productId });
-  })
+    return res.json({
+      ok: true,
+      deleted: (result as any).deleted,
+      productId: (result as any).productId,
+    });
+  }),
 );
 
 /**
@@ -1122,15 +1146,11 @@ router.delete(
     });
 
     return res.json({ ok: true, productId, ...deleted });
-  })
+  }),
 );
 
 /**
  * POST /api/admin/products/:productId/supplier-offers/repair
- *
- * ✅ Repair only:
- *  - ensures supplierProductOfferId links are consistent
- * ✅ IMPORTANT: NEVER creates a base row
  */
 router.post(
   "/products/:productId/supplier-offers/repair",
@@ -1184,7 +1204,7 @@ router.post(
     });
 
     return res.json({ ok: true, productId, ...result });
-  })
+  }),
 );
 
 export default router;

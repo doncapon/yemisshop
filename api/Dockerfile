@@ -25,7 +25,7 @@ RUN apk add --no-cache openssl libc6-compat
 ENV NODE_ENV=production
 ENV PORT=8080
 # ✅ default: seed runs. Set RUN_SEED=false in Railway if you want to disable.
-ENV RUN_SEED=false
+ENV RUN_SEED=true
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
@@ -33,7 +33,7 @@ COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/package-lock.json ./package-lock.json
 
-# RUN npm run seed:shipping
+RUN npm run seed:shipping
 
 COPY start.sh ./start.sh
 RUN chmod +x ./start.sh

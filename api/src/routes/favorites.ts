@@ -91,7 +91,14 @@ async function getMarginPercentCached(): Promise<number> {
     const rowB = await prisma.setting.findUnique({ where: { key: "pricingMarkupPercent" } });
     const vB = toNumAny(rowB?.value);
 
-    const v = Math.max(0, Number.isFinite(vA as any) ? (vA as number) : Number.isFinite(vB as any) ? (vB as number) : 0);
+    const v = Math.max(
+      0,
+      Number.isFinite(vA as any)
+        ? (vA as number)
+        : Number.isFinite(vB as any)
+          ? (vB as number)
+          : 0
+    );
     cachedMargin = { v, at: now };
     return v;
   } catch {
@@ -152,7 +159,9 @@ async function buildFavoritesItems(userId: string) {
     if (p) {
       supplierMinPrice = pickCheapestSupplierPrice(p);
       computedRetailPrice =
-        supplierMinPrice != null && supplierMinPrice > 0 ? applyMargin(supplierMinPrice, marginPercent) : null;
+        supplierMinPrice != null && supplierMinPrice > 0
+          ? applyMargin(supplierMinPrice, marginPercent)
+          : null;
     }
 
     return {
@@ -172,10 +181,6 @@ async function buildFavoritesItems(userId: string) {
             retailPrice: p.retailPrice != null ? Number(p.retailPrice as any) : null,
             images: normalizeImages((p as any).imagesJson),
             sku: (p as any).sku ?? null,
-
-            // (optional) also include computed fields inside product if you prefer
-            // supplierMinPrice,
-            // computedRetailPrice,
           }
         : null,
     };
@@ -200,11 +205,51 @@ router.get("/", async (req, res, next) => {
 
 /**
  * Optional alias (if referenced elsewhere)
+ * GET /api/favorites/mine
  */
 router.get("/mine", async (req, res, next) => {
   try {
     const items = await buildFavoritesItems(req.user!.id);
     return res.json({ items });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * POST /api/favorites/toggle
+ * Body: { productId: string }
+ * Toggles a single product in the current user's favorites list.
+ * Response:
+ *   - { isFavorite: true, id: string } if now added
+ *   - { isFavorite: false } if removed
+ */
+router.post("/toggle", async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const productIdRaw = (req.body as any)?.productId;
+    const productId = typeof productIdRaw === "string" ? productIdRaw.trim() : "";
+
+    if (!productId) {
+      return res.status(400).json({ error: "productId is required" });
+    }
+
+    const existing = await prisma.favorite.findFirst({
+      where: { userId, productId },
+      select: { id: true },
+    });
+
+    if (existing) {
+      await prisma.favorite.delete({ where: { id: existing.id } });
+      return res.json({ isFavorite: false });
+    }
+
+    const created = await prisma.favorite.create({
+      data: { userId, productId },
+      select: { id: true },
+    });
+
+    return res.json({ isFavorite: true, id: created.id });
   } catch (e) {
     next(e);
   }
