@@ -13,12 +13,23 @@ type IncomingItem = {
   variantId?: string | null;
   kind?: CartKind;
   qty?: number;
-  selectedOptions?: any[];
+  selectedOptions?: any[]; // raw from client
   optionsKey?: string; // optional
   titleSnapshot?: string | null;
   imageSnapshot?: string | null;
   unitPriceCache?: number | null;
 };
+
+type SelectedOptionSnapshot = {
+  attributeId: string;
+  attribute: string;
+  valueId?: string | null;
+  value: string;
+};
+
+/* -------------------------------------------------------------------------- */
+/* Helpers                                                                    */
+/* -------------------------------------------------------------------------- */
 
 function normKind(kind?: string, variantId?: string | null): CartKind {
   const k = String(kind || "").toUpperCase();
@@ -33,6 +44,170 @@ function asInt(v: any, d = 0) {
 
 function clampQty(q: any) {
   return Math.max(1, asInt(q, 1));
+}
+
+/** Heuristic: detect IDs / codes like `cmm7f4...` so we don't treat them as labels */
+function isCodeLike(raw: unknown): boolean {
+  const s = String(raw ?? "").trim();
+  if (!s) return false;
+
+  // If it has spaces, treat as a normal human label.
+  if (/\s/.test(s)) return false;
+
+  // Explicit DaySpring-style IDs like cmm7f4...
+  if (/^cmm[0-9a-z]{5,}$/i.test(s)) return true;
+
+  // UUID-ish tokens
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) {
+    return true;
+  }
+
+  // Very long pure hex strings
+  if (/^[0-9a-f]{16,}$/i.test(s)) return true;
+
+  // Otherwise, assume it’s a human-readable name (e.g. Black-M, Blue_L)
+  return false;
+}
+
+/**
+ * Normalise a raw `selectedOptions` array into a clean snapshot:
+ *  - Ensures attributeId / valueId are strings
+ *  - Fills in attribute/value names from DB when missing or code-like
+ *  - For variant lines, derives directly from ProductVariantOption relations
+ */
+async function computeSelectedOptionsSnapshot(args: {
+  productId: string;
+  variantId?: string | null;
+  selectedOptions?: any;
+}): Promise<SelectedOptionSnapshot[] | null> {
+  const productId = String(args.productId);
+  const variantId = args.variantId == null ? null : String(args.variantId);
+
+  // 1) Variant line → derive from variant options (source of truth)
+  if (variantId) {
+    const variant = await prisma.productVariant.findUnique({
+      where: { id: variantId },
+      include: {
+        options: {
+          include: {
+            attribute: true,
+            value: true,
+          },
+        },
+      },
+    });
+
+    if (!variant) return null;
+
+    const out: SelectedOptionSnapshot[] = variant.options.map((opt) => ({
+      attributeId: opt.attributeId,
+      attribute: opt.attribute?.name ?? "",
+      valueId: opt.valueId,
+      value: opt.value?.name ?? "",
+    }));
+
+    return out.length ? out : null;
+  }
+
+  // 2) Base line with manual selectedOptions
+  const rawArr = Array.isArray(args.selectedOptions)
+    ? args.selectedOptions
+    : args.selectedOptions
+    ? [args.selectedOptions]
+    : [];
+
+  if (!rawArr.length) return null;
+
+  // Detect if everything already has good labels (no DB hit required)
+  const alreadyHumanReadable = rawArr.every((o: any) => {
+    const attrName = String(o?.attribute ?? "").trim();
+    const valName = String(o?.value ?? "").trim();
+    if (!attrName && !valName) return false;
+    return !isCodeLike(attrName) && !isCodeLike(valName);
+  });
+
+  if (alreadyHumanReadable) {
+    const mapped: SelectedOptionSnapshot[] = rawArr
+      .map((o: any) => {
+        const attributeId = String(o?.attributeId ?? "");
+        const valueId = o?.valueId != null ? String(o.valueId) : undefined;
+        const attribute = String(o?.attribute ?? "").trim();
+        const value = String(o?.value ?? "").trim();
+
+        if (!attributeId && !valueId && !attribute && !value) return null;
+
+        return {
+          attributeId,
+          attribute,
+          valueId,
+          value,
+        };
+      })
+      .filter(Boolean) as SelectedOptionSnapshot[];
+
+    return mapped.length ? mapped : null;
+  }
+
+  // We need to look up names by IDs
+  const attrIds = new Set<string>();
+  const valIds = new Set<string>();
+
+  for (const o of rawArr) {
+    const aId = o?.attributeId ? String(o.attributeId) : "";
+    const vId = o?.valueId ? String(o.valueId) : "";
+
+    if (aId) attrIds.add(aId);
+    if (vId) valIds.add(vId);
+  }
+
+  const [attributes, values] = await Promise.all([
+    attrIds.size
+      ? prisma.attribute.findMany({
+          where: { id: { in: Array.from(attrIds) } },
+          select: { id: true, name: true },
+        })
+      : Promise.resolve([]),
+    valIds.size
+      ? prisma.attributeValue.findMany({
+          where: { id: { in: Array.from(valIds) } },
+          select: { id: true, name: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const attrMap = new Map(attributes.map((a) => [a.id, a.name]));
+  const valMap = new Map(values.map((v) => [v.id, v.name]));
+
+  const normalized: SelectedOptionSnapshot[] = rawArr
+    .map((o: any) => {
+      const attributeId = o?.attributeId ? String(o.attributeId) : "";
+      const valueId = o?.valueId != null ? String(o.valueId) : undefined;
+
+      const existingAttr = String(o?.attribute ?? "").trim();
+      const existingVal = String(o?.value ?? "").trim();
+
+      const attribute =
+        (!existingAttr || isCodeLike(existingAttr)) && attributeId
+          ? attrMap.get(attributeId) || existingAttr
+          : existingAttr;
+
+      const value =
+        (!existingVal || isCodeLike(existingVal)) && valueId
+          ? valMap.get(valueId) || existingVal
+          : existingVal;
+
+      if (!attributeId && !valueId && !attribute && !value) return null;
+
+      return {
+        attributeId,
+        attribute,
+        valueId,
+        value,
+      };
+    })
+    .filter(Boolean) as SelectedOptionSnapshot[];
+
+  return normalized.length ? normalized : null;
 }
 
 async function getOrCreateActiveCart(userId: string) {
@@ -69,7 +244,7 @@ function lineUniqWhere(cartId: string, it: IncomingItem): Prisma.CartItemWhereUn
       cartId,
       productId,
       variantId, // ✅ non-null for this unique
-      kind,      // String in schema
+      kind, // String in schema
       optionsKey,
     };
 
@@ -85,6 +260,10 @@ function lineUniqWhere(cartId: string, it: IncomingItem): Prisma.CartItemWhereUn
 
   return { cart_line_base_unique: compound };
 }
+
+/* -------------------------------------------------------------------------- */
+/* Routes                                                                      */
+/* -------------------------------------------------------------------------- */
 
 /**
  * GET /api/cart
@@ -116,7 +295,25 @@ router.get("/", requireAuth, async (req, res) => {
     },
   });
 
-  return res.json({ cartId: cart?.id ?? null, items: cart?.items ?? [] });
+  let items = cart?.items ?? [];
+
+  // Enrich selectedOptions for older/stale items so UI sees human-readable labels
+  const enrichedItems = await Promise.all(
+    items.map(async (it) => {
+      const snapshot = await computeSelectedOptionsSnapshot({
+        productId: it.productId,
+        variantId: it.variantId,
+        selectedOptions: it.selectedOptions as any,
+      });
+
+      return {
+        ...it,
+        selectedOptions: snapshot ?? it.selectedOptions,
+      };
+    })
+  );
+
+  return res.json({ cartId: cart?.id ?? null, items: enrichedItems });
 });
 
 /**
@@ -188,6 +385,14 @@ router.post("/items", requireAuth, async (req, res) => {
     const kind = normKind(body.kind, variantId);
     const qtyAdd = clampQty(body.qty ?? 1);
 
+    // 🔍 Build a nice human-readable selectedOptions snapshot
+    const selectedOptionsSnapshot =
+      (await computeSelectedOptionsSnapshot({
+        productId: body.productId,
+        variantId,
+        selectedOptions: body.selectedOptions,
+      })) ?? [];
+
     const where = lineUniqWhere(cart.id, { ...body, variantId, kind });
 
     const existing = await prisma.cartItem.findUnique({
@@ -205,7 +410,7 @@ router.post("/items", requireAuth, async (req, res) => {
         variantId,
         kind,
         qty: nextQty,
-        selectedOptions: body.selectedOptions ?? [],
+        selectedOptions: selectedOptionsSnapshot,
         optionsKey: String(body.optionsKey || ""),
         titleSnapshot: body.titleSnapshot ?? null,
         imageSnapshot: body.imageSnapshot ?? null,
@@ -213,7 +418,7 @@ router.post("/items", requireAuth, async (req, res) => {
       },
       update: {
         qty: nextQty,
-        selectedOptions: body.selectedOptions ?? undefined,
+        selectedOptions: selectedOptionsSnapshot.length ? selectedOptionsSnapshot : undefined,
         titleSnapshot: body.titleSnapshot ?? undefined,
         imageSnapshot: body.imageSnapshot ?? undefined,
         unitPriceCache: body.unitPriceCache != null ? body.unitPriceCache : undefined,
@@ -302,6 +507,14 @@ router.post("/merge", requireAuth, async (req, res) => {
       const kind = normKind(raw.kind, variantId);
       const qtyAdd = clampQty(raw.qty ?? 1);
 
+      // 🔍 Enrich selectedOptions for merged guest lines too
+      const selectedOptionsSnapshot =
+        (await computeSelectedOptionsSnapshot({
+          productId: raw.productId,
+          variantId,
+          selectedOptions: raw.selectedOptions,
+        })) ?? [];
+
       const where = lineUniqWhere(cart.id, { ...raw, variantId, kind });
 
       const existing = await prisma.cartItem.findUnique({
@@ -319,7 +532,7 @@ router.post("/merge", requireAuth, async (req, res) => {
           variantId,
           kind,
           qty: nextQty,
-          selectedOptions: raw.selectedOptions ?? [],
+          selectedOptions: selectedOptionsSnapshot,
           optionsKey: String(raw.optionsKey || ""),
           titleSnapshot: raw.titleSnapshot ?? null,
           imageSnapshot: raw.imageSnapshot ?? null,
@@ -327,7 +540,7 @@ router.post("/merge", requireAuth, async (req, res) => {
         },
         update: {
           qty: nextQty,
-          selectedOptions: raw.selectedOptions ?? undefined,
+          selectedOptions: selectedOptionsSnapshot.length ? selectedOptionsSnapshot : undefined,
           titleSnapshot: raw.titleSnapshot ?? undefined,
           imageSnapshot: raw.imageSnapshot ?? undefined,
           unitPriceCache: raw.unitPriceCache != null ? raw.unitPriceCache : undefined,

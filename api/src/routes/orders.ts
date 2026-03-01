@@ -610,60 +610,66 @@ async function fetchActiveBaseOffersTx(
   tx: any,
   where: { productId: string }
 ): Promise<CandidateOffer[]> {
-  const row = await tx.supplierProductOffer.findFirst({
-    where: {
-      productId: where.productId,
-      isActive: true,
-      inStock: true,
-      availableQty: { gt: 0 },
-      basePrice: { gt: 0 },
-      product: {
-        status: "LIVE",
-        isDeleted: false,
-        supplier: { ...checkoutReadySupplierWhere() },
-      },
-    },
-    select: {
-      id: true,
-      availableQty: true,
-      basePrice: true,
-      leadDays: true,
-      product: {
-        select: {
-          supplierId: true,
-          supplier: { select: { ratingAvg: true, ratingCount: true } },
+  // 🔹 FIX: use findMany so we see *all* base offers for this product
+  const rows =
+    ((await tx.supplierProductOffer.findMany({
+      where: {
+        productId: where.productId,
+        isActive: true,
+        inStock: true,
+        availableQty: { gt: 0 },
+        basePrice: { gt: 0 },
+        product: {
+          status: "LIVE",
+          isDeleted: false,
+          supplier: { ...checkoutReadySupplierWhere() },
         },
       },
-    },
-  });
-
-  if (row) {
-    const supplierId = String(row.product?.supplierId ?? "");
-    const price = asNumber(row.basePrice, 0);
-    const qty = Math.max(0, asNumber(row.availableQty, 0));
-
-    if (supplierId && price > 0 && qty > 0) {
-      return [
-        {
-          id: String(row.id),
-          supplierId,
-          availableQty: qty,
-          unitPrice: price,
-          model: "BASE_OFFER",
-          supplierProductOfferId: String(row.id),
-          supplierVariantOfferId: null,
-          leadDays: row.leadDays == null ? null : Number(row.leadDays),
-          supplierRatingAvg:
-            row.product?.supplier?.ratingAvg != null
-              ? Number(row.product.supplier.ratingAvg)
-              : null,
-          supplierRatingCount:
-            row.product?.supplier?.ratingCount != null
-              ? Number(row.product.supplier.ratingCount)
-              : null,
+      select: {
+        id: true,
+        availableQty: true,
+        basePrice: true,
+        leadDays: true,
+        product: {
+          select: {
+            supplierId: true,
+            supplier: { select: { ratingAvg: true, ratingCount: true } },
+          },
         },
-      ];
-    }
+      },
+    })) as any[]) ?? [];
+
+  const current: CandidateOffer[] = rows
+    .map((row: any) => {
+      const supplierId = String(row.product?.supplierId ?? "");
+      const price = asNumber(row.basePrice, 0);
+      const qty = Math.max(0, asNumber(row.availableQty, 0));
+
+      if (!supplierId || !(price > 0) || !(qty > 0)) return null;
+
+      return {
+        id: String(row.id),
+        supplierId,
+        availableQty: qty,
+        unitPrice: price,
+        model: "BASE_OFFER" as const,
+        supplierProductOfferId: String(row.id),
+        supplierVariantOfferId: null,
+        leadDays: row.leadDays == null ? null : Number(row.leadDays),
+        supplierRatingAvg:
+          row.product?.supplier?.ratingAvg != null
+            ? Number(row.product.supplier.ratingAvg)
+            : null,
+        supplierRatingCount:
+          row.product?.supplier?.ratingCount != null
+            ? Number(row.product.supplier.ratingCount)
+            : null,
+      } as CandidateOffer;
+    })
+    .filter(Boolean) as CandidateOffer[];
+
+  if (current.length) {
+    return sortOffersCheapestFirst(current);
   }
 
   // legacy fallback (if you still keep legacy table around)
@@ -692,7 +698,7 @@ async function fetchActiveBaseOffersTx(
         model: "LEGACY_OFFER" as const,
         supplierProductOfferId: null,
         supplierVariantOfferId: null,
-      };
+      } as CandidateOffer;
     })
     .filter(Boolean)
     .filter((o: any) => o.availableQty > 0 && o.unitPrice > 0);
@@ -833,63 +839,69 @@ async function fetchActiveOffersTx(
   tx: any,
   where: { productId: string; variantId: string }
 ): Promise<CandidateOffer[]> {
-  const vo = await tx.supplierVariantOffer.findFirst({
-    where: {
-      productId: where.productId,
-      variantId: where.variantId,
-      isActive: true,
-      inStock: true,
-      availableQty: { gt: 0 },
-      product: {
-        status: "LIVE",
-        isDeleted: false,
-        supplier: { ...checkoutReadySupplierWhere() },
-      },
-    } as any,
-    select: {
-      id: true,
-      availableQty: true,
-      unitPrice: true,
-      supplierProductOfferId: true,
-      leadDays: true,
-      product: {
-        select: {
-          supplierId: true,
-          supplier: { select: { ratingAvg: true, ratingCount: true } },
+  // 🔹 FIX: use findMany so we see *all* variant offers for this product+variant
+  const vos =
+    ((await tx.supplierVariantOffer.findMany({
+      where: {
+        productId: where.productId,
+        variantId: where.variantId,
+        isActive: true,
+        inStock: true,
+        availableQty: { gt: 0 },
+        product: {
+          status: "LIVE",
+          isDeleted: false,
+          supplier: { ...checkoutReadySupplierWhere() },
         },
-      },
-    } as any,
-  });
+      } as any,
+      select: {
+        id: true,
+        availableQty: true,
+        unitPrice: true,
+        supplierProductOfferId: true,
+        leadDays: true,
+        product: {
+          select: {
+            supplierId: true,
+            supplier: { select: { ratingAvg: true, ratingCount: true } },
+          },
+        },
+      } as any,
+    })) as any[]) ?? [];
 
-  if (vo) {
-    const supplierId = String(vo.product?.supplierId ?? "");
-    const unit = asNumber(vo.unitPrice, 0);
-    const qty = Math.max(0, asNumber(vo.availableQty, 0));
+  const current: CandidateOffer[] = vos
+    .map((vo: any) => {
+      const supplierId = String(vo.product?.supplierId ?? "");
+      const unit = asNumber(vo.unitPrice, 0);
+      const qty = Math.max(0, asNumber(vo.availableQty, 0));
 
-    if (supplierId && unit > 0 && qty > 0) {
-      return [
-        {
-          id: String(vo.id),
-          supplierId,
-          availableQty: qty,
-          unitPrice: unit,
-          model: "VARIANT_OFFER",
-          supplierProductOfferId: vo.supplierProductOfferId
-            ? String(vo.supplierProductOfferId)
+      if (!supplierId || !(unit > 0) || !(qty > 0)) return null;
+
+      return {
+        id: String(vo.id),
+        supplierId,
+        availableQty: qty,
+        unitPrice: unit,
+        model: "VARIANT_OFFER" as const,
+        supplierProductOfferId: vo.supplierProductOfferId
+          ? String(vo.supplierProductOfferId)
+          : null,
+        supplierVariantOfferId: String(vo.id),
+        leadDays: vo.leadDays != null ? Number(vo.leadDays) : null,
+        supplierRatingAvg:
+          vo.product?.supplier?.ratingAvg != null
+            ? Number(vo.product.supplier.ratingAvg)
             : null,
-          supplierVariantOfferId: String(vo.id),
-          leadDays: vo.leadDays != null ? Number(vo.leadDays) : null,
-          supplierRatingAvg:
-            vo.product?.supplier?.ratingAvg != null
-              ? Number(vo.product.supplier.ratingAvg)
-              : null,
-          supplierRatingCount:
-            vo.product?.supplier?.ratingCount != null
-              ? Number(vo.product.supplier.ratingCount)
-              : null,
-        },
-      ];
-    }
+        supplierRatingCount:
+          vo.product?.supplier?.ratingCount != null
+            ? Number(vo.product.supplier.ratingCount)
+            : null,
+      } as CandidateOffer;
+    })
+    .filter(Boolean) as CandidateOffer[];
+
+  if (current.length) {
+    return sortOffersCheapestFirst(current);
   }
 
   // legacy fallback
@@ -918,7 +930,7 @@ async function fetchActiveOffersTx(
         model: "LEGACY_OFFER" as const,
         supplierProductOfferId: null,
         supplierVariantOfferId: null,
-      };
+      } as CandidateOffer;
     })
     .filter(Boolean)
     .filter((o: any) => o.availableQty > 0 && o.unitPrice > 0);
@@ -1681,13 +1693,26 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
                 `Offer mismatch: wrong product for offer ${explicitOfferId}.`
               );
 
+            // 🔹 Use the offer's own model + variantId to decide base vs variant
+            const model = one.model;
             variantId = one.variantId ? String(one.variantId) : null;
-            if (!variantId && variantFromOptions) variantId = String(variantFromOptions);
 
-            if (variantId) {
-              await assertVariantSellableTx(tx, productId, variantId);
-              candidates = await fetchActiveOffersTx(tx, { productId, variantId });
+            if (model === "VARIANT_OFFER" || variantId) {
+              // this is a variant offer (or points to a variant)
+              if (!variantId && variantFromOptions) {
+                variantId = String(variantFromOptions);
+              }
+
+              if (variantId) {
+                await assertVariantSellableTx(tx, productId, variantId);
+                candidates = await fetchActiveOffersTx(tx, { productId, variantId });
+              } else {
+                // extremely defensive: if we somehow still have no variant, fallback to base
+                candidates = await fetchActiveBaseOffersTx(tx, { productId });
+              }
             } else {
+              // BASE_OFFER or legacy without variantId → treat as base, ignore variantFromOptions
+              variantId = null;
               candidates = await fetchActiveBaseOffersTx(tx, { productId });
             }
           } else {

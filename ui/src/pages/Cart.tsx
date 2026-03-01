@@ -163,6 +163,50 @@ type ServerCartItem = {
   unitPriceCache?: any;
 };
 
+/* ---------------- Shared keys / options ---------------- */
+
+/** Heuristic: detect IDs / codes like `cmm7f4...` so we don't show them as labels */
+function isCodeLike(raw: string | undefined | null): boolean {
+  const s = String(raw ?? "").trim();
+  if (!s) return false;
+
+  // If it has spaces, treat as a normal human label.
+  if (/\s/.test(s)) return false;
+
+  // Explicit DaySpring-style IDs like cmm7f4...
+  if (/^cmm[0-9a-z]{5,}$/i.test(s)) return true;
+
+  // UUID-ish tokens
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) {
+    return true;
+  }
+
+  // Very long pure hex strings
+  if (/^[0-9a-f]{16,}$/i.test(s)) return true;
+
+  // Otherwise, assume it’s a human-readable name (e.g. Black-M, Blue_L)
+  return false;
+}
+
+function normalizeSelectedOptions(raw: any): SelectedOption[] {
+  const arr = (Array.isArray(raw) ? raw : raw ? [raw] : [])
+    .map((o: any) => ({
+      attributeId: String(o.attributeId ?? ""),
+      attribute: String(o.attribute ?? ""),
+      valueId: o.valueId ? String(o.valueId) : undefined,
+      value: String(o.value ?? ""),
+    }))
+    .filter((o: any) => o.attributeId || o.attribute || o.valueId || o.value);
+
+  arr.sort((a, b) => {
+    const aKey = `${a.attributeId}:${a.valueId ?? a.value}`;
+    const bKey = `${b.attributeId}:${b.valueId ?? b.value}`;
+    return aKey.localeCompare(bKey);
+  });
+
+  return arr;
+}
+
 async function fetchServerCart(): Promise<CartItem[]> {
   const { data } = await api.get("/api/cart", AXIOS_COOKIE_CFG);
   const items: ServerCartItem[] = Array.isArray((data as any)?.items) ? (data as any).items : [];
@@ -182,7 +226,8 @@ async function fetchServerCart(): Promise<CartItem[]> {
       qty,
       unitPrice: unit,
       totalPrice: unit * qty,
-      selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : [],
+      // ✅ normalize to strip empty junk & keep structure
+      selectedOptions: normalizeSelectedOptions(it.selectedOptions),
       image: img,
     };
   });
@@ -196,27 +241,6 @@ async function serverSetQty(item: CartItem, qty: number) {
   } else {
     await api.patch(`/api/cart/items/${item.id}`, { qty: next }, AXIOS_COOKIE_CFG);
   }
-}
-
-/* ---------------- Shared keys / options ---------------- */
-
-function normalizeSelectedOptions(raw: any): SelectedOption[] {
-  const arr = (Array.isArray(raw) ? raw : raw ? [raw] : [])
-    .map((o: any) => ({
-      attributeId: String(o.attributeId ?? ""),
-      attribute: String(o.attribute ?? ""),
-      valueId: o.valueId ? String(o.valueId) : undefined,
-      value: String(o.value ?? ""),
-    }))
-    .filter((o: any) => o.attributeId || o.attribute || o.valueId || o.value);
-
-  arr.sort((a, b) => {
-    const aKey = `${a.attributeId}:${a.valueId ?? a.value}`;
-    const bKey = `${b.attributeId}:${b.valueId ?? b.value}`;
-    return aKey.localeCompare(bKey);
-  });
-
-  return arr;
 }
 
 function optionsKey(sel?: SelectedOption[]) {
@@ -614,7 +638,7 @@ export default function Cart() {
       }
 
       if (isAuthed) {
-        loadCart().catch(() => {});
+        loadCart().catch(() => { });
         return;
       }
 
@@ -747,21 +771,13 @@ export default function Cart() {
         asMoney(it.unitPrice, 0) > 0
           ? asMoney(it.unitPrice, 0)
           : qty > 0
-          ? asMoney(it.totalPrice, 0) / qty
-          : 0;
+            ? asMoney(it.totalPrice, 0) / qty
+            : 0;
 
       const lineTotal = round2(Math.max(0, cachedUnit) * qty);
       return sum + lineTotal;
     }, 0);
   }, [visibleCart]);
-
-  const sumOtherLinesQty = (productId: string, except: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) => {
-    return cart.reduce((s, it) => {
-      if (it.productId !== productId) return s;
-      if (sameLine(it, except)) return s;
-      return s + Math.max(0, Number(it.qty) || 0);
-    }, 0);
-  };
 
   const computedCapForLine = (item: CartItem): number | undefined => {
     const data = availabilityQ.data as AvailabilityPayload | undefined;
@@ -868,7 +884,7 @@ export default function Cart() {
           await serverSetQty(target, clamped);
           await loadCart();
         } catch {
-          await loadCart().catch(() => {});
+          await loadCart().catch(() => { });
         }
       } else {
         // ✅ persist guest immediately (no race)
@@ -894,7 +910,7 @@ export default function Cart() {
           await serverSetQty(target, 0);
           await loadCart();
         } catch {
-          await loadCart().catch(() => {});
+          await loadCart().catch(() => { });
         }
       } else {
         // ✅ persist guest immediately (so last item removal works)
@@ -991,8 +1007,8 @@ export default function Cart() {
                   asMoney(it.unitPrice, 0) > 0
                     ? asMoney(it.unitPrice, 0)
                     : currentQty > 0
-                    ? asMoney(it.totalPrice, 0) / currentQty
-                    : 0;
+                      ? asMoney(it.totalPrice, 0) / currentQty
+                      : 0;
 
                 const displayUnit = Math.max(0, cachedUnit);
                 const displayLineTotal = round2(displayUnit * currentQty);
@@ -1003,16 +1019,16 @@ export default function Cart() {
                   hasQuote && ql.allocations.filter((a) => a.qty > 0).length > 1
                     ? "Split across suppliers"
                     : hasQuote && ql.allocations.length === 1
-                    ? "Single supplier"
-                    : "";
+                      ? "Single supplier"
+                      : "";
 
                 const kindLabel = isBaseLine(it)
                   ? "Base"
                   : it.variantId
-                  ? "Variant"
-                  : it.selectedOptions?.length
-                  ? "Configured"
-                  : "Item";
+                    ? "Variant"
+                    : it.selectedOptions?.length
+                      ? "Configured"
+                      : "Item";
 
                 const isExpanded = !!expanded[k];
 
@@ -1048,6 +1064,43 @@ export default function Cart() {
                 };
 
                 const unitText = displayUnit > 0 ? ngn.format(displayUnit) : "—";
+
+                // ✅ Use normalized options, and prefer human names over IDs/codes
+                const displayOptions = normalizeSelectedOptions(it.selectedOptions);
+
+                let optionLabel = displayOptions
+                  .map((o) => {
+                    const attr =
+                      o.attribute && !isCodeLike(o.attribute)
+                        ? o.attribute
+                        : o.attributeId && !isCodeLike(o.attributeId)
+                          ? o.attributeId
+                          : "";
+
+                    const val =
+                      o.value && !isCodeLike(o.value)
+                        ? o.value
+                        : o.valueId && !isCodeLike(o.valueId)
+                          ? o.valueId
+                          : "";
+
+                    if (!attr && !val) return null;
+                    if (!attr) return val;
+                    if (!val) return attr;
+                    return `${attr}: ${val}`;
+                  })
+                  .filter(Boolean)
+                  .join(" • ");
+
+                // 🔁 Fallbacks if we only had internal IDs / codes
+                if (!optionLabel && !isBaseLine(it)) {
+                  // We know it's a VARIANT line but don't have nice labels
+                  optionLabel = "Variant selected";
+                } else if (!optionLabel && displayOptions.length) {
+                  // Options exist but all looked like codes → don't show raw IDs,
+                  // just a generic hint that configuration is stored.
+                  optionLabel = "Options saved";
+                }
 
                 return (
                   <article
@@ -1094,9 +1147,9 @@ export default function Cart() {
                             {pricingQ.isFetching && <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">Updating…</span>}
                           </div>
 
-                          {!!it.selectedOptions?.length && (
+                          {!!optionLabel && (
                             <div className="mt-2 text-[12px] max-[360px]:text-[11px] sm:text-xs text-ink-soft leading-snug break-words">
-                              {it.selectedOptions.map((o) => `${o.attribute}: ${o.value}`).join(" • ")}
+                              {optionLabel}
                             </div>
                           )}
 
@@ -1264,10 +1317,9 @@ export default function Cart() {
                       if (!!pricingWarning) e.preventDefault();
                     }}
                     className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition
-                      ${
-                        !pricingWarning
-                          ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
-                          : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                      ${!pricingWarning
+                        ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
+                        : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
                       }`}
                     aria-disabled={!!pricingWarning}
                   >

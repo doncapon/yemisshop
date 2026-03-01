@@ -11,10 +11,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { showMiniCartToast } from "../components/cart/MiniCartToast";
 import { setSeo } from "../seo/head";
 import { useAuthStore } from "../store/auth";
+import { useModal } from "../components/ModalProvider";
 
 // ✅ single source of truth (navbar/cart reads this)
 import { upsertCartLine, toMiniCartRows, readCartLines } from "../utils/cartModel";
-// (qtyInCart removed – we now key on optionsKey/kind for uniqueness)
 
 /* ---------------- Types ---------------- */
 type Brand = { id: string; name: string } | null;
@@ -134,7 +134,6 @@ function idOfOption(o: VariantOptionWire) {
 }
 
 function normalizeVariants(p: any): VariantWire[] {
-  // ✅ Support both Prisma relation names and legacy keys
   const src: any[] = Array.isArray(p?.variants)
     ? p.variants
     : Array.isArray(p?.ProductVariant)
@@ -142,7 +141,7 @@ function normalizeVariants(p: any): VariantWire[] {
       : [];
 
   const readVariantRetail = (x: any) => {
-    const raw = x?.retailPrice ?? x?.price ?? null; // price is mapped from retailPrice in Prisma
+    const raw = x?.retailPrice ?? x?.price ?? null;
     return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
   };
 
@@ -179,8 +178,6 @@ function offersFromSchema(p: any): OfferWire[] {
   const base: any[] = Array.isArray(p?.supplierProductOffers) ? p.supplierProductOffers : [];
   const vars: any[] = Array.isArray(p?.supplierVariantOffers) ? p.supplierVariantOffers : [];
 
-  // ✅ Current schema: offers are NOT supplier-keyed
-  // Use product.supplier as canonical supplier for display/grouping.
   const fallbackSupplierId = String(p?.supplierId ?? p?.supplier?.id ?? "PRODUCT_SUPPLIER");
   const fallbackSupplierName = p?.supplier?.name ? String(p.supplier.name) : null;
 
@@ -267,7 +264,6 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
     };
   }
 
-  // ✅ Also support Prisma relation-shaped arrays from your schema
   const attrsArr: any[] =
     (Array.isArray(p?.attributes) && p.attributes) ||
     (Array.isArray(p?.attributeOptions) && p.attributeOptions) ||
@@ -488,6 +484,7 @@ export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { openModal } = useModal();
 
   /* ---------------- Silver-ish UI  ---------------- */
   const cardCls =
@@ -536,7 +533,6 @@ export default function ProductDetail() {
     queryKey: ["product", id],
     queryFn: async () => {
       const { data } = await api.get(`/api/products/${id}`, {
-        // ✅ include supplier because current offer schema is not supplier-keyed
         params: { include: "brand,supplier,variants,attributes,supplierProductOffers,supplierVariantOffers" },
       });
 
@@ -587,7 +583,6 @@ export default function ProductDetail() {
       const sellableVariantIds = new Set(Object.keys(stockByVariantId));
 
       const readProductRetail = (x: any) => {
-        // Prisma maps retailPrice -> price column; API can return either name depending on serializer
         const raw = x?.retailPrice ?? x?.price ?? null;
         return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
       };
@@ -805,9 +800,10 @@ export default function ProductDetail() {
     return v;
   }, [cheapestOverallOffer, product?.variants]);
 
-  const cheapestOverallVariantSelection = React.useMemo(() => {
-    return buildSelectionFromVariant(axes, cheapestOverallVariant);
-  }, [axes, cheapestOverallVariant]);
+  const cheapestOverallVariantSelection = React.useMemo(
+    () => buildSelectionFromVariant(axes, cheapestOverallVariant),
+    [axes, cheapestOverallVariant]
+  );
 
   const [selected, setSelected] = React.useState<Record<string, string>>({});
 
@@ -1339,7 +1335,6 @@ export default function ProductDetail() {
 
   const mainImgRef = React.useRef<HTMLImageElement | null>(null);
   const [imgBox, setImgBox] = React.useState({ w: 0, h: 0 });
-  const [naturalSize, setNaturalSize] = React.useState({ w: 0, h: 0 });
   const [hoverPx, setHoverPx] = React.useState({ x: 0, y: 0 });
   const [showZoom, setShowZoom] = React.useState(false);
 
@@ -1364,7 +1359,7 @@ export default function ProductDetail() {
     if (top < pad) top = pad;
 
     setZoomAnchor({ top, left });
-  }, [ZOOM_PANE.w, ZOOM_PANE.h]);
+  }, []);
 
   React.useLayoutEffect(() => {
     const img = mainImgRef.current;
@@ -1378,7 +1373,6 @@ export default function ProductDetail() {
 
   function handleImageLoad(e: React.SyntheticEvent<HTMLImageElement>) {
     const img = e.currentTarget;
-    setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
     setImgBox({ w: img.clientWidth, h: img.clientHeight });
     setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: false }));
   }
@@ -1400,10 +1394,21 @@ export default function ProductDetail() {
   const bgPosY = `${relY * 100}%`;
   const bgSize = `${EFFECTIVE_ZOOM * 100}%`;
 
-  /* ---------------- Add to cart (server + local cartModel) ---------------- */
+  /* ---------------- Add to cart ---------------- */
   const handleAddToCart = React.useCallback(async () => {
     if (!product) return;
-    if (purchaseMeta.disableAddToCart) return;
+
+    if (purchaseMeta.disableAddToCart) {
+      const msg =
+        purchaseMeta.helperNote ||
+        "Please select an available option (variant or base) before adding this item to your cart.";
+      try {
+        openModal({ title: "Select options", message: msg });
+      } catch {
+        alert(msg);
+      }
+      return;
+    }
 
     const variantId = purchaseMeta.mode === "VARIANT" ? purchaseMeta.variantId : null;
 
@@ -1411,7 +1416,6 @@ export default function ProductDetail() {
       .filter(([, v]) => !!String(v || "").trim())
       .map(([attributeId, valueId]) => ({ attributeId, valueId }));
 
-    // stable optionsKey so cart lines don't collide
     const optionsKey =
       variantId && selectedOptionsWire.length
         ? selectedOptionsWire
@@ -1436,8 +1440,6 @@ export default function ProductDetail() {
     const AXIOS_COOKIE_CFG = { withCredentials: true as const };
     const isLoggedIn = !!useAuthStore.getState().user?.id;
 
-    // ✅ compute next local qty based on the **exact line**:
-    // productId + variantId + kind + optionsKey
     const existingLines = (readCartLines() as any[]) || [];
     const lineKind = variantId ? "VARIANT" : "BASE";
 
@@ -1453,7 +1455,6 @@ export default function ProductDetail() {
     const nextQty = (existingForCombo?.qty ?? 0) + 1;
 
     if (isLoggedIn) {
-      // ✅ server write: treat POST as "add 1"
       await api.post(
         "/api/cart/items",
         {
@@ -1470,13 +1471,12 @@ export default function ProductDetail() {
         AXIOS_COOKIE_CFG
       );
 
-      // ✅ local mirror so navbar/cart toast reads the same unified cartModel
       upsertCartLine({
         productId: String(product.id),
         variantId: variantId ?? null,
         kind: lineKind,
         optionsKey,
-        qty: nextQty, // ⬅️ cumulative qty for this specific combo
+        qty: nextQty,
         selectedOptions: selectedOptionsLabeled ?? [],
         titleSnapshot: product.title ?? null,
         imageSnapshot: primaryImg ?? null,
@@ -1485,7 +1485,6 @@ export default function ProductDetail() {
 
       window.dispatchEvent(new Event("cart:updated"));
 
-      // ✅ Toast uses the full (server-mirrored) cart content, including this new addition
       const linesAfter = readCartLines();
       const miniRows = toMiniCartRows(linesAfter);
 
@@ -1498,13 +1497,12 @@ export default function ProductDetail() {
       return;
     }
 
-    // ✅ guest write (SAME cartModel storage)
     upsertCartLine({
       productId: String(product.id),
       variantId: variantId ?? null,
       kind: lineKind,
       optionsKey,
-      qty: nextQty, // ⬅️ cumulative qty for this specific combo
+      qty: nextQty,
       selectedOptions: selectedOptionsLabeled ?? [],
       titleSnapshot: product.title ?? null,
       imageSnapshot: primaryImg ?? null,
@@ -1513,14 +1511,13 @@ export default function ProductDetail() {
 
     window.dispatchEvent(new Event("cart:updated"));
 
-    // toast from actual storage (guaranteed to match navbar/cart page)
     const linesAfter = readCartLines();
     showMiniCartToast(
       toMiniCartRows(linesAfter),
       { productId: product.id, variantId: variantId ?? null },
       { title: "Added to cart", duration: 3500, maxItems: 4, mode: "add" }
     );
-  }, [product, purchaseMeta, selected, computed.final, axes]);
+  }, [product, purchaseMeta, selected, computed.final, axes, openModal]);
 
   React.useEffect(() => {
     if (!showZoom) return;
@@ -1533,7 +1530,7 @@ export default function ProductDetail() {
     };
   }, [showZoom, updateZoomAnchor]);
 
-  /* ---------------- Similar products carousel helpers ---------------- */
+  /* ---------------- Similar products helpers ---------------- */
   const similarRef = React.useRef<HTMLDivElement | null>(null);
 
   const scrollSimilarBy = React.useCallback((dir: -1 | 1) => {
@@ -1552,7 +1549,6 @@ export default function ProductDetail() {
         staleTime: 60_000,
         queryFn: async () => {
           const { data } = await api.get(`/api/products/${sp.id}`, {
-            // ✅ schema-aligned include
             params: { include: "supplier,supplierProductOffers,supplierVariantOffers" },
           });
           const payload = (data as any)?.data ?? data ?? {};
@@ -1581,7 +1577,7 @@ export default function ProductDetail() {
     return !!window.matchMedia?.("(pointer: coarse)").matches;
   }, []);
 
-  /* ---------------- SEO (dynamic) ---------------- */
+  /* ---------------- SEO ---------------- */
   const seo = React.useMemo(() => {
     const fallbackTitle = "DaySpring House — Shop";
 
@@ -1723,7 +1719,7 @@ export default function ProductDetail() {
               <button
                 key={opt.id}
                 type="button"
-                disabled={st.disabled}
+                disabled={false}
                 onClick={() => onChange(opt.id)}
                 className={`px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2 ${silverBorder} ${silverShadowSm}
                 ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "bg-white hover:bg-zinc-50"}
@@ -1814,6 +1810,7 @@ export default function ProductDetail() {
           </div>
         </div>
 
+        {/* MAIN GRID: images + details */}
         <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-[360px]:gap-5">
           {/* LEFT: images + description */}
           <div className="space-y-3 md:space-y-5">
@@ -1873,6 +1870,7 @@ export default function ProductDetail() {
                       left: zoomAnchor.left,
                       width: ZOOM_PANE.w,
                       height: ZOOM_PANE.h,
+                      pointerEvents: "none",
                     }}
                   >
                     <div
@@ -1922,59 +1920,14 @@ export default function ProductDetail() {
               )}
             </div>
 
-            {images.length > 0 && (
-              <div
-                className="flex items-center justify-center gap-2"
-                onMouseEnter={() => setPaused(true)}
-                onMouseLeave={() => setPaused(false)}
-              >
-                <button
-                  type="button"
-                  onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-                  className={`rounded-full px-2.5 py-1.5 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                  aria-label="Previous thumbnails"
-                >
-                  ‹
-                </button>
-
-                <div className="flex gap-2">
-                  {visibleThumbs.map((u, i) => {
-                    const absoluteIndex = thumbStart + i;
-                    const isActive = absoluteIndex === mainIndex;
-                    return (
-                      <img
-                        key={`${u}:${absoluteIndex}`}
-                        src={u}
-                        alt=""
-                        onClick={() => setMainIndex(absoluteIndex)}
-                        className={`w-20 h-16 sm:w-24 sm:h-20 max-[360px]:w-[68px] max-[360px]:h-[54px] rounded-xl object-cover select-none cursor-pointer ${silverBorder} ${silverShadowSm} ${
-                          isActive ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "hover:opacity-90 bg-white"
-                        }`}
-                        onLoad={() => setBrokenByIndex((prev) => ({ ...prev, [absoluteIndex]: false }))}
-                        onError={() => setBrokenByIndex((prev) => ({ ...prev, [absoluteIndex]: true }))}
-                      />
-                    );
-                  })}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                  className={`rounded-full px-2 py-1 text-sm max-[360px]:px-1.5 max-[360px]:py-0.5 bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                  aria-label="Next thumbnails"
-                >
-                  ›
-                </button>
-              </div>
-            )}
-
+            {/* Description on desktop (left column) */}
             <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
               <h2 className="text-base font-semibold mb-1">Description</h2>
               <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
             </div>
           </div>
 
-          {/* RIGHT */}
+          {/* RIGHT: price, options, buttons */}
           <div className="space-y-4 md:space-y-5">
             <div className={`${cardCls} p-4 md:p-5`}>
               <div className="flex items-start justify-between gap-3">
@@ -2048,9 +2001,10 @@ export default function ProductDetail() {
                 <button
                   type="button"
                   onClick={handleAddToCart}
-                  disabled={purchaseMeta.disableAddToCart}
-                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white ${
-                    purchaseMeta.disableAddToCart ? "bg-zinc-300 cursor-not-allowed" : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${
+                    purchaseMeta.disableAddToCart
+                      ? "bg-zinc-300 cursor-not-allowed"
+                      : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
                   }`}
                 >
                   Add to cart
@@ -2071,76 +2025,84 @@ export default function ProductDetail() {
               ) : null}
             </div>
 
+            {/* Description on mobile (full width within right column) */}
             <div className={`md:hidden ${cardCls} p-4`}>
               <h2 className="text-base font-semibold mb-1">Description</h2>
               <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
             </div>
-
-            {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
-              <div className={`${cardCls} p-4 md:p-5`}>
-                <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-base font-semibold">Similar products</h2>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => scrollSimilarBy(-1)}
-                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                    >
-                      ‹
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => scrollSimilarBy(1)}
-                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                    >
-                      ›
-                    </button>
-                  </div>
-                </div>
-
-                <div
-                  ref={similarRef}
-                  className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
-                  style={{ scrollbarWidth: "thin" as any }}
-                >
-                  {similarQ.data.map((sp, idx) => {
-                    const priceFromOffer = (similarOfferQs as any)?.[idx]?.data?.supplierPrice ?? null;
-                    const basePrice =
-                      priceFromOffer != null && Number.isFinite(Number(priceFromOffer))
-                        ? Number(priceFromOffer)
-                        : sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice))
-                          ? Number(sp.retailPrice)
-                          : null;
-
-                    const showPrice = basePrice != null ? NGN.format(applyMargin(basePrice, marginPercent)) : "—";
-                    const img = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
-
-                    return (
-                      <Link
-                        key={sp.id}
-                        to={`/product/${sp.id}`}
-                        className={`min-w-[220px] max-w-[220px] rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} hover:opacity-95`}
-                      >
-                        <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
-                          {img ? (
-                            <img src={img} alt={sp.title} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">No image</div>
-                          )}
-                        </div>
-                        <div className="p-3">
-                          <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
-                          <div className="mt-1 text-sm font-bold">{showPrice}</div>
-                          <div className="mt-1 text-xs text-zinc-500">{sp.inStock === false ? "Out of stock" : "Available"}</div>
-                        </div>
-                      </Link>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
           </div>
         </div>
+
+        {/* ✅ Similar products: now full-width under the description, spanning across page on desktop */}
+        {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
+          <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 pb-6">
+            <div className={`${cardCls} p-4 md:p-5`}>
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-base font-semibold">Similar products</h2>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => scrollSimilarBy(-1)}
+                    className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => scrollSimilarBy(1)}
+                    className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                  >
+                    ›
+                  </button>
+                </div>
+              </div>
+
+              <div
+                ref={similarRef}
+                className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
+                style={{ scrollbarWidth: "thin" as any }}
+              >
+                {similarQ.data.map((sp, idx) => {
+                  const priceFromOffer = (similarOfferQs as any)?.[idx]?.data?.supplierPrice ?? null;
+                  const basePrice =
+                    priceFromOffer != null && Number.isFinite(Number(priceFromOffer))
+                      ? Number(priceFromOffer)
+                      : sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice))
+                        ? Number(sp.retailPrice)
+                        : null;
+
+                  const showPrice = basePrice != null ? NGN.format(applyMargin(basePrice, marginPercent)) : "—";
+                  const img = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
+
+                  return (
+                    <Link
+                      key={sp.id}
+                      to={`/product/${sp.id}`}
+                      className={`min-w-[220px] max-w-[220px] rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} hover:opacity-95`}
+                    >
+                      <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
+                        {img ? (
+                          <img src={img} alt={sp.title} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">
+                            No image
+                          </div>
+                        )}
+                      </div>
+                      <div className="p-3">
+                        <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
+                        <div className="mt-1 text-sm font-bold">{showPrice}</div>
+                        <div className="mt-1 text-xs text-zinc-500">
+                          {sp.inStock === false ? "Out of stock" : "Available"}
+                        </div>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </SiteLayout>
   );
