@@ -767,8 +767,11 @@ export default function Checkout() {
   });
 
   const marginPercent = useMemo(() => extractMarginPercent(publicSettingsQ.data), [publicSettingsQ.data]);
-  const shippingEnabled = useMemo(() => extractShippingEnabled(publicSettingsQ.data), [publicSettingsQ.data]);
-  const shippingMode = useMemo(() => extractShippingMode(publicSettingsQ.data), [publicSettingsQ.data]);
+
+// 🔒 Hard-disable shipping for now, regardless of settings
+const shippingEnabled = false;
+const shippingMode: "DELIVERY" | "PICKUP_ONLY" = "PICKUP_ONLY";
+
 
   // ✅ Supplier-split quote (supplier-cost)
   const pricingQ = useQuery({
