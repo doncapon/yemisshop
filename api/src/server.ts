@@ -74,6 +74,7 @@ import supplierCatalogOffers from "./routes/supplierCatalogOffers.js";
 import adminOfferChangeRequests from "./routes/adminOfferChangeRequests.js";
 import adminUsersRouter from "./routes/adminUsers.js";
 import checkoutShippingRouter from "./routes/checkoutShipping.js";
+import productReviewsRouter from "./routes/productReviews.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -402,7 +403,7 @@ const UPLOADS_DIR = process.env.UPLOADS_DIR ?? path.resolve(process.cwd(), "uplo
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "30d", index: false }));
 app.use("/api/uploads", uploadsRouter);
-
+app.use("/api", productReviewsRouter);
 /* ------------------------------ Serve Frontend (SPA) + SEO endpoints ------------------------------ */
 
 const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {

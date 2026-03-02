@@ -1,7 +1,7 @@
 // src/pages/ProductDetail.tsx
 import * as React from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { useQuery, useQueryClient, useQueries } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useQueries, useMutation } from "@tanstack/react-query";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
 import { createPortal } from "react-dom";
@@ -15,6 +15,9 @@ import { useModal } from "../components/ModalProvider";
 
 // ✅ single source of truth (navbar/cart reads this)
 import { upsertCartLine, toMiniCartRows, readCartLines } from "../utils/cartModel";
+
+/* ---------------- Config ---------------- */
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
 /* ---------------- Types ---------------- */
 type Brand = { id: string; name: string } | null;
@@ -90,6 +93,11 @@ type ProductWire = {
         }>;
       }
     | null;
+
+  // ⭐ Rating fields
+  ratingAvg?: number | null;
+  ratingCount?: number | null;
+  bestSupplierRating?: { ratingAvg: number | null; ratingCount: number | null } | null;
 };
 
 type ValueState = {
@@ -438,7 +446,8 @@ function pickBestOffer(params: {
     const qty = Number(o.availableQty ?? 0) || 0;
     if (qty <= 0) continue;
 
-    const price = o.unitPrice != null && Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null;
+    const price =
+      o.unitPrice != null && Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null;
     if (price == null || price <= 0) continue;
 
     const isVariant = o.model === "VARIANT" || !!o.variantId;
@@ -454,7 +463,8 @@ function pickBestOffer(params: {
     }
 
     if (kind === "ANY" && isVariant) {
-      if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId))) continue;
+      if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId)))
+        continue;
     }
 
     const candidate: BestOfferPick = {
@@ -485,6 +495,7 @@ export default function ProductDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { openModal } = useModal();
+  const user = useAuthStore((s) => s.user);
 
   /* ---------------- Silver-ish UI  ---------------- */
   const cardCls =
@@ -496,7 +507,9 @@ export default function ProductDetail() {
     "shadow-[0_1px_0_rgba(255,255,255,0.8),0_8px_22px_rgba(15,23,42,0.06)]";
 
   const SITE_ORIGIN =
-    typeof window !== "undefined" && window.location?.origin ? window.location.origin : "https://dayspringhouse.com";
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "https://dayspringhouse.com";
 
   const absUrl = React.useCallback(
     (maybeUrl: string) => {
@@ -533,7 +546,10 @@ export default function ProductDetail() {
     queryKey: ["product", id],
     queryFn: async () => {
       const { data } = await api.get(`/api/products/${id}`, {
-        params: { include: "brand,supplier,variants,attributes,supplierProductOffers,supplierVariantOffers" },
+        // ✅ ask backend for offers so we also get rating info
+        params: {
+          include: "brand,supplier,variants,attributes,offers",
+        },
       });
 
       const payload = (data as any)?.data ?? data ?? {};
@@ -587,6 +603,8 @@ export default function ProductDetail() {
         return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
       };
 
+      const rawBestSupplierRating = (p as any).bestSupplierRating ?? null;
+
       const product: ProductWire = {
         id: String(p.id),
         title: String(p.title ?? ""),
@@ -595,10 +613,39 @@ export default function ProductDetail() {
         inStock: p.inStock !== false,
         imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
         brand: p.brand ? { id: String(p.brand.id), name: String(p.brand.name) } : null,
-        supplier: p.supplier ? { id: String(p.supplier.id), name: p.supplier.name ? String(p.supplier.name) : null } : null,
+        supplier: p.supplier
+          ? { id: String(p.supplier.id), name: p.supplier.name ? String(p.supplier.name) : null }
+          : null,
         variants,
         offers,
         attributes: normalizeAttributesIntoProductWire(p),
+
+        // ⭐ pull rating fields from backend if present
+        ratingAvg:
+          typeof (p as any).ratingAvg === "number"
+            ? Number((p as any).ratingAvg)
+            : typeof rawBestSupplierRating?.ratingAvg === "number"
+              ? Number(rawBestSupplierRating.ratingAvg)
+              : null,
+        ratingCount:
+          typeof (p as any).ratingCount === "number"
+            ? Number((p as any).ratingCount)
+            : typeof rawBestSupplierRating?.ratingCount === "number"
+              ? Number(rawBestSupplierRating.ratingCount)
+              : null,
+        bestSupplierRating:
+          rawBestSupplierRating && typeof rawBestSupplierRating === "object"
+            ? {
+                ratingAvg:
+                  typeof rawBestSupplierRating.ratingAvg === "number"
+                    ? Number(rawBestSupplierRating.ratingAvg)
+                    : null,
+                ratingCount:
+                  typeof rawBestSupplierRating.ratingCount === "number"
+                    ? Number(rawBestSupplierRating.ratingCount)
+                    : null,
+              }
+            : null,
       };
 
       const cheapestBaseOffer = pickBestOffer({ offers, kind: "BASE" });
@@ -645,7 +692,129 @@ export default function ProductDetail() {
     staleTime: 60_000,
   });
 
+  /* ---------------- Ratings / Reviews hooks ---------------- */
+  const [ratingInput, setRatingInput] = React.useState<number>(0);
+  const [commentInput, setCommentInput] = React.useState<string>("");
+
+  const reviewSummaryQ = useQuery({
+    queryKey: ["product-reviews-summary", id],
+    enabled: !!id,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const { data } = await api.get(`/api/products/${id}/reviews/summary`);
+      const payload = (data as any)?.data ?? data ?? {};
+      return {
+        ratingAvg:
+          payload.ratingAvg != null && Number.isFinite(Number(payload.ratingAvg))
+            ? Number(payload.ratingAvg)
+            : null,
+        ratingCount:
+          payload.ratingCount != null && Number.isFinite(Number(payload.ratingCount))
+            ? Number(payload.ratingCount)
+            : null,
+      };
+    },
+  });
+
+  const myReviewQ = useQuery({
+    queryKey: ["product-my-review", id],
+    enabled: !!id && !!user?.id,
+    staleTime: 0,
+    queryFn: async () => {
+      const { data } = await api.get(`/api/products/${id}/reviews/my`, AXIOS_COOKIE_CFG);
+      const payload = (data as any)?.data ?? data ?? null;
+      if (!payload) return null;
+      return {
+        rating:
+          payload.rating != null && Number.isFinite(Number(payload.rating))
+            ? Number(payload.rating)
+            : 0,
+        comment: payload.comment != null ? String(payload.comment) : "",
+      };
+    },
+  });
+
+  React.useEffect(() => {
+    if (!myReviewQ.data) {
+      setRatingInput(0);
+      setCommentInput("");
+      return;
+    }
+    setRatingInput(myReviewQ.data.rating ?? 0);
+    setCommentInput(myReviewQ.data.comment ?? "");
+  }, [myReviewQ.data]);
+
+  const saveReviewMutation = useMutation({
+    mutationFn: async ({ rating, comment }: { rating: number; comment: string }) => {
+      const body = {
+        rating,
+        comment: comment.trim() || null,
+      };
+      const { data } = await api.post(`/api/products/${id}/reviews`, body, AXIOS_COOKIE_CFG);
+      return (data as any)?.data ?? data ?? {};
+    },
+    onSuccess: () => {
+      // ✅ refresh everything relying on rating
+      queryClient.invalidateQueries({ queryKey: ["product-my-review", id] });
+      queryClient.invalidateQueries({ queryKey: ["product-reviews-summary", id] });
+      queryClient.invalidateQueries({ queryKey: ["product", id] });
+    },
+  });
+
+  const deleteReviewMutation = useMutation({
+    mutationFn: async () => {
+      await api.delete(`/api/products/${id}/reviews/my`, AXIOS_COOKIE_CFG);
+    },
+    onSuccess: () => {
+      // Clear local state
+      setRatingInput(0);
+      setCommentInput("");
+      // Refresh aggregates + product
+      queryClient.invalidateQueries({ queryKey: ["product-my-review", id] });
+      queryClient.invalidateQueries({ queryKey: ["product-reviews-summary", id] });
+      queryClient.invalidateQueries({ queryKey: ["product", id] });
+    },
+  });
+
   const product = productQ.data?.product;
+
+  const ratingSummary = React.useMemo(() => {
+    const avgFromSummary = reviewSummaryQ.data?.ratingAvg ?? null;
+    const countFromSummary = reviewSummaryQ.data?.ratingCount ?? null;
+
+    const avgFromProduct =
+      typeof product?.ratingAvg === "number"
+        ? product.ratingAvg
+        : typeof product?.bestSupplierRating?.ratingAvg === "number"
+          ? product.bestSupplierRating.ratingAvg
+          : null;
+
+    const countFromProduct =
+      typeof product?.ratingCount === "number"
+        ? product.ratingCount
+        : typeof product?.bestSupplierRating?.ratingCount === "number"
+          ? product.bestSupplierRating.ratingCount
+          : null;
+
+    const avgRaw = avgFromSummary ?? avgFromProduct ?? null;
+    const countRaw = countFromSummary ?? countFromProduct ?? null;
+
+    const avg =
+      avgRaw != null && Number.isFinite(Number(avgRaw))
+        ? Math.round(Number(avgRaw) * 10) / 10
+        : null;
+    const count =
+      countRaw != null && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
+
+    return { avg, count };
+  }, [
+    reviewSummaryQ.data?.ratingAvg,
+    reviewSummaryQ.data?.ratingCount,
+    product?.ratingAvg,
+    product?.ratingCount,
+    product?.bestSupplierRating?.ratingAvg,
+    product?.bestSupplierRating?.ratingCount,
+  ]);
 
   const stockByVariantId = productQ.data?.stockByVariantId ?? {};
   const totalStockQty = productQ.data?.totalStockQty ?? 0;
@@ -824,7 +993,10 @@ export default function ProductDetail() {
       const qty = Number(o.availableQty ?? 0) || 0;
       if (qty <= 0) continue;
 
-      const price = o.unitPrice != null && Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null;
+      const price =
+        o.unitPrice != null && Number.isFinite(Number(o.unitPrice))
+          ? Number(o.unitPrice)
+          : null;
       if (price == null || price <= 0) continue;
 
       const isVariant = o.model === "VARIANT" || !!o.variantId;
@@ -840,7 +1012,8 @@ export default function ProductDetail() {
       }
 
       if (kind === "ANY" && isVariant) {
-        if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId))) continue;
+        if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId)))
+          continue;
       }
 
       if (best == null || price < best) best = price;
@@ -857,17 +1030,25 @@ export default function ProductDetail() {
     return Math.min(av, bv);
   }
 
+  // 🔁 Shared reset logic for initial selection *and* "Reset to base" button
+  const computeResetSelection = React.useCallback(
+    (): Record<string, string> => {
+      if (!axes.length) return {};
+      if (cheapestOverallVariantSelection) return { ...cheapestOverallVariantSelection };
+      return { ...baseDefaults };
+    },
+    [axes.length, cheapestOverallVariantSelection, baseDefaults]
+  );
+
   React.useEffect(() => {
     if (!product || !axes.length) {
       setSelected({});
       return;
     }
 
-    setSelected(() => {
-      if (cheapestOverallVariantSelection) return { ...cheapestOverallVariantSelection };
-      return { ...baseDefaults };
-    });
-  }, [product?.id, axes, baseDefaults, cheapestOverallVariantSelection]);
+    // Use the same logic as the reset button: cheapest variant or base defaults
+    setSelected(computeResetSelection);
+  }, [product?.id, axes.length, computeResetSelection]);
 
   const getFilteredValuesForAttribute = React.useCallback(
     (attrId: string) => {
@@ -979,7 +1160,8 @@ export default function ProductDetail() {
             : "PRODUCT_RETAIL";
       }
 
-      const retailFromSupplier = chosenSupplier != null ? applyMargin(chosenSupplier, marginPercent) : null;
+      const retailFromSupplier =
+        chosenSupplier != null ? applyMargin(chosenSupplier, marginPercent) : null;
       const fallbackRetail = toNum(product?.retailPrice, 0);
 
       return {
@@ -999,7 +1181,8 @@ export default function ProductDetail() {
     const pickedPairs = selectionPairsOf(selected);
     if (!pickedPairs.length) {
       const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
-      const retailFromSupplier = bestAny?.unitPrice != null ? applyMargin(bestAny.unitPrice, marginPercent) : null;
+      const retailFromSupplier =
+        bestAny?.unitPrice != null ? applyMargin(bestAny.unitPrice, marginPercent) : null;
 
       return {
         mode: "VARIANT" as const,
@@ -1007,7 +1190,10 @@ export default function ProductDetail() {
         supplierId: bestAny?.supplierId ?? null,
         supplierName: bestAny?.supplierName ?? null,
         offerId: bestAny?.offerId ?? null,
-        final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
+        final:
+          retailFromSupplier != null && retailFromSupplier > 0
+            ? retailFromSupplier
+            : retailFallbackProduct,
         matchedVariant: null as VariantWire | null,
         exactMatch: false,
         exactSellable: false,
@@ -1034,7 +1220,8 @@ export default function ProductDetail() {
 
     if (!matched) {
       const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
-      const retailFromSupplier = bestAny?.unitPrice != null ? applyMargin(bestAny.unitPrice, marginPercent) : null;
+      const retailFromSupplier =
+        bestAny?.unitPrice != null ? applyMargin(bestAny.unitPrice, marginPercent) : null;
 
       return {
         mode: "VARIANT" as const,
@@ -1042,7 +1229,10 @@ export default function ProductDetail() {
         supplierId: bestAny?.supplierId ?? null,
         supplierName: bestAny?.supplierName ?? null,
         offerId: bestAny?.offerId ?? null,
-        final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : retailFallbackProduct,
+        final:
+          retailFromSupplier != null && retailFromSupplier > 0
+            ? retailFromSupplier
+            : retailFallbackProduct,
         matchedVariant: null as VariantWire | null,
         exactMatch: false,
         exactSellable: false,
@@ -1062,7 +1252,8 @@ export default function ProductDetail() {
     const bestBase = pickBestOffer({ offers, kind: "BASE" });
 
     const chosen = bestVariant ?? bestBase;
-    const retailFromSupplier = chosen?.unitPrice != null ? applyMargin(chosen.unitPrice, marginPercent) : null;
+    const retailFromSupplier =
+      chosen?.unitPrice != null ? applyMargin(chosen.unitPrice, marginPercent) : null;
 
     const fallbackVariantRetail = toNum(matched.retailPrice, 0);
     const fallbackRetail = fallbackVariantRetail > 0 ? fallbackVariantRetail : retailFallbackProduct;
@@ -1073,11 +1264,17 @@ export default function ProductDetail() {
       supplierId: chosen?.supplierId ?? product?.supplier?.id ?? null,
       supplierName: chosen?.supplierName ?? product?.supplier?.name ?? null,
       offerId: chosen?.offerId ?? null,
-      final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
+      final:
+        retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
       matchedVariant: matched,
       exactMatch: true,
       exactSellable: sellable,
-      source: bestVariant != null ? "VARIANT_OFFER" : bestBase != null ? "BASE_OFFER_FALLBACK" : "RETAIL_FALLBACK",
+      source:
+        bestVariant != null
+          ? "VARIANT_OFFER"
+          : bestBase != null
+            ? "BASE_OFFER_FALLBACK"
+            : "RETAIL_FALLBACK",
     };
   }, [
     product?.offers,
@@ -1104,8 +1301,19 @@ export default function ProductDetail() {
     const { picked, exact, supers, totalStockExact, missingAxisIds } = selectionInfo;
 
     if (!hasVariantAxes) {
-      if (canBuyBase) return { disableAddToCart: false, helperNote: null, mode: "BASE" as const, variantId: null as string | null };
-      return { disableAddToCart: true, helperNote: "Out of stock.", mode: "BASE" as const, variantId: null as string | null };
+      if (canBuyBase)
+        return {
+          disableAddToCart: false,
+          helperNote: null,
+          mode: "BASE" as const,
+          variantId: null as string | null,
+        };
+      return {
+        disableAddToCart: true,
+        helperNote: "Out of stock.",
+        mode: "BASE" as const,
+        variantId: null as string | null,
+      };
     }
 
     if (isAllEmptySelection(selected)) {
@@ -1129,26 +1337,38 @@ export default function ProductDetail() {
       if (variantStockQty > 0) {
         return {
           disableAddToCart: true,
-          helperNote: "Base offer is not available. This product is available as variants only — please select options.",
+          helperNote:
+            "Base offer is not available. This product is available as variants only — please select options.",
           mode: "BASE" as const,
           variantId: null as string | null,
         };
       }
-      return { disableAddToCart: true, helperNote: "Out of stock.", mode: "BASE" as const, variantId: null as string | null };
+      return {
+        disableAddToCart: true,
+        helperNote: "Out of stock.",
+        mode: "BASE" as const,
+        variantId: null as string | null,
+      };
     }
 
     if (picked.length && exact.length > 0) {
       if (totalStockExact <= 0) {
         return {
           disableAddToCart: true,
-          helperNote: "This variant combo is out of stock (no active supplier offer). Try another combination.",
+          helperNote:
+            "This variant combo is out of stock (no active supplier offer). Try another combination.",
           mode: "VARIANT" as const,
           variantId: null as string | null,
         };
       }
 
       const vid = computed.matchedVariant?.id ?? exact[0]?.id ?? null;
-      return { disableAddToCart: !vid, helperNote: null, mode: "VARIANT" as const, variantId: vid };
+      return {
+        disableAddToCart: !vid,
+        helperNote: null,
+        mode: "VARIANT" as const,
+        variantId: vid,
+      };
     }
 
     if (supers.length > 0) {
@@ -1220,25 +1440,44 @@ export default function ProductDetail() {
       };
     }
 
-    if (productAvailabilityMode === "NONE") return { text: "Out of stock", cls: "bg-rose-600/10 text-rose-700 border-rose-600/20" };
+    if (productAvailabilityMode === "NONE")
+      return {
+        text: "Out of stock",
+        cls: "bg-rose-600/10 text-rose-700 border-rose-600/20",
+      };
 
     if (purchaseMeta.mode === "VARIANT" && selectionInfo.exact.length > 0) {
-      return { text: "Out of stock (selection)", cls: "bg-rose-600/10 text-rose-700 border-rose-600/20" };
+      return {
+        text: "Out of stock (selection)",
+        cls: "bg-rose-600/10 text-rose-700 border-rose-600/20",
+      };
     }
 
     if (isAtBaseDefaults(selected) && productAvailabilityMode === "VARIANT_ONLY") {
-      return { text: "Variant only", cls: "bg-indigo-600/10 text-indigo-700 border-indigo-600/20" };
+      return {
+        text: "Variant only",
+        cls: "bg-indigo-600/10 text-indigo-700 border-indigo-600/20",
+      };
     }
 
     if (!isAtBaseDefaults(selected) && productAvailabilityMode === "BASE_ONLY") {
-      return { text: "Base only", cls: "bg-indigo-600/10 text-indigo-700 border-indigo-600/20" };
+      return {
+        text: "Base only",
+        cls: "bg-indigo-600/10 text-indigo-700 border-indigo-600/20",
+      };
     }
 
     if (productAvailabilityMode === "VARIANT_ONLY") {
-      return { text: "Select variant options", cls: "bg-amber-600/10 text-amber-700 border-amber-600/20" };
+      return {
+        text: "Select variant options",
+        cls: "bg-amber-600/10 text-amber-700 border-amber-600/20",
+      };
     }
 
-    return { text: "Select options", cls: "bg-amber-600/10 text-amber-700 border-amber-600/20" };
+    return {
+      text: "Select options",
+      cls: "bg-amber-600/10 text-amber-700 border-amber-600/20",
+    };
   }, [
     currentSelectionQty,
     purchaseMeta.disableAddToCart,
@@ -1426,7 +1665,9 @@ export default function ProductDetail() {
 
     const unitPriceClient = toNum(computed.final, 0);
 
-    const variantImg = variantId ? (product.variants || []).find((v) => v.id === variantId)?.imagesJson?.[0] : undefined;
+    const variantImg = variantId
+      ? (product.variants || []).find((v) => v.id === variantId)?.imagesJson?.[0]
+      : undefined;
     const primaryImg = variantImg || (product.imagesJson || [])[0] || null;
 
     const { attrNameById, valueNameByAttrId } = buildLabelMaps(axes);
@@ -1437,7 +1678,6 @@ export default function ProductDetail() {
       value: valueId ? valueNameByAttrId.get(attributeId)?.get(valueId) ?? "" : "",
     }));
 
-    const AXIOS_COOKIE_CFG = { withCredentials: true as const };
     const isLoggedIn = !!useAuthStore.getState().user?.id;
 
     const existingLines = (readCartLines() as any[]) || [];
@@ -1518,6 +1758,50 @@ export default function ProductDetail() {
       { title: "Added to cart", duration: 3500, maxItems: 4, mode: "add" }
     );
   }, [product, purchaseMeta, selected, computed.final, axes, openModal]);
+
+  const handleSubmitReview = React.useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!user) {
+        navigate("/login");
+        return;
+      }
+      if (!product) return;
+
+      if (!ratingInput || ratingInput < 1 || ratingInput > 5) {
+        const msg = "Please select a rating from 1 to 5 stars.";
+        try {
+          openModal({ title: "Rating required", message: msg });
+        } catch {
+          alert(msg);
+        }
+        return;
+      }
+
+      await saveReviewMutation.mutateAsync({
+        rating: ratingInput,
+        comment: commentInput,
+      });
+    },
+    [user, product, ratingInput, commentInput, saveReviewMutation, navigate, openModal]
+  );
+
+  const handleResetReview = React.useCallback(async () => {
+    if (!user || !id) return;
+
+    try {
+      await deleteReviewMutation.mutateAsync();
+    } catch (err) {
+      const msg =
+        (err as any)?.response?.data?.message ||
+        "Could not reset your review. Please try again later.";
+      try {
+        openModal({ title: "Reset review failed", message: msg });
+      } catch {
+        alert(msg);
+      }
+    }
+  }, [deleteReviewMutation, openModal, user, id]);
 
   React.useEffect(() => {
     if (!showZoom) return;
@@ -1602,9 +1886,14 @@ export default function ProductDetail() {
         .slice(0, 155) || `Buy ${product.title} on DaySpring House.`;
 
     const img =
-      Array.isArray(product.imagesJson) && product.imagesJson.length > 0 ? absUrl(String(product.imagesJson[0])) : "";
+      Array.isArray(product.imagesJson) && product.imagesJson.length > 0
+        ? absUrl(String(product.imagesJson[0]))
+        : "";
 
-    const price = Number.isFinite(Number(computed?.final)) && Number(computed.final) > 0 ? Number(computed.final) : null;
+    const price =
+      Number.isFinite(Number(computed?.final)) && Number(computed.final) > 0
+        ? Number(computed.final)
+        : null;
 
     const jsonLd = {
       "@context": "https://schema.org",
@@ -1621,7 +1910,9 @@ export default function ProductDetail() {
               priceCurrency: "NGN",
               price: String(price),
               availability:
-                (totalStockQty ?? 0) > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
+                (totalStockQty ?? 0) > 0
+                  ? "https://schema.org/InStock"
+                  : "https://schema.org/OutOfStock",
               url: canonical,
             },
           }
@@ -1662,7 +1953,9 @@ export default function ProductDetail() {
         { property: "twitter:description", content: seo.description },
         ...(seo.ogImage ? [{ property: "twitter:image", content: seo.ogImage }] : []),
       ],
-      jsonLd: seo.jsonLd ? { id: product?.id ? `product-${product.id}` : "page", data: seo.jsonLd } : undefined,
+      jsonLd: seo.jsonLd
+        ? { id: product?.id ? `product-${product.id}` : "page", data: seo.jsonLd }
+        : undefined,
     });
 
     return dispose;
@@ -1685,7 +1978,9 @@ export default function ProductDetail() {
         <div className="max-w-6xl mx-auto p-6">
           <div className={`${cardCls} p-5 text-rose-600`}>
             Could not load product.
-            <div className="text-xs opacity-70 mt-1">{String((productQ.error as any)?.message || "Unknown error")}</div>
+            <div className="text-xs opacity-70 mt-1">
+              {String((productQ.error as any)?.message || "Unknown error")}
+            </div>
           </div>
         </div>
       </SiteLayout>
@@ -1722,7 +2017,11 @@ export default function ProductDetail() {
                 disabled={false}
                 onClick={() => onChange(opt.id)}
                 className={`px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2 ${silverBorder} ${silverShadowSm}
-                ${active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : "bg-white hover:bg-zinc-50"}
+                ${
+                  active
+                    ? "ring-2 ring-fuchsia-500 border-fuchsia-500"
+                    : "bg-white hover:bg-zinc-50"
+                }
                 ${st.disabled ? "opacity-60 cursor-not-allowed hover:bg-white" : ""}`}
               >
                 <span className={st.disabled ? "line-through" : ""}>{opt.name}</span>
@@ -1746,8 +2045,13 @@ export default function ProductDetail() {
     const filtered = getFilteredValuesForAttribute(axis.id);
 
     return (
-      <Select value={value} onValueChange={(v) => onChange(v === "__NONE__" ? "" : v)}>
-        <SelectTrigger className={`h-11 rounded-xl text-sm md:text-base ${silverBorder} ${silverShadowSm}`}>
+      <Select
+        value={value}
+        onValueChange={(v) => onChange(v === "__NONE__" ? "" : v)}
+      >
+        <SelectTrigger
+          className={`h-11 rounded-xl text-sm md:text-base ${silverBorder} ${silverShadowSm}`}
+        >
           <SelectValue placeholder={`No ${axis.name.toLowerCase()}`} />
         </SelectTrigger>
 
@@ -1757,7 +2061,11 @@ export default function ProductDetail() {
             const st = states[opt.id] ?? { exists: true, stock: 0, disabled: false };
 
             const labelText =
-              st.disabled && st.reason ? `${opt.name} — ${st.reason}` : st.stock > 0 ? `${opt.name} (${st.stock})` : opt.name;
+              st.disabled && st.reason
+                ? `${opt.name} — ${st.reason}`
+                : st.stock > 0
+                  ? `${opt.name} (${st.stock})`
+                  : opt.name;
 
             return (
               <SelectItem key={opt.id} value={opt.id} disabled={st.disabled}>
@@ -1772,10 +2080,15 @@ export default function ProductDetail() {
 
   function NoImageBox({ className = "" }: { className?: string }) {
     return (
-      <div className={`w-full h-full flex items-center justify-center text-center ${className}`} aria-label="No image">
+      <div
+        className={`w-full h-full flex items-center justify-center text-center ${className}`}
+        aria-label="No image"
+      >
         <div className="px-6 py-8">
           <div className="text-sm font-medium text-zinc-700">No image</div>
-          <div className="mt-1 text-xs text-zinc-500">This product has no photos yet.</div>
+          <div className="mt-1 text-xs text-zinc-500">
+            This product has no photos yet.
+          </div>
         </div>
       </div>
     );
@@ -1804,7 +2117,9 @@ export default function ProductDetail() {
                   {product.brand.name} / {product.title}
                 </span>
               ) : (
-                <span className="truncate max-w-[60vw] inline-block">{product.title}</span>
+                <span className="truncate max-w-[60vw] inline-block">
+                  {product.title}
+                </span>
               )}
             </div>
           </div>
@@ -1844,7 +2159,9 @@ export default function ProductDetail() {
                     alt={product.title || "Product image"}
                     className="w-full h-full object-cover cursor-zoom-in"
                     onLoad={handleImageLoad}
-                    onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
+                    onError={() =>
+                      setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))
+                    }
                   />
                 ) : (
                   <NoImageBox className="bg-zinc-50" />
@@ -1891,7 +2208,9 @@ export default function ProductDetail() {
                 <>
                   <button
                     type="button"
-                    onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+                    onClick={() =>
+                      setMainIndex((i) => (i - 1 + images.length) % images.length)
+                    }
                     className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
                     aria-label="Previous image"
                   >
@@ -1911,7 +2230,9 @@ export default function ProductDetail() {
                         key={i}
                         onClick={() => setMainIndex(i)}
                         className={`h-1.5 w-1.5 rounded-full cursor-pointer ${
-                          i === mainIndex ? "bg-fuchsia-600" : "bg-white/80 border border-zinc-200/70"
+                          i === mainIndex
+                            ? "bg-fuchsia-600"
+                            : "bg-white/80 border border-zinc-200/70"
                         }`}
                       />
                     ))}
@@ -1923,22 +2244,28 @@ export default function ProductDetail() {
             {/* Description on desktop (left column) */}
             <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
               <h2 className="text-base font-semibold mb-1">Description</h2>
-              <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
+              <p className="text-sm text-zinc-700 whitespace-pre-line">
+                {product.description || "No description yet."}
+              </p>
             </div>
           </div>
 
-          {/* RIGHT: price, options, buttons */}
+          {/* RIGHT: price, options, buttons, reviews */}
           <div className="space-y-4 md:space-y-5">
             <div className={`${cardCls} p-4 md:p-5`}>
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">{product.title}</h1>
+                  <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-zinc-900">
+                    {product.title}
+                  </h1>
                   {product.brand?.name ? (
                     <div className="mt-1 text-sm text-zinc-600">
                       Brand: <span className="font-medium">{product.brand.name}</span>
                     </div>
                   ) : null}
-                  <div className="mt-2 text-2xl md:text-3xl font-bold text-zinc-900">{priceLabel}</div>
+                  <div className="mt-2 text-2xl md:text-3xl font-bold text-zinc-900">
+                    {priceLabel}
+                  </div>
                   <div className="mt-1 text-xs text-zinc-500">
                     {computed.source === "VARIANT_OFFER"
                       ? "Price from variant offer"
@@ -1948,11 +2275,35 @@ export default function ProductDetail() {
                           ? "Price from cheapest available offer"
                           : "Retail price"}
                   </div>
+
+                  {/* ⭐ Rating summary under price */}
+                  {ratingSummary.avg != null && (
+                    <div className="mt-2 flex items-center gap-2 text-sm text-zinc-700">
+                      <div className="flex items-center gap-0.5 text-amber-500 text-base">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <span key={i}>
+                            {i < Math.round(ratingSummary.avg ?? 0) ? "★" : "☆"}
+                          </span>
+                        ))}
+                      </div>
+                      <span className="font-semibold">
+                        {ratingSummary.avg.toFixed(1)}
+                      </span>
+                      {ratingSummary.count != null && (
+                        <span className="text-xs text-zinc-500">
+                          ({ratingSummary.count} review
+                          {ratingSummary.count === 1 ? "" : "s"})
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="text-right">
                   <div className="text-xs text-zinc-500">Total stock</div>
-                  <div className="text-sm font-semibold">{Math.max(0, totalStockQty)}</div>
+                  <div className="text-sm font-semibold">
+                    {Math.max(0, totalStockQty)}
+                  </div>
                 </div>
               </div>
 
@@ -1968,11 +2319,15 @@ export default function ProductDetail() {
                 <div className="mt-4 space-y-4">
                   {axes.map((axis) => (
                     <div key={axis.id} className="space-y-2">
-                      <div className="text-sm font-semibold text-zinc-800">{axis.name}</div>
+                      <div className="text-sm font-semibold text-zinc-800">
+                        {axis.name}
+                      </div>
                       <VariantAxisPicker
                         axis={axis}
                         value={String(selected?.[axis.id] ?? "")}
-                        onChange={(next) => setSelected((prev) => ({ ...prev, [axis.id]: next }))}
+                        onChange={(next) =>
+                          setSelected((prev) => ({ ...prev, [axis.id]: next }))
+                        }
                       />
                     </div>
                   ))}
@@ -1980,7 +2335,7 @@ export default function ProductDetail() {
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setSelected({ ...baseDefaults })}
+                      onClick={() => setSelected(computeResetSelection())}
                       className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                     >
                       Reset to base
@@ -2020,20 +2375,147 @@ export default function ProductDetail() {
 
               {computed.supplierName ? (
                 <div className="mt-3 text-xs text-zinc-500">
-                  Supplier: <span className="font-medium text-zinc-700">{computed.supplierName}</span>
+                  Supplier:{" "}
+                  <span className="font-medium text-zinc-700">
+                    {computed.supplierName}
+                  </span>
                 </div>
               ) : null}
+
+              {/* ⭐ Review form */}
+              <div className="mt-6 border-t border-zinc-200 pt-4">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-zinc-900">
+                    Rate this product
+                  </h2>
+                  {ratingSummary.avg != null && (
+                    <div className="flex items-center gap-1 text-xs text-zinc-500">
+                      <span>{ratingSummary.avg.toFixed(1)}★</span>
+                      {ratingSummary.count != null && (
+                        <span>
+                          ({ratingSummary.count} review
+                          {ratingSummary.count === 1 ? "" : "s"})
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {!user && (
+                  <p className="mt-2 text-xs text-zinc-600">
+                    <Link
+                      to="/login"
+                      className="font-medium text-fuchsia-600 hover:text-fuchsia-700"
+                    >
+                      Sign in
+                    </Link>{" "}
+                    to write a review.
+                  </p>
+                )}
+
+                {user && (
+                  <form
+                    className="mt-3 space-y-3"
+                    onSubmit={handleSubmitReview}
+                  >
+                    <div className="flex items-center gap-1">
+                      {[1, 2, 3, 4, 5].map((star) => {
+                        const active = ratingInput >= star;
+                        return (
+                          <button
+                            key={star}
+                            type="button"
+                            onClick={() => setRatingInput(star)}
+                            className="p-0.5"
+                            aria-label={`${star} star${star === 1 ? "" : "s"}`}
+                          >
+                            <span
+                              className={`text-xl ${
+                                active ? "text-amber-500" : "text-zinc-300"
+                              }`}
+                            >
+                              {active ? "★" : "☆"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                      <span className="ml-2 text-xs text-zinc-500">
+                        {ratingInput
+                          ? `${ratingInput} / 5`
+                          : "Tap a star to rate"}
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-700 mb-1">
+                        Comment (optional)
+                      </label>
+                      <textarea
+                        rows={3}
+                        value={commentInput}
+                        onChange={(e) => setCommentInput(e.target.value)}
+                        className={`w-full rounded-xl border text-sm px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-fuchsia-500 ${silverBorder}`}
+                        placeholder="Share your experience with this product…"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="submit"
+                        disabled={saveReviewMutation.isPending}
+                        className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${
+                          saveReviewMutation.isPending
+                            ? "bg-zinc-400 cursor-not-allowed"
+                            : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                        }`}
+                      >
+                        {saveReviewMutation.isPending
+                          ? "Saving…"
+                          : myReviewQ.data
+                            ? "Update review"
+                            : "Submit review"}
+                      </button>
+
+                      {myReviewQ.data && (
+                        <button
+                          type="button"
+                          onClick={handleResetReview}
+                          disabled={deleteReviewMutation.isPending}
+                          className={`px-3 py-2 rounded-xl text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                        >
+                          {deleteReviewMutation.isPending ? "Resetting…" : "Reset review"}
+                        </button>
+                      )}
+                    </div>
+
+                    {saveReviewMutation.isError && (
+                      <div className="text-xs text-rose-600">
+                        {(saveReviewMutation.error as any)?.message ||
+                          "Could not save review. Please try again."}
+                      </div>
+                    )}
+                    {deleteReviewMutation.isError && (
+                      <div className="text-xs text-rose-600">
+                        {(deleteReviewMutation.error as any)?.message ||
+                          "Could not reset review. Please try again."}
+                      </div>
+                    )}
+                  </form>
+                )}
+              </div>
             </div>
 
             {/* Description on mobile (full width within right column) */}
             <div className={`md:hidden ${cardCls} p-4`}>
               <h2 className="text-base font-semibold mb-1">Description</h2>
-              <p className="text-sm text-zinc-700 whitespace-pre-line">{product.description || "No description yet."}</p>
+              <p className="text-sm text-zinc-700 whitespace-pre-line">
+                {product.description || "No description yet."}
+              </p>
             </div>
           </div>
         </div>
 
-        {/* ✅ Similar products: now full-width under the description, spanning across page on desktop */}
+        {/* ✅ Similar products: full-width under the description */}
         {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
           <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 pb-6">
             <div className={`${cardCls} p-4 md:p-5`}>
@@ -2063,16 +2545,24 @@ export default function ProductDetail() {
                 style={{ scrollbarWidth: "thin" as any }}
               >
                 {similarQ.data.map((sp, idx) => {
-                  const priceFromOffer = (similarOfferQs as any)?.[idx]?.data?.supplierPrice ?? null;
+                  const priceFromOffer =
+                    (similarOfferQs as any)?.[idx]?.data?.supplierPrice ?? null;
                   const basePrice =
                     priceFromOffer != null && Number.isFinite(Number(priceFromOffer))
                       ? Number(priceFromOffer)
-                      : sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice))
+                      : sp.retailPrice != null &&
+                          Number.isFinite(Number(sp.retailPrice))
                         ? Number(sp.retailPrice)
                         : null;
 
-                  const showPrice = basePrice != null ? NGN.format(applyMargin(basePrice, marginPercent)) : "—";
-                  const img = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
+                  const showPrice =
+                    basePrice != null
+                      ? NGN.format(applyMargin(basePrice, marginPercent))
+                      : "—";
+                  const img =
+                    Array.isArray(sp.imagesJson) && sp.imagesJson.length
+                      ? sp.imagesJson[0]
+                      : "";
 
                   return (
                     <Link
@@ -2082,7 +2572,11 @@ export default function ProductDetail() {
                     >
                       <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
                         {img ? (
-                          <img src={img} alt={sp.title} className="w-full h-full object-cover" />
+                          <img
+                            src={img}
+                            alt={sp.title}
+                            className="w-full h-full object-cover"
+                          />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">
                             No image
@@ -2090,7 +2584,9 @@ export default function ProductDetail() {
                         )}
                       </div>
                       <div className="p-3">
-                        <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
+                        <div className="text-sm font-semibold line-clamp-2">
+                          {sp.title}
+                        </div>
                         <div className="mt-1 text-sm font-bold">{showPrice}</div>
                         <div className="mt-1 text-xs text-zinc-500">
                           {sp.inStock === false ? "Out of stock" : "Available"}

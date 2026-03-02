@@ -425,6 +425,8 @@ model ProductVariant {
   isBulkyOverride       Boolean?
   shippingClassOverride String?
 
+  supplierReviews SupplierReview[] 
+
   @@index([productId])
   @@index([productId, isActive])
   @@index([productId, archivedAt])
@@ -504,6 +506,8 @@ model Product {
   attributeOptions     ProductAttributeOption[] @relation("Product_ProductAttributeOptions")
   ProductAttributeText ProductAttributeText[]
   ProductVariant       ProductVariant[]         @relation("Product_ProductVariants")
+
+  supplierReviews SupplierReview[] 
 
   // ✅ keep offers, but now they are NOT supplier-keyed
   supplierProductOffers SupplierProductOffer[]
@@ -810,8 +814,6 @@ model User {
 
   supplier Supplier?
 
-  supplierReviews SupplierReview[]
-
   address         Address? @relation("UserPrimaryAddress", fields: [addressId], references: [id])
   shippingAddress Address? @relation("UserShippingAddress", fields: [shippingAddressId], references: [id])
 
@@ -824,6 +826,9 @@ model User {
   sessions UserSession[]
 
   notifications Notification[]
+
+  supplierReviews SupplierReview[]
+
 
   carts Cart[]
 
@@ -978,24 +983,6 @@ model Supplier {
   @@index([pickupAddressId]) // 
 }
 
-model SupplierReview {
-  id              String @id @default(cuid())
-  supplierId      String
-  userId          String
-  purchaseOrderId String
-
-  rating    Int
-  comment   String?
-  createdAt DateTime @default(now())
-
-  supplier      Supplier      @relation(fields: [supplierId], references: [id], onDelete: Cascade)
-  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  purchaseOrder PurchaseOrder @relation("PurchaseOrderToSupplierReviews", fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-
-  @@unique([purchaseOrderId, userId])
-  @@index([supplierId, createdAt])
-  @@index([purchaseOrderId])
-}
 
 enum ShippingRateSource {
   FALLBACK_ZONE
@@ -1886,6 +1873,42 @@ model CartItem {
   @@unique([cartId, productId, kind, optionsKey], name: "cart_line_base_unique")
   @@unique([cartId, productId, variantId, kind, optionsKey], name: "cart_line_variant_unique")
   @@index([cartId])
+  @@index([productId])
+  @@index([variantId])
+}
+
+
+model SupplierReview {
+  id              String   @id @default(cuid())
+  supplierId      String
+  userId          String
+
+  /// Optional – if the review is tied to a specific purchase order
+  purchaseOrderId String?
+
+  /// Optional – product & variant this review is about
+  productId String?
+  variantId String?
+
+  rating           Int
+  title            String?
+  comment          String?
+  verifiedPurchase Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  supplier      Supplier       @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purchaseOrder PurchaseOrder? @relation("PurchaseOrderToSupplierReviews", fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  product Product?        @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  /// One review per user per product per supplier
+  @@unique([supplierId, productId, userId], name: "SupplierReview_user_product_unique")
+
+  @@index([supplierId, createdAt])
+  @@index([purchaseOrderId])
   @@index([productId])
   @@index([variantId])
 }

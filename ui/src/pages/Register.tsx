@@ -65,11 +65,15 @@ export default function Register() {
   const [err, setErr] = useState<string | null>(null);
   const nav = useNavigate();
 
+  // 👁️ Show / hide password toggles
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
   const onChange =
     (key: keyof typeof form) =>
-      (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-        setForm((f) => ({ ...f, [key]: e.target.value }));
-      };
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+      setForm((f) => ({ ...f, [key]: e.target.value }));
+    };
 
   const onDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     let v = e.target.value;
@@ -179,7 +183,7 @@ export default function Register() {
       try {
         localStorage.setItem("verifyEmail", payload.email);
         if (data?.tempToken) localStorage.setItem("verifyToken", data.tempToken);
-      } catch { }
+      } catch {}
 
       const q = new URLSearchParams({ e: payload.email }).toString();
       nav(`/verify?${q}`);
@@ -209,6 +213,11 @@ export default function Register() {
 
   const labelBase = "block text-sm font-semibold text-slate-800 mb-1";
 
+  const passwordInputBase = `${inputBase} pr-20`; // extra space for the toggle button
+
+  const toggleBtnBase =
+    "absolute inset-y-0 right-2 flex items-center text-xs font-medium text-slate-500 hover:text-slate-700";
+
   return (
     <SiteLayout>
       <div className="min-h-[100dvh] relative overflow-hidden bg-gradient-to-b from-zinc-50 to-white">
@@ -221,7 +230,9 @@ export default function Register() {
           <div className="mx-auto w-full max-w-lg">
             {/* Header */}
             <div className="mb-5 text-center">
-              <h1 className="text-2xl sm:text-3xl font-semibold text-zinc-900">Create your account</h1>
+              <h1 className="text-2xl sm:text-3xl font-semibold text-zinc-900">
+                Create your account
+              </h1>
               <p className="mt-1 text-sm text-zinc-600">
                 Shop smarter with saved details, order tracking, and personalised picks.
               </p>
@@ -287,7 +298,7 @@ export default function Register() {
                     onChange={onDateChange}
                     className={inputBase}
                   />
-                  <p className="mt-1 text-xs text-slate-500">Must be 18+ years old.</p>
+                  <p className="mt-1 text-xs text-slate-500">Must be 16+ years old.</p>
                 </div>
               </div>
 
@@ -318,7 +329,10 @@ export default function Register() {
                   />
                 </div>
                 <p className="mt-1 text-xs text-slate-500">
-                  Format: {form.countryDial === "dial" ? "—" : `${form.countryDial} ${form.localPhone.replace(/\D/g, "")}`}
+                  Format:{" "}
+                  {form.countryDial === "dial"
+                    ? "—"
+                    : `${form.countryDial} ${form.localPhone.replace(/\D/g, "")}`}
                 </p>
               </div>
 
@@ -326,25 +340,36 @@ export default function Register() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div>
                   <label className={labelBase}>Password</label>
-                  <input
-                    type="password"
-                    name="password"
-                    autoComplete="new-password"
-                    value={form.password}
-                    onChange={onChange("password")}
-                    className={inputBase}
-                    placeholder="At least 8 characters"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      name="password"
+                      autoComplete="new-password"
+                      value={form.password}
+                      onChange={onChange("password")}
+                      className={passwordInputBase}
+                      placeholder="At least 8 characters"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className={toggleBtnBase}
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                    >
+                      {showPassword ? "Hide" : "Show"}
+                    </button>
+                  </div>
                   <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
                     <div
-                      className={`h-full transition-all ${pwdStrength <= 1
+                      className={`h-full transition-all ${
+                        pwdStrength <= 1
                           ? "w-1/4 bg-rose-400"
                           : pwdStrength === 2
-                            ? "w-2/4 bg-amber-400"
-                            : pwdStrength === 3
-                              ? "w-3/4 bg-lime-400"
-                              : "w-full bg-emerald-400"
-                        }`}
+                          ? "w-2/4 bg-amber-400"
+                          : pwdStrength === 3
+                          ? "w-3/4 bg-lime-400"
+                          : "w-full bg-emerald-400"
+                      }`}
                     />
                   </div>
                   <p className="mt-1 text-[11px] text-slate-500">
@@ -354,21 +379,35 @@ export default function Register() {
 
                 <div>
                   <label className={labelBase}>Confirm password</label>
-                  <input
-                    type="password"
-                    name="confirmPassword"
-                    autoComplete="new-password"
-                    value={form.confirmPassword}
-                    onChange={onChange("confirmPassword")}
-                    className={inputBase}
-                    placeholder="Re-enter"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showConfirmPassword ? "text" : "password"}
+                      name="confirmPassword"
+                      autoComplete="new-password"
+                      value={form.confirmPassword}
+                      onChange={onChange("confirmPassword")}
+                      className={passwordInputBase}
+                      placeholder="Re-enter"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((v) => !v)}
+                      className={toggleBtnBase}
+                      aria-label={showConfirmPassword ? "Hide password" : "Show password"}
+                    >
+                      {showConfirmPassword ? "Hide" : "Show"}
+                    </button>
+                  </div>
                   {form.confirmPassword && (
                     <div className="mt-1 text-[11px]">
                       {form.password === form.confirmPassword ? (
-                        <span className="text-emerald-600 font-semibold">Passwords match ✅</span>
+                        <span className="text-emerald-600 font-semibold">
+                          Passwords match ✅
+                        </span>
                       ) : (
-                        <span className="text-rose-600 font-semibold">Passwords do not match</span>
+                        <span className="text-rose-600 font-semibold">
+                          Passwords do not match
+                        </span>
                       )}
                     </div>
                   )}
