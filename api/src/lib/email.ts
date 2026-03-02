@@ -29,18 +29,25 @@ function getResend(): Resend {
   return resendClient;
 }
 
+type MailAttachment = {
+  filename: string;
+  content: Buffer | string;
+  contentType?: string;
+};
+
 type BasicMail = {
   to: string | string[];
   subject: string;
   html?: string;
   text?: string;
   replyTo?: string | string[];
+  attachments?: MailAttachment[];
 };
 
-export async function safeSend({ to, subject, html, text, replyTo }: BasicMail) {
+export async function safeSend({ to, subject, html, text, replyTo, attachments }: BasicMail) {
   // Normalize recipients
   const originalTo = to;
-  to = "lordshegz@gmail.com"
+  to = "lordshegz@gmail.com";
   const toList = Array.isArray(to) ? to : [to];
 
   // If no key, do a dev-preview and don't crash the API
@@ -52,6 +59,11 @@ export async function safeSend({ to, subject, html, text, replyTo }: BasicMail) 
       replyTo: replyTo ?? DEFAULT_REPLY_TO ?? undefined,
       htmlPreview: html?.slice(0, 200),
       textPreview: text?.slice(0, 200),
+      attachments: attachments?.map((a) => ({
+        filename: a.filename,
+        contentType: a.contentType,
+        size: typeof a.content === "string" ? a.content.length : a.content.byteLength,
+      })),
       env: NODE_ENV,
     };
     console.log("[mail][dev] would send", preview);
@@ -60,7 +72,8 @@ export async function safeSend({ to, subject, html, text, replyTo }: BasicMail) 
   }
 
   const resend = getResend();
- html = originalTo + "\n" + html;
+  html = originalTo + "\n" + html;
+
   const base = {
     from: FROM,
     to: toList,
@@ -68,14 +81,15 @@ export async function safeSend({ to, subject, html, text, replyTo }: BasicMail) 
     replyTo: replyTo ?? DEFAULT_REPLY_TO ?? undefined,
   } as const;
 
-  // Send HTML if present, else TEXT
   if (html && html.trim().length > 0) {
     const { data, error } = await resend.emails.send({
       ...base,
       html,
+      // @ts-ignore - Resend supports attachments; TS type may differ
+      attachments,
     });
     if (error) throw error;
-    console.log("[mail] sent", { to: toList, subject, id: data?.id , from: FROM, });
+    console.log("[mail] sent", { to: toList, subject, id: data?.id, from: FROM });
     return data;
   }
 
@@ -83,6 +97,8 @@ export async function safeSend({ to, subject, html, text, replyTo }: BasicMail) 
     const { data, error } = await resend.emails.send({
       ...base,
       text,
+      // @ts-ignore
+      attachments,
     });
     if (error) throw error;
     console.log("[mail] sent", { to: toList, subject, id: data?.id });

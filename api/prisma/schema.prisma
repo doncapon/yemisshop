@@ -1912,3 +1912,201 @@ model SupplierReview {
   @@index([productId])
   @@index([variantId])
 }
+
+enum JobApplicationStatus {
+  NEW
+  REVIEWED
+  SHORTLISTED
+  REJECTED
+}
+
+model JobApplication {
+  id          String              @id @default(cuid())
+  createdAt   DateTime            @default(now())
+
+  name        String
+  email       String
+  roleId      String?
+  roleTitle   String?
+  linkedinUrl String?
+
+  // CV metadata – the actual file is emailed, not stored in DB
+  cvFilename  String?
+  cvMimeType  String?
+  cvSize      Int?                // bytes
+
+  message     String
+
+  status      JobApplicationStatus @default(NEW)
+  notes       String?
+
+  ip          String?
+  userAgent   String?
+
+  @@index([email, createdAt])
+  @@index([roleId, createdAt])
+}
+
+
+// ------------------------ Enums ------------------------
+
+enum EmployeeStatus {
+  ACTIVE
+  PROBATION
+  ON_LEAVE
+  EXITED
+}
+
+enum EmployeePayFrequency {
+  MONTHLY
+  WEEKLY
+  OTHER
+}
+
+enum EmployeeDocumentKind {
+  PASSPORT
+  NIN_SLIP
+  TAX
+  CONTRACT
+  OTHER
+}
+
+// ------------------------ Models ------------------------
+
+model Employee {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Personal
+  firstName      String
+  lastName       String
+  emailWork      String? // official company email
+  emailPersonal  String?
+  phone          String?
+
+  // Employment
+  jobTitle   String?
+  department String?
+  status     EmployeeStatus @default(ACTIVE)
+  startDate  DateTime?
+
+  // Compensation
+  baseSalaryNGN Int? // NGN amount; no decimals for simplicity
+  payFrequency  EmployeePayFrequency?
+
+  // Bank / payroll
+  bankName       String?
+  bankCode       String?
+  accountNumber  String?
+  accountName    String?
+  isPayrollReady Boolean   @default(false)
+
+  // Document flags (quick summary for UI filters)
+  hasPassportDoc Boolean @default(false)
+  hasNinSlipDoc  Boolean @default(false)
+  hasTaxDoc      Boolean @default(false)
+
+  // Relations
+  documents EmployeeDocument[]
+
+  @@index([status, department])
+  @@index([emailWork])
+  @@index([emailPersonal])
+}
+
+model EmployeeDocument {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  kind              EmployeeDocumentKind
+  storageKey        String  // key/path in your object storage (or relative path from /uploads)
+  originalFilename  String
+  mimeType          String?
+  size              Int?    // bytes
+  uploadedByUserId  String? // optional: track which admin uploaded
+
+  @@index([employeeId, kind])
+}
+
+
+// ========================= Enums =========================
+enum CareersEmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  TEMPORARY
+  INTERN
+}
+
+enum CareersLocationType {
+  ONSITE
+  HYBRID
+  REMOTE
+}
+
+// ========================= Models =========================
+model CareersJobRole {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  title     String
+  department String?
+  location   String?
+
+  locationType   CareersLocationType?
+  employmentType CareersEmploymentType?
+
+  // salary band – optional, in NGN by default, but flexible
+  minSalary   Int?
+  maxSalary   Int?
+  currency    String? @default("NGN")
+
+  // publishing + soft delete
+  isPublished Boolean  @default(false)
+  isDeleted   Boolean  @default(false)
+  sortOrder   Int      @default(0)
+
+  // application handling
+  applicationEmail String?
+  applicationUrl   String?
+
+  // content – rich text / bullet list JSON, etc.
+  introHtml          String? // short hero text/summary
+  responsibilitiesJson Json?
+  requirementsJson     Json?
+  benefitsJson         Json?
+
+  closingDate DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // If / when you add applicants later:
+  // applicants CareersApplicant[]
+}
+
+model CareersSettings {
+  id Int @id @default(1)
+
+  // global toggles
+  isCareersEnabled      Boolean @default(true)
+  allowOpenApplications Boolean @default(false)
+
+  // default contact / meta
+  careersEmail      String?
+  careersInboxLabel String? // e.g. "HR Team", "People & Culture"
+  defaultLocation   String?
+  defaultLocationType CareersLocationType?
+
+  // global copy for landing / config page
+  careersIntroHtml    String?
+  careersFooterHtml   String?
+  seoTitle            String?
+  seoDescription      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

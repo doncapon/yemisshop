@@ -75,6 +75,13 @@ import adminOfferChangeRequests from "./routes/adminOfferChangeRequests.js";
 import adminUsersRouter from "./routes/adminUsers.js";
 import checkoutShippingRouter from "./routes/checkoutShipping.js";
 import productReviewsRouter from "./routes/productReviews.js";
+import careersRoutes from "./routes/careers.js";
+
+import supportRoutes from "./routes/support.js";
+import adminCareersRoutes from "./routes/adminCareers.js";
+import adminEmployeesRouter from "./routes/adminEmployees.js";
+import adminCareersJobsRouter from "./routes/adminCareersJobs.js";
+import adminCareersSettingsRouter from "./routes/adminCareersSettings.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -404,6 +411,13 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "30d", index: false }));
 app.use("/api/uploads", uploadsRouter);
 app.use("/api", productReviewsRouter);
+app.use("/api/support", supportRoutes);
+app.use("/api/admin/careers", adminCareersRoutes);
+app.use("/api/careers", careersRoutes);
+app.use("/api/admin/careers", adminCareersRoutes);
+app.use("/api/admin/employees", adminEmployeesRouter);
+app.use("/api/admin/careers/jobs", adminCareersJobsRouter);
+app.use("/api/admin/careers/settings", adminCareersSettingsRouter);
 /* ------------------------------ Serve Frontend (SPA) + SEO endpoints ------------------------------ */
 
 const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {
