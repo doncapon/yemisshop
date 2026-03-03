@@ -154,10 +154,40 @@ function normalizePayload(d: ToastPayload | null | undefined) {
 }
 
 /* ----------------------------------------------------------------------------
+ * Helpers: filter out "dead" rows
+ *
+ * A dead row is:
+ *  - missing productId, OR
+ *  - qty <= 0, OR
+ *  - effective unit price <= 0 (sold out / no valid offer).
+ *
+ * This ensures any stale zero-price, sold-out items that might still
+ * be hanging around in an old payload are automatically ignored by
+ * the mini-cart toast as soon as you interact with the cart again.
+ * -------------------------------------------------------------------------- */
+function isDeadRow(row: MiniCartRow | null | undefined): boolean {
+  if (!row || !row.productId) return true;
+
+  const qty = Number(row.qty ?? 0);
+  if (!Number.isFinite(qty) || qty <= 0) return true;
+
+  const unitCandidate =
+    row.unitPrice ??
+    row.price ??
+    (row.totalPrice != null && qty > 0 ? row.totalPrice / qty : undefined);
+
+  const unit = money(unitCandidate);
+  if (unit <= 0) return true;
+
+  return false;
+}
+
+/* ----------------------------------------------------------------------------
  * Group cart rows by **productId + variantId + kind + supplierId + optionsKey (and id)**
  * so:
  * - Different suppliers never merge.
  * - Different variant selections (optionsKey) never merge.
+ * - Zero-price / sold-out lines are automatically dropped.
  * -------------------------------------------------------------------------- */
 function groupCart(cart: MiniCartRow[]): MiniCartRow[] {
   const map = new Map<
@@ -169,7 +199,8 @@ function groupCart(cart: MiniCartRow[]): MiniCartRow[] {
   >();
 
   cart.forEach((row, index) => {
-    if (!row || !row.productId) return;
+    // 🔥 Drop any sold-out / zero-price / invalid rows immediately
+    if (isDeadRow(row)) return;
 
     const kind = row.kind ?? (row.variantId ? "VARIANT" : "BASE");
 
@@ -369,7 +400,9 @@ export default function MiniCartToastHost() {
 
               return (
                 <div
-                  key={`${it.productId}:${it.variantId ?? "base"}:${it.supplierId ?? "nosupp"}:${it.optionsKey ?? "noop"}:${idx}`}
+                  key={`${it.productId}:${it.variantId ?? "base"}:${
+                    it.supplierId ?? "nosupp"
+                  }:${it.optionsKey ?? "noop"}:${idx}`}
                   className={`flex gap-3 rounded-xl border p-3 ${
                     isFocus
                       ? "border-fuchsia-400 bg-fuchsia-50/50"
@@ -414,7 +447,7 @@ export default function MiniCartToastHost() {
                         </div>
                       )}
 
-                    <div className="mt-1 flex items-center justify-between">
+                    <div className="mt-1 flex.items-center justify-between">
                       <div className="text-[11px] text-zinc-600">
                         Qty: {it.qty}
                       </div>

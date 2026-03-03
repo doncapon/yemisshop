@@ -780,27 +780,53 @@ export default function Cart() {
   }, [visibleCart]);
 
   const computedCapForLine = (item: CartItem): number | undefined => {
+    // 0️⃣ First, check pricing quote for this exact cart line.
+    const key = lineKeyFor(item);
+    const ql = quoteLines[key];
+
+    if (ql) {
+      const priced = asInt(ql.qtyPriced, 0);
+      const requested = asInt(ql.qtyRequested, 0);
+
+      // If nothing could be priced, this line is effectively out of stock
+      // for the *current configuration* (supplier / offer combo).
+      if (!Number.isFinite(priced) || priced <= 0) {
+        return 0;
+      }
+
+      // If the quote only managed to price part of the requested qty,
+      // cap at the priced amount.
+      if (priced < requested) {
+        return Math.max(0, Math.floor(priced));
+      }
+
+      // If priced >= requested, we know at least the requested qty is fine.
+      // We don't know the absolute max here, so we fall through to availability
+      // to get a looser cap (or "no cap" if availability is unknown).
+    }
+
+    // 1️⃣ Fallback to availability endpoint (product/variant level)
     const data = availabilityQ.data as AvailabilityPayload | undefined;
     if (!data) return undefined;
 
     const exactKey = availKeyFor(item.productId, item.variantId ?? null);
     const exactLine = data.lines?.[exactKey];
 
-    // 1) Exact line availability wins (best for one-supplier-per-product setup)
+    // 1a) Exact product+variant availability wins when present.
     if (exactLine && Number.isFinite(Number(exactLine.totalAvailable))) {
       return Math.max(0, Math.floor(Number(exactLine.totalAvailable) || 0));
     }
 
-    // 2) Fallback to product pool if exact line is missing
+    // 1b) Fallback to product pool if exact line is missing.
     const pool = data.products?.[String(item.productId)];
     if (!pool) return undefined;
 
-    // Variant line → prefer variant-specific pool
+    // Variant line → prefer variant-specific pool.
     if (item.variantId) {
       const vCap = Number(pool.perVariantTotals?.[String(item.variantId)] ?? NaN);
       if (Number.isFinite(vCap)) return Math.max(0, Math.floor(vCap));
 
-      // if no explicit variant pool exists, fallback to generic pool
+      // No explicit variant pool → fallback to generic pool.
       if (Number.isFinite(Number(pool.genericTotal))) {
         return Math.max(0, Math.floor(Number(pool.genericTotal) || 0));
       }
@@ -809,9 +835,8 @@ export default function Cart() {
     }
 
     // Base line (non-variant)
-    // If product has variant-specific offers only, use genericTotal for base line.
-    // If not, productTotal is the best fallback.
     if (pool.hasVariantSpecific) {
+      // When there are variant-specific pools, base line just sees generic stock.
       return Math.max(0, Math.floor(Number(pool.genericTotal) || 0));
     }
 
