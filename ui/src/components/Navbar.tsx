@@ -458,7 +458,7 @@ export default function Navbar() {
                     title="Become a supplier"
                   >
                     <Store size={16} />
-                    <span className="hidden lg:inline">Supply</span>
+                    <span className="hidden lg:inline">Become a supplier</span>
                   </NavLink>
 
                   {/* ✅ include ?from= so refresh on login page still returns */}
