@@ -1,8 +1,66 @@
 // src/components/Footer.tsx
+import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
+import toast from "react-hot-toast";
+import api from "../api/client";
+
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
 export default function Footer() {
   const year = new Date().getFullYear();
+
+  const [email, setEmail] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubscribe(e: FormEvent) {
+    e.preventDefault();
+    const trimmed = email.trim();
+
+    if (!trimmed) {
+      toast.error("Please enter a valid email address.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      // Primary endpoint – adjust to match your API
+      const urls = ["/api/newsletter/subscribe", "/api/marketing/newsletter/subscribe"];
+
+      let lastErr: any = null;
+      let success = false;
+
+      for (const url of urls) {
+        try {
+          await api.post(
+            url,
+            { email: trimmed },
+            AXIOS_COOKIE_CFG
+          );
+          success = true;
+          break;
+        } catch (err: any) {
+          lastErr = err;
+        }
+      }
+
+      if (!success) {
+        console.error("Newsletter subscription failed", lastErr);
+        throw lastErr;
+      }
+
+      toast.success("Thanks! You’re subscribed to DaySpring updates.");
+      setEmail("");
+    } catch (err: any) {
+      // Try to show a friendlier message if backend sends one
+      const msg =
+        err?.response?.data?.message ||
+        err?.response?.data?.error ||
+        "We couldn’t subscribe you right now. Please try again later.";
+      toast.error(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <footer className="bg-surface-alt border-t border-[--color-surface-ring] text-ink mt-10 overflow-x-hidden">
@@ -147,10 +205,7 @@ export default function Footer() {
 
                 <form
                   className="flex flex-col sm:flex-row gap-2"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    // integrate newsletter handler here
-                  }}
+                  onSubmit={handleSubscribe}
                 >
                   <input
                     type="email"
@@ -158,18 +213,25 @@ export default function Footer() {
                     autoComplete="email"
                     placeholder="you@example.com"
                     required
-                    // ✅ IMPORTANT: iOS Safari auto-zooms inputs < 16px.
-                    // Set 16px on mobile to prevent viewport zoom/jump when keyboard opens.
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    // ✅ Prevent iOS Safari zooming by keeping 16px on mobile
                     className="border rounded-xl px-3 py-2 w-full outline-none focus:ring-2 ring-primary-300 bg-white text-base sm:text-sm"
+                    disabled={submitting}
                   />
                   <button
                     type="submit"
-                    // Keep button visually aligned with the input (also 16px on mobile)
-                    className="rounded-xl px-3 py-2 bg-primary-600 text-white hover:bg-primary-700 transition w-full sm:w-auto font-semibold text-base sm:text-sm"
+                    className="rounded-xl px-3 py-2 bg-primary-600 text-white hover:bg-primary-700 transition w-full sm:w-auto font-semibold text-base sm:text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                    disabled={submitting}
                   >
-                    Subscribe
+                    {submitting ? "Subscribing…" : "Subscribe"}
                   </button>
                 </form>
+
+                <p className="text-[10px] sm:text-[11px] text-ink-soft">
+                  By subscribing, you agree to receive marketing emails from DaySpring. You can
+                  unsubscribe at any time from the email footer.
+                </p>
               </div>
             </div>
           </div>

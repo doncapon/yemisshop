@@ -82,6 +82,8 @@ import adminCareersRoutes from "./routes/adminCareers.js";
 import adminEmployeesRouter from "./routes/adminEmployees.js";
 import adminCareersJobsRouter from "./routes/adminCareersJobs.js";
 import adminCareersSettingsRouter from "./routes/adminCareersSettings.js";
+import newsletterRouter from "./routes/newsletter.js";
+import adminNewsletterRouter from "./routes/adminNewsletter.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -418,6 +420,9 @@ app.use("/api/admin/careers", adminCareersRoutes);
 app.use("/api/admin/employees", adminEmployeesRouter);
 app.use("/api/admin/careers/jobs", adminCareersJobsRouter);
 app.use("/api/admin/careers/settings", adminCareersSettingsRouter);
+app.use("/api/newsletter", newsletterRouter);
+app.use("/api/newsletter", newsletterRouter);
+app.use("/api/admin/newsletter", adminNewsletterRouter);
 /* ------------------------------ Serve Frontend (SPA) + SEO endpoints ------------------------------ */
 
 const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {

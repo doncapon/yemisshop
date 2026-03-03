@@ -145,7 +145,6 @@ function normalizeRefunds(payload: any): RefundRow[] {
 }
 
 /* ---------------- Customers normalization (for admin view-as) ---------------- */
-/* ---------------- Customers normalization (for admin view-as) ---------------- */
 function normalizeCustomers(payload: any): CustomerRow[] {
   const list =
     (payload && Array.isArray(payload.data) && payload.data) ||

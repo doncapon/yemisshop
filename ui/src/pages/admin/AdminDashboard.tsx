@@ -15,6 +15,7 @@ import {
   BarChart3,
   Search,
   Undo2,
+  Mail,
 } from "lucide-react";
 
 import api from "../../api/client.js";
@@ -292,6 +293,7 @@ export default function AdminDashboard() {
     "marketing",
     "analytics",
     "finance",
+    "careers",
   ];
 
   const validPTabs: ProductsInnerTab[] = ["moderation", "manage"];
@@ -372,7 +374,8 @@ export default function AdminDashboard() {
   const me = useQuery({
     queryKey: ["me"],
     retry: false,
-    queryFn: async () => (await api.get<Me>("/api/profile/me", { withCredentials: true })).data,
+    queryFn: async () =>
+      (await api.get<Me>("/api/profile/me", { withCredentials: true })).data,
     staleTime: staleTimeMs,
     refetchOnWindowFocus: false,
   });
@@ -402,7 +405,9 @@ export default function AdminDashboard() {
   const overview = useQuery<Overview>({
     queryKey: ["admin", "overview"],
     enabled: !!canAdmin,
-    queryFn: async () => (await api.get<Overview>("/api/admin/overview", { withCredentials: true })).data,
+    queryFn: async () =>
+      (await api.get<Overview>("/api/admin/overview", { withCredentials: true }))
+        .data,
     staleTime: staleTimeMs,
     refetchOnWindowFocus: false,
   });
@@ -435,13 +440,18 @@ export default function AdminDashboard() {
 
       // ✅ Use admin endpoint first
       try {
-        const res = await api.get(`/api/admin/payments?includeItems=1&q=${qq}`, { withCredentials: true });
+        const res = await api.get(`/api/admin/payments?includeItems=1&q=${qq}`, {
+          withCredentials: true,
+        });
 
         return unwrapArray<AdminPayment>(res.data);
       } catch (e: any) {
         // Optional fallback if your project uses the other route
         if (e?.response?.status === 404) {
-          const res2 = await api.get(`/api/payments/admin?includeItems=1&q=${qq}`, { withCredentials: true });
+          const res2 = await api.get(
+            `/api/payments/admin?includeItems=1&q=${qq}`,
+            { withCredentials: true }
+          );
           return unwrapArray<AdminPayment>(res2.data);
         }
         throw e;
@@ -474,7 +484,9 @@ export default function AdminDashboard() {
     enabled: !!canAdmin && tab === "refunds",
     queryFn: async () => {
       const { data } = await api.get<{ data: AdminRefundTop[] }>(
-        `/api/admin/refunds?q=${encodeURIComponent(refundQ)}&status=${encodeURIComponent(refundStatus)}`,
+        `/api/admin/refunds?q=${encodeURIComponent(
+          refundQ
+        )}&status=${encodeURIComponent(refundStatus)}`,
         { withCredentials: true }
       );
       return data?.data ?? [];
@@ -484,7 +496,11 @@ export default function AdminDashboard() {
   });
 
   const decideRefundMTop = useMutation({
-    mutationFn: async (vars: { id: string; decision: "APPROVE" | "REJECT"; note?: string }) =>
+    mutationFn: async (vars: {
+      id: string;
+      decision: "APPROVE" | "REJECT";
+      note?: string;
+    }) =>
       (
         await api.patch(
           `/api/admin/refunds/${vars.id}/decision`,
@@ -496,38 +512,74 @@ export default function AdminDashboard() {
       qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
       toast.push({ title: "Refunds", message: "Decision saved.", duration: 2000 });
     },
-    onError: (e: any) => openModal({ title: "Refunds", message: e?.response?.data?.error || "Failed." }),
+    onError: (e: any) =>
+      openModal({
+        title: "Refunds",
+        message: e?.response?.data?.error || "Failed.",
+      }),
   });
 
   const markRefundedMTop = useMutation({
     mutationFn: async (id: string) =>
-      (await api.post(`/api/admin/refunds/${id}/mark-refunded`, {}, { withCredentials: true })).data,
+      (
+        await api.post(
+          `/api/admin/refunds/${id}/mark-refunded`,
+          {},
+          { withCredentials: true }
+        )
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
       toast.push({ title: "Refunds", message: "Marked refunded.", duration: 2000 });
     },
-    onError: (e: any) => openModal({ title: "Refunds", message: e?.response?.data?.error || "Failed." }),
+    onError: (e: any) =>
+      openModal({
+        title: "Refunds",
+        message: e?.response?.data?.error || "Failed.",
+      }),
   });
 
   const verifyPayment = useMutation({
     mutationFn: async (paymentId: string) =>
-      (await api.post(`/api/admin/payments/${paymentId}/verify`, {}, { withCredentials: true })).data,
+      (
+        await api.post(
+          `/api/admin/payments/${paymentId}/verify`,
+          {},
+          { withCredentials: true }
+        )
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "payments"] });
       qc.invalidateQueries({ queryKey: ["admin", "overview"] });
-      toast.push({ title: "Payments", message: "Payment verified.", duration: 2500 });
+      toast.push({
+        title: "Payments",
+        message: "Payment verified.",
+        duration: 2500,
+      });
     },
-    onError: () => openModal({ title: "Payments", message: "Verification failed." }),
+    onError: () =>
+      openModal({ title: "Payments", message: "Verification failed." }),
   });
 
   const refundPayment = useMutation({
     mutationFn: async (paymentId: string) =>
-      (await api.post(`/api/admin/payments/${paymentId}/refund`, {}, { withCredentials: true })).data,
+      (
+        await api.post(
+          `/api/admin/payments/${paymentId}/refund`,
+          {},
+          { withCredentials: true }
+        )
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "payments"] });
-      toast.push({ title: "Payments", message: "Refund processed.", duration: 2500 });
+      toast.push({
+        title: "Payments",
+        message: "Refund processed.",
+        duration: 2500,
+      });
     },
-    onError: () => openModal({ title: "Payments", message: "Refund failed." }),
+    onError: () =>
+      openModal({ title: "Payments", message: "Refund failed." }),
   });
 
   /* -------- Catalog: categories, brands, attributes -------- */
@@ -535,22 +587,34 @@ export default function AdminDashboard() {
     queryKey: ["admin", "categories"],
     enabled: !!canAdmin && tab === "catalog",
     queryFn: async () =>
-      (await api.get<{ data: AdminCategory[] }>("/api/admin/categories", { withCredentials: true })).data.data,
+      (
+        await api.get<{ data: AdminCategory[] }>("/api/admin/categories", {
+          withCredentials: true,
+        })
+      ).data.data,
     refetchOnWindowFocus: false,
     staleTime: staleTimeMs,
   });
 
   const createCategory = useMutation({
     mutationFn: async (payload: Partial<AdminCategory>) =>
-      (await api.post("/api/admin/categories", payload, { withCredentials: true })).data,
+      (await api.post("/api/admin/categories", payload, { withCredentials: true }))
+        .data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "categories"] });
     },
   });
 
   const updateCategory = useMutation({
-    mutationFn: async ({ id, ...payload }: Partial<AdminCategory> & { id: string }) =>
-      (await api.put(`/api/admin/categories/${id}`, payload, { withCredentials: true })).data,
+    mutationFn: async ({
+      id,
+      ...payload
+    }: Partial<AdminCategory> & { id: string }) =>
+      (
+        await api.put(`/api/admin/categories/${id}`, payload, {
+          withCredentials: true,
+        })
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "categories"] });
     },
@@ -558,7 +622,11 @@ export default function AdminDashboard() {
 
   const deleteCategory = useMutation({
     mutationFn: async (id: string) =>
-      (await api.delete(`/api/admin/categories/${id}`, { withCredentials: true })).data,
+      (
+        await api.delete(`/api/admin/categories/${id}`, {
+          withCredentials: true,
+        })
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "categories"] });
     },
@@ -568,29 +636,46 @@ export default function AdminDashboard() {
     queryKey: ["admin", "brands"],
     enabled: !!canAdmin && tab === "catalog",
     queryFn: async () =>
-      (await api.get<{ data: AdminBrand[] }>("/api/admin/brands", { withCredentials: true })).data.data,
+      (
+        await api.get<{ data: AdminBrand[] }>("/api/admin/brands", {
+          withCredentials: true,
+        })
+      ).data.data,
     refetchOnWindowFocus: false,
     staleTime: staleTimeMs,
   });
 
   const createBrand = useMutation({
     mutationFn: async (payload: Partial<AdminBrand>) =>
-      (await api.post("/api/admin/brands", payload, { withCredentials: true })).data,
+      (await api.post("/api/admin/brands", payload, { withCredentials: true }))
+        .data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "brands"] });
     },
   });
 
   const updateBrand = useMutation({
-    mutationFn: async ({ id, ...payload }: Partial<AdminBrand> & { id: string }) =>
-      (await api.put(`/api/admin/brands/${id}`, payload, { withCredentials: true })).data,
+    mutationFn: async ({
+      id,
+      ...payload
+    }: Partial<AdminBrand> & { id: string }) =>
+      (
+        await api.put(`/api/admin/brands/${id}`, payload, {
+          withCredentials: true,
+        })
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "brands"] });
     },
   });
 
   const deleteBrand = useMutation({
-    mutationFn: async (id: string) => (await api.delete(`/api/admin/brands/${id}`, { withCredentials: true })).data,
+    mutationFn: async (id: string) =>
+      (
+        await api.delete(`/api/admin/brands/${id}`, {
+          withCredentials: true,
+        })
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "brands"] });
     },
@@ -600,22 +685,34 @@ export default function AdminDashboard() {
     queryKey: ["admin", "attributes"],
     enabled: !!canAdmin && tab === "catalog",
     queryFn: async () =>
-      (await api.get<{ data: AdminAttribute[] }>("/api/admin/attributes", { withCredentials: true })).data.data,
+      (
+        await api.get<{ data: AdminAttribute[] }>("/api/admin/attributes", {
+          withCredentials: true,
+        })
+      ).data.data,
     refetchOnWindowFocus: false,
     staleTime: staleTimeMs,
   });
 
   const createAttribute = useMutation({
     mutationFn: async (payload: Partial<AdminAttribute>) =>
-      (await api.post("/api/admin/attributes", payload, { withCredentials: true })).data,
+      (await api.post("/api/admin/attributes", payload, { withCredentials: true }))
+        .data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
     },
   });
 
   const updateAttribute = useMutation({
-    mutationFn: async ({ id, ...payload }: Partial<AdminAttribute> & { id: string }) =>
-      (await api.put(`/api/admin/attributes/${id}`, payload, { withCredentials: true })).data,
+    mutationFn: async ({
+      id,
+      ...payload
+    }: Partial<AdminAttribute> & { id: string }) =>
+      (
+        await api.put(`/api/admin/attributes/${id}`, payload, {
+          withCredentials: true,
+        })
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
     },
@@ -623,7 +720,11 @@ export default function AdminDashboard() {
 
   const deleteAttribute = useMutation({
     mutationFn: async (id: string) =>
-      (await api.delete(`/api/admin/attributes/${id}`, { withCredentials: true })).data,
+      (
+        await api.delete(`/api/admin/attributes/${id}`, {
+          withCredentials: true,
+        })
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
     },
@@ -631,10 +732,18 @@ export default function AdminDashboard() {
 
   /* -------- Attribute values -------- */
   const createAttrValue = useMutation({
-    mutationFn: async (payload: { attributeId: string; name: string; code?: string }) => {
-      const { data } = await api.post(`/api/admin/attributes/${payload.attributeId}/values`, payload, {
-        withCredentials: true,
-      });
+    mutationFn: async (payload: {
+      attributeId: string;
+      name: string;
+      code?: string;
+    }) => {
+      const { data } = await api.post(
+        `/api/admin/attributes/${payload.attributeId}/values`,
+        payload,
+        {
+          withCredentials: true,
+        }
+      );
       return data;
     },
     onMutate: async (vars) => {
@@ -660,7 +769,11 @@ export default function AdminDashboard() {
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData(["admin", "attributes"], ctx.prev);
-      toast.push({ title: "Attributes", message: "Failed to add value.", duration: 2500 });
+      toast.push({
+        title: "Attributes",
+        message: "Failed to add value.",
+        duration: 2500,
+      });
     },
     onSuccess: (created, vars) => {
       qc.setQueryData(["admin", "attributes"], (prev: any[] = []) => {
@@ -674,7 +787,11 @@ export default function AdminDashboard() {
         next[idx] = a;
         return next;
       });
-      toast.push({ title: "Attributes", message: "Value added.", duration: 1800 });
+      toast.push({
+        title: "Attributes",
+        message: "Value added.",
+        duration: 1800,
+      });
     },
   });
 
@@ -690,25 +807,59 @@ export default function AdminDashboard() {
       code?: string | null;
       position?: number | null;
       isActive?: boolean;
-    }) => (await api.put(`/api/admin/attributes/${attributeId}/values/${id}`, payload, { withCredentials: true })).data,
+    }) =>
+      (
+        await api.put(
+          `/api/admin/attributes/${attributeId}/values/${id}`,
+          payload,
+          { withCredentials: true }
+        )
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
-      toast.push({ title: "Attributes", message: "Value updated.", duration: 1600 });
+      toast.push({
+        title: "Attributes",
+        message: "Value updated.",
+        duration: 1600,
+      });
     },
     onError: () => {
-      toast.push({ title: "Attributes", message: "Failed to update value.", duration: 2500 });
+      toast.push({
+        title: "Attributes",
+        message: "Failed to update value.",
+        duration: 2500,
+      });
     },
   });
 
   const deleteAttrValue = useMutation({
-    mutationFn: async ({ attributeId, id }: { attributeId: string; id: string }) =>
-      (await api.delete(`/api/admin/attributes/${attributeId}/values/${id}`, { withCredentials: true })).data,
+    mutationFn: async ({
+      attributeId,
+      id,
+    }: {
+      attributeId: string;
+      id: string;
+    }) =>
+      (
+        await api.delete(
+          `/api/admin/attributes/${attributeId}/values/${id}`,
+          { withCredentials: true }
+        )
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
-      toast.push({ title: "Attributes", message: "Value deleted.", duration: 1600 });
+      toast.push({
+        title: "Attributes",
+        message: "Value deleted.",
+        duration: 1600,
+      });
     },
     onError: () => {
-      toast.push({ title: "Attributes", message: "Failed to delete value.", duration: 2500 });
+      toast.push({
+        title: "Attributes",
+        message: "Failed to delete value.",
+        duration: 2500,
+      });
     },
   });
 
@@ -718,19 +869,28 @@ export default function AdminDashboard() {
     enabled: !!canAdmin && tab === "catalog",
     queryFn: async () => {
       try {
-        const { data } = await api.get("/api/admin/catalog/usage", { withCredentials: true });
+        const { data } = await api.get("/api/admin/catalog/usage", {
+          withCredentials: true,
+        });
         return data || { categories: {}, attributes: {}, brands: {} };
       } catch {
         // Fallback: derive from products if usage endpoint is missing
         try {
-          const { data } = await api.get("/api/products?include=attributes,variants", { withCredentials: true });
-          const arr: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+          const { data } = await api.get("/api/products?include=attributes,variants", {
+            withCredentials: true,
+          });
+          const arr: any[] = Array.isArray(data?.data)
+            ? data.data
+            : Array.isArray(data)
+            ? data
+            : [];
           const categories: Record<string, number> = {};
           const attributes: Record<string, number> = {};
           const brands: Record<string, number> = {};
 
           for (const p of arr) {
-            if (p.categoryId) categories[p.categoryId] = (categories[p.categoryId] || 0) + 1;
+            if (p.categoryId)
+              categories[p.categoryId] = (categories[p.categoryId] || 0) + 1;
             if (p.brandId) brands[p.brandId] = (brands[p.brandId] || 0) + 1;
 
             const avs = p.attributeValues || [];
@@ -774,22 +934,35 @@ export default function AdminDashboard() {
 
   const createSupplier = useMutation({
     mutationFn: async (payload: Partial<AdminSupplier>) =>
-      (await api.post("/api/admin/suppliers", payload, { withCredentials: true })).data,
+      (await api.post("/api/admin/suppliers", payload, { withCredentials: true }))
+        .data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
     },
   });
 
   const updateSupplier = useMutation({
-    mutationFn: async ({ id, ...payload }: Partial<AdminSupplier> & { id: string }) =>
-      (await api.put(`/api/admin/suppliers/${id}`, payload, { withCredentials: true })).data,
+    mutationFn: async ({
+      id,
+      ...payload
+    }: Partial<AdminSupplier> & { id: string }) =>
+      (
+        await api.put(`/api/admin/suppliers/${id}`, payload, {
+          withCredentials: true,
+        })
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
     },
   });
 
   const deleteSupplier = useMutation({
-    mutationFn: async (id: string) => (await api.delete(`/api/admin/suppliers/${id}`, { withCredentials: true })).data,
+    mutationFn: async (id: string) =>
+      (
+        await api.delete(`/api/admin/suppliers/${id}`, {
+          withCredentials: true,
+        })
+      ).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
     },
@@ -926,10 +1099,11 @@ export default function AdminDashboard() {
       <button
         type="button"
         onClick={onClick}
-        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${emphasis
-          ? "bg-emerald-600 text-white border-emerald-600 hover:opacity-90"
-          : "bg-white hover:bg-black/5"
-          }`}
+        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${
+          emphasis
+            ? "bg-emerald-600 text-white border-emerald-600 hover:opacity-90"
+            : "bg-white hover:bg-black/5"
+        }`}
         title={label}
       >
         <span className="font-medium">{value.toLocaleString()}</span>
@@ -968,16 +1142,36 @@ export default function AdminDashboard() {
     useEffect(() => {
       if (usersQ.isError) {
         const e: any = usersQ.error;
-        console.error("Users list failed:", e?.response?.status, e?.response?.data || e?.message);
+        console.error(
+          "Users list failed:",
+          e?.response?.status,
+          e?.response?.data || e?.message
+        );
       }
     }, [usersQ.isError, usersQ.error]);
 
     const updateUserRole = useMutation({
-      mutationFn: async ({ userId, role: nextRole }: { userId: string; role: string }) =>
-        (await api.post(`/api/admin/users/${userId}/role`, { role: nextRole }, { withCredentials: true })).data,
+      mutationFn: async ({
+        userId,
+        role: nextRole,
+      }: {
+        userId: string;
+        role: string;
+      }) =>
+        (
+          await api.post(
+            `/api/admin/users/${userId}/role`,
+            { role: nextRole },
+            { withCredentials: true }
+          )
+        ).data,
       onSuccess: () => {
         qc2.invalidateQueries({ queryKey: ["admin", "users"], exact: false });
-        toast2.push({ title: "Users", message: "Role updated.", duration: 2500 });
+        toast2.push({
+          title: "Users",
+          message: "Role updated.",
+          duration: 2500,
+        });
       },
       onError: (e: any) => {
         const msg = e?.response?.data?.error || "Could not update role.";
@@ -987,22 +1181,44 @@ export default function AdminDashboard() {
 
     const deactivateUser = useMutation({
       mutationFn: async (userId: string) =>
-        (await api.post(`/api/admin/users/${userId}/deactivate`, {}, { withCredentials: true })).data,
+        (
+          await api.post(
+            `/api/admin/users/${userId}/deactivate`,
+            {},
+            { withCredentials: true }
+          )
+        ).data,
       onSuccess: () => {
         qc2.invalidateQueries({ queryKey: ["admin", "users"], exact: false });
-        toast2.push({ title: "Users", message: "User deactivated.", duration: 2500 });
+        toast2.push({
+          title: "Users",
+          message: "User deactivated.",
+          duration: 2500,
+        });
       },
-      onError: () => openModal2({ title: "Users", message: "Could not deactivate user." }),
+      onError: () =>
+        openModal2({ title: "Users", message: "Could not deactivate user." }),
     });
 
     const reactivateUser = useMutation({
       mutationFn: async (userId: string) =>
-        (await api.post(`/api/admin/users/${userId}/reactivate`, {}, { withCredentials: true })).data,
+        (
+          await api.post(
+            `/api/admin/users/${userId}/reactivate`,
+            {},
+            { withCredentials: true }
+          )
+        ).data,
       onSuccess: () => {
         qc2.invalidateQueries({ queryKey: ["admin", "users"], exact: false });
-        toast2.push({ title: "Users", message: "User reactivated.", duration: 2500 });
+        toast2.push({
+          title: "Users",
+          message: "User reactivated.",
+          duration: 2500,
+        });
       },
-      onError: () => openModal2({ title: "Users", message: "Could not reactivate user." }),
+      onError: () =>
+        openModal2({ title: "Users", message: "Could not reactivate user." }),
     });
 
     const rows = usersQ.data ?? [];
@@ -1013,7 +1229,10 @@ export default function AdminDashboard() {
         subtitle="Create, approve, deactivate, reactivate; manage privileges"
         right={
           <div className="relative w-full sm:w-[320px]">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <Search
+              size={16}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+            />
             <input
               value={usersSearchInput}
               onChange={(e) => setUsersSearchInput(e.target.value)}
@@ -1035,12 +1254,16 @@ export default function AdminDashboard() {
             ))}
 
           {!usersQ.isLoading && rows.length === 0 && (
-            <div className="rounded-2xl border p-4 text-sm text-zinc-600">No users found.</div>
+            <div className="rounded-2xl border p-4 text-sm text-zinc-600">
+              No users found.
+            </div>
           )}
 
           {rows.map((u) => {
             const statusUpper = (u.status || "").toUpperCase();
-            const isSuspended = ["SUSPENDED", "DEACTIVATED", "DISABLED"].includes(statusUpper);
+            const isSuspended = ["SUSPENDED", "DEACTIVATED", "DISABLED"].includes(
+              statusUpper
+            );
 
             return (
               <div key={u.id} className="rounded-2xl border p-4 bg-white">
@@ -1056,7 +1279,12 @@ export default function AdminDashboard() {
                         <div className="inline-block">
                           <RoleSelect
                             value={u.role}
-                            onChange={(newRole) => updateUserRole.mutate({ userId: u.id, role: newRole })}
+                            onChange={(newRole) =>
+                              updateUserRole.mutate({
+                                userId: u.id,
+                                role: newRole,
+                              })
+                            }
                           />
                         </div>
                       )
@@ -1071,7 +1299,9 @@ export default function AdminDashboard() {
                   </div>
 
                   <div className="text-xs text-ink-soft">Created</div>
-                  <div className="text-right text-ink">{fmtDate(u.createdAt)}</div>
+                  <div className="text-right text-ink">
+                    {fmtDate(u.createdAt)}
+                  </div>
                 </div>
 
                 <div className="mt-3 grid grid-cols-2 gap-2">
@@ -1091,7 +1321,9 @@ export default function AdminDashboard() {
                     </button>
                   )}
                   <button
-                    onClick={() => openModal2({ title: "User", message: u.email })}
+                    onClick={() =>
+                      openModal2({ title: "User", message: u.email })
+                    }
                     className="inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl border bg-white hover:bg-black/5"
                   >
                     View
@@ -1124,14 +1356,19 @@ export default function AdminDashboard() {
               )}
               {!usersQ.isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-6 text-center text-zinc-500">
+                  <td
+                    colSpan={5}
+                    className="px-3 py-6 text-center text-zinc-500"
+                  >
                     No users found.
                   </td>
                 </tr>
               )}
               {rows.map((u) => {
                 const statusUpper = (u.status || "").toUpperCase();
-                const isSuspended = ["SUSPENDED", "DEACTIVATED", "DISABLED"].includes(statusUpper);
+                const isSuspended = ["SUSPENDED", "DEACTIVATED", "DISABLED"].includes(
+                  statusUpper
+                );
                 return (
                   <tr key={u.id} className="hover:bg-black/5">
                     <td className="px-3 py-3">{u.email}</td>
@@ -1142,7 +1379,12 @@ export default function AdminDashboard() {
                         ) : (
                           <RoleSelect
                             value={u.role}
-                            onChange={(newRole) => updateUserRole.mutate({ userId: u.id, role: newRole })}
+                            onChange={(newRole) =>
+                              updateUserRole.mutate({
+                                userId: u.id,
+                                role: newRole,
+                              })
+                            }
                           />
                         )
                       ) : (
@@ -1177,6 +1419,37 @@ export default function AdminDashboard() {
               })}
             </tbody>
           </table>
+        </div>
+      </SectionCard>
+    );
+  }
+
+  /* -------- Marketing Section: wire newsletter page -------- */
+  function MarketingSection() {
+    return (
+      <SectionCard
+        title="Marketing"
+        subtitle="Keep shoppers engaged with newsletters and updates"
+      >
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <QuickAction
+            toAction={() => nav("/admin/newsletter")}
+            icon={Mail}
+            label="Newsletter broadcast"
+            desc="Send updates to all subscribers (with dry run first)"
+          />
+          <QuickAction
+            toAction={() => setTab("analytics")}
+            icon={BarChart3}
+            label="Activity analytics"
+            desc="Review events and signals from the activity log"
+          />
+          <QuickAction
+            toAction={() => nav("/")}
+            icon={BellRing}
+            label="Customer-facing homepage"
+            desc="Open main site to see how promos look"
+          />
         </div>
       </SectionCard>
     );
@@ -1249,16 +1522,25 @@ export default function AdminDashboard() {
 
     const approveM = useMutation({
       mutationFn: async (id: string) => {
-        const res = await api.post(`/api/admin/products/${encodeURIComponent(id)}/go-live`, {}, { withCredentials: true });
+        const res = await api.post(
+          `/api/admin/products/${encodeURIComponent(id)}/go-live`,
+          {},
+          { withCredentials: true }
+        );
         return res.data?.data ?? res.data ?? res;
       },
       onSuccess: async () => {
         await qc2.invalidateQueries({ queryKey: ["admin", "products"] });
-        await qc2.invalidateQueries({ queryKey: ["admin", "products", "moderation"] });
+        await qc2.invalidateQueries({
+          queryKey: ["admin", "products", "moderation"],
+        });
         await qc2.invalidateQueries({ queryKey: ["admin", "overview"] });
       },
       onError: (e: any) => {
-        const msg = e?.response?.data?.error || e?.message || "Failed to approve (go live).";
+        const msg =
+          e?.response?.data?.error ||
+          e?.message ||
+          "Failed to approve (go live).";
         window.alert(msg);
       },
     });
@@ -1299,10 +1581,15 @@ export default function AdminDashboard() {
                   animate={{ opacity: 1, y: 0 }}
                   className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight"
                 >
-                  {me.isLoading ? "Loading…" : role === "SUPER_ADMIN" ? "Super Admin Dashboard" : "Admin Dashboard"}
+                  {me.isLoading
+                    ? "Loading…"
+                    : role === "SUPER_ADMIN"
+                    ? "Super Admin Dashboard"
+                    : "Admin Dashboard"}
                 </motion.h1>
                 <p className="text-white/80 text-sm mt-1">
-                  Full control & oversight — users, products, transactions, operations, marketing, and analytics.
+                  Full control & oversight — users, products, transactions,
+                  operations, marketing, and analytics.
                 </p>
               </div>
 
@@ -1352,21 +1639,31 @@ export default function AdminDashboard() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
             <KpiCard
               title="Users"
-              value={(overview.data?.users.totalUsers ?? 0).toLocaleString()}
-              hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${overview.data?.users.totalSuppliers ?? 0
-                } Suppliers • ${overview.data?.users.totalSupplierRiders ?? 0} Riders • ${overview.data?.users.totalAdmins ?? 0
-                } Admins • ${overview.data?.users.totalSuperAdmins ?? 0} Super Admins`}
+              value={(
+                overview.data?.users.totalUsers ?? 0
+              ).toLocaleString()}
+              hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${
+                overview.data?.users.totalSuppliers ?? 0
+              } Suppliers • ${
+                overview.data?.users.totalSupplierRiders ?? 0
+              } Riders • ${overview.data?.users.totalAdmins ?? 0} Admins • ${
+                overview.data?.users.totalSuperAdmins ?? 0
+              } Super Admins`}
               Icon={Users}
             />
 
             <KpiCardOverview
               title="Products"
               total={`${overview.data?.products.total ?? 0} total`}
-              value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0
-                } Live`}
-              hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0
-                } Rejected`}
-              res={`${overview.data?.products.availability.publishedAvailable ?? 0} Published available`}
+              value={`${overview.data?.products.published ?? 0} Published • ${
+                overview.data?.products.live ?? 0
+              } Live`}
+              hint={`${overview.data?.products.pending ?? 0} Pending • ${
+                overview.data?.products.rejected ?? 0
+              } Rejected`}
+              res={`${
+                overview.data?.products.availability.publishedAvailable ?? 0
+              } Published available`}
               Icon={PackageCheck}
             />
 
@@ -1382,7 +1679,11 @@ export default function AdminDashboard() {
               value={ngn.format(fmtN(overview.data?.revenueToday))}
               hint="Last 7 days"
               Icon={BarChart3}
-              chart={<Sparkline points={overview.data?.sparklineRevenue7d || []} />}
+              chart={
+                <Sparkline
+                  points={overview.data?.sparklineRevenue7d || []}
+                />
+              }
             />
 
             {role === "SUPER_ADMIN" && (
@@ -1391,7 +1692,9 @@ export default function AdminDashboard() {
                 value={ngn.format(fmtN(overview.data?.profitToday))}
                 hint="Last 7 days"
                 Icon={BarChart3}
-                chart={<Sparkline points={overview.data?.sparklineProfit7d || []} />}
+                chart={
+                  <Sparkline points={overview.data?.sparklineProfit7d || []} />
+                }
               />
             )}
           </div>
@@ -1402,14 +1705,44 @@ export default function AdminDashboard() {
           <div className="rounded-2xl border bg-white p-2 shadow-sm">
             <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
               <TabButton k="overview" label="Overview" Icon={ShieldCheck} />
-              <TabButton k="users" label="Users & Roles" mobileLabel="Users" Icon={UserCheck} />
-              <TabButton k="careers" label="Careers" mobileLabel="Careers" Icon={Users} />
-              <TabButton k="products" label="Product Moderation" mobileLabel="Products" Icon={PackageCheck} />
-              <TabButton k="catalog" label="Catalog Settings" mobileLabel="Catalog" Icon={Settings} />
+              <TabButton
+                k="users"
+                label="Users & Roles"
+                mobileLabel="Users"
+                Icon={UserCheck}
+              />
+              <TabButton
+                k="careers"
+                label="Careers"
+                mobileLabel="Careers"
+                Icon={Users}
+              />
+              <TabButton
+                k="products"
+                label="Product Moderation"
+                mobileLabel="Products"
+                Icon={PackageCheck}
+              />
+              <TabButton
+                k="catalog"
+                label="Catalog Settings"
+                mobileLabel="Catalog"
+                Icon={Settings}
+              />
               <TabButton k="refunds" label="Refunds" Icon={Undo2} />
-              <TabButton k="transactions" label="Transactions" mobileLabel="Payments" Icon={CreditCard} />
+              <TabButton
+                k="transactions"
+                label="Transactions"
+                mobileLabel="Payments"
+                Icon={CreditCard}
+              />
               <TabButton k="finance" label="Finance" Icon={CreditCard} />
-              <TabButton k="ops" label="Ops & Security" mobileLabel="Ops" Icon={Settings} />
+              <TabButton
+                k="ops"
+                label="Ops & Security"
+                mobileLabel="Ops"
+                Icon={Settings}
+              />
               <TabButton k="marketing" label="Marketing" Icon={BellRing} />
               <TabButton k="analytics" label="Analytics" Icon={BarChart3} />
             </div>
@@ -1425,7 +1758,10 @@ export default function AdminDashboard() {
           {/* Overview */}
           {tab === "overview" && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <SectionCard title="Quick Actions" subtitle="Common admin tasks at a glance">
+              <SectionCard
+                title="Quick Actions"
+                subtitle="Common admin tasks at a glance"
+              >
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   {/* Applicants */}
                   <QuickAction
@@ -1459,6 +1795,14 @@ export default function AdminDashboard() {
                     desc="Configure careers site & settings"
                   />
 
+                  {/* Newsletter broadcast */}
+                  <QuickAction
+                    toAction={() => nav("/admin/newsletter")}
+                    icon={Mail}
+                    label="Newsletter broadcast"
+                    desc="Send updates to newsletter subscribers"
+                  />
+
                   {/* Existing stuff */}
                   <QuickAction
                     toAction={() => setTab("users")}
@@ -1481,14 +1825,21 @@ export default function AdminDashboard() {
                 </div>
               </SectionCard>
 
-              <SectionCard title="What needs attention" subtitle="Pending items & alerts">
+              <SectionCard
+                title="What needs attention"
+                subtitle="Pending items & alerts"
+              >
                 <ul className="space-y-3 text-sm">
                   <li className="flex items-center justify-between border rounded-xl px-3 py-2">
                     <span className="text-ink">Products pending review</span>
-                    <span className="font-semibold">{overview.data?.products.pending ?? 0}</span>
+                    <span className="font-semibold">
+                      {overview.data?.products.pending ?? 0}
+                    </span>
                   </li>
                   <li className="flex items-center justify-between border rounded-xl px-3 py-2">
-                    <span className="text-ink">Unverified / flagged transactions</span>
+                    <span className="text-ink">
+                      Unverified / flagged transactions
+                    </span>
                     <span className="font-semibold">—</span>
                   </li>
                   <li className="flex items-center justify-between border rounded-xl px-3 py-2">
@@ -1532,23 +1883,37 @@ export default function AdminDashboard() {
                   </div>
 
                   <div className="rounded-xl border p-3">
-                    <div className="text-xs text-ink-soft mb-2">Availability (variant-aware)</div>
+                    <div className="text-xs text-ink-soft mb-2">
+                      Availability (variant-aware)
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       <StatChip
                         label="All statuses available"
-                        value={overview.data?.products.availability.allStatusesAvailable ?? 0}
-                        onClick={() => goProductsManageFromTile("All statuses available")}
+                        value={
+                          overview.data?.products.availability
+                            .allStatusesAvailable ?? 0
+                        }
+                        onClick={() =>
+                          goProductsManageFromTile("All statuses available")
+                        }
                       />
                       <StatChip
                         label="Published available"
-                        value={overview.data?.products.availability.publishedAvailable ?? 0}
-                        onClick={() => goProductsManageFromTile("Published available")}
+                        value={
+                          overview.data?.products.availability
+                            .publishedAvailable ?? 0
+                        }
+                        onClick={() =>
+                          goProductsManageFromTile("Published available")
+                        }
                       />
                     </div>
                   </div>
 
                   <div className="rounded-xl border p-3">
-                    <div className="text-xs text-ink-soft mb-2">Supplier offers</div>
+                    <div className="text-xs text-ink-soft mb-2">
+                      Supplier offers
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       <StatChip
                         label="With any"
@@ -1558,17 +1923,28 @@ export default function AdminDashboard() {
                       <StatChip
                         label="Without any"
                         value={overview.data?.products.offers.withoutAny ?? 0}
-                        onClick={() => goProductsManageFromTile("Without any")}
+                        onClick={() =>
+                          goProductsManageFromTile("Without any")
+                        }
                       />
                       <StatChip
                         label="Published with any"
-                        value={overview.data?.products.offers.publishedWithAny ?? 0}
-                        onClick={() => goProductsManageFromTile("Published with any")}
+                        value={
+                          overview.data?.products.offers.publishedWithAny ?? 0
+                        }
+                        onClick={() =>
+                          goProductsManageFromTile("Published with any")
+                        }
                       />
                       <StatChip
                         label="Published without any"
-                        value={overview.data?.products.offers.publishedWithoutAny ?? 0}
-                        onClick={() => goProductsManageFromTile("Published without any")}
+                        value={
+                          overview.data?.products.offers
+                            .publishedWithoutAny ?? 0
+                        }
+                        onClick={() =>
+                          goProductsManageFromTile("Published without any")
+                        }
                       />
                       <StatChip
                         label="With active"
@@ -1577,8 +1953,13 @@ export default function AdminDashboard() {
                       />
                       <StatChip
                         label="Published with active"
-                        value={overview.data?.products.offers.publishedWithActive ?? 0}
-                        onClick={() => goProductsManageFromTile("Published with active")}
+                        value={
+                          overview.data?.products.offers
+                            .publishedWithActive ?? 0
+                        }
+                        onClick={() =>
+                          goProductsManageFromTile("Published with active")
+                        }
                       />
                     </div>
                   </div>
@@ -1588,8 +1969,12 @@ export default function AdminDashboard() {
                     <div className="flex flex-wrap gap-2">
                       <StatChip
                         label="With variants"
-                        value={overview.data?.products.variantMix.withVariants ?? 0}
-                        onClick={() => goProductsManageFromTile("With variants")}
+                        value={
+                          overview.data?.products.variantMix.withVariants ?? 0
+                        }
+                        onClick={() =>
+                          goProductsManageFromTile("With variants")
+                        }
                       />
                       <StatChip
                         label="Simple"
@@ -1600,17 +1985,29 @@ export default function AdminDashboard() {
                   </div>
 
                   <div className="rounded-xl border p-3 sm:col-span-2">
-                    <div className="text-xs text-ink-soft mb-2">Published base stock (non-variant-aware)</div>
+                    <div className="text-xs text-ink-soft mb-2">
+                      Published base stock (non-variant-aware)
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       <StatChip
                         label="Base in-stock"
-                        value={overview.data?.products.publishedBaseStock.inStock ?? 0}
-                        onClick={() => goProductsManageFromTile("Base in-stock")}
+                        value={
+                          overview.data?.products.publishedBaseStock.inStock ??
+                          0
+                        }
+                        onClick={() =>
+                          goProductsManageFromTile("Base in-stock")
+                        }
                       />
                       <StatChip
                         label="Base out-of-stock"
-                        value={overview.data?.products.publishedBaseStock.outOfStock ?? 0}
-                        onClick={() => goProductsManageFromTile("Base out-of-stock")}
+                        value={
+                          overview.data?.products.publishedBaseStock
+                            .outOfStock ?? 0
+                        }
+                        onClick={() =>
+                          goProductsManageFromTile("Base out-of-stock")
+                        }
                       />
                     </div>
                   </div>
@@ -1634,8 +2031,11 @@ export default function AdminDashboard() {
                       s.set("pTab", "moderation");
                       nav(`/admin?${s.toString()}`, { replace: false });
                     }}
-                    className={`flex-1 sm:flex-none px-3 py-2 text-sm ${pTab === "moderation" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"
-                      }`}
+                    className={`flex-1 sm:flex-none px-3 py-2 text-sm ${
+                      pTab === "moderation"
+                        ? "bg-zinc-900 text-white"
+                        : "bg-white hover:bg-black/5"
+                    }`}
                   >
                     Moderation
                   </button>
@@ -1647,8 +2047,11 @@ export default function AdminDashboard() {
                       s.set("pTab", "manage");
                       nav(`/admin?${s.toString()}`, { replace: false });
                     }}
-                    className={`flex-1 sm:flex-none px-3 py-2 text-sm ${pTab === "manage" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"
-                      }`}
+                    className={`flex-1 sm:flex-none px-3 py-2 text-sm ${
+                      pTab === "manage"
+                        ? "bg-zinc-900 text-white"
+                        : "bg-white hover:bg-black/5"
+                    }`}
                   >
                     Manage
                   </button>
@@ -1754,6 +2157,9 @@ export default function AdminDashboard() {
             </SectionCard>
           )}
 
+          {/* Marketing: newsletter wiring */}
+          {tab === "marketing" && <MarketingSection />}
+
           {tab === "refunds" && <RefundsSection canAdmin={canAdmin} />}
           {tab === "finance" && <FinanceSection canAdmin={canAdmin} />}
 
@@ -1763,7 +2169,9 @@ export default function AdminDashboard() {
               q={q}
               setQ={setQ}
               txQ={txQ}
-              onRefresh={() => qc.invalidateQueries({ queryKey: ["admin", "payments"] })}
+              onRefresh={() =>
+                qc.invalidateQueries({ queryKey: ["admin", "payments"] })
+              }
               onVerify={verifyPayment.mutate}
               onRefund={refundPayment.mutate}
             />
@@ -1836,7 +2244,10 @@ function TransactionsSection({
       right={
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 w-full sm:w-auto">
           <div className="relative w-full sm:w-[340px]">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <Search
+              size={16}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+            />
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -1857,7 +2268,10 @@ function TransactionsSection({
       <div className="sm:hidden space-y-3">
         {txQ.isLoading &&
           Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="rounded-2xl border p-4 animate-pulse">
+            <div
+              key={i}
+              className="rounded-2xl border p-4 animate-pulse"
+            >
               <div className="h-4 w-2/3 bg-zinc-200 rounded" />
               <div className="mt-2 h-3 w-1/2 bg-zinc-200 rounded" />
               <div className="mt-4 h-9 w-full bg-zinc-200 rounded-xl" />
@@ -1867,12 +2281,16 @@ function TransactionsSection({
         {txQ.isError && (
           <div className="rounded-2xl border p-4 text-sm text-rose-600">
             Failed to load transactions.{" "}
-            {(txQ.error as any)?.response?.data?.error || (txQ.error as any)?.message || ""}
+            {(txQ.error as any)?.response?.data?.error ||
+              (txQ.error as any)?.message ||
+              ""}
           </div>
         )}
 
         {!txQ.isLoading && !txQ.isError && rows.length === 0 && (
-          <div className="rounded-2xl border p-4 text-sm text-zinc-600">No transactions found.</div>
+          <div className="rounded-2xl border p-4 text-sm text-zinc-600">
+            No transactions found.
+          </div>
         )}
 
         {!txQ.isLoading &&
@@ -1881,19 +2299,29 @@ function TransactionsSection({
             <div key={t.id} className="rounded-2xl border p-4 bg-white">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="font-semibold text-ink break-all">{t.reference || t.id}</div>
-                  <div className="text-xs text-ink-soft mt-0.5 break-all">Order: {t.orderId}</div>
-                  <div className="text-xs text-ink-soft mt-0.5 break-all">{t.userEmail || "—"}</div>
+                  <div className="font-semibold text-ink break-all">
+                    {t.reference || t.id}
+                  </div>
+                  <div className="text-xs text-ink-soft mt-0.5 break-all">
+                    Order: {t.orderId}
+                  </div>
+                  <div className="text-xs text-ink-soft mt-0.5 break-all">
+                    {t.userEmail || "—"}
+                  </div>
                 </div>
                 <StatusDot label={t.status} />
               </div>
 
               <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                 <div className="text-xs text-ink-soft">Total</div>
-                <div className="text-right text-ink">{ngn.format(fmtN(t.amount))}</div>
+                <div className="text-right text-ink">
+                  {ngn.format(fmtN(t.amount))}
+                </div>
 
                 <div className="text-xs text-ink-soft">Date</div>
-                <div className="text-right text-ink">{fmtDate(t.createdAt)}</div>
+                <div className="text-right text-ink">
+                  {fmtDate(t.createdAt)}
+                </div>
               </div>
 
               <div className="mt-3 grid grid-cols-2 gap-2">
@@ -1938,21 +2366,34 @@ function TransactionsSection({
             )}
             {txQ.isError && (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-rose-600">
+                <td
+                  colSpan={7}
+                  className="px-3 py-6 text-center text-rose-600"
+                >
                   Failed to load transactions.{" "}
-                  {(txQ.error as any)?.response?.data?.error || (txQ.error as any)?.message || ""}
+                  {(txQ.error as any)?.response?.data?.error ||
+                    (txQ.error as any)?.message ||
+                    ""}
                 </td>
               </tr>
             )}
             {!txQ.isLoading && !txQ.isError && rows.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-zinc-500">
+                <td
+                  colSpan={7}
+                  className="px-3 py-6 text-center text-zinc-500"
+                >
                   No transactions found.
                 </td>
               </tr>
             )}
             {rows.map((t) => (
-              <TransactionRow key={t.id} tx={t} onVerify={() => onVerify(t.id)} onRefund={() => onRefund(t.id)} />
+              <TransactionRow
+                key={t.id}
+                tx={t}
+                onVerify={() => onVerify(t.id)}
+                onRefund={() => onRefund(t.id)}
+              />
             ))}
           </tbody>
         </table>
@@ -1975,7 +2416,11 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
     status: string;
     requestedAt?: string;
     createdAt?: string;
-    requestedBy?: { email?: string; firstName?: string | null; lastName?: string | null };
+    requestedBy?: {
+      email?: string;
+      firstName?: string | null;
+      lastName?: string | null;
+    };
     supplier?: { name?: string };
     totalAmount?: number | string;
     provider?: string | null;
@@ -2036,7 +2481,9 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
     enabled: !!canAdmin,
     queryFn: async () => {
       const { data } = await api.get(
-        `/api/admin/refunds?q=${encodeURIComponent(q)}&status=${encodeURIComponent(
+        `/api/admin/refunds?q=${encodeURIComponent(
+          q
+        )}&status=${encodeURIComponent(
           status
         )}&take=${take}&skip=${skip}`,
         { withCredentials: true }
@@ -2050,8 +2497,12 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
       const total: number | undefined =
         (typeof root?.total === "number" ? root.total : undefined) ??
         (typeof root?.count === "number" ? root.count : undefined) ??
-        (typeof root?.data?.total === "number" ? root.data.total : undefined) ??
-        (typeof root?.data?.count === "number" ? root.data.count : undefined) ??
+        (typeof root?.data?.total === "number"
+          ? root.data.total
+          : undefined) ??
+        (typeof root?.data?.count === "number"
+          ? root.data.count
+          : undefined) ??
         undefined;
 
       return { rows, total };
@@ -2063,13 +2514,23 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
   const rows: AdminRefund[] = refundsQ.data?.rows ?? [];
   const total: number | undefined = refundsQ.data?.total;
 
-  const totalPages = typeof total === "number" && total >= 0 ? Math.max(1, Math.ceil(total / take)) : undefined;
+  const totalPages =
+    typeof total === "number" && total >= 0
+      ? Math.max(1, Math.ceil(total / take))
+      : undefined;
 
   const canPrev = page > 1;
-  const canNext = typeof totalPages === "number" ? page < totalPages : rows.length === take;
+  const canNext =
+    typeof totalPages === "number"
+      ? page < totalPages
+      : rows.length === take;
 
   const decideRefundM = useMutation({
-    mutationFn: async (vars: { id: string; decision: "APPROVE" | "REJECT"; note?: string }) =>
+    mutationFn: async (vars: {
+      id: string;
+      decision: "APPROVE" | "REJECT";
+      note?: string;
+    }) =>
       (
         await api.patch(
           `/api/admin/refunds/${encodeURIComponent(vars.id)}/decision`,
@@ -2079,22 +2540,43 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
       ).data,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
-      toast.push({ title: "Refunds", message: "Decision saved.", duration: 2000 });
+      toast.push({
+        title: "Refunds",
+        message: "Decision saved.",
+        duration: 2000,
+      });
       closeModal();
     },
-    onError: (e: any) => openModal({ title: "Refunds", message: e?.response?.data?.error || "Failed." }),
+    onError: (e: any) =>
+      openModal({
+        title: "Refunds",
+        message: e?.response?.data?.error || "Failed.",
+      }),
   });
 
   const markRefundedM = useMutation({
     mutationFn: async (id: string) =>
-      (await api.post(`/api/admin/refunds/${encodeURIComponent(id)}/mark-refunded`, {}, { withCredentials: true }))
-        .data,
+      (
+        await api.post(
+          `/api/admin/refunds/${encodeURIComponent(id)}/mark-refunded`,
+          {},
+          { withCredentials: true }
+        )
+      ).data,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
-      toast.push({ title: "Refunds", message: "Marked refunded.", duration: 2000 });
+      toast.push({
+        title: "Refunds",
+        message: "Marked refunded.",
+        duration: 2000,
+      });
       closeModal();
     },
-    onError: (e: any) => openModal({ title: "Refunds", message: e?.response?.data?.error || "Failed." }),
+    onError: (e: any) =>
+      openModal({
+        title: "Refunds",
+        message: e?.response?.data?.error || "Failed.",
+      }),
   });
 
   const isMutating = decideRefundM.isPending || markRefundedM.isPending;
@@ -2104,7 +2586,9 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
       <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="min-w-[180px]">
           <h3 className="text-ink font-semibold">Refunds</h3>
-          <p className="text-xs text-ink-soft">Review supplier/customer refund cases and settle them.</p>
+          <p className="text-xs text-ink-soft">
+            Review supplier/customer refund cases and settle them.
+          </p>
         </div>
 
         <div className="grid grid-cols-1 sm:flex sm:flex-row sm:items-center gap-2 w-full sm:w-auto">
@@ -2159,10 +2643,13 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
           {refundsQ.isFetching
             ? "Loading…"
             : refundsQ.isError
-              ? "Failed to load."
-              : typeof total === "number"
-                ? `Showing ${Math.min(skip + 1, total)}–${Math.min(skip + rows.length, total)} of ${total}`
-                : `Showing ${rows.length} item(s)`}
+            ? "Failed to load."
+            : typeof total === "number"
+            ? `Showing ${Math.min(
+                skip + 1,
+                total
+              )}–${Math.min(skip + rows.length, total)} of ${total}`
+            : `Showing ${rows.length} item(s)`}
         </div>
 
         <div className="inline-flex items-center gap-2">
@@ -2211,24 +2698,35 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
           </>
         )}
 
-        {refundsQ.isError && <div className="rounded-2xl border p-4 text-sm text-rose-600">Failed to load refunds.</div>}
+        {refundsQ.isError && (
+          <div className="rounded-2xl border p-4 text-sm text-rose-600">
+            Failed to load refunds.
+          </div>
+        )}
 
         {!refundsQ.isLoading && !refundsQ.isError && rows.length === 0 && (
-          <div className="rounded-2xl border p-4 text-sm text-zinc-600">No refunds found.</div>
+          <div className="rounded-2xl border p-4 text-sm text-zinc-600">
+            No refunds found.
+          </div>
         )}
 
         {!refundsQ.isLoading &&
           !refundsQ.isError &&
           rows.map((r) => {
             const statusUpper = String(r.status || "").toUpperCase();
-            const disableDecision = statusUpper === "REFUNDED" || statusUpper === "CLOSED";
+            const disableDecision =
+              statusUpper === "REFUNDED" || statusUpper === "CLOSED";
 
             return (
               <div key={r.id} className="rounded-2xl border p-4 bg-white">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="font-semibold text-ink break-all">{r.orderId || r.id}</div>
-                    <div className="text-xs text-ink-soft mt-0.5 break-all">PO: {r.purchaseOrderId || "—"}</div>
+                    <div className="font-semibold text-ink break-all">
+                      {r.orderId || r.id}
+                    </div>
+                    <div className="text-xs text-ink-soft mt-0.5 break-all">
+                      PO: {r.purchaseOrderId || "—"}
+                    </div>
                     <div className="text-xs text-ink-soft mt-0.5 break-all">
                       Supplier: {r.supplier?.name || r.supplierId || "—"}
                     </div>
@@ -2238,10 +2736,14 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
                 <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                   <div className="text-xs text-ink-soft">Amount</div>
-                  <div className="text-right text-ink">{ngnLocal.format(fmtMoney(r.totalAmount))}</div>
+                  <div className="text-right text-ink">
+                    {ngnLocal.format(fmtMoney(r.totalAmount))}
+                  </div>
 
                   <div className="text-xs text-ink-soft">Created</div>
-                  <div className="text-right text-ink">{fmtDate2(r.createdAt || r.requestedAt)}</div>
+                  <div className="text-right text-ink">
+                    {fmtDate2(r.createdAt || r.requestedAt)}
+                  </div>
                 </div>
 
                 <div className="mt-3 grid grid-cols-2 gap-2">
@@ -2266,14 +2768,24 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                               <b>PO:</b> {r.purchaseOrderId || "—"}
                             </div>
                             <div className="text-sm">
-                              <b>Supplier:</b> {r.supplier?.name || r.supplierId || "—"}
+                              <b>Supplier:</b>{" "}
+                              {r.supplier?.name || r.supplierId || "—"}
                             </div>
                             <div className="text-sm">
-                              <b>Amount:</b> {ngnLocal.format(fmtMoney(r.totalAmount))}
+                              <b>Amount:</b>{" "}
+                              {ngnLocal.format(fmtMoney(r.totalAmount))}
                             </div>
-                            <div className="text-xs text-zinc-500">Provider ref: {r.providerReference || "—"}</div>
-                            <div className="text-xs text-zinc-500">Admin decision: {r.adminDecision || "—"}</div>
-                            {r.adminNote ? <div className="text-sm text-zinc-700">{r.adminNote}</div> : null}
+                            <div className="text-xs text-zinc-500">
+                              Provider ref: {r.providerReference || "—"}
+                            </div>
+                            <div className="text-xs text-zinc-500">
+                              Admin decision: {r.adminDecision || "—"}
+                            </div>
+                            {r.adminNote ? (
+                              <div className="text-sm text-zinc-700">
+                                {r.adminNote}
+                              </div>
+                            ) : null}
                           </div>
                         ),
                       })
@@ -2305,8 +2817,13 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                     className="px-3 py-2 rounded-xl bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
                     disabled={disableDecision || isMutating}
                     onClick={() => {
-                      const note = window.prompt("Reject reason (optional)") || "";
-                      decideRefundM.mutate({ id: r.id, decision: "REJECT", note: note || undefined });
+                      const note =
+                        window.prompt("Reject reason (optional)") || "";
+                      decideRefundM.mutate({
+                        id: r.id,
+                        decision: "REJECT",
+                        note: note || undefined,
+                      });
                     }}
                   >
                     Reject
@@ -2331,17 +2848,34 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
           <table className="min-w-[1100px] w-full text-sm">
             <thead>
               <tr className="bg-zinc-50 text-ink">
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">Order</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">PO</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[240px]">Supplier</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">Requested By</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[140px]">Amount</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[160px]">Status</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[180px]">Created</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">
+                  Order
+                </th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">
+                  PO
+                </th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[240px]">
+                  Supplier
+                </th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[220px]">
+                  Requested By
+                </th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[140px]">
+                  Amount
+                </th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[160px]">
+                  Status
+                </th>
+                <th className="text-left px-3 py-2 whitespace-nowrap min-w-[180px]">
+                  Created
+                </th>
 
                 <th
                   className="sticky right-0 z-40 text-right px-3 py-2 bg-zinc-50 whitespace-nowrap w-[220px] min-w-[220px] max-w-[220px] border-l"
-                  style={{ boxShadow: "-10px 0 16px -14px rgba(0,0,0,0.35)" }}
+                  style={{
+                    boxShadow:
+                      "-10px 0 16px -14px rgba(0,0,0,0.35)",
+                  }}
                 >
                   Actions
                 </th>
@@ -2351,7 +2885,10 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
             <tbody className="divide-y">
               {refundsQ.isLoading && (
                 <tr>
-                  <td colSpan={8} className="px-3 py-6 text-center text-zinc-500">
+                  <td
+                    colSpan={8}
+                    className="px-3 py-6 text-center text-zinc-500"
+                  >
                     Loading refunds…
                   </td>
                 </tr>
@@ -2359,23 +2896,32 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
               {refundsQ.isError && (
                 <tr>
-                  <td colSpan={8} className="px-3 py-6 text-center text-rose-600">
+                  <td
+                    colSpan={8}
+                    className="px-3 py-6 text-center text-rose-600"
+                  >
                     Failed to load refunds.
                   </td>
                 </tr>
               )}
 
-              {!refundsQ.isLoading && !refundsQ.isError && rows.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-3 py-6 text-center text-zinc-500">
-                    No refunds found.
-                  </td>
-                </tr>
-              )}
+              {!refundsQ.isLoading &&
+                !refundsQ.isError &&
+                rows.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={8}
+                      className="px-3 py-6 text-center text-zinc-500"
+                    >
+                      No refunds found.
+                    </td>
+                  </tr>
+                )}
 
               {rows.map((r) => {
                 const statusUpper = String(r.status || "").toUpperCase();
-                const disableDecision = statusUpper === "REFUNDED" || statusUpper === "CLOSED";
+                const disableDecision =
+                  statusUpper === "REFUNDED" || statusUpper === "CLOSED";
 
                 return (
                   <tr key={r.id} className="hover:bg-black/5">
@@ -2393,7 +2939,9 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                       )}
                     </td>
 
-                    <td className="px-3 py-3 whitespace-nowrap">{r.purchaseOrderId || "—"}</td>
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      {r.purchaseOrderId || "—"}
+                    </td>
 
                     <td className="px-3 py-3 whitespace-nowrap">
                       <span
@@ -2413,7 +2961,9 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                       </span>
                     </td>
 
-                    <td className="px-3 py-3 whitespace-nowrap">{ngnLocal.format(fmtMoney(r.totalAmount))}</td>
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      {ngnLocal.format(fmtMoney(r.totalAmount))}
+                    </td>
 
                     <td className="px-3 py-3 whitespace-nowrap">
                       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border bg-white whitespace-nowrap">
@@ -2421,11 +2971,16 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                       </span>
                     </td>
 
-                    <td className="px-3 py-3 whitespace-nowrap">{fmtDate2(r.createdAt || r.requestedAt)}</td>
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      {fmtDate2(r.createdAt || r.requestedAt)}
+                    </td>
 
                     <td
                       className="sticky right-0 z-30 px-3 py-3 text-right bg-white w-[220px] min-w-[220px] max-w-[220px] border-l"
-                      style={{ boxShadow: "-10px 0 16px -14px rgba(0,0,0,0.25)" }}
+                      style={{
+                        boxShadow:
+                          "-10px 0 16px -14px rgba(0,0,0,0.25)",
+                      }}
                     >
                       <div className="inline-flex flex-col items-end gap-2">
                         <button
@@ -2443,14 +2998,26 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                                     <b>PO:</b> {r.purchaseOrderId || "—"}
                                   </div>
                                   <div className="text-sm">
-                                    <b>Supplier:</b> {r.supplier?.name || r.supplierId || "—"}
+                                    <b>Supplier:</b>{" "}
+                                    {r.supplier?.name || r.supplierId || "—"}
                                   </div>
                                   <div className="text-sm">
-                                    <b>Amount:</b> {ngnLocal.format(fmtMoney(r.totalAmount))}
+                                    <b>Amount:</b>{" "}
+                                    {ngnLocal.format(fmtMoney(r.totalAmount))}
                                   </div>
-                                  <div className="text-xs text-zinc-500">Provider ref: {r.providerReference || "—"}</div>
-                                  <div className="text-xs text-zinc-500">Admin decision: {r.adminDecision || "—"}</div>
-                                  {r.adminNote ? <div className="text-sm text-zinc-700">{r.adminNote}</div> : null}
+                                  <div className="text-xs text-zinc-500">
+                                    Provider ref:{" "}
+                                    {r.providerReference || "—"}
+                                  </div>
+                                  <div className="text-xs text-zinc-500">
+                                    Admin decision:{" "}
+                                    {r.adminDecision || "—"}
+                                  </div>
+                                  {r.adminNote ? (
+                                    <div className="text-sm text-zinc-700">
+                                      {r.adminNote}
+                                    </div>
+                                  ) : null}
                                 </div>
                               ),
                             })
@@ -2465,7 +3032,9 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                           onClick={() => {
                             const note = window.prompt("Admin note (optional)");
                             if (note === null) return;
-                            const ok = window.confirm("Approve this refund?");
+                            const ok = window.confirm(
+                              "Approve this refund?"
+                            );
                             if (!ok) return;
 
                             decideRefundM.mutate({
@@ -2482,8 +3051,13 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                           className="px-3 py-1.5 rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
                           disabled={disableDecision || isMutating}
                           onClick={() => {
-                            const note = window.prompt("Reject reason (optional)") || "";
-                            decideRefundM.mutate({ id: r.id, decision: "REJECT", note: note || undefined });
+                            const note =
+                              window.prompt("Reject reason (optional)") || "";
+                            decideRefundM.mutate({
+                              id: r.id,
+                              decision: "REJECT",
+                              note: note || undefined,
+                            });
                           }}
                         >
                           Reject
@@ -2527,21 +3101,30 @@ function FinanceSection({ canAdmin }: { canAdmin: boolean }) {
       <div className="px-4 md:px-5 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="min-w-[180px]">
           <h3 className="text-ink font-semibold">Finance</h3>
-          <p className="text-xs text-ink-soft">Release supplier payouts, view allocations, and post ledger adjustments.</p>
+          <p className="text-xs text-ink-soft">
+            Release supplier payouts, view allocations, and post ledger
+            adjustments.
+          </p>
         </div>
 
         <div className="inline-flex rounded-xl border overflow-hidden w-full sm:w-auto">
           <button
             onClick={() => setSubTab("payouts")}
-            className={`flex-1 sm:flex-none px-3 py-2 text-sm ${subTab === "payouts" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"
-              }`}
+            className={`flex-1 sm:flex-none px-3 py-2 text-sm ${
+              subTab === "payouts"
+                ? "bg-zinc-900 text-white"
+                : "bg-white hover:bg-black/5"
+            }`}
           >
             Payouts
           </button>
           <button
             onClick={() => setSubTab("ledger")}
-            className={`flex-1 sm:flex-none px-3 py-2 text-sm ${subTab === "ledger" ? "bg-zinc-900 text-white" : "bg-white hover:bg-black/5"
-              }`}
+            className={`flex-1 sm:flex-none px-3 py-2 text-sm ${
+              subTab === "ledger"
+                ? "bg-zinc-900 text-white"
+                : "bg-white hover:bg-black/5"
+            }`}
           >
             Ledger
           </button>
@@ -2549,14 +3132,30 @@ function FinanceSection({ canAdmin }: { canAdmin: boolean }) {
       </div>
 
       <div className="p-4 md:p-5">
-        {subTab === "payouts" ? <AdminPayoutsAny canAdmin={canAdmin} /> : <AdminLedgerAny canAdmin={canAdmin} />}
+        {subTab === "payouts" ? (
+          <AdminPayoutsAny canAdmin={canAdmin} />
+        ) : (
+          <AdminLedgerAny canAdmin={canAdmin} />
+        )}
       </div>
     </div>
   );
 }
 
 /* ---------------- Small presentational bits ---------------- */
-function KpiCard({ title, value, hint, Icon, chart }: { title: string; value: string; hint?: string; Icon: any; chart?: ReactNode }) {
+function KpiCard({
+  title,
+  value,
+  hint,
+  Icon,
+  chart,
+}: {
+  title: string;
+  value: string;
+  hint?: string;
+  Icon: any;
+  chart?: ReactNode;
+}) {
   return (
     <div className="rounded-2xl border bg-white shadow-sm p-4">
       <div className="flex items-center justify-between">
@@ -2597,7 +3196,9 @@ function KpiCardOverview({
         <div>
           <div className="text-xs text-ink-soft">{title}</div>
           <div className="text-xl font-semibold text-ink mt-0.5">{total}</div>
-          <div className="text-lg font-semibold text-ink mt-0.5">{value}</div>
+          <div className="text-lg font-semibold text-ink mt-0.5">
+            {value}
+          </div>
           {!!hint && <div className="text-xs text-ink-soft mt-1">{hint}</div>}
           {!!res && <div className="text-xs text-ink-soft mt-1">{res}</div>}
         </div>
@@ -2616,23 +3217,44 @@ function StatusDot({ label }: { label?: string | null }) {
     s === "VERIFIED" || s === "PUBLISHED" || s === "PAID"
       ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
       : s === "PENDING"
-        ? "bg-amber-500/10 text-amber-700 border-amber-600/20"
-        : s === "FAILED" || s === "CANCELED" || s === "REJECTED" || s === "REFUNDED"
-          ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
-          : s === "SUSPENDED" || s === "DEACTIVATED" || s === "DISABLED"
-            ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
-            : "bg-zinc-500/10 text-zinc-700 border-zinc-600/20";
+      ? "bg-amber-500/10 text-amber-700 border-amber-600/20"
+      : s === "FAILED" ||
+        s === "CANCELED" ||
+        s === "REJECTED" ||
+        s === "REFUNDED"
+      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+      : s === "SUSPENDED" ||
+        s === "DEACTIVATED" ||
+        s === "DISABLED"
+      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+      : "bg-zinc-500/10 text-zinc-700 border-zinc-600/20";
 
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${cls}`}>{label}</span>;
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${cls}`}
+    >
+      {label}
+    </span>
+  );
 }
 
-function RoleSelect({ value, disabled, onChange }: { value: string; disabled?: boolean; onChange: (role: string) => void }) {
+function RoleSelect({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  disabled?: boolean;
+  onChange: (role: string) => void;
+}) {
   return (
     <select
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className={`border rounded-lg px-2 py-1 text-sm bg-white ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}
+      className={`border rounded-lg px-2 py-1 text-sm bg-white ${
+        disabled ? "opacity-60 cursor-not-allowed" : ""
+      }`}
     >
       <option value="SHOPPER">SHOPPER</option>
       <option value="ADMIN">ADMIN</option>
@@ -2641,15 +3263,30 @@ function RoleSelect({ value, disabled, onChange }: { value: string; disabled?: b
   );
 }
 
-function QuickAction({ toAction, icon: Icon, label, desc }: { toAction: () => void; icon: any; label: string; desc: string }) {
+function QuickAction({
+  toAction,
+  icon: Icon,
+  label,
+  desc,
+}: {
+  toAction: () => void;
+  icon: any;
+  label: string;
+  desc: string;
+}) {
   return (
-    <button onClick={toAction} className="group rounded-2xl border bg-white p-4 text-left hover:shadow-md transition">
+    <button
+      onClick={toAction}
+      className="group rounded-2xl border bg-white p-4 text-left hover:shadow-md transition"
+    >
       <div className="flex items-center gap-3">
         <span className="inline-grid place-items-center w-10 h-10 rounded-xl bg-primary-50">
           <Icon size={18} />
         </span>
         <div>
-          <div className="font-semibold text-ink group-hover:underline">{label}</div>
+          <div className="font-semibold text-ink group-hover:underline">
+            {label}
+          </div>
           <div className="text-xs text-ink-soft">{desc}</div>
         </div>
       </div>
