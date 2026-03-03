@@ -1,7 +1,9 @@
-// src/pages/Receipt.tsx (or ReceiptPage.tsx)
+// src/pages/Receipt.tsx
+
 import { useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
 
@@ -28,23 +30,26 @@ const ngn = new Intl.NumberFormat("en-NG", {
 
 const toNum = (v: any): number => {
   if (v == null) return 0;
+
   if (typeof v === "string") {
     const n = Number(v.replace(/,/g, "").trim());
     return Number.isFinite(n) ? n : 0;
   }
+
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 };
 
+/* -------------------------------------------------------------------------- */
+/* Normalise service fee from snapshot                                        */
+/* -------------------------------------------------------------------------- */
 function resolveServiceFeeTotal(order: any): number {
   if (!order) return 0;
 
   const base = toNum(order.serviceFeeBase);
   const comms = toNum(order.serviceFeeComms);
   const gateway = toNum(order.serviceFeeGateway);
-
   const explicitTotal = toNum(order.serviceFeeTotal);
-
   const legacy = toNum(order.serviceFee);
   const legacyCommsTotal = toNum(order.commsTotal ?? order.comms);
 
@@ -64,25 +69,108 @@ function resolveServiceFeeTotal(order: any): number {
   return 0;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Shipping for RECEIPT DISPLAY                                               */
+/* -------------------------------------------------------------------------- */
+/**
+ * We want the shipping number on the receipt to match checkout:
+ *   Shipping (displayed) = customer-facing shipping INCLUDING VAT.
+ *
+ * Given your schema, a safe strategy:
+ *   shippingDisplay = total - subtotal - serviceFee
+ * (because VAT is already "included" in those amounts).
+ *
+ * We also try to honour any shippingBreakdownJson snapshot if present.
+ */
+function resolveShippingDisplay(order: any): number {
+  if (!order) return 0;
+
+  const subtotal = toNum(order.subtotal ?? order.itemsSubtotal);
+  const total = toNum(order.total);
+  const serviceFee = resolveServiceFeeTotal(order);
+
+  let best = 0;
+
+  // 1) Derive from totals (preferred – matches checkout behaviour)
+  if (subtotal > 0 && total > 0) {
+    const fromTotals = total - subtotal - serviceFee;
+    if (fromTotals > 0) best = fromTotals;
+  }
+
+  // 2) Check any structured breakdown snapshot
+  const rawBreakdown =
+    order.shippingBreakdownJson ??
+    order.shippingBreakdown ??
+    order.shippingBreakdownJSON;
+
+  let breakdown: any = rawBreakdown;
+
+  if (typeof rawBreakdown === "string") {
+    try {
+      breakdown = JSON.parse(rawBreakdown);
+    } catch {
+      breakdown = null;
+    }
+  }
+
+  if (breakdown && typeof breakdown === "object") {
+    const candidatesKeys = [
+      "customerCharged",
+      "customerAmount",
+      "totalFee",
+      "shippingTotal",
+      "total",
+      "totalWithTax",
+      "gross",
+    ];
+
+    for (const key of candidatesKeys) {
+      const v = toNum(breakdown[key]);
+      if (v > best) best = v;
+    }
+
+    // Some snapshots might store base + VAT separately
+    const base =
+      toNum(breakdown.shippingFee ?? breakdown.baseFee ?? breakdown.fee);
+    const vat =
+      toNum(breakdown.tax ?? breakdown.vat ?? breakdown.vatAmount ?? 0);
+    if (base > 0 && base + vat > best) {
+      best = base + vat;
+    }
+  }
+
+  // 3) Fallbacks: legacy order.shipping / order.shippingFee
+  if (!best) {
+    const direct = toNum(order.shipping ?? order.shippingFee);
+    if (direct > 0) best = direct;
+  }
+
+  return best > 0 ? best : 0;
+}
+
+/* ========================================================================== */
+
 export default function ReceiptPage() {
   const { paymentId = "" } = useParams();
 
   const q = useQuery({
     queryKey: ["receipt", paymentId],
-    enabled: !!paymentId, // ✅ cookie auth: no token gating
+    enabled: !!paymentId,
+    // ✅ cookie auth: no token gating
     queryFn: async () =>
-      (await api.get<ReceiptResp>(`/api/payments/${encodeURIComponent(paymentId)}/receipt`)).data,
+      (await api.get<ReceiptResp>(`/api/payments/${encodeURIComponent(paymentId)}/receipt`))
+        .data,
   });
 
   // 🔹 Public settings (to know if shipping is enabled)
   const settingsQ = useQuery({
     queryKey: ["settings-public"],
-    queryFn: async () => (await api.get<PublicSettings>("/api/settings/public")).data,
+    queryFn: async () =>
+      (await api.get<PublicSettings>("/api/settings/public")).data,
     staleTime: 5 * 60_000,
   });
 
   const settings = (settingsQ.data || {}) as PublicSettings;
-
   const shippingEnabled = !!(
     settings.shippingEnabled ||
     settings.enableShipping ||
@@ -92,7 +180,9 @@ export default function ReceiptPage() {
   );
 
   useEffect(() => {
-    document.title = q.data?.receiptNo ? `Receipt ${q.data.receiptNo}` : "Receipt";
+    document.title = q.data?.receiptNo
+      ? `Receipt ${q.data.receiptNo}`
+      : "Receipt";
   }, [q.data?.receiptNo]);
 
   if (q.isLoading) {
@@ -115,18 +205,18 @@ export default function ReceiptPage() {
   const order = r.order || {};
   const items = order.items || [];
 
-  // Normalized service fee from snapshot
+  // Normalized service fee + shipping for display
   const serviceFee = resolveServiceFeeTotal(order);
+  const shippingDisplay = shippingEnabled ? resolveShippingDisplay(order) : 0;
 
   const downloadReceipt = async (key: string) => {
     try {
-      const res = await api.get(`/api/payments/${encodeURIComponent(key)}/receipt.pdf`, {
-        responseType: "blob",
-      });
-
+      const res = await api.get(
+        `/api/payments/${encodeURIComponent(key)}/receipt.pdf`,
+        { responseType: "blob" }
+      );
       const blob = new Blob([res.data], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
-
       const w = window.open(url, "_blank");
       if (!w) {
         const a = document.createElement("a");
@@ -136,7 +226,6 @@ export default function ReceiptPage() {
         a.click();
         a.remove();
       }
-
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (e: any) {
       alert(e?.response?.data?.error || "Could not download receipt.");
@@ -149,13 +238,19 @@ export default function ReceiptPage() {
         {/* Header */}
         <div className="flex items-start justify-between mb-4">
           <div>
-            <h1 className="text-xl font-semibold">{r.merchant?.name || "Receipt"}</h1>
+            <h1 className="text-xl font-semibold">
+              {r.merchant?.name || "Receipt"}
+            </h1>
             <div className="text-sm text-zinc-600">
               {r.merchant?.addressLine1}
-              {r.merchant?.addressLine2 ? `, ${r.merchant.addressLine2}` : ""}
+              {r.merchant?.addressLine2
+                ? `, ${r.merchant.addressLine2}`
+                : ""}
             </div>
             {r.merchant?.supportEmail && (
-              <div className="text-sm text-zinc-600">Support: {r.merchant.supportEmail}</div>
+              <div className="text-sm text-zinc-600">
+                Support: {r.merchant.supportEmail}
+              </div>
             )}
           </div>
 
@@ -167,7 +262,9 @@ export default function ReceiptPage() {
             <div className="font-mono break-all">{r.reference}</div>
 
             <div className="text-sm mt-2">Paid At</div>
-            <div>{r.paidAt ? new Date(r.paidAt).toLocaleString() : "—"}</div>
+            <div>
+              {r.paidAt ? new Date(r.paidAt).toLocaleString() : "—"}
+            </div>
           </div>
         </div>
 
@@ -175,26 +272,39 @@ export default function ReceiptPage() {
         <div className="grid sm:grid-cols-2 gap-4 border rounded-xl bg-white p-4 mb-4">
           <div>
             <div className="text-sm text-zinc-600">Billed To</div>
-            <div className="font-medium">{r.customer?.name || "—"}</div>
+            <div className="font-medium">
+              {r.customer?.name || "—"}
+            </div>
             <div className="text-sm">{r.customer?.email || "—"}</div>
-            {r.customer?.phone && <div className="text-sm">{r.customer.phone}</div>}
+            {r.customer?.phone && (
+              <div className="text-sm">{r.customer.phone}</div>
+            )}
           </div>
 
           {shippingEnabled && (
             <div>
               <div className="text-sm text-zinc-600">Ship To</div>
               <div className="text-sm">
-                {[order.shippingAddress?.houseNumber, order.shippingAddress?.streetName]
+                {[
+                  order.shippingAddress?.houseNumber,
+                  order.shippingAddress?.streetName,
+                ]
                   .filter(Boolean)
                   .join(" ")}
               </div>
               <div className="text-sm">
-                {[order.shippingAddress?.town, order.shippingAddress?.city]
+                {[
+                  order.shippingAddress?.town,
+                  order.shippingAddress?.city,
+                ]
                   .filter(Boolean)
                   .join(", ")}
               </div>
               <div className="text-sm">
-                {[order.shippingAddress?.state, order.shippingAddress?.country]
+                {[
+                  order.shippingAddress?.state,
+                  order.shippingAddress?.country,
+                ]
                   .filter(Boolean)
                   .join(", ")}
               </div>
@@ -213,7 +323,6 @@ export default function ReceiptPage() {
                 <th className="text-right px-3 py-2">Line Total</th>
               </tr>
             </thead>
-
             <tbody className="divide-y">
               {items.map((it: any) => {
                 const qty = Number(it.quantity || 1);
@@ -224,23 +333,29 @@ export default function ReceiptPage() {
                   <tr key={it.id}>
                     <td className="px-3 py-2">
                       <div className="font-medium">{it.title}</div>
-
-                      {Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0 && (
+                      {Array.isArray(it.selectedOptions) &&
+                        it.selectedOptions.length > 0 && (
+                          <div className="text-xs text-zinc-600">
+                            {it.selectedOptions
+                              .map(
+                                (o: any) => `${o.attribute}: ${o.value}`
+                              )
+                              .join(" • ")}
+                          </div>
+                        )}
+                      {it.variantSku && (
                         <div className="text-xs text-zinc-600">
-                          {it.selectedOptions
-                            .map((o: any) => `${o.attribute}: ${o.value}`)
-                            .join(" • ")}
+                          SKU: {it.variantSku}
                         </div>
                       )}
-
-                      {it.variantSku && (
-                        <div className="text-xs text-zinc-600">SKU: {it.variantSku}</div>
-                      )}
                     </td>
-
                     <td className="px-3 py-2 text-right">{qty}</td>
-                    <td className="px-3 py-2 text-right">{ngn.format(unit)}</td>
-                    <td className="px-3 py-2 text-right">{ngn.format(line)}</td>
+                    <td className="px-3 py-2 text-right">
+                      {ngn.format(unit)}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {ngn.format(line)}
+                    </td>
                   </tr>
                 );
               })}
@@ -248,7 +363,10 @@ export default function ReceiptPage() {
 
             <tfoot>
               <tr className="bg-zinc-50">
-                <td className="px-3 py-2 font-medium text-right" colSpan={3}>
+                <td
+                  className="px-3 py-2 font-medium text-right"
+                  colSpan={3}
+                >
                   Subtotal
                 </td>
                 <td className="px-3 py-2 text-right">
@@ -257,8 +375,11 @@ export default function ReceiptPage() {
               </tr>
 
               <tr className="bg-zinc-50">
-                <td className="px-3 py-2 font-medium text-right" colSpan={3}>
-                  Tax(Included)
+                <td
+                  className="px-3 py-2 font-medium text-right"
+                  colSpan={3}
+                >
+                  Tax (Included)
                 </td>
                 <td className="px-3 py-2 text-right">
                   {ngn.format(toNum(order.tax || 0))}
@@ -267,26 +388,37 @@ export default function ReceiptPage() {
 
               {shippingEnabled && (
                 <tr className="bg-zinc-50">
-                  <td className="px-3 py-2 font-medium text-right" colSpan={3}>
+                  <td
+                    className="px-3 py-2 font-medium text-right"
+                    colSpan={3}
+                  >
                     Shipping
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {ngn.format(toNum(order.shipping || 0))}
+                    {ngn.format(shippingDisplay)}
                   </td>
                 </tr>
               )}
 
               {serviceFee > 0 && (
                 <tr className="bg-zinc-50">
-                  <td className="px-3 py-2 font-medium text-right" colSpan={3}>
+                  <td
+                    className="px-3 py-2 font-medium text-right"
+                    colSpan={3}
+                  >
                     Service fee
                   </td>
-                  <td className="px-3 py-2 text-right">{ngn.format(serviceFee)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {ngn.format(serviceFee)}
+                  </td>
                 </tr>
               )}
 
               <tr className="bg-zinc-50">
-                <td className="px-3 py-2 font-semibold text-right" colSpan={3}>
+                <td
+                  className="px-3 py-2 font-semibold text-right"
+                  colSpan={3}
+                >
                   Total
                 </td>
                 <td className="px-3 py-2 font-semibold text-right">
