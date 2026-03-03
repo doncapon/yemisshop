@@ -24,7 +24,7 @@ import ResetGuard from "./routes/ResetGuard";
 
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import SettingsAdminPage from "./pages/admin/SettingsAdminPage";
-
+import AdminApplicants from "./pages/admin/AdminApplicants";
 import UserDashboard from "./pages/UserDashboard";
 import SupplierRegister from "./pages/supplier/SupplierRegister";
 
@@ -52,6 +52,17 @@ import DataPrivacy from "./pages/DataPrivacy";
 import AuthBootstrap from "./components/AuthBootstrap";
 import AdminOfferChangeRequests from "./pages/admin/AdminOfferChangeRequests";
 import ScrollToTop from "./components/ScrollToTop";
+import About from "./pages/AboutUs";
+import Contact from "./pages/Contact";
+import Careers from "./pages/Careers";
+import AdminEmployeeDocuments from "./pages/admin/AdminEmployeeDocuments";
+import AdminEmployees from "./pages/admin/AdminEmployees";
+import AdminCareersConfig from "./pages/admin/AdminCareersConfig";
+import AdminCareersJobs from "./pages/admin/AdminCareersJobs";
+import CareersIndex from "./pages/CareersIndex";
+import CareerJobDetail from "./pages/CareerJobDetail";
+import AdminEmployeeDetails from "./pages/admin/AdminEmployeeDetails";
+import ReturnsRefunds from "./pages/ReturnsRefunds";
 
 /* -----------------------------
    Role normalization + aliases
@@ -172,7 +183,7 @@ export default function App() {
     // persist for refresh safety
     try {
       sessionStorage.setItem("auth:returnTo", target);
-    } catch {}
+    } catch { }
 
     const qp = encodeURIComponent(target);
 
@@ -209,6 +220,8 @@ export default function App() {
               {/* ✅ IMPORTANT: Do NOT auto-redirect away from /login here.
                   Login.tsx controls the “returnTo” redirect. */}
               <Route path="/login" element={<Login />} />
+              <Route path="/about" element={<About />} />
+              <Route path="/contact" element={<Contact />} />
 
               <Route path="/register" element={hydrated && isAuthed ? <Navigate to="/" replace /> : <Register />} />
               <Route
@@ -240,6 +253,16 @@ export default function App() {
                 element={
                   <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <Orders />
+                  </ProtectedRoute>
+                }
+              />
+
+
+              <Route
+                path="/returns-refunds"
+                element={
+                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <ReturnsRefunds />
                   </ProtectedRoute>
                 }
               />
@@ -419,11 +442,35 @@ export default function App() {
                     </ProtectedRoute>
                   }
                 />
+
                 <Route path="*" element={<Navigate to="/admin" replace />} />
               </Route>
 
               <Route path="/admin/dashboard" element={<Navigate to="/admin" replace />} />
               <Route path="*" element={<Navigate to="/" replace />} />
+
+              <Route path="/admin/applicants" element={<AdminApplicants />} />
+              <Route path="/admin/careers/jobs" element={<AdminCareersJobs />} />
+              <Route path="/admin/careers/config" element={<AdminCareersConfig />} />
+
+              <Route path="/careers" element={<CareersIndex />} />
+              <Route path="/careers/:slug" element={<CareerJobDetail />} />
+
+              <Route path="/careers/apply" element={<Careers />} />
+
+
+              <Route
+                path="/admin/employees/:employeeId/documents"
+                element={<AdminEmployeeDocuments />}
+              />
+              <Route
+                path="/admin/employees"
+                element={<AdminEmployees />}
+              />
+              <Route
+                path="/admin/employees/:employeeId"
+                element={<AdminEmployeeDetails />}
+              />
             </Routes>
           </div>
         </main>

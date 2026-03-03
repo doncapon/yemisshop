@@ -306,7 +306,6 @@ async function ensurePurchaseOrdersForOrderTx(tx: any, orderId: string) {
  */
 async function recordSupplierAllocationsOnPaidTx(tx: any, paymentId: string, orderId: string) {
   const pos = await tx.purchaseOrder.findMany({
-    method: undefined,
     where: { orderId },
     include: { supplier: { select: { id: true, name: true } } },
   });
@@ -485,8 +484,8 @@ async function recomputeProfitForPayment(paymentId: string) {
   const baseServiceFee =
     Number(
       (await readSetting("serviceFeeBaseNGN")) ??
-        (await readSetting("platformBaseFeeNGN")) ??
-        0
+      (await readSetting("platformBaseFeeNGN")) ??
+      0
     ) || 0;
 
   const amountPaid = Number(p.amount || 0);
@@ -562,15 +561,6 @@ async function finalizePaidFlow(paymentId: string) {
 
     if (!p || p.status !== "PAID" || !p.orderId) return null;
 
-    // Cancel other pending attempts for same order
-    await tx.payment.updateMany({
-      where: {
-        orderId: p.orderId,
-        status: "PENDING",
-        NOT: { id: p.id },
-      },
-      data: { status: "CANCELED" },
-    });
 
     const next =
       process.env.TURN_OFF_AWAIT_CONF === "true" ? "PAID" : "AWAITING_FULFILLMENT";
@@ -722,8 +712,14 @@ router.get("/summary", requireAuth, async (req: any, res: any, next: any) => {
   }
 });
 
+
+const asNum = (v: any, d = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+
 /**
- * POST /api/payments/init  { orderId, channel?, otpToken? }
+ * POST /api/payments/init  { orderId, channel?, otpToken?, expectedTotal? }
  */
 router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next) => {
   try {
@@ -750,9 +746,76 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
 
     const order = await prisma.order.findFirst({
       where: { id: orderId, userId },
-      select: { id: true, total: true, createdAt: true },
+      select: {
+        id: true,
+        total: true,
+        subtotal: true,
+        tax: true,
+        serviceFeeTotal: true,
+        shippingFee: true,
+        shippingCurrency: true,
+        shippingRateSource: true,
+        createdAt: true,
+      },
     });
+    
     if (!order) return res.status(404).json({ error: "Order not found" });
+
+    // ✅ Optional client total from checkout (for drift detection only; never trusted)
+    const clientExpectedTotalRaw = req.body?.expectedTotal ?? req.body?.total ?? null;
+    if (clientExpectedTotalRaw != null) {
+      const clientExpectedTotal = round2(asNum(clientExpectedTotalRaw, NaN));
+      const orderTotal = round2(asNum(order.total, 0));
+
+      if (Number.isFinite(clientExpectedTotal)) {
+        const diff = round2(orderTotal - clientExpectedTotal);
+
+        // 1 naira tolerance to avoid noisy decimal differences
+        if (Math.abs(diff) > 1) {
+          console.warn("[payments/init] total mismatch", {
+            orderId: order.id,
+            userId,
+            orderTotal,
+            clientExpectedTotal,
+            diff,
+            subtotal: round2(asNum((order as any).subtotal, 0)),
+            tax: round2(asNum((order as any).tax, 0)),
+            serviceFeeTotal: round2(asNum((order as any).serviceFeeTotal, 0)),
+            shippingFee: round2(asNum((order as any).shippingFee, 0)),
+            shippingCurrency: (order as any).shippingCurrency ?? "NGN",
+            shippingRateSource: (order as any).shippingRateSource ?? null,
+          });
+
+          await logOrderActivity(
+            orderId,
+            "PAYMENT_INIT",
+            "Checkout total differed from persisted order total during payment init",
+            {
+              orderTotal,
+              clientExpectedTotal,
+              diff,
+              subtotal: round2(asNum((order as any).subtotal, 0)),
+              tax: round2(asNum((order as any).tax, 0)),
+              serviceFeeTotal: round2(asNum((order as any).serviceFeeTotal, 0)),
+              shippingFee: round2(asNum((order as any).shippingFee, 0)),
+              shippingCurrency: (order as any).shippingCurrency ?? "NGN",
+              shippingRateSource: (order as any).shippingRateSource ?? null,
+            }
+          );
+
+          // ✅ Optional: strict in non-prod so you catch it early
+          if (String(process.env.NODE_ENV || "").toLowerCase() !== "production") {
+            return res.status(409).json({
+              error: "Order total changed. Please refresh checkout and try again.",
+              code: "TOTAL_MISMATCH",
+              orderTotal,
+              clientExpectedTotal,
+              diff,
+            });
+          }
+        }
+      }
+    }
 
     const paid = await prisma.payment.findFirst({
       where: { orderId, status: "PAID" },
@@ -770,9 +833,34 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
         channel: true,
         providerPayload: true,
         status: true,
+        amount: true, // ✅ needed to detect stale pending payment amounts
       },
     });
 
+    // ✅ If order total changed (shipping/service fee/etc), do NOT reuse stale pending payment.
+    // IMPORTANT: per request, do NOT cancel old pending rows — just ignore and create a new one.
+    if (pay) {
+      const pendingAmt = Number((pay as any).amount ?? 0);
+      const currentOrderTotal = Number(order.total ?? 0);
+
+      // 1 naira tolerance for decimal/rounding safety
+      if (Math.abs(pendingAmt - currentOrderTotal) > 1) {
+        await logOrderActivity(
+          orderId,
+          "PAYMENT_INIT",
+          "Ignored stale pending payment (order total changed); creating new payment attempt",
+          {
+            reference: pay.reference,
+            oldAmount: pendingAmt,
+            newAmount: currentOrderTotal,
+          }
+        );
+
+        pay = null as any;
+      }
+    }
+
+    // Resume fresh existing Paystack init if we already have an auth URL
     if (pay && isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN) && channel === "paystack") {
       const authUrl = (pay.providerPayload as any)?.authorization_url;
       if (authUrl) {
@@ -787,14 +875,23 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
       }
     }
 
+    // Ignore expired pending payment and create a new one
     if (pay && !isFresh(pay.createdAt, ACTIVE_PENDING_TTL_MIN)) {
-      await prisma.payment.update({
-        where: { id: pay.id },
-        data: { status: "CANCELED" },
-      });
+      await logOrderActivity(
+        orderId,
+        "PAYMENT_INIT",
+        "Ignored expired pending payment; creating new payment attempt",
+        {
+          reference: pay.reference,
+          createdAt: pay.createdAt,
+          ttlMinutes: ACTIVE_PENDING_TTL_MIN,
+        }
+      );
+
       pay = null as any;
     }
 
+    // Create a fresh pending payment if none should be reused
     if (!pay) {
       const created = await prisma.payment.create({
         data: {
@@ -803,7 +900,7 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
           channel: TRIAL_MODE ? "trial" : channel,
           provider: TRIAL_MODE ? "TRIAL" : channel === "paystack" ? "PAYSTACK" : null,
           providerEnv: TRIAL_MODE || process.env.PAYSTACK_LIVE_MODE !== "true" ? "test" : "live",
-          amount: order.total,
+          amount: order.total, // ✅ authoritative total (includes shipping/service fees)
           status: "PENDING",
         },
       });
@@ -815,6 +912,7 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
         channel: created.channel,
         providerPayload: created.providerPayload,
         status: created.status,
+        amount: created.amount,
       } as any;
     }
 
@@ -869,7 +967,7 @@ router.post("/init", requireAuth, async (req: AuthedRequest, res: Response, next
 
       const initPayload: any = {
         email: userEmail,
-        amount: toKobo(order.total),
+        amount: toKobo(order.total), // ✅ authoritative total from order (includes shipping)
         reference: pay!.reference,
         currency: "NGN",
         callback_url,
@@ -962,6 +1060,38 @@ async function verifyPaystack(reference: string) {
       (tx.authorization?.country_code && tx.authorization.country_code !== "NG") ||
       tx.currency !== "NGN";
     feeNaira = calcPaystackFee(amountNaira, { international: !!isIntl });
+  }
+
+  // ✅ Load the payment + order total before marking PAID, and block underpayment.
+  const current = await prisma.payment.findUnique({
+    where: { reference },
+    select: {
+      id: true,
+      orderId: true,
+      order: { select: { total: true } },
+    },
+  });
+
+  if (!current?.id || !current.orderId) {
+    throw new Error("Payment not found");
+  }
+
+  const orderTotal = Number(current.order?.total ?? 0);
+
+  // ✅ Prevent accepting underpayment if order total includes shipping/service fees
+  // 1 naira tolerance for rounding
+  if (amountNaira + 1 < orderTotal) {
+    await prisma.paymentEvent.create({
+      data: {
+        paymentId: current.id,
+        type: "VERIFY_UNDERPAID",
+        data: { reference, paidAmount: amountNaira, orderTotal },
+      },
+    });
+
+    throw new Error(
+      `Underpayment detected. Paid ₦${amountNaira}, order total is ₦${orderTotal}.`
+    );
   }
 
   await prisma.payment.update({
@@ -1547,14 +1677,14 @@ router.get("/admin/compat-alias", requireAuth, async (req: AuthedRequest, res: R
             user: { select: { email: true } },
             items: includeItems
               ? {
-                  select: {
-                    id: true,
-                    title: true,
-                    unitPrice: true,
-                    quantity: true,
-                    status: true,
-                  },
-                }
+                select: {
+                  id: true,
+                  title: true,
+                  unitPrice: true,
+                  quantity: true,
+                  status: true,
+                },
+              }
               : false,
           },
         },
@@ -1574,13 +1704,13 @@ router.get("/admin/compat-alias", requireAuth, async (req: AuthedRequest, res: R
       orderStatus: p.order?.status,
       items: Array.isArray((p.order as any)?.items)
         ? (p.order as any).items.map((it: any) => ({
-            id: it.id,
-            title: it.title,
-            unitPrice: Number(it.unitPrice),
-            quantity: Number(it.quantity || 0),
-            lineTotal: Number(it.unitPrice) * Number(it.quantity || 0),
-            status: it.status,
-          }))
+          id: it.id,
+          title: it.title,
+          unitPrice: Number(it.unitPrice),
+          quantity: Number(it.quantity || 0),
+          lineTotal: Number(it.unitPrice) * Number(it.quantity || 0),
+          status: it.status,
+        }))
         : undefined,
     }));
 

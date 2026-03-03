@@ -1,0 +1,798 @@
+// src/pages/admin/AdminEmployees.tsx
+import React, { useMemo, useState, type FormEvent } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
+import api from "../../api/client";
+import { format } from "date-fns";
+
+/* ----------------------------- Types ----------------------------- */
+
+type EmployeeStatus = "ACTIVE" | "PROBATION" | "ON_LEAVE" | "EXITED";
+type EmployeePayFrequency = "MONTHLY" | "WEEKLY" | "OTHER";
+
+export type Employee = {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+
+  // Personal
+  firstName: string;
+  lastName: string;
+  emailWork?: string | null;
+  emailPersonal?: string | null;
+  phone?: string | null;
+
+  // Employment
+  jobTitle?: string | null;
+  department?: string | null;
+  status: EmployeeStatus;
+  startDate?: string | null;
+
+  // Compensation
+  baseSalaryNGN?: number | null;
+  payFrequency?: EmployeePayFrequency | null;
+
+  // Bank / payroll
+  bankName?: string | null;
+  bankCode?: string | null;
+  accountNumber?: string | null;
+  accountName?: string | null;
+  isPayrollReady: boolean;
+
+  // Document flags
+  hasPassportDoc: boolean;
+  hasNinSlipDoc: boolean;
+  hasTaxDoc: boolean;
+};
+
+type EmployeesListResponse = {
+  items: Employee[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+};
+
+/* ----------------------------- Filters / UI State ----------------------------- */
+
+type Filters = {
+  search: string;
+  department: string;
+  status: "all" | EmployeeStatus;
+  page: number;
+  pageSize: number;
+};
+
+const DEFAULT_FILTERS: Filters = {
+  search: "",
+  department: "",
+  status: "all",
+  page: 1,
+  pageSize: 20,
+};
+
+type EditingState =
+  | { mode: "create"; employee: Partial<Employee> }
+  | { mode: "edit"; employee: Employee }
+  | null;
+
+/* ----------------------------- Helpers ----------------------------- */
+
+function buildListQuery(filters: Filters) {
+  const params: any = {
+    page: filters.page,
+    pageSize: filters.pageSize,
+  };
+
+  if (filters.search.trim()) params.search = filters.search.trim();
+  if (filters.department.trim()) params.department = filters.department.trim();
+  if (filters.status !== "all") params.status = filters.status;
+
+  return params;
+}
+
+// Robustly unwrap either EmployeesListResponse or plain Employee[]
+function getEmployeesFromResponse(data: EmployeesListResponse | Employee[] | undefined) {
+  if (!data) return [] as Employee[];
+  if (Array.isArray(data)) return data;
+  return data.items ?? [];
+}
+
+function getPaginationMeta(
+  data: EmployeesListResponse | Employee[] | undefined,
+  fallbackPage: number,
+  fallbackPageSize: number
+) {
+  if (!data || Array.isArray(data)) {
+    return {
+      page: fallbackPage,
+      pageSize: fallbackPageSize,
+      total: Array.isArray(data) ? data.length : 0,
+      pageCount: 1,
+    };
+  }
+  return {
+    page: data.page,
+    pageSize: data.pageSize,
+    total: data.total,
+    pageCount: data.pageCount,
+  };
+}
+
+/* ----------------------------- Component ----------------------------- */
+
+const AdminEmployees: React.FC = () => {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+
+  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [editing, setEditing] = useState<EditingState>(null);
+  const [isFormOpen, setIsFormOpen] = useState(false);
+
+  const queryKey = useMemo(() => ["admin-employees", filters], [filters]);
+
+  const employeesQuery = useQuery({
+    queryKey,
+    queryFn: async () => {
+      const params = buildListQuery(filters);
+      const res = await api.get<EmployeesListResponse | Employee[]>("/api/admin/employees", {
+        params,
+      });
+      return res.data;
+    },
+  });
+
+  const createMutation = useMutation({
+    mutationFn: async (payload: any) => {
+      const res = await api.post<Employee>("/api/admin/employees", payload);
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-employees"] });
+      setIsFormOpen(false);
+      setEditing(null);
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async (payload: any & { id: string }) => {
+      const { id, ...data } = payload;
+      const res = await api.patch<Employee>(`/api/admin/employees/${id}`, data);
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-employees"] });
+      setIsFormOpen(false);
+      setEditing(null);
+    },
+  });
+
+  const togglePayrollMutation = useMutation({
+    mutationFn: async (args: { id: string; isPayrollReady: boolean }) => {
+      const res = await api.patch<Employee>(`/api/admin/employees/${args.id}`, {
+        isPayrollReady: args.isPayrollReady,
+      });
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-employees"] });
+    },
+  });
+
+  const isSaving = createMutation.isPending || updateMutation.isPending;
+  const isTogglingPayroll = togglePayrollMutation.isPending;
+  const { data, isLoading, isError } = employeesQuery;
+
+  const employees = getEmployeesFromResponse(data);
+  const pagination = getPaginationMeta(data, filters.page, filters.pageSize);
+
+  /* ----------------------------- Handlers ----------------------------- */
+
+  function openCreate() {
+    const blank: Partial<Employee> = {
+      firstName: "",
+      lastName: "",
+      emailWork: "",
+      emailPersonal: "",
+      phone: "",
+      jobTitle: "",
+      department: "",
+      status: "ACTIVE",
+      startDate: "",
+      baseSalaryNGN: undefined,
+      payFrequency: "MONTHLY",
+      bankName: "",
+      bankCode: "",
+      accountNumber: "",
+      accountName: "",
+      isPayrollReady: false,
+      hasPassportDoc: false,
+      hasNinSlipDoc: false,
+      hasTaxDoc: false,
+    };
+    setEditing({ mode: "create", employee: blank });
+    setIsFormOpen(true);
+  }
+
+  function openEdit(employee: Employee) {
+    setEditing({ mode: "edit", employee });
+    setIsFormOpen(true);
+  }
+
+  function closeForm() {
+    if (isSaving) return;
+    setIsFormOpen(false);
+    setEditing(null);
+  }
+
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!editing) return;
+
+    const formData = new FormData(e.currentTarget);
+
+    const startDateRaw = formData.get("startDate")?.toString().trim() || "";
+    const startDateIso = startDateRaw
+      ? new Date(`${startDateRaw}T00:00:00Z`).toISOString()
+      : undefined;
+
+    const baseSalaryStr = formData.get("baseSalaryNGN")?.toString().trim() || "";
+    const baseSalaryNGN =
+      baseSalaryStr !== "" && !Number.isNaN(Number(baseSalaryStr))
+        ? Number(baseSalaryStr)
+        : undefined;
+
+    const payload: any = {
+      firstName: formData.get("firstName")?.toString().trim(),
+      lastName: formData.get("lastName")?.toString().trim(),
+      emailWork: formData.get("emailWork")?.toString().trim() || null,
+      emailPersonal: formData.get("emailPersonal")?.toString().trim() || null,
+      phone: formData.get("phone")?.toString().trim() || null,
+      jobTitle: formData.get("jobTitle")?.toString().trim() || null,
+      department: formData.get("department")?.toString().trim() || null,
+      status: formData.get("status")?.toString().trim() || "ACTIVE",
+      startDate: startDateIso ?? null,
+      baseSalaryNGN: baseSalaryNGN ?? null,
+      payFrequency:
+        (formData.get("payFrequency")?.toString().trim() as EmployeePayFrequency | "") || null,
+      bankName: formData.get("bankName")?.toString().trim() || null,
+      bankCode: formData.get("bankCode")?.toString().trim() || null,
+      accountNumber: formData.get("accountNumber")?.toString().trim() || null,
+      accountName: formData.get("accountName")?.toString().trim() || null,
+      isPayrollReady: formData.get("isPayrollReady") === "on",
+    };
+
+    try {
+      if (editing.mode === "create") {
+        await createMutation.mutateAsync(payload);
+      } else {
+        await updateMutation.mutateAsync({ id: editing.employee.id, ...payload });
+      }
+    } catch (err) {
+      console.error("Failed to save employee", err);
+    }
+  }
+
+  function handlePayrollToggle(emp: Employee) {
+    togglePayrollMutation.mutate({
+      id: emp.id,
+      isPayrollReady: !emp.isPayrollReady,
+    });
+  }
+
+  /* ----------------------------- Render ----------------------------- */
+
+  return (
+    <div className="p-6 space-y-6">
+      <header className="flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Employees</h1>
+          <p className="text-sm text-gray-500">
+            Manage DaySpring staff records and payroll readiness.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={openCreate}
+          className="inline-flex items-center px-4 py-2 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700"
+        >
+          + New Employee
+        </button>
+      </header>
+
+      {/* Filters */}
+      <section className="bg-white rounded-lg shadow-sm p-4 space-y-3">
+        <div className="flex flex-wrap gap-3 items-end text-sm">
+          <div className="flex flex-col">
+            <label className="text-xs font-medium text-gray-600">Search</label>
+            <input
+              type="text"
+              className="border rounded px-2 py-1 text-sm"
+              value={filters.search}
+              onChange={(e) =>
+                setFilters((f) => ({ ...f, search: e.target.value, page: 1 }))
+              }
+              placeholder="Name, email, job title..."
+            />
+          </div>
+
+          <div className="flex flex-col">
+            <label className="text-xs font-medium text-gray-600">Department</label>
+            <input
+              type="text"
+              className="border rounded px-2 py-1 text-sm"
+              value={filters.department}
+              onChange={(e) =>
+                setFilters((f) => ({ ...f, department: e.target.value, page: 1 }))
+              }
+              placeholder="e.g. Operations"
+            />
+          </div>
+
+          <div className="flex flex-col">
+            <label className="text-xs font-medium text-gray-600">Status</label>
+            <select
+              className="border rounded px-2 py-1 text-sm"
+              value={filters.status}
+              onChange={(e) =>
+                setFilters((f) => ({
+                  ...f,
+                  status: e.target.value as Filters["status"],
+                  page: 1,
+                }))
+              }
+            >
+              <option value="all">All</option>
+              <option value="ACTIVE">Active</option>
+              <option value="PROBATION">Probation</option>
+              <option value="ON_LEAVE">On leave</option>
+              <option value="EXITED">Exited</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      {/* Table */}
+      <section className="bg-white rounded-lg shadow-sm">
+        {isLoading && (
+          <div className="p-6 text-sm text-gray-500">Loading employees…</div>
+        )}
+        {isError && !isLoading && (
+          <div className="p-6 text-sm text-red-600">
+            Failed to load employees. Please try again.
+          </div>
+        )}
+        {!isLoading && employees.length === 0 && (
+          <div className="p-6 text-sm text-gray-500">No employees found.</div>
+        )}
+
+        {employees.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-gray-50 border-b">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
+                    Name
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
+                    Job / Dept
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
+                    Email
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
+                    Status
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium text-xs text-gray-500">
+                    Payroll
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium text-xs text-gray-500">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {employees.map((emp) => {
+                  const fullName = `${emp.firstName} ${emp.lastName}`.trim();
+                  const primaryEmail = emp.emailWork || emp.emailPersonal || "—";
+
+                  return (
+                    <tr
+                      key={emp.id}
+                      className={`border-b last:border-b-0 ${
+                        emp.status === "EXITED" ? "opacity-60 bg-gray-50" : ""
+                      }`}
+                    >
+                      <td className="px-3 py-2 align-top">
+                        <div className="font-medium">{fullName || "—"}</div>
+                        <div className="text-[11px] text-gray-500">
+                          Joined{" "}
+                          {emp.startDate
+                            ? format(new Date(emp.startDate), "dd MMM yyyy")
+                            : "—"}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 align-top text-xs text-gray-700">
+                        <div>{emp.jobTitle || "—"}</div>
+                        <div className="text-[11px] text-gray-500">
+                          {emp.department || "—"}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 align-top text-xs text-gray-700">
+                        {primaryEmail}
+                      </td>
+                      <td className="px-3 py-2 align-top text-xs">
+                        <span
+                          className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] ${
+                            emp.status === "ACTIVE"
+                              ? "bg-emerald-100 text-emerald-800"
+                              : emp.status === "PROBATION"
+                              ? "bg-yellow-100 text-yellow-800"
+                              : emp.status === "ON_LEAVE"
+                              ? "bg-blue-100 text-blue-800"
+                              : "bg-gray-200 text-gray-700"
+                          }`}
+                        >
+                          {emp.status.replace("_", " ")}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 align-top text-xs">
+                        <div className="flex flex-col gap-1">
+                          <button
+                            type="button"
+                            disabled={isTogglingPayroll}
+                            onClick={() => handlePayrollToggle(emp)}
+                            className={`inline-flex items-center px-2 py-0.5 rounded border text-[11px] ${
+                              emp.isPayrollReady
+                                ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                                : "bg-white border-gray-200 text-gray-600"
+                            } disabled:opacity-50`}
+                          >
+                            {emp.isPayrollReady ? "Payroll ready" : "Mark payroll ready"}
+                          </button>
+                          <div className="text-[10px] text-gray-500">
+                            Docs:{" "}
+                            {[
+                              emp.hasPassportDoc ? "Passport" : null,
+                              emp.hasNinSlipDoc ? "NIN" : null,
+                              emp.hasTaxDoc ? "Tax" : null,
+                            ]
+                              .filter(Boolean)
+                              .join(", ") || "None"}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 align-top text-right text-xs space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => openEdit(emp)}
+                          className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            navigate(`/admin/employees/${emp.id}/documents`)
+                          }
+                          className="px-2 py-1 rounded border text-xs hover:bg-gray-50"
+                        >
+                          Documents
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Pagination (only if backend provides it) */}
+        {pagination.pageCount > 1 && (
+          <div className="px-4 py-3 flex items-center justify-between text-xs text-gray-600 border-t">
+            <div>
+              Page {pagination.page} of {pagination.pageCount} • {pagination.total} employees
+            </div>
+            <div className="space-x-2">
+              <button
+                type="button"
+                disabled={filters.page <= 1}
+                onClick={() =>
+                  setFilters((f) => ({ ...f, page: Math.max(1, f.page - 1) }))
+                }
+                className="px-2 py-1 border rounded disabled:opacity-50"
+              >
+                Prev
+              </button>
+              <button
+                type="button"
+                disabled={filters.page >= pagination.pageCount}
+                onClick={() =>
+                  setFilters((f) => ({
+                    ...f,
+                    page: Math.min(pagination.pageCount, f.page + 1),
+                  }))
+                }
+                className="px-2 py-1 border rounded disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Form Drawer / Modal */}
+      {isFormOpen && editing && (
+        <div className="fixed inset-0 z-40 flex">
+          {/* Backdrop */}
+          <div
+            className="flex-1 bg-black/40"
+            onClick={closeForm}
+            aria-hidden="true"
+          />
+
+          {/* Panel */}
+          <div className="w-full max-w-xl bg-white shadow-xl p-6 overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">
+                {editing.mode === "create" ? "New Employee" : "Edit Employee"}
+              </h2>
+              <button
+                type="button"
+                onClick={closeForm}
+                className="text-sm text-gray-500 hover:text-gray-700"
+                disabled={isSaving}
+              >
+                Close
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4 text-sm">
+              {/* Name */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    First name
+                  </label>
+                  <input
+                    name="firstName"
+                    defaultValue={editing.employee.firstName || ""}
+                    required
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    Last name
+                  </label>
+                  <input
+                    name="lastName"
+                    defaultValue={editing.employee.lastName || ""}
+                    required
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  />
+                </div>
+              </div>
+
+              {/* Emails / phone */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    Work email
+                  </label>
+                  <input
+                    name="emailWork"
+                    type="email"
+                    defaultValue={editing.employee.emailWork || ""}
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    Personal email
+                  </label>
+                  <input
+                    name="emailPersonal"
+                    type="email"
+                    defaultValue={editing.employee.emailPersonal || ""}
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    Phone
+                  </label>
+                  <input
+                    name="phone"
+                    defaultValue={editing.employee.phone || ""}
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  />
+                </div>
+              </div>
+
+              {/* Job / dept / status */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    Job title
+                  </label>
+                  <input
+                    name="jobTitle"
+                    defaultValue={editing.employee.jobTitle || ""}
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    Department
+                  </label>
+                  <input
+                    name="department"
+                    defaultValue={editing.employee.department || ""}
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    Status
+                  </label>
+                  <select
+                    name="status"
+                    defaultValue={editing.employee.status || "ACTIVE"}
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  >
+                    <option value="ACTIVE">Active</option>
+                    <option value="PROBATION">Probation</option>
+                    <option value="ON_LEAVE">On leave</option>
+                    <option value="EXITED">Exited</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Start date / salary / frequency */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    Start date
+                  </label>
+                  <input
+                    name="startDate"
+                    type="date"
+                    defaultValue={
+                      editing.employee.startDate
+                        ? format(new Date(editing.employee.startDate), "yyyy-MM-dd")
+                        : ""
+                    }
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    Base salary (NGN)
+                  </label>
+                  <input
+                    name="baseSalaryNGN"
+                    type="number"
+                    min={0}
+                    defaultValue={editing.employee.baseSalaryNGN ?? ""}
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600">
+                    Pay frequency
+                  </label>
+                  <select
+                    name="payFrequency"
+                    defaultValue={editing.employee.payFrequency || ""}
+                    className="mt-1 w-full border rounded px-2 py-1"
+                  >
+                    <option value="">—</option>
+                    <option value="MONTHLY">Monthly</option>
+                    <option value="WEEKLY">Weekly</option>
+                    <option value="OTHER">Other</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Bank details + payroll ready */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600">
+                      Bank name
+                    </label>
+                    <input
+                      name="bankName"
+                      defaultValue={editing.employee.bankName || ""}
+                      className="mt-1 w-full border rounded px-2 py-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600">
+                      Bank code
+                    </label>
+                    <input
+                      name="bankCode"
+                      defaultValue={editing.employee.bankCode || ""}
+                      className="mt-1 w-full border rounded px-2 py-1"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600">
+                      Account number
+                    </label>
+                    <input
+                      name="accountNumber"
+                      defaultValue={editing.employee.accountNumber || ""}
+                      className="mt-1 w-full border rounded px-2 py-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600">
+                      Account name
+                    </label>
+                    <input
+                      name="accountName"
+                      defaultValue={editing.employee.accountName || ""}
+                      className="mt-1 w-full border rounded px-2 py-1"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  id="isPayrollReady"
+                  name="isPayrollReady"
+                  type="checkbox"
+                  defaultChecked={!!editing.employee.isPayrollReady}
+                  className="h-4 w-4"
+                />
+                <label
+                  htmlFor="isPayrollReady"
+                  className="text-xs font-medium text-gray-600"
+                >
+                  Mark as payroll ready
+                </label>
+              </div>
+
+              {/* Actions */}
+              <div className="pt-4 flex items-center justify-between border-t">
+                <button
+                  type="button"
+                  onClick={closeForm}
+                  disabled={isSaving}
+                  className="px-3 py-1.5 border rounded text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSaving}
+                  className="px-4 py-1.5 rounded text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {isSaving
+                    ? editing.mode === "create"
+                      ? "Creating…"
+                      : "Saving…"
+                    : editing.mode === "create"
+                    ? "Create employee"
+                    : "Save changes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default AdminEmployees;

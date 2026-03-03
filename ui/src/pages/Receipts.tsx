@@ -12,6 +12,14 @@ type ReceiptResp = {
   data: any; // snapshot from backend
 };
 
+type PublicSettings = {
+  shippingEnabled?: boolean;
+  enableShipping?: boolean;
+  shipping?: { enabled?: boolean };
+  checkout?: { shippingEnabled?: boolean };
+  features?: { shipping?: boolean };
+};
+
 const ngn = new Intl.NumberFormat("en-NG", {
   style: "currency",
   currency: "NGN",
@@ -65,6 +73,23 @@ export default function ReceiptPage() {
     queryFn: async () =>
       (await api.get<ReceiptResp>(`/api/payments/${encodeURIComponent(paymentId)}/receipt`)).data,
   });
+
+  // 🔹 Public settings (to know if shipping is enabled)
+  const settingsQ = useQuery({
+    queryKey: ["settings-public"],
+    queryFn: async () => (await api.get<PublicSettings>("/api/settings/public")).data,
+    staleTime: 5 * 60_000,
+  });
+
+  const settings = (settingsQ.data || {}) as PublicSettings;
+
+  const shippingEnabled = !!(
+    settings.shippingEnabled ||
+    settings.enableShipping ||
+    settings.shipping?.enabled ||
+    settings.checkout?.shippingEnabled ||
+    settings.features?.shipping
+  );
 
   useEffect(() => {
     document.title = q.data?.receiptNo ? `Receipt ${q.data.receiptNo}` : "Receipt";
@@ -155,18 +180,26 @@ export default function ReceiptPage() {
             {r.customer?.phone && <div className="text-sm">{r.customer.phone}</div>}
           </div>
 
-          <div>
-            <div className="text-sm text-zinc-600">Ship To</div>
-            <div className="text-sm">
-              {[order.shippingAddress?.houseNumber, order.shippingAddress?.streetName].filter(Boolean).join(" ")}
+          {shippingEnabled && (
+            <div>
+              <div className="text-sm text-zinc-600">Ship To</div>
+              <div className="text-sm">
+                {[order.shippingAddress?.houseNumber, order.shippingAddress?.streetName]
+                  .filter(Boolean)
+                  .join(" ")}
+              </div>
+              <div className="text-sm">
+                {[order.shippingAddress?.town, order.shippingAddress?.city]
+                  .filter(Boolean)
+                  .join(", ")}
+              </div>
+              <div className="text-sm">
+                {[order.shippingAddress?.state, order.shippingAddress?.country]
+                  .filter(Boolean)
+                  .join(", ")}
+              </div>
             </div>
-            <div className="text-sm">
-              {[order.shippingAddress?.town, order.shippingAddress?.city].filter(Boolean).join(", ")}
-            </div>
-            <div className="text-sm">
-              {[order.shippingAddress?.state, order.shippingAddress?.country].filter(Boolean).join(", ")}
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Line items */}
@@ -194,11 +227,15 @@ export default function ReceiptPage() {
 
                       {Array.isArray(it.selectedOptions) && it.selectedOptions.length > 0 && (
                         <div className="text-xs text-zinc-600">
-                          {it.selectedOptions.map((o: any) => `${o.attribute}: ${o.value}`).join(" • ")}
+                          {it.selectedOptions
+                            .map((o: any) => `${o.attribute}: ${o.value}`)
+                            .join(" • ")}
                         </div>
                       )}
 
-                      {it.variantSku && <div className="text-xs text-zinc-600">SKU: {it.variantSku}</div>}
+                      {it.variantSku && (
+                        <div className="text-xs text-zinc-600">SKU: {it.variantSku}</div>
+                      )}
                     </td>
 
                     <td className="px-3 py-2 text-right">{qty}</td>
@@ -214,22 +251,30 @@ export default function ReceiptPage() {
                 <td className="px-3 py-2 font-medium text-right" colSpan={3}>
                   Subtotal
                 </td>
-                <td className="px-3 py-2 text-right">{ngn.format(toNum(order.subtotal || 0))}</td>
+                <td className="px-3 py-2 text-right">
+                  {ngn.format(toNum(order.subtotal || 0))}
+                </td>
               </tr>
 
               <tr className="bg-zinc-50">
                 <td className="px-3 py-2 font-medium text-right" colSpan={3}>
                   Tax(Included)
                 </td>
-                <td className="px-3 py-2 text-right">{ngn.format(toNum(order.tax || 0))}</td>
+                <td className="px-3 py-2 text-right">
+                  {ngn.format(toNum(order.tax || 0))}
+                </td>
               </tr>
 
-              <tr className="bg-zinc-50">
-                <td className="px-3 py-2 font-medium text-right" colSpan={3}>
-                  Shipping
-                </td>
-                <td className="px-3 py-2 text-right">{ngn.format(toNum(order.shipping || 0))}</td>
-              </tr>
+              {shippingEnabled && (
+                <tr className="bg-zinc-50">
+                  <td className="px-3 py-2 font-medium text-right" colSpan={3}>
+                    Shipping
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    {ngn.format(toNum(order.shipping || 0))}
+                  </td>
+                </tr>
+              )}
 
               {serviceFee > 0 && (
                 <tr className="bg-zinc-50">
@@ -244,7 +289,9 @@ export default function ReceiptPage() {
                 <td className="px-3 py-2 font-semibold text-right" colSpan={3}>
                   Total
                 </td>
-                <td className="px-3 py-2 font-semibold text-right">{ngn.format(toNum(order.total || 0))}</td>
+                <td className="px-3 py-2 font-semibold text-right">
+                  {ngn.format(toNum(order.total || 0))}
+                </td>
               </tr>
             </tfoot>
           </table>

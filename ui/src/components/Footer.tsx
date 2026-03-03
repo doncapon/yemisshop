@@ -90,13 +90,8 @@ export default function Footer() {
                     </Link>
                   </li>
                   <li>
-                    <Link to="/returns" className="hover:text-ink">
+                    <Link to="/returns-refunds" className="hover:text-ink">
                       Returns &amp; refunds
-                    </Link>
-                  </li>
-                  <li>
-                    <Link to="/shipping" className="hover:text-ink">
-                      Shipping info
                     </Link>
                   </li>
 
@@ -129,12 +124,7 @@ export default function Footer() {
                   </li>
                   <li>
                     <Link to="/contact" className="hover:text-ink">
-                      Contact
-                    </Link>
-                  </li>
-                  <li>
-                    <Link to="/blog" className="hover:text-ink">
-                      Blog
+                      Contact us
                     </Link>
                   </li>
                 </ul>

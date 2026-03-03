@@ -1,24 +1,28 @@
 // src/pages/ProductDetail.tsx
 import * as React from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { useQuery, useQueryClient, useQueries } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useQueries, useMutation } from "@tanstack/react-query";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
 import { createPortal } from "react-dom";
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../components/Select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/Select";
 
 import { showMiniCartToast } from "../components/cart/MiniCartToast";
 import { setSeo } from "../seo/head";
+import { useAuthStore } from "../store/auth";
+import { useModal } from "../components/ModalProvider";
+
+// ✅ single source of truth (navbar/cart reads this)
+import { upsertCartLine, toMiniCartRows, readCartLines } from "../utils/cartModel";
+
+/* ---------------- Config ---------------- */
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
 /* ---------------- Types ---------------- */
 type Brand = { id: string; name: string } | null;
+
+type SupplierLite = { id: string; name?: string | null } | null;
 
 /**
  * ✅ Conform to Prisma:
@@ -33,12 +37,8 @@ type VariantOptionWire = {
 };
 
 /**
- * Offers wire: normalize from any backend shape.
- * We’ll use:
- * - model BASE|VARIANT
- * - variantId nullable
- * - availableQty
- * - price (supplier price) from basePrice/unitPrice/price/etc
+ * ✅ Schema-aligned offers wire (your current schema does NOT store supplierId on offers)
+ * We fallback to the product's required supplierId/supplier.name.
  */
 type OfferWire = {
   id: string;
@@ -51,22 +51,14 @@ type OfferWire = {
   isActive: boolean;
   availableQty: number;
   leadDays?: number | null;
-
   unitPrice?: number | null;
-
   model: "BASE" | "VARIANT";
 };
 
 type VariantWire = {
   id: string;
   sku?: string | null;
-
-  /**
-   * ✅ ProductVariant.retailPrice (public retail) — may exist, but we do NOT rely on it
-   * for live retail if marginPercent is used to compute retail.
-   */
   retailPrice?: number | null;
-
   inStock?: boolean;
   imagesJson?: string[];
   options?: VariantOptionWire[];
@@ -76,16 +68,11 @@ type ProductWire = {
   id: string;
   title: string;
   description?: string;
-
-  /**
-   * ✅ Product.retailPrice (public display base) — may exist, but we do NOT rely on it
-   * for live retail if marginPercent is used to compute retail.
-   */
   retailPrice: number | null;
-
   inStock?: boolean;
   imagesJson?: string[];
   brand?: Brand;
+  supplier?: SupplierLite;
   variants?: VariantWire[];
   offers?: OfferWire[];
   attributes?:
@@ -106,19 +93,24 @@ type ProductWire = {
         }>;
       }
     | null;
+
+  // ⭐ Rating fields
+  ratingAvg?: number | null;
+  ratingCount?: number | null;
+  bestSupplierRating?: { ratingAvg: number | null; ratingCount: number | null } | null;
 };
 
 type ValueState = {
   exists: boolean;
   stock: number;
   disabled: boolean;
-  reason?: string; // "Not available" | "Out of stock"
+  reason?: string;
 };
 
 type SimilarProductWire = {
   id: string;
   title: string;
-  retailPrice: number | null; // from endpoint fallback
+  retailPrice: number | null;
   imagesJson?: string[];
   inStock?: boolean;
 };
@@ -136,7 +128,7 @@ const NGN = new Intl.NumberFormat("en-NG", {
   maximumFractionDigits: 2,
 });
 
-const toNum = (n: any, d = 0) => {
+const toNum = (n: unknown, d = 0) => {
   const v = Number(n);
   return Number.isFinite(v) ? v : d;
 };
@@ -149,15 +141,15 @@ function idOfOption(o: VariantOptionWire) {
   return { a: String(a), v: String(v) };
 }
 
-/**
- * ✅ Normalize variants using schema-friendly names:
- * - v.retailPrice (primary)
- */
 function normalizeVariants(p: any): VariantWire[] {
-  const src: any[] = Array.isArray(p?.variants) ? p.variants : [];
+  const src: any[] = Array.isArray(p?.variants)
+    ? p.variants
+    : Array.isArray(p?.ProductVariant)
+      ? p.ProductVariant
+      : [];
 
   const readVariantRetail = (x: any) => {
-    const raw = x?.retailPrice ?? null;
+    const raw = x?.retailPrice ?? x?.price ?? null;
     return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
   };
 
@@ -179,18 +171,10 @@ function normalizeVariants(p: any): VariantWire[] {
             valueId: String(o.valueId ?? o.value?.id ?? ""),
             unitPrice: readOptionUnit(o),
             attribute: o.attribute
-              ? {
-                  id: String(o.attribute.id),
-                  name: String(o.attribute.name),
-                  type: o.attribute.type,
-                }
+              ? { id: String(o.attribute.id), name: String(o.attribute.name), type: o.attribute.type }
               : undefined,
             value: o.value
-              ? {
-                  id: String(o.value.id),
-                  name: String(o.value.name),
-                  code: o.value.code ?? null,
-                }
+              ? { id: String(o.value.id), name: String(o.value.name), code: o.value.code ?? null }
               : undefined,
           }))
           .filter((o: any) => o.attributeId && o.valueId)
@@ -202,13 +186,16 @@ function offersFromSchema(p: any): OfferWire[] {
   const base: any[] = Array.isArray(p?.supplierProductOffers) ? p.supplierProductOffers : [];
   const vars: any[] = Array.isArray(p?.supplierVariantOffers) ? p.supplierVariantOffers : [];
 
+  const fallbackSupplierId = String(p?.supplierId ?? p?.supplier?.id ?? "PRODUCT_SUPPLIER");
+  const fallbackSupplierName = p?.supplier?.name ? String(p.supplier.name) : null;
+
   const out: OfferWire[] = [];
 
   for (const o of base) {
     out.push({
       id: String(o.id),
-      supplierId: String(o.supplierId),
-      supplierName: o?.supplier?.name ? String(o.supplier.name) : null,
+      supplierId: fallbackSupplierId,
+      supplierName: fallbackSupplierName,
       productId: String(o.productId),
       variantId: null,
       currency: o?.currency ?? "NGN",
@@ -216,7 +203,7 @@ function offersFromSchema(p: any): OfferWire[] {
       isActive: Boolean(o?.isActive),
       availableQty: Number(o?.availableQty ?? 0) || 0,
       leadDays: o?.leadDays ?? null,
-      unitPrice: o?.basePrice != null ? Number(o.basePrice) : null, // ✅ basePrice only
+      unitPrice: o?.basePrice != null ? Number(o.basePrice) : null,
       model: "BASE",
     });
   }
@@ -224,8 +211,8 @@ function offersFromSchema(p: any): OfferWire[] {
   for (const o of vars) {
     out.push({
       id: String(o.id),
-      supplierId: String(o.supplierId),
-      supplierName: o?.supplier?.name ? String(o.supplier.name) : null,
+      supplierId: fallbackSupplierId,
+      supplierName: fallbackSupplierName,
       productId: String(o.productId),
       variantId: String(o.variantId),
       currency: o?.currency ?? "NGN",
@@ -233,7 +220,7 @@ function offersFromSchema(p: any): OfferWire[] {
       isActive: Boolean(o?.isActive),
       availableQty: Number(o?.availableQty ?? 0) || 0,
       leadDays: o?.leadDays ?? null,
-      unitPrice: o?.unitPrice != null ? Number(o.unitPrice) : null, // ✅ unitPrice only
+      unitPrice: o?.unitPrice != null ? Number(o.unitPrice) : null,
       model: "VARIANT",
     });
   }
@@ -285,17 +272,24 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
     };
   }
 
-  const attrsArr: any[] = Array.isArray(p?.attributes) ? p.attributes : [];
-  const textsArr: any[] = Array.isArray(p?.attributeTexts) ? p.attributeTexts : [];
+  const attrsArr: any[] =
+    (Array.isArray(p?.attributes) && p.attributes) ||
+    (Array.isArray(p?.attributeOptions) && p.attributeOptions) ||
+    (Array.isArray(p?.ProductAttributeOption) && p.ProductAttributeOption) ||
+    [];
+  const textsArr: any[] =
+    (Array.isArray(p?.attributeTexts) && p.attributeTexts) ||
+    (Array.isArray(p?.ProductAttributeText) && p.ProductAttributeText) ||
+    [];
 
   const options = attrsArr
     .map((row: any) => {
-      const attributeId = String(row?.attributeId ?? "").trim();
-      const valueId = String(row?.valueId ?? "").trim();
+      const attributeId = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
+      const valueId = String(row?.valueId ?? row?.value?.id ?? "").trim();
       if (!attributeId || !valueId) return null;
 
-      const attributeName = row?.attributeName;
-      const valueName = row?.valueName;
+      const attributeName = row?.attribute?.name ?? row?.attributeName;
+      const valueName = row?.value?.name ?? row?.valueName;
 
       return {
         attributeId,
@@ -310,11 +304,11 @@ function normalizeAttributesIntoProductWire(p: any): ProductWire["attributes"] {
 
   const texts = textsArr
     .map((t: any) => {
-      const attributeId = String(t?.attributeId ?? "").trim();
+      const attributeId = String(t?.attributeId ?? t?.attribute?.id ?? "").trim();
       const value = String(t?.value ?? "").trim();
       if (!attributeId || !value) return null;
 
-      const attributeName = t?.attributeName;
+      const attributeName = t?.attribute?.name ?? t?.attributeName;
 
       return {
         attributeId,
@@ -348,7 +342,13 @@ function normalizeBaseDefaultsFromAttributes(p: any): Record<string, string> {
     if (Object.keys(out).length) return out;
   }
 
-  const opts: any[] = Array.isArray(p?.attributes?.options) ? p.attributes.options : [];
+  const opts: any[] = Array.isArray(p?.attributes?.options)
+    ? p.attributes.options
+    : Array.isArray(p?.attributeOptions)
+      ? p.attributeOptions
+      : Array.isArray(p?.ProductAttributeOption)
+        ? p.ProductAttributeOption
+        : [];
   for (const row of opts) {
     const a = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
     const v = String(row?.valueId ?? row?.value?.id ?? "").trim();
@@ -358,106 +358,10 @@ function normalizeBaseDefaultsFromAttributes(p: any): Record<string, string> {
   return out;
 }
 
-/* ---------------- Local cart helpers ---------------- */
-
-type CartRowLS = {
-  productId: string;
-  variantId?: string | null;
-  title?: string;
-  qty: number;
-
-  unitPrice?: number;
-  totalPrice?: number;
-
-  image?: string | null;
-
-  selectedOptions?: any[];
-};
-
-const CART_KEY = "cart";
-
-function readCartLS(): any[] {
-  try {
-    const raw = localStorage.getItem(CART_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
-function setCartQty(cart: any[]) {
-  try {
-    localStorage.setItem(CART_KEY, JSON.stringify(cart));
-  } catch {
-    // ignore
-  }
-  window.dispatchEvent(new Event("cart:updated"));
-}
-
-function upsertCartLineLS(input: {
-  productId: string;
-  variantId: string | null;
-  title: string;
-  unitPrice: number;
-  image?: string | null;
-  selectedOptions?: any[];
-}) {
-  const cart = readCartLS();
-
-  const pid = input.productId;
-  const vid = input.variantId ?? null;
-
-  const idx = cart.findIndex(
-    (x: any) => String(x?.productId ?? "") === pid && (x?.variantId ?? null) === vid
-  );
-
-  const safeIdx =
-    idx >= 0
-      ? idx
-      : cart.findIndex(
-          (x: any) => String(x?.productId ?? "") === pid && (x?.variantId ?? null) === vid
-        );
-
-  if (safeIdx >= 0) {
-    const prevQty = Math.max(0, Number(cart[safeIdx]?.qty) || 0);
-    const nextQty = Math.max(1, prevQty + 1);
-
-    cart[safeIdx] = {
-      ...cart[safeIdx],
-      productId: pid,
-      variantId: vid,
-      title: input.title,
-      qty: nextQty,
-      unitPrice: input.unitPrice,
-      totalPrice: input.unitPrice * nextQty,
-      image: input.image ?? cart[safeIdx]?.image ?? null,
-      selectedOptions: input.selectedOptions ?? cart[safeIdx]?.selectedOptions ?? [],
-    };
-  } else {
-    cart.push({
-      productId: pid,
-      variantId: vid,
-      title: input.title,
-      qty: 1,
-      unitPrice: input.unitPrice,
-      totalPrice: input.unitPrice,
-      image: input.image ?? null,
-      selectedOptions: input.selectedOptions ?? [],
-    });
-  }
-  setCartQty(cart);
-  return cart as CartRowLS[];
-}
-
 /* ---------------- UI helpers ---------------- */
 
 const buildLabelMaps = (
-  axes: Array<{
-    id: string;
-    name: string;
-    values: Array<{ id: string; name: string }>;
-  }>
+  axes: Array<{ id: string; name: string; values: Array<{ id: string; name: string }> }>
 ) => {
   const attrNameById = new Map<string, string>();
   const valueNameByAttrId = new Map<string, Map<string, string>>();
@@ -559,14 +463,13 @@ function pickBestOffer(params: {
     }
 
     if (kind === "ANY" && isVariant) {
-      if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId))) {
+      if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId)))
         continue;
-      }
     }
 
     const candidate: BestOfferPick = {
       offerId: String(o.id),
-      supplierId: String(o.supplierId),
+      supplierId: String(o.supplierId ?? "PRODUCT_SUPPLIER"),
       supplierName: o.supplierName ?? null,
       model: isVariant ? "VARIANT" : "BASE",
       variantId: o.variantId ? String(o.variantId) : null,
@@ -591,19 +494,18 @@ export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { openModal } = useModal();
+  const user = useAuthStore((s) => s.user);
 
   /* ---------------- Silver-ish UI  ---------------- */
   const cardCls =
     "rounded-2xl border border-zinc-200/80 bg-white shadow-[0_1px_0_rgba(255,255,255,0.85),0_10px_30px_rgba(15,23,42,0.06)]";
-  const softInsetCls =
-    "border border-zinc-200/80 bg-white/70 backdrop-blur shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_10px_28px_rgba(15,23,42,0.05)]";
   const silverBorder = "border border-zinc-200/80";
   const silverShadow =
     "shadow-[0_1px_0_rgba(255,255,255,0.85),0_10px_30px_rgba(15,23,42,0.06)]";
   const silverShadowSm =
     "shadow-[0_1px_0_rgba(255,255,255,0.8),0_8px_22px_rgba(15,23,42,0.06)]";
 
-  // ✅ derive site origin safely (works local + production)
   const SITE_ORIGIN =
     typeof window !== "undefined" && window.location?.origin
       ? window.location.origin
@@ -620,9 +522,6 @@ export default function ProductDetail() {
     [SITE_ORIGIN]
   );
 
-  /**
-   * ✅ Load marginPercent from settings/public
-   */
   const settingsQ = useQuery<number>({
     queryKey: ["settings", "public", "marginPercent"],
     staleTime: 10_000,
@@ -634,8 +533,8 @@ export default function ProductDetail() {
       const v = Number.isFinite(Number(s?.marginPercent))
         ? Number(s.marginPercent)
         : Number.isFinite(Number(s?.pricingMarkupPercent))
-        ? Number(s.pricingMarkupPercent)
-        : NaN;
+          ? Number(s.pricingMarkupPercent)
+          : NaN;
 
       return Math.max(0, Number.isFinite(v) ? v : 0);
     },
@@ -647,7 +546,10 @@ export default function ProductDetail() {
     queryKey: ["product", id],
     queryFn: async () => {
       const { data } = await api.get(`/api/products/${id}`, {
-        params: { include: "brand,variants,attributes,supplierProductOffers,supplierVariantOffers" },
+        // ✅ ask backend for offers so we also get rating info
+        params: {
+          include: "brand,supplier,variants,attributes,offers",
+        },
       });
 
       const payload = (data as any)?.data ?? data ?? {};
@@ -697,9 +599,11 @@ export default function ProductDetail() {
       const sellableVariantIds = new Set(Object.keys(stockByVariantId));
 
       const readProductRetail = (x: any) => {
-        const raw = x?.retailPrice ?? null;
+        const raw = x?.retailPrice ?? x?.price ?? null;
         return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
       };
+
+      const rawBestSupplierRating = (p as any).bestSupplierRating ?? null;
 
       const product: ProductWire = {
         id: String(p.id),
@@ -709,18 +613,43 @@ export default function ProductDetail() {
         inStock: p.inStock !== false,
         imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
         brand: p.brand ? { id: String(p.brand.id), name: String(p.brand.name) } : null,
+        supplier: p.supplier
+          ? { id: String(p.supplier.id), name: p.supplier.name ? String(p.supplier.name) : null }
+          : null,
         variants,
         offers,
         attributes: normalizeAttributesIntoProductWire(p),
+
+        // ⭐ pull rating fields from backend if present
+        ratingAvg:
+          typeof (p as any).ratingAvg === "number"
+            ? Number((p as any).ratingAvg)
+            : typeof rawBestSupplierRating?.ratingAvg === "number"
+              ? Number(rawBestSupplierRating.ratingAvg)
+              : null,
+        ratingCount:
+          typeof (p as any).ratingCount === "number"
+            ? Number((p as any).ratingCount)
+            : typeof rawBestSupplierRating?.ratingCount === "number"
+              ? Number(rawBestSupplierRating.ratingCount)
+              : null,
+        bestSupplierRating:
+          rawBestSupplierRating && typeof rawBestSupplierRating === "object"
+            ? {
+                ratingAvg:
+                  typeof rawBestSupplierRating.ratingAvg === "number"
+                    ? Number(rawBestSupplierRating.ratingAvg)
+                    : null,
+                ratingCount:
+                  typeof rawBestSupplierRating.ratingCount === "number"
+                    ? Number(rawBestSupplierRating.ratingCount)
+                    : null,
+              }
+            : null,
       };
 
       const cheapestBaseOffer = pickBestOffer({ offers, kind: "BASE" });
-      const cheapestOverallOffer = pickBestOffer({
-        offers,
-        kind: "ANY",
-        sellableVariantIds,
-      });
-
+      const cheapestOverallOffer = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
       const baseDefaultsFromAttributes = normalizeBaseDefaultsFromAttributes(p);
 
       return {
@@ -752,7 +681,9 @@ export default function ProductDetail() {
         retailPrice:
           x?.retailPrice != null && Number.isFinite(Number(x.retailPrice))
             ? Number(x.retailPrice)
-            : null,
+            : x?.price != null && Number.isFinite(Number(x.price))
+              ? Number(x.price)
+              : null,
         imagesJson: Array.isArray(x?.imagesJson) ? x.imagesJson : [],
         inStock: x?.inStock !== false,
       })) as SimilarProductWire[];
@@ -761,7 +692,129 @@ export default function ProductDetail() {
     staleTime: 60_000,
   });
 
+  /* ---------------- Ratings / Reviews hooks ---------------- */
+  const [ratingInput, setRatingInput] = React.useState<number>(0);
+  const [commentInput, setCommentInput] = React.useState<string>("");
+
+  const reviewSummaryQ = useQuery({
+    queryKey: ["product-reviews-summary", id],
+    enabled: !!id,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const { data } = await api.get(`/api/products/${id}/reviews/summary`);
+      const payload = (data as any)?.data ?? data ?? {};
+      return {
+        ratingAvg:
+          payload.ratingAvg != null && Number.isFinite(Number(payload.ratingAvg))
+            ? Number(payload.ratingAvg)
+            : null,
+        ratingCount:
+          payload.ratingCount != null && Number.isFinite(Number(payload.ratingCount))
+            ? Number(payload.ratingCount)
+            : null,
+      };
+    },
+  });
+
+  const myReviewQ = useQuery({
+    queryKey: ["product-my-review", id],
+    enabled: !!id && !!user?.id,
+    staleTime: 0,
+    queryFn: async () => {
+      const { data } = await api.get(`/api/products/${id}/reviews/my`, AXIOS_COOKIE_CFG);
+      const payload = (data as any)?.data ?? data ?? null;
+      if (!payload) return null;
+      return {
+        rating:
+          payload.rating != null && Number.isFinite(Number(payload.rating))
+            ? Number(payload.rating)
+            : 0,
+        comment: payload.comment != null ? String(payload.comment) : "",
+      };
+    },
+  });
+
+  React.useEffect(() => {
+    if (!myReviewQ.data) {
+      setRatingInput(0);
+      setCommentInput("");
+      return;
+    }
+    setRatingInput(myReviewQ.data.rating ?? 0);
+    setCommentInput(myReviewQ.data.comment ?? "");
+  }, [myReviewQ.data]);
+
+  const saveReviewMutation = useMutation({
+    mutationFn: async ({ rating, comment }: { rating: number; comment: string }) => {
+      const body = {
+        rating,
+        comment: comment.trim() || null,
+      };
+      const { data } = await api.post(`/api/products/${id}/reviews`, body, AXIOS_COOKIE_CFG);
+      return (data as any)?.data ?? data ?? {};
+    },
+    onSuccess: () => {
+      // ✅ refresh everything relying on rating
+      queryClient.invalidateQueries({ queryKey: ["product-my-review", id] });
+      queryClient.invalidateQueries({ queryKey: ["product-reviews-summary", id] });
+      queryClient.invalidateQueries({ queryKey: ["product", id] });
+    },
+  });
+
+  const deleteReviewMutation = useMutation({
+    mutationFn: async () => {
+      await api.delete(`/api/products/${id}/reviews/my`, AXIOS_COOKIE_CFG);
+    },
+    onSuccess: () => {
+      // Clear local state
+      setRatingInput(0);
+      setCommentInput("");
+      // Refresh aggregates + product
+      queryClient.invalidateQueries({ queryKey: ["product-my-review", id] });
+      queryClient.invalidateQueries({ queryKey: ["product-reviews-summary", id] });
+      queryClient.invalidateQueries({ queryKey: ["product", id] });
+    },
+  });
+
   const product = productQ.data?.product;
+
+  const ratingSummary = React.useMemo(() => {
+    const avgFromSummary = reviewSummaryQ.data?.ratingAvg ?? null;
+    const countFromSummary = reviewSummaryQ.data?.ratingCount ?? null;
+
+    const avgFromProduct =
+      typeof product?.ratingAvg === "number"
+        ? product.ratingAvg
+        : typeof product?.bestSupplierRating?.ratingAvg === "number"
+          ? product.bestSupplierRating.ratingAvg
+          : null;
+
+    const countFromProduct =
+      typeof product?.ratingCount === "number"
+        ? product.ratingCount
+        : typeof product?.bestSupplierRating?.ratingCount === "number"
+          ? product.bestSupplierRating.ratingCount
+          : null;
+
+    const avgRaw = avgFromSummary ?? avgFromProduct ?? null;
+    const countRaw = countFromSummary ?? countFromProduct ?? null;
+
+    const avg =
+      avgRaw != null && Number.isFinite(Number(avgRaw))
+        ? Math.round(Number(avgRaw) * 10) / 10
+        : null;
+    const count =
+      countRaw != null && Number.isFinite(Number(countRaw)) ? Number(countRaw) : null;
+
+    return { avg, count };
+  }, [
+    reviewSummaryQ.data?.ratingAvg,
+    reviewSummaryQ.data?.ratingCount,
+    product?.ratingAvg,
+    product?.ratingCount,
+    product?.bestSupplierRating?.ratingAvg,
+    product?.bestSupplierRating?.ratingCount,
+  ]);
 
   const stockByVariantId = productQ.data?.stockByVariantId ?? {};
   const totalStockQty = productQ.data?.totalStockQty ?? 0;
@@ -773,7 +826,6 @@ export default function ProductDetail() {
   const sellableVariantIds = productQ.data?.sellableVariantIds ?? new Set<string>();
   const baseDefaultsFromAttributes = productQ.data?.baseDefaultsFromAttributes ?? {};
 
-  const cheapestBaseOffer = productQ.data?.cheapestBaseOffer ?? null;
   const cheapestOverallOffer = productQ.data?.cheapestOverallOffer ?? null;
 
   const canBuyBase = hasBaseOffer && baseStockQty > 0;
@@ -781,7 +833,6 @@ export default function ProductDetail() {
   const productAvailabilityMode: ProductAvailabilityMode = React.useMemo(() => {
     const hasBase = baseStockQty > 0;
     const hasVariant = variantStockQty > 0;
-
     if (hasBase && hasVariant) return "BASE_AND_VARIANT";
     if (hasVariant) return "VARIANT_ONLY";
     if (hasBase) return "BASE_ONLY";
@@ -789,15 +840,8 @@ export default function ProductDetail() {
   }, [baseStockQty, variantStockQty]);
 
   const allVariants = product?.variants ?? [];
-
-  const sellableVariants = React.useMemo(() => {
-    if (!allVariants.length) return [];
-    return allVariants.filter((v) => sellableVariantIds.has(v.id));
-  }, [allVariants, sellableVariantIds]);
-
   const variantsForOptions = allVariants;
 
-  // ✅ axes are derived ONLY from product/variants
   const axes = React.useMemo(() => {
     if (!product) return [];
 
@@ -925,9 +969,10 @@ export default function ProductDetail() {
     return v;
   }, [cheapestOverallOffer, product?.variants]);
 
-  const cheapestOverallVariantSelection = React.useMemo(() => {
-    return buildSelectionFromVariant(axes, cheapestOverallVariant);
-  }, [axes, cheapestOverallVariant]);
+  const cheapestOverallVariantSelection = React.useMemo(
+    () => buildSelectionFromVariant(axes, cheapestOverallVariant),
+    [axes, cheapestOverallVariant]
+  );
 
   const [selected, setSelected] = React.useState<Record<string, string>>({});
 
@@ -949,7 +994,9 @@ export default function ProductDetail() {
       if (qty <= 0) continue;
 
       const price =
-        o.unitPrice != null && Number.isFinite(Number(o.unitPrice)) ? Number(o.unitPrice) : null;
+        o.unitPrice != null && Number.isFinite(Number(o.unitPrice))
+          ? Number(o.unitPrice)
+          : null;
       if (price == null || price <= 0) continue;
 
       const isVariant = o.model === "VARIANT" || !!o.variantId;
@@ -965,9 +1012,8 @@ export default function ProductDetail() {
       }
 
       if (kind === "ANY" && isVariant) {
-        if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId))) {
+        if (sellableVariantIds && o.variantId && !sellableVariantIds.has(String(o.variantId)))
           continue;
-        }
       }
 
       if (best == null || price < best) best = price;
@@ -984,17 +1030,25 @@ export default function ProductDetail() {
     return Math.min(av, bv);
   }
 
+  // 🔁 Shared reset logic for initial selection *and* "Reset to base" button
+  const computeResetSelection = React.useCallback(
+    (): Record<string, string> => {
+      if (!axes.length) return {};
+      if (cheapestOverallVariantSelection) return { ...cheapestOverallVariantSelection };
+      return { ...baseDefaults };
+    },
+    [axes.length, cheapestOverallVariantSelection, baseDefaults]
+  );
+
   React.useEffect(() => {
     if (!product || !axes.length) {
       setSelected({});
       return;
     }
 
-    setSelected(() => {
-      if (cheapestOverallVariantSelection) return { ...cheapestOverallVariantSelection };
-      return { ...baseDefaults };
-    });
-  }, [product?.id, axes, baseDefaults, cheapestOverallVariantSelection]);
+    // Use the same logic as the reset button: cheapest variant or base defaults
+    setSelected(computeResetSelection);
+  }, [product?.id, axes.length, computeResetSelection]);
 
   const getFilteredValuesForAttribute = React.useCallback(
     (attrId: string) => {
@@ -1095,12 +1149,7 @@ export default function ProductDetail() {
         chosenSupplier = baseSupplier;
         source = baseSupplier != null ? "BASE_OFFER" : "PRODUCT_RETAIL";
       } else {
-        const anySupplier = cheapestOfferPrice({
-          offers,
-          kind: "ANY",
-          sellableVariantIds,
-        });
-
+        const anySupplier = cheapestOfferPrice({ offers, kind: "ANY", sellableVariantIds });
         chosenSupplier = pickCheapestPositive(baseSupplier, anySupplier);
 
         source =
@@ -1113,16 +1162,14 @@ export default function ProductDetail() {
 
       const retailFromSupplier =
         chosenSupplier != null ? applyMargin(chosenSupplier, marginPercent) : null;
-
       const fallbackRetail = toNum(product?.retailPrice, 0);
 
       return {
         mode: "BASE" as const,
         supplierPrice: chosenSupplier,
-        final:
-          retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
-        supplierId: null as string | null,
-        supplierName: null as string | null,
+        final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
+        supplierId: product?.supplier?.id ?? null,
+        supplierName: product?.supplier?.name ?? null,
         offerId: null as string | null,
         matchedVariant: null as VariantWire | null,
         exactMatch: false,
@@ -1214,10 +1261,11 @@ export default function ProductDetail() {
     return {
       mode: "VARIANT" as const,
       supplierPrice: chosen?.unitPrice ?? null,
-      supplierId: chosen?.supplierId ?? null,
-      supplierName: chosen?.supplierName ?? null,
+      supplierId: chosen?.supplierId ?? product?.supplier?.id ?? null,
+      supplierName: chosen?.supplierName ?? product?.supplier?.name ?? null,
       offerId: chosen?.offerId ?? null,
-      final: retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
+      final:
+        retailFromSupplier != null && retailFromSupplier > 0 ? retailFromSupplier : fallbackRetail,
       matchedVariant: matched,
       exactMatch: true,
       exactSellable: sellable,
@@ -1225,12 +1273,14 @@ export default function ProductDetail() {
         bestVariant != null
           ? "VARIANT_OFFER"
           : bestBase != null
-          ? "BASE_OFFER_FALLBACK"
-          : "RETAIL_FALLBACK",
+            ? "BASE_OFFER_FALLBACK"
+            : "RETAIL_FALLBACK",
     };
   }, [
     product?.offers,
     product?.retailPrice,
+    product?.supplier?.id,
+    product?.supplier?.name,
     axes.length,
     selected,
     isAtBaseDefaults,
@@ -1240,6 +1290,11 @@ export default function ProductDetail() {
     marginPercent,
     baseStockQty,
   ]);
+
+  const sellableVariants = React.useMemo(() => {
+    if (!allVariants.length) return [];
+    return allVariants.filter((v) => sellableVariantIds.has(v.id));
+  }, [allVariants, sellableVariantIds]);
 
   const purchaseMeta = React.useMemo(() => {
     const hasVariantAxes = axes.length > 0;
@@ -1279,7 +1334,6 @@ export default function ProductDetail() {
           variantId: null as string | null,
         };
       }
-
       if (variantStockQty > 0) {
         return {
           disableAddToCart: true,
@@ -1289,7 +1343,6 @@ export default function ProductDetail() {
           variantId: null as string | null,
         };
       }
-
       return {
         disableAddToCart: true,
         helperNote: "Out of stock.",
@@ -1336,8 +1389,8 @@ export default function ProductDetail() {
         sellableVariants.length > 0
           ? "This combination is not available (no supplier offer). Try a different set of options."
           : canBuyBase
-          ? "Only base is available right now."
-          : "No available offers for this product right now.",
+            ? "Only base is available right now."
+            : "No available offers for this product right now.",
       mode: "VARIANT" as const,
       variantId: null as string | null,
     };
@@ -1359,11 +1412,10 @@ export default function ProductDetail() {
   }
 
   const images = React.useMemo(() => {
-    const arr = Array.isArray(product?.imagesJson) ? product!.imagesJson! : [];
+    const arr = Array.isArray(product?.imagesJson) ? product.imagesJson : [];
     return arr.map(String).filter((u) => isUrlish(u));
   }, [product?.imagesJson]);
 
-  // ✅ reset image state when product changes
   const [mainIndex, setMainIndex] = React.useState(0);
   const [brokenByIndex, setBrokenByIndex] = React.useState<Record<number, boolean>>({});
   React.useEffect(() => {
@@ -1388,12 +1440,11 @@ export default function ProductDetail() {
       };
     }
 
-    if (productAvailabilityMode === "NONE") {
+    if (productAvailabilityMode === "NONE")
       return {
         text: "Out of stock",
         cls: "bg-rose-600/10 text-rose-700 border-rose-600/20",
       };
-    }
 
     if (purchaseMeta.mode === "VARIANT" && selectionInfo.exact.length > 0) {
       return {
@@ -1523,7 +1574,6 @@ export default function ProductDetail() {
 
   const mainImgRef = React.useRef<HTMLImageElement | null>(null);
   const [imgBox, setImgBox] = React.useState({ w: 0, h: 0 });
-  const [naturalSize, setNaturalSize] = React.useState({ w: 0, h: 0 });
   const [hoverPx, setHoverPx] = React.useState({ x: 0, y: 0 });
   const [showZoom, setShowZoom] = React.useState(false);
 
@@ -1543,17 +1593,12 @@ export default function ProductDetail() {
     const paneW = ZOOM_PANE.w;
     const paneH = ZOOM_PANE.h;
 
-    if (left + paneW + pad > window.innerWidth) {
-      left = Math.max(pad, r.left - paneW - 12);
-    }
-
-    if (top + paneH + pad > window.innerHeight) {
-      top = Math.max(pad, window.innerHeight - paneH - pad);
-    }
+    if (left + paneW + pad > window.innerWidth) left = Math.max(pad, r.left - paneW - 12);
+    if (top + paneH + pad > window.innerHeight) top = Math.max(pad, window.innerHeight - paneH - pad);
     if (top < pad) top = pad;
 
     setZoomAnchor({ top, left });
-  }, [ZOOM_PANE.w, ZOOM_PANE.h]);
+  }, []);
 
   React.useLayoutEffect(() => {
     const img = mainImgRef.current;
@@ -1567,7 +1612,6 @@ export default function ProductDetail() {
 
   function handleImageLoad(e: React.SyntheticEvent<HTMLImageElement>) {
     const img = e.currentTarget;
-    setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
     setImgBox({ w: img.clientWidth, h: img.clientHeight });
     setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: false }));
   }
@@ -1592,7 +1636,18 @@ export default function ProductDetail() {
   /* ---------------- Add to cart ---------------- */
   const handleAddToCart = React.useCallback(async () => {
     if (!product) return;
-    if (purchaseMeta.disableAddToCart) return;
+
+    if (purchaseMeta.disableAddToCart) {
+      const msg =
+        purchaseMeta.helperNote ||
+        "Please select an available option (variant or base) before adding this item to your cart.";
+      try {
+        openModal({ title: "Select options", message: msg });
+      } catch {
+        alert(msg);
+      }
+      return;
+    }
 
     const variantId = purchaseMeta.mode === "VARIANT" ? purchaseMeta.variantId : null;
 
@@ -1600,31 +1655,20 @@ export default function ProductDetail() {
       .filter(([, v]) => !!String(v || "").trim())
       .map(([attributeId, valueId]) => ({ attributeId, valueId }));
 
+    const optionsKey =
+      variantId && selectedOptionsWire.length
+        ? selectedOptionsWire
+            .map((x) => `${String(x.attributeId)}:${String(x.valueId)}`)
+            .sort()
+            .join("|")
+        : "";
+
     const unitPriceClient = toNum(computed.final, 0);
-    const unit = Number(unitPriceClient) || 0;
 
     const variantImg = variantId
       ? (product.variants || []).find((v) => v.id === variantId)?.imagesJson?.[0]
       : undefined;
-
     const primaryImg = variantImg || (product.imagesJson || [])[0] || null;
-
-    try {
-      await api.post("/api/cart/items", {
-        productId: product.id,
-        variantId,
-        quantity: 1,
-        selectedOptions: selectedOptionsWire,
-        unitPriceClient,
-        supplierId: computed.supplierId,
-        supplierOfferId: computed.offerId,
-      });
-    } catch {
-      // ignore
-    } finally {
-      queryClient.invalidateQueries({ queryKey: ["cart"] });
-      window.dispatchEvent(new Event("cart:updated"));
-    }
 
     const { attrNameById, valueNameByAttrId } = buildLabelMaps(axes);
     const selectedOptionsLabeled = selectedOptionsWire.map(({ attributeId, valueId }) => ({
@@ -1634,34 +1678,133 @@ export default function ProductDetail() {
       value: valueId ? valueNameByAttrId.get(attributeId)?.get(valueId) ?? "" : "",
     }));
 
-    const cart = upsertCartLineLS({
-      productId: product.id,
-      variantId,
-      title: product.title ?? "",
-      unitPrice: unit,
-      image: primaryImg,
-      selectedOptions: selectedOptionsLabeled,
+    const isLoggedIn = !!useAuthStore.getState().user?.id;
+
+    const existingLines = (readCartLines() as any[]) || [];
+    const lineKind = variantId ? "VARIANT" : "BASE";
+
+    const existingForCombo = existingLines.find((ln) => {
+      return (
+        String(ln.productId) === String(product.id) &&
+        String(ln.variantId ?? null) === String(variantId ?? null) &&
+        String(ln.optionsKey ?? "") === optionsKey &&
+        String(ln.kind ?? lineKind) === lineKind
+      );
     });
 
+    const nextQty = (existingForCombo?.qty ?? 0) + 1;
+
+    if (isLoggedIn) {
+      await api.post(
+        "/api/cart/items",
+        {
+          productId: product.id,
+          variantId,
+          kind: lineKind,
+          qty: 1,
+          selectedOptions: selectedOptionsWire,
+          optionsKey,
+          titleSnapshot: product.title ?? "",
+          imageSnapshot: primaryImg ?? null,
+          unitPriceCache: unitPriceClient,
+        },
+        AXIOS_COOKIE_CFG
+      );
+
+      upsertCartLine({
+        productId: String(product.id),
+        variantId: variantId ?? null,
+        kind: lineKind,
+        optionsKey,
+        qty: nextQty,
+        selectedOptions: selectedOptionsLabeled ?? [],
+        titleSnapshot: product.title ?? null,
+        imageSnapshot: primaryImg ?? null,
+        unitPriceCache: Number.isFinite(unitPriceClient) ? unitPriceClient : 0,
+      });
+
+      window.dispatchEvent(new Event("cart:updated"));
+
+      const linesAfter = readCartLines();
+      const miniRows = toMiniCartRows(linesAfter);
+
+      showMiniCartToast({
+        cart: miniRows,
+        focus: { productId: product.id, variantId: variantId ?? null },
+        opts: { title: "Added to cart", duration: 3500, maxItems: 4, mode: "add" },
+      });
+
+      return;
+    }
+
+    upsertCartLine({
+      productId: String(product.id),
+      variantId: variantId ?? null,
+      kind: lineKind,
+      optionsKey,
+      qty: nextQty,
+      selectedOptions: selectedOptionsLabeled ?? [],
+      titleSnapshot: product.title ?? null,
+      imageSnapshot: primaryImg ?? null,
+      unitPriceCache: Number.isFinite(unitPriceClient) ? unitPriceClient : 0,
+    });
+
+    window.dispatchEvent(new Event("cart:updated"));
+
+    const linesAfter = readCartLines();
     showMiniCartToast(
-      cart,
-      { productId: product.id, variantId },
-      { title: "Added to cart", duration: 3500, maxItems: 4 }
+      toMiniCartRows(linesAfter),
+      { productId: product.id, variantId: variantId ?? null },
+      { title: "Added to cart", duration: 3500, maxItems: 4, mode: "add" }
     );
-  }, [
-    product,
-    purchaseMeta,
-    selected,
-    computed.final,
-    computed.supplierId,
-    computed.offerId,
-    axes,
-    queryClient,
-  ]);
+  }, [product, purchaseMeta, selected, computed.final, axes, openModal]);
+
+  const handleSubmitReview = React.useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!user) {
+        navigate("/login");
+        return;
+      }
+      if (!product) return;
+
+      if (!ratingInput || ratingInput < 1 || ratingInput > 5) {
+        const msg = "Please select a rating from 1 to 5 stars.";
+        try {
+          openModal({ title: "Rating required", message: msg });
+        } catch {
+          alert(msg);
+        }
+        return;
+      }
+
+      await saveReviewMutation.mutateAsync({
+        rating: ratingInput,
+        comment: commentInput,
+      });
+    },
+    [user, product, ratingInput, commentInput, saveReviewMutation, navigate, openModal]
+  );
+
+  const handleResetReview = React.useCallback(async () => {
+    if (!user || !id) return;
+
+    try {
+      await deleteReviewMutation.mutateAsync();
+    } catch (err) {
+      const msg =
+        (err as any)?.response?.data?.message ||
+        "Could not reset your review. Please try again later.";
+      try {
+        openModal({ title: "Reset review failed", message: msg });
+      } catch {
+        alert(msg);
+      }
+    }
+  }, [deleteReviewMutation, openModal, user, id]);
 
   React.useEffect(() => {
     if (!showZoom) return;
-
     const on = () => updateZoomAnchor();
     window.addEventListener("scroll", on, true);
     window.addEventListener("resize", on);
@@ -1671,7 +1814,7 @@ export default function ProductDetail() {
     };
   }, [showZoom, updateZoomAnchor]);
 
-  /* ---------------- Similar products carousel helpers ---------------- */
+  /* ---------------- Similar products helpers ---------------- */
   const similarRef = React.useRef<HTMLDivElement | null>(null);
 
   const scrollSimilarBy = React.useCallback((dir: -1 | 1) => {
@@ -1690,7 +1833,7 @@ export default function ProductDetail() {
         staleTime: 60_000,
         queryFn: async () => {
           const { data } = await api.get(`/api/products/${sp.id}`, {
-            params: { include: "offers" },
+            params: { include: "supplier,supplierProductOffers,supplierVariantOffers" },
           });
           const payload = (data as any)?.data ?? data ?? {};
           const p = (payload as any)?.data ?? payload;
@@ -1707,15 +1850,8 @@ export default function ProductDetail() {
             }
           }
 
-          const bestAny = pickBestOffer({
-            offers,
-            kind: "ANY",
-            sellableVariantIds,
-          });
-
-          return {
-            supplierPrice: bestAny?.unitPrice ?? null,
-          };
+          const bestAny = pickBestOffer({ offers, kind: "ANY", sellableVariantIds });
+          return { supplierPrice: bestAny?.unitPrice ?? null };
         },
       })),
   });
@@ -1725,9 +1861,7 @@ export default function ProductDetail() {
     return !!window.matchMedia?.("(pointer: coarse)").matches;
   }, []);
 
-  /* ---------------- SEO (dynamic) ---------------- */
-  // ✅ This is what makes Google see the product title as your page title.
-  //    (Google still decides what to display, but this is the correct setup.)
+  /* ---------------- SEO ---------------- */
   const seo = React.useMemo(() => {
     const fallbackTitle = "DaySpring House — Shop";
 
@@ -1756,8 +1890,10 @@ export default function ProductDetail() {
         ? absUrl(String(product.imagesJson[0]))
         : "";
 
-    // Use computed final price if available (stronger than raw product.retailPrice)
-    const price = Number.isFinite(Number(computed?.final)) && Number(computed.final) > 0 ? Number(computed.final) : null;
+    const price =
+      Number.isFinite(Number(computed?.final)) && Number(computed.final) > 0
+        ? Number(computed.final)
+        : null;
 
     const jsonLd = {
       "@context": "https://schema.org",
@@ -1766,33 +1902,29 @@ export default function ProductDetail() {
       description: desc,
       url: canonical,
       ...(img ? { image: [img] } : {}),
+      ...(product.brand?.name ? { brand: { "@type": "Brand", name: product.brand.name } } : {}),
       ...(price != null
         ? {
             offers: {
               "@type": "Offer",
               priceCurrency: "NGN",
               price: String(price),
-              availability: (totalStockQty ?? 0) > 0
-                ? "https://schema.org/InStock"
-                : "https://schema.org/OutOfStock",
+              availability:
+                (totalStockQty ?? 0) > 0
+                  ? "https://schema.org/InStock"
+                  : "https://schema.org/OutOfStock",
               url: canonical,
             },
           }
         : {}),
     };
 
-    return {
-      title,
-      description: desc,
-      canonical,
-      ogImage: img,
-      jsonLd,
-      ogType: "product" as const,
-    };
+    return { title, description: desc, canonical, ogImage: img, jsonLd, ogType: "product" as const };
   }, [
     product?.id,
     product?.title,
     product?.description,
+    product?.brand?.name,
     JSON.stringify(product?.imagesJson ?? []),
     SITE_ORIGIN,
     absUrl,
@@ -1800,13 +1932,11 @@ export default function ProductDetail() {
     totalStockQty,
   ]);
 
-  // Optional but nice: make tab title sensible while loading/error
   React.useEffect(() => {
     if (productQ.isLoading) document.title = "Loading product… | DaySpring House";
     else if (productQ.isError || !product) document.title = "Product not found | DaySpring House";
   }, [productQ.isLoading, productQ.isError, product?.id]);
 
-  // Apply SEO head tags (and cleanup when product changes)
   React.useEffect(() => {
     const dispose = setSeo({
       title: seo.title,
@@ -1818,8 +1948,6 @@ export default function ProductDetail() {
         { property: "og:url", content: seo.canonical },
         { property: "og:type", content: seo.ogType },
         ...(seo.ogImage ? [{ property: "og:image", content: seo.ogImage }] : []),
-
-        // Optional but helpful:
         { property: "twitter:card", content: "summary_large_image" },
         { property: "twitter:title", content: seo.title },
         { property: "twitter:description", content: seo.description },
@@ -1878,8 +2006,6 @@ export default function ProductDetail() {
     if (useChips) {
       return (
         <div className="flex flex-wrap gap-2">
-        
-
           {axis.values.map((opt) => {
             const st = states[opt.id] ?? { exists: true, stock: 0, disabled: false };
             const active = value === opt.id;
@@ -1888,7 +2014,7 @@ export default function ProductDetail() {
               <button
                 key={opt.id}
                 type="button"
-                disabled={st.disabled}
+                disabled={false}
                 onClick={() => onChange(opt.id)}
                 className={`px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2 ${silverBorder} ${silverShadowSm}
                 ${
@@ -1919,8 +2045,13 @@ export default function ProductDetail() {
     const filtered = getFilteredValuesForAttribute(axis.id);
 
     return (
-      <Select value={value} onValueChange={(v) => onChange(v === "__NONE__" ? "" : v)}>
-        <SelectTrigger className={`h-11 rounded-xl text-sm md:text-base ${silverBorder} ${silverShadowSm}`}>
+      <Select
+        value={value}
+        onValueChange={(v) => onChange(v === "__NONE__" ? "" : v)}
+      >
+        <SelectTrigger
+          className={`h-11 rounded-xl text-sm md:text-base ${silverBorder} ${silverShadowSm}`}
+        >
           <SelectValue placeholder={`No ${axis.name.toLowerCase()}`} />
         </SelectTrigger>
 
@@ -1933,8 +2064,8 @@ export default function ProductDetail() {
               st.disabled && st.reason
                 ? `${opt.name} — ${st.reason}`
                 : st.stock > 0
-                ? `${opt.name} (${st.stock})`
-                : opt.name;
+                  ? `${opt.name} (${st.stock})`
+                  : opt.name;
 
             return (
               <SelectItem key={opt.id} value={opt.id} disabled={st.disabled}>
@@ -1949,10 +2080,15 @@ export default function ProductDetail() {
 
   function NoImageBox({ className = "" }: { className?: string }) {
     return (
-      <div className={`w-full h-full flex items-center justify-center text-center ${className}`} aria-label="No image">
+      <div
+        className={`w-full h-full flex items-center justify-center text-center ${className}`}
+        aria-label="No image"
+      >
         <div className="px-6 py-8">
           <div className="text-sm font-medium text-zinc-700">No image</div>
-          <div className="mt-1 text-xs text-zinc-500">This product has no photos yet.</div>
+          <div className="mt-1 text-xs text-zinc-500">
+            This product has no photos yet.
+          </div>
         </div>
       </div>
     );
@@ -1981,12 +2117,15 @@ export default function ProductDetail() {
                   {product.brand.name} / {product.title}
                 </span>
               ) : (
-                <span className="truncate max-w-[60vw] inline-block">{product.title}</span>
+                <span className="truncate max-w-[60vw] inline-block">
+                  {product.title}
+                </span>
               )}
             </div>
           </div>
         </div>
 
+        {/* MAIN GRID: images + details */}
         <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-[360px]:gap-5">
           {/* LEFT: images + description */}
           <div className="space-y-3 md:space-y-5">
@@ -2003,7 +2142,14 @@ export default function ProductDetail() {
                         updateZoomAnchor();
                       }
                 }
-                onMouseLeave={isCoarsePointer ? undefined : () => { setShowZoom(false); setPaused(false); }}
+                onMouseLeave={
+                  isCoarsePointer
+                    ? undefined
+                    : () => {
+                        setShowZoom(false);
+                        setPaused(false);
+                      }
+                }
                 onMouseMove={isCoarsePointer ? undefined : onMouseMove}
               >
                 {showMainImg ? (
@@ -2013,7 +2159,9 @@ export default function ProductDetail() {
                     alt={product.title || "Product image"}
                     className="w-full h-full object-cover cursor-zoom-in"
                     onLoad={handleImageLoad}
-                    onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
+                    onError={() =>
+                      setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))
+                    }
                   />
                 ) : (
                   <NoImageBox className="bg-zinc-50" />
@@ -2026,7 +2174,10 @@ export default function ProductDetail() {
                 {availabilityBadge.text}
               </span>
 
-              {showZoom && hasBox && zoomAnchor && showMainImg &&
+              {showZoom &&
+                hasBox &&
+                zoomAnchor &&
+                showMainImg &&
                 createPortal(
                   <div
                     className={`hidden md:block rounded-xl overflow-hidden pointer-events-none z-[9999] bg-white ${silverBorder} ${silverShadow}`}
@@ -2036,6 +2187,7 @@ export default function ProductDetail() {
                       left: zoomAnchor.left,
                       width: ZOOM_PANE.w,
                       height: ZOOM_PANE.h,
+                      pointerEvents: "none",
                     }}
                   >
                     <div
@@ -2056,7 +2208,9 @@ export default function ProductDetail() {
                 <>
                   <button
                     type="button"
-                    onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
+                    onClick={() =>
+                      setMainIndex((i) => (i - 1 + images.length) % images.length)
+                    }
                     className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-white/95 hover:bg-white px-3 py-2 ${silverBorder} ${silverShadowSm}`}
                     aria-label="Previous image"
                   >
@@ -2087,54 +2241,7 @@ export default function ProductDetail() {
               )}
             </div>
 
-            {images.length > 0 && (
-              <div
-                className="flex items-center justify-center gap-2"
-                onMouseEnter={() => setPaused(true)}
-                onMouseLeave={() => setPaused(false)}
-              >
-                <button
-                  type="button"
-                  onClick={() => setMainIndex((i) => (i - 1 + images.length) % images.length)}
-                  className={`rounded-full px-2.5 py-1.5 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                  aria-label="Previous thumbnails"
-                >
-                  ‹
-                </button>
-
-                <div className="flex gap-2">
-                  {visibleThumbs.map((u, i) => {
-                    const absoluteIndex = thumbStart + i;
-                    const isActive = absoluteIndex === mainIndex;
-                    return (
-                      <img
-                        key={`${u}:${absoluteIndex}`}
-                        src={u}
-                        alt=""
-                        onClick={() => setMainIndex(absoluteIndex)}
-                        className={`w-20 h-16 sm:w-24 sm:h-20 max-[360px]:w-[68px] max-[360px]:h-[54px] rounded-xl object-cover select-none cursor-pointer ${silverBorder} ${silverShadowSm} ${
-                          isActive
-                            ? "ring-2 ring-fuchsia-500 border-fuchsia-500"
-                            : "hover:opacity-90 bg-white"
-                        }`}
-                        onLoad={() => setBrokenByIndex((prev) => ({ ...prev, [absoluteIndex]: false }))}
-                        onError={() => setBrokenByIndex((prev) => ({ ...prev, [absoluteIndex]: true }))}
-                      />
-                    );
-                  })}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setMainIndex((i) => (i + 1) % images.length)}
-                  className={`rounded-full px-2 py-1 text-sm max-[360px]:px-1.5 max-[360px]:py-0.5 bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                  aria-label="Next thumbnails"
-                >
-                  ›
-                </button>
-              </div>
-            )}
-
+            {/* Description on desktop (left column) */}
             <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
               <h2 className="text-base font-semibold mb-1">Description</h2>
               <p className="text-sm text-zinc-700 whitespace-pre-line">
@@ -2143,7 +2250,7 @@ export default function ProductDetail() {
             </div>
           </div>
 
-          {/* RIGHT: product info + variant pickers + actions */}
+          {/* RIGHT: price, options, buttons, reviews */}
           <div className="space-y-4 md:space-y-5">
             <div className={`${cardCls} p-4 md:p-5`}>
               <div className="flex items-start justify-between gap-3">
@@ -2163,16 +2270,40 @@ export default function ProductDetail() {
                     {computed.source === "VARIANT_OFFER"
                       ? "Price from variant offer"
                       : computed.source === "BASE_OFFER"
-                      ? "Price from base offer"
-                      : computed.source === "CHEAPEST_OFFER"
-                      ? "Price from cheapest available offer"
-                      : "Retail price"}
+                        ? "Price from base offer"
+                        : computed.source === "CHEAPEST_OFFER"
+                          ? "Price from cheapest available offer"
+                          : "Retail price"}
                   </div>
+
+                  {/* ⭐ Rating summary under price */}
+                  {ratingSummary.avg != null && (
+                    <div className="mt-2 flex items-center gap-2 text-sm text-zinc-700">
+                      <div className="flex items-center gap-0.5 text-amber-500 text-base">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <span key={i}>
+                            {i < Math.round(ratingSummary.avg ?? 0) ? "★" : "☆"}
+                          </span>
+                        ))}
+                      </div>
+                      <span className="font-semibold">
+                        {ratingSummary.avg.toFixed(1)}
+                      </span>
+                      {ratingSummary.count != null && (
+                        <span className="text-xs text-zinc-500">
+                          ({ratingSummary.count} review
+                          {ratingSummary.count === 1 ? "" : "s"})
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="text-right">
                   <div className="text-xs text-zinc-500">Total stock</div>
-                  <div className="text-sm font-semibold">{Math.max(0, totalStockQty)}</div>
+                  <div className="text-sm font-semibold">
+                    {Math.max(0, totalStockQty)}
+                  </div>
                 </div>
               </div>
 
@@ -2184,16 +2315,19 @@ export default function ProductDetail() {
                 </div>
               ) : null}
 
-              {/* Variant pickers (if any axes) */}
               {axes.length > 0 && (
                 <div className="mt-4 space-y-4">
                   {axes.map((axis) => (
                     <div key={axis.id} className="space-y-2">
-                      <div className="text-sm font-semibold text-zinc-800">{axis.name}</div>
+                      <div className="text-sm font-semibold text-zinc-800">
+                        {axis.name}
+                      </div>
                       <VariantAxisPicker
                         axis={axis}
                         value={String(selected?.[axis.id] ?? "")}
-                        onChange={(next) => setSelected((prev) => ({ ...prev, [axis.id]: next }))}
+                        onChange={(next) =>
+                          setSelected((prev) => ({ ...prev, [axis.id]: next }))
+                        }
                       />
                     </div>
                   ))}
@@ -2201,7 +2335,7 @@ export default function ProductDetail() {
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setSelected({ ...baseDefaults })}
+                      onClick={() => setSelected(computeResetSelection())}
                       className={`text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
                     >
                       Reset to base
@@ -2218,16 +2352,14 @@ export default function ProductDetail() {
                 </div>
               )}
 
-              {/* Actions */}
               <div className="mt-5 flex flex-col sm:flex-row gap-3">
                 <button
                   type="button"
                   onClick={handleAddToCart}
-                  disabled={purchaseMeta.disableAddToCart}
-                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white ${
+                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${
                     purchaseMeta.disableAddToCart
                       ? "bg-zinc-300 cursor-not-allowed"
-                      : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                      : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
                   }`}
                 >
                   Add to cart
@@ -2243,89 +2375,230 @@ export default function ProductDetail() {
 
               {computed.supplierName ? (
                 <div className="mt-3 text-xs text-zinc-500">
-                  Supplier: <span className="font-medium text-zinc-700">{computed.supplierName}</span>
+                  Supplier:{" "}
+                  <span className="font-medium text-zinc-700">
+                    {computed.supplierName}
+                  </span>
                 </div>
               ) : null}
+
+              {/* ⭐ Review form */}
+              <div className="mt-6 border-t border-zinc-200 pt-4">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-zinc-900">
+                    Rate this product
+                  </h2>
+                  {ratingSummary.avg != null && (
+                    <div className="flex items-center gap-1 text-xs text-zinc-500">
+                      <span>{ratingSummary.avg.toFixed(1)}★</span>
+                      {ratingSummary.count != null && (
+                        <span>
+                          ({ratingSummary.count} review
+                          {ratingSummary.count === 1 ? "" : "s"})
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {!user && (
+                  <p className="mt-2 text-xs text-zinc-600">
+                    <Link
+                      to="/login"
+                      className="font-medium text-fuchsia-600 hover:text-fuchsia-700"
+                    >
+                      Sign in
+                    </Link>{" "}
+                    to write a review.
+                  </p>
+                )}
+
+                {user && (
+                  <form
+                    className="mt-3 space-y-3"
+                    onSubmit={handleSubmitReview}
+                  >
+                    <div className="flex items-center gap-1">
+                      {[1, 2, 3, 4, 5].map((star) => {
+                        const active = ratingInput >= star;
+                        return (
+                          <button
+                            key={star}
+                            type="button"
+                            onClick={() => setRatingInput(star)}
+                            className="p-0.5"
+                            aria-label={`${star} star${star === 1 ? "" : "s"}`}
+                          >
+                            <span
+                              className={`text-xl ${
+                                active ? "text-amber-500" : "text-zinc-300"
+                              }`}
+                            >
+                              {active ? "★" : "☆"}
+                            </span>
+                          </button>
+                        );
+                      })}
+                      <span className="ml-2 text-xs text-zinc-500">
+                        {ratingInput
+                          ? `${ratingInput} / 5`
+                          : "Tap a star to rate"}
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-700 mb-1">
+                        Comment (optional)
+                      </label>
+                      <textarea
+                        rows={3}
+                        value={commentInput}
+                        onChange={(e) => setCommentInput(e.target.value)}
+                        className={`w-full rounded-xl border text-sm px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-fuchsia-500 ${silverBorder}`}
+                        placeholder="Share your experience with this product…"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="submit"
+                        disabled={saveReviewMutation.isPending}
+                        className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${
+                          saveReviewMutation.isPending
+                            ? "bg-zinc-400 cursor-not-allowed"
+                            : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                        }`}
+                      >
+                        {saveReviewMutation.isPending
+                          ? "Saving…"
+                          : myReviewQ.data
+                            ? "Update review"
+                            : "Submit review"}
+                      </button>
+
+                      {myReviewQ.data && (
+                        <button
+                          type="button"
+                          onClick={handleResetReview}
+                          disabled={deleteReviewMutation.isPending}
+                          className={`px-3 py-2 rounded-xl text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                        >
+                          {deleteReviewMutation.isPending ? "Resetting…" : "Reset review"}
+                        </button>
+                      )}
+                    </div>
+
+                    {saveReviewMutation.isError && (
+                      <div className="text-xs text-rose-600">
+                        {(saveReviewMutation.error as any)?.message ||
+                          "Could not save review. Please try again."}
+                      </div>
+                    )}
+                    {deleteReviewMutation.isError && (
+                      <div className="text-xs text-rose-600">
+                        {(deleteReviewMutation.error as any)?.message ||
+                          "Could not reset review. Please try again."}
+                      </div>
+                    )}
+                  </form>
+                )}
+              </div>
             </div>
 
-            {/* Mobile description card */}
+            {/* Description on mobile (full width within right column) */}
             <div className={`md:hidden ${cardCls} p-4`}>
               <h2 className="text-base font-semibold mb-1">Description</h2>
               <p className="text-sm text-zinc-700 whitespace-pre-line">
                 {product.description || "No description yet."}
               </p>
             </div>
+          </div>
+        </div>
 
-            {/* Similar products */}
-            {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
-              <div className={`${cardCls} p-4 md:p-5`}>
-                <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-base font-semibold">Similar products</h2>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => scrollSimilarBy(-1)}
-                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                    >
-                      ‹
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => scrollSimilarBy(1)}
-                      className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
-                    >
-                      ›
-                    </button>
-                  </div>
+        {/* ✅ Similar products: full-width under the description */}
+        {Array.isArray(similarQ.data) && similarQ.data.length > 0 && (
+          <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 pb-6">
+            <div className={`${cardCls} p-4 md:p-5`}>
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-base font-semibold">Similar products</h2>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => scrollSimilarBy(-1)}
+                    className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => scrollSimilarBy(1)}
+                    className={`rounded-xl px-3 py-2 text-sm bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
+                  >
+                    ›
+                  </button>
                 </div>
+              </div>
 
-                <div
-                  ref={similarRef}
-                  className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
-                  style={{ scrollbarWidth: "thin" as any }}
-                >
-                  {similarQ.data.map((sp, idx) => {
-                    const priceFromOffer = (similarOfferQs as any)?.[idx]?.data?.supplierPrice ?? null;
-                    const basePrice =
-                      priceFromOffer != null && Number.isFinite(Number(priceFromOffer))
-                        ? Number(priceFromOffer)
-                        : sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice))
+              <div
+                ref={similarRef}
+                className="mt-3 flex gap-3 overflow-x-auto scroll-smooth pb-2"
+                style={{ scrollbarWidth: "thin" as any }}
+              >
+                {similarQ.data.map((sp, idx) => {
+                  const priceFromOffer =
+                    (similarOfferQs as any)?.[idx]?.data?.supplierPrice ?? null;
+                  const basePrice =
+                    priceFromOffer != null && Number.isFinite(Number(priceFromOffer))
+                      ? Number(priceFromOffer)
+                      : sp.retailPrice != null &&
+                          Number.isFinite(Number(sp.retailPrice))
                         ? Number(sp.retailPrice)
                         : null;
 
-                    const showPrice = basePrice != null ? NGN.format(applyMargin(basePrice, marginPercent)) : "—";
-                    const img = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
+                  const showPrice =
+                    basePrice != null
+                      ? NGN.format(applyMargin(basePrice, marginPercent))
+                      : "—";
+                  const img =
+                    Array.isArray(sp.imagesJson) && sp.imagesJson.length
+                      ? sp.imagesJson[0]
+                      : "";
 
-                    return (
-                      <Link
-                        key={sp.id}
-                        to={`/product/${sp.id}`}
-                        className={`min-w-[220px] max-w-[220px] rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} hover:opacity-95`}
-                      >
-                        <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
-                          {img ? (
-                            <img src={img} alt={sp.title} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">
-                              No image
-                            </div>
-                          )}
-                        </div>
-                        <div className="p-3">
-                          <div className="text-sm font-semibold line-clamp-2">{sp.title}</div>
-                          <div className="mt-1 text-sm font-bold">{showPrice}</div>
-                          <div className="mt-1 text-xs text-zinc-500">
-                            {sp.inStock === false ? "Out of stock" : "Available"}
+                  return (
+                    <Link
+                      key={sp.id}
+                      to={`/product/${sp.id}`}
+                      className={`min-w-[220px] max-w-[220px] rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm} hover:opacity-95`}
+                    >
+                      <div className="bg-zinc-50" style={{ aspectRatio: "4 / 3" }}>
+                        {img ? (
+                          <img
+                            src={img}
+                            alt={sp.title}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-xs text-zinc-500">
+                            No image
                           </div>
+                        )}
+                      </div>
+                      <div className="p-3">
+                        <div className="text-sm font-semibold line-clamp-2">
+                          {sp.title}
                         </div>
-                      </Link>
-                    );
-                  })}
-                </div>
+                        <div className="mt-1 text-sm font-bold">{showPrice}</div>
+                        <div className="mt-1 text-xs text-zinc-500">
+                          {sp.inStock === false ? "Out of stock" : "Available"}
+                        </div>
+                      </div>
+                    </Link>
+                  );
+                })}
               </div>
-            )}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </SiteLayout>
   );

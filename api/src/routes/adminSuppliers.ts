@@ -60,16 +60,32 @@ const toNullablePatch = <T = any>(v: T | undefined | null): T | null | undefined
 
 /**
  * New offers setup:
- * - SupplierProductOffer (base price per supplier per product)
- * - SupplierVariantOffer (per-variant bump per supplier per variant)
+ * - SupplierProductOffer (base price per product)
+ * - SupplierVariantOffer (per-variant price per product variant)
  *
  * So "supplier is in use" = has product offers OR variant offers OR POs, etc.
  */
 async function supplierUsageCounts(supplierId: string) {
   const [productOffers, variantOffers, purchaseOrders, chosenOrderItems] = await Promise.all([
-    prisma.supplierProductOffer.count({ where: { supplierId } }),
-    prisma.supplierVariantOffer.count({ where: { supplierId } }),
+    // Offers are now tied to the product, and Product has supplierId
+    prisma.supplierProductOffer.count({
+      where: {
+        product: {
+          supplierId, // Product.supplierId
+        },
+      },
+    }),
+
+    prisma.supplierVariantOffer.count({
+      where: {
+        product: {
+          supplierId, // Product.supplierId via productId on the variant offer
+        },
+      },
+    }),
+
     prisma.purchaseOrder.count({ where: { supplierId } }).catch(() => 0),
+
     prisma.orderItem.count({ where: { chosenSupplierId: supplierId } }).catch(() => 0),
   ]);
 

@@ -15,7 +15,7 @@ type SupplierOfferLite = {
   id: string;
   productId: string;
   variantId?: string | null;
-  supplierId: string;
+  supplierId?: string;
   supplierName?: string;
   isActive?: boolean;
   inStock?: boolean;
@@ -38,6 +38,7 @@ type AdminProduct = {
   title: string;
   retailPrice: number | string;
   status: string;
+  sku?: string;
   imagesJson?: string[] | string;
   createdAt?: string;
   isDeleted?: boolean;
@@ -53,7 +54,6 @@ type AdminProduct = {
   ownerEmail?: string | null;
   categoryId?: string | null;
   brandId?: string | null;
-  sku?: string | null;
   inStock?: boolean;
 
   variants?: any[];
@@ -159,10 +159,6 @@ type VariantRow = {
 };
 
 type AttrDef = { id: string; name?: string };
-
-/* ============================
-   Cookie-auth axios options
-============================ */
 
 const cookieOpts = { withCredentials: true as const };
 
@@ -473,6 +469,8 @@ export function ManageProducts({
   const hasOrdersSupportRef = useRef<"unknown" | "supported" | "unsupported">("unknown");
   const hasOrdersProbeDoneRef = useRef(false);
 
+  const [refreshKey, setRefreshKey] = useState(0);
+
   /**
    * Keep search fully local; only sync to parent onBlur to avoid remount churn.
    */
@@ -508,23 +506,6 @@ export function ManageProducts({
     refetchOnMount: "always",
 
   });
-
-  function skuSafePart(input: any) {
-    const s = String(input ?? "")
-      .trim()
-      .toUpperCase()
-      .replace(/&/g, " AND ")
-      .replace(/['"]/g, "")
-      .replace(/[^A-Z0-9]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
-    return s;
-  }
-
-  function buildSkuFromTitle(title: string) {
-    const out = skuSafePart(title);
-    return out || `PRODUCT-${Date.now()}`;
-  }
 
   const pricingMarkupPercent =
     Number.isFinite(Number(markupQ.data)) && Number(markupQ.data) > 0 ? Number(markupQ.data) : DEFAULT_MARKUP_PERCENT;
@@ -945,20 +926,20 @@ export function ManageProducts({
 
   const createM = useMutation({
     mutationFn: async (payload: any) => (await api.post("/api/admin/products", payload, cookieOpts)).data,
-    onError: (e) =>
-      openModal({
-        title: "Products",
-        message: friendlyErrorMessage(e, "Create failed"),
-      }),
+    onError: (e) => {
+      setSaveBanner(friendlyErrorMessage(e, "Create failed"));
+      restoreSnapshot();
+      openModal({ title: "Products", message: friendlyErrorMessage(e, "Create failed") });
+    },
   });
 
   const updateM = useMutation({
     mutationFn: async ({ id, ...payload }: any) => (await api.patch(`/api/admin/products/${id}`, payload, cookieOpts)).data,
-    onError: (e) =>
-      openModal({
-        title: "Products",
-        message: friendlyErrorMessage(e, "Update failed"),
-      }),
+    onError: (e) => {
+      setSaveBanner(friendlyErrorMessage(e, "Update failed"));
+      restoreSnapshot();
+      openModal({ title: "Products", message: friendlyErrorMessage(e, "Update failed") });
+    },
   });
 
   const restoreM = useMutation({
@@ -1085,7 +1066,7 @@ export function ManageProducts({
     brandId: "",
     supplierId: "",
     supplierAvailableQty: "",
-    sku: "",
+    sku: "", // ✅ keep for edit-mode display (server-generated)
     imageUrls: "",
     description: "",
   };
@@ -1152,14 +1133,19 @@ export function ManageProducts({
   }, [DRAFT_KEY, pending, variantRows, selectedAttrs]);
 
   const lockedVariantIdsQ = useQuery<string[]>({
-    queryKey: ["admin", "products", "locked-variant-ids", { productId: editingId }],
+    queryKey: ["admin", "products", "locked-variant-ids", { productId: editingId, supplierId: pending.supplierId }],
     enabled: !!role && !!editingId,
     refetchOnWindowFocus: false,
     staleTime: 30_000,
     queryFn: async () => {
       const offers = await fetchSupplierOffersForProduct(editingId!);
+      const supplierId = (pending.supplierId || "").trim();
+
       const locked = new Set<string>();
       for (const o of offers) {
+        const sid = extractOfferSupplierId(o);
+        if (!supplierId || !sid || String(sid) !== String(supplierId)) continue;
+
         const vid = extractOfferVariantId(o);
         if (vid) locked.add(vid);
       }
@@ -1212,79 +1198,82 @@ export function ManageProducts({
     return offerUnitCost(o);
   }
 
+
+  function skuSafePart(input: any) {
+    const s = String(input ?? "")
+      .trim()
+      .toUpperCase()
+      .replace(/&/g, " AND ")
+      .replace(/['"]/g, "")
+      .replace(/[^A-Z0-9]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return s;
+  }
+
   const offerPriceCapsQ = useQuery<{
     minBase: number;
     minVariantByVariant: Record<string, number>;
     minVariantOverall: number;
   }>({
-    queryKey: ["admin", "products", "offer-price-caps", { productId: editingId }],
-    enabled: !!role && !!editingId,
+    queryKey: ["admin", "products", "offer-price-caps", { productId: editingId, supplierId: pending.supplierId }], enabled: !!role && !!editingId,
     refetchOnWindowFocus: false,
     staleTime: 30_000,
     queryFn: async () => {
-      const offers = await fetchSupplierOffersForProduct(editingId!);
-
-      const baseBySupplier: Record<string, number> = {};
-
-      for (const o of offers ?? []) {
-        const vid = extractOfferVariantId(o);
-        if (vid) continue;
-
-        const sid = extractOfferSupplierId(o);
-        if (!sid) continue;
-
-        const isActive = coerceBool((o as any).isActive, true);
-        const isInStock = coerceBool((o as any).inStock, true);
-        const availableQty = availOf(o) || 0;
-
-        const qtyKnown = hasExplicitQty(o);
-
-        if (!isActive || !isInStock) continue;
-        if (!(availableQty > 0 || !qtyKnown)) continue;
-
-        const base = offerUnitCost(o);
-        if (base == null || !Number.isFinite(base) || base <= 0) continue;
-
-        const prev = baseBySupplier[sid];
-        if (!prev || base < prev) baseBySupplier[sid] = base;
+      const supplierId = (pending.supplierId || "").trim();
+      if (!editingId || !supplierId) {
+        return { minBase: 0, minVariantByVariant: {}, minVariantOverall: 0 };
       }
 
+      const offers = await fetchSupplierOffersForProduct(editingId);
+
+      let minBase = 0; // base offer for THIS supplier (optional)
       const minVariantByVariant: Record<string, number> = {};
 
       for (const o of offers ?? []) {
-        const variantId = extractOfferVariantId(o);
-        if (!variantId) continue;
+        const pid = extractOfferProductId(o);
+        if (pid && String(pid) !== String(editingId)) continue;
 
-        const rawSid = (o as any)?.supplierId?.id ?? (o as any)?.supplier?.id ?? (o as any)?.supplierId;
-        const sid = normalizeNullableId(rawSid);
-        if (!sid) continue;
+        const sid = extractOfferSupplierId(o);
+        if (!sid || String(sid) !== String(supplierId)) continue; // ✅ ONLY owning supplier
 
         const isActive = coerceBool((o as any).isActive, true);
         const isInStock = coerceBool((o as any).inStock, true);
-        const availableQty = availOf(o) || 0;
-
+        const qty = availOf(o) || 0;
         const qtyKnown = hasExplicitQty(o);
 
-        if (!isActive || !isInStock) continue;
-        if (!(availableQty > 0 || !qtyKnown)) continue;
+        // ✅ only count purchasable offers (active + inStock + qty>0 unless qty unknown)
+        const purchasable = isActive && isInStock && (qty > 0 || !qtyKnown);
+        if (!purchasable) continue;
 
-        const variantPriceRaw = offerVariantPrice(o);
-        if (variantPriceRaw == null || !Number.isFinite(variantPriceRaw) || variantPriceRaw <= 0) continue;
+        const variantId = extractOfferVariantId(o);
+
+        if (!variantId) {
+          // BASE offer for this supplier+product
+          const baseCost = offerUnitCost(o);
+          if (baseCost != null && Number.isFinite(baseCost) && baseCost > 0) {
+            minBase = baseCost;
+          }
+          continue;
+        }
+
+        // VARIANT offer for this supplier+variant
+        const vCost = offerVariantPrice(o);
+        if (vCost == null || !Number.isFinite(vCost) || vCost <= 0) continue;
 
         const prev = minVariantByVariant[variantId];
-        if (!prev || variantPriceRaw < prev) minVariantByVariant[variantId] = variantPriceRaw;
+        if (!prev || vCost < prev) minVariantByVariant[variantId] = vCost;
       }
 
-      const minBaseRaw = Object.values(baseBySupplier).reduce((m, v) => (v > 0 && v < m ? v : m), Number.POSITIVE_INFINITY);
-      const minVariantOverall = Object.values(minVariantByVariant).reduce((m, v) => (v > 0 && v < m ? v : m), Number.POSITIVE_INFINITY);
-
-      const minBase = Number.isFinite(minBaseRaw) && minBaseRaw > 0 ? minBaseRaw : 0;
-      const minVariantOverallFinal = Number.isFinite(minVariantOverall) && minVariantOverall > 0 ? minVariantOverall : 0;
+      const minVariantOverall = Object.values(minVariantByVariant).reduce(
+        (m, v) => (v > 0 && v < m ? v : m),
+        Number.POSITIVE_INFINITY
+      );
 
       return {
-        minBase,
+        minBase: minBase > 0 ? minBase : 0,
         minVariantByVariant,
-        minVariantOverall: minVariantOverallFinal,
+        minVariantOverall: Number.isFinite(minVariantOverall) ? minVariantOverall : 0,
       };
     },
   });
@@ -1296,11 +1285,28 @@ export function ManageProducts({
       minVariantOverall: 0,
     };
 
-  const visibleVariantRows = useMemo(() => (Array.isArray(variantRows) ? variantRows : []), [variantRows]);
+  const baseComboKey = useMemo(() => {
+    // only consider the SELECT attrs you actually use as variant dimensions
+    const attrs = (selectableAttrs || []).map((a) => ({ id: a.id, name: a.name }));
+    return buildBaseComboKeyFromSelectedAttrs(selectedAttrs, attrs);
+  }, [selectableAttrs, selectedAttrs]);
 
-  const comboErrors = useMemo(() => findDuplicateCombos(visibleVariantRows ?? [], selectableAttrs ?? []), [visibleVariantRows, selectableAttrs]);
+  const visibleVariantRows = useMemo(() => {
+    const rows = Array.isArray(variantRows) ? variantRows : [];
+    // ✅ Always show all variant combos (create + edit)
+    return rows.filter((r) => {
+      const id = String(r?.id ?? "").trim();
+      return !!id;
+    });
+  }, [variantRows]);
+  const comboErrors = useMemo(() => {
+    const dup = findDuplicateCombos(visibleVariantRows ?? [], selectableAttrs ?? []);
+    const baseConf = findBaseVsVariantConflicts(visibleVariantRows ?? [], selectableAttrs ?? [], baseComboKey);
+
+    return { ...dup, ...baseConf };
+  }, [visibleVariantRows, selectableAttrs, baseComboKey]);
+
   const hasDuplicateCombos = Object.keys(comboErrors).length > 0;
-
   const emptyRowErrors = useMemo(() => findEmptyRowErrors(visibleVariantRows ?? []), [visibleVariantRows]);
 
   const computedRetailFromEditing = useMemo(() => {
@@ -1355,7 +1361,37 @@ export function ManageProducts({
   const [isUploadingImages, setIsUploadingImages] = useState(false);
   const [uploadInfo, setUploadInfo] = useState<string>("");
   const [isRefreshingProduct, setIsRefreshingProduct] = useState(false);
+  const [saveBanner, setSaveBanner] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
+  // snapshot to restore the form if save fails
+  const lastSaveSnapshotRef = useRef<{
+    pending: typeof defaultPending;
+    selectedAttrs: Record<string, string | string[]>;
+    variantRows: VariantRow[];
+  } | null>(null);
+
+  function snapshotBeforeSave() {
+    lastSaveSnapshotRef.current = {
+      pending: { ...pending },
+      selectedAttrs: JSON.parse(JSON.stringify(selectedAttrs || {})),
+      variantRows: JSON.parse(JSON.stringify(variantRows || [])),
+    };
+  }
+
+  function restoreSnapshot() {
+    const snap = lastSaveSnapshotRef.current;
+    if (!snap) return;
+    setPending(snap.pending);
+    setSelectedAttrs(snap.selectedAttrs);
+    setVariantRows(snap.variantRows);
+  }
+
+
+  function clearSaveUiErrors() {
+    setSaveBanner(null);
+    setFieldErrors({});
+  }
   async function refreshEditingProduct() {
     const pid = editingId;
     if (!pid) return;
@@ -1558,30 +1594,74 @@ export function ManageProducts({
 
     touchVariants();
   }
-
   function computedVariantRetail(row: VariantRow) {
-    const baseSupplier = offerPriceCaps.minBase || 0;
-    const baseRetailComputed = baseSupplier > 0 ? applyMarkup(baseSupplier, pricingMarkupPercent) : 0;
-
     const vid = String(row?.id ?? "").trim();
-    const supplierVariant = vid && isRealVariantId(vid) ? Number(offerPriceCaps.minVariantByVariant?.[vid] ?? 0) || 0 : 0;
+
+    const supplierVariantCost =
+      vid && isRealVariantId(vid) ? Number(offerPriceCaps.minVariantByVariant?.[vid] ?? 0) || 0 : 0;
 
     if (editingId) {
-      if (supplierVariant > 0) {
-        const variantRetailComputed = applyMarkup(supplierVariant, pricingMarkupPercent);
-        return { baseRetail: baseRetailComputed, variantRetail: variantRetailComputed, hasComputed: true };
-      }
-      return { baseRetail: baseRetailComputed || 0, variantRetail: -1, hasComputed: false };
+      // ✅ edit mode: only show computed when offer exists (but we already filtered rows)
+      const retail = supplierVariantCost > 0 ? applyMarkup(supplierVariantCost, pricingMarkupPercent) : -1;
+      return { variantRetail: retail, supplierVariantCost, hasComputed: supplierVariantCost > 0 };
     }
 
+    // create mode: keep your existing behaviour
     const fromInput = toNumberLoose(row?.retailPrice);
     const baseFallback = Number(pending.retailPrice) || 0;
+    return { variantRetail: fromInput != null ? fromInput : baseFallback, supplierVariantCost: 0, hasComputed: false };
+  }
 
-    return {
-      baseRetail: baseFallback,
-      variantRetail: fromInput != null ? fromInput : baseFallback,
-      hasComputed: false,
-    };
+
+  function buildBaseComboKeyFromSelectedAttrs(
+    selectedAttrs: Record<string, string | string[]>,
+    attrs: AttrDef[]
+  ): string {
+    const parts: string[] = [];
+
+    for (const a of attrs || []) {
+      const raw = selectedAttrs?.[a.id];
+
+      const vids = Array.isArray(raw)
+        ? raw
+        : raw != null
+          ? [raw]
+          : [];
+
+      const cleanVids = vids
+        .map((v) => String(v ?? "").trim())
+        .filter(Boolean);
+
+      if (!cleanVids.length) continue;
+
+      // ✅ attributeId-vid1-vid2-vid3
+      parts.push([a.id, ...cleanVids].join("-"));
+    }
+
+    // If nothing selected, treat as "no base combo"
+    if (!parts.length) return "";
+
+    // ✅ if multiple attrs: aid1-vid1 | aid2-vid2-vid3
+    return parts.join("|");
+  }
+
+  function findBaseVsVariantConflicts(
+    rows: VariantRow[],
+    attrs: AttrDef[],
+    baseComboKey: string
+  ): Record<string, string> {
+    const errors: Record<string, string> = {};
+    if (!baseComboKey) return errors;
+
+    rows.forEach((r, idx) => {
+      const ck = buildComboKey(r, attrs);
+      if (!ck) return;
+      if (ck === baseComboKey) {
+        errors[rowKey(r, idx)] = "This variant combo duplicates the BASE combo. Change the selections.";
+      }
+    });
+
+    return errors;
   }
 
   /* ---------------- Full product loader ---------------- */
@@ -1806,7 +1886,6 @@ export function ManageProducts({
     base: {
       title: string;
       status: string;
-      sku?: string;
       categoryId?: string;
       brandId?: string;
       supplierId?: string;
@@ -1822,7 +1901,6 @@ export function ManageProducts({
     attrsAll: AdminAttribute[];
   }) {
     const payload: any = { ...base };
-    if (payload.sku) payload.sku = skuSafePart(payload.sku);
 
     const attributeSelections: any[] = [];
     const attributeValues: Array<{ attributeId: string; valueId?: string; valueIds?: string[] }> = [];
@@ -1877,9 +1955,7 @@ export function ManageProducts({
           retailPriceToSend =
             computed.hasComputed && computed.variantRetail > 0
               ? computed.variantRetail
-              : computed.baseRetail > 0
-                ? computed.baseRetail
-                : baseRetailFallback;
+              : baseRetailFallback;
         } else {
           // ✅ CREATE: respect user input per row, else base fallback
           const rowRetail = toNumberLoose(row?.retailPrice);
@@ -1901,12 +1977,22 @@ export function ManageProducts({
         }
 
         const comboLabel = labelParts.filter(Boolean).join("-");
-        const productSku = skuSafePart(base.sku || "");
-        const sku = productSku && comboLabel ? `${productSku}-${comboLabel}` : productSku || comboLabel || undefined;
+
+        // If editing, we already have server SKU in pending.sku (read-only)
+        // If creating, don't send variant sku; server will generate unique variant SKUs.
+        const canSendVariantSku = !!editingId && !!pending.sku;
+        const productSku = canSendVariantSku ? skuSafePart(pending.sku) : "";
+
+        const sku =
+          canSendVariantSku && productSku && comboLabel
+            ? `${productSku}-${comboLabel}`
+            : canSendVariantSku && productSku
+              ? productSku
+              : undefined;
 
         variants.push({
           ...(isRealVariantIdLocal(row.id) ? { id: row.id } : {}),
-          sku,
+          ...(sku ? { sku } : {}),
           ...(retailPriceToSend != null ? { retailPrice: retailPriceToSend } : {}),
           options,
           optionSelections: options,
@@ -1939,17 +2025,26 @@ export function ManageProducts({
   }
 
   /* ---------------- Save / Create ---------------- */
+  const variantsForSave = useMemo(() => {
+    return editingId ? (visibleVariantRows ?? []) : (variantRows ?? []);
+  }, [editingId, visibleVariantRows, variantRows]);
+
 
   async function saveOrCreate() {
+    clearSaveUiErrors();
+    snapshotBeforeSave();
+
+    const nextFieldErrors: Record<string, string> = {};
     const title = pending.title.trim();
-    const ensuredProductSku = (pending.sku || "").trim() ? skuSafePart(pending.sku) : buildSkuFromTitle(title);
 
-    if ((pending.sku || "").trim() !== ensuredProductSku) {
-      setPending((p) => ({ ...p, sku: ensuredProductSku }));
-    }
+    if (!title) nextFieldErrors.title = "Title is required.";
+    if (!pending.supplierId) nextFieldErrors.supplierId = "Supplier is required.";
+    if (!pending.brandId) nextFieldErrors.brandId = "Brand is required.";
 
-    if (!title) {
-      openModal({ title: "Products", message: "Title is required." });
+    if (Object.keys(nextFieldErrors).length) {
+      setFieldErrors(nextFieldErrors);
+      setSaveBanner("Please fix the highlighted fields.");
+      restoreSnapshot(); // safe even if nothing changed
       return;
     }
 
@@ -1959,16 +2054,15 @@ export function ManageProducts({
     }
 
     if (hasDuplicateCombos) {
-      openModal({ title: "Variants", message: "Fix duplicate variant combinations before saving." });
+      setSaveBanner("You have duplicate variant combinations (or a variant matches the BASE combo). Fix them before saving.");
+      restoreSnapshot();
       return;
     }
 
-    const emptyRowErrorsNow = findEmptyRowErrors(variantRows ?? []);
+    const emptyRowErrorsNow = findEmptyRowErrors(variantsForSave ?? []);
     if (Object.keys(emptyRowErrorsNow).length > 0) {
-      openModal({
-        title: "Variants",
-        message: "You have a variant row with no option selected. Pick at least 1 option or remove the row.",
-      });
+      setSaveBanner("One or more variant rows have no selections. Pick at least 1 option or remove the row.");
+      restoreSnapshot();
       return;
     }
 
@@ -1978,7 +2072,7 @@ export function ManageProducts({
 
     const check = validateRetailAboveSupplierPrices({
       baseRetail: retailBase,
-      variantRows,
+      variantRows: variantsForSave,
       caps: offerPriceCaps,
     });
 
@@ -1997,11 +2091,12 @@ export function ManageProducts({
       title,
       retailPrice: retailBase,
       status: pending.status,
-      sku: ensuredProductSku || undefined,
       description: pending.description != null ? pending.description : undefined,
       categoryId: pending.categoryId || undefined,
-      brandId: pending.brandId || undefined,
-      ...(pending.supplierId ? { supplierId: pending.supplierId } : {}),
+
+      // required
+      brandId: pending.brandId,
+      supplierId: pending.supplierId,
     };
 
     if (!editingId && supplierQty > 0) {
@@ -2014,7 +2109,7 @@ export function ManageProducts({
     const fullPayload = buildProductPayload({
       base,
       selectedAttrs,
-      variantRows,
+      variantRows: variantsForSave,
       attrsAll: attrsQ.data || [],
     });
 
@@ -2077,9 +2172,11 @@ export function ManageProducts({
                 qc.invalidateQueries({
                   queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }],
                 });
-              } catch (e) {
-                // eslint-disable-next-line no-console
+              }
+              catch (e) {
                 console.error("Failed to persist variants on update", e);
+                setSaveBanner(friendlyErrorMessage(e, "Failed to save variants"));
+                restoreSnapshot();
                 openModal({ title: "Products", message: friendlyErrorMessage(e, "Failed to save variants") });
                 return;
               }
@@ -2140,10 +2237,13 @@ export function ManageProducts({
             setOfferVariants(refreshed.variants || []);
 
             qc.invalidateQueries({ queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }] });
-          } catch (e) {
-            // eslint-disable-next-line no-console
-            console.error("Failed to persist variants on create", e);
+          }
+          catch (e) {
+            console.error("Failed to persist variants on update", e);
+            setSaveBanner(friendlyErrorMessage(e, "Failed to save variants"));
+            restoreSnapshot();
             openModal({ title: "Products", message: friendlyErrorMessage(e, "Failed to save variants") });
+            return;
           }
         }
 
@@ -2164,6 +2264,8 @@ export function ManageProducts({
         ]);
       },
     });
+
+    setRefreshKey((prev) => prev + 1);
   }
 
   /* ---------------- Focus handoff ---------------- */
@@ -2280,52 +2382,57 @@ export function ManageProducts({
 
     return arr;
   }, [filteredRows, sort, statusRank]);
+  
 
-  /**
-   * OFFERABLE variants list from admin combos
-   */
-  const supplierVariants = useMemo(() => {
-    const skuByVariantId = new Map<string, string>();
+ const supplierVariants = useMemo(() => {
+  const skuByVariantId = new Map<string, string>();
 
-    const norm = (x: any) => {
-      if (x == null) return null;
-      const s = String(x).trim();
-      if (!s || s === "null" || s === "undefined") return null;
-      return s;
-    };
+  const norm = (x: any) => {
+    if (x == null) return null;
+    const s = String(x).trim();
+    if (!s || s === "null" || s === "undefined") return null;
+    return s;
+  };
 
-    for (const v of offerVariants || []) {
-      const vid = norm(v?.id) || norm(v?.variantId) || norm(v?.variant?.id) || norm(v?.id?.id) || norm(v?.variantId?.id);
-      const sku = String(v?.sku || "").trim();
-      if (vid && sku) skuByVariantId.set(vid, sku);
+  for (const v of offerVariants || []) {
+    const vid =
+      norm(v?.id) ||
+      norm(v?.variantId) ||
+      norm(v?.variant?.id) ||
+      norm(v?.id?.id) ||
+      norm(v?.variantId?.id);
+    const sku = String(v?.sku || "").trim();
+    if (vid && sku) skuByVariantId.set(vid, sku);
+  }
+
+  const rows = (variantRows || []).filter((r) => isRealVariantId(String(r?.id ?? "")));
+
+  const toLabelFromSelections = (r: VariantRow) => {
+    const parts: string[] = [];
+    for (const a of selectableAttrs || []) {
+      const valId = String(r?.selections?.[a.id] ?? "").trim();
+      if (!valId) continue;
+      const valName = a?.values?.find((vv) => String(vv.id) === valId)?.name;
+      parts.push(String(valName || "").trim() || valId);
     }
+    return parts.filter(Boolean).join(" / ");
+  };
 
-    const rows = (variantRows || []).filter((r) => isRealVariantId(String(r?.id ?? "")));
+  return rows
+    .map((r, index) => {
+      const vid = norm(r?.id);
+      if (!vid) return null;
 
-    const toLabelFromSelections = (r: VariantRow) => {
-      const parts: string[] = [];
-      for (const a of selectableAttrs || []) {
-        const valId = String(r?.selections?.[a.id] ?? "").trim();
-        if (!valId) continue;
-        const valName = a?.values?.find((vv) => String(vv.id) === valId)?.name;
-        parts.push(String(valName || "").trim() || valId);
-      }
-      return parts.filter(Boolean).join(" / ");
-    };
+      const serverSku = skuByVariantId.get(vid);
+      const labelFromSelections = toLabelFromSelections(r);
+      const label = serverSku || labelFromSelections || `Variant ${index + 1}`;
 
-    return rows
-      .map((r, index) => {
-        const vid = norm(r?.id);
-        if (!vid) return null;
-
-        const serverSku = skuByVariantId.get(vid);
-        const labelFromSelections = toLabelFromSelections(r);
-        const label = serverSku || labelFromSelections || `Variant ${index + 1}`;
-
-        return { id: vid, sku: serverSku || label, label };
-      })
-      .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
-  }, [variantRows, selectableAttrs, offerVariants]);
+      // NOTE: sku is the “suffix” piece here – SuppliersOfferManager
+      // will decide how to combine it with productSku.
+      return { id: vid, sku: serverSku || label, label };
+    })
+    .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
+}, [variantRows, selectableAttrs, offerVariants]);
 
   /* ---------------- Primary actions ---------------- */
 
@@ -2551,6 +2658,7 @@ export function ManageProducts({
           {editingId && offersProductId && (
             <div className="rounded-2xl border bg-white shadow-sm">
               <SuppliersOfferManager
+                refreshKey={refreshKey}
                 productId={offersProductId}
                 variants={supplierVariants}
                 suppliers={suppliersQ.data}
@@ -2575,6 +2683,7 @@ export function ManageProducts({
                 </div>
               </div>
 
+
               {editingId && (
                 <button
                   type="button"
@@ -2588,18 +2697,27 @@ export function ManageProducts({
               )}
             </div>
 
+            {saveBanner && (
+              <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+                {saveBanner}
+              </div>
+            )}
+
             <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
               {/* Left */}
               <div className="space-y-3">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="sm:col-span-2">
                     <label className="text-sm font-medium text-slate-700">Title</label>
+
                     <input
                       value={pending.title}
                       onChange={(e) => setPending((p) => ({ ...p, title: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2"
+                      className={`mt-1 w-full rounded-xl border px-3 py-2 ${fieldErrors.title ? "border-rose-300" : ""}`}
                       placeholder="Product title"
                     />
+                    {fieldErrors.title && <div className="mt-1 text-[11px] text-rose-600">{fieldErrors.title}</div>}
+
                   </div>
 
                   <div>
@@ -2636,7 +2754,7 @@ export function ManageProducts({
                     <select
                       value={pending.supplierId}
                       onChange={(e) => setPending((p) => ({ ...p, supplierId: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2"
+                      className={`mt-1 w-full rounded-xl border px-3 py-2 ${fieldErrors.supplierId ? "border-rose-300" : ""}`}
                     >
                       <option value="">Select supplier…</option>
                       {(suppliersQ.data ?? []).map((s) => (
@@ -2645,6 +2763,7 @@ export function ManageProducts({
                         </option>
                       ))}
                     </select>
+                    {fieldErrors.supplierId && <div className="mt-1 text-[11px] text-rose-600">{fieldErrors.supplierId}</div>}
                   </div>
 
                   <div>
@@ -2664,30 +2783,43 @@ export function ManageProducts({
                   </div>
 
                   <div>
-                    <label className="text-sm font-medium text-slate-700">Brand</label>
+                    <label className="text-sm font-medium text-slate-700">
+                      Brand <span className="text-rose-600">*</span>
+                    </label>
+
                     <select
                       value={pending.brandId}
                       onChange={(e) => setPending((p) => ({ ...p, brandId: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2"
+                      className={`mt-1 w-full rounded-xl border px-3 py-2 ${(!pending.brandId || fieldErrors.brandId) ? "border-rose-300" : ""
+                        }`}
                     >
                       <option value="">Select brand…</option>
-                      {(brandsQ.data ?? []).map((b) => (
-                        <option key={b.id} value={b.id}>
-                          {b.name}
-                        </option>
-                      ))}
+                      {(brandsQ.data ?? [])
+                        .filter((b) => b.isActive)
+                        .map((b) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name}
+                          </option>
+                        ))}
                     </select>
+                    {fieldErrors.brandId && <div className="mt-1 text-[11px] text-rose-600">{fieldErrors.brandId}</div>}
+
+                    {!pending.brandId && (
+                      <div className="mt-1 text-[11px] text-rose-600">Brand is required.</div>
+                    )}
                   </div>
 
-                  <div className="sm:col-span-2">
-                    <label className="text-sm font-medium text-slate-700">SKU</label>
-                    <input
-                      value={pending.sku}
-                      onChange={(e) => setPending((p) => ({ ...p, sku: e.target.value }))}
-                      className="mt-1 w-full rounded-xl border px-3 py-2"
-                      placeholder="SKU"
-                    />
-                  </div>
+                  {editingId && (
+                    <div className="sm:col-span-2">
+                      <label className="text-sm font-medium text-slate-700">SKU (auto)</label>
+                      <div className="mt-1 w-full rounded-xl border px-3 py-2 bg-slate-50 text-slate-700 font-mono text-sm">
+                        {pending.sku || "—"}
+                      </div>
+                      <div className="mt-1 text-[11px] text-slate-500">
+                        SKU is generated automatically from Supplier + Brand + Title.
+                      </div>
+                    </div>
+                  )}
 
                   {!editingId && (
                     <div className="sm:col-span-2">

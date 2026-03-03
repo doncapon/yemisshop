@@ -5,13 +5,6 @@ import { requireAuth } from "../middleware/auth.js";
 import { PurchaseOrderStatus } from "@prisma/client";
 import { computeSupplierBalance } from "./supplierPayouts.js";
 
-// ✅ IMPORTANT: use the SAME accounting as /api/supplier/payouts/summary
-// Option A (recommended): if you moved it into a shared service:
-
-// Option B: if you haven't moved it yet and it's still in payouts route file,
-// export it from that file and import it here instead.
-// import { computeSupplierBalance } from "./supplierPayouts.js";
-
 const router = Router();
 
 const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
@@ -137,11 +130,21 @@ router.get("/summary", requireAuth, async (req: any, res) => {
     // ---------- Live products (distinct productIds with any active offer) ----------
     const [baseOfferProducts, variantOfferProducts] = await Promise.all([
       prisma.supplierProductOffer.findMany({
-        where: { supplierId, isActive: true, inStock: true },
+        where: {
+          isActive: true,
+          inStock: true,
+          // 🔁 filter via related Product.supplierId
+          product: { supplierId } as any,
+        } as any,
         select: { productId: true },
       }),
       prisma.supplierVariantOffer.findMany({
-        where: { supplierId, isActive: true, inStock: true },
+        where: {
+          isActive: true,
+          inStock: true,
+          // 🔁 filter via related Product.supplierId
+          product: { supplierId } as any,
+        } as any,
         select: { productId: true },
       }),
     ]);
@@ -155,12 +158,22 @@ router.get("/summary", requireAuth, async (req: any, res) => {
     const [baseAgg, variantAgg] = await Promise.all([
       prisma.supplierProductOffer.groupBy({
         by: ["productId"],
-        where: { supplierId, isActive: true, inStock: true },
+        where: {
+          isActive: true,
+          inStock: true,
+          // 🔁 again, constrain via Product.supplierId
+          product: { supplierId } as any,
+        } as any,
         _sum: { availableQty: true },
       }),
       prisma.supplierVariantOffer.groupBy({
         by: ["productId"],
-        where: { supplierId, isActive: true, inStock: true },
+        where: {
+          isActive: true,
+          inStock: true,
+          // 🔁 again, constrain via Product.supplierId
+          product: { supplierId } as any,
+        } as any,
         _sum: { availableQty: true },
       }),
     ]);

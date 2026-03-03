@@ -197,7 +197,8 @@ type TabKey =
   | "ops"
   | "marketing"
   | "analytics"
-  | "finance";
+  | "finance"
+  | "careers";
 
 type ProductsInnerTab = "moderation" | "manage";
 
@@ -326,7 +327,6 @@ export default function AdminDashboard() {
       }
     }
 
-
     // --- PTAB syncing ---
     const effectiveTab: TabKey = hasValidTab ? urlTab : tab;
     const isProducts = effectiveTab === "products";
@@ -407,7 +407,6 @@ export default function AdminDashboard() {
     refetchOnWindowFocus: false,
   });
 
-
   function unwrapArray<T = any>(payload: any): T[] {
     if (!payload) return [];
     if (Array.isArray(payload)) return payload;
@@ -436,26 +435,18 @@ export default function AdminDashboard() {
 
       // ✅ Use admin endpoint first
       try {
-        const res = await api.get(
-          `/api/admin/payments?includeItems=1&q=${qq}`,
-          { withCredentials: true }
-        );
+        const res = await api.get(`/api/admin/payments?includeItems=1&q=${qq}`, { withCredentials: true });
 
         return unwrapArray<AdminPayment>(res.data);
       } catch (e: any) {
         // Optional fallback if your project uses the other route
         if (e?.response?.status === 404) {
-          const res2 = await api.get(
-            `/api/payments/admin?includeItems=1&q=${qq}`,
-            { withCredentials: true }
-          );
+          const res2 = await api.get(`/api/payments/admin?includeItems=1&q=${qq}`, { withCredentials: true });
           return unwrapArray<AdminPayment>(res2.data);
         }
         throw e;
       }
     },
-
-
   });
 
   type AdminRefundTop = {
@@ -566,7 +557,8 @@ export default function AdminDashboard() {
   });
 
   const deleteCategory = useMutation({
-    mutationFn: async (id: string) => (await api.delete(`/api/admin/categories/${id}`, { withCredentials: true })).data,
+    mutationFn: async (id: string) =>
+      (await api.delete(`/api/admin/categories/${id}`, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "categories"] });
     },
@@ -575,7 +567,8 @@ export default function AdminDashboard() {
   const brandsQ = useQuery({
     queryKey: ["admin", "brands"],
     enabled: !!canAdmin && tab === "catalog",
-    queryFn: async () => (await api.get<{ data: AdminBrand[] }>("/api/admin/brands", { withCredentials: true })).data.data,
+    queryFn: async () =>
+      (await api.get<{ data: AdminBrand[] }>("/api/admin/brands", { withCredentials: true })).data.data,
     refetchOnWindowFocus: false,
     staleTime: staleTimeMs,
   });
@@ -629,7 +622,8 @@ export default function AdminDashboard() {
   });
 
   const deleteAttribute = useMutation({
-    mutationFn: async (id: string) => (await api.delete(`/api/admin/attributes/${id}`, { withCredentials: true })).data,
+    mutationFn: async (id: string) =>
+      (await api.delete(`/api/admin/attributes/${id}`, { withCredentials: true })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "attributes"] });
     },
@@ -770,7 +764,7 @@ export default function AdminDashboard() {
     queryKey: ["admin", "suppliers"],
     enabled: !!canAdmin && tab === "catalog",
     queryFn: async () => {
-      const res = await api.get("/api/admin/suppliers",);
+      const res = await api.get("/api/admin/suppliers");
       return unwrapArray<AdminSupplier>(res.data);
     },
 
@@ -1312,10 +1306,39 @@ export default function AdminDashboard() {
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 w-full sm:w-auto">
+              {/* 👉 Hero actions: Applicants + Careers pages + Back to site */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+                {/* Applicants list */}
+                <Link
+                  to="/admin/applicants"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-white text-sky-800 px-3 py-2 text-sm font-medium shadow-sm hover:bg-sky-50 w-full sm:w-auto"
+                >
+                  <Users size={16} />
+                  <span className="truncate">View applicants</span>
+                </Link>
+
+                {/* Job roles page */}
+                <Link
+                  to="/admin/careers/jobs"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-2 text-sm w-full sm:w-auto"
+                >
+                  <Users size={16} />
+                  <span className="truncate">Job roles</span>
+                </Link>
+
+                {/* Careers config */}
+                <Link
+                  to="/admin/careers/config"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-2 text-sm w-full sm:w-auto"
+                >
+                  <Settings size={16} />
+                  <span className="truncate">Careers config</span>
+                </Link>
+
+                {/* Back to main site */}
                 <Link
                   to="/"
-                  className="inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-2 text-sm w-full sm:w-auto justify-center"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 px-3 py-2 text-sm w-full sm:w-auto"
                 >
                   <ShieldCheck size={16} /> Back to site
                 </Link>
@@ -1339,13 +1362,20 @@ export default function AdminDashboard() {
             <KpiCardOverview
               title="Products"
               total={`${overview.data?.products.total ?? 0} total`}
-              value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0} Live`}
-              hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0} Rejected`}
+              value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0
+                } Live`}
+              hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0
+                } Rejected`}
               res={`${overview.data?.products.availability.publishedAvailable ?? 0} Published available`}
               Icon={PackageCheck}
             />
 
-            <KpiCard title="Orders Today" value={(overview.data?.ordersToday ?? 0).toLocaleString()} hint="New orders" Icon={CreditCard} />
+            <KpiCard
+              title="Orders Today"
+              value={(overview.data?.ordersToday ?? 0).toLocaleString()}
+              hint="New orders"
+              Icon={CreditCard}
+            />
 
             <KpiCard
               title="Revenue Today"
@@ -1373,6 +1403,7 @@ export default function AdminDashboard() {
             <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
               <TabButton k="overview" label="Overview" Icon={ShieldCheck} />
               <TabButton k="users" label="Users & Roles" mobileLabel="Users" Icon={UserCheck} />
+              <TabButton k="careers" label="Careers" mobileLabel="Careers" Icon={Users} />
               <TabButton k="products" label="Product Moderation" mobileLabel="Products" Icon={PackageCheck} />
               <TabButton k="catalog" label="Catalog Settings" mobileLabel="Catalog" Icon={Settings} />
               <TabButton k="refunds" label="Refunds" Icon={Undo2} />
@@ -1395,11 +1426,58 @@ export default function AdminDashboard() {
           {tab === "overview" && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <SectionCard title="Quick Actions" subtitle="Common admin tasks at a glance">
-                <div className="grid sm:grid-cols-2 gap-3">
-                  <QuickAction toAction={() => setTab("users")} icon={UserCheck} label="Approve Super Users" desc="Review & approve applicants" />
-                  <QuickAction toAction={() => setTab("products")} icon={PackageCheck} label="Moderate Products" desc="Approve or reject submissions" />
-                  <QuickAction toAction={() => setTab("transactions")} icon={CreditCard} label="Verify Payments" desc="Handle verifications & refunds" />
-                  <QuickAction toAction={() => setTab("marketing")} icon={BellRing} label="Send Announcement" desc="Notify users of updates" />
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {/* Applicants */}
+                  <QuickAction
+                    toAction={() => nav("/admin/applicants")}
+                    icon={Users}
+                    label="Job applicants"
+                    desc="Review and manage CVs from the careers page"
+                  />
+
+                  {/* Job roles */}
+                  <QuickAction
+                    toAction={() => nav("/admin/careers/jobs")}
+                    icon={Users}
+                    label="Job roles"
+                    desc="Define roles and hiring needs"
+                  />
+
+                  {/* Employees (HR) */}
+                  <QuickAction
+                    toAction={() => nav("/admin/employees")}
+                    icon={UserCheck}
+                    label="Employees"
+                    desc="View and manage staff records"
+                  />
+
+                  {/* Careers config */}
+                  <QuickAction
+                    toAction={() => nav("/admin/careers/confi")}
+                    icon={Settings}
+                    label="Careers config"
+                    desc="Configure careers site & settings"
+                  />
+
+                  {/* Existing stuff */}
+                  <QuickAction
+                    toAction={() => setTab("users")}
+                    icon={UserCheck}
+                    label="Users & roles"
+                    desc="Manage admin privileges and access"
+                  />
+                  <QuickAction
+                    toAction={() => setTab("products")}
+                    icon={PackageCheck}
+                    label="Moderate products"
+                    desc="Approve or reject submissions"
+                  />
+                  <QuickAction
+                    toAction={() => setTab("transactions")}
+                    icon={CreditCard}
+                    label="Verify payments"
+                    desc="Handle verifications & refunds"
+                  />
                 </div>
               </SectionCard>
 
@@ -1421,15 +1499,35 @@ export default function AdminDashboard() {
               </SectionCard>
 
               {/* Catalog snapshot */}
-              <SectionCard title="Catalog snapshot" subtitle="Availability & offers are variant-aware; Live = Published + Available + Active offer">
+              <SectionCard
+                title="Catalog snapshot"
+                subtitle="Availability & offers are variant-aware; Live = Published + Available + Active offer"
+              >
                 <div className="grid sm:grid-cols-2 gap-4">
                   <div className="rounded-xl border p-3">
                     <div className="text-xs text-ink-soft mb-2">Status</div>
                     <div className="flex flex-wrap gap-2">
-                      <StatChip label="Published" value={overview.data?.products.published ?? 0} onClick={() => goProductsManageFromTile("Published")} />
-                      <StatChip label="Live" value={overview.data?.products.live ?? 0} onClick={() => goProductsManageFromTile("Live")} emphasis />
-                      <StatChip label="Pending" value={overview.data?.products.pending ?? 0} onClick={() => goProductsManageFromTile("Pending")} />
-                      <StatChip label="Rejected" value={overview.data?.products.rejected ?? 0} onClick={() => goProductsManageFromTile("Rejected")} />
+                      <StatChip
+                        label="Published"
+                        value={overview.data?.products.published ?? 0}
+                        onClick={() => goProductsManageFromTile("Published")}
+                      />
+                      <StatChip
+                        label="Live"
+                        value={overview.data?.products.live ?? 0}
+                        onClick={() => goProductsManageFromTile("Live")}
+                        emphasis
+                      />
+                      <StatChip
+                        label="Pending"
+                        value={overview.data?.products.pending ?? 0}
+                        onClick={() => goProductsManageFromTile("Pending")}
+                      />
+                      <StatChip
+                        label="Rejected"
+                        value={overview.data?.products.rejected ?? 0}
+                        onClick={() => goProductsManageFromTile("Rejected")}
+                      />
                     </div>
                   </div>
 
@@ -1452,28 +1550,68 @@ export default function AdminDashboard() {
                   <div className="rounded-xl border p-3">
                     <div className="text-xs text-ink-soft mb-2">Supplier offers</div>
                     <div className="flex flex-wrap gap-2">
-                      <StatChip label="With any" value={overview.data?.products.offers.withAny ?? 0} onClick={() => goProductsManageFromTile("With any")} />
-                      <StatChip label="Without any" value={overview.data?.products.offers.withoutAny ?? 0} onClick={() => goProductsManageFromTile("Without any")} />
-                      <StatChip label="Published with any" value={overview.data?.products.offers.publishedWithAny ?? 0} onClick={() => goProductsManageFromTile("Published with any")} />
-                      <StatChip label="Published without any" value={overview.data?.products.offers.publishedWithoutAny ?? 0} onClick={() => goProductsManageFromTile("Published without any")} />
-                      <StatChip label="With active" value={overview.data?.products.offers.withActive ?? 0} onClick={() => goProductsManageFromTile("With active")} />
-                      <StatChip label="Published with active" value={overview.data?.products.offers.publishedWithActive ?? 0} onClick={() => goProductsManageFromTile("Published with active")} />
+                      <StatChip
+                        label="With any"
+                        value={overview.data?.products.offers.withAny ?? 0}
+                        onClick={() => goProductsManageFromTile("With any")}
+                      />
+                      <StatChip
+                        label="Without any"
+                        value={overview.data?.products.offers.withoutAny ?? 0}
+                        onClick={() => goProductsManageFromTile("Without any")}
+                      />
+                      <StatChip
+                        label="Published with any"
+                        value={overview.data?.products.offers.publishedWithAny ?? 0}
+                        onClick={() => goProductsManageFromTile("Published with any")}
+                      />
+                      <StatChip
+                        label="Published without any"
+                        value={overview.data?.products.offers.publishedWithoutAny ?? 0}
+                        onClick={() => goProductsManageFromTile("Published without any")}
+                      />
+                      <StatChip
+                        label="With active"
+                        value={overview.data?.products.offers.withActive ?? 0}
+                        onClick={() => goProductsManageFromTile("With active")}
+                      />
+                      <StatChip
+                        label="Published with active"
+                        value={overview.data?.products.offers.publishedWithActive ?? 0}
+                        onClick={() => goProductsManageFromTile("Published with active")}
+                      />
                     </div>
                   </div>
 
                   <div className="rounded-xl border p-3">
                     <div className="text-xs text-ink-soft mb-2">Variants</div>
                     <div className="flex flex-wrap gap-2">
-                      <StatChip label="With variants" value={overview.data?.products.variantMix.withVariants ?? 0} onClick={() => goProductsManageFromTile("With variants")} />
-                      <StatChip label="Simple" value={overview.data?.products.variantMix.simple ?? 0} onClick={() => goProductsManageFromTile("Simple")} />
+                      <StatChip
+                        label="With variants"
+                        value={overview.data?.products.variantMix.withVariants ?? 0}
+                        onClick={() => goProductsManageFromTile("With variants")}
+                      />
+                      <StatChip
+                        label="Simple"
+                        value={overview.data?.products.variantMix.simple ?? 0}
+                        onClick={() => goProductsManageFromTile("Simple")}
+                      />
                     </div>
                   </div>
 
                   <div className="rounded-xl border p-3 sm:col-span-2">
                     <div className="text-xs text-ink-soft mb-2">Published base stock (non-variant-aware)</div>
                     <div className="flex flex-wrap gap-2">
-                      <StatChip label="Base in-stock" value={overview.data?.products.publishedBaseStock.inStock ?? 0} onClick={() => goProductsManageFromTile("Base in-stock")} />
-                      <StatChip label="Base out-of-stock" value={overview.data?.products.publishedBaseStock.outOfStock ?? 0} onClick={() => goProductsManageFromTile("Base out-of-stock")} />
+                      <StatChip
+                        label="Base in-stock"
+                        value={overview.data?.products.publishedBaseStock.inStock ?? 0}
+                        onClick={() => goProductsManageFromTile("Base in-stock")}
+                      />
+                      <StatChip
+                        label="Base out-of-stock"
+                        value={overview.data?.products.publishedBaseStock.outOfStock ?? 0}
+                        onClick={() => goProductsManageFromTile("Base out-of-stock")}
+                      />
                     </div>
                   </div>
                 </div>
@@ -1579,6 +1717,41 @@ export default function AdminDashboard() {
               updateSupplier={updateSupplier}
               deleteSupplier={deleteSupplier}
             />
+          )}
+
+          {tab === "careers" && (
+            <SectionCard
+              title="Careers"
+              subtitle="Applicants, roles, and settings"
+            >
+              <div className="grid sm:grid-cols-2 gap-3">
+                <QuickAction
+                  toAction={() => nav("/admin/applicants")}
+                  icon={Users}
+                  label="Job applicants"
+                  desc="View and manage applications"
+                />
+                <QuickAction
+                  toAction={() => nav("/admin/careers/jobs")}
+                  icon={Users}
+                  label="Job roles"
+                  desc="Define roles & responsibilities"
+                />
+                <QuickAction
+                  toAction={() => nav("/admin/careers/config")}
+                  icon={Settings}
+                  label="Careers settings"
+                  desc="Configure careers site behaviour"
+                />
+              </div>
+
+              <QuickAction
+                toAction={() => nav("/admin/employees")}
+                icon={UserCheck}
+                label="Employees"
+                desc="HR view of staff, payroll readiness & docs"
+              />
+            </SectionCard>
           )}
 
           {tab === "refunds" && <RefundsSection canAdmin={canAdmin} />}
@@ -1693,7 +1866,8 @@ function TransactionsSection({
 
         {txQ.isError && (
           <div className="rounded-2xl border p-4 text-sm text-rose-600">
-            Failed to load transactions. {(txQ.error as any)?.response?.data?.error || (txQ.error as any)?.message || ""}
+            Failed to load transactions.{" "}
+            {(txQ.error as any)?.response?.data?.error || (txQ.error as any)?.message || ""}
           </div>
         )}
 
@@ -1765,7 +1939,8 @@ function TransactionsSection({
             {txQ.isError && (
               <tr>
                 <td colSpan={7} className="px-3 py-6 text-center text-rose-600">
-                  Failed to load transactions. {(txQ.error as any)?.response?.data?.error || (txQ.error as any)?.message || ""}
+                  Failed to load transactions.{" "}
+                  {(txQ.error as any)?.response?.data?.error || (txQ.error as any)?.message || ""}
                 </td>
               </tr>
             )}
@@ -1861,7 +2036,9 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
     enabled: !!canAdmin,
     queryFn: async () => {
       const { data } = await api.get(
-        `/api/admin/refunds?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&take=${take}&skip=${skip}`,
+        `/api/admin/refunds?q=${encodeURIComponent(q)}&status=${encodeURIComponent(
+          status
+        )}&take=${take}&skip=${skip}`,
         { withCredentials: true }
       );
 
@@ -1910,7 +2087,8 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
 
   const markRefundedM = useMutation({
     mutationFn: async (id: string) =>
-      (await api.post(`/api/admin/refunds/${encodeURIComponent(id)}/mark-refunded`, {}, { withCredentials: true })).data,
+      (await api.post(`/api/admin/refunds/${encodeURIComponent(id)}/mark-refunded`, {}, { withCredentials: true }))
+        .data,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "refunds"] });
       toast.push({ title: "Refunds", message: "Marked refunded.", duration: 2000 });
@@ -2218,13 +2396,19 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
                     <td className="px-3 py-3 whitespace-nowrap">{r.purchaseOrderId || "—"}</td>
 
                     <td className="px-3 py-3 whitespace-nowrap">
-                      <span className="inline-block max-w-[240px] truncate align-bottom" title={r.supplier?.name || r.supplierId || ""}>
+                      <span
+                        className="inline-block max-w-[240px] truncate align-bottom"
+                        title={r.supplier?.name || r.supplierId || ""}
+                      >
                         {r.supplier?.name || r.supplierId || "—"}
                       </span>
                     </td>
 
                     <td className="px-3 py-3 whitespace-nowrap">
-                      <span className="inline-block max-w-[220px] truncate align-bottom" title={r.requestedBy?.email || ""}>
+                      <span
+                        className="inline-block max-w-[220px] truncate align-bottom"
+                        title={r.requestedBy?.email || ""}
+                      >
                         {r.requestedBy?.email || "—"}
                       </span>
                     </td>

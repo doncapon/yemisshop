@@ -41,6 +41,50 @@ function estimateGatewayFee(amountNaira: number): number {
   return Math.min(percent + extra, 2000);
 }
 
+/* ------------------------- FEATURE FLAG helpers -------------------------- */
+
+function parseBool(v: any, def = false): boolean {
+  if (v === null || v === undefined || v === "") return def;
+  const s = String(v).trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on", "enabled"].includes(s)) return true;
+  if (["0", "false", "no", "n", "off", "disabled"].includes(s)) return false;
+  return def;
+}
+
+type ShippingMode = "DELIVERY" | "PICKUP_ONLY";
+
+function parseShippingMode(v: any, def: ShippingMode = "DELIVERY"): ShippingMode {
+  const s = String(v ?? "").trim().toUpperCase();
+  if (s === "PICKUP_ONLY") return "PICKUP_ONLY";
+  if (s === "DELIVERY") return "DELIVERY";
+  return def;
+}
+
+/**
+ * DB-only shipping flags:
+ * - shippingEnabled: "true"/"false"/"1"/"0"
+ * - shippingMode: "DELIVERY" | "PICKUP_ONLY"
+ */
+async function resolveShippingFlags(): Promise<{
+  shippingEnabled: boolean;
+  shippingMode: ShippingMode;
+}> {
+  // safe defaults
+  let shippingEnabled = true;
+  let shippingMode: ShippingMode = "DELIVERY";
+
+  const dbEnabled = await readSetting("shippingEnabled");
+  const dbMode = await readSetting("shippingMode");
+
+  if (dbEnabled !== null) shippingEnabled = parseBool(dbEnabled, shippingEnabled);
+  if (dbMode !== null) shippingMode = parseShippingMode(dbMode, shippingMode);
+
+  // if shipping is disabled, force pickup-only mode for consistency
+  if (!shippingEnabled) shippingMode = "PICKUP_ONLY";
+
+  return { shippingEnabled, shippingMode };
+}
+
 /* -------------------------- PUBLIC endpoints FIRST ----------------------- */
 
 /**
@@ -63,7 +107,7 @@ router.get("/public", async (_req, res) => {
     const modeRaw = await readSetting("taxMode");
     const rateRaw = await readSetting("taxRatePct");
 
-    // ✅ NEW: pricing markup/margin for retail calculation
+    // ✅ pricing markup/margin for retail calculation
     const marginRaw =
       (await readSetting("marginPercent")) ??
       (await readSetting("pricingMarkupPercent")) ??
@@ -77,6 +121,9 @@ router.get("/public", async (_req, res) => {
 
     const marginPercent = Math.max(0, toNumber(marginRaw, 0));
 
+    // ✅ DB-only runtime flags (no env)
+    const { shippingEnabled, shippingMode } = await resolveShippingFlags();
+
     res.json({
       baseServiceFeeNGN,
       commsUnitCostNGN,
@@ -86,13 +133,16 @@ router.get("/public", async (_req, res) => {
       // ✅ include BOTH names for compatibility
       marginPercent,
       pricingMarkupPercent: marginPercent,
+
+      // ✅ NEW flags for UI
+      shippingEnabled,
+      shippingMode,
     });
   } catch (e) {
     console.error("GET /api/settings/public failed:", e);
     res.status(500).json({ error: "Failed to load public settings" });
   }
 });
-
 
 /**
  * GET /api/settings/checkout/service-fee
@@ -247,7 +297,8 @@ router.post("/", requireAuth, requireSuperAdmin, async (req, res) => {
 });
 
 router.patch("/:id", requireAuth, requireSuperAdmin, async (req, res) => {
-  const { value, isPublic, meta } = req.body ?? {};
+  const { value, isPublic, meta, expectedUpdatedAt } = req.body ?? {};
+
   const data: Record<string, any> = {};
   if (typeof value === "string") data.value = value;
   if (typeof isPublic === "boolean") data.isPublic = isPublic;
@@ -257,21 +308,55 @@ router.patch("/:id", requireAuth, requireSuperAdmin, async (req, res) => {
     return res.status(400).json({ error: "No updatable fields provided" });
   }
 
+  const id = requiredString(req.params.id);
+
+  // ✅ optimistic concurrency: client must send expectedUpdatedAt
+  if (!expectedUpdatedAt || typeof expectedUpdatedAt !== "string") {
+    return res.status(400).json({
+      error: "expectedUpdatedAt is required for updates (optimistic concurrency)",
+    });
+  }
+
   try {
+    // Fast path: update only if updatedAt matches
+    // Use updateMany so we can include updatedAt in WHERE without throwing.
+    let updatedCount = 0;
+
     try {
-      const row = await prisma.setting.update({ where: { id: requiredString(req.params.id) }, data });
-      return res.json(row);
+      const r = await prisma.setting.updateMany({
+        where: {
+          id,
+          updatedAt: new Date(expectedUpdatedAt),
+        } as any,
+        data,
+      });
+      updatedCount = r.count ?? 0;
     } catch (e: any) {
-      if (e?.code === "P2022" || /Unknown argument .*isPublic|meta/i.test(String(e?.message))) {
-        const fallback: Record<string, any> = {};
-        if (typeof value === "string") fallback.value = value;
-        const row = await prisma.setting.update({ where: { id: requiredString(req.params.id) }, data: fallback });
+      // Back-compat: if model doesn't support updatedAt in where, fall back to old behavior
+      // (but your Setting type suggests it does exist).
+      if (/Unknown argument .*updatedAt/i.test(String(e?.message)) || e?.code === "P2022") {
+        const row = await prisma.setting.update({ where: { id }, data });
         return res.json(row);
       }
-      if (e?.code === "P2025") return res.status(404).json({ error: "Not found" });
       throw e;
     }
-  } catch {
+
+    if (updatedCount === 0) {
+      // Either not found or stale write
+      const current = await prisma.setting.findUnique({ where: { id } });
+      if (!current) return res.status(404).json({ error: "Not found" });
+
+      return res.status(409).json({
+        error: "This setting was updated by someone else. Please refresh and try again.",
+        current,
+      });
+    }
+
+    // Return the freshly updated row
+    const row = await prisma.setting.findUnique({ where: { id } });
+    return res.json(row);
+  } catch (e: any) {
+    console.error("PATCH /api/settings/:id failed:", e);
     return res.status(500).json({ error: "Update failed" });
   }
 });

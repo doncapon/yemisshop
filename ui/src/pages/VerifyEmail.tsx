@@ -383,15 +383,17 @@ export default function VerifyEmail() {
         {/* Hero */}
         <div className="relative overflow-hidden border-b">
           <div className="bg-gradient-to-br from-primary-700 via-primary-600 to-indigo-700 text-white">
-            <div className="max-w-5xl mx-auto px-4 md:px-8 py-8">
+            <div className="max-w-5xl mx-auto px-3 sm:px-4 md:px-8 py-6 md:py-8">
               <motion.h1
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="text-2xl md:text-3xl font-bold tracking-tight"
+                className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight"
               >
                 {headerTitle}
               </motion.h1>
-              <p className="mt-1 text-white/85 text-sm">We sent a confirmation link to your email. Please click it to continue.</p>
+              <p className="mt-1 text-white/85 text-xs sm:text-sm">
+                We sent a confirmation link to your email. Please click it to continue.
+              </p>
               {!me?.emailVerifiedAt && (
                 <div className="mt-3">
                   <StatChip tone="amber">
@@ -405,7 +407,7 @@ export default function VerifyEmail() {
         </div>
 
         {/* Content */}
-        <div className="max-w-5xl mx-auto px-4 md:px-8 py-8 space-y-6">
+        <div className="max-w-5xl mx-auto px-3 sm:px-4 md:px-8 py-6 md:py-8 space-y-6">
           <Card>
             <CardHeader
               title="Verification status"
@@ -415,14 +417,14 @@ export default function VerifyEmail() {
                 <div className="hidden sm:flex items-center gap-2">
                   <button
                     onClick={refreshStatus}
-                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm hover:bg-black/5"
+                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs sm:text-sm hover:bg-black/5"
                   >
                     <RefreshCcw size={16} /> Check status
                   </button>
                   {me?.emailVerifiedAt ? (
                     <Link
                       to={nextStepPath}
-                      className="inline-flex items-center gap-2 rounded-xl bg-white/10 text-white px-3 py-2 text-sm hover:bg-white/20"
+                      className="inline-flex items-center gap-2 rounded-xl bg-white/10 text-white px-3 py-2 text-xs sm:text-sm hover:bg-white/20"
                     >
                       Continue <ChevronRight size={16} />
                     </Link>
@@ -430,7 +432,7 @@ export default function VerifyEmail() {
                 </div>
               }
             />
-            <div className="p-5">
+            <div className="p-4 sm:p-5">
               {loading ? (
                 <div className="animate-pulse space-y-2">
                   <div className="h-4 w-2/3 bg-zinc-200 rounded" />
@@ -439,30 +441,36 @@ export default function VerifyEmail() {
               ) : (
                 <>
                   {banner && (
-                    <div className="mb-3 text-sm text-emerald-700 border border-emerald-200 bg-emerald-50 px-3 py-2 rounded">
+                    <div className="mb-3 text-xs sm:text-sm text-emerald-700 border border-emerald-200 bg-emerald-50 px-3 py-2 rounded">
                       {banner}
                     </div>
                   )}
                   {err && (
-                    <div className="mb-3 text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">{err}</div>
+                    <div className="mb-3 text-xs sm:text-sm text-danger border border-danger/20 bg-red-50 px-3 py-2 rounded">
+                      {err}
+                    </div>
                   )}
 
                   {/* Email chip + status */}
                   <div className="flex flex-wrap items-center gap-3">
-                    <span className="inline-flex items-center gap-2 text-sm px-3 py-2 rounded-xl border bg-surface">
-                      <Mail size={16} className="text-primary-700" />
-                      <span className="font-medium text-ink">{targetEmail || me?.email || "—"}</span>
+                    <span className="inline-flex items-center gap-1.5 text-xs sm:text-sm px-2.5 py-1.5 rounded-xl border bg-surface max-w-full">
+                      <Mail size={16} className="text-primary-700 shrink-0" />
+                      <span className="font-medium text-ink truncate max-w-[200px] sm:max-w-none text-[10px] sm:text-xs leading-tight">
+                        {targetEmail || me?.email || "—"}
+                      </span>
                     </span>
 
                     {me?.emailVerifiedAt ? (
                       <StatChip tone="green">
                         <ShieldCheck size={14} />
-                        Verified at {new Date(me.emailVerifiedAt).toLocaleString()}
+                        <span className="truncate">
+                          Verified at {new Date(me.emailVerifiedAt).toLocaleString()}
+                        </span>
                       </StatChip>
                     ) : (
                       <StatChip tone="zinc">
                         <Inbox size={14} />
-                        Waiting for confirmation
+                        <span>Waiting for confirmation</span>
                       </StatChip>
                     )}
                   </div>
@@ -473,7 +481,7 @@ export default function VerifyEmail() {
                       <button
                         onClick={resendPublic}
                         disabled={sendingEmail || emailCooldown > 0 || !targetEmail}
-                        className="inline-flex items-center gap-2 rounded-xl bg-accent-500 text-white px-4 py-2 hover:bg-accent-600 disabled:opacity-50"
+                        className="inline-flex items-center gap-2 rounded-xl bg-accent-500 text-white px-3 py-2 text-xs sm:text-sm hover:bg-accent-600 disabled:opacity-50"
                       >
                         {sendingEmail ? (
                           <>
@@ -498,7 +506,7 @@ export default function VerifyEmail() {
                         <button
                           onClick={resendAuthed}
                           disabled={sendingEmail || emailCooldown > 0}
-                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs sm:text-sm hover:bg-black/5"
                         >
                           <RefreshCcw size={16} />
                           Resend (logged in)
@@ -507,7 +515,7 @@ export default function VerifyEmail() {
 
                       <button
                         onClick={refreshStatus}
-                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs sm:text-sm hover:bg-black/5"
                       >
                         <RefreshCcw size={16} />
                         I’ve verified — Check again
@@ -515,7 +523,7 @@ export default function VerifyEmail() {
 
                       <Link
                         to="/profile"
-                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-4 py-2 hover:bg-black/5"
+                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs sm:text-sm hover:bg-black/5"
                         title="Change or correct your email address"
                       >
                         <UserCog size={16} />
@@ -526,7 +534,7 @@ export default function VerifyEmail() {
 
                   {/* Phone OTP block (cookie auth only, when not verified) */}
                   {showOtpBlock && (
-                    <div className="mt-6 rounded-xl border bg-white p-4">
+                    <div className="mt-6 rounded-xl border bg-white p-4 sm:p-5">
                       <div className="flex items-center gap-2 mb-2">
                         <Smartphone size={18} className="text-primary-700" />
                         <div className="text-sm font-medium text-ink">Phone verification</div>
@@ -548,19 +556,22 @@ export default function VerifyEmail() {
                         </div>
                       )}
 
-                      <form onSubmit={submitOtp} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                      <form
+                        onSubmit={submitOtp}
+                        className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2"
+                      >
                         <input
                           value={otp}
                           onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
                           inputMode="numeric"
                           pattern="\d*"
                           placeholder="Enter the 6-digit code"
-                          className="flex-1 rounded-xl border border-slate-300/80 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
+                          className="flex-1 rounded-xl border border-slate-300/80 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
                         />
                         <button
                           type="submit"
                           disabled={verifyingOtp || !otp.trim()}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary-600 text-white px-4 py-2 hover:bg-primary-700 disabled:opacity-50"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary-600 text-white px-4 py-2 text-xs sm:text-sm hover:bg-primary-700 disabled:opacity-50"
                         >
                           {verifyingOtp ? "Verifying…" : "Verify code"}
                         </button>
@@ -568,7 +579,7 @@ export default function VerifyEmail() {
                           type="button"
                           onClick={resendOtp}
                           disabled={otpCooldown > 0}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-4 py-2 hover:bg-black/5 disabled:opacity-50"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-4 py-2 text-xs sm:text-sm hover:bg-black/5 disabled:opacity-50"
                           title="Resend verification code"
                         >
                           <RefreshCcw size={16} className={otpCooldown > 0 ? "opacity-70" : ""} />
@@ -587,10 +598,10 @@ export default function VerifyEmail() {
 
           {/* Help / links while email is unverified */}
           {!me?.emailVerifiedAt && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 sm:gap-6">
               <Card>
                 <CardHeader title="Open your inbox" subtitle="Jump straight to your provider" icon={<Mail size={18} />} />
-                <div className="p-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {[
                     { name: "Gmail", href: "https://mail.google.com/", color: "text-rose-600" },
                     { name: "Outlook", href: "https://outlook.live.com/mail/", color: "text-sky-700" },
@@ -601,9 +612,9 @@ export default function VerifyEmail() {
                       href={x.href}
                       target="_blank"
                       rel="noreferrer"
-                      className="group rounded-xl border bg-white px-4 py-3 flex items-center justify-between hover:bg-black/5"
+                      className="group rounded-xl border bg-white px-3 py-3 flex items-center justify-between hover:bg-black/5"
                     >
-                      <span className={`font-medium ${x.color}`}>{x.name}</span>
+                      <span className={`font-medium text-sm ${x.color}`}>{x.name}</span>
                       <ExternalLink size={16} className="text-zinc-500 group-hover:translate-x-0.5 transition" />
                     </a>
                   ))}
@@ -612,7 +623,7 @@ export default function VerifyEmail() {
 
               <Card>
                 <CardHeader title="Troubleshooting tips" subtitle="Didn’t get the email?" icon={<MailWarning size={18} />} />
-                <div className="p-5 text-sm text-ink">
+                <div className="p-4 sm:p-5 text-xs sm:text-sm text-ink">
                   <ul className="list-disc pl-5 space-y-2">
                     <li>
                       Check your <b>Spam</b> or <b>Promotions</b> folder.
@@ -642,11 +653,14 @@ export default function VerifyEmail() {
             <div className="flex flex-wrap items-center gap-3">
               <Link
                 to={nextStepPath}
-                className="inline-flex items-center gap-2 rounded-xl bg-primary-600 text-white px-4 py-2 hover:bg-primary-700"
+                className="inline-flex items-center gap-2 rounded-xl bg-primary-600 text-white px-4 py-2 text-sm hover:bg-primary-700"
               >
                 Continue <ChevronRight size={16} />
               </Link>
-              <Link to="/" className="inline-flex items-center gap-2 rounded-xl border bg-white px-4 py-2 hover:bg-black/5">
+              <Link
+                to="/"
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-4 py-2 text-sm hover:bg-black/5"
+              >
                 Back to home
               </Link>
             </div>

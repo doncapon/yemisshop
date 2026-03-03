@@ -9,6 +9,9 @@ const router = Router();
 const isAdmin = (role?: string) => role === "ADMIN" || role === "SUPER_ADMIN";
 const isSupplier = (role?: string) => role === "SUPPLIER";
 
+const PAYOUT_HOLD_DAYS = Number(process.env.PAYOUT_HOLD_DAYS ?? 14); // 14 days
+const COMPLAINT_WINDOW_DAYS = Number(process.env.COMPLAINT_WINDOW_DAYS ?? 5);
+
 function asNum(v: any, d = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
@@ -16,11 +19,11 @@ function asNum(v: any, d = 0) {
 
 type SupplierCtx =
   | {
-      ok: true;
-      supplierId: string;
-      supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
-      impersonating: boolean;
-    }
+    ok: true;
+    supplierId: string;
+    supplier: { id: string; name?: string | null; status?: any; userId?: string | null };
+    impersonating: boolean;
+  }
   | { ok: false; status: number; error: string };
 
 async function resolveSupplierContext(req: any): Promise<SupplierCtx> {
@@ -412,6 +415,50 @@ async function getDeliveryOtpVerifiedAtForPO(tx: any, purchaseOrderId: string): 
   return row?.verifiedAt ?? null;
 }
 
+async function hasOpenComplaintsForPO(tx: any, purchaseOrderId: string): Promise<boolean> {
+  // RefundRequest still open
+  const openRefundRequests = await tx.refundRequest.count({
+    where: {
+      purchaseOrderId,
+      status: {
+        notIn: [
+          "APPROVED",
+          "REJECTED",
+          "REFUNDED",
+          "CLOSED",
+        ] as any,
+      },
+    },
+  });
+
+  // DisputeCase still open
+  const openDisputes = await tx.disputeCase.count({
+    where: {
+      purchaseOrderId,
+      status: {
+        notIn: ["RESOLVED", "CLOSED"] as any,
+      },
+    },
+  });
+
+  // If you also want to block when a concrete Refund is in-flight, you can add:
+  const openRefunds = await tx.refund.count({
+    where: {
+      purchaseOrderId,
+      status: {
+        notIn: [
+          "APPROVED",
+          "REJECTED",
+          "REFUNDED",
+          "CLOSED",
+        ] as any,
+      },
+    },
+  });
+
+  return openRefundRequests > 0 || openDisputes > 0 || openRefunds > 0;
+}
+
 async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
   const po = await tx.purchaseOrder.findUnique({
     where: { id: purchaseOrderId },
@@ -423,16 +470,17 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
       status: true,
       payoutStatus: true,
       paidOutAt: true,
+      payoutHoldUntil: true,
     },
   });
   if (!po) throw new Error("PurchaseOrder not found");
 
   const poStatus = String(po.status || "").toUpperCase();
   if (poStatus !== "DELIVERED") {
-    throw new Error("Cannot release payout unless PO is DELIVERED");
+    throw new Error("Cannot request payout unless PO is DELIVERED");
   }
 
-  // ✅ must have verified OTP (from normalized table)
+  // Use normalized delivery OTP record as the "delivered" truth
   const verifiedAt = await getDeliveryOtpVerifiedAtForPO(tx, po.id);
   if (!verifiedAt) {
     const err: any = new Error("Payout not allowed until delivery OTP is verified");
@@ -440,15 +488,36 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
     throw err;
   }
 
-  // ✅ block payout unless supplier is payout-ready
-  await assertSupplierPayoutReadyTx(tx, po.supplierId);
-
-  // ✅ idempotent: if already marked as released/paid, return ok
-  const payoutStatus = String(po.payoutStatus || "").toUpperCase();
-  if (po.paidOutAt || ["RELEASED", "PAID"].includes(payoutStatus)) {
-    return { ok: true, alreadyReleased: true };
+  // ❗ If there is any open complaint/refund/dispute, don't even start hold.
+  if (await hasOpenComplaintsForPO(tx, po.id)) {
+    const err: any = new Error(
+      "Order has an open customer complaint/refund or dispute; payout cannot be requested yet."
+    );
+    err.status = 409;
+    throw err;
   }
 
+  // Supplier must be payout-ready
+  await assertSupplierPayoutReadyTx(tx, po.supplierId);
+
+  const payoutStatus = String(po.payoutStatus || "").toUpperCase();
+
+  // Idempotency: already fully released
+  if (po.paidOutAt || payoutStatus === "RELEASED") {
+    return { ok: true, alreadyReleased: true, mode: "released" };
+  }
+
+  // Idempotency: already HELD
+  if (payoutStatus === "HELD" && po.payoutHoldUntil) {
+    return {
+      ok: true,
+      alreadyHeld: true,
+      mode: "held",
+      holdUntil: po.payoutHoldUntil,
+    };
+  }
+
+  // Find the eligible allocation for this PO
   const payment = await tx.payment.findFirst({
     where: { orderId: po.orderId, status: "PAID" as any },
     orderBy: { createdAt: "desc" },
@@ -461,66 +530,98 @@ async function releasePayoutForPOTx(tx: any, purchaseOrderId: string) {
       paymentId: payment.id,
       purchaseOrderId: po.id,
       supplierId: po.supplierId,
-      status: { in: allocEligibleStatuses() },
+      status: { in: allocEligibleStatuses() }, // PENDING / APPROVED
     },
     orderBy: { createdAt: "desc" },
-    select: { id: true, amount: true, status: true, releasedAt: true },
+    select: {
+      id: true,
+      amount: true,
+      status: true,
+      releasedAt: true,
+      holdUntil: true,
+    },
   });
 
-  /**
-   * 🔒 Do NOT "pretend released" if there is no allocation to pay.
-   * This was the main bug causing "payout released" in UI but balance never changing.
-   */
+  // If no PENDING/APPROVED allocation, see if we've already HELD or PAID
   if (!alloc) {
-    const alreadyPaid = await tx.supplierPaymentAllocation.findFirst({
+    const heldAlloc = await tx.supplierPaymentAllocation.findFirst({
       where: {
         paymentId: payment.id,
         purchaseOrderId: po.id,
         supplierId: po.supplierId,
-        status: SupplierPaymentStatus.PAID,
+        status: "HELD" as any,
+      },
+      select: { id: true, holdUntil: true },
+    });
+
+    if (heldAlloc) {
+      return {
+        ok: true,
+        alreadyHeld: true,
+        mode: "held",
+        holdUntil: heldAlloc.holdUntil ?? null,
+      };
+    }
+
+    const paidAlloc = await tx.supplierPaymentAllocation.findFirst({
+      where: {
+        paymentId: payment.id,
+        purchaseOrderId: po.id,
+        supplierId: po.supplierId,
+        status: "PAID" as any,
       },
       select: { id: true, releasedAt: true },
     });
 
-    if (alreadyPaid?.id) {
+    if (paidAlloc) {
       await tx.purchaseOrder.update({
         where: { id: po.id },
         data: {
           payoutStatus: "RELEASED",
-          ...(po.paidOutAt ? {} : { paidOutAt: alreadyPaid.releasedAt ?? new Date() }),
+          ...(po.paidOutAt ? {} : { paidOutAt: paidAlloc.releasedAt ?? new Date() }),
         } as any,
       });
-      return { ok: true, alreadyReleased: true };
+      return {
+        ok: true,
+        alreadyReleased: true,
+        mode: "released",
+        releasedAt: paidAlloc.releasedAt ?? null,
+      };
     }
 
-    const err: any = new Error("No eligible allocation found to release for this PO");
+    const err: any = new Error("No eligible allocation found to hold for this PO");
     err.status = 409;
     throw err;
   }
 
+  // ✅ Compute holdUntil = verifiedAt + PAYOUT_HOLD_DAYS
+  const holdUntil = new Date(verifiedAt);
+  holdUntil.setDate(holdUntil.getDate() + PAYOUT_HOLD_DAYS);
+
+  // Move allocation into HELD
   await tx.supplierPaymentAllocation.update({
     where: { id: alloc.id },
     data: {
-      status: allocReleasedStatus(), // PAID
-      releasedAt: new Date(),
+      status: "HELD" as any,
+      holdUntil,
     } as any,
   });
 
-  /**
-   * ✅ IMPORTANT:
-   * We intentionally do NOT create a ledger CREDIT here to avoid double counting:
-   * - computeSupplierBalance already counts allocations with status PAID as credits.
-   * - If you also create a ledger CREDIT for the same amount, credits will be doubled.
-   *
-   * If you want an audit trail, keep it in allocation.meta or paymentEvent, not ledger credits.
-   */
-
+  // Update PO payoutStatus + payoutHoldUntil
   await tx.purchaseOrder.update({
     where: { id: po.id },
-    data: { payoutStatus: "RELEASED", paidOutAt: new Date() } as any,
+    data: {
+      payoutStatus: "HELD" as any,
+      payoutHoldUntil: holdUntil,
+    },
   });
 
-  return { ok: true };
+  return {
+    ok: true,
+    mode: "held",
+    holdUntil,
+    complaintWindowDays: COMPLAINT_WINDOW_DAYS,
+  };
 }
 
 async function assertSupplierPayoutReadyTx(tx: any, supplierId: string) {

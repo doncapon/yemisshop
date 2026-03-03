@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import api from "../api/client";
-import { useAuthStore, type Role } from "../store/auth";
+import { mergeGuestCartIntoUserCart, useAuthStore, type Role } from "../store/auth";
 import SiteLayout from "../layouts/SiteLayout";
 import DaySpringLogo from "../components/brand/DayspringLogo";
 
@@ -20,7 +20,8 @@ function safeReturnTo(v: unknown): string | null {
   if (!s.startsWith("/")) return null;
 
   // avoid loops back to auth pages
-  if (s.startsWith("/login") || s.startsWith("/register") || s.startsWith("/forgot-password")) return null;
+  if (s.startsWith("/login") || s.startsWith("/register") || s.startsWith("/forgot-password"))
+    return null;
 
   return s;
 }
@@ -77,11 +78,13 @@ type LoginBlocked = {
 function normalizeProfile(raw: any): MeResponse | null {
   if (!raw) return null;
 
-  const emailVerified = raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1;
+  const emailVerified =
+    raw.emailVerified === true || !!raw.emailVerifiedAt || raw.emailVerifiedAt === 1;
 
   let phoneVerified: boolean;
   if ((import.meta as any)?.env?.PHONE_VERIFY === "set") {
-    phoneVerified = raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
+    phoneVerified =
+      raw.phoneVerified === true || !!raw.phoneVerifiedAt || raw.phoneVerifiedAt === 1;
   } else {
     phoneVerified = true;
   }
@@ -101,13 +104,15 @@ function normalizeProfile(raw: any): MeResponse | null {
 
 function normRole(r: any): Role {
   const x = String(r || "").trim().toUpperCase();
-  return (x === "ADMIN" ||
-    x === "SUPER_ADMIN" ||
-    x === "SHOPPER" ||
-    x === "SUPPLIER" ||
-    x === "SUPPLIER_RIDER"
-    ? x
-    : "SHOPPER") as Role;
+  return (
+    x === "ADMIN" ||
+      x === "SUPER_ADMIN" ||
+      x === "SHOPPER" ||
+      x === "SUPPLIER" ||
+      x === "SUPPLIER_RIDER"
+      ? x
+      : "SHOPPER"
+  ) as Role;
 }
 
 export default function Login() {
@@ -121,6 +126,9 @@ export default function Login() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  // 👁️ show/hide password
+  const [showPassword, setShowPassword] = useState(false);
 
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -140,7 +148,6 @@ export default function Login() {
 
   // ✅ Compact mobile: collapse verification panel by default
   const [verifyPanelOpen, setVerifyPanelOpen] = useState(true);
-
   const nav = useNavigate();
   const loc = useLocation();
 
@@ -167,7 +174,7 @@ export default function Login() {
     let ssFrom: string | null = null;
     try {
       ssFrom = safeReturnTo(sessionStorage.getItem(RETURN_TO_KEY));
-    } catch {}
+    } catch { }
 
     return stateFrom || qpFrom || ssFrom || null;
   }, [loc.state, loc.search]);
@@ -182,7 +189,7 @@ export default function Login() {
     if (!returnToRef.current) return;
     try {
       sessionStorage.setItem(RETURN_TO_KEY, returnToRef.current);
-    } catch {}
+    } catch { }
   }, [computedReturnTo]); // (computedReturnTo triggers this once when it becomes available)
 
   // ✅ If already logged in (cookie session restored), bounce away
@@ -271,13 +278,18 @@ export default function Login() {
       // ✅ Cookie is already set by backend. We only store profile for UI.
       setUser(profile);
       setNeedsVerification(needsVer);
+      try {
+        mergeGuestCartIntoUserCart(String(profile.id));
+      } catch { }
+
+      queueMicrotask(() => window.dispatchEvent(new Event("cart:updated")));
 
       // (Optional/backward-compatible) Keep verify session token for OTP endpoints.
       try {
         localStorage.setItem("verifyEmail", profile.email);
         if (vt) localStorage.setItem("verifyToken", vt);
         else localStorage.removeItem("verifyToken");
-      } catch {}
+      } catch { }
 
       // ✅ If backend says verification is needed but still returned 200,
       // stay on login and show the verification panel instead of redirecting away.
@@ -306,7 +318,7 @@ export default function Login() {
       // ✅ clear stored returnTo AFTER we’ve decided target
       try {
         sessionStorage.removeItem(RETURN_TO_KEY);
-      } catch {}
+      } catch { }
 
       // also clear the ref so future manual /login doesn’t reuse old value
       returnToRef.current = null;
@@ -331,7 +343,7 @@ export default function Login() {
         try {
           if (p?.email) localStorage.setItem("verifyEmail", p.email);
           if (vt) localStorage.setItem("verifyToken", vt);
-        } catch {}
+        } catch { }
 
         setVerifyPanelOpen(true);
         setCooldown(1);
@@ -339,7 +351,9 @@ export default function Login() {
       }
 
       const msg =
-        e?.response?.data?.error || (status === 401 ? "Invalid email or password" : null) || "Login failed";
+        e?.response?.data?.error ||
+        (status === 401 ? "Invalid email or password" : null) ||
+        "Login failed";
 
       setErr(msg);
       clearAuth();
@@ -356,7 +370,11 @@ export default function Login() {
     setEmailMsg(null);
     setEmailBusy(true);
     try {
-      const r = await api.post("/api/auth/resend-verification", { email: blockedProfile.email }, AXIOS_COOKIE_CFG);
+      const r = await api.post(
+        "/api/auth/resend-verification",
+        { email: blockedProfile.email },
+        AXIOS_COOKIE_CFG
+      );
 
       setEmailMsg("Verification email sent. Please check your inbox (and spam).");
       const next = Number((r as any).data?.nextResendAfterSec ?? 60);
@@ -388,7 +406,11 @@ export default function Login() {
       const emailVerifiedAt = (r as any).data?.emailVerifiedAt;
 
       setBlockedProfile((p) => (p ? { ...p, emailVerified: !!emailVerifiedAt } : p));
-      setEmailMsg(emailVerifiedAt ? "Email verified ✅" : "Email not verified yet. Check your inbox.");
+      setEmailMsg(
+        emailVerifiedAt
+          ? "Email verified ✅"
+          : "Email not verified yet. Check your inbox."
+      );
     } catch (e: any) {
       setEmailMsg(e?.response?.data?.error || "Could not check email status.");
     } finally {
@@ -491,7 +513,9 @@ export default function Login() {
               <h1 className="mt-4 text-[22px] sm:text-2xl md:text-3xl font-semibold text-zinc-900 leading-tight">
                 Sign in
               </h1>
-              <p className="mt-1 text-sm text-zinc-600">Access your cart, orders and personalised dashboard.</p>
+              <p className="mt-1 text-sm text-zinc-600">
+                Access your cart, orders and personalised dashboard.
+              </p>
             </div>
 
             <form
@@ -523,8 +547,12 @@ export default function Login() {
                       aria-expanded={verifyPanelOpen}
                     >
                       <div>
-                        <div className="text-sm font-semibold text-slate-900">Supplier verification required</div>
-                        <div className="text-xs text-slate-700 truncate max-w-[260px]">{blockedProfile.email}</div>
+                        <div className="text-sm font-semibold text-slate-900">
+                          Supplier verification required
+                        </div>
+                        <div className="text-xs text-slate-700 truncate max-w-[260px]">
+                          {blockedProfile.email}
+                        </div>
                       </div>
                       <div className="text-xs font-semibold text-slate-800 rounded-full border border-amber-200 bg-white px-2 py-1">
                         {verifyPanelOpen ? "Hide" : "Show"}
@@ -536,7 +564,9 @@ export default function Login() {
                         {/* Email */}
                         {!blockedProfile.emailVerified && (
                           <div className="rounded-xl border border-amber-200 bg-white/80 p-3">
-                            <div className="text-sm font-semibold text-slate-900">Verify your email</div>
+                            <div className="text-sm font-semibold text-slate-900">
+                              Verify your email
+                            </div>
                             <div className="mt-1 text-xs text-slate-600">
                               Click the link we sent to your email. You can resend it below.
                             </div>
@@ -562,14 +592,18 @@ export default function Login() {
                                 {emailBusy ? "Checking…" : "I verified (check)"}
                               </button>
                             </div>
-                            {emailMsg && <div className="mt-2 text-xs text-slate-700">{emailMsg}</div>}
+                            {emailMsg && (
+                              <div className="mt-2 text-xs text-slate-700">{emailMsg}</div>
+                            )}
                           </div>
                         )}
 
                         {/* Phone OTP */}
                         {!blockedProfile.phoneVerified && (
                           <div className="rounded-xl border border-amber-200 bg-white/80 p-3">
-                            <div className="text-sm font-semibold text-slate-900">Verify your phone (WhatsApp OTP)</div>
+                            <div className="text-sm font-semibold text-slate-900">
+                              Verify your phone (WhatsApp OTP)
+                            </div>
                             <div className="mt-1 text-xs text-slate-600">
                               We’ll send a one-time code to your WhatsApp number on file.
                             </div>
@@ -607,12 +641,16 @@ export default function Login() {
                               </div>
                             </div>
 
-                            {otpMsg && <div className="mt-2 text-xs text-slate-700">{otpMsg}</div>}
+                            {otpMsg && (
+                              <div className="mt-2 text-xs text-slate-700">{otpMsg}</div>
+                            )}
                           </div>
                         )}
 
                         {!showSupplierVerify && (
-                          <div className="text-xs text-slate-700">You can continue once email and phone are verified.</div>
+                          <div className="text-xs text-slate-700">
+                            You can continue once email and phone are verified.
+                          </div>
                         )}
                       </div>
                     )}
@@ -631,15 +669,23 @@ export default function Login() {
                     inputMode="email"
                     className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-10 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">✉</span>
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">
+                    ✉
+                  </span>
                 </div>
               </div>
 
-              {/* Password */}
+              {/* Password with big pencil-drawn eye toggle */}
+              {/* Password with big swapped eye icons */}
               <div className="space-y-1">
                 <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                  <label className="block text-sm font-medium text-zinc-800 leading-tight">Password</label>
-                  <Link className="text-xs text-fuchsia-700 hover:underline leading-tight self-start sm:self-auto" to="/forgot-password">
+                  <label className="block text-sm font-medium text-zinc-800 leading-tight">
+                    Password
+                  </label>
+                  <Link
+                    className="text-xs text-fuchsia-700 hover:underline leading-tight self-start sm:self-auto"
+                    to="/forgot-password"
+                  >
                     Forgot password?
                   </Link>
                 </div>
@@ -647,13 +693,58 @@ export default function Login() {
                 <div className="relative">
                   <input
                     value={password}
-                    type="password"
+                    type={showPassword ? "text" : "password"}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
                     autoComplete="current-password"
-                    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-10 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
+                    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 pr-14 text-[16px] text-zinc-900 placeholder:text-zinc-400 outline-none focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-200 transition shadow-sm"
                   />
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">🔒</span>
+
+                  {/* Toggle button */}
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center w-9 h-9 rounded-full border border-zinc-300 bg-white/90 shadow-sm hover:bg-zinc-50 transition"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    aria-pressed={showPassword}
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="w-6 h-6"
+                      aria-hidden="true"
+                    >
+                      {/* eye outline */}
+                      <path
+                        d="M2.5 12s3.2-5.5 9.5-5.5S21.5 12 21.5 12s-3.2 5.5-9.5 5.5S2.5 12 2.5 12z"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+
+                      {/* iris */}
+                      <circle
+                        cx={12}
+                        cy={12}
+                        r={2.8}
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                      />
+
+                      {/* WHEN PASSWORD IS *VISIBLE*, show the slash */}
+                      {showPassword && (
+                        <path
+                          d="M4 4L20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={1.8}
+                          strokeLinecap="round"
+                        />
+                      )}
+                    </svg>
+                  </button>
                 </div>
               </div>
 
@@ -663,7 +754,13 @@ export default function Login() {
                 disabled={!hydrated || loading || cooldown > 0}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white px-4 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.995] focus:outline-none focus:ring-4 focus:ring-fuchsia-300/40 transition disabled:opacity-50"
               >
-                {!hydrated ? "Preparing…" : loading ? "Logging in…" : cooldown > 0 ? `Try again in ${cooldown}s` : "Login"}
+                {!hydrated
+                  ? "Preparing…"
+                  : loading
+                    ? "Logging in…"
+                    : cooldown > 0
+                      ? `Try again in ${cooldown}s`
+                      : "Login"}
               </button>
 
               {/* Footer links */}
