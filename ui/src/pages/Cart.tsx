@@ -184,9 +184,7 @@ function isCodeLike(raw: string | undefined | null): boolean {
   if (/^cmm[0-9a-z]{5,}$/i.test(s)) return true;
 
   // UUID-ish tokens
-  if (
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
-  ) {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) {
     return true;
   }
 
@@ -235,8 +233,7 @@ async function fetchServerCart(): Promise<CartItem[]> {
 
     return {
       id: String(it.id),
-      kind:
-        (it.kind as any) || (it.variantId ? "VARIANT" : "BASE"),
+      kind: (it.kind as any) || (it.variantId ? "VARIANT" : "BASE"),
       productId: String(it.productId),
       variantId: it.variantId == null ? null : String(it.variantId),
       title,
@@ -383,9 +380,11 @@ async function fetchAvailabilityForCart(
 
         for (const r of arr as Row[]) {
           const pid = String(r.productId);
-          const vid =
-            r.variantId == null ? null : String(r.variantId);
-          const avail = Math.max(0, Number(r.totalAvailable) || 0);
+          const vid = r.variantId == null ? null : String(r.variantId);
+          const avail = Math.max(
+            0,
+            Number(r.totalAvailable) || 0
+          );
           const k = availKeyFor(pid, vid);
 
           lines[k] = {
@@ -409,9 +408,10 @@ async function fetchAvailabilityForCart(
         for (const [pid, agg] of Object.entries(byProduct)) {
           const hasVariantSpecific =
             Object.keys(agg.perVariant).length > 0;
-          const variantSum = Object.values(
-            agg.perVariant
-          ).reduce((s, n) => s + n, 0);
+          const variantSum = Object.values(agg.perVariant).reduce(
+            (s, n) => s + n,
+            0
+          );
           const productTotal = agg.generic + variantSum;
 
           products[pid] = {
@@ -486,9 +486,7 @@ function normalizeQuoteResponse(
     );
 
     return {
-      supplierId: String(
-        a?.supplierId ?? a?.supplier_id ?? ""
-      ),
+      supplierId: String(a?.supplierId ?? a?.supplier_id ?? ""),
       supplierName: a?.supplierName ?? a?.supplier?.name ?? null,
       qty,
       unitPrice,
@@ -519,11 +517,12 @@ function normalizeQuoteResponse(
       )
     );
 
-    const allocsRaw = (Array.isArray(x?.allocations)
-      ? x.allocations
-      : x?.allocations
-      ? [x.allocations]
-      : []
+    const allocsRaw = (
+      Array.isArray(x?.allocations)
+        ? x.allocations
+        : x?.allocations
+        ? [x.allocations]
+        : []
     ).concat(
       Array.isArray(x?.splits)
         ? x.splits
@@ -534,16 +533,13 @@ function normalizeQuoteResponse(
 
     const allocations = allocsRaw
       .map(normalizeAlloc)
-      .filter(
-        (a: any) => a.qty > 0 && a.unitPrice >= 0
-      );
+      .filter((a: any) => a.qty > 0 && a.unitPrice >= 0);
 
     const lineTotal = asMoney(
       x?.lineTotal ??
         x?.total ??
         allocations.reduce(
-          (s: any, a: any) =>
-            s + asMoney(a.lineTotal, 0),
+          (s: any, a: any) => s + asMoney(a.lineTotal, 0),
           0
         ),
       0
@@ -562,16 +558,10 @@ function normalizeQuoteResponse(
     );
 
     const units = allocations
-      .map((a: any) =>
-        asMoney(a.unitPrice, NaN)
-      )
+      .map((a: any) => asMoney(a.unitPrice, NaN))
       .filter((n: any) => Number.isFinite(n));
-    const minUnit = units.length
-      ? Math.min(...(units as number[]))
-      : 0;
-    const maxUnit = units.length
-      ? Math.max(...(units as number[]))
-      : 0;
+    const minUnit = units.length ? Math.min(...(units as number[])) : 0;
+    const maxUnit = units.length ? Math.max(...(units as number[])) : 0;
     const averageUnit =
       qtyRequested > 0 ? lineTotal / qtyRequested : 0;
 
@@ -627,13 +617,8 @@ function normalizeQuoteResponse(
         productId: it.productId,
         variantId: it.variantId ?? null,
         kind:
-          it.kind === "VARIANT" || it.variantId
-            ? "VARIANT"
-            : "BASE",
-        qtyRequested: Math.max(
-          1,
-          asInt(it.qty, 1)
-        ),
+          it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE",
+        qtyRequested: Math.max(1, asInt(it.qty, 1)),
         qtyPriced: 0,
         allocations: [],
         lineTotal: 0,
@@ -657,9 +642,7 @@ async function fetchPricingQuoteForCart(
   const items = cart.map((it) => ({
     key: lineKeyFor(it),
     kind:
-      it.kind === "VARIANT" || it.variantId
-        ? "VARIANT"
-        : "BASE",
+      it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE",
     productId: it.productId,
     variantId: it.variantId ?? null,
     qty: Math.max(1, asInt(it.qty, 1)),
@@ -682,16 +665,8 @@ async function fetchPricingQuoteForCart(
       body: { items },
     },
     { method: "post", url: "/api/orders/quote", body: { items } },
-    {
-      method: "post",
-      url: "/api/catalog/pricing",
-      body: { items },
-    },
-    {
-      method: "post",
-      url: "/api/cart/pricing",
-      body: { items },
-    },
+    { method: "post", url: "/api/catalog/pricing", body: { items } },
+    { method: "post", url: "/api/cart/pricing", body: { items } },
     {
       method: "post",
       url: "/api/checkout/pricing",
@@ -764,41 +739,36 @@ export default function Cart() {
   const isAuthed = !!userId;
 
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [qtyDraft, setQtyDraft] = useState<
-    Record<string, string>
-  >({});
+  const [qtyDraft, setQtyDraft] = useState<Record<string, string>>(
+    {}
+  );
 
   // prevent loops when we ourselves write local mirror for authed
   const suppressNextCartEventRef = useRef(false);
 
-  const mirrorAuthedCartToLocal = useCallback(
-    (items: CartItem[]) => {
-      const lines = items.map((x) => ({
-        productId: String(x.productId),
-        variantId:
-          x.variantId == null ? null : String(x.variantId),
-        kind: (x.kind === "VARIANT" || x.variantId
-          ? "VARIANT"
-          : "BASE") as "BASE" | "VARIANT",
-        optionsKey: "",
-        qty: Math.max(0, Number(x.qty) || 0),
-        selectedOptions: Array.isArray(x.selectedOptions)
-          ? x.selectedOptions
-          : [],
-        titleSnapshot: x.title ?? null,
-        imageSnapshot: x.image ?? null,
-        unitPriceCache: Number.isFinite(
-          Number(x.unitPrice)
-        )
-          ? Number(x.unitPrice)
-          : 0,
-      }));
+  const mirrorAuthedCartToLocal = useCallback((items: CartItem[]) => {
+    const lines = items.map((x) => ({
+      productId: String(x.productId),
+      variantId:
+        x.variantId == null ? null : String(x.variantId),
+      kind: (x.kind === "VARIANT" || x.variantId
+        ? "VARIANT"
+        : "BASE") as "BASE" | "VARIANT",
+      optionsKey: "",
+      qty: Math.max(0, Number(x.qty) || 0),
+      selectedOptions: Array.isArray(x.selectedOptions)
+        ? x.selectedOptions
+        : [],
+      titleSnapshot: x.title ?? null,
+      imageSnapshot: x.image ?? null,
+      unitPriceCache: Number.isFinite(Number(x.unitPrice))
+        ? Number(x.unitPrice)
+        : 0,
+    }));
 
-      suppressNextCartEventRef.current = true;
-      writeCartLines(lines as any);
-    },
-    []
-  );
+    suppressNextCartEventRef.current = true;
+    writeCartLines(lines as any);
+  }, []);
 
   const loadCart = useCallback(async () => {
     if (isAuthed) {
@@ -885,9 +855,7 @@ export default function Cart() {
         const existing = prev[k];
 
         if (existing == null) {
-          next[k] = String(
-            Math.max(1, Number(it.qty) || 1)
-          );
+          next[k] = String(Math.max(1, Number(it.qty) || 1));
           changed = true;
           continue;
         }
@@ -898,9 +866,7 @@ export default function Cart() {
           Number.isFinite(dNum) &&
           Math.trunc(dNum) !== (Number(it.qty) || 1)
         ) {
-          next[k] = String(
-            Math.max(1, Number(it.qty) || 1)
-          );
+          next[k] = String(Math.max(1, Number(it.qty) || 1));
           changed = true;
         }
       }
@@ -921,6 +887,7 @@ export default function Cart() {
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
     queryFn: fetchPublicSettings,
+    notifyOnChangeProps: ["data"], // ✅ changes in isFetching won't trigger rerender
   });
 
   const marginPercent = useMemo(
@@ -943,20 +910,16 @@ export default function Cart() {
     refetchOnWindowFocus: false,
     staleTime: 15_000,
     queryFn: () => fetchAvailabilityForCart(cart),
+    notifyOnChangeProps: ["data"], // ✅ no re-render for isFetching
   });
 
+  // ✅ pricing key NO LONGER depends on quantity → qty changes do NOT refetch
   const pricingQ = useQuery({
     queryKey: [
       "catalog",
       "pricing-quote:v1",
       cart
-        .map(
-          (i) =>
-            `${lineKeyFor(i)}@${Math.max(
-              1,
-              asInt(i.qty, 1)
-            )}`
-        )
+        .map((i) => lineKeyFor(i))
         .sort()
         .join(","),
     ],
@@ -964,6 +927,7 @@ export default function Cart() {
     refetchOnWindowFocus: false,
     staleTime: 10_000,
     queryFn: () => fetchPricingQuoteForCart(cart),
+    notifyOnChangeProps: ["data"], // ✅ no re-render for isFetching alone
   });
 
   const visibleCart = useMemo(() => {
@@ -1001,9 +965,7 @@ export default function Cart() {
 
     let subtotalRetail = 0;
 
-    for (const [k, ln] of Object.entries(
-      q.lines || {}
-    )) {
+    for (const [k, ln] of Object.entries(q.lines || {})) {
       const allocs = (ln.allocations || []).filter(
         (a) => a.qty > 0
       );
@@ -1014,25 +976,17 @@ export default function Cart() {
           marginPercent
         );
         const retailLineTotal =
-          retailUnitPrice *
-          Math.max(0, asInt(a.qty, 0));
-        return {
-          ...a,
-          retailUnitPrice,
-          retailLineTotal,
-        };
+          retailUnitPrice * Math.max(0, asInt(a.qty, 0));
+        return { ...a, retailUnitPrice, retailLineTotal };
       });
 
       const retailLineTotal = allocationsRetail.reduce(
-        (s, a) =>
-          s + asMoney(a.retailLineTotal, 0),
+        (s, a) => s + asMoney(a.retailLineTotal, 0),
         0
       );
 
       const units = allocationsRetail
-        .map((a) =>
-          asMoney(a.retailUnitPrice, NaN)
-        )
+        .map((a) => asMoney(a.retailUnitPrice, NaN))
         .filter((n) => Number.isFinite(n));
       const retailMinUnit = units.length
         ? Math.min(...(units as number[]))
@@ -1076,17 +1030,13 @@ export default function Cart() {
           ? asMoney(it.totalPrice, 0) / qty
           : 0;
 
-      const lineTotal = round2(
-        Math.max(0, cachedUnit) * qty
-      );
+      const lineTotal = round2(Math.max(0, cachedUnit) * qty);
       return sum + lineTotal;
     }, 0);
   }, [visibleCart]);
 
   // ✅ availability cap now respects the quote first
-  const computedCapForLine = (item: CartItem):
-    | number
-    | undefined => {
+  const computedCapForLine = (item: CartItem): number | undefined => {
     // 0️⃣ Quote-level cap (per exact line)
     const key = lineKeyFor(item);
     const ql = quoteLines[key];
@@ -1095,17 +1045,9 @@ export default function Cart() {
       const priced = asInt(ql.qtyPriced, 0);
       const requested = asInt(ql.qtyRequested, 0);
 
-      // If nothing could be priced, this line is effectively OOS
-      if (!Number.isFinite(priced) || priced <= 0) {
-        return 0;
-      }
-
-      // If only part of the request could be priced, cap at priced qty
-      if (priced < requested) {
+      if (!Number.isFinite(priced) || priced <= 0) return 0;
+      if (priced < requested)
         return Math.max(0, Math.floor(priced));
-      }
-
-      // priced >= requested → OK; fall through to stock pools
     }
 
     // 1️⃣ Fallback to availability endpoint (product/variant level)
@@ -1123,15 +1065,11 @@ export default function Cart() {
     // 1a) Exact line availability wins
     if (
       exactLine &&
-      Number.isFinite(
-        Number(exactLine.totalAvailable)
-      )
+      Number.isFinite(Number(exactLine.totalAvailable))
     ) {
       return Math.max(
         0,
-        Math.floor(
-          Number(exactLine.totalAvailable) || 0
-        )
+        Math.floor(Number(exactLine.totalAvailable) || 0)
       );
     }
 
@@ -1139,51 +1077,34 @@ export default function Cart() {
     const pool = data.products?.[String(item.productId)];
     if (!pool) return undefined;
 
-    // Variant line → prefer variant-specific pool
     if (item.variantId) {
       const vCap = Number(
-        pool.perVariantTotals?.[
-          String(item.variantId)
-        ] ?? NaN
+        pool.perVariantTotals?.[String(item.variantId)] ??
+          NaN
       );
       if (Number.isFinite(vCap))
-        return Math.max(
-          0,
-          Math.floor(vCap)
-        );
+        return Math.max(0, Math.floor(vCap));
 
-      // if no explicit variant pool exists, fallback to generic pool
-      if (
-        Number.isFinite(
-          Number(pool.genericTotal)
-        )
-      ) {
+      if (Number.isFinite(Number(pool.genericTotal))) {
         return Math.max(
           0,
-          Math.floor(
-            Number(pool.genericTotal) || 0
-          )
+          Math.floor(Number(pool.genericTotal) || 0)
         );
       }
 
       return undefined;
     }
 
-    // Base line (non-variant)
     if (pool.hasVariantSpecific) {
       return Math.max(
         0,
-        Math.floor(
-          Number(pool.genericTotal) || 0
-        )
+        Math.floor(Number(pool.genericTotal) || 0)
       );
     }
 
     return Math.max(
       0,
-      Math.floor(
-        Number(pool.productTotal) || 0
-      )
+      Math.floor(Number(pool.productTotal) || 0)
     );
   };
 
@@ -1211,9 +1132,7 @@ export default function Cart() {
         .map((it) => ({
           productId: String(it.productId),
           variantId:
-            it.variantId == null
-              ? null
-              : String(it.variantId),
+            it.variantId == null ? null : String(it.variantId),
           kind: (it.kind === "VARIANT" || it.variantId
             ? "VARIANT"
             : "BASE") as "BASE" | "VARIANT",
@@ -1221,21 +1140,17 @@ export default function Cart() {
           qty: Math.max(
             0,
             Math.floor(Number(it.qty) || 0)
-          ), // ✅ allow 0 (removal)
-          selectedOptions: Array.isArray(
-            it.selectedOptions
-          )
+          ),
+          selectedOptions: Array.isArray(it.selectedOptions)
             ? it.selectedOptions
             : [],
           titleSnapshot: it.title ?? null,
           imageSnapshot: it.image ?? null,
-          unitPriceCache: Number.isFinite(
-            Number(it.unitPrice)
-          )
+          unitPriceCache: Number.isFinite(Number(it.unitPrice))
             ? Number(it.unitPrice)
             : 0,
         }))
-        .filter((x) => x.qty > 0); // ✅ remove zero qty lines
+        .filter((x) => x.qty > 0);
 
       writeCartLines(lines as any);
       window.dispatchEvent(new Event("cart:updated"));
@@ -1257,22 +1172,16 @@ export default function Cart() {
             Number(it.unitPrice) > 0
               ? Number(it.unitPrice)
               : (Number(it.totalPrice) || 0) /
-                Math.max(
-                  1,
-                  Number(it.qty) || 1
-                );
+                Math.max(1, Number(it.qty) || 1);
 
-          const safeUnit =
-            unit > 0 ? unit : 0;
+          const safeUnit = unit > 0 ? unit : 0;
 
           return {
             ...it,
             qty: clamped,
             totalPrice: safeUnit * clamped,
             unitPrice:
-              safeUnit > 0
-                ? safeUnit
-                : it.unitPrice,
+              safeUnit > 0 ? safeUnit : it.unitPrice,
           };
         });
 
@@ -1287,7 +1196,7 @@ export default function Cart() {
       if (isAuthed) {
         try {
           await serverSetQty(target, clamped);
-          await loadCart();
+          // ✅ no loadCart() on success → less shaking
         } catch {
           await loadCart().catch(() => {});
         }
@@ -1314,7 +1223,7 @@ export default function Cart() {
       if (isAuthed) {
         try {
           await serverSetQty(target, 0);
-          await loadCart();
+          // ✅ no loadCart() on success
         } catch {
           await loadCart().catch(() => {});
         }
@@ -1327,11 +1236,8 @@ export default function Cart() {
     const q = pricingQ.data as QuotePayload | null;
     if (!q) return null;
 
-    const unpriced = Object.values(
-      q.lines || {}
-    ).filter(
-      (l) =>
-        l.qtyPriced < l.qtyRequested
+    const unpriced = Object.values(q.lines || {}).filter(
+      (l) => l.qtyPriced < l.qtyRequested
     );
     if (!unpriced.length) return null;
 
@@ -1347,7 +1253,7 @@ export default function Cart() {
   if (visibleCart.length === 0) {
     return (
       <SiteLayout>
-        <div className="min-h-[88vh] bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden grid place-items-center px-4">
+        <div className="min-h[88vh] bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden grid place-items-center px-4">
           <div className="pointer-events-none -z-10 absolute -top-24 -left-24 size-80 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
           <div className="pointer-events-none -z-10 absolute -bottom-28 -right-24 size-96 rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
 
@@ -1360,12 +1266,12 @@ export default function Cart() {
               Let’s find something you’ll love
             </h1>
             <p className="mt-1 text-ink-soft">
-              Browse our catalogue and add items to your
-              cart. They’ll show up here for checkout.
+              Browse our catalogue and add items to your cart.
+              They’ll show up here for checkout.
             </p>
             <Link
               to="/"
-              className={`${tap} mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200 transition`}
+              className={`${tap} mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md focus:outline-none focus:ring-4 focus:ring-primary-200 transition`}
             >
               Go shopping
             </Link>
@@ -1375,18 +1281,11 @@ export default function Cart() {
     );
   }
 
-  const topBannerLoading =
-    pricingQ.isLoading || pricingQ.isFetching;
-  const topBannerStatus = topBannerLoading
-    ? "loading"
-    : pricingWarning
-    ? "warning"
-    : "ok";
-  const topBannerText = topBannerLoading
-    ? "Calculating best supplier prices…"
-    : pricingWarning
-    ? pricingWarning
-    : "Prices are based on live supplier offers and your retail margin.";
+  // ✅ Banner is now completely stable; only changes colour/text if there’s a real warning.
+  const topBannerStatus = pricingWarning ? "warning" : "ok";
+  const topBannerText =
+    pricingWarning ??
+    "Prices are based on live supplier offers and your retail margin.";
 
   return (
     <SiteLayout>
@@ -1407,19 +1306,15 @@ export default function Cart() {
 
             <p className="text-sm max-[360px]:text-[12px] text-ink-soft">
               Prices shown are{" "}
-              <span className="font-medium">
-                retail
-              </span>{" "}
-              (same basis as catalogue &amp; wishlist).
+              <span className="font-medium">retail</span> (same
+              basis as catalogue &amp; wishlist).
             </p>
 
-            {/* ✅ Always render banner with fixed height to avoid layout jumps */}
+            {/* ✅ Always rendered banner with fixed height and subtle state */}
             <div className="mt-3 inline-flex items-center gap-2 rounded-full border bg-white/70 px-3 py-1 text-[12px] max-[360px]:text-[11px] text-ink-soft min-h-[26px]">
               <span
                 className={`inline-block size-2 rounded-full ${
-                  topBannerStatus === "loading"
-                    ? "bg-amber-400 animate-pulse"
-                    : topBannerStatus === "warning"
+                  topBannerStatus === "warning"
                     ? "bg-rose-500"
                     : "bg-emerald-500"
                 }`}
@@ -1492,70 +1387,64 @@ export default function Cart() {
                     ? String(currentQty)
                     : draft;
 
-                const commitDraft = async () => {
+                const commitDraft = () => {
                   const raw = qtyDraft[k];
                   const parsed =
                     raw === "" || raw == null
                       ? 1
                       : Math.floor(Number(raw));
                   const desired =
-                    Number.isFinite(parsed) &&
-                    parsed > 0
+                    Number.isFinite(parsed) && parsed > 0
                       ? parsed
                       : 1;
-                  const clamped = await updateQty(
-                    it,
-                    desired
+                  updateQty(it, desired).then(
+                    (clamped) => {
+                      setQtyDraft((p) => ({
+                        ...p,
+                        [k]: String(clamped),
+                      }));
+                    }
                   );
-                  setQtyDraft((p) => ({
-                    ...p,
-                    [k]: String(clamped),
-                  }));
                 };
 
                 const effectiveQtyForButtons = () => {
                   const raw = qtyDraft[k];
                   if (raw == null || raw === "")
                     return currentQty;
-                  const n = Math.floor(
-                    Number(raw)
-                  );
-                  return Number.isFinite(n) &&
-                    n > 0
+                  const n = Math.floor(Number(raw));
+                  return Number.isFinite(n) && n > 0
                     ? n
                     : currentQty;
                 };
 
-                const inc = async () => {
+                const inc = () => {
                   const base =
                     effectiveQtyForButtons();
-                  const clamped =
-                    await updateQty(
-                      it,
-                      base + 1
-                    );
-                  setQtyDraft((p) => ({
-                    ...p,
-                    [k]: String(clamped),
-                  }));
+                  updateQty(it, base + 1).then(
+                    (clamped) => {
+                      setQtyDraft((p) => ({
+                        ...p,
+                        [k]: String(clamped),
+                      }));
+                    }
+                  );
                 };
 
-                const dec = async () => {
+                const dec = () => {
                   const base =
                     effectiveQtyForButtons();
                   const nextQty = Math.max(
                     1,
                     base - 1
                   );
-                  const clamped =
-                    await updateQty(
-                      it,
-                      nextQty
-                    );
-                  setQtyDraft((p) => ({
-                    ...p,
-                    [k]: String(clamped),
-                  }));
+                  updateQty(it, nextQty).then(
+                    (clamped) => {
+                      setQtyDraft((p) => ({
+                        ...p,
+                        [k]: String(clamped),
+                      }));
+                    }
+                  );
                 };
 
                 const unitText =
@@ -1576,9 +1465,7 @@ export default function Cart() {
                       !isCodeLike(o.attribute)
                         ? o.attribute
                         : o.attributeId &&
-                          !isCodeLike(
-                            o.attributeId
-                          )
+                          !isCodeLike(o.attributeId)
                         ? o.attributeId
                         : "";
 
@@ -1587,9 +1474,7 @@ export default function Cart() {
                       !isCodeLike(o.value)
                         ? o.value
                         : o.valueId &&
-                          !isCodeLike(
-                            o.valueId
-                          )
+                          !isCodeLike(o.valueId)
                         ? o.valueId
                         : "";
 
@@ -1601,11 +1486,7 @@ export default function Cart() {
                   .filter(Boolean)
                   .join(" • ");
 
-                // 🔁 Fallbacks if we only had internal IDs / codes
-                if (
-                  !optionLabel &&
-                  !isBaseLine(it)
-                ) {
+                if (!optionLabel && !isBaseLine(it)) {
                   optionLabel = "Variant selected";
                 } else if (
                   !optionLabel &&
@@ -1628,16 +1509,15 @@ export default function Cart() {
 
                         {resolveImageUrl(it.image) && (
                           <img
-                            src={resolveImageUrl(
-                              it.image
-                            )}
+                            src={resolveImageUrl(it.image)}
                             alt=""
                             aria-hidden="true"
                             className="relative w-full h-full object-cover"
-                            onError={(e) =>
-                              ((e.currentTarget as HTMLImageElement).style.display =
-                                "none")
-                            }
+                            onError={(e) => {
+                              (
+                                e.currentTarget as HTMLImageElement
+                              ).style.opacity = "0";
+                            }}
                           />
                         )}
                       </div>
@@ -1655,9 +1535,7 @@ export default function Cart() {
                             <button
                               type="button"
                               className={`${tap} shrink-0 whitespace-nowrap text-[12px] sm:text-sm text-rose-600 hover:underline rounded-lg px-2 py-1 hover:bg-rose-500/10 transition`}
-                              onClick={() =>
-                                remove(it)
-                              }
+                              onClick={() => remove(it)}
                               aria-label={`Remove ${it.title}`}
                               title="Remove item"
                             >
@@ -1697,12 +1575,10 @@ export default function Cart() {
                               <button
                                 className={`${tap} mt-2 text-[11px] text-primary-700 hover:underline`}
                                 onClick={() =>
-                                  setExpanded(
-                                    (p) => ({
-                                      ...p,
-                                      [k]: !p[k],
-                                    })
-                                  )
+                                  setExpanded((p) => ({
+                                    ...p,
+                                    [k]: !p[k],
+                                  }))
                                 }
                                 type="button"
                               >
@@ -1720,8 +1596,7 @@ export default function Cart() {
                             <div className="mt-3 rounded-xl border bg-white/70 p-3 text-xs">
                               <div className="flex items-center justify-between text-ink-soft">
                                 <span>
-                                  Supplier split
-                                  (retail)
+                                  Supplier split (retail)
                                 </span>
                                 <span className="font-medium text-ink">
                                   {ngn.format(
@@ -1735,60 +1610,45 @@ export default function Cart() {
 
                               <div className="mt-2 space-y-1">
                                 {rl.allocationsRetail
-                                  .filter(
-                                    (a) =>
-                                      a.qty > 0
-                                  )
-                                  .map(
-                                    (
-                                      a,
-                                      idx
-                                    ) => (
-                                      <div
-                                        key={`${a.supplierId}-${idx}`}
-                                        className="flex items-center justify-between gap-3"
-                                      >
-                                        <div className="min-w-0">
-                                          <div className="font-medium text-ink truncate">
-                                            {a.supplierName ||
-                                              "Supplier"}
-                                          </div>
-                                          <div className="text-ink-soft">
-                                            {a.qty} ×{" "}
-                                            {ngn.format(
-                                              asMoney(
-                                                a.retailUnitPrice,
-                                                0
-                                              )
-                                            )}
-                                          </div>
+                                  .filter((a) => a.qty > 0)
+                                  .map((a, idx) => (
+                                    <div
+                                      key={`${a.supplierId}-${idx}`}
+                                      className="flex items-center justify-between gap-3"
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="font-medium text-ink truncate">
+                                          {a.supplierName ||
+                                            "Supplier"}
                                         </div>
-                                        <div className="font-semibold text-ink whitespace-nowrap">
+                                        <div className="text-ink-soft">
+                                          {a.qty} ×{" "}
                                           {ngn.format(
                                             asMoney(
-                                              a.retailLineTotal,
+                                              a.retailUnitPrice,
                                               0
                                             )
                                           )}
                                         </div>
                                       </div>
-                                    )
-                                  )}
+                                      <div className="font-semibold text-ink whitespace-nowrap">
+                                        {ngn.format(
+                                          asMoney(
+                                            a.retailLineTotal,
+                                            0
+                                          )
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
                               </div>
 
                               {ql &&
                                 ql.qtyPriced <
                                   ql.qtyRequested && (
                                   <div className="mt-2 text-[11px] text-rose-700">
-                                    Only{" "}
-                                    {
-                                      ql.qtyPriced
-                                    }{" "}
-                                    out of{" "}
-                                    {
-                                      ql.qtyRequested
-                                    }{" "}
-                                    could be
+                                    Only {ql.qtyPriced} out of{" "}
+                                    {ql.qtyRequested} could be
                                     allocated.
                                   </div>
                                 )}
@@ -1801,7 +1661,7 @@ export default function Cart() {
                               <button
                                 type="button"
                                 aria-label="Decrease quantity"
-                                className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 active:scale-[0.98] transition`}
+                                className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 transition`}
                                 onMouseDown={(e) =>
                                   e.preventDefault()
                                 }
@@ -1816,55 +1676,33 @@ export default function Cart() {
                                 pattern="[0-9]*"
                                 value={inputValue}
                                 onChange={(e) => {
-                                  const v =
-                                    e.target
-                                      .value;
-                                  if (
-                                    v === ""
-                                  ) {
-                                    setQtyDraft(
-                                      (
-                                        p
-                                      ) => ({
-                                        ...p,
-                                        [k]: "",
-                                      })
-                                    );
+                                  const v = e.target.value;
+                                  if (v === "") {
+                                    setQtyDraft((p) => ({
+                                      ...p,
+                                      [k]: "",
+                                    }));
                                     return;
                                   }
-                                  if (
-                                    !/^\d+$/.test(
-                                      v
-                                    )
-                                  )
-                                    return;
-                                  setQtyDraft(
-                                    (
-                                      p
-                                    ) => ({
-                                      ...p,
-                                      [k]: v,
-                                    })
-                                  );
+                                  if (!/^\d+$/.test(v)) return;
+                                  setQtyDraft((p) => ({
+                                    ...p,
+                                    [k]: v,
+                                  }));
                                 }}
-                                onBlur={() =>
-                                  commitDraft()
-                                }
+                                onBlur={commitDraft}
                                 onKeyDown={(e) => {
-                                  if (
-                                    e.key ===
-                                    "Enter"
-                                  )
+                                  if (e.key === "Enter")
                                     (e.currentTarget as HTMLInputElement).blur();
                                 }}
-                                className="w-14 sm:w-16 max-[360px]:w-12 text-center outline-none px-2 py-2 max-[360px]:py-1.5 bg-white"
+                                className="w-[52px] text-center outline-none px-2 py-2 max-[360px]:py-1.5 bg-white"
                                 aria-label="Quantity"
                               />
 
                               <button
                                 type="button"
                                 aria-label="Increase quantity"
-                                className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 active:scale-[0.98] transition`}
+                                className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 transition`}
                                 onMouseDown={(e) =>
                                   e.preventDefault()
                                 }
@@ -1876,21 +1714,22 @@ export default function Cart() {
 
                             <div className="text-xs max-[360px]:text-[11px] text-ink-soft leading-tight">
                               <div>Qty</div>
-                              {typeof maxQty ===
-                                "number" &&
-                                Number.isFinite(
-                                  maxQty
-                                ) && (
-                                  <div className="text-[10px]">
-                                    Max:{" "}
-                                    <span className="font-medium text-ink">
-                                      {Math.max(
-                                        0,
-                                        maxQty
-                                      )}
+                              <div className="h-[16px] text-[10px]">
+                                {typeof maxQty === "number" &&
+                                  Number.isFinite(
+                                    maxQty
+                                  ) && (
+                                    <span>
+                                      Max:{" "}
+                                      <span className="font-medium text-ink">
+                                        {Math.max(
+                                          0,
+                                          maxQty
+                                        )}
+                                      </span>
                                     </span>
-                                  </div>
-                                )}
+                                  )}
+                              </div>
                             </div>
                           </div>
 
@@ -1899,9 +1738,7 @@ export default function Cart() {
                               Line total
                             </div>
                             <div className="text-[18px] sm:text-lg font-semibold tracking-tight break-words">
-                              {ngn.format(
-                                displayLineTotal
-                              )}
+                              {ngn.format(displayLineTotal)}
                             </div>
                           </div>
                         </div>
@@ -1913,7 +1750,7 @@ export default function Cart() {
             </section>
 
             {/* RIGHT: Summary */}
-            <aside className="lg:sticky lg:top-6 h-max relative z-10">
+            <aside className="lg:sticky lg:top-6 cart-summary-stable">
               <div className="rounded-2xl border border-white/60 bg-white/70 backdrop-blur p-4 sm:p-5 max-[360px]:p-3 shadow-[0_6px_30px_rgba(0,0,0,0.06)] overflow-hidden">
                 <h2 className="text-lg max-[360px]:text-base font-semibold text-ink">
                   Order summary
@@ -1958,7 +1795,12 @@ export default function Cart() {
                     <span className="font-semibold text-ink">
                       Total
                     </span>
-                    <span className="text-[26px] sm:text-2xl max-[360px]:text-[22px] font-extrabold tracking-tight text-ink break-words">
+                    <span
+                      style={{
+                        opacity: pricingQ.isFetching ? 0.5 : 1,
+                      }}
+                      className="text-[26px] sm:text-2xl max-[360px]:text-[22px] font-extrabold tracking-tight text-ink break-words"
+                    >
                       {ngn.format(total)}
                     </span>
                   </div>
@@ -1978,7 +1820,7 @@ export default function Cart() {
                     className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition
                       ${
                         !pricingWarning
-                          ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
+                          ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md focus:outline-none focus:ring-4 focus:ring-primary-200"
                           : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
                       }`}
                     aria-disabled={!!pricingWarning}
@@ -1999,15 +1841,15 @@ export default function Cart() {
                   </Link>
 
                   <p className="mt-3 text-[11px] text-ink-soft">
-                    Totals above use the same retail basis
-                    as the catalogue.
+                    Totals above use the same retail basis as the
+                    catalogue.
                   </p>
                 </div>
               </div>
 
               <p className="mt-3 text-[11px] text-ink-soft text-center">
-                Taxes &amp; shipping are shown at
-                checkout. You can update addresses there.
+                Taxes &amp; shipping are shown at checkout. You
+                can update addresses there.
               </p>
             </aside>
           </div>

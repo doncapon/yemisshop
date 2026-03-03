@@ -339,3 +339,11 @@ body {
   min-height: 100vh;
 }
 
+.cart-summary-stable {
+  min-height: 180px; /* whatever fits your summary */
+  position: relative;
+}
+
+.cart-summary-stable > * {
+  transition: opacity 0.25s ease;
+}
