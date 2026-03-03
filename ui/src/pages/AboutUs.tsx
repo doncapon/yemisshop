@@ -3,6 +3,8 @@ import React from "react";
 import { motion } from "framer-motion";
 import { ShoppingBag, ShieldCheck, Truck, Store, Sparkles, Users } from "lucide-react";
 import SiteLayout from "../layouts/SiteLayout";
+import { useAuthStore } from "../store/auth";
+
 // import DaySpringLogo from "../components/brand/DayspringLogo"; // optional
 
 const fadeUp = {
@@ -11,6 +13,9 @@ const fadeUp = {
 };
 
 export default function About() {
+  // 👇 derived auth state: true when logged in
+  const hasUser = useAuthStore((s) => !!s.user);
+
   return (
     <SiteLayout>
       <div className="min-h-[80vh] bg-surface">
@@ -293,12 +298,15 @@ export default function About() {
                 >
                   Start shopping
                 </a>
-                <a
-                  href="/register-supplier"
-                  className="inline-flex items-center justify-center rounded-xl border border-primary-200 bg-white px-4 py-2 text-xs sm:text-sm font-medium text-primary-700 hover:bg-primary-50"
-                >
-                  Become a supplier
-                </a>
+                {/* Only for unauthenticated users */}
+                {!hasUser && (
+                  <a
+                    href="/register-supplier"
+                    className="inline-flex items-center justify-center rounded-xl border border-primary-200 bg-white px-4 py-2 text-xs sm:text-sm font-medium text-primary-700 hover:bg-primary-50"
+                  >
+                    Become a supplier
+                  </a>
+                )}
               </div>
             </motion.div>
           </section>

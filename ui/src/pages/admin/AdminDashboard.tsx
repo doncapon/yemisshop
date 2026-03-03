@@ -1744,6 +1744,13 @@ export default function AdminDashboard() {
                   desc="Configure careers site behaviour"
                 />
               </div>
+
+              <QuickAction
+                toAction={() => nav("/admin/employees")}
+                icon={UserCheck}
+                label="Employees"
+                desc="HR view of staff, payroll readiness & docs"
+              />
             </SectionCard>
           )}
 

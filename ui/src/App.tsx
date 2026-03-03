@@ -62,6 +62,7 @@ import AdminCareersJobs from "./pages/admin/AdminCareersJobs";
 import CareersIndex from "./pages/CareersIndex";
 import CareerJobDetail from "./pages/CareerJobDetail";
 import AdminEmployeeDetails from "./pages/admin/AdminEmployeeDetails";
+import ReturnsRefunds from "./pages/ReturnsRefunds";
 
 /* -----------------------------
    Role normalization + aliases
@@ -252,6 +253,16 @@ export default function App() {
                 element={
                   <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
                     <Orders />
+                  </ProtectedRoute>
+                }
+              />
+
+
+              <Route
+                path="/returns-refunds"
+                element={
+                  <ProtectedRoute roles={["SHOPPER", "ADMIN", "SUPER_ADMIN", "SUPERADMIN", "SUPER ADMIN"]}>
+                    <ReturnsRefunds />
                   </ProtectedRoute>
                 }
               />
@@ -448,7 +459,7 @@ export default function App() {
               <Route path="/careers/apply" element={<Careers />} />
 
 
-                            <Route
+              <Route
                 path="/admin/employees/:employeeId/documents"
                 element={<AdminEmployeeDocuments />}
               />

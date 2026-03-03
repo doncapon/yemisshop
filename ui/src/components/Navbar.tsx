@@ -26,6 +26,7 @@ import {
   LogOut,
   Settings,
   ClipboardList,
+  RotateCcw, // ✅ new icon for Returns
 } from "lucide-react";
 import { performLogout } from "../utils/logout";
 
@@ -159,8 +160,8 @@ function MobileMenuButton({
     variant === "primary"
       ? "bg-zinc-900 text-white border-zinc-900 hover:opacity-95"
       : variant === "danger"
-        ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
-        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50";
+      ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
+      : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50";
 
   const iconColor = variant === "primary" ? "text-white" : "text-zinc-700";
 
@@ -352,6 +353,9 @@ export default function Navbar() {
   // ✅ OK to return AFTER hooks
   if (forced) return null;
 
+  // helper for returns route (customer vs admin)
+  const returnsHref = "/returns-refunds";
+
   return (
     <>
       <header className="fixed top-0 left-0 right-0 z-50 w-full border-b border-zinc-200 bg-white">
@@ -417,6 +421,12 @@ export default function Navbar() {
                         onPrefetch={prefetchWishlist}
                       />
                       <IconNavLink to="/orders" end icon={<Package size={18} />} label="Orders" />
+                      {/* ✅ Returns & refunds (customers + admins) */}
+                      <IconNavLink
+                        to={returnsHref}
+                        icon={<RotateCcw size={18} />}
+                        label="Returns"
+                      />
                     </>
                   )}
 
@@ -585,6 +595,22 @@ export default function Navbar() {
                               </button>
                             )}
 
+                            {/* ✅ Returns & refunds in user menu */}
+                            {!isSupplier && (
+                              <button
+                                type="button"
+                                className="w-full text-left px-3 py-2 hover:bg-zinc-50 transition inline-flex items-center gap-2"
+                                onClick={() => {
+                                  setMenuOpen(false);
+                                  nav(returnsHref);
+                                }}
+                                role="menuitem"
+                              >
+                                <RotateCcw size={16} />
+                                Returns &amp; refunds
+                              </button>
+                            )}
+
                             {roleNorm === "SUPER_ADMIN" && (
                               <button
                                 type="button"
@@ -723,6 +749,18 @@ export default function Navbar() {
                         />
                       )}
 
+                      {/* ✅ Returns & refunds on mobile */}
+                      {showBuyerNav && (
+                        <MobileMenuButton
+                          icon={<RotateCcw size={18} />}
+                          label="Returns & refunds"
+                          onClick={() => {
+                            setMobileMoreOpen(false);
+                            nav(returnsHref);
+                          }}
+                        />
+                      )}
+
                       {showSupplierNav && (
                         <MobileMenuButton
                           icon={<Store size={18} />}
@@ -827,7 +865,12 @@ export default function Navbar() {
                               nav("/account/sessions");
                             }}
                           />
-                          <MobileMenuButton icon={<LogOut size={18} />} label="Logout" variant="danger" onClick={logout} />
+                          <MobileMenuButton
+                            icon={<LogOut size={18} />}
+                            label="Logout"
+                            variant="danger"
+                            onClick={logout}
+                          />
                         </>
                       )}
                     </>

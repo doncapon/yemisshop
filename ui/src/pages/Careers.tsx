@@ -1,5 +1,5 @@
 // src/pages/Careers.tsx
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Briefcase,
@@ -11,6 +11,7 @@ import {
   Clock,
   ShieldCheck,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import SiteLayout from "../layouts/SiteLayout";
 import api from "../api/client";
 
@@ -18,6 +19,48 @@ const fadeUp = {
   hidden: { opacity: 0, y: 12 },
   visible: { opacity: 1, y: 0 },
 };
+
+/* ----------------------------- API types ----------------------------- */
+
+type CareersEmploymentType =
+  | "FULL_TIME"
+  | "PART_TIME"
+  | "CONTRACT"
+  | "TEMPORARY"
+  | "INTERN";
+
+type CareersLocationType = "ONSITE" | "HYBRID" | "REMOTE";
+
+type CareersJobRole = {
+  id: string;
+  slug: string;
+  title: string;
+  department?: string | null;
+  location?: string | null;
+  employmentType?: CareersEmploymentType | null;
+  locationType?: CareersLocationType | null;
+  minSalary?: number | null;
+  maxSalary?: number | null;
+  currency?: string | null;
+  isPublished: boolean;
+  isDeleted: boolean;
+  sortOrder: number;
+  applicationEmail?: string | null;
+  applicationUrl?: string | null;
+  introHtml?: string | null;
+  responsibilitiesJson?: any | null;
+  requirementsJson?: any | null;
+  benefitsJson?: any | null;
+  closingDate?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type PublicJobsListResponse = {
+  items: CareersJobRole[];
+};
+
+/* ----------------------------- UI-mapped type ----------------------------- */
 
 type Role = {
   id: string;
@@ -32,101 +75,138 @@ type Role = {
   bullets: string[];
 };
 
-const roles: Role[] = [
-  {
-    id: "admin-platform",
-    title: "Platform Administrator",
-    team: "Operations",
-    type: "Full-time",
-    location: "Remote / Lagos, Nigeria",
-    isNew: true,
-    isHot: true,
-    highlight: true,
-    summary:
-      "Help keep the DaySpring platform running smoothly — managing users, permissions, content, and escalations.",
-    bullets: [
-      "Manage user and supplier accounts, roles, and access controls.",
-      "Monitor platform health, flags, and admin dashboards.",
-      "Work closely with support and engineering to resolve issues quickly.",
-    ],
-  },
-  {
-    id: "admin-customer",
-    title: "Customer Experience Administrator",
-    team: "Customer Support",
-    type: "Full-time",
-    location: "Remote / Hybrid",
-    isNew: true,
-    highlight: true,
-    summary:
-      "Sit at the heart of our customer operations — coordinating tickets, escalations, and feedback loops.",
-    bullets: [
-      "Oversee order, refund, and dispute workflows in admin tools.",
-      "Support frontline agents with decisions and approvals.",
-      "Turn customer feedback into structured insights for the team.",
-    ],
-  },
-  {
-    id: "admin-supplier",
-    title: "Supplier Operations Administrator",
-    team: "Supplier & Marketplace",
-    type: "Full-time",
-    location: "Remote / Lagos, Nigeria",
-    summary:
-      "Support our suppliers behind the scenes — approvals, catalog checks, compliance, and quality.",
-    bullets: [
-      "Review and approve supplier registrations and product listings.",
-      "Monitor pricing, stock, and quality signals across the marketplace.",
-      "Partner with suppliers to keep catalog and offers clean and compliant.",
-    ],
-  },
-  {
-    id: "engineer-fullstack",
-    title: "Full-Stack Engineer (React / Node)",
-    team: "Engineering",
-    type: "Full-time",
-    location: "Remote-friendly",
-    summary:
-      "Build and improve core DaySpring experiences across shopper, supplier, and admin tools.",
-    bullets: [
-      "Work across our React + Node/Express + Prisma stack.",
-      "Ship features that balance reliability, performance, and UX.",
-      "Collaborate with design, QA, and operations on daily iterations.",
-    ],
-  },
-  {
-    id: "support-specialist",
-    title: "Customer Support Specialist",
-    team: "Customer Support",
-    type: "Full-time",
-    location: "Remote / Call-centre",
-    summary:
-      "Be the first friendly voice customers hear when they need help with orders, delivery, or payments.",
-    bullets: [
-      "Handle inbound queries via email, chat, and phone.",
-      "Troubleshoot orders, deliveries, and refunds with empathy.",
-      "Document recurring issues and help improve internal playbooks.",
-    ],
-  },
-  {
-    id: "rider-ops",
-    title: "Rider Operations Coordinator",
-    team: "Logistics",
-    type: "Full-time",
-    location: "On-site / Hybrid",
-    summary:
-      "Coordinate supplier riders, delivery routes, and OTP handovers to keep orders moving smoothly.",
-    bullets: [
-      "Work with suppliers and riders to schedule and track deliveries.",
-      "Monitor OTP delivery flows and resolve exceptions.",
-      "Support performance tracking for riders and routes.",
-    ],
-  },
-];
+function employmentTypeLabel(et?: CareersEmploymentType | null): string {
+  switch (et) {
+    case "FULL_TIME":
+      return "Full-time";
+    case "PART_TIME":
+      return "Part-time";
+    case "CONTRACT":
+      return "Contract";
+    case "TEMPORARY":
+      return "Temporary";
+    case "INTERN":
+      return "Intern";
+    default:
+      return "Role";
+  }
+}
+
+function locationLabel(
+  location?: string | null,
+  locationType?: CareersLocationType | null
+): string {
+  const loc = location || "Location flexible";
+  if (!locationType) return loc;
+  const lt =
+    locationType === "ONSITE"
+      ? "On-site"
+      : locationType === "HYBRID"
+      ? "Hybrid"
+      : "Remote";
+  return `${loc} • ${lt}`;
+}
+
+function stripHtml(html?: string | null): string {
+  if (!html) return "";
+  return html.replace(/<[^>]+>/g, "");
+}
+
+function normaliseBullets(v: any): string[] {
+  if (!v) return [];
+  if (Array.isArray(v)) {
+    return v
+      .map((x) => (typeof x === "string" ? x.trim() : ""))
+      .filter(Boolean);
+  }
+  if (typeof v === "string") {
+    return [v.trim()].filter(Boolean);
+  }
+  return [];
+}
+
+function mapJobToRole(job: CareersJobRole): Role {
+  const team = job.department || "Operations";
+  const type = employmentTypeLabel(job.employmentType);
+  const location = locationLabel(job.location, job.locationType);
+
+  const summarySource =
+    stripHtml(job.introHtml) || stripHtml(job.requirementsJson as any);
+  const summary =
+    summarySource.length > 260
+      ? summarySource.slice(0, 257) + "..."
+      : summarySource || "Help us build the DaySpring platform.";
+
+  const bullets =
+    normaliseBullets(job.responsibilitiesJson) ||
+    normaliseBullets(job.requirementsJson);
+
+  const created = new Date(job.createdAt).getTime();
+  const now = Date.now();
+  const daysSinceCreated = (now - created) / (1000 * 60 * 60 * 24);
+
+  const isNew = daysSinceCreated <= 30;
+  const isHot =
+    typeof job.sortOrder === "number" ? job.sortOrder <= 2 : false;
+
+  const isAdminish = /admin|administrator|ops|operations/i.test(
+    `${job.title} ${team}`
+  );
+
+  return {
+    id: job.id,
+    title: job.title,
+    team,
+    type,
+    location,
+    isNew,
+    isHot,
+    highlight: isAdminish,
+    summary,
+    bullets: bullets.slice(0, 6),
+  };
+}
 
 export default function Careers() {
-  const adminRoles = roles.filter((r) => r.title.toLowerCase().includes("admin"));
-  const otherRoles = roles.filter((r) => !r.title.toLowerCase().includes("admin"));
+  // Fetch roles from the public careers API
+  const {
+    data,
+    isLoading: isJobsLoading,
+    isError: isJobsError,
+  } = useQuery<PublicJobsListResponse>({
+    queryKey: ["careers-jobs-public"],
+    queryFn: async () => {
+      const res = await api.get<PublicJobsListResponse>("/api/careers/jobs");
+      return res.data;
+    },
+  });
+
+  const jobs = data?.items ?? [];
+
+  const roles: Role[] = useMemo(
+    () => jobs.map((job) => mapJobToRole(job)),
+    [jobs]
+  );
+
+  const adminRoles = useMemo(
+    () =>
+      roles.filter((r) =>
+        /admin|administrator|ops|operations/i.test(
+          `${r.title} ${r.team}`
+        )
+      ),
+    [roles]
+  );
+  const otherRoles = useMemo(
+    () =>
+      roles.filter(
+        (r) =>
+          !/admin|administrator|ops|operations/i.test(
+            `${r.title} ${r.team}`
+          )
+      ),
+    [roles]
+  );
 
   // Application form state
   const [selectedRoleId, setSelectedRoleId] = useState<string | "">("");
@@ -181,7 +261,9 @@ export default function Careers() {
       setCvFile(null);
       setMessage("");
     } catch (err: any) {
-      const apiErr = err?.response?.data?.error || "Something went wrong. Please try again.";
+      const apiErr =
+        err?.response?.data?.error ||
+        "Something went wrong. Please try again.";
       setErrorMsg(apiErr);
       setStatusMsg(null);
     } finally {
@@ -208,10 +290,11 @@ export default function Careers() {
                 Help us build a brighter way to shop and sell.
               </h1>
               <p className="mt-2 max-w-2xl text-xs sm:text-sm md:text-base text-white/85">
-                DaySpring is growing, and we’re looking for people who care about reliability,
-                customer experience, and thoughtful products. Right now, we’re especially keen to
-                meet <span className="font-semibold">administrators</span> who can help run the
-                platform behind the scenes.
+                DaySpring is growing, and we’re looking for people who care
+                about reliability, customer experience, and thoughtful products.
+                Right now, we’re especially keen to meet{" "}
+                <span className="font-semibold">administrators</span> who can
+                help run the platform behind the scenes.
               </p>
             </motion.div>
           </div>
@@ -233,16 +316,18 @@ export default function Careers() {
                 Why work at DaySpring?
               </h2>
               <p className="text-[11px] sm:text-sm md:text-base text-ink-soft">
-                DaySpring is more than an online store — it’s a marketplace and an operations
-                engine. You’ll be working with a small, focused team that values{" "}
+                DaySpring is more than an online store — it’s a marketplace and
+                an operations engine. You’ll be working with a small, focused
+                team that values{" "}
                 <span className="font-medium text-ink">
                   ownership, clear thinking, and steady execution
                 </span>
                 .
               </p>
               <p className="text-[11px] sm:text-sm md:text-base text-ink-soft">
-                We care about meaningful work, not performative busyness. If you like solving
-                real-world problems for shoppers, suppliers, and riders, you’ll feel at home here.
+                We care about meaningful work, not performative busyness. If you
+                like solving real-world problems for shoppers, suppliers, and
+                riders, you’ll feel at home here.
               </p>
 
               <div className="grid gap-3 sm:grid-cols-3">
@@ -254,7 +339,8 @@ export default function Careers() {
                     Real responsibility
                   </h3>
                   <p className="mt-1 text-[11px] sm:text-xs text-ink-soft">
-                    You’ll own meaningful parts of the platform and systems, not just tasks.
+                    You’ll own meaningful parts of the platform and systems, not
+                    just tasks.
                   </p>
                 </div>
                 <div className="rounded-2xl border bg-white p-3 sm:p-4 shadow-sm">
@@ -265,7 +351,8 @@ export default function Careers() {
                     Close-knit team
                   </h3>
                   <p className="mt-1 text-[11px] sm:text-xs text-ink-soft">
-                    Work directly with engineering, support, and operations — short feedback loops.
+                    Work directly with engineering, support, and operations —
+                    short feedback loops.
                   </p>
                 </div>
                 <div className="rounded-2xl border bg-white p-3 sm:p-4 shadow-sm">
@@ -276,7 +363,8 @@ export default function Careers() {
                     Real-world impact
                   </h3>
                   <p className="mt-1 text-[11px] sm:text-xs text-ink-soft">
-                    Your decisions affect how people buy, sell, and receive goods every day.
+                    Your decisions affect how people buy, sell, and receive
+                    goods every day.
                   </p>
                 </div>
               </div>
@@ -290,13 +378,21 @@ export default function Careers() {
               variants={fadeUp}
               className="rounded-2xl border bg-white p-3 sm:p-4 md:p-5 shadow-sm space-y-3"
             >
-              <div className="inline-flex items-center gap-2 rounded-full bg-primary-50 px-3 py-1 text-[10px] sm:text-[11px] font-medium text-primary-800">
-                <Briefcase size={14} />
-                We’re hiring administrators
-              </div>
+              {adminRoles.length > 0 ? (
+                <div className="inline-flex items-center gap-2 rounded-full bg-primary-50 px-3 py-1 text-[10px] sm:text-[11px] font-medium text-primary-800">
+                  <Briefcase size={14} />
+                  We’re hiring administrators
+                </div>
+              ) : (
+                <div className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-3 py-1 text-[10px] sm:text-[11px] font-medium text-slate-700">
+                  <Briefcase size={14} />
+                  We review applications on a rolling basis
+                </div>
+              )}
               <p className="text-[11px] sm:text-sm text-ink-soft">
-                Administrators play a key role at DaySpring. You’ll keep our tools, workflows, and
-                data clean — so the rest of the team can move faster with confidence.
+                Administrators play a key role at DaySpring. You’ll keep our
+                tools, workflows, and data clean — so the rest of the team can
+                move faster with confidence.
               </p>
               <ul className="space-y-1.5 text-[11px] sm:text-xs text-ink-soft">
                 <li>• Comfortable working across multiple dashboards and systems.</li>
@@ -304,8 +400,8 @@ export default function Careers() {
                 <li>• Calm under pressure and able to manage competing priorities.</li>
               </ul>
               <p className="text-[11px] sm:text-xs text-ink-soft mt-2">
-                If you have experience as an admin, ops coordinator, or support lead — we’d love to
-                hear from you.
+                If you have experience as an admin, ops coordinator, or support
+                lead — we’d love to hear from you.
               </p>
             </motion.div>
           </section>
@@ -325,8 +421,9 @@ export default function Careers() {
                   Open roles
                 </h2>
                 <p className="text-[11px] sm:text-sm text-ink-soft">
-                  We’re currently prioritising administrator roles, but we’re always happy to meet
-                  strong candidates across operations, support, and engineering.
+                  We’re currently prioritising administrator roles, but we’re
+                  always happy to meet strong candidates across operations,
+                  support, and engineering.
                 </p>
               </div>
               <a
@@ -338,8 +435,29 @@ export default function Careers() {
               </a>
             </motion.div>
 
+            {isJobsLoading && (
+              <p className="text-[11px] sm:text-xs text-ink-soft">
+                Loading roles…
+              </p>
+            )}
+
+            {isJobsError && (
+              <p className="text-[11px] sm:text-xs text-rose-700">
+                Could not load roles right now. You can still send a general
+                application via email.
+              </p>
+            )}
+
+            {!isJobsLoading && !isJobsError && roles.length === 0 && (
+              <p className="text-[11px] sm:text-xs text-ink-soft">
+                We don’t have any open roles listed right now, but we’re always
+                happy to hear from strong candidates. Send us a general
+                application.
+              </p>
+            )}
+
             {/* Admin roles */}
-            {adminRoles.length > 0 && (
+            {!isJobsLoading && adminRoles.length > 0 && (
               <div className="space-y-2">
                 <h3 className="text-xs sm:text-sm font-semibold text-ink flex items-center gap-2">
                   <Settings size={14} className="text-primary-600" />
@@ -383,13 +501,17 @@ export default function Careers() {
                         </div>
                       </div>
 
-                      <p className="mt-2 text-[11px] sm:text-xs text-ink-soft">{role.summary}</p>
+                      <p className="mt-2 text-[11px] sm:text-xs text-ink-soft">
+                        {role.summary}
+                      </p>
 
-                      <ul className="mt-2 space-y-1.5 text-[11px] sm:text-xs text-ink-soft">
-                        {role.bullets.map((b, idx) => (
-                          <li key={idx}>• {b}</li>
-                        ))}
-                      </ul>
+                      {role.bullets.length > 0 && (
+                        <ul className="mt-2 space-y-1.5 text-[11px] sm:text-xs text-ink-soft">
+                          {role.bullets.map((b, idx) => (
+                            <li key={idx}>• {b}</li>
+                          ))}
+                        </ul>
+                      )}
 
                       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-[10px] sm:text-[11px] text-ink-soft">
@@ -414,7 +536,7 @@ export default function Careers() {
             )}
 
             {/* Other roles */}
-            {otherRoles.length > 0 && (
+            {!isJobsLoading && otherRoles.length > 0 && (
               <div className="space-y-2">
                 <h3 className="text-xs sm:text-sm font-semibold text-ink flex items-center gap-2">
                   <Users size={14} className="text-indigo-600" />
@@ -446,13 +568,17 @@ export default function Careers() {
                         </span>
                       </div>
 
-                      <p className="mt-2 text-[11px] sm:text-xs text-ink-soft">{role.summary}</p>
+                      <p className="mt-2 text-[11px] sm:text-xs text-ink-soft">
+                        {role.summary}
+                      </p>
 
-                      <ul className="mt-2 space-y-1.5 text-[11px] sm:text-xs text-ink-soft">
-                        {role.bullets.map((b, idx) => (
-                          <li key={idx}>• {b}</li>
-                        ))}
-                      </ul>
+                      {role.bullets.length > 0 && (
+                        <ul className="mt-2 space-y-1.5 text-[11px] sm:text-xs text-ink-soft">
+                          {role.bullets.map((b, idx) => (
+                            <li key={idx}>• {b}</li>
+                          ))}
+                        </ul>
+                      )}
 
                       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                         <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 text-ink-soft text-[10px] sm:text-[11px] px-2 py-0.5">
@@ -493,7 +619,10 @@ export default function Careers() {
                   </h2>
                   <p className="text-[10px] sm:text-[11px] text-ink-soft">
                     Fill in a few details and attach your CV. You can also email{" "}
-                    <span className="font-medium text-ink">careers@dayspring.com</span> directly.
+                    <span className="font-medium text-ink">
+                      careers@dayspring.com
+                    </span>{" "}
+                    directly.
                   </p>
                 </div>
               </div>
@@ -546,10 +675,16 @@ export default function Careers() {
                   <select
                     value={selectedRoleId}
                     onChange={(e) => setSelectedRoleId(e.target.value)}
-                    required
+                    required={roles.length > 0 && !isJobsError}
                     className="w-full rounded-xl border border-slate-300/80 bg-white px-3 py-2 text-[11px] sm:text-sm text-slate-900 outline-none focus:border-violet-400 focus:ring-4 focus:ring-violet-200 transition shadow-sm"
                   >
-                    <option value="">Select a role</option>
+                    <option value="">
+                      {isJobsLoading
+                        ? "Loading roles…"
+                        : roles.length === 0
+                        ? "No specific roles — send a general application"
+                        : "Select a role"}
+                    </option>
                     {roles.map((role) => (
                       <option key={role.id} value={role.id}>
                         {role.title} — {role.team}
