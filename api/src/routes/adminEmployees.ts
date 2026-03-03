@@ -6,6 +6,7 @@ import express, {
   type RequestHandler,
 } from "express";
 import { z } from "zod";
+
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
 import { requiredString } from "../lib/http.js";
@@ -21,42 +22,266 @@ const wrap =
     Promise.resolve(fn(req, res, next)).catch(next);
 
 /* ----------------------------------------------------------------------------
- * Zod schemas
+ * Enums / Zod schemas
  * --------------------------------------------------------------------------*/
 
+const statusEnum = z.enum(["ACTIVE", "PROBATION", "ON_LEAVE", "EXITED"]);
+const payFrequencyEnum = z.enum(["MONTHLY", "WEEKLY", "OTHER"]);
+
+// Query params for list
 const listQuerySchema = z.object({
-  status: z
-    .enum(["ACTIVE", "PROBATION", "ON_LEAVE", "EXITED"])
-    .optional(),
-  department: z.string().max(200).optional().or(z.literal("")),
-  search: z.string().max(200).optional().or(z.literal("")),
-  cursor: z.string().optional().or(z.literal("")),
-  limit: z
-    .string()
+  status: statusEnum.optional(),
+  search: z.string().optional(),
+  department: z.string().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+// Base body schema used for create/update
+const baseEmployeeBodySchema = z.object({
+  firstName: z.string().min(1),
+  lastName: z.string().min(1),
+
+  // 🔓 Be lenient on email format (string or null)
+  emailWork: z.string().max(255).optional().nullable(),
+  emailPersonal: z.string().max(255).optional().nullable(),
+  phone: z.string().max(255).optional().nullable(),
+
+  jobTitle: z.string().max(255).optional().nullable(),
+  department: z.string().max(255).optional().nullable(),
+  status: statusEnum.default("ACTIVE"),
+
+  // receives ISO string or null from UI
+  startDate: z.string().optional().nullable(),
+
+  baseSalaryNGN: z
+    .union([z.number(), z.string()])
     .optional()
-    .transform((v) => {
-      const n = Number(v);
-      if (!Number.isFinite(n) || n <= 0) return 20;
-      return Math.min(100, Math.max(1, n));
-    }),
-});
-
-// Everything the Admin UI can update
-const updateBodySchema = z.object({
-  status: z.enum(["ACTIVE", "PROBATION", "ON_LEAVE", "EXITED"]).optional(),
-  baseSalaryNGN: z.number().int().nonnegative().nullable().optional(),
-  payFrequency: z
-    .enum(["MONTHLY", "WEEKLY", "OTHER"])
     .nullable()
-    .optional(),
+    .transform((v) => {
+      if (v === "" || v == null) return null;
+      const n = typeof v === "string" ? Number(v) : v;
+      return Number.isFinite(n) ? n : null;
+    }),
 
-  bankName: z.string().max(200).nullable().optional(),
-  bankCode: z.string().max(50).nullable().optional(),
-  accountNumber: z.string().max(50).nullable().optional(),
-  accountName: z.string().max(200).nullable().optional(),
+  payFrequency: payFrequencyEnum.optional().nullable(),
 
-  isPayrollReady: z.boolean().nullable().optional(),
+  bankName: z.string().max(255).optional().nullable(),
+  bankCode: z.string().max(255).optional().nullable(),
+  accountNumber: z.string().max(255).optional().nullable(),
+  accountName: z.string().max(255).optional().nullable(),
+
+  isPayrollReady: z.boolean().optional().default(false),
+
+  // doc flags – backend is permissive; they default to false
+  hasPassportDoc: z.boolean().optional().default(false),
+  hasNinSlipDoc: z.boolean().optional().default(false),
+  hasTaxDoc: z.boolean().optional().default(false),
 });
+
+const createEmployeeSchema = baseEmployeeBodySchema;
+const updateEmployeeSchema = baseEmployeeBodySchema.partial();
+
+/* ----------------------------------------------------------------------------
+ * Helpers
+ * --------------------------------------------------------------------------*/
+
+function toDateOrNull(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function buildListWhere(input: z.infer<typeof listQuerySchema>) {
+  const where: any = {};
+
+  if (input.status) {
+    where.status = input.status;
+  }
+
+  if (input.department && input.department.trim()) {
+    where.department = {
+      contains: input.department.trim(),
+      mode: "insensitive",
+    };
+  }
+
+  if (input.search && input.search.trim()) {
+    const q = input.search.trim();
+    where.OR = [
+      { firstName: { contains: q, mode: "insensitive" } },
+      { lastName: { contains: q, mode: "insensitive" } },
+      { emailWork: { contains: q, mode: "insensitive" } },
+      { emailPersonal: { contains: q, mode: "insensitive" } },
+      { jobTitle: { contains: q, mode: "insensitive" } },
+    ];
+  }
+
+  return where;
+}
+
+/* ----------------------------------------------------------------------------
+ * Middleware
+ * --------------------------------------------------------------------------*/
+
+router.use(requireAuth);
+router.use(requireAdmin);
+
+/* ----------------------------------------------------------------------------
+ * Routes
+ * --------------------------------------------------------------------------*/
+
+/**
+ * GET /api/admin/employees
+ * List employees with filters & pagination
+ */
+router.get(
+  "/",
+  wrap(async (req: Request, res: Response) => {
+    const query = listQuerySchema.parse(req.query);
+    const where = buildListWhere(query);
+
+    const [total, items] = await Promise.all([
+      prisma.employee.count({ where }),
+      prisma.employee.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+      }),
+    ]);
+
+    const pageCount = Math.max(1, Math.ceil(total / query.pageSize));
+
+    res.json({
+      items,
+      total,
+      page: query.page,
+      pageSize: query.pageSize,
+      pageCount,
+    });
+  })
+);
+
+/**
+ * POST /api/admin/employees
+ * Create a new employee
+ */
+router.post(
+  "/",
+  wrap(async (req: Request, res: Response) => {
+    const body = createEmployeeSchema.parse(req.body);
+
+    const employee = await prisma.employee.create({
+      data: {
+        firstName: body.firstName,
+        lastName: body.lastName,
+
+        emailWork: body.emailWork ?? null,
+        emailPersonal: body.emailPersonal ?? null,
+        phone: body.phone ?? null,
+
+        jobTitle: body.jobTitle ?? null,
+        department: body.department ?? null,
+        status: body.status ?? "ACTIVE",
+
+        startDate: toDateOrNull(body.startDate ?? null),
+
+        baseSalaryNGN: body.baseSalaryNGN ?? null,
+        payFrequency: body.payFrequency ?? null,
+
+        bankName: body.bankName ?? null,
+        bankCode: body.bankCode ?? null,
+        accountNumber: body.accountNumber ?? null,
+        accountName: body.accountName ?? null,
+
+        isPayrollReady: body.isPayrollReady ?? false,
+        hasPassportDoc: body.hasPassportDoc ?? false,
+        hasNinSlipDoc: body.hasNinSlipDoc ?? false,
+        hasTaxDoc: body.hasTaxDoc ?? false,
+      },
+    });
+
+    res.status(201).json(employee);
+  })
+);
+
+/**
+ * PATCH /api/admin/employees/:id
+ * Update existing employee (including payroll toggle)
+ */
+router.patch(
+  "/:id",
+  wrap(async (req: Request, res: Response) => {
+    const id = requiredString(req.params.id, "id");
+    const body = updateEmployeeSchema.parse(req.body);
+
+    const data: any = {};
+
+    if (body.firstName !== undefined) data.firstName = body.firstName;
+    if (body.lastName !== undefined) data.lastName = body.lastName;
+
+    if (body.emailWork !== undefined) data.emailWork = body.emailWork;
+    if (body.emailPersonal !== undefined) data.emailPersonal = body.emailPersonal;
+    if (body.phone !== undefined) data.phone = body.phone;
+
+    if (body.jobTitle !== undefined) data.jobTitle = body.jobTitle;
+    if (body.department !== undefined) data.department = body.department;
+    if (body.status !== undefined) data.status = body.status;
+
+    if (body.startDate !== undefined) {
+      data.startDate = toDateOrNull(body.startDate ?? null);
+    }
+
+    if (body.baseSalaryNGN !== undefined) {
+      data.baseSalaryNGN = body.baseSalaryNGN;
+    }
+
+    if (body.payFrequency !== undefined) {
+      data.payFrequency = body.payFrequency;
+    }
+
+    if (body.bankName !== undefined) data.bankName = body.bankName;
+    if (body.bankCode !== undefined) data.bankCode = body.bankCode;
+    if (body.accountNumber !== undefined) data.accountNumber = body.accountNumber;
+    if (body.accountName !== undefined) data.accountName = body.accountName;
+
+    if (body.isPayrollReady !== undefined) {
+      data.isPayrollReady = body.isPayrollReady;
+    }
+
+    if (body.hasPassportDoc !== undefined) data.hasPassportDoc = body.hasPassportDoc;
+    if (body.hasNinSlipDoc !== undefined) data.hasNinSlipDoc = body.hasNinSlipDoc;
+    if (body.hasTaxDoc !== undefined) data.hasTaxDoc = body.hasTaxDoc;
+
+    const employee = await prisma.employee.update({
+      where: { id },
+      data,
+    });
+
+    res.json(employee);
+  })
+);
+
+/**
+ * (Optional) GET /api/admin/employees/:id
+ */
+router.get(
+  "/:id",
+  wrap(async (req: Request, res: Response) => {
+    const id = requiredString(req.params.id, "id");
+
+    const employee = await prisma.employee.findUnique({
+      where: { id },
+    });
+
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
+    res.json(employee);
+  })
+);
 
 // Create employee document (after upload to /api/uploads or S3 etc.)
 const createDocumentBodySchema = z.object({
@@ -66,207 +291,6 @@ const createDocumentBodySchema = z.object({
   mimeType: z.string().optional(),
   size: z.number().int().nonnegative().optional(),
 });
-
-/* ----------------------------------------------------------------------------
- * Admin-only
- * --------------------------------------------------------------------------*/
-router.use(requireAuth);
-router.use(requireAdmin);
-
-/* ----------------------------------------------------------------------------
- * GET /api/admin/employees
- * List employees + department summary
- * --------------------------------------------------------------------------*/
-router.get(
-  "/",
-  wrap(async (req: Request, res: Response) => {
-    const q = listQuerySchema.parse(req.query);
-
-    const where: any = {};
-
-    if (q.status) {
-      where.status = q.status;
-    }
-
-    if (q.department && q.department.trim()) {
-      where.department = q.department.trim();
-    }
-
-    if (q.search && q.search.trim()) {
-      const term = q.search.trim();
-      where.OR = [
-        { firstName: { contains: term, mode: "insensitive" } },
-        { lastName: { contains: term, mode: "insensitive" } },
-        { emailWork: { contains: term, mode: "insensitive" } },
-        { emailPersonal: { contains: term, mode: "insensitive" } },
-        { jobTitle: { contains: term, mode: "insensitive" } },
-        { department: { contains: term, mode: "insensitive" } },
-      ];
-    }
-
-    const take = q.limit ?? 20;
-    const cursor =
-      q.cursor && q.cursor.trim() ? { id: q.cursor.trim() } : null;
-
-    const employees = await prisma.employee.findMany({
-      where,
-      take: take + 1,
-      ...(cursor ? { cursor, skip: 1 } : {}),
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        createdAt: true,
-
-        firstName: true,
-        lastName: true,
-        emailWork: true,
-        emailPersonal: true,
-        phone: true,
-
-        jobTitle: true,
-        department: true,
-        status: true,
-        startDate: true,
-
-        baseSalaryNGN: true,
-        payFrequency: true,
-
-        bankName: true,
-        bankCode: true,
-        accountNumber: true,
-        accountName: true,
-        isPayrollReady: true,
-
-        hasPassportDoc: true,
-        hasNinSlipDoc: true,
-        hasTaxDoc: true,
-      },
-    });
-
-    let nextCursor: string | null = null;
-    if (employees.length > take) {
-      const last = employees[employees.length - 1];
-      nextCursor = last.id;
-      employees.pop();
-    }
-
-    // Department summary – for filters
-    const departmentSummary = await prisma.employee.groupBy({
-      by: ["department"],
-      _count: {
-        id: true,
-      },
-      // Prisma 6 groupBy: orderBy _count must use a real field, not _all
-      orderBy: {
-        _count: {
-          id: "desc",
-        },
-      },
-    });
-
-    res.json({
-      items: employees.map((e) => ({
-        ...e,
-        // ensure JSON serialisation is nice; startDate/createdAt already ISO
-      })),
-      nextCursor,
-      departmentSummary: departmentSummary.map((d) => ({
-        department: d.department,
-        count: d._count.id,
-      })),
-    });
-  })
-);
-
-/* ----------------------------------------------------------------------------
- * PATCH /api/admin/employees/:id
- * Update employment / salary / bank / payroll flags
- * --------------------------------------------------------------------------*/
-router.patch(
-  "/:id",
-  wrap(async (req: Request, res: Response) => {
-    const id = requiredString(req.params.id);
-    if (!id) {
-      return res.status(400).json({ error: "Missing employee id" });
-    }
-
-    const body = updateBodySchema.parse(req.body);
-
-    // Build Prisma data object, only including fields that are actually present
-    const data: any = {};
-
-    if (typeof body.status !== "undefined") {
-      data.status = body.status;
-    }
-
-    if (typeof body.baseSalaryNGN !== "undefined") {
-      // allow null to clear it
-      data.baseSalaryNGN =
-        body.baseSalaryNGN === null ? null : body.baseSalaryNGN;
-    }
-
-    if (typeof body.payFrequency !== "undefined") {
-      data.payFrequency = body.payFrequency;
-    }
-
-    if (typeof body.bankName !== "undefined") {
-      data.bankName = body.bankName;
-    }
-    if (typeof body.bankCode !== "undefined") {
-      data.bankCode = body.bankCode;
-    }
-    if (typeof body.accountNumber !== "undefined") {
-      data.accountNumber = body.accountNumber;
-    }
-    if (typeof body.accountName !== "undefined") {
-      data.accountName = body.accountName;
-    }
-
-    if (typeof body.isPayrollReady !== "undefined") {
-      data.isPayrollReady =
-        body.isPayrollReady === null ? false : body.isPayrollReady;
-    }
-
-    if (Object.keys(data).length === 0) {
-      return res.status(400).json({ error: "Nothing to update" });
-    }
-
-    const updated = await prisma.employee.update({
-      where: { id },
-      data,
-      select: {
-        id: true,
-        createdAt: true,
-
-        firstName: true,
-        lastName: true,
-        emailWork: true,
-        emailPersonal: true,
-        phone: true,
-
-        jobTitle: true,
-        department: true,
-        status: true,
-        startDate: true,
-
-        baseSalaryNGN: true,
-        payFrequency: true,
-
-        bankName: true,
-        bankCode: true,
-        accountNumber: true,
-        accountName: true,
-        isPayrollReady: true,
-
-        hasPassportDoc: true,
-        hasNinSlipDoc: true,
-        hasTaxDoc: true,
-      },
-    });
-
-    res.json({ ok: true, item: updated });
-  })
-);
 
 /* ----------------------------------------------------------------------------
  * GET /api/admin/employees/:id/documents

@@ -133,16 +133,16 @@ function collectFiles(req: Request): Express.Multer.File[] {
  *   ok: true,
  *   files: [
  *     {
- *       key: "1730567890000-file.pdf",
- *       storageKey: "1730567890000-file.pdf",
- *       url: "/uploads/1730567890000-file.pdf",
- *       absoluteUrl: "https://example.com/uploads/1730567890000-file.pdf",
+ *       key: "employees/123/docs/1730567890000-file.pdf",
+ *       storageKey: "employees/123/docs/1730567890000-file.pdf",
+ *       url: "/uploads/employees/123/docs/1730567890000-file.pdf",
+ *       absoluteUrl: "https://example.com/uploads/employees/123/docs/1730567890000-file.pdf",
  *       originalFilename: "file.pdf",
  *       mimeType: "application/pdf",
  *       size: 12345
  *     }
  *   ],
- *   urls: ["/uploads/1730567890000-file.pdf"]
+ *   urls: ["/uploads/employees/123/docs/1730567890000-file.pdf"]
  * }
  */
 router.post(
@@ -152,6 +152,7 @@ router.post(
     { name: "files[]", maxCount: 20 },
     { name: "file", maxCount: 1 },
   ]),
+
   (req, res) => {
     const files = collectFiles(req);
 
@@ -165,11 +166,18 @@ router.post(
     const base = absoluteBase(req);
 
     const payload = files.map((f) => {
-      const basename = path.basename(f.path);
-      const urlPath = `/uploads/${encodeURIComponent(basename)}`;
+      // Path on disk, e.g. /app/uploads/employees/123/docs/1730-file.pdf
+      // Convert to a relative key under UPLOADS_DIR
+      let relPath = path.relative(UPLOADS_DIR, f.path);
+      // Normalise to URL-style slashes
+      relPath = relPath.replace(/\\/g, "/");
+
+      // Build URL path including subfolders
+      const urlPath = `/uploads/${encodeURI(relPath)}`;
+
       return {
-        key: basename,
-        storageKey: basename,
+        key: relPath,
+        storageKey: relPath,
         url: urlPath,
         absoluteUrl: `${base}${urlPath}`,
         originalFilename: f.originalname,
