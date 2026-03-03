@@ -103,7 +103,11 @@ const ngn = new Intl.NumberFormat("en-NG", {
 /* ---------------- Helpers: numbers ---------------- */
 
 const API_ORIGIN =
-  String((import.meta as any)?.env?.VITE_API_URL || (import.meta as any)?.env?.API_URL || "")
+  String(
+    (import.meta as any)?.env?.VITE_API_URL ||
+      (import.meta as any)?.env?.API_URL ||
+      ""
+  )
     .trim()
     .replace(/\/+$/, "") || "https://api.dayspringhouse.com";
 
@@ -115,11 +119,13 @@ function resolveImageUrl(input?: string | null): string | undefined {
   if (s.startsWith("//")) return `${window.location.protocol}${s}`;
 
   if (s.startsWith("/")) {
-    if (s.startsWith("/uploads/") || s.startsWith("/api/uploads/")) return `${API_ORIGIN}${s}`;
+    if (s.startsWith("/uploads/") || s.startsWith("/api/uploads/"))
+      return `${API_ORIGIN}${s}`;
     return `${window.location.origin}${s}`;
   }
 
-  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) return `${API_ORIGIN}/${s}`;
+  if (s.startsWith("uploads/") || s.startsWith("api/uploads/"))
+    return `${API_ORIGIN}/${s}`;
   return `${window.location.origin}/${s}`;
 }
 
@@ -133,7 +139,8 @@ const asMoney = (v: any, d = 0) => {
   return Number.isFinite(n) ? n : d;
 };
 
-const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+const round2 = (n: number) =>
+  Math.round((n + Number.EPSILON) * 100) / 100;
 
 const clampPct = (p: number) => {
   if (!Number.isFinite(p)) return 0;
@@ -177,7 +184,9 @@ function isCodeLike(raw: string | undefined | null): boolean {
   if (/^cmm[0-9a-z]{5,}$/i.test(s)) return true;
 
   // UUID-ish tokens
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) {
+  if (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+  ) {
     return true;
   }
 
@@ -196,7 +205,10 @@ function normalizeSelectedOptions(raw: any): SelectedOption[] {
       valueId: o.valueId ? String(o.valueId) : undefined,
       value: String(o.value ?? ""),
     }))
-    .filter((o: any) => o.attributeId || o.attribute || o.valueId || o.value);
+    .filter(
+      (o: any) =>
+        o.attributeId || o.attribute || o.valueId || o.value
+    );
 
   arr.sort((a, b) => {
     const aKey = `${a.attributeId}:${a.valueId ?? a.value}`;
@@ -209,17 +221,22 @@ function normalizeSelectedOptions(raw: any): SelectedOption[] {
 
 async function fetchServerCart(): Promise<CartItem[]> {
   const { data } = await api.get("/api/cart", AXIOS_COOKIE_CFG);
-  const items: ServerCartItem[] = Array.isArray((data as any)?.items) ? (data as any).items : [];
+  const items: ServerCartItem[] = Array.isArray((data as any)?.items)
+    ? (data as any).items
+    : [];
 
   return items.map((it) => {
     const qty = Math.max(1, Number(it.qty) || 1);
     const unit = Number(it.unitPriceCache) || 0;
     const title = String(it.titleSnapshot ?? "");
-    const img = it.imageSnapshot ? resolveImageUrl(it.imageSnapshot) : undefined;
+    const img = it.imageSnapshot
+      ? resolveImageUrl(it.imageSnapshot)
+      : undefined;
 
     return {
       id: String(it.id),
-      kind: (it.kind as any) || (it.variantId ? "VARIANT" : "BASE"),
+      kind:
+        (it.kind as any) || (it.variantId ? "VARIANT" : "BASE"),
       productId: String(it.productId),
       variantId: it.variantId == null ? null : String(it.variantId),
       title,
@@ -237,37 +254,65 @@ async function serverSetQty(item: CartItem, qty: number) {
   if (!item.id) return;
   const next = Math.max(0, Math.floor(Number(qty) || 0));
   if (next <= 0) {
-    await api.delete(`/api/cart/items/${item.id}`, AXIOS_COOKIE_CFG);
+    await api.delete(
+      `/api/cart/items/${item.id}`,
+      AXIOS_COOKIE_CFG
+    );
   } else {
-    await api.patch(`/api/cart/items/${item.id}`, { qty: next }, AXIOS_COOKIE_CFG);
+    await api.patch(
+      `/api/cart/items/${item.id}`,
+      { qty: next },
+      AXIOS_COOKIE_CFG
+    );
   }
 }
 
 function optionsKey(sel?: SelectedOption[]) {
   const s = (sel ?? []).filter(Boolean);
   if (!s.length) return "";
-  return s.map((o) => `${o.attributeId}=${o.valueId ?? o.value}`).join("|");
+  return s
+    .map((o) => `${o.attributeId}=${o.valueId ?? o.value}`)
+    .join("|");
 }
 
-function lineKeyFor(item: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) {
+function lineKeyFor(
+  item: Pick<
+    CartItem,
+    "productId" | "variantId" | "selectedOptions" | "kind"
+  >
+) {
   const pid = String(item.productId);
   const vid = item.variantId == null ? null : String(item.variantId);
   const sel = normalizeSelectedOptions(item.selectedOptions);
 
   const kind: "BASE" | "VARIANT" =
-    item.kind === "BASE" || item.kind === "VARIANT" ? item.kind : item.variantId ? "VARIANT" : "BASE";
+    item.kind === "BASE" || item.kind === "VARIANT"
+      ? item.kind
+      : item.variantId
+      ? "VARIANT"
+      : "BASE";
 
   if (kind === "VARIANT") {
     if (vid) return `${pid}::v:${vid}`;
-    return sel.length ? `${pid}::o:${optionsKey(sel)}` : `${pid}::v:unknown`;
+    return sel.length
+      ? `${pid}::o:${optionsKey(sel)}`
+      : `${pid}::v:unknown`;
   }
   return `${pid}::base`;
 }
 
-const availKeyFor = (productId: string, variantId?: string | null) => `${productId}::${variantId ?? "null"}`;
+const availKeyFor = (
+  productId: string,
+  variantId?: string | null
+) => `${productId}::${variantId ?? "null"}`;
 
-const sameLine = (a: CartItem, b: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) =>
-  lineKeyFor(a) === lineKeyFor(b);
+const sameLine = (
+  a: CartItem,
+  b: Pick<
+    CartItem,
+    "productId" | "variantId" | "selectedOptions" | "kind"
+  >
+) => lineKeyFor(a) === lineKeyFor(b);
 
 const isBaseLine = (it: CartItem) => {
   if (it.variantId) return false;
@@ -277,11 +322,17 @@ const isBaseLine = (it: CartItem) => {
 
 /* ---------------- Availability (batched) ---------------- */
 
-async function fetchAvailabilityForCart(items: CartItem[]): Promise<AvailabilityPayload> {
+async function fetchAvailabilityForCart(
+  items: CartItem[]
+): Promise<AvailabilityPayload> {
   if (!items.length) return { lines: {}, products: {} };
 
-  const pairs = items.map((i) => ({ productId: i.productId, variantId: i.variantId ?? null }));
-  const uniqPairs: { productId: string; variantId: string | null }[] = [];
+  const pairs = items.map((i) => ({
+    productId: i.productId,
+    variantId: i.variantId ?? null,
+  }));
+  const uniqPairs: { productId: string; variantId: string | null }[] =
+    [];
   const seen = new Set<string>();
 
   for (const p of pairs) {
@@ -292,18 +343,30 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Availability
     }
   }
 
-  const itemsParam = uniqPairs.map((p) => `${p.productId}:${p.variantId ?? ""}`).join(",");
+  const itemsParam = uniqPairs
+    .map((p) => `${p.productId}:${p.variantId ?? ""}`)
+    .join(",");
 
   const attempts = [
-    `/api/catalog/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
-    `/api/products/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
-    `/api/supplier-offers/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
+    `/api/catalog/availability?items=${encodeURIComponent(
+      itemsParam
+    )}&includeBase=1`,
+    `/api/products/availability?items=${encodeURIComponent(
+      itemsParam
+    )}&includeBase=1`,
+    `/api/supplier-offers/availability?items=${encodeURIComponent(
+      itemsParam
+    )}&includeBase=1`,
   ];
 
   for (const url of attempts) {
     try {
       const { data } = await api.get(url);
-      const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
+      const arr = Array.isArray((data as any)?.data)
+        ? (data as any).data
+        : Array.isArray(data)
+        ? data
+        : [];
       if (Array.isArray(arr)) {
         const lines: Record<string, Availability> = {};
         type Row = {
@@ -313,28 +376,42 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Availability
           cheapestSupplierUnit?: number | null;
         };
 
-        const byProduct: Record<string, { generic: number; perVariant: Record<string, number> }> = {};
+        const byProduct: Record<
+          string,
+          { generic: number; perVariant: Record<string, number> }
+        > = {};
 
         for (const r of arr as Row[]) {
           const pid = String(r.productId);
-          const vid = r.variantId == null ? null : String(r.variantId);
+          const vid =
+            r.variantId == null ? null : String(r.variantId);
           const avail = Math.max(0, Number(r.totalAvailable) || 0);
           const k = availKeyFor(pid, vid);
 
           lines[k] = {
             totalAvailable: avail,
-            cheapestSupplierUnit: Number.isFinite(Number(r.cheapestSupplierUnit)) ? Number(r.cheapestSupplierUnit) : null,
+            cheapestSupplierUnit: Number.isFinite(
+              Number(r.cheapestSupplierUnit)
+            )
+              ? Number(r.cheapestSupplierUnit)
+              : null,
           };
 
-          if (!byProduct[pid]) byProduct[pid] = { generic: 0, perVariant: {} };
+          if (!byProduct[pid])
+            byProduct[pid] = { generic: 0, perVariant: {} };
           if (vid == null) byProduct[pid].generic += avail;
-          else byProduct[pid].perVariant[vid] = (byProduct[pid].perVariant[vid] || 0) + avail;
+          else
+            byProduct[pid].perVariant[vid] =
+              (byProduct[pid].perVariant[vid] || 0) + avail;
         }
 
         const products: Record<string, ProductPools> = {};
         for (const [pid, agg] of Object.entries(byProduct)) {
-          const hasVariantSpecific = Object.keys(agg.perVariant).length > 0;
-          const variantSum = Object.values(agg.perVariant).reduce((s, n) => s + n, 0);
+          const hasVariantSpecific =
+            Object.keys(agg.perVariant).length > 0;
+          const variantSum = Object.values(
+            agg.perVariant
+          ).reduce((s, n) => s + n, 0);
           const productTotal = agg.generic + variantSum;
 
           products[pid] = {
@@ -357,13 +434,23 @@ async function fetchAvailabilityForCart(items: CartItem[]): Promise<Availability
 
 /* ---------------- Supplier-split pricing quote ---------------- */
 
-function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null {
+function normalizeQuoteResponse(
+  raw: any,
+  cart: CartItem[]
+): QuotePayload | null {
   const root = raw?.data?.data ?? raw?.data ?? raw ?? null;
   if (!root) return null;
 
   const currency = root.currency ?? root?.quote?.currency ?? null;
   const maybe = root.quote ?? root;
-  const subtotal = asMoney(maybe.subtotal ?? maybe.itemsSubtotal ?? maybe.totalItems ?? maybe.total ?? 0, 0);
+  const subtotal = asMoney(
+    maybe.subtotal ??
+      maybe.itemsSubtotal ??
+      maybe.totalItems ??
+      maybe.total ??
+      0,
+    0
+  );
 
   const outLines: Record<string, QuoteLine> = {};
 
@@ -373,20 +460,35 @@ function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null
 
     const pid = String(x?.productId ?? "");
     const vid = x?.variantId == null ? null : String(x.variantId);
-    const kind: "BASE" | "VARIANT" = x?.kind === "VARIANT" || (!!vid && x?.kind !== "BASE") ? "VARIANT" : "BASE";
+    const kind: "BASE" | "VARIANT" =
+      x?.kind === "VARIANT" || (!!vid && x?.kind !== "BASE")
+        ? "VARIANT"
+        : "BASE";
 
     if (!pid) return "";
-    if (kind === "VARIANT") return vid ? `${pid}::v:${vid}` : `${pid}::v:unknown`;
+    if (kind === "VARIANT")
+      return vid ? `${pid}::v:${vid}` : `${pid}::v:unknown`;
     return `${pid}::base`;
   };
 
   const normalizeAlloc = (a: any): QuoteAllocation => {
-    const qty = Math.max(0, asInt(a?.qty ?? a?.quantity ?? 0, 0));
-    const unitPrice = asMoney(a?.unitPrice ?? a?.price ?? a?.supplierPrice ?? 0, 0);
-    const lineTotal = asMoney(a?.lineTotal ?? qty * unitPrice, qty * unitPrice);
+    const qty = Math.max(
+      0,
+      asInt(a?.qty ?? a?.quantity ?? 0, 0)
+    );
+    const unitPrice = asMoney(
+      a?.unitPrice ?? a?.price ?? a?.supplierPrice ?? 0,
+      0
+    );
+    const lineTotal = asMoney(
+      a?.lineTotal ?? qty * unitPrice,
+      qty * unitPrice
+    );
 
     return {
-      supplierId: String(a?.supplierId ?? a?.supplier_id ?? ""),
+      supplierId: String(
+        a?.supplierId ?? a?.supplier_id ?? ""
+      ),
       supplierName: a?.supplierName ?? a?.supplier?.name ?? null,
       qty,
       unitPrice,
@@ -400,35 +502,84 @@ function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null
     if (!key) return null;
 
     const productId = String(x?.productId ?? "");
-    const variantId = x?.variantId == null ? null : String(x.variantId);
+    const variantId =
+      x?.variantId == null ? null : String(x.variantId);
     const kind: "BASE" | "VARIANT" =
-      x?.kind === "BASE" || x?.kind === "VARIANT" ? x.kind : variantId ? "VARIANT" : "BASE";
+      x?.kind === "BASE" || x?.kind === "VARIANT"
+        ? x.kind
+        : variantId
+        ? "VARIANT"
+        : "BASE";
 
-    const qtyRequested = Math.max(1, asInt(x?.qtyRequested ?? x?.qty ?? x?.requestedQty ?? 1, 1));
-
-    const allocsRaw = (Array.isArray(x?.allocations) ? x.allocations : x?.allocations ? [x.allocations] : []).concat(
-      Array.isArray(x?.splits) ? x.splits : x?.splits ? [x.splits] : []
+    const qtyRequested = Math.max(
+      1,
+      asInt(
+        x?.qtyRequested ?? x?.qty ?? x?.requestedQty ?? 1,
+        1
+      )
     );
 
-    const allocations = allocsRaw.map(normalizeAlloc).filter((a: any) => a.qty > 0 && a.unitPrice >= 0);
+    const allocsRaw = (Array.isArray(x?.allocations)
+      ? x.allocations
+      : x?.allocations
+      ? [x.allocations]
+      : []
+    ).concat(
+      Array.isArray(x?.splits)
+        ? x.splits
+        : x?.splits
+        ? [x.splits]
+        : []
+    );
+
+    const allocations = allocsRaw
+      .map(normalizeAlloc)
+      .filter(
+        (a: any) => a.qty > 0 && a.unitPrice >= 0
+      );
 
     const lineTotal = asMoney(
-      x?.lineTotal ?? x?.total ?? allocations.reduce((s: any, a: any) => s + asMoney(a.lineTotal, 0), 0),
+      x?.lineTotal ??
+        x?.total ??
+        allocations.reduce(
+          (s: any, a: any) =>
+            s + asMoney(a.lineTotal, 0),
+          0
+        ),
       0
     );
 
     const qtyPriced = Math.max(
       0,
-      asInt(x?.qtyPriced ?? allocations.reduce((s: any, a: any) => s + asInt(a.qty, 0), 0), 0)
+      asInt(
+        x?.qtyPriced ??
+          allocations.reduce(
+            (s: any, a: any) => s + asInt(a.qty, 0),
+            0
+          ),
+        0
+      )
     );
 
-    const units = allocations.map((a: any) => asMoney(a.unitPrice, NaN)).filter((n: any) => Number.isFinite(n));
-    const minUnit = units.length ? Math.min(...(units as number[])) : 0;
-    const maxUnit = units.length ? Math.max(...(units as number[])) : 0;
-    const averageUnit = qtyRequested > 0 ? lineTotal / qtyRequested : 0;
+    const units = allocations
+      .map((a: any) =>
+        asMoney(a.unitPrice, NaN)
+      )
+      .filter((n: any) => Number.isFinite(n));
+    const minUnit = units.length
+      ? Math.min(...(units as number[]))
+      : 0;
+    const maxUnit = units.length
+      ? Math.max(...(units as number[]))
+      : 0;
+    const averageUnit =
+      qtyRequested > 0 ? lineTotal / qtyRequested : 0;
 
     const warnings: string[] = [];
-    if (qtyPriced < qtyRequested) warnings.push("Some units could not be priced/allocated.");
+    if (qtyPriced < qtyRequested)
+      warnings.push(
+        "Some units could not be priced/allocated."
+      );
 
     return {
       key,
@@ -454,7 +605,11 @@ function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null
     }
   }
 
-  if (!Object.keys(outLines).length && maybe?.lines && typeof maybe.lines === "object") {
+  if (
+    !Object.keys(outLines).length &&
+    maybe?.lines &&
+    typeof maybe.lines === "object"
+  ) {
     for (const [k, v] of Object.entries(maybe.lines)) {
       const ln = normalizeLine({ ...(v as any), key: k });
       if (ln) outLines[ln.key] = ln;
@@ -471,8 +626,14 @@ function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null
         key: k,
         productId: it.productId,
         variantId: it.variantId ?? null,
-        kind: it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE",
-        qtyRequested: Math.max(1, asInt(it.qty, 1)),
+        kind:
+          it.kind === "VARIANT" || it.variantId
+            ? "VARIANT"
+            : "BASE",
+        qtyRequested: Math.max(
+          1,
+          asInt(it.qty, 1)
+        ),
         qtyPriced: 0,
         allocations: [],
         lineTotal: 0,
@@ -488,27 +649,54 @@ function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null
   return { currency, subtotal, lines: outLines, raw };
 }
 
-async function fetchPricingQuoteForCart(cart: CartItem[]): Promise<QuotePayload | null> {
+async function fetchPricingQuoteForCart(
+  cart: CartItem[]
+): Promise<QuotePayload | null> {
   if (!cart.length) return null;
 
   const items = cart.map((it) => ({
     key: lineKeyFor(it),
-    kind: it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE",
+    kind:
+      it.kind === "VARIANT" || it.variantId
+        ? "VARIANT"
+        : "BASE",
     productId: it.productId,
     variantId: it.variantId ?? null,
     qty: Math.max(1, asInt(it.qty, 1)),
-    selectedOptions: Array.isArray(it.selectedOptions) ? normalizeSelectedOptions(it.selectedOptions) : undefined,
+    selectedOptions: Array.isArray(it.selectedOptions)
+      ? normalizeSelectedOptions(it.selectedOptions)
+      : undefined,
     unitPriceCache: asMoney(it.unitPrice, 0),
   }));
 
-  const attempts: Array<{ method: "post" | "get"; url: string; body?: any }> = [
+  const attempts: Array<{
+    method: "post" | "get";
+    url: string;
+    body?: any;
+  }> = [
     { method: "post", url: "/api/catalog/quote", body: { items } },
     { method: "post", url: "/api/cart/quote", body: { items } },
-    { method: "post", url: "/api/checkout/quote", body: { items } },
+    {
+      method: "post",
+      url: "/api/checkout/quote",
+      body: { items },
+    },
     { method: "post", url: "/api/orders/quote", body: { items } },
-    { method: "post", url: "/api/catalog/pricing", body: { items } },
-    { method: "post", url: "/api/cart/pricing", body: { items } },
-    { method: "post", url: "/api/checkout/pricing", body: { items } },
+    {
+      method: "post",
+      url: "/api/catalog/pricing",
+      body: { items },
+    },
+    {
+      method: "post",
+      url: "/api/cart/pricing",
+      body: { items },
+    },
+    {
+      method: "post",
+      url: "/api/checkout/pricing",
+      body: { items },
+    },
   ];
 
   for (const a of attempts) {
@@ -516,7 +704,9 @@ async function fetchPricingQuoteForCart(cart: CartItem[]): Promise<QuotePayload 
       const res =
         a.method === "post"
           ? await api.post(a.url, a.body)
-          : await api.get(a.url, { params: { items: JSON.stringify(items) } });
+          : await api.get(a.url, {
+              params: { items: JSON.stringify(items) },
+            });
       const normalized = normalizeQuoteResponse(res, cart);
       if (normalized) return normalized;
     } catch {
@@ -530,7 +720,11 @@ async function fetchPricingQuoteForCart(cart: CartItem[]): Promise<QuotePayload 
 /* ---------------- Public settings fetch ---------------- */
 
 async function fetchPublicSettings(): Promise<PublicSettings | null> {
-  const attempts = ["/api/settings/public", "/api/settings/public?include=pricing", "/api/settings/public?scope=commerce"];
+  const attempts = [
+    "/api/settings/public",
+    "/api/settings/public?include=pricing",
+    "/api/settings/public?scope=commerce",
+  ];
 
   for (const url of attempts) {
     try {
@@ -544,7 +738,9 @@ async function fetchPublicSettings(): Promise<PublicSettings | null> {
   return null;
 }
 
-function extractMarginPercent(s: PublicSettings | null | undefined): number {
+function extractMarginPercent(
+  s: PublicSettings | null | undefined
+): number {
   if (!s) return 0;
 
   const direct = asMoney(s.marginPercent, NaN);
@@ -568,27 +764,41 @@ export default function Cart() {
   const isAuthed = !!userId;
 
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
+  const [qtyDraft, setQtyDraft] = useState<
+    Record<string, string>
+  >({});
 
   // prevent loops when we ourselves write local mirror for authed
   const suppressNextCartEventRef = useRef(false);
 
-  const mirrorAuthedCartToLocal = useCallback((items: CartItem[]) => {
-    const lines = items.map((x) => ({
-      productId: String(x.productId),
-      variantId: x.variantId == null ? null : String(x.variantId),
-      kind: (x.kind === "VARIANT" || x.variantId ? "VARIANT" : "BASE") as "BASE" | "VARIANT",
-      optionsKey: "",
-      qty: Math.max(0, Number(x.qty) || 0),
-      selectedOptions: Array.isArray(x.selectedOptions) ? x.selectedOptions : [],
-      titleSnapshot: x.title ?? null,
-      imageSnapshot: x.image ?? null,
-      unitPriceCache: Number.isFinite(Number(x.unitPrice)) ? Number(x.unitPrice) : 0,
-    }));
+  const mirrorAuthedCartToLocal = useCallback(
+    (items: CartItem[]) => {
+      const lines = items.map((x) => ({
+        productId: String(x.productId),
+        variantId:
+          x.variantId == null ? null : String(x.variantId),
+        kind: (x.kind === "VARIANT" || x.variantId
+          ? "VARIANT"
+          : "BASE") as "BASE" | "VARIANT",
+        optionsKey: "",
+        qty: Math.max(0, Number(x.qty) || 0),
+        selectedOptions: Array.isArray(x.selectedOptions)
+          ? x.selectedOptions
+          : [],
+        titleSnapshot: x.title ?? null,
+        imageSnapshot: x.image ?? null,
+        unitPriceCache: Number.isFinite(
+          Number(x.unitPrice)
+        )
+          ? Number(x.unitPrice)
+          : 0,
+      }));
 
-    suppressNextCartEventRef.current = true;
-    writeCartLines(lines as any);
-  }, []);
+      suppressNextCartEventRef.current = true;
+      writeCartLines(lines as any);
+    },
+    []
+  );
 
   const loadCart = useCallback(async () => {
     if (isAuthed) {
@@ -599,14 +809,20 @@ export default function Cart() {
         return;
       } catch {
         // server failed: fallback to local mirror
-        const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+        const localItems = toCartPageItems(
+          readCartLines(),
+          resolveImageUrl
+        ) as any as CartItem[];
         setCart(localItems);
         return;
       }
     }
 
     // guest
-    const guestItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+    const guestItems = toCartPageItems(
+      readCartLines(),
+      resolveImageUrl
+    ) as any as CartItem[];
     setCart(guestItems);
   }, [isAuthed, mirrorAuthedCartToLocal]);
 
@@ -618,7 +834,10 @@ export default function Cart() {
         await loadCart();
       } catch {
         if (!cancelled) {
-          const fallback = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+          const fallback = toCartPageItems(
+            readCartLines(),
+            resolveImageUrl
+          ) as any as CartItem[];
           setCart(fallback);
         }
       }
@@ -638,17 +857,21 @@ export default function Cart() {
       }
 
       if (isAuthed) {
-        loadCart().catch(() => { });
+        loadCart().catch(() => {});
         return;
       }
 
       // guest: read storage only, no extra writes
-      const guestItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
+      const guestItems = toCartPageItems(
+        readCartLines(),
+        resolveImageUrl
+      ) as any as CartItem[];
       setCart(guestItems);
     };
 
     window.addEventListener("cart:updated", onCartUpdated);
-    return () => window.removeEventListener("cart:updated", onCartUpdated);
+    return () =>
+      window.removeEventListener("cart:updated", onCartUpdated);
   }, [isAuthed, loadCart]);
 
   // keep qtyDraft in sync
@@ -662,14 +885,22 @@ export default function Cart() {
         const existing = prev[k];
 
         if (existing == null) {
-          next[k] = String(Math.max(1, Number(it.qty) || 1));
+          next[k] = String(
+            Math.max(1, Number(it.qty) || 1)
+          );
           changed = true;
           continue;
         }
 
         const dNum = Number(existing);
-        if (existing !== "" && Number.isFinite(dNum) && Math.trunc(dNum) !== (Number(it.qty) || 1)) {
-          next[k] = String(Math.max(1, Number(it.qty) || 1));
+        if (
+          existing !== "" &&
+          Number.isFinite(dNum) &&
+          Math.trunc(dNum) !== (Number(it.qty) || 1)
+        ) {
+          next[k] = String(
+            Math.max(1, Number(it.qty) || 1)
+          );
           changed = true;
         }
       }
@@ -692,10 +923,22 @@ export default function Cart() {
     queryFn: fetchPublicSettings,
   });
 
-  const marginPercent = useMemo(() => extractMarginPercent(publicSettingsQ.data), [publicSettingsQ.data]);
+  const marginPercent = useMemo(
+    () => extractMarginPercent(publicSettingsQ.data),
+    [publicSettingsQ.data]
+  );
 
   const availabilityQ = useQuery({
-    queryKey: ["catalog", "availability:v3", cart.map((i) => availKeyFor(i.productId, i.variantId ?? null)).sort().join(",")],
+    queryKey: [
+      "catalog",
+      "availability:v3",
+      cart
+        .map((i) =>
+          availKeyFor(i.productId, i.variantId ?? null)
+        )
+        .sort()
+        .join(","),
+    ],
     enabled: cart.length > 0,
     refetchOnWindowFocus: false,
     staleTime: 15_000,
@@ -703,7 +946,20 @@ export default function Cart() {
   });
 
   const pricingQ = useQuery({
-    queryKey: ["catalog", "pricing-quote:v1", cart.map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`).sort().join(",")],
+    queryKey: [
+      "catalog",
+      "pricing-quote:v1",
+      cart
+        .map(
+          (i) =>
+            `${lineKeyFor(i)}@${Math.max(
+              1,
+              asInt(i.qty, 1)
+            )}`
+        )
+        .sort()
+        .join(","),
+    ],
     enabled: cart.length > 0,
     refetchOnWindowFocus: false,
     staleTime: 10_000,
@@ -711,15 +967,17 @@ export default function Cart() {
   });
 
   const visibleCart = useMemo(() => {
-    const data = availabilityQ.data as AvailabilityPayload | undefined;
+    const data = availabilityQ.data as
+      | AvailabilityPayload
+      | undefined;
     if (!data) return cart;
 
-    // NOTE: do NOT hide “0 available” lines permanently; user must still be able to remove them.
-    // So we only hide them for display IF they are OOS, but keep them removable.
+    // NOTE: we keep OOS lines visible so user can still remove them.
     return cart;
   }, [cart, availabilityQ.data]);
 
-  const quoteLines = (pricingQ.data as QuotePayload | null)?.lines ?? {};
+  const quoteLines =
+    (pricingQ.data as QuotePayload | null)?.lines ?? {};
 
   const quoteRetail = useMemo(() => {
     const q = pricingQ.data as QuotePayload | null;
@@ -732,35 +990,79 @@ export default function Cart() {
         retailMinUnit: number;
         retailMaxUnit: number;
         retailAverageUnit: number;
-        allocationsRetail: Array<QuoteAllocation & { retailUnitPrice: number; retailLineTotal: number }>;
+        allocationsRetail: Array<
+          QuoteAllocation & {
+            retailUnitPrice: number;
+            retailLineTotal: number;
+          }
+        >;
       }
     > = {};
 
     let subtotalRetail = 0;
 
-    for (const [k, ln] of Object.entries(q.lines || {})) {
-      const allocs = (ln.allocations || []).filter((a) => a.qty > 0);
+    for (const [k, ln] of Object.entries(
+      q.lines || {}
+    )) {
+      const allocs = (ln.allocations || []).filter(
+        (a) => a.qty > 0
+      );
 
       const allocationsRetail = allocs.map((a) => {
-        const retailUnitPrice = applyMargin(asMoney(a.unitPrice, 0), marginPercent);
-        const retailLineTotal = retailUnitPrice * Math.max(0, asInt(a.qty, 0));
-        return { ...a, retailUnitPrice, retailLineTotal };
+        const retailUnitPrice = applyMargin(
+          asMoney(a.unitPrice, 0),
+          marginPercent
+        );
+        const retailLineTotal =
+          retailUnitPrice *
+          Math.max(0, asInt(a.qty, 0));
+        return {
+          ...a,
+          retailUnitPrice,
+          retailLineTotal,
+        };
       });
 
-      const retailLineTotal = allocationsRetail.reduce((s, a) => s + asMoney(a.retailLineTotal, 0), 0);
+      const retailLineTotal = allocationsRetail.reduce(
+        (s, a) =>
+          s + asMoney(a.retailLineTotal, 0),
+        0
+      );
 
-      const units = allocationsRetail.map((a) => asMoney(a.retailUnitPrice, NaN)).filter((n) => Number.isFinite(n));
-      const retailMinUnit = units.length ? Math.min(...(units as number[])) : 0;
-      const retailMaxUnit = units.length ? Math.max(...(units as number[])) : 0;
+      const units = allocationsRetail
+        .map((a) =>
+          asMoney(a.retailUnitPrice, NaN)
+        )
+        .filter((n) => Number.isFinite(n));
+      const retailMinUnit = units.length
+        ? Math.min(...(units as number[]))
+        : 0;
+      const retailMaxUnit = units.length
+        ? Math.max(...(units as number[]))
+        : 0;
 
-      const qtyReq = Math.max(1, asInt(ln.qtyRequested, 1));
-      const retailAverageUnit = qtyReq > 0 ? retailLineTotal / qtyReq : 0;
+      const qtyReq = Math.max(
+        1,
+        asInt(ln.qtyRequested, 1)
+      );
+      const retailAverageUnit =
+        qtyReq > 0 ? retailLineTotal / qtyReq : 0;
 
-      linesRetail[k] = { retailLineTotal, retailMinUnit, retailMaxUnit, retailAverageUnit, allocationsRetail };
+      linesRetail[k] = {
+        retailLineTotal,
+        retailMinUnit,
+        retailMaxUnit,
+        retailAverageUnit,
+        allocationsRetail,
+      };
       subtotalRetail += retailLineTotal;
     }
 
-    return { subtotalRetail: round2(subtotalRetail), linesRetail, currency: q.currency ?? null };
+    return {
+      subtotalRetail: round2(subtotalRetail),
+      linesRetail,
+      currency: q.currency ?? null,
+    };
   }, [pricingQ.data, marginPercent]);
 
   // 🔁 Subtotal shown to shopper now uses cached retail unit prices (Cart/Wishlist/Catalog aligned)
@@ -771,16 +1073,21 @@ export default function Cart() {
         asMoney(it.unitPrice, 0) > 0
           ? asMoney(it.unitPrice, 0)
           : qty > 0
-            ? asMoney(it.totalPrice, 0) / qty
-            : 0;
+          ? asMoney(it.totalPrice, 0) / qty
+          : 0;
 
-      const lineTotal = round2(Math.max(0, cachedUnit) * qty);
+      const lineTotal = round2(
+        Math.max(0, cachedUnit) * qty
+      );
       return sum + lineTotal;
     }, 0);
   }, [visibleCart]);
 
-  const computedCapForLine = (item: CartItem): number | undefined => {
-    // 0️⃣ First, check pricing quote for this exact cart line.
+  // ✅ availability cap now respects the quote first
+  const computedCapForLine = (item: CartItem):
+    | number
+    | undefined => {
+    // 0️⃣ Quote-level cap (per exact line)
     const key = lineKeyFor(item);
     const ql = quoteLines[key];
 
@@ -788,47 +1095,75 @@ export default function Cart() {
       const priced = asInt(ql.qtyPriced, 0);
       const requested = asInt(ql.qtyRequested, 0);
 
-      // If nothing could be priced, this line is effectively out of stock
-      // for the *current configuration* (supplier / offer combo).
+      // If nothing could be priced, this line is effectively OOS
       if (!Number.isFinite(priced) || priced <= 0) {
         return 0;
       }
 
-      // If the quote only managed to price part of the requested qty,
-      // cap at the priced amount.
+      // If only part of the request could be priced, cap at priced qty
       if (priced < requested) {
         return Math.max(0, Math.floor(priced));
       }
 
-      // If priced >= requested, we know at least the requested qty is fine.
-      // We don't know the absolute max here, so we fall through to availability
-      // to get a looser cap (or "no cap" if availability is unknown).
+      // priced >= requested → OK; fall through to stock pools
     }
 
     // 1️⃣ Fallback to availability endpoint (product/variant level)
-    const data = availabilityQ.data as AvailabilityPayload | undefined;
+    const data = availabilityQ.data as
+      | AvailabilityPayload
+      | undefined;
     if (!data) return undefined;
 
-    const exactKey = availKeyFor(item.productId, item.variantId ?? null);
+    const exactKey = availKeyFor(
+      item.productId,
+      item.variantId ?? null
+    );
     const exactLine = data.lines?.[exactKey];
 
-    // 1a) Exact product+variant availability wins when present.
-    if (exactLine && Number.isFinite(Number(exactLine.totalAvailable))) {
-      return Math.max(0, Math.floor(Number(exactLine.totalAvailable) || 0));
+    // 1a) Exact line availability wins
+    if (
+      exactLine &&
+      Number.isFinite(
+        Number(exactLine.totalAvailable)
+      )
+    ) {
+      return Math.max(
+        0,
+        Math.floor(
+          Number(exactLine.totalAvailable) || 0
+        )
+      );
     }
 
-    // 1b) Fallback to product pool if exact line is missing.
+    // 1b) Fallback to product pool if exact line is missing
     const pool = data.products?.[String(item.productId)];
     if (!pool) return undefined;
 
-    // Variant line → prefer variant-specific pool.
+    // Variant line → prefer variant-specific pool
     if (item.variantId) {
-      const vCap = Number(pool.perVariantTotals?.[String(item.variantId)] ?? NaN);
-      if (Number.isFinite(vCap)) return Math.max(0, Math.floor(vCap));
+      const vCap = Number(
+        pool.perVariantTotals?.[
+          String(item.variantId)
+        ] ?? NaN
+      );
+      if (Number.isFinite(vCap))
+        return Math.max(
+          0,
+          Math.floor(vCap)
+        );
 
-      // No explicit variant pool → fallback to generic pool.
-      if (Number.isFinite(Number(pool.genericTotal))) {
-        return Math.max(0, Math.floor(Number(pool.genericTotal) || 0));
+      // if no explicit variant pool exists, fallback to generic pool
+      if (
+        Number.isFinite(
+          Number(pool.genericTotal)
+        )
+      ) {
+        return Math.max(
+          0,
+          Math.floor(
+            Number(pool.genericTotal) || 0
+          )
+        );
       }
 
       return undefined;
@@ -836,15 +1171,27 @@ export default function Cart() {
 
     // Base line (non-variant)
     if (pool.hasVariantSpecific) {
-      // When there are variant-specific pools, base line just sees generic stock.
-      return Math.max(0, Math.floor(Number(pool.genericTotal) || 0));
+      return Math.max(
+        0,
+        Math.floor(
+          Number(pool.genericTotal) || 0
+        )
+      );
     }
 
-    return Math.max(0, Math.floor(Number(pool.productTotal) || 0));
+    return Math.max(
+      0,
+      Math.floor(
+        Number(pool.productTotal) || 0
+      )
+    );
   };
 
   const clampToMax = (item: CartItem, wantQty: number) => {
-    const desired = Math.max(1, Math.floor(Number(wantQty) || 1));
+    const desired = Math.max(
+      1,
+      Math.floor(Number(wantQty) || 1)
+    );
     const cap = computedCapForLine(item);
 
     // no availability known → allow desired
@@ -858,49 +1205,82 @@ export default function Cart() {
   };
 
   // ✅ helper: write current guest cart state to cartModel storage
-  const persistGuestCartNow = useCallback((nextCart: CartItem[]) => {
-    const lines = (nextCart || [])
-      .map((it) => ({
-        productId: String(it.productId),
-        variantId: it.variantId == null ? null : String(it.variantId),
-        kind: (it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE") as "BASE" | "VARIANT",
-        optionsKey: "",
-        qty: Math.max(0, Math.floor(Number(it.qty) || 0)), // ✅ allow 0 (removal)
-        selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : [],
-        titleSnapshot: it.title ?? null,
-        imageSnapshot: it.image ?? null,
-        unitPriceCache: Number.isFinite(Number(it.unitPrice)) ? Number(it.unitPrice) : 0,
-      }))
-      .filter((x) => x.qty > 0); // ✅ remove zero qty lines
+  const persistGuestCartNow = useCallback(
+    (nextCart: CartItem[]) => {
+      const lines = (nextCart || [])
+        .map((it) => ({
+          productId: String(it.productId),
+          variantId:
+            it.variantId == null
+              ? null
+              : String(it.variantId),
+          kind: (it.kind === "VARIANT" || it.variantId
+            ? "VARIANT"
+            : "BASE") as "BASE" | "VARIANT",
+          optionsKey: "",
+          qty: Math.max(
+            0,
+            Math.floor(Number(it.qty) || 0)
+          ), // ✅ allow 0 (removal)
+          selectedOptions: Array.isArray(
+            it.selectedOptions
+          )
+            ? it.selectedOptions
+            : [],
+          titleSnapshot: it.title ?? null,
+          imageSnapshot: it.image ?? null,
+          unitPriceCache: Number.isFinite(
+            Number(it.unitPrice)
+          )
+            ? Number(it.unitPrice)
+            : 0,
+        }))
+        .filter((x) => x.qty > 0); // ✅ remove zero qty lines
 
-    writeCartLines(lines as any);
-    window.dispatchEvent(new Event("cart:updated"));
-  }, []);
+      writeCartLines(lines as any);
+      window.dispatchEvent(new Event("cart:updated"));
+    },
+    []
+  );
 
   const updateQty = useCallback(
     async (target: CartItem, newQtyRaw: number) => {
       const clamped = clampToMax(target, newQtyRaw);
 
-      // optimistic UI
-      const nextCartFn = (prev: CartItem[]) =>
-        prev.map((it) => {
+      // ✅ Single functional setCart → smooth UI
+      setCart((prev) => {
+        const updated = prev.map((it) => {
           if (!sameLine(it, target)) return it;
 
           const unit =
-            Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
+            Number.isFinite(Number(it.unitPrice)) &&
+            Number(it.unitPrice) > 0
               ? Number(it.unitPrice)
-              : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
+              : (Number(it.totalPrice) || 0) /
+                Math.max(
+                  1,
+                  Number(it.qty) || 1
+                );
+
+          const safeUnit =
+            unit > 0 ? unit : 0;
 
           return {
             ...it,
             qty: clamped,
-            totalPrice: (unit > 0 ? unit : 0) * clamped,
-            unitPrice: unit > 0 ? unit : it.unitPrice,
+            totalPrice: safeUnit * clamped,
+            unitPrice:
+              safeUnit > 0
+                ? safeUnit
+                : it.unitPrice,
           };
         });
 
-      setCart((prev) => {
-        const updated = nextCartFn(prev);
+        if (!isAuthed) {
+          // persist guest immediately as part of same render
+          persistGuestCartNow(updated);
+        }
+
         return updated;
       });
 
@@ -909,54 +1289,60 @@ export default function Cart() {
           await serverSetQty(target, clamped);
           await loadCart();
         } catch {
-          await loadCart().catch(() => { });
+          await loadCart().catch(() => {});
         }
-      } else {
-        // ✅ persist guest immediately (no race)
-        const updated = nextCartFn(cart);
-        persistGuestCartNow(updated);
-        setCart(updated);
       }
 
       return clamped;
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [availabilityQ.data, isAuthed, loadCart, cart, persistGuestCartNow]
+    [isAuthed, loadCart, persistGuestCartNow]
   );
 
   const remove = useCallback(
     async (target: CartItem) => {
       // optimistic
-      const next = cart.filter((it) => !sameLine(it, target));
-      setCart(next);
+      setCart((prev) => {
+        const next = prev.filter(
+          (it) => !sameLine(it, target)
+        );
+        if (!isAuthed) {
+          persistGuestCartNow(next);
+        }
+        return next;
+      });
 
       if (isAuthed) {
         try {
           await serverSetQty(target, 0);
           await loadCart();
         } catch {
-          await loadCart().catch(() => { });
+          await loadCart().catch(() => {});
         }
-      } else {
-        // ✅ persist guest immediately (so last item removal works)
-        persistGuestCartNow(next);
       }
     },
-    [isAuthed, loadCart, cart, persistGuestCartNow]
+    [isAuthed, loadCart, persistGuestCartNow]
   );
 
   const pricingWarning = useMemo(() => {
     const q = pricingQ.data as QuotePayload | null;
     if (!q) return null;
 
-    const unpriced = Object.values(q.lines || {}).filter((l) => l.qtyPriced < l.qtyRequested);
+    const unpriced = Object.values(
+      q.lines || {}
+    ).filter(
+      (l) =>
+        l.qtyPriced < l.qtyRequested
+    );
     if (!unpriced.length) return null;
 
     return "Some items could not be fully allocated across suppliers. Reduce quantities or try again.";
   }, [pricingQ.data]);
 
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const tap = "touch-manipulation [-webkit-tap-highlight-color:transparent]";
+  const [expanded, setExpanded] = useState<
+    Record<string, boolean>
+  >({});
+  const tap =
+    "touch-manipulation [-webkit-tap-highlight-color:transparent]";
 
   if (visibleCart.length === 0) {
     return (
@@ -970,8 +1356,13 @@ export default function Cart() {
               <span className="inline-block size-1.5 rounded-full bg-white/90" />
               Your cart is empty
             </div>
-            <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-ink">Let’s find something you’ll love</h1>
-            <p className="mt-1 text-ink-soft">Browse our catalogue and add items to your cart. They’ll show up here for checkout.</p>
+            <h1 className="mt-3 text-3xl font-extrabold tracking-tight text-ink">
+              Let’s find something you’ll love
+            </h1>
+            <p className="mt-1 text-ink-soft">
+              Browse our catalogue and add items to your
+              cart. They’ll show up here for checkout.
+            </p>
             <Link
               to="/"
               className={`${tap} mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200 transition`}
@@ -984,8 +1375,18 @@ export default function Cart() {
     );
   }
 
-  const topBannerLoading = pricingQ.isLoading || pricingQ.isFetching;
-  const topBannerText = topBannerLoading ? "Calculating best supplier prices…" : pricingWarning ?? "";
+  const topBannerLoading =
+    pricingQ.isLoading || pricingQ.isFetching;
+  const topBannerStatus = topBannerLoading
+    ? "loading"
+    : pricingWarning
+    ? "warning"
+    : "ok";
+  const topBannerText = topBannerLoading
+    ? "Calculating best supplier prices…"
+    : pricingWarning
+    ? pricingWarning
+    : "Prices are based on live supplier offers and your retail margin.";
 
   return (
     <SiteLayout>
@@ -1005,15 +1406,26 @@ export default function Cart() {
             </h1>
 
             <p className="text-sm max-[360px]:text-[12px] text-ink-soft">
-              Prices shown are <span className="font-medium">retail</span> (same basis as catalogue &amp; wishlist).
+              Prices shown are{" "}
+              <span className="font-medium">
+                retail
+              </span>{" "}
+              (same basis as catalogue &amp; wishlist).
             </p>
 
-            {(topBannerLoading || !!pricingWarning) && (
-              <div className="mt-3 inline-flex items-center gap-2 rounded-full border bg-white/70 px-3 py-1 text-[12px] max-[360px]:text-[11px] text-ink-soft">
-                <span className={`inline-block size-2 rounded-full ${topBannerLoading ? "bg-amber-400 animate-pulse" : "bg-rose-400"}`} />
-                {topBannerText}
-              </div>
-            )}
+            {/* ✅ Always render banner with fixed height to avoid layout jumps */}
+            <div className="mt-3 inline-flex items-center gap-2 rounded-full border bg-white/70 px-3 py-1 text-[12px] max-[360px]:text-[11px] text-ink-soft min-h-[26px]">
+              <span
+                className={`inline-block size-2 rounded-full ${
+                  topBannerStatus === "loading"
+                    ? "bg-amber-400 animate-pulse"
+                    : topBannerStatus === "warning"
+                    ? "bg-rose-500"
+                    : "bg-emerald-500"
+                }`}
+              />
+              <span>{topBannerText}</span>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-4 sm:gap-6">
@@ -1022,9 +1434,13 @@ export default function Cart() {
               {visibleCart.map((it) => {
                 const k = lineKeyFor(it);
                 const ql = quoteLines[k];
-                const rl = quoteRetail?.linesRetail?.[k];
+                const rl =
+                  quoteRetail?.linesRetail?.[k];
 
-                const currentQty = Math.max(1, Number(it.qty) || 1);
+                const currentQty = Math.max(
+                  1,
+                  Number(it.qty) || 1
+                );
                 const maxQty = computedCapForLine(it);
 
                 // 💰 Display unit price (aligned with Catalog/Wishlist) from cached retail
@@ -1032,82 +1448,150 @@ export default function Cart() {
                   asMoney(it.unitPrice, 0) > 0
                     ? asMoney(it.unitPrice, 0)
                     : currentQty > 0
-                      ? asMoney(it.totalPrice, 0) / currentQty
-                      : 0;
+                    ? asMoney(it.totalPrice, 0) /
+                      currentQty
+                    : 0;
 
-                const displayUnit = Math.max(0, cachedUnit);
-                const displayLineTotal = round2(displayUnit * currentQty);
+                const displayUnit = Math.max(
+                  0,
+                  cachedUnit
+                );
+                const displayLineTotal = round2(
+                  displayUnit * currentQty
+                );
 
-                const hasQuote = !!ql && (ql.lineTotal > 0 || ql.allocations.length > 0);
+                const hasQuote =
+                  !!ql &&
+                  (ql.lineTotal > 0 ||
+                    ql.allocations.length > 0);
 
                 const splitBadge =
-                  hasQuote && ql.allocations.filter((a) => a.qty > 0).length > 1
+                  hasQuote &&
+                  ql.allocations.filter(
+                    (a) => a.qty > 0
+                  ).length > 1
                     ? "Split across suppliers"
-                    : hasQuote && ql.allocations.length === 1
-                      ? "Single supplier"
-                      : "";
+                    : hasQuote &&
+                      ql.allocations.length === 1
+                    ? "Single supplier"
+                    : "";
 
                 const kindLabel = isBaseLine(it)
                   ? "Base"
                   : it.variantId
-                    ? "Variant"
-                    : it.selectedOptions?.length
-                      ? "Configured"
-                      : "Item";
+                  ? "Variant"
+                  : it.selectedOptions?.length
+                  ? "Configured"
+                  : "Item";
 
                 const isExpanded = !!expanded[k];
 
                 const draft = qtyDraft[k];
-                const inputValue = draft == null ? String(currentQty) : draft;
+                const inputValue =
+                  draft == null
+                    ? String(currentQty)
+                    : draft;
 
                 const commitDraft = async () => {
                   const raw = qtyDraft[k];
-                  const parsed = raw === "" || raw == null ? 1 : Math.floor(Number(raw));
-                  const desired = Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-                  const clamped = await updateQty(it, desired);
-                  setQtyDraft((p) => ({ ...p, [k]: String(clamped) }));
+                  const parsed =
+                    raw === "" || raw == null
+                      ? 1
+                      : Math.floor(Number(raw));
+                  const desired =
+                    Number.isFinite(parsed) &&
+                    parsed > 0
+                      ? parsed
+                      : 1;
+                  const clamped = await updateQty(
+                    it,
+                    desired
+                  );
+                  setQtyDraft((p) => ({
+                    ...p,
+                    [k]: String(clamped),
+                  }));
                 };
 
                 const effectiveQtyForButtons = () => {
                   const raw = qtyDraft[k];
-                  if (raw == null || raw === "") return currentQty;
-                  const n = Math.floor(Number(raw));
-                  return Number.isFinite(n) && n > 0 ? n : currentQty;
+                  if (raw == null || raw === "")
+                    return currentQty;
+                  const n = Math.floor(
+                    Number(raw)
+                  );
+                  return Number.isFinite(n) &&
+                    n > 0
+                    ? n
+                    : currentQty;
                 };
 
                 const inc = async () => {
-                  const base = effectiveQtyForButtons();
-                  const clamped = await updateQty(it, base + 1);
-                  setQtyDraft((p) => ({ ...p, [k]: String(clamped) }));
+                  const base =
+                    effectiveQtyForButtons();
+                  const clamped =
+                    await updateQty(
+                      it,
+                      base + 1
+                    );
+                  setQtyDraft((p) => ({
+                    ...p,
+                    [k]: String(clamped),
+                  }));
                 };
 
                 const dec = async () => {
-                  const base = effectiveQtyForButtons();
-                  const nextQty = Math.max(1, base - 1);
-                  const clamped = await updateQty(it, nextQty);
-                  setQtyDraft((p) => ({ ...p, [k]: String(clamped) }));
+                  const base =
+                    effectiveQtyForButtons();
+                  const nextQty = Math.max(
+                    1,
+                    base - 1
+                  );
+                  const clamped =
+                    await updateQty(
+                      it,
+                      nextQty
+                    );
+                  setQtyDraft((p) => ({
+                    ...p,
+                    [k]: String(clamped),
+                  }));
                 };
 
-                const unitText = displayUnit > 0 ? ngn.format(displayUnit) : "—";
+                const unitText =
+                  displayUnit > 0
+                    ? ngn.format(displayUnit)
+                    : "—";
 
                 // ✅ Use normalized options, and prefer human names over IDs/codes
-                const displayOptions = normalizeSelectedOptions(it.selectedOptions);
+                const displayOptions =
+                  normalizeSelectedOptions(
+                    it.selectedOptions
+                  );
 
                 let optionLabel = displayOptions
                   .map((o) => {
                     const attr =
-                      o.attribute && !isCodeLike(o.attribute)
+                      o.attribute &&
+                      !isCodeLike(o.attribute)
                         ? o.attribute
-                        : o.attributeId && !isCodeLike(o.attributeId)
-                          ? o.attributeId
-                          : "";
+                        : o.attributeId &&
+                          !isCodeLike(
+                            o.attributeId
+                          )
+                        ? o.attributeId
+                        : "";
 
                     const val =
-                      o.value && !isCodeLike(o.value)
+                      o.value &&
+                      !isCodeLike(o.value)
                         ? o.value
-                        : o.valueId && !isCodeLike(o.valueId)
-                          ? o.valueId
-                          : "";
+                        : o.valueId &&
+                          !isCodeLike(
+                            o.valueId
+                          )
+                        ? o.valueId
+                        : "";
 
                     if (!attr && !val) return null;
                     if (!attr) return val;
@@ -1118,12 +1602,15 @@ export default function Cart() {
                   .join(" • ");
 
                 // 🔁 Fallbacks if we only had internal IDs / codes
-                if (!optionLabel && !isBaseLine(it)) {
-                  // We know it's a VARIANT line but don't have nice labels
+                if (
+                  !optionLabel &&
+                  !isBaseLine(it)
+                ) {
                   optionLabel = "Variant selected";
-                } else if (!optionLabel && displayOptions.length) {
-                  // Options exist but all looked like codes → don't show raw IDs,
-                  // just a generic hint that configuration is stored.
+                } else if (
+                  !optionLabel &&
+                  displayOptions.length
+                ) {
                   optionLabel = "Options saved";
                 }
 
@@ -1135,15 +1622,22 @@ export default function Cart() {
                   >
                     <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4">
                       <div className="shrink-0 w-16 h-16 sm:w-20 sm:h-20 max-[360px]:w-14 max-[360px]:h-14 rounded-xl border overflow-hidden bg-white self-start relative">
-                        <div className="absolute inset-0 grid place-items-center text-[11px] text-ink-soft">No image</div>
+                        <div className="absolute inset-0 grid place-items-center text-[11px] text-ink-soft">
+                          No image
+                        </div>
 
                         {resolveImageUrl(it.image) && (
                           <img
-                            src={resolveImageUrl(it.image)}
+                            src={resolveImageUrl(
+                              it.image
+                            )}
                             alt=""
                             aria-hidden="true"
                             className="relative w-full h-full object-cover"
-                            onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")}
+                            onError={(e) =>
+                              ((e.currentTarget as HTMLImageElement).style.display =
+                                "none")
+                            }
                           />
                         )}
                       </div>
@@ -1151,14 +1645,19 @@ export default function Cart() {
                       <div className="flex-1 min-w-0">
                         <div className="min-w-0">
                           <div className="flex items-start justify-between gap-2">
-                            <h3 className="font-semibold text-ink text-[14px] sm:text-base leading-snug truncate" title={it.title}>
+                            <h3
+                              className="font-semibold text-ink text-[14px] sm:text-base leading-snug truncate"
+                              title={it.title}
+                            >
                               {it.title || "Item"}
                             </h3>
 
                             <button
                               type="button"
                               className={`${tap} shrink-0 whitespace-nowrap text-[12px] sm:text-sm text-rose-600 hover:underline rounded-lg px-2 py-1 hover:bg-rose-500/10 transition`}
-                              onClick={() => remove(it)}
+                              onClick={() =>
+                                remove(it)
+                              }
                               aria-label={`Remove ${it.title}`}
                               title="Remove item"
                             >
@@ -1167,9 +1666,14 @@ export default function Cart() {
                           </div>
 
                           <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">{kindLabel}</span>
-                            {!!splitBadge && <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">{splitBadge}</span>}
-                            {pricingQ.isFetching && <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">Updating…</span>}
+                            <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">
+                              {kindLabel}
+                            </span>
+                            {!!splitBadge && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">
+                                {splitBadge}
+                              </span>
+                            )}
                           </div>
 
                           {!!optionLabel && (
@@ -1180,53 +1684,116 @@ export default function Cart() {
 
                           <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] max-[360px]:text-[11px] sm:text-xs text-ink-soft">
                             <div>
-                              Unit: <span className="font-medium text-ink">{unitText}</span>
+                              Unit:{" "}
+                              <span className="font-medium text-ink">
+                                {unitText}
+                              </span>
                             </div>
                           </div>
 
-                          {rl && (rl.allocationsRetail?.length ?? 0) > 0 && (
-                            <button
-                              className={`${tap} mt-2 text-[11px] text-primary-700 hover:underline`}
-                              onClick={() => setExpanded((p) => ({ ...p, [k]: !p[k] }))}
-                              type="button"
-                            >
-                              {isExpanded ? "Hide supplier breakdown" : "Show supplier breakdown"}
-                            </button>
-                          )}
+                          {rl &&
+                            (rl.allocationsRetail?.length ??
+                              0) > 0 && (
+                              <button
+                                className={`${tap} mt-2 text-[11px] text-primary-700 hover:underline`}
+                                onClick={() =>
+                                  setExpanded(
+                                    (p) => ({
+                                      ...p,
+                                      [k]: !p[k],
+                                    })
+                                  )
+                                }
+                                type="button"
+                              >
+                                {isExpanded
+                                  ? "Hide supplier breakdown"
+                                  : "Show supplier breakdown"}
+                              </button>
+                            )}
                         </div>
 
-                        {rl && isExpanded && (rl.allocationsRetail?.length ?? 0) > 0 && (
-                          <div className="mt-3 rounded-xl border bg-white/70 p-3 text-xs">
-                            <div className="flex items-center justify-between text-ink-soft">
-                              <span>Supplier split (retail)</span>
-                              <span className="font-medium text-ink">{ngn.format(asMoney(rl.retailLineTotal, 0))}</span>
-                            </div>
-
-                            <div className="mt-2 space-y-1">
-                              {rl.allocationsRetail
-                                .filter((a) => a.qty > 0)
-                                .map((a, idx) => (
-                                  <div key={`${a.supplierId}-${idx}`} className="flex items-center justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <div className="font-medium text-ink truncate">{a.supplierName || "Supplier"}</div>
-                                      <div className="text-ink-soft">
-                                        {a.qty} × {ngn.format(asMoney(a.retailUnitPrice, 0))}
-                                      </div>
-                                    </div>
-                                    <div className="font-semibold text-ink whitespace-nowrap">
-                                      {ngn.format(asMoney(a.retailLineTotal, 0))}
-                                    </div>
-                                  </div>
-                                ))}
-                            </div>
-
-                            {ql && ql.qtyPriced < ql.qtyRequested && (
-                              <div className="mt-2 text-[11px] text-rose-700">
-                                Only {ql.qtyPriced} out of {ql.qtyRequested} could be allocated.
+                        {rl &&
+                          isExpanded &&
+                          (rl.allocationsRetail?.length ??
+                            0) > 0 && (
+                            <div className="mt-3 rounded-xl border bg-white/70 p-3 text-xs">
+                              <div className="flex items-center justify-between text-ink-soft">
+                                <span>
+                                  Supplier split
+                                  (retail)
+                                </span>
+                                <span className="font-medium text-ink">
+                                  {ngn.format(
+                                    asMoney(
+                                      rl.retailLineTotal,
+                                      0
+                                    )
+                                  )}
+                                </span>
                               </div>
-                            )}
-                          </div>
-                        )}
+
+                              <div className="mt-2 space-y-1">
+                                {rl.allocationsRetail
+                                  .filter(
+                                    (a) =>
+                                      a.qty > 0
+                                  )
+                                  .map(
+                                    (
+                                      a,
+                                      idx
+                                    ) => (
+                                      <div
+                                        key={`${a.supplierId}-${idx}`}
+                                        className="flex items-center justify-between gap-3"
+                                      >
+                                        <div className="min-w-0">
+                                          <div className="font-medium text-ink truncate">
+                                            {a.supplierName ||
+                                              "Supplier"}
+                                          </div>
+                                          <div className="text-ink-soft">
+                                            {a.qty} ×{" "}
+                                            {ngn.format(
+                                              asMoney(
+                                                a.retailUnitPrice,
+                                                0
+                                              )
+                                            )}
+                                          </div>
+                                        </div>
+                                        <div className="font-semibold text-ink whitespace-nowrap">
+                                          {ngn.format(
+                                            asMoney(
+                                              a.retailLineTotal,
+                                              0
+                                            )
+                                          )}
+                                        </div>
+                                      </div>
+                                    )
+                                  )}
+                              </div>
+
+                              {ql &&
+                                ql.qtyPriced <
+                                  ql.qtyRequested && (
+                                  <div className="mt-2 text-[11px] text-rose-700">
+                                    Only{" "}
+                                    {
+                                      ql.qtyPriced
+                                    }{" "}
+                                    out of{" "}
+                                    {
+                                      ql.qtyRequested
+                                    }{" "}
+                                    could be
+                                    allocated.
+                                  </div>
+                                )}
+                            </div>
+                          )}
 
                         <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                           <div className="flex items-center justify-between sm:justify-start gap-3">
@@ -1235,7 +1802,9 @@ export default function Cart() {
                                 type="button"
                                 aria-label="Decrease quantity"
                                 className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 active:scale-[0.98] transition`}
-                                onMouseDown={(e) => e.preventDefault()}
+                                onMouseDown={(e) =>
+                                  e.preventDefault()
+                                }
                                 onClick={dec}
                               >
                                 −
@@ -1247,17 +1816,46 @@ export default function Cart() {
                                 pattern="[0-9]*"
                                 value={inputValue}
                                 onChange={(e) => {
-                                  const v = e.target.value;
-                                  if (v === "") {
-                                    setQtyDraft((p) => ({ ...p, [k]: "" }));
+                                  const v =
+                                    e.target
+                                      .value;
+                                  if (
+                                    v === ""
+                                  ) {
+                                    setQtyDraft(
+                                      (
+                                        p
+                                      ) => ({
+                                        ...p,
+                                        [k]: "",
+                                      })
+                                    );
                                     return;
                                   }
-                                  if (!/^\d+$/.test(v)) return;
-                                  setQtyDraft((p) => ({ ...p, [k]: v }));
+                                  if (
+                                    !/^\d+$/.test(
+                                      v
+                                    )
+                                  )
+                                    return;
+                                  setQtyDraft(
+                                    (
+                                      p
+                                    ) => ({
+                                      ...p,
+                                      [k]: v,
+                                    })
+                                  );
                                 }}
-                                onBlur={() => commitDraft()}
+                                onBlur={() =>
+                                  commitDraft()
+                                }
                                 onKeyDown={(e) => {
-                                  if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                                  if (
+                                    e.key ===
+                                    "Enter"
+                                  )
+                                    (e.currentTarget as HTMLInputElement).blur();
                                 }}
                                 className="w-14 sm:w-16 max-[360px]:w-12 text-center outline-none px-2 py-2 max-[360px]:py-1.5 bg-white"
                                 aria-label="Quantity"
@@ -1267,7 +1865,9 @@ export default function Cart() {
                                 type="button"
                                 aria-label="Increase quantity"
                                 className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 active:scale-[0.98] transition`}
-                                onMouseDown={(e) => e.preventDefault()}
+                                onMouseDown={(e) =>
+                                  e.preventDefault()
+                                }
                                 onClick={inc}
                               >
                                 +
@@ -1276,18 +1876,32 @@ export default function Cart() {
 
                             <div className="text-xs max-[360px]:text-[11px] text-ink-soft leading-tight">
                               <div>Qty</div>
-                              {typeof maxQty === "number" && Number.isFinite(maxQty) && (
-                                <div className="text-[10px]">
-                                  Max: <span className="font-medium text-ink">{Math.max(0, maxQty)}</span>
-                                </div>
-                              )}
+                              {typeof maxQty ===
+                                "number" &&
+                                Number.isFinite(
+                                  maxQty
+                                ) && (
+                                  <div className="text-[10px]">
+                                    Max:{" "}
+                                    <span className="font-medium text-ink">
+                                      {Math.max(
+                                        0,
+                                        maxQty
+                                      )}
+                                    </span>
+                                  </div>
+                                )}
                             </div>
                           </div>
 
                           <div className="sm:ml-auto rounded-xl border bg-white/70 px-3 py-2 text-right min-w-[140px] max-[360px]:min-w-[0]">
-                            <div className="text-[11px] text-ink-soft">Line total</div>
+                            <div className="text-[11px] text-ink-soft">
+                              Line total
+                            </div>
                             <div className="text-[18px] sm:text-lg font-semibold tracking-tight break-words">
-                              {ngn.format(displayLineTotal)}
+                              {ngn.format(
+                                displayLineTotal
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1301,23 +1915,36 @@ export default function Cart() {
             {/* RIGHT: Summary */}
             <aside className="lg:sticky lg:top-6 h-max relative z-10">
               <div className="rounded-2xl border border-white/60 bg-white/70 backdrop-blur p-4 sm:p-5 max-[360px]:p-3 shadow-[0_6px_30px_rgba(0,0,0,0.06)] overflow-hidden">
-                <h2 className="text-lg max-[360px]:text-base font-semibold text-ink">Order summary</h2>
+                <h2 className="text-lg max-[360px]:text-base font-semibold text-ink">
+                  Order summary
+                </h2>
 
                 <div className="mt-4 grid gap-3 text-[13px] max-[360px]:text-[12px] sm:text-sm">
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
-                    <span className="text-ink-soft leading-tight">Items</span>
-                    <span className="font-semibold text-ink whitespace-nowrap text-right">{visibleCart.length}</span>
+                    <span className="text-ink-soft leading-tight">
+                      Items
+                    </span>
+                    <span className="font-semibold text-ink whitespace-nowrap text-right">
+                      {visibleCart.length}
+                    </span>
                   </div>
 
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
                     <span className="text-ink-soft leading-tight">
-                      Subtotal <span className="text-[11px]">(retail)</span>
+                      Subtotal{" "}
+                      <span className="text-[11px]">
+                        (retail)
+                      </span>
                     </span>
-                    <span className="font-semibold text-ink whitespace-nowrap text-right">{ngn.format(total)}</span>
+                    <span className="font-semibold text-ink whitespace-nowrap text-right">
+                      {ngn.format(total)}
+                    </span>
                   </div>
 
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
-                    <span className="text-ink-soft leading-tight">Shipping</span>
+                    <span className="text-ink-soft leading-tight">
+                      Shipping
+                    </span>
                     <span className="font-semibold text-ink text-right leading-tight">
                       Calculated
                       <br />
@@ -1328,28 +1955,40 @@ export default function Cart() {
 
                 <div className="mt-5 pt-4 border-t border-white/50">
                   <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                    <span className="font-semibold text-ink">Total</span>
+                    <span className="font-semibold text-ink">
+                      Total
+                    </span>
                     <span className="text-[26px] sm:text-2xl max-[360px]:text-[22px] font-extrabold tracking-tight text-ink break-words">
                       {ngn.format(total)}
                     </span>
                   </div>
 
-                  {pricingWarning && <p className="mt-2 text-[12px] text-rose-600">{pricingWarning}</p>}
+                  {pricingWarning && (
+                    <p className="mt-2 text-[12px] text-rose-600">
+                      {pricingWarning}
+                    </p>
+                  )}
 
                   <Link
                     to={!pricingWarning ? "/checkout" : "#"}
                     onClick={(e) => {
-                      if (!!pricingWarning) e.preventDefault();
+                      if (!!pricingWarning)
+                        e.preventDefault();
                     }}
                     className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition
-                      ${!pricingWarning
-                        ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
-                        : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                      ${
+                        !pricingWarning
+                          ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
+                          : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
                       }`}
                     aria-disabled={!!pricingWarning}
                   >
-                    <span className="sm:hidden">Checkout</span>
-                    <span className="hidden sm:inline">Proceed to checkout</span>
+                    <span className="sm:hidden">
+                      Checkout
+                    </span>
+                    <span className="hidden sm:inline">
+                      Proceed to checkout
+                    </span>
                   </Link>
 
                   <Link
@@ -1359,12 +1998,16 @@ export default function Cart() {
                     Continue shopping
                   </Link>
 
-                  <p className="mt-3 text-[11px] text-ink-soft">Totals above use the same retail basis as the catalogue.</p>
+                  <p className="mt-3 text-[11px] text-ink-soft">
+                    Totals above use the same retail basis
+                    as the catalogue.
+                  </p>
                 </div>
               </div>
 
               <p className="mt-3 text-[11px] text-ink-soft text-center">
-                Taxes &amp; shipping are shown at checkout. You can update addresses there.
+                Taxes &amp; shipping are shown at
+                checkout. You can update addresses there.
               </p>
             </aside>
           </div>
