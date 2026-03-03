@@ -69,17 +69,19 @@ async function resolveShippingFlags(): Promise<{
   shippingEnabled: boolean;
   shippingMode: ShippingMode;
 }> {
-  // safe defaults
-  let shippingEnabled = true;
-  let shippingMode: ShippingMode = "DELIVERY";
+  // ❗ Default behaviour when there is NO row:
+  //    -> treat as shipping disabled (pickup only)
+  let shippingEnabled = false;
+  let shippingMode: ShippingMode = "PICKUP_ONLY";
 
   const dbEnabled = await readSetting("shippingEnabled");
   const dbMode = await readSetting("shippingMode");
 
+  // Only override from DB if a row actually exists
   if (dbEnabled !== null) shippingEnabled = parseBool(dbEnabled, shippingEnabled);
   if (dbMode !== null) shippingMode = parseShippingMode(dbMode, shippingMode);
 
-  // if shipping is disabled, force pickup-only mode for consistency
+  // If shipping is disabled, force pickup-only mode for consistency
   if (!shippingEnabled) shippingMode = "PICKUP_ONLY";
 
   return { shippingEnabled, shippingMode };
