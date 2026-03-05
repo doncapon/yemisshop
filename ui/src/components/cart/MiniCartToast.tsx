@@ -3,40 +3,33 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { ShoppingCart, X } from "lucide-react";
+import api from "../../api/client";
+import { readCartLines, upsertCartLine, toMiniCartRows } from "../../utils/cartModel";
 
 type ToastMode = "add" | "remove";
 
 type ToastOpts = {
   title?: string;
-  duration?: number; // ms
+  duration?: number;
   maxItems?: number;
-  mode?: ToastMode; // ✅ NEW
+  mode?: ToastMode;
 };
 
 type MiniCartOption = { attribute?: string; value?: string };
 
 export type MiniCartRow = {
-  // ✅ optional cart item id so we can uniquely separate rows if needed
   id?: string;
-
   productId: string;
   variantId?: string | null;
-
-  // ✅ supplier info so items from different suppliers never merge
   supplierId?: string | null;
   supplierName?: string | null;
-
-  // ✅ base vs variant kind
   kind?: "BASE" | "VARIANT";
-
-  // ✅ ensures different variant selections don’t collapse together
   optionsKey?: string | null;
-
   title?: string;
   qty: number;
   unitPrice?: number;
   totalPrice?: number;
-  price?: number; // legacy
+  price?: number;
   image?: string | null;
   selectedOptions?: MiniCartOption[];
 };
@@ -44,46 +37,19 @@ export type MiniCartRow = {
 type ToastFocus = { productId: string; variantId?: string | null };
 
 type ToastPayload = {
-  /**
-   * Full cart snapshot (e.g. server cart) – will be used as the base.
-   */
   cart?: MiniCartRow[];
-  /**
-   * Additional rows (e.g. just-added items). These are *appended* to `cart`
-   * when present so the toast shows server + new items.
-   */
   items?: MiniCartRow[];
-  /**
-   * Alias / legacy shape – also appended.
-   */
   rows?: MiniCartRow[];
-
   focus?: ToastFocus | null;
   opts?: ToastOpts;
 };
 
 const EVENT = "mini-cart-toast:v1";
 
-/* ----------------------------------------------------------------------------
- * Public API: showMiniCartToast
- *
- * 1) Legacy usage (still works):
- *    showMiniCartToast(cartRows, { productId, variantId }, opts)
- *
- * 2) New usage (server + additions merged in the toast):
- *    showMiniCartToast({
- *      cart: serverCartRows,
- *      items: addedRows,   // or `rows`
- *      focus: { productId, variantId },
- *      opts: { ... },
- *    });
- * -------------------------------------------------------------------------- */
+/* ---------------- showMiniCartToast ---------------- */
+
 export function showMiniCartToast(payload: ToastPayload): void;
-export function showMiniCartToast(
-  cart: MiniCartRow[],
-  focus?: ToastFocus | null,
-  opts?: ToastOpts
-): void;
+export function showMiniCartToast(cart: MiniCartRow[], focus?: ToastFocus | null, opts?: ToastOpts): void;
 export function showMiniCartToast(
   arg1: MiniCartRow[] | ToastPayload,
   arg2?: ToastFocus | null,
@@ -91,30 +57,18 @@ export function showMiniCartToast(
 ): void {
   try {
     const detail: ToastPayload = Array.isArray(arg1)
-      ? {
-          cart: arg1,
-          focus: arg2 ?? undefined,
-          opts: arg3,
-        }
+      ? { cart: arg1, focus: arg2 ?? undefined, opts: arg3 }
       : arg1;
 
-    window.dispatchEvent(new CustomEvent<ToastPayload>(EVENT, { detail }));
-  } catch {
-    // never block add-to-cart
-  }
+    window.dispatchEvent(new CustomEvent(EVENT, { detail }));
+  } catch {}
 }
 
-function clampCart(cart: MiniCartRow[], maxItems: number) {
-  const safe = Array.isArray(cart) ? cart : [];
-  // show most-recent-ish: last items first
-  const sliced = safe.slice(-Math.max(1, maxItems)).reverse();
-  return sliced;
-}
+/* ---------------- helpers ---------------- */
 
 const NGN = new Intl.NumberFormat("en-NG", {
   style: "currency",
   currency: "NGN",
-  maximumFractionDigits: 2,
 });
 
 function money(n: any) {
@@ -122,9 +76,38 @@ function money(n: any) {
   return Number.isFinite(v) ? v : 0;
 }
 
-/* ----------------------------------------------------------------------------
- * Normalize event payload: merge server cart + added rows
- * -------------------------------------------------------------------------- */
+function str(v: any) {
+  return String(v ?? "").trim();
+}
+
+function normKind(row: MiniCartRow): "BASE" | "VARIANT" {
+  const k = str(row.kind).toUpperCase();
+  if (k === "BASE" || k === "VARIANT") return k as any;
+  return row.variantId ? "VARIANT" : "BASE";
+}
+
+function normVariantId(row: MiniCartRow) {
+  const vid = str(row.variantId);
+  return vid ? vid : null;
+}
+
+function normOptionsKey(row: MiniCartRow) {
+  const ok = str(row.optionsKey);
+  return ok || "";
+}
+
+function cartKey(row: MiniCartRow) {
+  const kind = normKind(row);
+  const vid = kind === "BASE" ? null : normVariantId(row);
+  const ok = kind === "BASE" ? "" : normOptionsKey(row);
+  return [str(row.productId), kind, String(vid ?? "base"), ok].join("|");
+}
+
+const availKeyFor = (productId: string, variantId?: string | null) =>
+  `${String(productId)}::${variantId ?? "null"}`;
+
+/* ---------------- normalize payload ---------------- */
+
 function normalizePayload(d: ToastPayload | null | undefined) {
   const base: MiniCartRow[] = Array.isArray(d?.cart) ? d!.cart : [];
   const extras: MiniCartRow[] = [];
@@ -134,134 +117,305 @@ function normalizePayload(d: ToastPayload | null | undefined) {
 
   const cart: MiniCartRow[] = [...base, ...extras];
 
-  // If focus is missing, derive from the most recent cart row (last item)
   const last = cart.length ? cart[cart.length - 1] : null;
 
   const focus: ToastFocus | null =
-    d?.focus && typeof d.focus === "object" && (d.focus as any).productId
-      ? {
-          productId: String((d.focus as any).productId),
-          variantId: (d.focus as any).variantId ?? null,
-        }
-      : last?.productId
-      ? {
-          productId: String(last.productId),
-          variantId: last.variantId ?? null,
-        }
+    d?.focus?.productId
+      ? { productId: String(d.focus.productId), variantId: d.focus.variantId ?? null }
+      : last
+      ? { productId: String(last.productId), variantId: last.variantId ?? null }
       : null;
 
   return { cart, focus, opts: d?.opts };
 }
 
-/* ----------------------------------------------------------------------------
- * Helpers: filter out "dead" rows
- *
- * A dead row is:
- *  - missing productId, OR
- *  - qty <= 0, OR
- *  - effective unit price <= 0 (sold out / no valid offer).
- *
- * This ensures any stale zero-price, sold-out items that might still
- * be hanging around in an old payload are automatically ignored by
- * the mini-cart toast as soon as you interact with the cart again.
- * -------------------------------------------------------------------------- */
-function isDeadRow(row: MiniCartRow | null | undefined): boolean {
-  if (!row || !row.productId) return true;
-
-  const qty = Number(row.qty ?? 0);
-  if (!Number.isFinite(qty) || qty <= 0) return true;
-
-  const unitCandidate =
-    row.unitPrice ??
-    row.price ??
-    (row.totalPrice != null && qty > 0 ? row.totalPrice / qty : undefined);
-
-  const unit = money(unitCandidate);
-  if (unit <= 0) return true;
-
-  return false;
-}
-
-/* ----------------------------------------------------------------------------
- * Group cart rows by **productId + variantId + kind + supplierId + optionsKey (and id)**
- * so:
- * - Different suppliers never merge.
- * - Different variant selections (optionsKey) never merge.
- * - Zero-price / sold-out lines are automatically dropped.
- * -------------------------------------------------------------------------- */
+/* ---------------- group cart ---------------- */
+/** Group by correct identity and keep most-recent at top. */
 function groupCart(cart: MiniCartRow[]): MiniCartRow[] {
-  const map = new Map<
-    string,
-    MiniCartRow & {
-      qty: number;
-      _lastIndex: number;
-    }
-  >();
+  const map = new Map<string, MiniCartRow & { _lastIndex: number }>();
 
   cart.forEach((row, index) => {
-    // 🔥 Drop any sold-out / zero-price / invalid rows immediately
-    if (isDeadRow(row)) return;
-
-    const kind = row.kind ?? (row.variantId ? "VARIANT" : "BASE");
-
-    // ✅ Build a highly specific key so “similar title” items but different suppliers
-    // or different option combos do not collapse.
-    const keyParts: string[] = [];
-
-    if (row.id) keyParts.push(`id:${row.id}`);
-    keyParts.push(`p:${row.productId}`);
-    keyParts.push(`v:${row.variantId ?? "base"}`);
-    keyParts.push(`k:${kind}`);
-    keyParts.push(`s:${row.supplierId ?? ""}`);
-    keyParts.push(`o:${row.optionsKey ?? ""}`);
-
-    const key = keyParts.join("|");
-
-    const rowQty = Math.max(1, Number(row.qty) || 0); // default to 1 if missing/0
-    const rowUnit = money(row.unitPrice ?? row.price);
-
+    const key = cartKey(row);
     const existing = map.get(key);
+
     if (existing) {
-      // accumulate qty for the exact same line (same supplier/options combo)
-      existing.qty += rowQty;
-
-      // keep the most recent info for display
-      if (row.title) existing.title = row.title;
-      if (row.image) existing.image = row.image;
-      if (Array.isArray(row.selectedOptions) && row.selectedOptions.length) {
-        existing.selectedOptions = row.selectedOptions;
-      }
-      if (rowUnit) {
-        existing.unitPrice = rowUnit;
-        existing.price = rowUnit;
-      }
-
-      // also refresh supplier info if present
-      if (row.supplierId) existing.supplierId = row.supplierId;
-      if (row.supplierName) existing.supplierName = row.supplierName;
-      if (row.kind) existing.kind = row.kind;
-      if (row.optionsKey) existing.optionsKey = row.optionsKey;
-
+      existing.qty += row.qty;
       existing._lastIndex = index;
+
+      // keep best snapshots
+      existing.title = existing.title || row.title;
+      existing.image = existing.image || row.image;
+      existing.unitPrice = existing.unitPrice ?? row.unitPrice;
+      existing.price = existing.price ?? row.price;
+      existing.kind = existing.kind || row.kind;
+      existing.optionsKey = existing.optionsKey || row.optionsKey;
+      existing.variantId = existing.variantId ?? row.variantId ?? null;
     } else {
-      map.set(key, {
-        ...row,
-        qty: rowQty,
-        unitPrice: row.unitPrice ?? row.price ?? rowUnit,
-        price: row.price ?? row.unitPrice ?? rowUnit,
-        kind,
-        _lastIndex: index,
-      });
+      map.set(key, { ...row, _lastIndex: index });
     }
   });
 
-  // Sort by last index so "most recently touched" items are last,
-  // then clampCart() will pull them to the top.
+  // MOST RECENT FIRST
   return Array.from(map.values())
-    .sort((a, b) => a._lastIndex - b._lastIndex)
+    .sort((a, b) => b._lastIndex - a._lastIndex)
     .map(({ _lastIndex, ...rest }) => rest);
 }
 
+/* ---------------- Availability (toast) ---------------- */
+
+type Availability = { totalAvailable: number; cheapestSupplierUnit?: number | null };
+type ProductPools = {
+  hasVariantSpecific: boolean;
+  genericTotal: number;
+  productTotal: number;
+  perVariantTotals: Record<string, number>;
+};
+type AvailabilityPayload = {
+  lines: Record<string, Availability>;
+  products: Record<string, ProductPools>;
+};
+
+async function fetchAvailabilityForRows(rows: MiniCartRow[]): Promise<AvailabilityPayload> {
+  if (!rows.length) return { lines: {}, products: {} };
+
+  const uniqPairs: { productId: string; variantId: string | null }[] = [];
+  const seen = new Set<string>();
+
+  for (const r of rows) {
+    const pid = str(r.productId);
+    if (!pid) continue;
+    const kind = normKind(r);
+    const vid = kind === "VARIANT" ? normVariantId(r) : null;
+    const k = availKeyFor(pid, vid);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    uniqPairs.push({ productId: pid, variantId: vid });
+  }
+
+  const itemsParam = uniqPairs.map((p) => `${p.productId}:${p.variantId ?? ""}`).join(",");
+
+  const attempts = [
+    `/api/catalog/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
+    `/api/products/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
+    `/api/supplier-offers/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
+  ];
+
+  for (const url of attempts) {
+    try {
+      const { data } = await api.get(url);
+      const arr = Array.isArray((data as any)?.data)
+        ? (data as any).data
+        : Array.isArray(data)
+        ? data
+        : [];
+
+      const lines: Record<string, Availability> = {};
+      const byProduct: Record<string, { generic: number; perVariant: Record<string, number> }> = {};
+
+      for (const r of arr as any[]) {
+        const pid = str(r?.productId);
+        const vid = r?.variantId == null ? null : str(r.variantId);
+        const avail = Math.max(0, Number(r?.totalAvailable) || 0);
+
+        lines[availKeyFor(pid, vid)] = {
+          totalAvailable: avail,
+          cheapestSupplierUnit: Number.isFinite(Number(r?.cheapestSupplierUnit))
+            ? Number(r.cheapestSupplierUnit)
+            : null,
+        };
+
+        if (!byProduct[pid]) byProduct[pid] = { generic: 0, perVariant: {} };
+        if (vid == null) byProduct[pid].generic += avail;
+        else byProduct[pid].perVariant[vid] = (byProduct[pid].perVariant[vid] || 0) + avail;
+      }
+
+      const products: Record<string, ProductPools> = {};
+      for (const [pid, agg] of Object.entries(byProduct)) {
+        const hasVariantSpecific = Object.keys(agg.perVariant).length > 0;
+        const variantSum = Object.values(agg.perVariant).reduce((s, n) => s + n, 0);
+        const productTotal = agg.generic + variantSum;
+
+        products[pid] = {
+          hasVariantSpecific,
+          genericTotal: agg.generic,
+          productTotal,
+          perVariantTotals: agg.perVariant,
+        };
+      }
+
+      return { lines, products };
+    } catch {
+      /* try next */
+    }
+  }
+
+  return { lines: {}, products: {} };
+}
+
+/* ---------------- pool-aware caps ---------------- */
+
+function poolKeyForRow(row: MiniCartRow, pools?: AvailabilityPayload["products"]) {
+  const pid = str(row.productId);
+  const kind = normKind(row);
+  const vid = kind === "VARIANT" ? normVariantId(row) : null;
+
+  const pool = pools?.[pid];
+
+  if (vid && pool?.perVariantTotals && Object.prototype.hasOwnProperty.call(pool.perVariantTotals, vid)) {
+    return `p:${pid}:v:${vid}`;
+  }
+
+  if (!vid) {
+    if (pool?.hasVariantSpecific) return `p:${pid}:generic`;
+    return `p:${pid}:product`;
+  }
+
+  return `p:${pid}:generic`;
+}
+
+function poolTotalForRow(row: MiniCartRow, avail?: AvailabilityPayload) {
+  const pid = str(row.productId);
+  const kind = normKind(row);
+  const vid = kind === "VARIANT" ? normVariantId(row) : null;
+
+  const pool = avail?.products?.[pid];
+  if (!pool) return undefined;
+
+  if (vid && Object.prototype.hasOwnProperty.call(pool.perVariantTotals || {}, vid)) {
+    return Math.max(0, Math.floor(Number(pool.perVariantTotals[vid]) || 0));
+  }
+
+  if (!vid) {
+    if (pool.hasVariantSpecific) return Math.max(0, Math.floor(Number(pool.genericTotal) || 0));
+    return Math.max(0, Math.floor(Number(pool.productTotal) || 0));
+  }
+
+  return Math.max(0, Math.floor(Number(pool.genericTotal) || 0));
+}
+
+/**
+ * Reconcile ALL rows so totals never exceed pool capacity.
+ * We allocate capacity in the current order (most-recent first),
+ * so newest keeps qty first, older gets reduced if needed.
+ */
+function reconcileRowsToPools(rows: MiniCartRow[], avail?: AvailabilityPayload) {
+  if (!avail) return { rows, changed: false, changedKeys: [] as string[] };
+
+  const remaining = new Map<string, number>();
+  const out: MiniCartRow[] = [];
+  let changed = false;
+  const changedKeys: string[] = [];
+
+  for (const r of rows) {
+    const pk = poolKeyForRow(r, avail.products);
+    const total = poolTotalForRow(r, avail);
+
+    if (total == null || !Number.isFinite(total)) {
+      out.push(r);
+      continue;
+    }
+
+    if (!remaining.has(pk)) remaining.set(pk, Math.max(0, Math.floor(total)));
+    const rem = remaining.get(pk)!;
+
+    const want = Math.max(0, Math.floor(Number(r.qty) || 0));
+    const next = Math.min(want, rem);
+
+    if (next !== want) {
+      changed = true;
+      changedKeys.push(cartKey(r));
+    }
+
+    remaining.set(pk, Math.max(0, rem - next));
+    out.push({ ...r, qty: next });
+  }
+
+  return { rows: out, changed, changedKeys };
+}
+
+/* ---------------- Qty editor ---------------- */
+
+function MiniCartQtyEditor({
+  row,
+  maxQty,
+  onChange,
+  onCorrected,
+}: {
+  row: MiniCartRow;
+  maxQty?: number;
+  onChange: (nextQty: number) => void;
+  onCorrected?: (msg: string) => void;
+}) {
+  const [value, setValue] = React.useState(row.qty);
+  const debounceRef = React.useRef<number | null>(null);
+
+  const clamp = (n: number) => {
+    const v = Math.max(0, Math.floor(Number(n) || 0));
+    if (maxQty == null || !Number.isFinite(maxQty)) return v;
+    return Math.min(v, Math.max(0, Math.floor(maxQty)));
+  };
+
+  const update = (next: number) => {
+    const raw = Math.max(0, Math.floor(Number(next) || 0));
+    const v = clamp(next);
+
+    // ✅ if user tried to exceed max → snap + note
+    if (maxQty != null && Number.isFinite(maxQty) && raw > Math.floor(maxQty)) {
+      onCorrected?.(`Qty corrected to max available (${Math.max(0, Math.floor(maxQty))}).`);
+    }
+
+    setValue(v);
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => {
+      onChange(v);
+    }, 200);
+  };
+
+  React.useEffect(() => {
+    setValue(row.qty);
+  }, [row.qty]);
+
+  const canInc = maxQty == null ? true : value < Math.max(0, Math.floor(maxQty));
+  const canDec = value > 0;
+
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        disabled={!canDec}
+        onClick={() => update(value - 1)}
+        className={`w-7 h-7 rounded-full border bg-white hover:bg-zinc-50 ${
+          !canDec ? "opacity-50 cursor-not-allowed" : ""
+        }`}
+      >
+        −
+      </button>
+
+      <input
+        type="number"
+        value={value}
+        min={0}
+        max={maxQty}
+        onChange={(e) => update(Number(e.target.value))}
+        className="w-12 h-7 text-center text-xs border rounded-lg"
+      />
+
+      <button
+        type="button"
+        disabled={!canInc}
+        onClick={() => update(value + 1)}
+        className={`w-7 h-7 rounded-full border bg-white hover:bg-zinc-50 ${
+          !canInc ? "opacity-50 cursor-not-allowed" : ""
+        }`}
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+/* ---------------- Toast host ---------------- */
 export default function MiniCartToastHost() {
   const [open, setOpen] = React.useState(false);
   const [payload, setPayload] = React.useState<{
@@ -272,188 +426,251 @@ export default function MiniCartToastHost() {
 
   const timerRef = React.useRef<number | null>(null);
 
+  // ✅ red disappearing notice (toast-level)
+  const [notice, setNotice] = React.useState<string | null>(null);
+  const noticeTimerRef = React.useRef<number | null>(null);
+
+  const showNotice = React.useCallback((msg: string) => {
+    setNotice(msg);
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => setNotice(null), 2200);
+  }, []);
+
   const stopTimer = React.useCallback(() => {
-    if (timerRef.current != null) {
-      window.clearTimeout(timerRef.current);
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
       timerRef.current = null;
     }
   }, []);
 
-  const close = React.useCallback(() => {
-    setOpen(false);
-    stopTimer();
-  }, [stopTimer]);
+  const startTimer = React.useCallback(
+    (duration: number = 5000) => {
+      stopTimer();
+      timerRef.current = window.setTimeout(() => setOpen(false), duration);
+    },
+    [stopTimer]
+  );
 
   React.useEffect(() => {
-    const onToast = (e: Event) => {
-      const ce = e as CustomEvent<any>;
-      const { cart, focus, opts } = normalizePayload(ce.detail as ToastPayload);
-
-      // ✅ if merged cart is empty, close immediately
-      if (!cart.length) {
-        setOpen(false);
-        setPayload(null);
-        stopTimer();
-        return;
-      }
+    const onToast = (e: any) => {
+      const { cart, focus, opts } = normalizePayload(e.detail);
+      if (!cart.length) return;
 
       setPayload({ cart, focus, opts });
       setOpen(true);
-
-      stopTimer();
-      const duration = Math.max(800, Number(opts?.duration ?? 5000));
-      timerRef.current = window.setTimeout(() => setOpen(false), duration);
+      startTimer(opts?.duration ?? 5000);
     };
 
-    window.addEventListener(EVENT, onToast as any);
-    return () => window.removeEventListener(EVENT, onToast as any);
-  }, [stopTimer]);
+    window.addEventListener(EVENT, onToast);
+    return () => window.removeEventListener(EVENT, onToast);
+  }, [startTimer]);
 
-  const node = React.useMemo(() => {
-    if (typeof document === "undefined") return null;
-    return document.body;
-  }, []);
+  // ✅ IMPORTANT: safe defaults so hooks always run
+  const cartForCalc = payload?.cart ?? [];
+  const groupedCart = React.useMemo(() => groupCart(cartForCalc), [cartForCalc]);
 
-  // ✅ Always call this hook, even when payload is null
-  const groupedCart = React.useMemo(
-    () => groupCart(payload?.cart || []),
-    [payload?.cart]
-  );
+  // ✅ availability for the toast
+  const [avail, setAvail] = React.useState<AvailabilityPayload | null>(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const a = await fetchAvailabilityForRows(groupedCart);
+        if (!cancelled) setAvail(a);
+      } catch {
+        if (!cancelled) setAvail({ lines: {}, products: {} });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // keep dependency stable
+  }, [groupedCart.map(cartKey).join(",")]);
 
-  // ✅ Guard AFTER all hooks
-  if (!node || !payload) return null;
+  // ✅ reconcile effect (safe: uses defaults)
+  const didReconcileRef = React.useRef<string>("");
+  React.useEffect(() => {
+    if (!payload) return;        // ✅ effects can early-return; hooks are already declared
+    if (!avail) return;
 
-  const mode = payload.opts?.mode ?? "add";
-  const title =
-    payload.opts?.title ??
-    (mode === "remove" ? "Removed from cart" : "Added to cart");
+    const sig = `${groupedCart.map((r) => `${cartKey(r)}=${r.qty}`).join(",")}|${Object.keys(avail.products || {}).length}`;
+    if (didReconcileRef.current === sig) return;
 
-  const maxItems = Math.max(1, Number(payload.opts?.maxItems ?? 4));
-  const items = clampCart(groupedCart, maxItems);
+    const { rows: reconciled, changed } = reconcileRowsToPools(groupedCart, avail);
+    if (!changed) {
+      didReconcileRef.current = sig;
+      return;
+    }
 
-  // ✅ total quantity from grouped cart
-  const totalQty = (groupedCart || []).reduce(
-    (s, x) => s + Math.max(0, Number(x?.qty) || 0),
-    0
-  );
+    for (const r of reconciled) {
+      const unit = money(r.unitPrice ?? r.price);
+      upsertCartLine({
+        productId: String(r.productId),
+        variantId: normKind(r) === "BASE" ? null : normVariantId(r),
+        kind: normKind(r),
+        optionsKey: normKind(r) === "BASE" ? "" : normOptionsKey(r),
+        qty: Math.max(0, Math.floor(Number(r.qty) || 0)),
+        titleSnapshot: r.title ?? null,
+        imageSnapshot: r.image ?? null,
+        unitPriceCache: unit,
+        selectedOptions: Array.isArray(r.selectedOptions)
+          ? r.selectedOptions.map((o) => ({ attribute: o.attribute, value: o.value }))
+          : [],
+      } as any);
+    }
 
-  const focusPid = payload.focus?.productId
-    ? String(payload.focus.productId)
-    : null;
-  const focusVid =
-    payload.focus?.variantId !== undefined
-      ? String(payload.focus.variantId ?? null)
-      : null;
+    const rows = toMiniCartRows(readCartLines());
+    setPayload((p) => (p ? { ...p, cart: rows } : p));
+    window.dispatchEvent(new Event("cart:updated"));
+    showNotice("Some quantities exceeded stock and were corrected.");
+
+    didReconcileRef.current = sig;
+  }, [payload, avail, groupedCart, showNotice]);
+
+  const items = React.useMemo(() => {
+    const max = payload?.opts?.maxItems ?? 999;
+    return groupedCart.slice(0, max);
+  }, [groupedCart, payload?.opts?.maxItems]);
+
+  const maxMap = React.useMemo(() => {
+    if (!avail) return new Map<string, number | undefined>();
+
+    const remaining = new Map<string, number>();
+    const out = new Map<string, number | undefined>();
+
+    for (const r of items) {
+      const pk = poolKeyForRow(r, avail.products);
+      const total = poolTotalForRow(r, avail);
+
+      if (total == null || !Number.isFinite(total)) {
+        out.set(cartKey(r), undefined);
+        continue;
+      }
+
+      if (!remaining.has(pk)) remaining.set(pk, Math.max(0, Math.floor(total)));
+      const rem = remaining.get(pk)!;
+
+      out.set(cartKey(r), Math.max(0, rem));
+
+      const used = Math.max(0, Math.floor(Number(r.qty) || 0));
+      remaining.set(pk, Math.max(0, rem - used));
+    }
+
+    return out;
+  }, [avail, items]);
+
+  // ✅ NOW it’s safe to return early (after hooks)
+  if (!payload) return null;
 
   return createPortal(
-    <div
-      className="fixed right-4 top-4 z-[99999] pointer-events-none"
-      aria-live="polite"
-      aria-atomic="true"
-    >
+    <div className="fixed right-4 top-4 z-[99999]">
       <div
-        className={`pointer-events-auto w-[92vw] max-w-[420px] rounded-2xl border bg-white shadow-2xl overflow-hidden transition-all duration-200 ${
-          open ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"
+        onMouseEnter={stopTimer}
+        onMouseLeave={() => startTimer(payload?.opts?.duration ?? 5000)}
+        className={`w-[92vw] max-w-[420px] rounded-2xl border bg-white shadow-2xl overflow-hidden transition-all ${
+          open ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3"
         }`}
       >
-        <div
-          className={`p-4 border-b text-white ${
-            mode === "remove"
-              ? "bg-gradient-to-r from-zinc-800 to-zinc-700"
-              : "bg-gradient-to-r from-fuchsia-600 to-pink-600"
-          }`}
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <ShoppingCart size={18} />
-                <div className="font-semibold">{title}</div>
-              </div>
-              <div className="text-xs text-white/90 mt-1">
-                Cart items: {totalQty}
-              </div>
+        {/* Header */}
+        <div className="p-4 bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white">
+          <div className="flex justify-between items-center">
+            <div className="flex gap-2 items-center">
+              <ShoppingCart size={18} />
+              <span>{payload.opts?.title ?? "Added to cart"}</span>
             </div>
-
-            <button
-              type="button"
-              onClick={close}
-              className="shrink-0 rounded-full bg-white/15 hover:bg-white/25 p-2"
-              aria-label="Close"
-            >
+            <button type="button" onClick={() => setOpen(false)}>
               <X size={16} />
             </button>
           </div>
         </div>
 
+        {/* Items */}
         <div className="p-4">
-          <div className="space-y-3">
-            {items.map((it, idx) => {
-              const img = it.image || "/placeholder.svg";
+          <div className="max-h-[55vh] overflow-y-auto pr-1 space-y-3">
+             {/* ✅ red disappearing note */}
+          {notice ? (
+            <div className="mt-2 text-[12px] font-semibold text-white bg-rose-600/80 rounded-lg px-2 py-1">
+              {notice}
+            </div>
+          ) : null}
+            {items.map((it) => {
               const unit = money(it.unitPrice ?? it.price);
-              const line = unit * Math.max(1, Number(it.qty) || 1);
+              const line = unit * it.qty;
+              const stableKey = cartKey(it);
 
-              const isFocus =
-                !!payload.focus &&
-                String(it.productId) === String(payload.focus.productId) &&
-                String(it.variantId ?? null) ===
-                  String(payload.focus.variantId ?? null);
+              const maxQty = maxMap.get(stableKey);
 
               return (
-                <div
-                  key={`${it.productId}:${it.variantId ?? "base"}:${
-                    it.supplierId ?? "nosupp"
-                  }:${it.optionsKey ?? "noop"}:${idx}`}
-                  className={`flex gap-3 rounded-xl border p-3 ${
-                    isFocus
-                      ? "border-fuchsia-400 bg-fuchsia-50/50"
-                      : "bg-white"
-                  }`}
-                >
+                <div key={stableKey} className="flex gap-3 border rounded-xl p-3">
                   <img
-                    src={img}
+                    src={it.image || "/placeholder.svg"}
+                    className="w-14 h-14 rounded-xl object-cover border"
                     alt={it.title || "Cart item"}
-                    className="w-14 h-14 rounded-xl border object-cover"
-                    onError={(e) => (e.currentTarget.style.opacity = "0.25")}
                   />
 
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-semibold truncate">
-                      {it.title || "Item"}
-                    </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold truncate">{it.title}</div>
 
-                    {/* ✅ Supplier label so “same title, different supplier” is obvious */}
-                    {(it.supplierName || it.supplierId) && (
-                      <div className="mt-0.5 text-[11px] text-zinc-500">
-                        Supplier:{" "}
-                        <span className="font-medium">
-                          {it.supplierName ?? it.supplierId}
-                        </span>
-                      </div>
-                    )}
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                      <div className="flex flex-col gap-1">
+                        <MiniCartQtyEditor
+                          row={it}
+                          maxQty={maxQty}
+                          onCorrected={(msg) => showNotice(msg)}
+                          onChange={(nextQty) => {
+                            try {
+                              // ✅ hard clamp again (safety)
+                              const safeMax =
+                                maxQty == null || !Number.isFinite(Number(maxQty))
+                                  ? undefined
+                                  : Math.max(0, Math.floor(Number(maxQty)));
 
-                    {Array.isArray(it.selectedOptions) &&
-                      it.selectedOptions.length > 0 && (
-                        <div className="text-[11px] text-zinc-600 mt-0.5 line-clamp-1">
-                          {it.selectedOptions
-                            .filter(Boolean)
-                            .map(
-                              (o) =>
-                                `${o.attribute ?? ""}${
-                                  o.value ? `: ${o.value}` : ""
-                                }`
-                            )
-                            .filter((s) => s.trim())
-                            .join(" • ")}
-                        </div>
-                      )}
+                              const finalQty =
+                                safeMax == null ? nextQty : Math.min(Math.max(0, nextQty), safeMax);
 
-                    <div className="mt-1 flex.items-center justify-between">
-                      <div className="text-[11px] text-zinc-600">
-                        Qty: {it.qty}
+                              if (safeMax != null && nextQty > safeMax) {
+                                showNotice(`Qty corrected to max available (${safeMax}).`);
+                              }
+
+                              upsertCartLine({
+                                productId: String(it.productId),
+                                variantId: normKind(it) === "BASE" ? null : normVariantId(it),
+                                kind: normKind(it),
+                                optionsKey: normKind(it) === "BASE" ? "" : normOptionsKey(it),
+                                qty: finalQty,
+
+                                titleSnapshot: it.title ?? null,
+                                imageSnapshot: it.image ?? null,
+                                unitPriceCache: unit,
+                                selectedOptions: Array.isArray(it.selectedOptions)
+                                  ? it.selectedOptions.map((o) => ({
+                                      attribute: o.attribute,
+                                      value: o.value,
+                                    }))
+                                  : [],
+                              } as any);
+
+                              const rows = toMiniCartRows(readCartLines());
+
+                              showMiniCartToast({
+                                cart: rows,
+                                focus: { productId: it.productId, variantId: it.variantId ?? null },
+                                opts: payload.opts,
+                              });
+
+                              window.dispatchEvent(new Event("cart:updated"));
+                            } catch {}
+                          }}
+                        />
+
+                        {typeof maxQty === "number" && Number.isFinite(maxQty) ? (
+                          <div className="text-[10px] text-zinc-500">
+                            Max: <span className="font-semibold text-zinc-700">{Math.max(0, Math.floor(maxQty))}</span>
+                          </div>
+                        ) : null}
                       </div>
-                      <div className="text-sm font-semibold">
-                        {NGN.format(line)}
-                      </div>
+
+                      <div className="text-sm font-semibold whitespace-nowrap">{NGN.format(line)}</div>
                     </div>
                   </div>
                 </div>
@@ -461,26 +678,23 @@ export default function MiniCartToastHost() {
             })}
           </div>
 
-          <div className="mt-4 flex items-center justify-between gap-2">
+          {/* Footer */}
+          <div className="mt-4 flex justify-between">
             <button
               type="button"
-              onClick={close}
-              className="text-sm px-3 py-2 rounded-xl border bg-white hover:bg-zinc-50"
+              onClick={() => setOpen(false)}
+              className="text-sm px-3 py-2 border rounded-xl bg-white hover:bg-zinc-50"
             >
               Continue shopping
             </button>
 
-            <Link
-              to="/cart"
-              onClick={close}
-              className="text-sm px-3 py-2 rounded-xl border bg-zinc-900 text-white hover:opacity-90"
-            >
+            <Link to="/cart" onClick={() => setOpen(false)} className="text-sm px-3 py-2 rounded-xl bg-zinc-900 text-white">
               View cart →
             </Link>
           </div>
         </div>
       </div>
     </div>,
-    node
+    document.body
   );
 }

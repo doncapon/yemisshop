@@ -8,9 +8,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Cart keys */
 const GUEST_CART_KEY = "cart:guest:v2";
-// NOTE: we intentionally do NOT delete user carts on logout.
-// const USER_CART_KEY_PREFIX = "cart:user:";
-// const CART_KEY_SUFFIX = ":v2";
+const USER_CART_KEY_PREFIX = "cart:user:";
+const CART_KEY_SUFFIX = ":v2";
 
 const LAST_LOGOUT_AT_KEY = "auth:lastLogoutAt";
 
@@ -33,6 +32,33 @@ export function wasJustLoggedOut(ms = 3000) {
   }
 }
 
+function userCartKey(userId: string) {
+  return `${USER_CART_KEY_PREFIX}${userId}${CART_KEY_SUFFIX}`;
+}
+
+/** Copy current user's cart to guest cart so it persists after logout */
+function migrateUserCartToGuest() {
+  try {
+    const uid = useAuthStore.getState().user?.id;
+    if (!uid) return;
+
+    const uKey = userCartKey(String(uid));
+    const raw = localStorage.getItem(uKey);
+
+    // If user cart exists, move/copy it to guest
+    if (raw) {
+      localStorage.setItem(GUEST_CART_KEY, raw);
+      return;
+    }
+
+    // Fallback: if legacy cart exists, keep it too
+    const legacy = localStorage.getItem("cart");
+    if (legacy) localStorage.setItem(GUEST_CART_KEY, legacy);
+  } catch {
+    // ignore
+  }
+}
+
 async function tryServerLogout() {
   // survive any baseURL config
   const urls = ["/auth/logout", "/api/auth/logout"];
@@ -50,6 +76,9 @@ export async function performLogout(redirectTo = "/", navigate?: NavigateFn) {
   // ✅ IMPORTANT: mark first so any immediate bootstrap() sees it
   markJustLoggedOut();
 
+  // ✅ Preserve cart BEFORE auth is cleared
+  migrateUserCartToGuest();
+
   const st = useAuthStore.getState();
 
   try {
@@ -64,11 +93,10 @@ export async function performLogout(redirectTo = "/", navigate?: NavigateFn) {
       useAuthStore.setState({ user: null } as any);
     } catch {}
 
-    // ✅ Clear ONLY guest cart + legacy cart.
-    // Keep user cart in localStorage so logging back in restores items.
+    // ✅ DO NOT delete guest cart here (it is now the active cart after logout)
+    // If you still want to remove legacy key, keep this:
     try {
-      localStorage.removeItem(GUEST_CART_KEY);
-      localStorage.removeItem("cart"); // legacy
+      localStorage.removeItem("cart"); // legacy only
       window.dispatchEvent(new Event("cart:updated"));
     } catch {}
 

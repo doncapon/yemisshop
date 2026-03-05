@@ -25,7 +25,7 @@ import SupplierLayout from "../../layouts/SupplierLayout";
 import { useAuthStore } from "../../store/auth";
 import { useModal } from "../../components/ModalProvider";
 import api from "../../api/client";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import type { AxiosError } from "axios";
 
 type BankOption = { country: string; code: string; name: string };
@@ -116,15 +116,25 @@ function Card({
   icon,
   right,
   children,
+  anchorId,
+  highlight,
+  className = "",
 }: {
   title: string;
   subtitle?: string;
   icon?: React.ReactNode;
   right?: React.ReactNode;
   children: React.ReactNode;
+  anchorId?: string;
+  highlight?: boolean;
+  className?: string;
 }) {
   return (
-    <div className="rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden">
+    <div
+      id={anchorId}
+      className={`scroll-mt-24 rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden transition ${highlight ? "ring-2 ring-violet-300" : ""
+        } ${className}`}
+    >
       {/* mobile-neater header: stack on small screens */}
       <div className="px-4 md:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="flex items-start gap-3 min-w-0">
@@ -162,24 +172,18 @@ function Field({
     <div className="space-y-1">
       <label className="block text-xs font-semibold text-zinc-700">{label}</label>
       <div className="relative">
-        {icon && (
-          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">
-            {icon}
-          </div>
-        )}
+        {icon && <div className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">{icon}</div>}
         <input
           type={type}
           value={value}
           onChange={(e) => onChange?.(e.target.value)}
           placeholder={placeholder}
           disabled={disabled}
-          className={`w-full rounded-xl border border-zinc-300/80 px-3 py-2.5 text-zinc-900 placeholder:text-zinc-400 outline-none transition shadow-sm ${
-            icon ? "pl-9" : ""
-          } ${
-            disabled
+          className={`w-full rounded-xl border border-zinc-300/80 px-3 py-2.5 text-zinc-900 placeholder:text-zinc-400 outline-none transition shadow-sm ${icon ? "pl-9" : ""
+            } ${disabled
               ? "bg-zinc-50 text-zinc-600 cursor-not-allowed"
               : "bg-white focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
-          }`}
+            }`}
         />
       </div>
     </div>
@@ -202,18 +206,13 @@ function ReadOnlyField({
     <div className="space-y-1">
       <label className="block text-xs font-semibold text-zinc-700">{label}</label>
       <div className="relative">
-        {icon && (
-          <div className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">
-            {icon}
-          </div>
-        )}
+        {icon && <div className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500">{icon}</div>}
         <input
           value={v || placeholder}
           readOnly
           disabled
-          className={`w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-zinc-800 outline-none shadow-sm ${
-            icon ? "pl-9" : ""
-          }`}
+          className={`w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-zinc-800 outline-none shadow-sm ${icon ? "pl-9" : ""
+            }`}
         />
       </div>
     </div>
@@ -238,25 +237,20 @@ function Toggle({
       type="button"
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`w-full rounded-2xl border transition p-4 text-left flex items-start justify-between gap-3 ${
-        disabled
-          ? "bg-zinc-50 text-zinc-500 cursor-not-allowed"
-          : "bg-white hover:bg-black/5"
-      }`}
+      className={`w-full rounded-2xl border transition p-4 text-left flex items-start justify-between gap-3 ${disabled ? "bg-zinc-50 text-zinc-500 cursor-not-allowed" : "bg-white hover:bg-black/5"
+        }`}
     >
       <div className="min-w-0">
         <div className="text-sm font-semibold text-zinc-900">{label}</div>
         {desc && <div className="text-xs text-zinc-500 mt-1">{desc}</div>}
       </div>
       <span
-        className={`shrink-0 inline-flex h-6 w-11 items-center rounded-full border transition ${
-          checked ? "bg-zinc-900 border-zinc-900" : "bg-zinc-200 border-zinc-300"
-        }`}
+        className={`shrink-0 inline-flex h-6 w-11 items-center rounded-full border transition ${checked ? "bg-zinc-900 border-zinc-900" : "bg-zinc-200 border-zinc-300"
+          }`}
       >
         <span
-          className={`h-5 w-5 rounded-full bg-white shadow-sm transition transform ${
-            checked ? "translate-x-5" : "translate-x-1"
-          }`}
+          className={`h-5 w-5 rounded-full bg-white shadow-sm transition transform ${checked ? "translate-x-5" : "translate-x-1"
+            }`}
         />
       </span>
     </button>
@@ -267,10 +261,15 @@ export default function SupplierSettings() {
   const { openModal } = useModal();
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const userFromStore = useAuthStore((s) => s.user);
 
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // ✅ highlight + deep-link support
+  const [highlightPayout, setHighlightPayout] = useState(false);
+  const [didAutoOpenBankEdit, setDidAutoOpenBankEdit] = useState(false);
 
   const urlSupplierId = useMemo(() => {
     const v = String(searchParams.get("supplierId") ?? "").trim();
@@ -339,46 +338,43 @@ export default function SupplierSettings() {
   const [bankEditUnlocked, setBankEditUnlocked] = useState(false);
 
   const meQ = useQuery<AuthMeDto, AxiosError>({
-  queryKey: ["auth", "me"],
-  queryFn: async () => {
-    const { data } = await api.get<AuthMeDto>("/api/auth/me", cookieCfg);
-    return data;
-  },
-  staleTime: 60_000,
-  retry: 1,
-});
+    queryKey: ["auth", "me"],
+    queryFn: async () => {
+      const { data } = await api.get<AuthMeDto>("/api/auth/me", cookieCfg);
+      return data;
+    },
+    staleTime: 60_000,
+    retry: 1,
+  });
 
-// keep role aligned even if store is stale
-useEffect(() => {
-  const roleFromMe = meQ.data?.role;
-  if (roleFromMe && roleFromMe !== roleOverride) {
-    setRoleOverride(roleFromMe);
-  }
-}, [meQ.data?.role, roleOverride]);
+  // keep role aligned even if store is stale
+  useEffect(() => {
+    const roleFromMe = meQ.data?.role;
+    if (roleFromMe && roleFromMe !== roleOverride) {
+      setRoleOverride(roleFromMe);
+    }
+  }, [meQ.data?.role, roleOverride]);
 
-// handle 401s
-useEffect(() => {
-  const status = meQ.error?.response?.status;
-  if (status === 401) {
-    openModal({
-      title: "Session expired",
-      message: "Please log in again.",
-    });
-    navigate("/login");
-  }
-}, [meQ.error, navigate, openModal]);
+  // handle 401s
+  useEffect(() => {
+    const status = meQ.error?.response?.status;
+    if (status === 401) {
+      openModal({
+        title: "Session expired",
+        message: "Please log in again.",
+      });
+      navigate("/login");
+    }
+  }, [meQ.error, navigate, openModal]);
 
   const supplierQ = useQuery({
     queryKey: ["supplier", "me", { supplierId: adminSupplierId }],
     enabled: !isAdmin || !!adminSupplierId,
     queryFn: async () => {
-      const { data } = await api.get<{ data: SupplierMeDto }>(
-        "/api/supplier/me",
-        {
-          ...cookieCfg,
-          params: { supplierId: adminSupplierId }, // ✅ admin view-as supplier
-        }
-      );
+      const { data } = await api.get<{ data: SupplierMeDto }>("/api/supplier/me", {
+        ...cookieCfg,
+        params: { supplierId: adminSupplierId }, // ✅ admin view-as supplier
+      });
       return data.data;
     },
     staleTime: 60_000,
@@ -456,7 +452,7 @@ useEffect(() => {
           supportEmail: (parsed.supportEmail || d.supportEmail || "").toString(),
         }));
       }
-    } catch {}
+    } catch { }
   }, []);
 
   useEffect(() => {
@@ -497,20 +493,65 @@ useEffect(() => {
   const bankLockedByStatus = bankStatus === "VERIFIED" || bankStatus === "PENDING";
   const bankEditable = !bankLockedByStatus || bankEditUnlocked;
 
+  useEffect(() => {
+    // wait until supplier data is loaded
+    if (!supplierQ.data) return;
+
+    const focus = String(searchParams.get("focus") ?? "").trim();
+    const hash = String(location.hash ?? "").trim();
+
+    const shouldFocus =
+      (focus === "payout-bank-details" || hash === "#payout-bank-details") &&
+      bankStatus !== "VERIFIED";
+
+    if (!shouldFocus) return;
+
+    window.setTimeout(() => {
+      const el = document.getElementById("payout-bank-details");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+
+      setHighlightPayout(true);
+      window.setTimeout(() => setHighlightPayout(false), 2500);
+
+      const canAutoUnlock =
+        !isAdmin &&
+        !bankEditUnlocked &&
+        !didAutoOpenBankEdit;
+
+      if (canAutoUnlock) {
+        setDidAutoOpenBankEdit(true);
+
+        openModal({
+          title: "Enter your bank details",
+          message:
+            "To receive payouts, please enter your payout bank details. When you save, the change will be pending admin verification and locked until reviewed.",
+        });
+
+        setBankEditUnlocked(true);
+      }
+    }, 50);
+  }, [
+    supplierQ.data,   // 🔴 important
+    searchParams,
+    location.hash,
+    bankStatus,
+    isAdmin,
+    bankEditUnlocked,
+    didAutoOpenBankEdit,
+    openModal,
+  ]);
+
   const saveM = useMutation({
     mutationFn: async (payload: any) => {
-      const { data } = await api.put<{ data: SupplierMeDto }>(
-        "/api/supplier/me",
-        payload,
-        {
-          ...cookieCfg,
-          params: { supplierId: adminSupplierId }, // backend can still enforce role
-        }
-      );
+      const { data } = await api.put<{ data: SupplierMeDto }>("/api/supplier/me", payload, {
+        ...cookieCfg,
+        params: { supplierId: adminSupplierId }, // backend can still enforce role
+      });
       return data.data;
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["supplier", "me"] });
+      await qc.invalidateQueries({ queryKey: ["supplier", "me", { supplierId: adminSupplierId }] });
       setBankEditUnlocked(false);
       openModal({ title: "Settings saved", message: "Supplier settings have been saved." });
     },
@@ -525,14 +566,13 @@ useEffect(() => {
   const save = async () => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(draft));
-    } catch {}
+    } catch { }
 
     if (isAdmin) {
       openModal({ title: "Admin view", message: "Admin supplier settings is read-only for now." });
       return;
     }
 
-    // cookie-auth: if not logged in, server will 401; keep local save message friendly
     const payload: any = {
       contactEmail: draft.supportEmail?.trim() ? draft.supportEmail.trim() : null,
       whatsappPhone: draft.supportPhone?.trim() ? draft.supportPhone.trim() : null,
@@ -624,9 +664,7 @@ useEffect(() => {
             >
               Supplier Settings <Sparkles className="inline ml-1" size={22} />
             </motion.h1>
-            <p className="mt-1 text-sm text-white/80">
-              Configure store profile, pickup details, payouts, notifications and security.
-            </p>
+            <p className="mt-1 text-sm text-white/80">Configure store profile, pickup details, payouts, notifications and security.</p>
 
             <div className="mt-4 grid grid-cols-1 sm:flex sm:flex-wrap gap-2">
               <button
@@ -665,17 +703,8 @@ useEffect(() => {
             }
           >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <ReadOnlyField
-                label="Business name"
-                value={draft.businessName}
-                icon={<Building2 size={16} />}
-              />
-              <ReadOnlyField
-                label="RC number"
-                value={draft.rcNumber}
-                icon={<Hash size={16} />}
-                placeholder="Not available yet"
-              />
+              <ReadOnlyField label="Business name" value={draft.businessName} icon={<Building2 size={16} />} />
+              <ReadOnlyField label="RC number" value={draft.rcNumber} icon={<Hash size={16} />} placeholder="Not available yet" />
 
               <Field
                 label="Support email"
@@ -709,22 +738,15 @@ useEffect(() => {
             }
           >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <ReadOnlyField
-                label="Address line"
-                value={draft.pickupAddressLine1}
-                icon={<MapPin size={16} />}
-                placeholder="Not available yet"
-              />
+              <ReadOnlyField label="Address line" value={draft.pickupAddressLine1} icon={<MapPin size={16} />} placeholder="Not available yet" />
               <ReadOnlyField label="City" value={draft.pickupCity} placeholder="Not available yet" />
-              <ReadOnlyField
-                label="State"
-                value={draft.pickupState}
-                placeholder="Not available yet"
-              />
+              <ReadOnlyField label="State" value={draft.pickupState} placeholder="Not available yet" />
             </div>
           </Card>
 
           <Card
+            anchorId="payout-bank-details"
+            highlight={highlightPayout}
             title="Payout bank details"
             subtitle="Any bank change requires admin verification. Verified details are locked."
             icon={<CreditCard size={18} />}
@@ -767,21 +789,18 @@ useEffect(() => {
 
             {bankStatus === "PENDING" && (
               <div className="mb-3 text-[11px] rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
-                Bank details are <span className="font-semibold">pending verification</span>. Editing
-                is locked until admin review.
+                Bank details are <span className="font-semibold">pending verification</span>. Editing is locked until admin review.
               </div>
             )}
 
-            {/* mobile-neater: keep inputs stacked; on md use 3 cols */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="md:col-span-1">
                 <label className="block text-xs font-semibold text-zinc-700">Bank country</label>
                 <select
-                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
-                    bankFieldsDisabled
-                      ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
-                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
-                  }`}
+                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${bankFieldsDisabled
+                    ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
+                    : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                    }`}
                   value={draft.bankCountry || "NG"}
                   disabled={bankFieldsDisabled}
                   onChange={(e) =>
@@ -795,19 +814,16 @@ useEffect(() => {
                 >
                   <option value="NG">Nigeria (NG)</option>
                 </select>
-                <div className="mt-1 text-[11px] text-zinc-500">
-                  {banksQ.isFetching ? "Loading banks…" : ""}
-                </div>
+                <div className="mt-1 text-[11px] text-zinc-500">{banksQ.isFetching ? "Loading banks…" : ""}</div>
               </div>
 
               <div className="md:col-span-1">
                 <label className="block text-xs font-semibold text-zinc-700">Bank name</label>
                 <select
-                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
-                    bankFieldsDisabled
-                      ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
-                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
-                  }`}
+                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${bankFieldsDisabled
+                    ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
+                    : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                    }`}
                   value={draft.bankName ?? ""}
                   disabled={bankFieldsDisabled}
                   onChange={(e) => setBankByName(e.target.value)}
@@ -824,11 +840,10 @@ useEffect(() => {
               <div className="md:col-span-1">
                 <label className="block text-xs font-semibold text-zinc-700">Bank code</label>
                 <select
-                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${
-                    bankFieldsDisabled
-                      ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
-                      : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
-                  }`}
+                  className={`w-full rounded-xl border px-3 py-2.5 shadow-sm outline-none transition ${bankFieldsDisabled
+                    ? "bg-zinc-50 border-zinc-200 text-zinc-600 cursor-not-allowed"
+                    : "bg-white border-zinc-300/80 focus:border-violet-400 focus:ring-4 focus:ring-violet-200"
+                    }`}
                   value={normCode(draft.bankCode)}
                   disabled={bankFieldsDisabled}
                   onChange={(e) => setBankByCode(e.target.value)}
@@ -846,12 +861,7 @@ useEffect(() => {
                 label="Account number"
                 value={draft.accountNumber}
                 disabled={bankFieldsDisabled}
-                onChange={(v) =>
-                  setDraft((d) => ({
-                    ...d,
-                    accountNumber: v.replace(/\D/g, "").slice(0, 16),
-                  }))
-                }
+                onChange={(v) => setDraft((d) => ({ ...d, accountNumber: v.replace(/\D/g, "").slice(0, 16) }))}
                 placeholder="0123456789"
               />
 
@@ -868,16 +878,12 @@ useEffect(() => {
               {isAdmin
                 ? "Admin view is read-only."
                 : bankStatus === "VERIFIED" && !bankEditUnlocked
-                ? "Bank details are verified and locked. Use “Request change” to submit an update."
-                : "When you save new bank details, they become pending admin verification."}
+                  ? "Bank details are verified and locked. Use “Request change” to submit an update."
+                  : "When you save new bank details, they become pending admin verification."}
             </div>
           </Card>
 
-          <Card
-            title="Notifications"
-            subtitle="Control which alerts you receive. (Not yet wired to backend)"
-            icon={<Bell size={18} />}
-          >
+          <Card title="Notifications" subtitle="Control which alerts you receive. (Not yet wired to backend)" icon={<Bell size={18} />}>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <Toggle
                 label="New orders"
@@ -905,12 +911,7 @@ useEffect(() => {
 
           <Card title="Verification documents" subtitle="Placeholder UI (not wired)." icon={<FileText size={18} />}>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <ReadOnlyField
-                label="CAC RC number"
-                value={draft.rcNumber}
-                icon={<Hash size={16} />}
-                placeholder="Not available yet"
-              />
+              <ReadOnlyField label="CAC RC number" value={draft.rcNumber} icon={<Hash size={16} />} placeholder="Not available yet" />
               <Field
                 label="Owner ID (or file ref)"
                 value={draft.docsID}
@@ -955,8 +956,7 @@ useEffect(() => {
             </button>
 
             <div className="text-[11px] text-zinc-500">
-              Bank changes require admin verification. Fields lock when status is{" "}
-              <span className="font-mono">PENDING</span> or{" "}
+              Bank changes require admin verification. Fields lock when status is <span className="font-mono">PENDING</span> or{" "}
               <span className="font-mono">VERIFIED</span>.
             </div>
           </div>

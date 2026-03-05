@@ -2,7 +2,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, ImagePlus, Save, Trash2, Plus, Package, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ImagePlus,
+  Save,
+  Trash2,
+  Plus,
+  Package,
+  X,
+  ChevronDown,
+} from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import SiteLayout from "../../layouts/SiteLayout";
@@ -112,10 +121,6 @@ function normalizeImageUrl(input: any): string | null {
   return null;
 }
 
-function isUrlish(s?: string) {
-  return !!normalizeImageUrl(s);
-}
-
 function uniqStrings(arr: string[]) {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -212,6 +217,34 @@ function Card({
       </div>
       <div className="p-4 sm:p-5">{children}</div>
     </div>
+  );
+}
+
+function AddNewLink({
+  label,
+  onClick,
+  disabled,
+  title,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={[
+        "text-[11px] font-semibold underline underline-offset-2",
+        "text-violet-700 hover:text-violet-800",
+        disabled ? "opacity-50 cursor-not-allowed" : "",
+      ].join(" ")}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -546,6 +579,9 @@ export default function SupplierEditProduct() {
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [dupWarn, setDupWarn] = useState<string | null>(null);
 
+  // ✅ mobile summary like Add page
+  const [summaryOpen, setSummaryOpen] = useState(false);
+
   const [title, setTitle] = useState("");
   const [retailPrice, setRetailPrice] = useState("");
   const [sku, setSku] = useState("");
@@ -601,6 +637,20 @@ export default function SupplierEditProduct() {
       }),
     []
   );
+
+const CATALOG_REQUESTS_PATH = "/supplier/catalog-requests";
+type CatalogReqSection = "categories" | "brands" | "attributes" | "attribute-values";
+
+function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?: Record<string, string>) {
+  const sp = new URLSearchParams();
+  sp.set("section", section);
+  if (focus) sp.set("focus", focus);
+  for (const [k, v] of Object.entries(extra || {})) {
+    if (v != null && String(v).trim() !== "") sp.set(k, String(v));
+  }
+
+  return { pathname: CATALOG_REQUESTS_PATH, search: `?${sp.toString()}` };
+}
 
   // ✅ cookie-auth: meta loads once session is hydrated
   const { categories, brands, attributes, categoriesQ, brandsQ } = useCatalogMeta({
@@ -659,10 +709,10 @@ export default function SupplierEditProduct() {
       const attempts = offersOnly
         ? [`/api/supplier/products/${id}`, `/api/supplier/products/${id}?include=offer,variants,images,attributes`]
         : [
-          `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
-          `/api/supplier/products/${id}?include=offer,variants`,
-          `/api/supplier/products/${id}`,
-        ];
+            `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
+            `/api/supplier/products/${id}?include=offer,variants`,
+            `/api/supplier/products/${id}`,
+          ];
 
       let lastErr: any = null;
 
@@ -760,8 +810,8 @@ export default function SupplierEditProduct() {
     const dupExplain =
       dups.size > 0
         ? `Duplicate variant combinations found: ${labels.join(
-          " • "
-        )}. Please change options or remove one of the duplicate rows.`
+            " • "
+          )}. Please change options or remove one of the duplicate rows.`
         : null;
 
     const defaultExplain =
@@ -921,7 +971,16 @@ export default function SupplierEditProduct() {
 
     const newCombosAdded = variantRows.some((r) => !r.variantId && rowHasAnySelection(r.selections));
 
-    return titleChanged || skuChanged || catChanged || brandChanged || descChanged || imagesChanged || attrChanged || newCombosAdded;
+    return (
+      titleChanged ||
+      skuChanged ||
+      catChanged ||
+      brandChanged ||
+      descChanged ||
+      imagesChanged ||
+      attrChanged ||
+      newCombosAdded
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     offersOnly,
@@ -1026,8 +1085,8 @@ export default function SupplierEditProduct() {
       const unitForInput = offersOnly
         ? activeUnitPrice
         : Number.isFinite(variantRetail) && variantRetail > 0
-          ? variantRetail
-          : baseP;
+        ? variantRetail
+        : baseP;
 
       return {
         id: uid("vr"),
@@ -1177,7 +1236,9 @@ export default function SupplierEditProduct() {
       const toAdd = nextPicked.slice(0, room);
       if (toAdd.length < nextPicked.length) {
         setErr(
-          `Only ${MAX_IMAGES_PER_PRODUCT} images max. Added ${toAdd.length}; ignored ${nextPicked.length - toAdd.length}.`
+          `Only ${MAX_IMAGES_PER_PRODUCT} images max. Added ${toAdd.length}; ignored ${
+            nextPicked.length - toAdd.length
+          }.`
         );
       }
       return [...prev, ...toAdd];
@@ -1484,8 +1545,8 @@ export default function SupplierEditProduct() {
           imageOverLimit
             ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
             : baseComboWarn
-              ? baseComboWarn
-              : dupWarn || "Fix the errors above to save."
+            ? baseComboWarn
+            : dupWarn || "Fix the errors above to save."
         );
       }
 
@@ -1494,7 +1555,9 @@ export default function SupplierEditProduct() {
       const imagesFromUi = getAllImagesFromUi();
       if (imagesFromUi.length > MAX_IMAGES_PER_PRODUCT) {
         throw new Error(
-          `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Please remove ${imagesFromUi.length - MAX_IMAGES_PER_PRODUCT} image(s).`
+          `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Please remove ${
+            imagesFromUi.length - MAX_IMAGES_PER_PRODUCT
+          } image(s).`
         );
       }
 
@@ -1546,9 +1609,7 @@ export default function SupplierEditProduct() {
 
           if (qty <= 0) {
             if (r.variantOfferId) {
-              tasks.push(
-                api.delete(`/api/supplier/catalog/offers/variant/${r.variantOfferId}`, { withCredentials: true })
-              );
+              tasks.push(api.delete(`/api/supplier/catalog/offers/variant/${r.variantOfferId}`, { withCredentials: true }));
             }
             continue;
           }
@@ -1624,10 +1685,10 @@ export default function SupplierEditProduct() {
       const payload = stockOnlyUpdate
         ? buildStockOnlyPayload({ baseQty: baseQtyPreview, variantRows })
         : {
-          ...buildPayload(merged),
-          submitForReview: isLive && nonStockChangesRequireReview,
-          stockOnly: false,
-        };
+            ...buildPayload(merged),
+            submitForReview: isLive && nonStockChangesRequireReview,
+            stockOnly: false,
+          };
 
       const { data } = await api.patch(`/api/supplier/products/${id}`, payload, {
         withCredentials: true,
@@ -1662,7 +1723,8 @@ export default function SupplierEditProduct() {
 
   const hasBlockingError = imageOverLimit || hasBaseComboConflict || hasDuplicates || hasInvalidDefaultVariant;
 
-  const saveDisabled = updateM.isPending || uploading || detailQ.isLoading || !hydrated || !isSupplier || hasBlockingError;
+  const saveDisabled =
+    updateM.isPending || uploading || detailQ.isLoading || !hydrated || !isSupplier || hasBlockingError;
 
   const hasPendingBase =
     offersOnly &&
@@ -1678,10 +1740,84 @@ export default function SupplierEditProduct() {
 
   const guardMsg = !hydrated ? "Loading session…" : !isSupplier ? "This page is for suppliers only." : null;
 
+  const doSave = () => {
+    if (hasBlockingError) {
+      setErr(
+        imageOverLimit
+          ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
+          : baseComboWarn
+          ? baseComboWarn
+          : dupWarn || "Fix the errors above to save."
+      );
+      return;
+    }
+    updateM.mutate();
+  };
+
   return (
     <SiteLayout>
       <SupplierLayout>
-        <div className="mt-4 sm:mt-6 space-y-4">
+        {/* Sticky mobile save bar + summary (like Add form) */}
+        <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
+          <div className="px-4 py-3 flex items-center gap-3">
+            <button
+              type="button"
+              disabled={saveDisabled}
+              onClick={doSave}
+              className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+            >
+              <Save size={16} />
+              {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSummaryOpen((v) => !v)}
+              className="shrink-0 inline-flex items-center gap-2 rounded-full border bg-white px-3 py-2 text-sm font-semibold"
+              aria-expanded={summaryOpen}
+            >
+              <Package size={16} />
+              <ChevronDown size={16} className={summaryOpen ? "rotate-180 transition" : "transition"} />
+            </button>
+          </div>
+
+          {summaryOpen && (
+            <div className="px-4 pb-4">
+              <div className="rounded-2xl border bg-white p-4 text-sm text-zinc-700 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Status</span>
+                  <b className="text-zinc-900">{productStatusUpper || "—"}</b>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Price</span>
+                  <b className="text-zinc-900">
+                    {ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}
+                  </b>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Stock</span>
+                  <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
+                    {effectiveQty} ({inStockPreview ? "In stock" : "Out of stock"})
+                  </b>
+                </div>
+                <div className="text-[11px] text-zinc-600">
+                  Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Images</span>
+                  <b className="text-zinc-900">
+                    {imageCount}/{MAX_IMAGES_PER_PRODUCT}
+                  </b>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Variant rows</span>
+                  <b className="text-zinc-900">{variantRows.length}</b>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 sm:mt-6 space-y-4 pb-28 sm:pb-8">
           {/* Header */}
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
             <div className="min-w-0">
@@ -1699,8 +1835,8 @@ export default function SupplierEditProduct() {
                 </p>
               ) : isLive ? (
                 <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
-                  This product is <b>{productStatusUpper || "LIVE"}</b>. <b>Stock updates</b> are immediate. Other changes
-                  may be <b>submitted for review</b>.
+                  This product is <b>{productStatusUpper || "LIVE"}</b>. <b>Stock updates</b> are immediate. Other
+                  changes may be <b>submitted for review</b>.
                 </p>
               ) : (
                 <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
@@ -1720,29 +1856,8 @@ export default function SupplierEditProduct() {
               <button
                 type="button"
                 disabled={saveDisabled}
-                onClick={() => {
-                  if (hasBlockingError) {
-                    setErr(
-                      imageOverLimit
-                        ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
-                        : baseComboWarn
-                          ? baseComboWarn
-                          : dupWarn || "Fix the errors above to save."
-                    );
-                    return;
-                  }
-                  updateM.mutate();
-                }}
+                onClick={doSave}
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-[13px] sm:text-sm font-semibold disabled:opacity-60"
-                title={
-                  imageOverLimit
-                    ? `Remove extra images (max ${MAX_IMAGES_PER_PRODUCT}).`
-                    : hasBaseComboConflict
-                      ? "Fix base combo vs variant combo conflict to save."
-                      : hasDuplicates || hasInvalidDefaultVariant
-                        ? "Fix duplicate/invalid combinations to save."
-                        : undefined
-                }
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
               </button>
@@ -1810,8 +1925,8 @@ export default function SupplierEditProduct() {
                   offersOnly
                     ? "Catalog product details are read-only. Set your offer price and stock."
                     : isLive
-                      ? "LIVE listing: Title/SKU/base price are locked. Stock updates are always allowed."
-                      : undefined
+                    ? "LIVE listing: Title/SKU/base price are locked. Stock updates are always allowed."
+                    : undefined
                 }
               >
                 <div className="space-y-3">
@@ -1915,11 +2030,20 @@ export default function SupplierEditProduct() {
                           {inStockPreview ? "YES" : "NO"}
                         </b>
                       </div>
-                      {variantsEnabled && <div className="text-[11px] text-zinc-500 mt-1">Variant quantities add on top.</div>}
+                      {variantsEnabled && (
+                        <div className="text-[11px] text-zinc-500 mt-1">Variant quantities add on top.</div>
+                      )}
                     </div>
 
                     <div>
-                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Category</label>
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <label className="block text-[11px] font-semibold text-zinc-700">Category</label>
+                        <AddNewLink
+                          label="Add new category"
+                          onClick={() => nav(goToCatalogRequests("categories", "category"))}
+                          title="Request a new category"
+                        />
+                      </div>
                       <select
                         value={categoryId}
                         onChange={(e) => setCategoryId(e.target.value)}
@@ -1936,7 +2060,14 @@ export default function SupplierEditProduct() {
                     </div>
 
                     <div>
-                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Brand</label>
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <label className="block text-[11px] font-semibold text-zinc-700">Brand</label>
+                        <AddNewLink
+                          label="Add new brand"
+                          onClick={() => nav(goToCatalogRequests("brands", "brand"))}
+                          title="Request a new brand"
+                        />
+                      </div>
                       <select
                         value={brandId}
                         onChange={(e) => setBrandId(e.target.value)}
@@ -1965,17 +2096,31 @@ export default function SupplierEditProduct() {
 
                   {/* Attributes */}
                   <div
-                    className={`rounded-2xl border bg-white overflow-hidden ${hasBaseComboConflict ? "border-rose-300 ring-2 ring-rose-200" : ""
-                      }`}
+                    className={`rounded-2xl border bg-white overflow-hidden ${
+                      hasBaseComboConflict ? "border-rose-300 ring-2 ring-rose-200" : ""
+                    }`}
                   >
                     <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
-                      <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Attributes</div>
-                      <div className="text-[11px] sm:text-xs text-zinc-500 mt-0.5">
-                        {offersOnly
-                          ? "Catalog product attributes are read-only."
-                          : isLive
-                            ? "LIVE listing: edits may require review."
-                            : "You can edit attributes freely while not LIVE."}
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Attributes</div>
+                          <div className="text-[11px] sm:text-xs text-zinc-500 mt-0.5">
+                            {offersOnly
+                              ? "Catalog product attributes are read-only."
+                              : isLive
+                              ? "LIVE listing: edits may require review."
+                              : "You can edit attributes freely while not LIVE."}
+                          </div>
+                        </div>
+
+                        <div className="shrink-0 flex flex-col items-end gap-1">
+                          <AddNewLink
+                            label="Add new attribute"
+                            onClick={() => nav(goToCatalogRequests("attributes", "attribute"))}
+                            title="Request a new attribute"
+                          />
+                          <div className="text-[10px] text-zinc-500">Need a new value? Use “Add values”.</div>
+                        </div>
                       </div>
 
                       {hasBaseComboConflict && (
@@ -1987,14 +2132,31 @@ export default function SupplierEditProduct() {
                     </div>
 
                     <div className="p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {activeAttrs.length === 0 && <div className="text-sm text-zinc-500">No active attributes configured.</div>}
+                      {activeAttrs.length === 0 && (
+                        <div className="text-sm text-zinc-500">No active attributes configured.</div>
+                      )}
 
                       {activeAttrs.map((a: any) => {
+                        const label = "add new " + a.name.toLowerCase();
+                        const addValuesBtn =
+                          a?.type === "SELECT" || a?.type === "MULTISELECT" ? (
+                            <AddNewLink
+                              label= {label}
+                              onClick={() =>
+                                nav(goToCatalogRequests("attribute-values", "value",{ attributeId: String(a.id || "") }))
+                              }
+                              title={`Request new values for ${a.name}`}
+                            />
+                          ) : null;
+
                         if (a.type === "TEXT") {
                           const val = String(getAttrVal(a.id) ?? "");
                           return (
                             <div key={a.id}>
-                              <label className="block text-[11px] font-semibold text-zinc-700 mb-1">{a.name}</label>
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <label className="block text-[11px] font-semibold text-zinc-700">{a.name}</label>
+                                {/* no values for TEXT */}
+                              </div>
                               <input
                                 value={val}
                                 onChange={(e) => setAttr(a.id, e.target.value)}
@@ -2011,13 +2173,17 @@ export default function SupplierEditProduct() {
                           const highlight = hasBaseComboConflict && attrOrder.includes(String(a.id));
                           return (
                             <div key={a.id}>
-                              <label className="block text-[11px] font-semibold text-zinc-700 mb-1">{a.name}</label>
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <label className="block text-[11px] font-semibold text-zinc-700">{a.name}</label>
+                                {addValuesBtn}
+                              </div>
                               <select
                                 value={val}
                                 onChange={(e) => setAttr(a.id, e.target.value)}
                                 disabled={!canEditAttributes}
-                                className={`w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60 ${highlight ? "border-rose-300 ring-2 ring-rose-100" : ""
-                                  }`}
+                                className={`w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60 ${
+                                  highlight ? "border-rose-300 ring-2 ring-rose-100" : ""
+                                }`}
                               >
                                 <option value="">— Select —</option>
                                 {(a.values || []).map((v: any) => (
@@ -2039,7 +2205,10 @@ export default function SupplierEditProduct() {
                           const vals = Array.isArray(getAttrVal(a.id)) ? (getAttrVal(a.id) as string[]) : [];
                           return (
                             <div key={a.id}>
-                              <label className="block text-[11px] font-semibold text-zinc-700 mb-1">{a.name}</label>
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <label className="block text-[11px] font-semibold text-zinc-700">{a.name}</label>
+                                {addValuesBtn}
+                              </div>
                               <select
                                 multiple
                                 value={vals}
@@ -2067,7 +2236,7 @@ export default function SupplierEditProduct() {
                 </div>
               </Card>
 
-              {/* Images (NOW matches Add page: previews show immediately even before upload) */}
+              {/* Images */}
               <Card
                 title="Images"
                 subtitle={
@@ -2077,8 +2246,9 @@ export default function SupplierEditProduct() {
                 }
                 right={
                   <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer ${offersOnly ? "opacity-60 pointer-events-none" : ""
-                      }`}
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer ${
+                      offersOnly ? "opacity-60 pointer-events-none" : ""
+                    }`}
                     title={offersOnly ? "Catalog images are read-only." : undefined}
                   >
                     <ImagePlus size={16} /> Add files
@@ -2126,8 +2296,9 @@ export default function SupplierEditProduct() {
                         setImageUrls(capped.join("\n"));
                       }}
                       disabled={offersOnly}
-                      className={`w-full rounded-xl border px-3 py-2.5 text-xs bg-white min-h-[90px] disabled:opacity-60 ${imageOverLimit ? "border-rose-300" : ""
-                        }`}
+                      className={`w-full rounded-xl border px-3 py-2.5 text-xs bg-white min-h-[90px] disabled:opacity-60 ${
+                        imageOverLimit ? "border-rose-300" : ""
+                      }`}
                       placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
                     />
                     {!offersOnly && imageOverLimit && (
@@ -2167,11 +2338,9 @@ export default function SupplierEditProduct() {
                                     return;
                                   }
 
-                                  // no more fallbacks
                                   img.style.display = "none";
                                 }}
                               />
-
 
                               {!offersOnly && (
                                 <button
@@ -2196,7 +2365,7 @@ export default function SupplierEditProduct() {
                           </div>
                         ))}
 
-                        {/* Local file previews (IMMEDIATE, before upload) */}
+                        {/* Local file previews */}
                         {!offersOnly &&
                           filePreviews.slice(0, MAX_IMAGES_PER_PRODUCT - allUrlPreviews.length).map(({ file, url }) => (
                             <div key={url} className="rounded-xl border overflow-hidden bg-white">
@@ -2270,8 +2439,8 @@ export default function SupplierEditProduct() {
                   offersOnly
                     ? "Catalog product: set price + qty for existing variants. You can’t create new combos."
                     : isLive
-                      ? "LIVE listing: update qty only. Prices/options are locked."
-                      : "Add/remove combos while not LIVE. Variants must have at least one option selected (DEFAULT is base-only)."
+                    ? "LIVE listing: update qty only. Prices/options are locked."
+                    : "Add/remove combos while not LIVE. Variants must have at least one option selected (DEFAULT is base-only)."
                 }
                 right={
                   <button
@@ -2328,8 +2497,9 @@ export default function SupplierEditProduct() {
                       return (
                         <div
                           key={row.id}
-                          className={`rounded-2xl border bg-white p-3 space-y-2 ${hasAnyIssue ? "border-rose-400 ring-2 ring-rose-200" : ""
-                            }`}
+                          className={`rounded-2xl border bg-white p-3 space-y-2 ${
+                            hasAnyIssue ? "border-rose-400 ring-2 ring-rose-200" : ""
+                          }`}
                         >
                           {/* option selects */}
                           <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
@@ -2340,8 +2510,9 @@ export default function SupplierEditProduct() {
                                   key={attr.id}
                                   value={valueId}
                                   onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
-                                    }`}
+                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${
+                                    hasAnyIssue ? "border-rose-300" : ""
+                                  }`}
                                   disabled={selectionLocked}
                                   title={
                                     selectionLocked
@@ -2377,10 +2548,11 @@ export default function SupplierEditProduct() {
                                   Qty: <b className="text-zinc-900">{rowQty}</b>
                                 </span>
                                 <span
-                                  className={`font-semibold px-2 py-0.5 rounded-full border ${rowInStock
+                                  className={`font-semibold px-2 py-0.5 rounded-full border ${
+                                    rowInStock
                                       ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                                       : "bg-rose-50 text-rose-700 border-rose-200"
-                                    }`}
+                                  }`}
                                 >
                                   {rowInStock ? "In stock" : "Out of stock"}
                                 </span>
@@ -2412,8 +2584,9 @@ export default function SupplierEditProduct() {
                                 inputMode="decimal"
                                 disabled={priceLocked}
                                 readOnly={priceLocked}
-                                className={`w-28 rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
-                                  } ${priceLocked ? "opacity-60" : ""}`}
+                                className={`w-28 rounded-xl border px-3 py-2 text-xs bg-white ${
+                                  hasAnyIssue ? "border-rose-300" : ""
+                                } ${priceLocked ? "opacity-60" : ""}`}
                                 placeholder="e.g. 25000"
                                 title={priceLocked ? "LIVE listing: variant price is locked." : "Set this variant unit price."}
                               />
@@ -2423,8 +2596,9 @@ export default function SupplierEditProduct() {
                                 value={row.availableQty}
                                 onChange={(e) => updateVariantQty(row.id, e.target.value)}
                                 inputMode="numeric"
-                                className={`w-24 rounded-xl border px-3 py-2 text-xs bg-white ${hasAnyIssue ? "border-rose-300" : ""
-                                  }`}
+                                className={`w-24 rounded-xl border px-3 py-2 text-xs bg-white ${
+                                  hasAnyIssue ? "border-rose-300" : ""
+                                }`}
                                 placeholder="e.g. 5"
                               />
 
@@ -2432,18 +2606,19 @@ export default function SupplierEditProduct() {
                                 type="button"
                                 onClick={() => removeVariantRow(row.id)}
                                 disabled={disableRemove}
-                                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${disableRemove
+                                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${
+                                  disableRemove
                                     ? "bg-zinc-50 text-zinc-400 border-zinc-200 cursor-not-allowed"
                                     : "bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200"
-                                  }`}
+                                }`}
                                 title={
                                   offersOnly
                                     ? row.variantOfferId
                                       ? "Remove your variant offer for this variant."
                                       : "Nothing to remove."
                                     : isLive && row.isExisting
-                                      ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
-                                      : undefined
+                                    ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
+                                    : undefined
                                 }
                               >
                                 <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
@@ -2470,17 +2645,24 @@ export default function SupplierEditProduct() {
                   )}
                 </div>
               </Card>
+
+              {/* Desktop full-width save (matches Add page pattern) */}
+              <div className="hidden sm:block">
+                <button
+                  type="button"
+                  disabled={saveDisabled}
+                  onClick={doSave}
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
+                >
+                  <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
+                </button>
+              </div>
             </div>
 
             {/* Right summary */}
-            <div className="space-y-4">
-              <div className="rounded-2xl border bg-white/90 shadow-sm overflow-hidden">
-                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
-                  <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Update summary</div>
-                  <div className="text-[11px] sm:text-xs text-zinc-500">What will be saved</div>
-                </div>
-
-                <div className="p-4 sm:p-5 text-sm text-zinc-700 space-y-2">
+            <div className="hidden lg:block space-y-4">
+              <Card title="Update summary" subtitle="What will be saved">
+                <div className="p-0 text-sm text-zinc-700 space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-zinc-500">Status</span>
                     <b className="text-zinc-900">{productStatusUpper || "—"}</b>
@@ -2552,34 +2734,13 @@ export default function SupplierEditProduct() {
                     </div>
                   )}
                 </div>
-              </div>
+              </Card>
 
               <button
                 type="button"
                 disabled={saveDisabled}
-                onClick={() => {
-                  if (hasBlockingError) {
-                    setErr(
-                      imageOverLimit
-                        ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
-                        : baseComboWarn
-                          ? baseComboWarn
-                          : dupWarn || "Fix the errors above to save."
-                    );
-                    return;
-                  }
-                  updateM.mutate();
-                }}
+                onClick={doSave}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
-                title={
-                  imageOverLimit
-                    ? `Remove extra images (max ${MAX_IMAGES_PER_PRODUCT}).`
-                    : hasBaseComboConflict
-                      ? "Fix base combo vs variant combo conflict to save."
-                      : hasDuplicates || hasInvalidDefaultVariant
-                        ? "Fix duplicate/invalid combinations to save."
-                        : undefined
-                }
               >
                 <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
               </button>

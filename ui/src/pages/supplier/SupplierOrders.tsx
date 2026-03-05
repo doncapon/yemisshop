@@ -322,9 +322,13 @@ export default function SupplierOrders() {
     "CANCELED",
   ] as const;
 
-  const [payoutMsg, setPayoutMsg] = useState<Record<string, { type: "info" | "error"; text: string }>>({});
+  const [payoutMsg, setPayoutMsg] = useState<
+    Record<string, { type: "info" | "error"; text?: React.ReactNode }>
+  >({});
   const [payoutPendingByPo, setPayoutPendingByPo] = useState<Record<string, boolean>>({});
-
+  const payoutBankDetailsLink = withSupplierCtx(
+    "/supplier/settings?focus=payout-bank-details#payout-bank-details"
+  );
   const PAGE_SIZES = [10, 20, 50, 100] as const;
   const [pageSize, setPageSize] = useState<number>(20);
   const [page, setPage] = useState<number>(1);
@@ -458,9 +462,20 @@ export default function SupplierOrders() {
       }));
     },
     onError: (err: any, vars) => {
+      const poId = String(vars.poId || "").trim();
       const e = err as AxiosError<any>;
-      const msg = e?.response?.data?.error || e?.message || "Failed to request delivery OTP";
-      setDeliveryOtpMsg((s) => ({ ...s, [vars.poId]: { type: "error", text: msg } }));
+      const msg =
+        (e as any)?.response?.data?.error ||
+        (e as any)?.response?.data?.message ||
+        e?.message ||
+        "Failed to request delivery OTP";
+
+      if (poId) {
+        setDeliveryOtpMsg((s) => ({
+          ...s,
+          [poId]: { type: "error", text: msg },
+        }));
+      }
     },
   });
 
@@ -513,25 +528,63 @@ export default function SupplierOrders() {
     },
     onError: (err: any, vars) => {
       const e = err as AxiosError<any>;
-      const msg = e?.response?.data?.error || e?.response?.data?.message || e?.message || "Failed to verify delivery OTP";
-      setDeliveryOtpMsg((s) => ({ ...s, [vars.poId]: { type: "error", text: msg } }));
+      const raw =
+        (e as any)?.response?.data?.error ||
+        (e as any)?.response?.data?.message ||
+        e?.message ||
+        "Failed to verify delivery OTP";
+
+      const msg = String(raw);
+
+      const isPayoutNotReady =
+        msg.toLowerCase().includes("not payout-ready") ||
+        msg.toLowerCase().includes("missing bank") ||
+        msg.toLowerCase().includes("payouts disabled");
+
+      setDeliveryOtpMsg((s:any) => ({
+        ...s,
+        [vars.poId]: {
+          type: "error",
+          text: isPayoutNotReady ? (
+            <span>
+              Supplier is not payout-ready.{" "}
+              <Link
+                to={payoutBankDetailsLink}
+                className="underline font-semibold text-rose-700 hover:text-rose-800"
+              >
+                Add payout bank details
+              </Link>
+            </span>
+          ) : (
+            msg
+          ),
+        },
+      }));
     },
   });
 
   // ✅ cookie-auth: release payout
   const releasePayoutM = useMutation({
     mutationFn: async (vars: { poId: string; orderId: string }) => {
-      const { data } = await api.post(`/api/supplier/payouts/purchase-orders/${vars.poId}/release`, {}, { withCredentials: true });
+      const { data } = await api.post(
+        `/api/supplier/payouts/purchase-orders/${vars.poId}/release`,
+        {},
+        { withCredentials: true }
+      );
       return data as any;
     },
     onMutate: (vars) => {
       const poId = String(vars.poId || "").trim();
       if (poId) setPayoutPendingByPo((s) => ({ ...s, [poId]: true }));
+      if (poId) setPayoutMsg((s) => ({ ...s, [poId]: { type: "info", text: "" } }));
     },
     onSuccess: (_data, vars) => {
       const poId = String(vars.poId || "").trim();
       if (poId) {
-        setPayoutMsg((s) => ({ ...s, [poId]: { type: "info", text: "Payout released (or already released)." } }));
+        setPayoutMsg((s) => ({
+          ...s,
+          [poId]: { type: "info", text: "Payout released (or already released)." },
+        }));
         setPayoutPendingByPo((s) => ({ ...s, [poId]: false }));
       }
       ordersQ.refetch();
@@ -541,14 +594,43 @@ export default function SupplierOrders() {
     onError: (err: any, vars) => {
       const poId = String(vars.poId || "").trim();
       const e = err as AxiosError<any>;
-      const msg =
+
+      const rawMsg =
         (e as any)?.response?.data?.error ||
         (e as any)?.response?.data?.message ||
         e?.message ||
         "Failed to release payout";
 
+      const msg = String(rawMsg);
+
+      const isPayoutNotReady =
+        msg.toLowerCase().includes("not payout-ready") ||
+        msg.toLowerCase().includes("not payout ready") ||
+        msg.toLowerCase().includes("missing bank") ||
+        msg.toLowerCase().includes("bank details") ||
+        msg.toLowerCase().includes("payouts disabled");
+
       if (poId) {
-        setPayoutMsg((s) => ({ ...s, [poId]: { type: "error", text: msg } }));
+        setPayoutMsg((s) => ({
+          ...s,
+          [poId]: {
+            type: "error",
+            text: isPayoutNotReady ? (
+              <span>
+                Supplier is not payout-ready (missing bank details or payouts disabled).{" "}
+                <Link
+                  to={payoutBankDetailsLink}
+                  className="underline font-semibold text-rose-700 hover:text-rose-800"
+                >
+                  Add payout bank details
+                </Link>
+              </span>
+            ) : (
+              msg
+            ),
+          },
+        }));
+
         setPayoutPendingByPo((s) => ({ ...s, [poId]: false }));
       }
     },
@@ -970,9 +1052,8 @@ export default function SupplierOrders() {
 
                         {poId && (
                           <span
-                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${
-                              otpVerified ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"
-                            }`}
+                            className={`inline-flex px-2 py-1 rounded-full text-[11px] border ${otpVerified ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"
+                              }`}
                           >
                             OTP: {otpVerified ? "VERIFIED" : "NOT VERIFIED"}
                           </span>
@@ -1045,9 +1126,8 @@ export default function SupplierOrders() {
 
                       {poId && payoutMsg[String(o.purchaseOrderId)]?.text ? (
                         <div
-                          className={`text-[12px] ${
-                            payoutMsg[String(o.purchaseOrderId)]?.type === "error" ? "text-rose-700" : "text-emerald-700"
-                          }`}
+                          className={`text-[12px] ${payoutMsg[String(o.purchaseOrderId)]?.type === "error" ? "text-rose-700" : "text-emerald-700"
+                            }`}
                         >
                           {payoutMsg[String(o.purchaseOrderId)]?.text}
                         </div>
@@ -1203,13 +1283,12 @@ export default function SupplierOrders() {
 
                         {cancelOtpMsg[o.id]?.text ? (
                           <div
-                            className={`mt-2 text-[12px] ${
-                              cancelOtpMsg[o.id].type === "warn"
-                                ? "text-amber-700"
-                                : cancelOtpMsg[o.id].type === "error"
+                            className={`mt-2 text-[12px] ${cancelOtpMsg[o.id].type === "warn"
+                              ? "text-amber-700"
+                              : cancelOtpMsg[o.id].type === "error"
                                 ? "text-rose-700"
                                 : "text-emerald-700"
-                            }`}
+                              }`}
                           >
                             {cancelOtpMsg[o.id].text}
                             {cancelOtpMsg[o.id].type === "warn" ? (
@@ -1264,13 +1343,12 @@ export default function SupplierOrders() {
 
                             {deliveryOtpMsg[poId]?.text ? (
                               <div
-                                className={`mt-2 text-[12px] ${
-                                  deliveryOtpMsg[poId].type === "error"
-                                    ? "text-rose-700"
-                                    : deliveryOtpMsg[poId].type === "warn"
+                                className={`mt-2 text-[12px] ${deliveryOtpMsg[poId].type === "error"
+                                  ? "text-rose-700"
+                                  : deliveryOtpMsg[poId].type === "warn"
                                     ? "text-amber-700"
                                     : "text-emerald-700"
-                                }`}
+                                  }`}
                               >
                                 {deliveryOtpMsg[poId].text}
                               </div>

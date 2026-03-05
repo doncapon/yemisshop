@@ -73,7 +73,7 @@ async function main() {
   let productUrls = [];
   try {
     const ids = await fetchAllProductIds();
-    productUrls = ids.map((id) => `${SITE_URL}/product/${id}`);
+    productUrls = ids.map((id) => `${SITE_URL}/products/${id}`);
     console.log(`[sitemap] fetched ${ids.length} product ids`);
   } catch (e) {
     console.warn("[sitemap] could not fetch products; continuing with static only:", e?.message || e);

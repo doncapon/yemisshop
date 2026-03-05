@@ -271,6 +271,49 @@ export default function SupplierAddProduct() {
     []
   );
 
+
+  function AddNewLink({
+    label,
+    onClick,
+    disabled,
+    title,
+  }: {
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+    title?: string;
+  }) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        title={title}
+        className={[
+          "text-[11px] font-semibold underline underline-offset-2",
+          "text-violet-700 hover:text-violet-800",
+          disabled ? "opacity-50 cursor-not-allowed" : "",
+        ].join(" ")}
+      >
+        {label}
+      </button>
+    );
+  }
+
+const CATALOG_REQUESTS_PATH = "/supplier/catalog-requests";
+type CatalogReqSection = "categories" | "brands" | "attributes" | "attribute-values";
+
+function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?: Record<string, string>) {
+  const sp = new URLSearchParams();
+  sp.set("section", section);
+  if (focus) sp.set("focus", focus);
+  for (const [k, v] of Object.entries(extra || {})) {
+    if (v != null && String(v).trim() !== "") sp.set(k, String(v));
+  }
+
+  return { pathname: CATALOG_REQUESTS_PATH, search: `?${sp.toString()}` };
+}
+
   const triggerConflictFlash = (rowId?: string) => {
     if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
 
@@ -1151,7 +1194,23 @@ export default function SupplierAddProduct() {
                     </div>
 
                     <div>
-                      <Label>Category</Label>
+                      <div className="flex items-center justify-between mb-1">
+                        <Label>Category</Label>
+                        {/* <Link
+                          to={goToCatalogRequests("categories", "category")}
+                          state={{ section: "categories" }}
+                          className="text-[11px] font-semibold text-violet-700 underline hover:text-violet-800"
+                          title="Request a new category"
+                        >
+                          Add new category
+                        </Link> */}
+
+                        <AddNewLink
+                          label="Add new category"
+                          onClick={() =>nav( goToCatalogRequests("categories", "category"))}
+                          title="Request a new category"
+                        />
+                      </div>
                       <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
                         <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
                         {categories.map((c) => (
@@ -1163,7 +1222,14 @@ export default function SupplierAddProduct() {
                     </div>
 
                     <div>
-                      <Label>Brand</Label>
+                      <div className="flex items-center justify-between mb-1">
+                        <Label>Brand</Label>
+                        <AddNewLink
+                          label="Add new brand"
+                          onClick={() => nav(goToCatalogRequests("brands", "brand"))}
+                          title="Request a new brand"
+                        />
+                      </div>
                       <Select value={brandId} onChange={(e) => setBrandId(e.target.value)}>
                         <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
                         {brands.map((b) => (
@@ -1349,6 +1415,15 @@ export default function SupplierAddProduct() {
                 title="Attributes"
                 subtitle="Optional details used for filtering and variant setup."
                 className={baseComboBorder}
+                right={
+                  <div className="flex items-center gap-2">
+                    <AddNewLink
+                      label="Add new attribute"
+                      onClick={() => nav(goToCatalogRequests("attributes", "attribute"))}
+                      title="Request a new attribute"
+                    />
+                  </div>
+                }
               >
                 <div className="space-y-3">
                   {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
@@ -1394,9 +1469,20 @@ export default function SupplierAddProduct() {
 
                       if (a.type === "SELECT") {
                         const v = String(selectedAttrs[a.id] ?? "");
+                        const label = "add new " + a.name.toLowerCase();
+
                         return (
                           <div key={a.id}>
-                            <Label>{a.name}</Label>
+                            <div className="flex items-center justify-between mb-1">
+                              <Label>{a.name}</Label>
+                              <AddNewLink
+                                label={label}
+                                onClick={() =>
+                                  nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
+                                }
+                                title={`Request new values for ${a.name}`}
+                              />
+                            </div>
                             <Select
                               value={v}
                               onChange={(e) => setBaseSelectAttr(a.id, e.target.value)}
@@ -1415,20 +1501,33 @@ export default function SupplierAddProduct() {
 
                       // MULTISELECT
                       const arr = Array.isArray(selectedAttrs[a.id]) ? (selectedAttrs[a.id] as string[]) : [];
+                      const label = "add new " + a.name.toLowerCase();
+
                       return (
                         <div key={a.id} className="sm:col-span-2 rounded-2xl border bg-white p-3">
-                          <div className="text-xs font-semibold text-zinc-700 mb-2">{a.name}</div>
-                          <div className="flex flex-wrap gap-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-xs font-semibold text-zinc-700">{a.name}</div>
+    
+                            <AddNewLink
+                              label={label}
+                              onClick={() =>
+                                nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
+                              }
+                              title={`Request new values for ${a.name}`}
+                            />
+
+
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-2">
                             {(a.values || []).map((x) => {
                               const checked = arr.includes(x.id);
                               return (
                                 <label
                                   key={x.id}
-                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
-                                    checked
-                                      ? "bg-zinc-900 text-white border-zinc-900"
-                                      : "bg-white hover:bg-black/5"
-                                  }`}
+                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${checked
+                                    ? "bg-zinc-900 text-white border-zinc-900"
+                                    : "bg-white hover:bg-black/5"
+                                    }`}
                                 >
                                   <input
                                     type="checkbox"
@@ -1496,9 +1595,21 @@ export default function SupplierAddProduct() {
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             {selectableAttrs.map((attr) => {
                               const valueId = row.selections[attr.id] || "";
+                              const label = "add new " + attr.name.toLowerCase();
+
                               return (
                                 <div key={attr.id}>
-                                  <div className="text-[11px] font-semibold text-zinc-600 mb-1">{attr.name}</div>
+                                  <div className="flex items-center justify-between mb-1">
+                                    <div className="text-[11px] font-semibold text-zinc-600">{attr.name}</div>
+
+                                    <AddNewLink
+                                      label={label}
+                                      onClick={() =>
+                                        nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(attr.id || "") }))
+                                      }
+                                      title={`Request new values for ${attr.name}`}
+                                    />
+                                  </div>
                                   <Select
                                     value={valueId}
                                     onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}

@@ -12,6 +12,8 @@ import {
   Tag,
   TextCursorInput,
   XCircle,
+  Search,
+  Filter,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -21,6 +23,7 @@ import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
 import { useCatalogMeta, type CatalogAttribute } from "../../hooks/useCatalogMeta";
+import { useLocation } from "react-router-dom";
 
 /* =========================================================
    Types
@@ -53,39 +56,38 @@ type CatalogRequestRow = {
   // review info
   adminNote?: string | null;
   reviewedAt?: string | null;
-
   createdAt?: string | null;
 };
 
 type CreateRequestPayload =
   | {
-      type: "BRAND";
-      name: string;
-      slug?: string;
-      logoUrl?: string | null;
-      notes?: string | null;
-    }
+    type: "BRAND";
+    name: string;
+    slug?: string;
+    logoUrl?: string | null;
+    notes?: string | null;
+  }
   | {
-      type: "CATEGORY";
-      name: string;
-      slug?: string;
-      parentId?: string | null;
-      notes?: string | null;
-    }
+    type: "CATEGORY";
+    name: string;
+    slug?: string;
+    parentId?: string | null;
+    notes?: string | null;
+  }
   | {
-      type: "ATTRIBUTE";
-      name: string;
-      slug?: string;
-      attributeType: "TEXT" | "SELECT" | "MULTISELECT";
-      notes?: string | null;
-    }
+    type: "ATTRIBUTE";
+    name: string;
+    slug?: string;
+    attributeType: "TEXT" | "SELECT" | "MULTISELECT";
+    notes?: string | null;
+  }
   | {
-      type: "ATTRIBUTE_VALUE";
-      attributeId: string;
-      valueName: string;
-      valueCode?: string | null;
-      notes?: string | null;
-    };
+    type: "ATTRIBUTE_VALUE";
+    attributeId: string;
+    valueName: string;
+    valueCode?: string | null;
+    notes?: string | null;
+  };
 
 /* =========================================================
    Small helpers
@@ -105,8 +107,8 @@ function StatusPill({ status }: { status: RequestStatus }) {
     status === "APPROVED"
       ? "bg-emerald-50 text-emerald-700 border-emerald-200"
       : status === "REJECTED"
-      ? "bg-rose-50 text-rose-700 border-rose-200"
-      : "bg-amber-50 text-amber-700 border-amber-200";
+        ? "bg-rose-50 text-rose-700 border-rose-200"
+        : "bg-amber-50 text-amber-700 border-amber-200";
 
   const icon =
     status === "APPROVED" ? (
@@ -148,6 +150,29 @@ function asRequestStatus(v: any): RequestStatus {
   const u = String(v ?? "").toUpperCase();
   if (u === "PENDING" || u === "APPROVED" || u === "REJECTED") return u;
   return "PENDING";
+}
+
+function prettyDate(v?: string | null) {
+  if (!v) return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+}
+
+function safeArrayFromApi(data: any): any[] {
+  // Accept {data: [...]}, {items: [...]}, plain [...], or nested {data:{items:[...]}}
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.items)) return data.items;
+  if (Array.isArray(data?.data?.items)) return data.data.items;
+  if (Array.isArray(data?.data?.data)) return data.data.data;
+  return [];
 }
 
 /* =========================================================
@@ -197,6 +222,23 @@ export default function SupplierCatalogRequests() {
   const [valCode, setValCode] = useState("");
   const [valNotes, setValNotes] = useState("");
 
+  // “My requests” controls
+  const [mineSearch, setMineSearch] = useState("");
+  const [mineStatus, setMineStatus] = useState<"" | RequestStatus>("");
+
+  const location = useLocation();
+
+  const categoryRef = React.useRef<HTMLDivElement | null>(null);
+  const brandRef = React.useRef<HTMLDivElement | null>(null);
+  const attributeRef = React.useRef<HTMLDivElement | null>(null);
+  const valueRef = React.useRef<HTMLDivElement | null>(null);
+
+  function scrollToRef(ref: React.RefObject<HTMLDivElement | null>) {
+    const el = ref.current;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   // ✅ cookie-auth: catalog meta can load once hydrated (no token)
   const { categories, brands, attributes, categoriesQ, brandsQ, attributesQ } = useCatalogMeta({
     enabled: hydrated,
@@ -209,6 +251,22 @@ export default function SupplierCatalogRequests() {
 
   const isSupplier = role === "SUPPLIER";
 
+  const categoryNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    (categories || []).forEach((c: any) => {
+      if (c?.id) m.set(String(c.id), String(c.name ?? c.id));
+    });
+    return m;
+  }, [categories]);
+
+  const attributeNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    (attributes || []).forEach((a: any) => {
+      if (a?.id) m.set(String(a.id), String(a.name ?? a.id));
+    });
+    return m;
+  }, [attributes]);
+
   // ----- My requests list (cookie-auth) -----
   const myRequestsQ = useQuery<CatalogRequestRow[]>({
     queryKey: ["supplier", "catalog-requests", "mine"],
@@ -218,8 +276,8 @@ export default function SupplierCatalogRequests() {
     refetchOnMount: "always",
     queryFn: async (): Promise<CatalogRequestRow[]> => {
       const { data } = await api.get("/api/supplier/catalog-requests", { withCredentials: true });
+      const arr = safeArrayFromApi(data);
 
-      const arr = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
       return (arr as any[]).map((r): CatalogRequestRow => ({
         id: String(r.id),
         type: asRequestType(r.type),
@@ -237,7 +295,8 @@ export default function SupplierCatalogRequests() {
         valueCode: r.valueCode ?? null,
 
         adminNote: r.adminNote ?? r.reviewNote ?? null,
-        reviewedAt: r.reviewedAt ?? null,
+        reviewedAt: r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? r.reviewedAt ?? null,
+        // ^ intentionally tolerant (some backends rename this a lot). If your API is consistent, keep just one.
         createdAt: r.createdAt ?? null,
       }));
     },
@@ -255,9 +314,9 @@ export default function SupplierCatalogRequests() {
       });
       return data?.data ?? data;
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       setOk("Request sent ✅ An admin will review it.");
-      qc.invalidateQueries({ queryKey: ["supplier", "catalog-requests", "mine"] });
+      await qc.invalidateQueries({ queryKey: ["supplier", "catalog-requests", "mine"] });
       setTimeout(() => setOk(null), 3500);
       setTab("MINE");
     },
@@ -309,6 +368,8 @@ export default function SupplierCatalogRequests() {
     setBrandSlugTouched(false);
   }
 
+
+
   function submitAttribute() {
     setErr(null);
     const name = attrName.trim();
@@ -353,6 +414,61 @@ export default function SupplierCatalogRequests() {
 
   const guardMsg = role && role !== "SUPPLIER" ? "This page is for suppliers only." : null;
 
+  const myRequestsFiltered = useMemo(() => {
+    const list = myRequestsQ.data || [];
+    const q = mineSearch.trim().toLowerCase();
+
+    return list
+      .filter((r) => (mineStatus ? r.status === mineStatus : true))
+      .filter((r) => {
+        if (!q) return true;
+
+        const type = r.type.toLowerCase();
+        const name = String(r.name ?? "").toLowerCase();
+        const slug = String(r.slug ?? "").toLowerCase();
+        const notes = String(r.notes ?? "").toLowerCase();
+        const admin = String(r.adminNote ?? "").toLowerCase();
+        const valueName = String(r.valueName ?? "").toLowerCase();
+        const attrName = String(attributeNameById.get(String(r.attributeId ?? "")) ?? r.attributeId ?? "").toLowerCase();
+
+        return (
+          type.includes(q) ||
+          name.includes(q) ||
+          slug.includes(q) ||
+          notes.includes(q) ||
+          admin.includes(q) ||
+          valueName.includes(q) ||
+          attrName.includes(q)
+        );
+      })
+      .sort((a, b) => {
+        const ad = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bd = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bd - ad;
+      });
+  }, [myRequestsQ.data, mineSearch, mineStatus, attributeNameById]);
+  useEffect(() => {
+    // supports: /supplier/catalog-requests?focus=attribute OR /supplier/catalog-requests#attribute
+    const sp = new URLSearchParams(location.search);
+    const focus = (sp.get("focus") || "").toLowerCase();
+    const hash = (location.hash || "").replace("#", "").toLowerCase();
+
+    const target = focus || hash;
+    if (!target) return;
+
+    // always show NEW tab first, because sections live there
+    setTab("NEW");
+
+    // wait for render, then scroll
+    const t = window.setTimeout(() => {
+      if (target === "category") scrollToRef(categoryRef);
+      if (target === "brand") scrollToRef(brandRef);
+      if (target === "attribute") scrollToRef(attributeRef);
+      if (target === "value" || target === "attribute_value") scrollToRef(valueRef);
+    }, 50);
+
+    return () => window.clearTimeout(t);
+  }, [location.search, location.hash]);
   return (
     <SiteLayout>
       <SupplierLayout>
@@ -427,19 +543,22 @@ export default function SupplierCatalogRequests() {
           </div>
         </div>
 
-        {/* Layout: on mobile -> one column (tips below). on desktop -> sidebar right */}
+        {/* Layout */}
         <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
           {/* MAIN */}
           <div className="order-1 lg:order-none lg:col-span-2 space-y-4">
             {tab === "NEW" && (
               <>
                 {/* Category request */}
+                <div ref={categoryRef} />
                 <Card>
                   <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
                     <Layers size={18} className="text-zinc-800" />
                     <div className="min-w-0">
                       <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Request a Category</div>
-                      <div className="text-[11px] sm:text-xs text-zinc-500">Admins approve to prevent duplicates and messy taxonomy.</div>
+                      <div className="text-[11px] sm:text-xs text-zinc-500">
+                        Admins approve to prevent duplicates and messy taxonomy.
+                      </div>
                     </div>
                   </div>
 
@@ -516,6 +635,7 @@ export default function SupplierCatalogRequests() {
                 </Card>
 
                 {/* Brand request */}
+                <div ref={brandRef} />
                 <Card>
                   <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
                     <Building2 size={18} className="text-zinc-800" />
@@ -592,6 +712,7 @@ export default function SupplierCatalogRequests() {
                 </Card>
 
                 {/* Attribute request */}
+                <div ref={attributeRef} />
                 <Card>
                   <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
                     <TextCursorInput size={18} className="text-zinc-800" />
@@ -673,6 +794,7 @@ export default function SupplierCatalogRequests() {
                 </Card>
 
                 {/* Attribute value request */}
+                <div ref={valueRef} />
                 <Card>
                   <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-center gap-2">
                     <Tag size={18} className="text-zinc-800" />
@@ -773,85 +895,132 @@ export default function SupplierCatalogRequests() {
                   </button>
                 </div>
 
-                <div className="p-4 sm:p-5">
+                <div className="p-4 sm:p-5 space-y-3">
+                  {/* Filters */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div className="sm:col-span-2">
+                      <div className="relative">
+                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+                        <input
+                          value={mineSearch}
+                          onChange={(e) => setMineSearch(e.target.value)}
+                          className="w-full rounded-xl border pl-9 pr-3 py-2.5 text-sm bg-white"
+                          placeholder="Search (name, slug, notes, attribute, value)…"
+                        />
+                      </div>
+                    </div>
+                    <div className="relative">
+                      <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+                      <select
+                        value={mineStatus}
+                        onChange={(e) => setMineStatus(e.target.value as any)}
+                        className="w-full rounded-xl border pl-9 pr-3 py-2.5 text-sm bg-white"
+                      >
+                        <option value="">All statuses</option>
+                        <option value="PENDING">PENDING</option>
+                        <option value="APPROVED">APPROVED</option>
+                        <option value="REJECTED">REJECTED</option>
+                      </select>
+                    </div>
+                  </div>
+
                   {myRequestsQ.isLoading && <div className="text-sm text-zinc-500">Loading your requests…</div>}
 
-                  {!myRequestsQ.isLoading && (myRequestsQ.data?.length || 0) === 0 && (
-                    <div className="text-sm text-zinc-500">No requests yet. Create one from “New”.</div>
+                  {!myRequestsQ.isLoading && (myRequestsFiltered.length || 0) === 0 && (
+                    <div className="text-sm text-zinc-500">No matching requests. Try clearing filters or create one from “New”.</div>
                   )}
 
-                  {(myRequestsQ.data || []).length > 0 && (
+                  {(myRequestsFiltered || []).length > 0 && (
                     <div className="space-y-3">
-                      {(myRequestsQ.data || []).map((r) => (
-                        <div key={r.id} className="rounded-2xl border bg-white p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
-                                {r.type === "BRAND"
-                                  ? "Brand"
-                                  : r.type === "CATEGORY"
-                                  ? "Category"
-                                  : r.type === "ATTRIBUTE"
-                                  ? "Attribute"
-                                  : "Attribute value"}{" "}
-                                request
-                              </div>
+                      {(myRequestsFiltered || []).map((r) => {
+                        const created = prettyDate(r.createdAt);
+                        const reviewed = prettyDate(r.reviewedAt);
 
-                              <div className="text-[13px] sm:text-sm text-zinc-700 mt-0.5">
-                                {r.type === "ATTRIBUTE_VALUE" ? (
-                                  <>
-                                    <span className="font-medium">{r.valueName || "—"}</span>
-                                    <span className="text-zinc-500"> (for {r.attributeId || "—"})</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <span className="font-medium">{r.name || "—"}</span>
-                                    {r.attributeType ? <span className="text-zinc-500"> · {r.attributeType}</span> : null}
-                                  </>
-                                )}
-                              </div>
+                        const isAttrVal = r.type === "ATTRIBUTE_VALUE";
+                        const attrName =
+                          attributeNameById.get(String(r.attributeId ?? "")) || (r.attributeId ? String(r.attributeId) : "—");
 
-                              <div className="text-[11px] text-zinc-500 mt-1">
-                                {r.slug ? (
-                                  <>
-                                    Slug: <span className="font-mono">{r.slug}</span>
-                                  </>
-                                ) : null}
-                                {r.createdAt ? (
-                                  <>
-                                    {r.slug ? " · " : ""}
-                                    Created: <span className="font-mono">{new Date(r.createdAt).toLocaleString()}</span>
-                                  </>
-                                ) : null}
-                              </div>
-                            </div>
+                        const categoryParentName = r.parentId
+                          ? categoryNameById.get(String(r.parentId)) || String(r.parentId)
+                          : null;
 
-                            <StatusPill status={r.status} />
-                          </div>
-
-                          {(r.notes || r.adminNote) && (
-                            <div className="mt-3 grid gap-2">
-                              {r.notes && (
-                                <div className="rounded-xl border bg-zinc-50 p-3">
-                                  <div className="text-[11px] font-semibold text-zinc-700 mb-1">Your notes</div>
-                                  <div className="text-sm text-zinc-700 whitespace-pre-wrap">{r.notes}</div>
+                        return (
+                          <div key={r.id} className="rounded-2xl border bg-white p-4">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
+                                  {r.type === "BRAND"
+                                    ? "Brand"
+                                    : r.type === "CATEGORY"
+                                      ? "Category"
+                                      : r.type === "ATTRIBUTE"
+                                        ? "Attribute"
+                                        : "Attribute value"}{" "}
+                                  request
                                 </div>
-                              )}
-                              {r.adminNote && (
-                                <div className="rounded-xl border bg-white p-3">
-                                  <div className="text-[11px] font-semibold text-zinc-700 mb-1">Admin note</div>
-                                  <div className="text-sm text-zinc-700 whitespace-pre-wrap">{r.adminNote}</div>
-                                  {r.reviewedAt && (
-                                    <div className="text-[11px] text-zinc-500 mt-1">
-                                      Reviewed: <span className="font-mono">{new Date(r.reviewedAt).toLocaleString()}</span>
-                                    </div>
+
+                                <div className="text-[13px] sm:text-sm text-zinc-700 mt-0.5">
+                                  {isAttrVal ? (
+                                    <>
+                                      <span className="font-medium">{r.valueName || "—"}</span>
+                                      <span className="text-zinc-500"> (for </span>
+                                      <span className="text-zinc-900 font-medium">{attrName}</span>
+                                      <span className="text-zinc-500">)</span>
+                                      {r.valueCode ? <span className="text-zinc-500"> · code: {r.valueCode}</span> : null}
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span className="font-medium">{r.name || "—"}</span>
+                                      {r.attributeType ? <span className="text-zinc-500"> · {r.attributeType}</span> : null}
+                                      {r.type === "CATEGORY" && categoryParentName ? (
+                                        <span className="text-zinc-500"> · parent: {categoryParentName}</span>
+                                      ) : null}
+                                    </>
                                   )}
                                 </div>
-                              )}
+
+                                <div className="text-[11px] text-zinc-500 mt-1">
+                                  {r.slug ? (
+                                    <>
+                                      Slug: <span className="font-mono">{r.slug}</span>
+                                    </>
+                                  ) : null}
+                                  {created ? (
+                                    <>
+                                      {r.slug ? " · " : ""}
+                                      Created: <span className="font-mono">{created}</span>
+                                    </>
+                                  ) : null}
+                                </div>
+                              </div>
+
+                              <StatusPill status={r.status} />
                             </div>
-                          )}
-                        </div>
-                      ))}
+
+                            {(r.notes || r.adminNote) && (
+                              <div className="mt-3 grid gap-2">
+                                {r.notes && (
+                                  <div className="rounded-xl border bg-zinc-50 p-3">
+                                    <div className="text-[11px] font-semibold text-zinc-700 mb-1">Your notes</div>
+                                    <div className="text-sm text-zinc-700 whitespace-pre-wrap">{r.notes}</div>
+                                  </div>
+                                )}
+                                {r.adminNote && (
+                                  <div className="rounded-xl border bg-white p-3">
+                                    <div className="text-[11px] font-semibold text-zinc-700 mb-1">Admin note</div>
+                                    <div className="text-sm text-zinc-700 whitespace-pre-wrap">{r.adminNote}</div>
+                                    {reviewed && (
+                                      <div className="text-[11px] text-zinc-500 mt-1">
+                                        Reviewed: <span className="font-mono">{reviewed}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -922,11 +1091,10 @@ export default function SupplierCatalogRequests() {
                                 </div>
                               </div>
                               <span
-                                className={`px-2 py-1 rounded-full text-[11px] border ${
-                                  a.isActive !== false
-                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                    : "bg-zinc-50 text-zinc-600 border-zinc-200"
-                                }`}
+                                className={`px-2 py-1 rounded-full text-[11px] border ${a.isActive !== false
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                  : "bg-zinc-50 text-zinc-600 border-zinc-200"
+                                  }`}
                               >
                                 {a.isActive !== false ? "ACTIVE" : "INACTIVE"}
                               </span>
@@ -950,7 +1118,9 @@ export default function SupplierCatalogRequests() {
                         ))}
 
                         {(selectableAttributes || []).length > 30 && (
-                          <div className="text-xs text-zinc-500">Showing 30 of {(selectableAttributes || []).length} attributes.</div>
+                          <div className="text-xs text-zinc-500">
+                            Showing 30 of {(selectableAttributes || []).length} attributes.
+                          </div>
                         )}
                       </div>
                     )}
