@@ -377,6 +377,7 @@ function findDuplicateCombos(rows: VariantRow[], attrs: AttrDef[]): Record<strin
   return errors;
 }
 
+
 /* ============================
    Variants persistence (tries multiple endpoints)
 ============================ */
@@ -441,6 +442,8 @@ async function persistVariantsStrict(productId: string, variants: any[], opts?: 
   console.error("No variants bulk endpoint found. Last error:", lastErr?.response?.status, lastErr?.response?.data);
   throw new Error("Your API does not expose a variants bulk endpoint. Add one server-side or update the frontend to match your backend route.");
 }
+
+
 
 /* ============================
    Component
@@ -540,6 +543,9 @@ export function ManageProducts({
     if (sort.key !== k) return <span className="opacity-50">↕</span>;
     return <span>{sort.dir === "asc" ? "↑" : "↓"}</span>;
   };
+
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<10 | 20 | 30 | 50>(10);
 
   function extractOfferProductId(o: any): string | null {
     return normalizeNullableId(o?.productId?.id ?? o?.product?.id ?? o?.productId);
@@ -757,6 +763,85 @@ export function ManageProducts({
       return byProduct;
     },
   });
+
+
+
+  function PaginationBar() {
+    if (totalRows === 0) return null;
+
+    const from = totalRows === 0 ? 0 : startIndex + 1;
+    const to = Math.min(endIndex, totalRows);
+
+    return (
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-2xl border bg-white shadow-sm p-3">
+        <div className="text-sm text-slate-600">
+          Showing <span className="font-medium">{from}</span>–<span className="font-medium">{to}</span> of{" "}
+          <span className="font-medium">{totalRows}</span>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-slate-600">Rows</label>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value) as 10 | 20 | 30 | 50);
+                setPage(1);
+              }}
+              className="rounded-xl border px-3 py-2 text-sm bg-white"
+            >
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={30}>30</option>
+              <option value={50}>50</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => goToPage(1)}
+              disabled={currentPage === 1}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              First
+            </button>
+
+            <button
+              type="button"
+              onClick={() => goToPage(currentPage - 1)}
+              disabled={currentPage === 1}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              Prev
+            </button>
+
+            <div className="text-sm text-slate-600 px-2">
+              Page <span className="font-medium">{currentPage}</span> / <span className="font-medium">{totalPages}</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => goToPage(currentPage + 1)}
+              disabled={currentPage === totalPages}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              Next
+            </button>
+
+            <button
+              type="button"
+              onClick={() => goToPage(totalPages)}
+              disabled={currentPage === totalPages}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              Last
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Derive availability + computed pricing into rows
   const rowsWithDerived: AdminProduct[] = useMemo(() => {
@@ -2382,57 +2467,83 @@ export function ManageProducts({
 
     return arr;
   }, [filteredRows, sort, statusRank]);
-  
 
- const supplierVariants = useMemo(() => {
-  const skuByVariantId = new Map<string, string>();
+  useEffect(() => {
+    setPage(1);
+  }, [preset, debouncedQ, sort.key, sort.dir]);
 
-  const norm = (x: any) => {
-    if (x == null) return null;
-    const s = String(x).trim();
-    if (!s || s === "null" || s === "undefined") return null;
-    return s;
-  };
 
-  for (const v of offerVariants || []) {
-    const vid =
-      norm(v?.id) ||
-      norm(v?.variantId) ||
-      norm(v?.variant?.id) ||
-      norm(v?.id?.id) ||
-      norm(v?.variantId?.id);
-    const sku = String(v?.sku || "").trim();
-    if (vid && sku) skuByVariantId.set(vid, sku);
+  const totalRows = displayRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = startIndex + pageSize;
+
+  const paginatedRows = useMemo(() => {
+    return displayRows.slice(startIndex, endIndex);
+  }, [displayRows, startIndex, endIndex]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  function goToPage(next: number) {
+    setPage(Math.min(Math.max(1, next), totalPages));
   }
 
-  const rows = (variantRows || []).filter((r) => isRealVariantId(String(r?.id ?? "")));
 
-  const toLabelFromSelections = (r: VariantRow) => {
-    const parts: string[] = [];
-    for (const a of selectableAttrs || []) {
-      const valId = String(r?.selections?.[a.id] ?? "").trim();
-      if (!valId) continue;
-      const valName = a?.values?.find((vv) => String(vv.id) === valId)?.name;
-      parts.push(String(valName || "").trim() || valId);
+
+  const supplierVariants = useMemo(() => {
+    const skuByVariantId = new Map<string, string>();
+
+    const norm = (x: any) => {
+      if (x == null) return null;
+      const s = String(x).trim();
+      if (!s || s === "null" || s === "undefined") return null;
+      return s;
+    };
+
+    for (const v of offerVariants || []) {
+      const vid =
+        norm(v?.id) ||
+        norm(v?.variantId) ||
+        norm(v?.variant?.id) ||
+        norm(v?.id?.id) ||
+        norm(v?.variantId?.id);
+      const sku = String(v?.sku || "").trim();
+      if (vid && sku) skuByVariantId.set(vid, sku);
     }
-    return parts.filter(Boolean).join(" / ");
-  };
 
-  return rows
-    .map((r, index) => {
-      const vid = norm(r?.id);
-      if (!vid) return null;
+    const rows = (variantRows || []).filter((r) => isRealVariantId(String(r?.id ?? "")));
 
-      const serverSku = skuByVariantId.get(vid);
-      const labelFromSelections = toLabelFromSelections(r);
-      const label = serverSku || labelFromSelections || `Variant ${index + 1}`;
+    const toLabelFromSelections = (r: VariantRow) => {
+      const parts: string[] = [];
+      for (const a of selectableAttrs || []) {
+        const valId = String(r?.selections?.[a.id] ?? "").trim();
+        if (!valId) continue;
+        const valName = a?.values?.find((vv) => String(vv.id) === valId)?.name;
+        parts.push(String(valName || "").trim() || valId);
+      }
+      return parts.filter(Boolean).join(" / ");
+    };
 
-      // NOTE: sku is the “suffix” piece here – SuppliersOfferManager
-      // will decide how to combine it with productSku.
-      return { id: vid, sku: serverSku || label, label };
-    })
-    .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
-}, [variantRows, selectableAttrs, offerVariants]);
+
+
+    return rows
+      .map((r, index) => {
+        const vid = norm(r?.id);
+        if (!vid) return null;
+
+        const serverSku = skuByVariantId.get(vid);
+        const labelFromSelections = toLabelFromSelections(r);
+        const label = serverSku || labelFromSelections || `Variant ${index + 1}`;
+
+        // NOTE: sku is the “suffix” piece here – SuppliersOfferManager
+        // will decide how to combine it with productSku.
+        return { id: vid, sku: serverSku || label, label };
+      })
+      .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
+  }, [variantRows, selectableAttrs, offerVariants]);
 
   /* ---------------- Primary actions ---------------- */
 
@@ -3250,10 +3361,11 @@ export function ManageProducts({
         </div>
       </div>
 
-      {/* ================= Mobile Cards (neater) ================= */}
+      <PaginationBar />
+
       {/* ================= Mobile Cards (neater) ================= */}
       <div className="md:hidden space-y-3">
-        {displayRows.map((p) => {
+        {paginatedRows.map((p) => {
           const action = primaryActionForRow(p);
           const price = displayRetailForRow(p);
           const status = getStatus(p);
@@ -3379,6 +3491,9 @@ ove-500">Offers</div>
         )}
       </div>
 
+      <div className="md:hidden">
+        <PaginationBar />
+      </div>
 
       {/* ================= Desktop Table ================= */}
       <div className="hidden md:block rounded-2xl border bg-white shadow-sm overflow-hidden">
@@ -3409,7 +3524,7 @@ ove-500">Offers</div>
             </thead>
 
             <tbody>
-              {displayRows.map((p) => {
+              {paginatedRows.map((p) => {
                 const action = primaryActionForRow(p);
                 const price = displayRetailForRow(p);
 
@@ -3500,6 +3615,7 @@ ove-500">Offers</div>
           </table>
         </div>
       </div>
+      <PaginationBar />
     </div>
   );
 }

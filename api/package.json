@@ -17,6 +17,7 @@
     "seed": "prisma db seed",
     "seed:shipping": "tsx prisma/seed-shipping.ts",
     "seed:catalog": "tsx prisma/seedCategories.ts",
+    "seed:product": "tsx prisma/seedProduct.ts",
     "postdeploy": "npm run seed",
     "prestart": "prisma migrate deploy && echo '--- PWD ---' && pwd && echo '--- ls -la ---' && ls -la && echo '--- ls -R dist ---' && ls -R dist || true"
   },
