@@ -1,8 +1,8 @@
 // src/pages/Catalog.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client.js";
-import { Link, useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useAuthStore } from "../store/auth";
 import { useModal } from "../components/ModalProvider";
 import {
@@ -20,9 +20,7 @@ import {
 import SiteLayout from "../layouts/SiteLayout.js";
 import { showMiniCartToast } from "../components/cart/MiniCartToast";
 import { readCartLines, upsertCartLine, qtyInCart, toMiniCartRows } from "../utils/cartModel";
-import { useWindowVirtualizer } from "@tanstack/react-virtual";
 
-import { useLayoutEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 /* =========================================================
@@ -778,6 +776,19 @@ export default function Catalog() {
     };
   }, []);
 
+
+  function stopCardNav(e: React.SyntheticEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  function goToProduct(productId: string) {
+    nav(`/products/${productId}`, {
+      state: {
+        from: location.pathname + location.search,
+        restoreScrollY: window.scrollY,
+      },
+    });
+  }
   const closeRefine = () => {
     setRefineOpen(false);
     setShowSuggest(false);
@@ -989,15 +1000,29 @@ export default function Catalog() {
     return list.filter((p) => isLive(p));
   }, [productsQ.data]);
 
+useLayoutEffect(() => {
+  const y = (location.state as any)?.restoreScrollY;
 
+  if (typeof y === "number") {
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: y, behavior: "auto" });
 
-  useLayoutEffect(() => {
-    const y = (location.state as any)?.restoreScrollY;
-    if (typeof y === "number") {
-      // restore once
-      requestAnimationFrame(() => window.scrollTo({ top: y, behavior: "auto" }));
-    }
-  }, [location.key]);
+      try {
+        const hs = window.history.state || {};
+        const usr = { ...(hs.usr || {}) };
+        delete usr.restoreScrollY;
+
+        window.history.replaceState(
+          { ...hs, usr },
+          "",
+          window.location.href
+        );
+      } catch {
+        // ignore
+      }
+    });
+  }
+}, [location.key]);
 
   /* ---------------- Categories (tree) ---------------- */
 
@@ -1091,11 +1116,6 @@ export default function Catalog() {
       window.dispatchEvent(new Event("wishlist:updated"));
     },
   });
-
-  useLayoutEffect(() => {
-    const y = (window.history.state as any)?.__catalogScrollY;
-    if (typeof y === "number") requestAnimationFrame(() => window.scrollTo({ top: y, behavior: "auto" }));
-  }, [location.key]);
 
 
   /* ---------------- Filters/sort ---------------- */
@@ -1348,11 +1368,6 @@ export default function Catalog() {
     return Math.ceil(pageItems.length / cols);
   }, [pageItems.length, gridCols]);
 
-  const rowVirtualizer = useWindowVirtualizer({
-    count: rowCount,
-    estimateSize: () => (gridCols >= 4 ? 320 : 280), // tweak if you want
-    overscan: 6,
-  });
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
       const t = e.target as Node;
@@ -1364,20 +1379,12 @@ export default function Catalog() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
-  useEffect(() => {
-    // coming back can change measurements; make virtualizer rebuild positions
-    rowVirtualizer.measure();
-  }, [location.key, gridCols, pageItems.length]);
-
   const goTo = (p: number) => {
     const clamped = Math.min(Math.max(1, p), totalPages);
     if (clamped === currentPage) return;
     setPage(clamped);
   };
 
-  useEffect(() => {
-    rowVirtualizer.measure();
-  }, [currentPage, rowVirtualizer]);
 
   const windowedPages = (current: number, total: number, radius = 2) => {
     const pages: number[] = [];
@@ -1911,105 +1918,193 @@ export default function Catalog() {
             ) : (
               <>
                 {/* VIRTUALIZED GRID */}
-                <div
-                  key={location.key}   // forces remount when coming back from product page
-                  className="relative z-0"
-                  style={{
-                    height: `${rowVirtualizer.getTotalSize()}px`,
-                    position: "relative",
-                  }}
-                >
-                  {rowVirtualizer.getVirtualItems().map((row) => {
-                    const cols = Math.max(1, gridCols);
-                    const from = row.index * cols;
-                    const to = Math.min(from + cols, pageItems.length);
-                    const rowItems = pageItems.slice(from, to);
+                <div className="-mx-2 sm:mx-0 grid gap-1.5 sm:gap-3 md:gap-4 grid-cols-2 md:grid-cols-4">
+                  {pageItems.map((p) => {
+                    const fav = isFav(p.id);
+                    const bestPrice = priceForFiltering(p, marginPercent);
+                    const inStock = availableNow(p);
+
+                    const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;
+                    const baseQtyInCart = qtyInCart(cartSnapshot, String(p.id), null);
+
+                    const primaryImgRaw =
+                      p.imagesJson?.[0] ||
+                      p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
+                      null;
+
+                    const primaryImg = resolveImageUrl(primaryImgRaw);
 
                     return (
                       <div
-                        key={row.key}
-                        style={{
-                          position: "absolute",
-                          top: 0,
-                          left: 0,
-                          width: "100%",
-                          transform: `translateY(${row.start}px)`,
+                        key={p.id}
+                        role="link"
+                        tabIndex={0}
+                        onClick={() => goToProduct(p.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            goToProduct(p.id);
+                          }
                         }}
+                        onDragStart={(e) => e.preventDefault()}
+                        className="block rounded-2xl bg-white border border-zinc-200 hover:border-zinc-300 shadow-sm overflow-hidden active:scale-[0.99] transition cursor-pointer"
                       >
-                        <div className="-mx-2 sm:mx-0 grid gap-1.5 sm:gap-3 md:gap-4 grid-cols-2 md:grid-cols-4">
-                          {rowItems.map((p) => {
-                            const fav = isFav(p.id);
-                            const bestPrice = priceForFiltering(p, marginPercent);
+                        {/* IMAGE */}
+                        <div className="relative w-full h-28 sm:h-36 md:h-40 overflow-hidden bg-zinc-100">
+                          {primaryImg ? (
+                            <img
+                              src={primaryImg}
+                              alt={p.title}
+                              loading="lazy"
+                              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                              draggable={false}
+                              onError={(e) => {
+                                (e.currentTarget as HTMLImageElement).style.display = "none";
+                              }}
+                            />
+                          ) : (
+                            <div className="absolute inset-0 grid place-items-center text-zinc-400 text-sm pointer-events-none">
+                              No image
+                            </div>
+                          )}
 
-                            const primaryImgRaw =
-                              p.imagesJson?.[0] ||
-                              p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
-                              null;
+                          {/* In stock badge */}
+                          {inStock && (
+                            <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-emerald-500/85 px-2.5 py-1 text-[10px] md:text-[11px] font-semibold text-white shadow-sm">
+                              In stock
+                            </span>
+                          )}
 
-                            const primaryImg = resolveImageUrl(primaryImgRaw);
-                      
-                            return (
-                              <Link
-                                key={p.id}
-                                to={`/products/${p.id}`}
-                                onDragStart={(e) => e.preventDefault()}
-                                onMouseDown={(e) => (e.currentTarget as HTMLElement).style.userSelect = "none"}
-                                className="block rounded-2xl bg-white border border-zinc-200 hover:border-zinc-300 shadow-sm overflow-hidden active:scale-[0.99] transition"
-                                onClick={() => {
-                                  try {
-                                    const nextState = { ...(window.history.state || {}), __catalogScrollY: window.scrollY };
-                                    window.history.replaceState(nextState, document.title);
-                                  } catch { }
+                          {/* Favourite icon back to top-right */}
+                          {!isSupplier && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+
+                                if (!isAuthed) {
+                                  openModal({
+                                    title: "Sign in required",
+                                    message: "Please sign in to save items to your wishlist.",
+                                  });
+                                  return;
+                                }
+
+                                toggleFav.mutate({ productId: p.id });
+                              }}
+                              className={`absolute right-2 top-2 z-10 inline-flex items-center justify-center w-8 h-8 rounded-full border shadow-sm transition ${fav
+                                ? "bg-rose-50 border-rose-200 text-rose-600"
+                                : "bg-white/95 border-zinc-200 text-zinc-400 hover:text-rose-600 hover:border-rose-200"
+                                }`}
+                              aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
+                              title={fav ? "Remove from wishlist" : "Add to wishlist"}
+                            >
+                              <Heart
+                                size={16}
+                                className={fav ? "fill-current" : ""}
+                              />
+                            </button>
+                          )}
+                        </div>
+
+                        {/* BODY */}
+                        <div className="p-2.5 md:p-4">
+                          <h3 className="font-semibold text-[12px] md:text-sm text-zinc-900 line-clamp-1">{p.title}</h3>
+
+                          <div className="text-[10px] md:text-xs text-zinc-500 line-clamp-1">
+                            {p.brand?.name ? `${p.brand.name} • ` : ""}
+                            {p.categoryName?.trim() || "Uncategorized"}
+                          </div>
+
+                          <div className="mt-1">
+                            <p className="text-sm md:text-base font-semibold">{ngn.format(bestPrice || 0)}</p>
+                          </div>
+
+                          <div className="mt-2">
+                            {hasVariants ? (
+                              <button
+                                type="button"
+                                className="inline-flex items-center rounded-full bg-black/40 px-3 py-1.5 text-[11px] md:text-xs font-medium text-white hover:bg-black/55 transition"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  nav(`/products/${p.id}`, {
+                                    state: {
+                                      from: location.pathname + location.search,
+                                      restoreScrollY: window.scrollY,
+                                    },
+                                  });
                                 }}
-                                state={{ from: location.pathname + location.search }}
                               >
-                                {/* IMAGE */}
-                                <div className="relative w-full h-28 sm:h-36 md:h-40 overflow-hidden bg-zinc-100">
-                                  {primaryImg ? (
-                                    <img
-                                      src={primaryImg}
-                                      alt={p.title}
-                                      loading="lazy"
-                                      className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                                      draggable={false}
-                                      onError={(e) => {
-                                        // hide broken images safely
-                                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                                Choose options
+                              </button>
+                            ) : (
+                              <div
+                                onClick={stopCardNav}
+                                onMouseDown={stopCardNav}
+                                onPointerDown={stopCardNav}
+                                onTouchStart={stopCardNav}
+                              >
+                                {baseQtyInCart > 0 ? (
+                                  <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
+                                    <button
+                                      type="button"
+                                      aria-label="Decrease quantity"
+                                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-sm font-semibold"
+                                      onClick={(e) => {
+                                        stopCardNav(e);
+                                        void setCartQty(p, baseQtyInCart - 1);
                                       }}
-                                    />
-                                  ) : (
-                                    <div className="absolute inset-0 grid place-items-center text-zinc-400 text-sm pointer-events-none">
-                                      No image
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* BODY */}
-                                <div className="p-2.5 md:p-4">
-                                  <h3 className="font-semibold text-[12px] md:text-sm text-zinc-900 line-clamp-1">{p.title}</h3>
-
-                                  <div className="text-[10px] md:text-xs text-zinc-500 line-clamp-1">
-                                    {p.brand?.name ? `${p.brand.name} • ` : ""}
-                                    {p.categoryName?.trim() || "Uncategorized"}
-                                  </div>
-
-                                  <div className="mt-1 flex items-center justify-between gap-2">
-                                    <p className="text-sm md:text-base font-semibold">{ngn.format(bestPrice || 0)}</p>
-
-                                    {/* optional: wishlist indicator (doesn't handle click here, just shows state) */}
-                                    <span
-                                      className={`inline-flex items-center justify-center w-8 h-8 rounded-full border ${fav ? "bg-rose-50 border-rose-200 text-rose-600" : "bg-white border-zinc-200 text-zinc-400"
-                                        }`}
-                                      aria-label={fav ? "In wishlist" : "Not in wishlist"}
-                                      title={fav ? "In wishlist" : "Not in wishlist"}
+                                      onMouseDown={stopCardNav}
+                                      onPointerDown={stopCardNav}
+                                      onTouchStart={stopCardNav}
                                     >
-                                      {fav ? <Heart size={16} /> : <HeartOff size={16} />}
+                                      −
+                                    </button>
+
+                                    <span className="min-w-[18px] text-center text-[11px] md:text-xs font-semibold">
+                                      {baseQtyInCart}
                                     </span>
+
+                                    <button
+                                      type="button"
+                                      aria-label="Increase quantity"
+                                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-sm font-semibold"
+                                      onClick={(e) => {
+                                        stopCardNav(e);
+                                        void setCartQty(p, baseQtyInCart + 1);
+                                      }}
+                                      onMouseDown={stopCardNav}
+                                      onPointerDown={stopCardNav}
+                                      onTouchStart={stopCardNav}
+                                    >
+                                      +
+                                    </button>
                                   </div>
-                                </div>
-                              </Link>
-                            );
-                          })}
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={!inStock}
+                                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] md:text-xs font-medium shadow-sm transition ${inStock
+                                      ? "bg-black text-white hover:bg-black/90"
+                                      : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                                      }`}
+                                    onClick={(e) => {
+                                      stopCardNav(e);
+                                      if (!inStock) return;
+                                      void setCartQty(p, 1);
+                                    }}
+                                    onMouseDown={stopCardNav}
+                                    onPointerDown={stopCardNav}
+                                    onTouchStart={stopCardNav}
+                                  >
+                                    Add to cart
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -2288,9 +2383,8 @@ export default function Catalog() {
                           <li key={p.id} className="mb-2 last:mb-0">
                             <button
                               type="button"
-                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
-                                active ? "bg-black/5" : ""
-                              }`}
+                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
+                                }`}
                               onClick={() => {
                                 closeRefine();
                                 nav(`/products/${p.id}`);

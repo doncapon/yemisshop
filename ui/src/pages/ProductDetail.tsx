@@ -202,6 +202,8 @@ function normalizeVariants(p: any): VariantWire[] {
   }));
 }
 
+
+
 function offersFromSchema(p: any): OfferWire[] {
   const base: any[] = Array.isArray(p?.supplierProductOffers) ? p.supplierProductOffers : [];
   const vars: any[] = Array.isArray(p?.supplierVariantOffers) ? p.supplierVariantOffers : [];
@@ -495,6 +497,45 @@ export default function ProductDetail() {
     [SITE_ORIGIN]
   );
 
+  const [isZooming, setIsZooming] = React.useState(false);
+  const [zoomPos, setZoomPos] = React.useState({ x: 0.5, y: 0.5 });
+  const MAGNIFIER_SIZE = 160;
+  const MAGNIFIER_ZOOM = 6; // increase this for stronger zoom
+
+  const handleZoomMove = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+
+    const xPx = e.clientX - rect.left;
+    const yPx = e.clientY - rect.top;
+
+    const x = (xPx / rect.width) * 100;
+    const y = (yPx / rect.height) * 100;
+
+    setZoomPos({
+      x: Math.max(0, Math.min(100, x)),
+      y: Math.max(0, Math.min(100, y)),
+    });
+  }, []);
+
+  const handleTouchZoomMove = React.useCallback((e: React.TouchEvent<HTMLDivElement>) => {
+    const t = e.touches[0];
+    if (!t) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+
+    const xPx = t.clientX - rect.left;
+    const yPx = t.clientY - rect.top;
+
+    const x = (xPx / rect.width) * 100;
+    const y = (yPx / rect.height) * 100;
+
+    setZoomPos({
+      x: Math.max(0, Math.min(100, x)),
+      y: Math.max(0, Math.min(100, y)),
+    });
+  }, []);
+
+
   /* ---------------- Settings ---------------- */
   const settingsQ = useQuery<number>({
     queryKey: ["settings", "public", "marginPercent"],
@@ -659,6 +700,13 @@ export default function ProductDetail() {
       })) as SimilarProductWire[];
     },
   });
+
+  React.useEffect(() => {
+    setMainIndex(0);
+    setBrokenByIndex({});
+    setIsZooming(false);
+    setZoomPos({ x: 50, y: 50 });
+  }, [product?.id]);
 
   /* ---------------- Ratings / Reviews ---------------- */
   const [ratingInput, setRatingInput] = React.useState<number>(0);
@@ -975,6 +1023,16 @@ export default function ProductDetail() {
 
   }, [product?.id, axes.length]);
 
+
+  const optionAvailabilityForAxis = React.useCallback(
+    (axisId: string, valueId: string) => {
+      const candidate = { ...selected, [axisId]: valueId };
+      return partialSelectionMatchesAnySellable(candidate);
+    },
+    [selected, partialSelectionMatchesAnySellable]
+  );
+
+
   const matchedVariantId = React.useMemo(() => {
     const key = selectionKeyFromSelected(selected);
     if (!key) return null;
@@ -1151,28 +1209,13 @@ export default function ProductDetail() {
     return { disableAddToCart: false, helperNote: null, mode: "VARIANT" as const, variantId: matchedVariantId };
   }, [axes.length, axisIds, canBuyBase, selected, isAtBaseDefaults, variantStockQty, matchedVariantId, stockByVariantId]);
 
-
-  // --- Variant warning UI + scroll ---
-  const variantWarningRef = React.useRef<HTMLDivElement | null>(null);
-  const bottomWarningRef = React.useRef<HTMLDivElement | null>(null);
-
   // show warning only when it's specifically the invalid-combo case
-  const showInvalidCombo = purchaseMeta.helperNote === "This combination is not available. Try a different set of options.";
+  const showInvalidCombo =
+    !!axes.length &&
+    !isAtBaseDefaults(selected) &&
+    selectionPairsOf(selected).length > 0 &&
+    !matchedVariantId;
 
-  // scroll only when we *enter* invalid state (not on every render)
-  const prevInvalidRef = React.useRef<boolean>(false);
-
-  React.useEffect(() => {
-    const prev = prevInvalidRef.current;
-    prevInvalidRef.current = showInvalidCombo;
-
-    if (!prev && showInvalidCombo) {
-      requestAnimationFrame(() => {
-        const el = variantWarningRef.current ?? bottomWarningRef.current;
-        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-      });
-    }
-  }, [showInvalidCombo]);
 
   /* ---------------- Images (simple) ---------------- */
   function isUrlish(s?: string) {
@@ -1473,6 +1516,7 @@ export default function ProductDetail() {
     computed?.final,
     totalStockQty,
   ]);
+  const imageStageRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     const dispose = setSeo({
@@ -1541,8 +1585,10 @@ export default function ProductDetail() {
                 key={opt.id}
                 type="button"
                 disabled={disabled}
-                onClick={() => !disabled && onChange(opt.id)}
-                className={[
+                onClick={() => {
+                  if (disabled) return;
+                  onChange(active ? "" : opt.id);
+                }} className={[
                   "px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2",
                   silverBorder,
                   silverShadowSm,
@@ -1576,11 +1622,56 @@ export default function ProductDetail() {
 
         <SelectContent className="text-sm md:text-base">
           <SelectItem value="__NONE__">{`No ${axis.name.toLowerCase()}`}</SelectItem>
-          {axis.values.map((opt) => (
-            <SelectItem key={opt.id} value={opt.id}>
-              {opt.name}
-            </SelectItem>
-          ))}
+
+          {axis.values.map((opt) => {
+            const active = value === opt.id;
+
+            // If clicked, this would be the next state for this axis
+            const candidate = { ...selected, [axis.id]: opt.id };
+
+            // Check if that candidate can still lead to a sellable variant
+            const isAvailable = partialSelectionMatchesAnySellable(candidate);
+
+            // We allow deselecting an active chip even if it currently looks unavailable
+            const disabled = !active && !isAvailable;
+
+            const availableCls =
+              "border-emerald-300/80 bg-emerald-50/30 hover:bg-emerald-50/60 text-zinc-900";
+            const unavailableCls =
+              "opacity-45 border-zinc-200 bg-zinc-50 text-zinc-500 cursor-not-allowed";
+            const selectedOkCls = "ring-2 ring-fuchsia-500 border-fuchsia-500";
+            const selectedWarnCls = "ring-2 ring-amber-400 border-amber-400";
+
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                disabled={disabled}
+                onClick={() => {
+                  if (disabled) return;
+                  onChange(active ? "" : opt.id);
+                }}
+                className={[
+                  "px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2",
+                  silverBorder,
+                  silverShadowSm,
+                  active
+                    ? showInvalidCombo
+                      ? selectedWarnCls
+                      : selectedOkCls
+                    : disabled
+                      ? unavailableCls
+                      : "border-dashed " + availableCls,
+                ].join(" ")}
+                title={disabled ? "Not available with current selections" : active ? "Click again to deselect" : ""}
+              >
+                {!active && !disabled && (
+                  <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
+                )}
+                <span>{opt.name}</span>
+              </button>
+            );
+          })}
         </SelectContent>
       </Select>
     );
@@ -1689,18 +1780,15 @@ export default function ProductDetail() {
             <button
               type="button"
               onClick={() => {
-                const from = String((location.state as any)?.from || "").trim();
-                const y = (window.history.state as any)?.__catalogScrollY;
+                const state = (location.state as any) || {};
+                const from = typeof state.from === "string" ? state.from : "/catalog";
+                const restoreScrollY =
+                  typeof state.restoreScrollY === "number" ? state.restoreScrollY : 0;
 
-                const restoreScrollY = typeof y === "number" ? y : undefined;
-
-                // Prefer the originating page if it was passed (Catalog already does this).
-                if (from.startsWith("/")) {
-                  navigate(from, { replace: true, state: { restoreScrollY } });
-                } else {
-                  // fallback if someone landed on product detail directly
-                  navigate("/catalog", { replace: true, state: { restoreScrollY } });
-                }
+                navigate(from, {
+                  replace: true,
+                  state: { restoreScrollY },
+                });
               }}
               className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
             >
@@ -1729,17 +1817,57 @@ export default function ProductDetail() {
           <div className="space-y-3 md:space-y-5">
             <div className="relative mx-auto w-full sm:max-w-[92%]">
               <div
-                className={`rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
+                ref={imageStageRef}
+                className={`relative rounded-2xl overflow-hidden bg-white ${silverBorder} ${silverShadowSm}`}
                 style={{ aspectRatio: "1 / 1" }}
+                onMouseEnter={() => showMainImg && setIsZooming(true)}
+                onMouseLeave={() => setIsZooming(false)}
+                onMouseMove={handleZoomMove}
+                onTouchStart={() => showMainImg && setIsZooming(true)}
+                onTouchMove={handleTouchZoomMove}
+                onTouchEnd={() => setIsZooming(false)}
               >
                 {showMainImg ? (
-                  <img
-                    src={currentSrc}
-                    alt={product.title || "Product image"}
-                    className="w-full h-full object-cover"
-                    loading="eager"
-                    onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
-                  />
+                  <>
+                    <img
+                      src={currentSrc}
+                      alt={product.title || "Product image"}
+                      className="w-full h-full object-cover"
+                      loading="eager"
+                      onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
+                    />
+
+                    {/* optional small hover lens marker on main image */}
+                    {isZooming && (
+                      <div
+                        className="pointer-events-none absolute hidden md:block h-20 w-20 rounded-full border border-white/90 bg-white/10 shadow-lg backdrop-blur-[1px]"
+                        style={{
+                          left: `${zoomPos.x}%`,
+                          top: `${zoomPos.y}%`,
+                          transform: "translate(-50%, -50%)",
+                        }}
+                      />
+                    )}
+                    {isZooming && (
+                      <div className="pointer-events-none absolute right-3 bottom-3 hidden md:block">
+                        <div className="h-40 w-40 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
+                          <div
+                            className="h-full w-full"
+                            style={{
+                              backgroundImage: `url(${currentSrc})`,
+                              backgroundRepeat: "no-repeat",
+                              backgroundSize: "416%",
+                              backgroundPosition: `${zoomPos.x}% ${zoomPos.y}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {/* mobile zoom badge */}
+                    <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white">
+                      Zoom
+                    </div>
+                  </>
                 ) : (
                   <NoImageBox className="bg-zinc-50" />
                 )}
@@ -1858,7 +1986,6 @@ export default function ProductDetail() {
 
                   {showInvalidCombo && (
                     <VariantWarning
-                      innerRef={variantWarningRef}
                       message="This combination is not available. Try a different set of options."
                     />
                   )}

@@ -365,6 +365,9 @@ model Attribute {
   name                    String
   type                    String                   @default("SELECT")
   isActive                Boolean                  @default(true)
+
+  productAttributes       ProductAttribute[]
+
   values                  AttributeValue[]
   productAttributeOptions ProductAttributeOption[] @relation("Attribute_ProductAttributeOptions")
   ProductAttributeText    ProductAttributeText[]
@@ -512,6 +515,8 @@ model Product {
   // ✅ keep offers, but now they are NOT supplier-keyed
   supplierProductOffers SupplierProductOffer[]
   supplierVariantOffers SupplierVariantOffer[]
+
+  productAttributes       ProductAttribute[]
 
   Favorite   Favorite[]
   orderItems OrderItem[]
@@ -2123,3 +2128,17 @@ model NewsletterSubscriber {
   unsubscribedAt DateTime?        // null = active; non-null = unsubscribed
 }
 
+
+model ProductAttribute {
+  id          String    @id @default(cuid())
+  productId   String
+  attributeId String
+  createdAt   DateTime  @default(now())
+
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  attribute   Attribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, attributeId])
+  @@index([productId])
+  @@index([attributeId])
+}
