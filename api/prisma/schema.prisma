@@ -1456,7 +1456,7 @@ model PurchaseOrderItem {
 model SupplierProductOffer {
   id         String @id @default(cuid())
   productId  String
-  supplierId String   // ✅ added back here
+  supplierId String
 
   basePrice Decimal @db.Decimal(10, 2)
   currency  String  @default("NGN")
@@ -1478,6 +1478,7 @@ model SupplierProductOffer {
   pendingChangeId  String?
   changeRequests   SupplierOfferChangeRequest[] @relation("BaseOffer_ChangeRequests")
 
+  @@unique([productId, supplierId], name: "supplier_product_offer_unique")
   @@index([productId])
   @@index([supplierId])
   @@index([isActive, inStock])
@@ -1486,8 +1487,9 @@ model SupplierProductOffer {
 model SupplierVariantOffer {
   id        String @id @default(cuid())
   productId String
-  variantId String @unique
+  variantId String
 
+  supplierId String
   supplierProductOfferId String?
 
   unitPrice Decimal @db.Decimal(10, 2)
@@ -1499,24 +1501,20 @@ model SupplierVariantOffer {
   isActive Boolean @default(true)
   inStock  Boolean @default(true)
 
-  supplierId String?
-
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   product              Product               @relation(fields: [productId], references: [id], onDelete: Cascade)
   variant              ProductVariant        @relation(fields: [variantId], references: [id], onDelete: Cascade)
-
-  // ✅ give this relation a name
-  supplier             Supplier?             @relation("SupplierToVariantOffers", fields: [supplierId], references: [id])
-
+  supplier             Supplier              @relation("SupplierToVariantOffers", fields: [supplierId], references: [id])
   orderItemsChosen     OrderItem[]           @relation("OrderItemChosenSupplierVariantOffer")
   supplierProductOffer SupplierProductOffer? @relation(fields: [supplierProductOfferId], references: [id])
+  changeRequests       SupplierOfferChangeRequest[] @relation("VariantOffer_ChangeRequests")
 
-  changeRequests SupplierOfferChangeRequest[] @relation("VariantOffer_ChangeRequests")
-
+  @@unique([variantId, supplierId], name: "supplier_variant_offer_unique")
   @@index([variantId])
   @@index([productId])
+  @@index([supplierId])
   @@index([isActive, inStock])
 }
 

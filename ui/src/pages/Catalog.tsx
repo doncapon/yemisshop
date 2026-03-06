@@ -14,7 +14,6 @@ import {
   ChevronRight,
   ChevronDown,
   Heart,
-  HeartOff,
 } from "lucide-react";
 
 import SiteLayout from "../layouts/SiteLayout.js";
@@ -24,7 +23,7 @@ import { readCartLines, upsertCartLine, qtyInCart, toMiniCartRows } from "../uti
 import { AnimatePresence, motion } from "framer-motion";
 
 /* =========================================================
-   Types — aligned to your Prisma schema
+   Types — aligned to public products route
 ========================================================= */
 
 type CartItemKind = "BASE" | "VARIANT";
@@ -37,8 +36,11 @@ type SupplierOfferLite = {
   inStock?: boolean;
   availableQty?: number | null;
 
-  basePrice?: number | null; // SupplierProductOffer.basePrice
-  unitPrice?: number | null; // SupplierVariantOffer.unitPrice
+  basePrice?: number | null;
+  unitPrice?: number | null;
+
+  currency?: string | null;
+  leadDays?: number | null;
 
   supplierRatingAvg?: number | null;
   supplierRatingCount?: number | null;
@@ -47,11 +49,10 @@ type SupplierOfferLite = {
 type Variant = {
   id: string;
   sku?: string | null;
-
-  retailPrice?: number | null; // ProductVariant.retailPrice
+  retailPrice?: number | null;
   inStock?: boolean | null;
   imagesJson?: string[];
-
+  availableQty?: number | null;
   offers?: SupplierOfferLite[];
 };
 
@@ -60,11 +61,17 @@ type Product = {
   title: string;
   description?: string;
 
-  retailPrice?: number | null; // Product.retailPrice
-  computedRetailPrice?: number | null; // kept for compatibility
+  sku?: string | null;
+
+  retailPrice?: number | null;
+  computedRetailPrice?: number | null;
+  autoPrice?: number | null;
+  displayBasePrice?: number | null;
+  offersFrom?: number | null;
   commissionPctInt?: number | null;
 
   inStock?: boolean | null;
+  availableQty?: number | null;
   imagesJson?: string[];
 
   categoryId?: string | null;
@@ -121,19 +128,26 @@ function decToNumber(v: any): number {
 function normalizeImages(val: any): string[] {
   if (!val) return [];
   if (Array.isArray(val)) return val.map(String).map((s) => s.trim()).filter(Boolean);
+
   if (typeof val === "string") {
     const s = val.trim();
     if (!s) return [];
+
     try {
       if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith('"') && s.endsWith('"'))) {
         const parsed = JSON.parse(s);
         return normalizeImages(parsed);
       }
     } catch {
-      // ignore
+      //
     }
-    return s.split(/[\n,]/g).map((t) => t.trim()).filter(Boolean);
+
+    return s
+      .split(/[\n,]/g)
+      .map((t) => t.trim())
+      .filter(Boolean);
   }
+
   return [];
 }
 
@@ -143,26 +157,13 @@ const isLive = (x?: { status?: string | null }) => String(x?.status ?? "").trim(
    Stock + offers helpers
 ========================================================= */
 
-function useProductPrefetch() {
-  const qc = useQueryClient();
-
-  return (productId: string) => {
-    qc.prefetchQuery({
-      queryKey: ["product", productId],
-      queryFn: async () => {
-        const { data } = await api.get(`/api/products/${productId}`);
-        return data;
-      },
-      staleTime: 60_000,
-    });
-  };
-}
-
 function offerStockOk(o?: SupplierOfferLite): boolean {
   if (!o || o.isActive === false) return false;
+
   const qty = o.availableQty;
   const hasQty = qty != null && Number.isFinite(Number(qty));
   const qtyOk = !hasQty ? true : Number(qty) > 0;
+
   return o.inStock === true || qtyOk;
 }
 
@@ -170,23 +171,17 @@ function collectAllOffers(p: Product): SupplierOfferLite[] {
   const out: SupplierOfferLite[] = [];
   if (Array.isArray(p.supplierProductOffers)) out.push(...p.supplierProductOffers);
   if (Array.isArray(p.variants)) {
-    for (const v of p.variants) if (Array.isArray(v.offers)) out.push(...v.offers);
+    for (const v of p.variants) {
+      if (Array.isArray(v.offers)) out.push(...v.offers);
+    }
   }
   return out;
 }
 
-function sumActivePositiveQty(offers?: SupplierOfferLite[]): number {
-  let sum = 0;
-  if (!Array.isArray(offers)) return sum;
-  for (const o of offers) {
-    if (!o || o.isActive === false) continue;
-    const q = Number(o.availableQty);
-    if (Number.isFinite(q) && q > 0) sum += q;
-  }
-  return sum;
-}
-
 function availableNow(p: Product): boolean {
+  const directQty = Number(p.availableQty);
+  if (Number.isFinite(directQty) && directQty > 0) return true;
+
   const offers = collectAllOffers(p);
 
   if (offers.some((o) => o?.isActive === true && o?.inStock === true)) return true;
@@ -198,34 +193,36 @@ function availableNow(p: Product): boolean {
   }
 
   if (p.inStock === true) return true;
-  if (Array.isArray(p.variants) && p.variants.some((v) => v.inStock === true)) return true;
+  if (Array.isArray(p.variants) && p.variants.some((v) => v.inStock === true || (Number(v.availableQty) || 0) > 0)) {
+    return true;
+  }
 
   return false;
 }
 
 /* =========================================================
-   Pricing — for products WITH options:
-   show BASE offer price first (if available),
-   else cheapest VARIANT offer price
+   Pricing
 ========================================================= */
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+function applyMargin(raw: number | null | undefined, marginPercent: number): number | null {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const m = Math.max(0, Number(marginPercent) || 0);
+  const out = round2(n * (1 + m / 100));
+  return Number.isFinite(out) && out > 0 ? out : null;
+}
 
 function cheapestActiveBaseOfferPrice(p: Product): number | null {
   const offers = Array.isArray(p.supplierProductOffers) ? p.supplierProductOffers : [];
   let best: number | null = null;
 
   for (const o of offers) {
-    if (!o) continue;
-    if (o.isActive === false) continue;
-    if (!offerStockOk(o)) continue;
-
+    if (!o || o.isActive === false || !offerStockOk(o)) continue;
     const raw = o.basePrice ?? o.unitPrice ?? null;
-    if (raw == null) continue;
-
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) continue;
-
     if (best == null || n < best) best = n;
   }
 
@@ -239,16 +236,10 @@ function cheapestActiveVariantOfferPrice(p: Product): number | null {
   for (const v of variants) {
     const offers = Array.isArray(v.offers) ? v.offers : [];
     for (const o of offers) {
-      if (!o) continue;
-      if (o.isActive === false) continue;
-      if (!offerStockOk(o)) continue;
-
+      if (!o || o.isActive === false || !offerStockOk(o)) continue;
       const raw = o.unitPrice ?? o.basePrice ?? null;
-      if (raw == null) continue;
-
       const n = Number(raw);
       if (!Number.isFinite(n) || n <= 0) continue;
-
       if (best == null || n < best) best = n;
     }
   }
@@ -261,16 +252,10 @@ function cheapestActiveAnyOfferPrice(p: Product): number | null {
   let best: number | null = null;
 
   for (const o of offers) {
-    if (!o) continue;
-    if (o.isActive === false) continue;
-    if (!offerStockOk(o)) continue;
-
+    if (!o || o.isActive === false || !offerStockOk(o)) continue;
     const raw = o.unitPrice ?? o.basePrice ?? null;
-    if (raw == null) continue;
-
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) continue;
-
     if (best == null || n < best) best = n;
   }
 
@@ -278,26 +263,38 @@ function cheapestActiveAnyOfferPrice(p: Product): number | null {
 }
 
 function getDisplayRetailPrice(p: Product, marginPercent: number): number {
-  const m = Math.max(0, Number(marginPercent) || 0);
+  const apiComputed = Number(p.computedRetailPrice);
+  if (Number.isFinite(apiComputed) && apiComputed > 0) return apiComputed;
+
   const hasOptions = Array.isArray(p.variants) && p.variants.length > 0;
 
-  let cheapest: number | null = null;
-
   if (hasOptions) {
-    cheapest = cheapestActiveBaseOfferPrice(p);
-    if (cheapest == null) cheapest = cheapestActiveVariantOfferPrice(p);
+    const baseRaw = cheapestActiveBaseOfferPrice(p);
+    const baseRetail = applyMargin(baseRaw, marginPercent);
+    if (baseRetail != null) return baseRetail;
+
+    const varRaw = cheapestActiveVariantOfferPrice(p);
+    const varRetail = applyMargin(varRaw, marginPercent);
+    if (varRetail != null) return varRetail;
   } else {
-    cheapest = cheapestActiveAnyOfferPrice(p);
+    const anyRaw = cheapestActiveAnyOfferPrice(p);
+    const anyRetail = applyMargin(anyRaw, marginPercent);
+    if (anyRetail != null) return anyRetail;
   }
 
-  if (cheapest != null) {
-    const out = round2(cheapest * (1 + m / 100));
-    if (Number.isFinite(out) && out > 0) return out;
-  }
+  const offersFromRetail = applyMargin(p.offersFrom, marginPercent);
+  if (offersFromRetail != null) return offersFromRetail;
 
-  const raw = (p as any).computedRetailPrice ?? p.retailPrice ?? 0;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : 0;
+  const raw =
+    Number(p.retailPrice) > 0
+      ? Number(p.retailPrice)
+      : Number(p.autoPrice) > 0
+      ? Number(p.autoPrice)
+      : Number(p.displayBasePrice) > 0
+      ? Number(p.displayBasePrice)
+      : 0;
+
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
 }
 
 function priceForFiltering(p: Product, marginPercent: number): number {
@@ -305,7 +302,7 @@ function priceForFiltering(p: Product, marginPercent: number): number {
 }
 
 /* =========================================================
-   Sellable flag (uses availability + price)
+   Sellable flag
 ========================================================= */
 
 function productSellable(p: Product, marginPercent: number): boolean {
@@ -321,6 +318,7 @@ function productSellable(p: Product, marginPercent: number): boolean {
 
 function getApiOrigin(): string {
   const base = String((api as any)?.defaults?.baseURL || "").trim();
+
   if (/^https?:\/\//i.test(base)) {
     try {
       return new URL(base).origin;
@@ -328,15 +326,18 @@ function getApiOrigin(): string {
       return window.location.origin;
     }
   }
+
   const env = (import.meta as any)?.env;
   const fromEnv = String(env?.VITE_API_URL || env?.VITE_API_ORIGIN || "").trim();
+
   if (fromEnv && /^https?:\/\//i.test(fromEnv)) {
     try {
       return new URL(fromEnv).origin;
     } catch {
-      // ignore
+      //
     }
   }
+
   return window.location.origin;
 }
 
@@ -372,18 +373,17 @@ function usePurchasedCounts(enabledOverride = true) {
     retry: 0,
     staleTime: 30_000,
     queryFn: async () => {
-      const LIMIT = 200;
       try {
         const { data } = await api.get("/api/orders/mine", {
           withCredentials: true,
-          params: { limit: LIMIT },
+          params: { limit: 200 },
         });
 
         const orders: any[] = Array.isArray((data as any)?.data)
           ? (data as any).data
           : Array.isArray(data)
-            ? (data as any)
-            : [];
+          ? (data as any)
+          : [];
 
         const map: Record<string, number> = {};
         for (const o of orders) {
@@ -432,6 +432,7 @@ function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceB
 
   const thresholds: number[] = [baseStep];
   let mult = 5;
+
   while (thresholds[thresholds.length - 1] < maxPrice) {
     thresholds.push(thresholds[thresholds.length - 1] * mult);
     mult = mult === 5 ? 2 : 5;
@@ -460,8 +461,10 @@ function bestSupplierRatingScore(p: Product): number {
 
   for (const o of offers) {
     if (!o || o.isActive === false) continue;
+
     const avg = Number(o.supplierRatingAvg);
     const cnt = Number(o.supplierRatingCount);
+
     if (!Number.isFinite(avg) || avg <= 0) continue;
 
     const weight = Number.isFinite(cnt) && cnt > 0 ? Math.min(1, Math.log10(cnt + 1) / 3) : 0;
@@ -473,13 +476,15 @@ function bestSupplierRatingScore(p: Product): number {
 }
 
 /* =========================================================
-   Category tree helpers (multi-layer)
+   Category tree helpers
 ========================================================= */
 
 function flattenCategoryTree(input: any): CategoryFlat[] {
   const out: CategoryFlat[] = [];
+
   const walk = (n: any, parentId: string | null) => {
     if (!n) return;
+
     const id = String(n.id ?? "");
     const name = String(n.name ?? "");
     if (!id || !name) return;
@@ -491,6 +496,7 @@ function flattenCategoryTree(input: any): CategoryFlat[] {
       position: Number.isFinite(Number(n.position)) ? Number(n.position) : 0,
       isActive: n.isActive != null ? !!n.isActive : true,
     };
+
     out.push(node);
 
     const kids: any[] = Array.isArray(n.children) ? n.children : Array.isArray(n.items) ? n.items : [];
@@ -499,11 +505,13 @@ function flattenCategoryTree(input: any): CategoryFlat[] {
 
   const arr: any[] = Array.isArray(input) ? input : Array.isArray(input?.data) ? input.data : [];
   for (const n of arr) walk(n, null);
+
   return out;
 }
 
 function buildCategoryForest(list: CategoryFlat[]): CategoryNode[] {
   const byId = new Map<string, CategoryNode>();
+
   for (const c of list) {
     const id = String(c.id);
     const name = String(c.name);
@@ -544,13 +552,16 @@ function buildDescendantMap(roots: CategoryNode[]) {
     childrenById.set(n.id, n.children.map((c) => c.id));
     for (const c of n.children) walk(c);
   };
+
   for (const r of roots) walk(r);
 
   const allDescCache = new Map<string, Set<string>>();
   const getAllDesc = (id: string): Set<string> => {
     if (allDescCache.has(id)) return allDescCache.get(id)!;
+
     const out = new Set<string>();
     const stack = [...(childrenById.get(id) || [])];
+
     while (stack.length) {
       const x = stack.pop()!;
       if (out.has(x)) continue;
@@ -558,6 +569,7 @@ function buildDescendantMap(roots: CategoryNode[]) {
       const kids = childrenById.get(x) || [];
       for (const k of kids) stack.push(k);
     }
+
     allDescCache.set(id, out);
     return out;
   };
@@ -567,6 +579,7 @@ function buildDescendantMap(roots: CategoryNode[]) {
 
 function computeCategoryCountsFromProducts(products: Product[]) {
   const map = new Map<string, { id: string; name: string; count: number }>();
+
   for (const p of products) {
     const id = p.categoryId ?? "uncategorized";
     const name = p.categoryName?.trim() || "Uncategorized";
@@ -574,6 +587,7 @@ function computeCategoryCountsFromProducts(products: Product[]) {
     prev.count += 1;
     map.set(id, prev);
   }
+
   return map;
 }
 
@@ -588,6 +602,7 @@ function aggregateCountsToParents(roots: CategoryNode[], directCounts: Map<strin
   };
 
   for (const r of roots) dfs(r);
+
   return out;
 }
 
@@ -634,7 +649,7 @@ function MotionCircleLoader({ label = "Loading…" }: { label?: string }) {
 }
 
 /* =========================================================
-   CART (server) helpers
+   CART helpers
 ========================================================= */
 
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
@@ -708,7 +723,7 @@ export default function Catalog() {
   const HIDE_OOS = false;
   const includeStr = "brand,category,variants,attributes,offers" as const;
 
-  /* ---------------- Settings (marginPercent) ---------------- */
+  /* ---------------- Settings ---------------- */
 
   const settingsQ = useQuery<number>({
     queryKey: ["settings", "public", "marginPercent"],
@@ -736,27 +751,18 @@ export default function Catalog() {
   const [activeIdx, setActiveIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const suggestRef = useRef<HTMLDivElement | null>(null);
-  /* ---------------- Virtualized grid ---------------- */
-
 
   const [refineOpen, setRefineOpen] = useState(false);
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [inStockOnly, setInStockOnly] = useState(true);
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>({});
-  /* Detect Tailwind breakpoint (md = 768px) */
-
   const [gridCols, setGridCols] = useState(2);
 
   useEffect(() => {
-    // any time we land on Catalog (including Back), kill any click-blocking UI
     setRefineOpen(false);
     setShowSuggest(false);
     setTouchStartX(null);
-
-    // unlock scroll no matter what
     document.body.style.overflow = "";
-
-    // if anything had focus (search input etc), drop it
     (document.activeElement as HTMLElement | null)?.blur?.();
   }, [location.key]);
 
@@ -766,7 +772,6 @@ export default function Catalog() {
 
     apply();
 
-    // Safari fallback
     if ((mq as any).addEventListener) mq.addEventListener("change", apply);
     else (mq as any).addListener(apply);
 
@@ -776,11 +781,11 @@ export default function Catalog() {
     };
   }, []);
 
-
   function stopCardNav(e: React.SyntheticEvent) {
     e.preventDefault();
     e.stopPropagation();
   }
+
   function goToProduct(productId: string) {
     nav(`/products/${productId}`, {
       state: {
@@ -789,6 +794,7 @@ export default function Catalog() {
       },
     });
   }
+
   const closeRefine = () => {
     setRefineOpen(false);
     setShowSuggest(false);
@@ -796,7 +802,6 @@ export default function Catalog() {
 
   useEffect(() => {
     const t = window.setInterval(() => {
-      // If something left scroll-lock or click-lock behind, nuke it.
       if (!refineOpen) {
         if (document.body.style.overflow === "hidden") document.body.style.overflow = "";
         if ((document.body.style as any).pointerEvents === "none") (document.body.style as any).pointerEvents = "";
@@ -806,7 +811,6 @@ export default function Catalog() {
     return () => window.clearInterval(t);
   }, [refineOpen]);
 
-  // BFCache restore guard: only reset overlay/scroll lock
   useEffect(() => {
     const resetUi = () => {
       setRefineOpen(false);
@@ -844,9 +848,7 @@ export default function Catalog() {
     return () => window.removeEventListener("cart:updated", onCartUpdated);
   }, []);
 
-  /* =========================================================
-     Server cart sync (non-blocking + coalesced per product)
-========================================================= */
+  /* ---------------- Server cart sync ---------------- */
 
   const serverSyncPendingRef = useRef<Record<string, boolean>>({});
   const serverSyncQueuedQtyRef = useRef<Record<string, number | null>>({});
@@ -886,6 +888,20 @@ export default function Catalog() {
     void run();
   };
 
+  useEffect(() => {
+  const handlePageShow = (event: PageTransitionEvent) => {
+    if (event.persisted) {
+      window.location.reload();
+    }
+  };
+
+  window.addEventListener("pageshow", handlePageShow);
+
+  return () => {
+    window.removeEventListener("pageshow", handlePageShow);
+  };
+}, []);
+
   /* ---------------- Products query ---------------- */
 
   const productsQ = useQuery<Product[]>({
@@ -896,50 +912,49 @@ export default function Catalog() {
         params: { include: includeStr, status: "LIVE" },
       });
 
-      const raw: any[] = Array.isArray(data) ? data : Array.isArray((data as any)?.data) ? (data as any).data : [];
+      const raw: any[] = Array.isArray(data)
+        ? data
+        : Array.isArray((data as any)?.data)
+        ? (data as any).data
+        : [];
 
-      const list: Product[] = (raw || [])
+      return (raw || [])
         .filter((x) => x && x.id != null)
         .map((x) => {
-          const retailPrice = x.retailPrice != null ? decToNumber(x.retailPrice) : null;
-          const computedRetailPrice = x.computedRetailPrice != null ? decToNumber(x.computedRetailPrice) : null;
-
           const variants: Variant[] = Array.isArray(x.variants)
-            ? x.variants.map((v: any) => {
-              const vRetail = v.retailPrice != null ? decToNumber(v.retailPrice) : null;
-
-              const vOffers: SupplierOfferLite[] = Array.isArray(v.offers)
-                ? v.offers.map((o: any) => ({
-                  id: String(o.id),
-                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                  isActive: o.isActive === true,
-                  inStock: o.inStock === true,
-                  availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
-                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                  supplierRatingAvg:
-                    o.supplierRatingAvg != null
-                      ? decToNumber(o.supplierRatingAvg)
-                      : o.supplier?.ratingAvg != null
-                        ? decToNumber(o.supplier.ratingAvg)
-                        : null,
-                  supplierRatingCount:
-                    o.supplierRatingCount != null
-                      ? Number(o.supplierRatingCount)
-                      : o.supplier?.ratingCount != null
-                        ? Number(o.supplier.ratingCount)
-                        : null,
-                }))
-                : [];
-
-              return {
+            ? x.variants.map((v: any) => ({
                 id: String(v.id),
                 sku: v.sku ?? null,
-                retailPrice: vRetail,
+                retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
                 inStock: v.inStock === true,
                 imagesJson: normalizeImages(v.imagesJson),
-                offers: vOffers,
-              };
-            })
+                availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+                offers: Array.isArray(v.offers)
+                  ? v.offers.map((o: any) => ({
+                      id: String(o.id),
+                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                      isActive: o.isActive === true,
+                      inStock: o.inStock === true,
+                      availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                      unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                      basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                      currency: o.currency ?? "NGN",
+                      leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
+                      supplierRatingAvg:
+                        o.supplierRatingAvg != null
+                          ? decToNumber(o.supplierRatingAvg)
+                          : o.supplier?.ratingAvg != null
+                          ? decToNumber(o.supplier.ratingAvg)
+                          : null,
+                      supplierRatingCount:
+                        o.supplierRatingCount != null
+                          ? Number(o.supplierRatingCount)
+                          : o.supplier?.ratingCount != null
+                          ? Number(o.supplier.ratingCount)
+                          : null,
+                    }))
+                  : [],
+              }))
             : [];
 
           const baseSource =
@@ -954,44 +969,49 @@ export default function Catalog() {
             inStock: o.inStock === true,
             availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
             basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+            unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+            currency: o.currency ?? "NGN",
+            leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
             supplierRatingAvg:
               o.supplierRatingAvg != null
                 ? decToNumber(o.supplierRatingAvg)
                 : o.supplier?.ratingAvg != null
-                  ? decToNumber(o.supplier.ratingAvg)
-                  : null,
+                ? decToNumber(o.supplier.ratingAvg)
+                : null,
             supplierRatingCount:
               o.supplierRatingCount != null
                 ? Number(o.supplierRatingCount)
                 : o.supplier?.ratingCount != null
-                  ? Number(o.supplier.ratingCount)
-                  : null,
+                ? Number(o.supplier.ratingCount)
+                : null,
           }));
 
           const catNameRaw = String(x.categoryName ?? x.category?.name ?? "").trim();
-          const categoryName = catNameRaw || null;
 
           return {
             id: String(x.id),
             title: String(x.title ?? ""),
             description: x.description ?? "",
-            retailPrice,
-            computedRetailPrice,
+            sku: x.sku ?? null,
+            retailPrice: x.retailPrice != null ? decToNumber(x.retailPrice) : null,
+            computedRetailPrice: x.computedRetailPrice != null ? decToNumber(x.computedRetailPrice) : null,
+            autoPrice: x.autoPrice != null ? decToNumber(x.autoPrice) : null,
+            displayBasePrice: x.displayBasePrice != null ? decToNumber(x.displayBasePrice) : null,
+            offersFrom: x.offersFrom != null ? decToNumber(x.offersFrom) : null,
             commissionPctInt: Number.isFinite(Number(x.commissionPctInt)) ? Number(x.commissionPctInt) : null,
             inStock: x.inStock === true,
+            availableQty: Number.isFinite(Number(x.availableQty)) ? Number(x.availableQty) : null,
             imagesJson: normalizeImages(x.imagesJson),
             categoryId: x.categoryId ?? x.category?.id ?? null,
-            categoryName,
+            categoryName: catNameRaw || null,
             brand: x.brand ? { id: String(x.brand.id), name: String(x.brand.name) } : null,
             variants,
             supplierProductOffers: baseOffers,
             ratingAvg: x.ratingAvg != null ? decToNumber(x.ratingAvg) : null,
             ratingCount: x.ratingCount != null ? Number(x.ratingCount) : null,
             status: String(x.status ?? ""),
-          };
+          } satisfies Product;
         });
-
-      return list;
     },
   });
 
@@ -1000,31 +1020,27 @@ export default function Catalog() {
     return list.filter((p) => isLive(p));
   }, [productsQ.data]);
 
-useLayoutEffect(() => {
-  const y = (location.state as any)?.restoreScrollY;
+  useLayoutEffect(() => {
+    const y = (location.state as any)?.restoreScrollY;
 
-  if (typeof y === "number") {
-    requestAnimationFrame(() => {
-      window.scrollTo({ top: y, behavior: "auto" });
+    if (typeof y === "number") {
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: y, behavior: "auto" });
 
-      try {
-        const hs = window.history.state || {};
-        const usr = { ...(hs.usr || {}) };
-        delete usr.restoreScrollY;
+        try {
+          const hs = window.history.state || {};
+          const usr = { ...(hs.usr || {}) };
+          delete usr.restoreScrollY;
 
-        window.history.replaceState(
-          { ...hs, usr },
-          "",
-          window.location.href
-        );
-      } catch {
-        // ignore
-      }
-    });
-  }
-}, [location.key]);
+          window.history.replaceState({ ...hs, usr }, "", window.location.href);
+        } catch {
+          //
+        }
+      });
+    }
+  }, [location.key]);
 
-  /* ---------------- Categories (tree) ---------------- */
+  /* ---------------- Categories ---------------- */
 
   const categoriesTreeQ = useQuery<CategoryNode[]>({
     queryKey: ["categories", "tree"],
@@ -1044,10 +1060,9 @@ useLayoutEffect(() => {
           const payload = (res as any)?.data?.data ?? (res as any)?.data ?? [];
           const flat = flattenCategoryTree(payload);
           if (!flat.length) continue;
-          const forest = buildCategoryForest(flat.filter((c) => c.isActive !== false));
-          return forest;
+          return buildCategoryForest(flat.filter((c) => c.isActive !== false));
         } catch {
-          // continue
+          //
         }
       }
 
@@ -1056,7 +1071,6 @@ useLayoutEffect(() => {
   });
 
   const categoryForest = categoriesTreeQ.data ?? [];
-
   const catTreeHelpers = useMemo(() => {
     if (!categoryForest.length) return null;
     return buildDescendantMap(categoryForest);
@@ -1078,7 +1092,9 @@ useLayoutEffect(() => {
 
       if (Array.isArray(payload.productIds)) ids = payload.productIds;
       else if (Array.isArray(payload.data?.productIds)) ids = payload.data.productIds;
-      else if (Array.isArray(payload.data)) ids = payload.data.map((x: any) => x?.productId ?? x?.id ?? null).filter(Boolean);
+      else if (Array.isArray(payload.data)) {
+        ids = payload.data.map((x: any) => x?.productId ?? x?.id ?? null).filter(Boolean);
+      }
 
       return new Set(ids.map(String));
     },
@@ -1117,7 +1133,6 @@ useLayoutEffect(() => {
     },
   });
 
-
   /* ---------------- Filters/sort ---------------- */
 
   const stockRank = (p: Product) => (availableNow(p) ? 0 : 1);
@@ -1140,6 +1155,7 @@ useLayoutEffect(() => {
   const suggestions = useMemo(() => {
     const q = norm(query.trim());
     if (!q) return [];
+
     const scored = products.map((p) => {
       const title = norm(p.title || "");
       const desc = norm(p.description || "");
@@ -1153,6 +1169,7 @@ useLayoutEffect(() => {
       if (brand.includes(q)) score += 2;
       return { p, score };
     });
+
     return scored
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
@@ -1174,7 +1191,9 @@ useLayoutEffect(() => {
     const q = norm(query.trim());
 
     const categoryQueryMatch =
-      catTreeHelpers && query ? [...catTreeHelpers.byId.values()].filter((c) => norm(c.name).includes(norm(query))) : [];
+      catTreeHelpers && query
+        ? [...catTreeHelpers.byId.values()].filter((c) => norm(c.name).includes(norm(query)))
+        : [];
 
     const baseByQuery = products.filter((p) => {
       if (inStockOnly && !availableNow(p)) return false;
@@ -1184,6 +1203,7 @@ useLayoutEffect(() => {
       const desc = norm(p.description || "");
       const cat = norm(p.categoryName || "");
       const brand = norm(p.brand?.name || "");
+
       const categoryHit =
         categoryQueryMatch.length &&
         categoryQueryMatch.some((c) => p.categoryId === c.id || catTreeHelpers?.getAllDesc(c.id)?.has(p.categoryId ?? ""));
@@ -1221,6 +1241,7 @@ useLayoutEffect(() => {
       const aggregated = aggregateCountsToParents(categoryForest, directCounts);
 
       const rows: Array<{ node: CategoryNode; count: number; depth: number; hasChildren: boolean }> = [];
+
       const walk = (n: CategoryNode, depth: number) => {
         const count = aggregated.get(n.id) || 0;
         if (count <= 0) return;
@@ -1253,7 +1274,9 @@ useLayoutEffect(() => {
       brandMap.set(name, prev);
     }
 
-    const brands = Array.from(brandMap.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    const brands = Array.from(brandMap.values()).sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+    );
 
     const baseForPriceCounts = baseByQuery.filter((p) => {
       const catOk = activeCatsEffective.size === 0 ? true : activeCatsEffective.has(p.categoryId ?? "uncategorized");
@@ -1261,8 +1284,13 @@ useLayoutEffect(() => {
       return catOk && brandOk;
     });
 
-    const priceCounts = PRICE_BUCKETS.map((b) => baseForPriceCounts.filter((p) => inBucket(priceForFiltering(p, marginPercent), b)).length);
-    const visiblePriceBuckets = PRICE_BUCKETS.map((b, i) => ({ bucket: b, idx: i, count: priceCounts[i] || 0 })).filter((x) => x.count > 0);
+    const priceCounts = PRICE_BUCKETS.map(
+      (b) => baseForPriceCounts.filter((p) => inBucket(priceForFiltering(p, marginPercent), b)).length
+    );
+
+    const visiblePriceBuckets = PRICE_BUCKETS.map((b, i) => ({ bucket: b, idx: i, count: priceCounts[i] || 0 })).filter(
+      (x) => x.count > 0
+    );
 
     let filteredCore = baseByQuery.filter((p) => {
       const price = priceForFiltering(p, marginPercent);
@@ -1361,12 +1389,6 @@ useLayoutEffect(() => {
   const currentPage = Math.min(page, totalPages);
   const start = (currentPage - 1) * pageSize;
   const pageItems = sorted.slice(start, start + pageSize);
-  /* -------- Virtualized rows -------- */
-
-  const rowCount = useMemo(() => {
-    const cols = Math.max(1, gridCols);
-    return Math.ceil(pageItems.length / cols);
-  }, [pageItems.length, gridCols]);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -1385,7 +1407,6 @@ useLayoutEffect(() => {
     setPage(clamped);
   };
 
-
   const windowedPages = (current: number, total: number, radius = 2) => {
     const pages: number[] = [];
     const s = Math.max(1, current - radius);
@@ -1402,28 +1423,16 @@ useLayoutEffect(() => {
   useEffect(() => setJumpVal(""), [totalPages]);
 
   useEffect(() => {
-    // HARD RESET: if any previous page left an overlay/backdrop or body lock behind,
-    // this prevents the "page frozen / nothing clickable" issue.
     document.body.style.overflow = "";
     (document.body.style as any).pointerEvents = "";
-
-    // also close any local UI in case it got restored weirdly
     setRefineOpen(false);
     setShowSuggest(false);
     setTouchStartX(null);
-
-    // drop focus (sometimes mobile/overlay combos cause weirdness)
     (document.activeElement as HTMLElement | null)?.blur?.();
   }, [location.key]);
 
-  /* ---------------- Broken images guard ---------------- */
-
-  const [brokenImg, setBrokenImg] = useState<Record<string, boolean>>({});
-  const markBroken = (key: string) => setBrokenImg((m) => (m[key] ? m : { ...m, [key]: true }));
-
-
   /* =========================================================
-     Add to cart — FAST UI + non-blocking server sync
+     Add to cart
 ========================================================= */
 
   const setCartQty = async (p: Product, nextQty: number) => {
@@ -1483,27 +1492,25 @@ useLayoutEffect(() => {
     setInStockOnly(true);
   };
 
-  const prefetchProduct = useProductPrefetch();
-
   const Shimmer = () => <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />;
 
   const anyActiveFilter =
     selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly;
 
   const hasSearch = !!query.trim();
-
   const toggleExpand = (id: string) => setExpandedCats((m) => ({ ...m, [id]: !m[id] }));
 
   /* ---------------- Render guards ---------------- */
 
-  if (productsQ.isLoading)
+  if (productsQ.isLoading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
         <MotionCircleLoader label="Loading products…" />
       </div>
     );
+  }
 
-  if (productsQ.error)
+  if (productsQ.error) {
     return (
       <>
         <div className="flex min-h-[60vh] items-center justify-center">
@@ -1512,6 +1519,7 @@ useLayoutEffect(() => {
         <p className="p-6 text-center text-rose-600">We are sorry, we are having technical issues</p>
       </>
     );
+  }
 
   /* =========================================================
      Main render
@@ -1538,7 +1546,6 @@ useLayoutEffect(() => {
         }}
         onTouchEnd={() => setTouchStartX(null)}
       >
-        {/* Desktop hero */}
         <div className="hidden md:block border-b bg-white">
           <div className="mx-auto max-w-7xl px-4 md:px-8 pt-3 pb-4 md:py-10">
             <div className="flex items-start justify-between gap-6">
@@ -1561,7 +1568,6 @@ useLayoutEffect(() => {
           </div>
         </div>
 
-        {/* Mobile compact title */}
         <div className="md:hidden mb-2 flex items-center justify-between gap-2">
           <div className="min-w-0">
             <h1 className="text-lg font-semibold text-zinc-900">Products</h1>
@@ -1578,7 +1584,6 @@ useLayoutEffect(() => {
           </button>
         </div>
 
-        {/* Context chips */}
         {(hasSearch || anyActiveFilter || sortKey !== "relevance" || pageSize !== 12) && (
           <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-700">
             {hasSearch && (
@@ -1615,7 +1620,6 @@ useLayoutEffect(() => {
           </div>
         )}
 
-        {/* Desktop search */}
         <div className="hidden md:block mt-3 mb-4">
           <div className="relative max-w-2xl">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
@@ -1664,7 +1668,9 @@ useLayoutEffect(() => {
                       <li key={p.id} className="mb-2 last:mb-0">
                         <button
                           type="button"
-                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""}`}
+                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
+                            active ? "bg-black/5" : ""
+                          }`}
                           onClick={() => {
                             setShowSuggest(false);
                             nav(`/products/${p.id}`);
@@ -1679,7 +1685,9 @@ useLayoutEffect(() => {
                               className="w-14 h-14 object-cover rounded-xl border border-zinc-200"
                             />
                           ) : (
-                            <div className="w-14 h-14 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">—</div>
+                            <div className="w-14 h-14 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
+                              —
+                            </div>
                           )}
 
                           <div className="min-w-0">
@@ -1700,9 +1708,7 @@ useLayoutEffect(() => {
           </div>
         </div>
 
-        {/* Body layout */}
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
-          {/* Desktop left filters */}
           <aside className="hidden md:block">
             <div className="sticky top-24 rounded-2xl bg-white/90 p-4 border border-zinc-200">
               <div className="flex items-center justify-between mb-3">
@@ -1722,7 +1728,6 @@ useLayoutEffect(() => {
                 )}
               </div>
 
-              {/* Sort */}
               <div className="mb-3">
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Sort</label>
                 <select
@@ -1736,7 +1741,6 @@ useLayoutEffect(() => {
                 </select>
               </div>
 
-              {/* Per page */}
               <div className="mb-3">
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Per page</label>
                 <select
@@ -1750,7 +1754,6 @@ useLayoutEffect(() => {
                 </select>
               </div>
 
-              {/* In stock */}
               <div className="mb-4">
                 <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-800">
                   <input
@@ -1763,7 +1766,6 @@ useLayoutEffect(() => {
                 </label>
               </div>
 
-              {/* Categories */}
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-xs font-semibold text-zinc-800">Categories</h4>
@@ -1786,18 +1788,20 @@ useLayoutEffect(() => {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`w-full flex items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white border-zinc-900"
-                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
-                              }`}
+                            className={`w-full flex items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${
+                              checked
+                                ? "bg-zinc-900 text-white border-zinc-900"
+                                : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                            }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex items-center justify-center w-6 h-6 rounded-lg ${checked ? "text-white/90 hover:bg-white/10" : "text-zinc-600 hover:bg-black/5"
-                                  }`}
+                                className={`inline-flex items-center justify-center w-6 h-6 rounded-lg ${
+                                  checked ? "text-white/90 hover:bg-white/10" : "text-zinc-600 hover:bg-black/5"
+                                }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -1806,11 +1810,18 @@ useLayoutEffect(() => {
                               <span className="inline-flex w-6 h-6" />
                             )}
 
-                            <button type="button" onClick={() => toggleCategory(node.id)} className="min-w-0 flex-1 text-left" title={node.name}>
+                            <button
+                              type="button"
+                              onClick={() => toggleCategory(node.id)}
+                              className="min-w-0 flex-1 text-left"
+                              title={node.name}
+                            >
                               <span className="truncate">{node.name}</span>
                             </button>
 
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>({count})</span>
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({count})
+                            </span>
                           </div>
                         </li>
                       );
@@ -1825,13 +1836,16 @@ useLayoutEffect(() => {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
-                              }`}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                            }`}
                           >
                             <span className="truncate">{c.name}</span>
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>({c.count})</span>
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({c.count})
+                            </span>
                           </button>
                         </li>
                       );
@@ -1840,7 +1854,6 @@ useLayoutEffect(() => {
                 )}
               </div>
 
-              {/* Brands */}
               {brands.length > 0 && (
                 <div className="mb-4">
                   <div className="flex items-center justify-between mb-2">
@@ -1860,13 +1873,16 @@ useLayoutEffect(() => {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                              ? "bg-zinc-900 text-white"
-                              : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
-                              }`}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
+                            }`}
                           >
                             <span className="truncate">{b.name}</span>
-                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>({b.count})</span>
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({b.count})
+                            </span>
                           </button>
                         </li>
                       );
@@ -1875,7 +1891,6 @@ useLayoutEffect(() => {
                 </div>
               )}
 
-              {/* Price */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
@@ -1887,6 +1902,7 @@ useLayoutEffect(() => {
                     Reset
                   </button>
                 </div>
+
                 <ul className="space-y-1.5 max-h-56 overflow-auto pr-1">
                   {visiblePriceBuckets.length === 0 && <Shimmer />}
                   {visiblePriceBuckets.map(({ bucket, idx, count }) => {
@@ -1895,13 +1911,16 @@ useLayoutEffect(() => {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
-                            ? "bg-zinc-900 text-white"
-                            : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
-                            }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                            checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
+                          }`}
                         >
                           <span>{bucket.label}</span>
-                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>({count})</span>
+                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            ({count})
+                          </span>
                         </button>
                       </li>
                     );
@@ -1911,13 +1930,11 @@ useLayoutEffect(() => {
             </div>
           </aside>
 
-          {/* Products grid */}
           <section className="mt-0 min-w-0">
             {sorted.length === 0 ? (
               <p className="text-sm text-zinc-600">No products match your filters.</p>
             ) : (
               <>
-                {/* VIRTUALIZED GRID */}
                 <div className="-mx-2 sm:mx-0 grid gap-1.5 sm:gap-3 md:gap-4 grid-cols-2 md:grid-cols-4">
                   {pageItems.map((p) => {
                     const fav = isFav(p.id);
@@ -1949,7 +1966,6 @@ useLayoutEffect(() => {
                         onDragStart={(e) => e.preventDefault()}
                         className="block rounded-2xl bg-white border border-zinc-200 hover:border-zinc-300 shadow-sm overflow-hidden active:scale-[0.99] transition cursor-pointer"
                       >
-                        {/* IMAGE */}
                         <div className="relative w-full h-28 sm:h-36 md:h-40 overflow-hidden bg-zinc-100">
                           {primaryImg ? (
                             <img
@@ -1968,14 +1984,12 @@ useLayoutEffect(() => {
                             </div>
                           )}
 
-                          {/* In stock badge */}
                           {inStock && (
                             <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-emerald-500/85 px-2.5 py-1 text-[10px] md:text-[11px] font-semibold text-white shadow-sm">
                               In stock
                             </span>
                           )}
 
-                          {/* Favourite icon back to top-right */}
                           {!isSupplier && (
                             <button
                               type="button"
@@ -1993,22 +2007,19 @@ useLayoutEffect(() => {
 
                                 toggleFav.mutate({ productId: p.id });
                               }}
-                              className={`absolute right-2 top-2 z-10 inline-flex items-center justify-center w-8 h-8 rounded-full border shadow-sm transition ${fav
-                                ? "bg-rose-50 border-rose-200 text-rose-600"
-                                : "bg-white/95 border-zinc-200 text-zinc-400 hover:text-rose-600 hover:border-rose-200"
-                                }`}
+                              className={`absolute right-2 top-2 z-10 inline-flex items-center justify-center w-8 h-8 rounded-full border shadow-sm transition ${
+                                fav
+                                  ? "bg-rose-50 border-rose-200 text-rose-600"
+                                  : "bg-white/95 border-zinc-200 text-zinc-400 hover:text-rose-600 hover:border-rose-200"
+                              }`}
                               aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
                               title={fav ? "Remove from wishlist" : "Add to wishlist"}
                             >
-                              <Heart
-                                size={16}
-                                className={fav ? "fill-current" : ""}
-                              />
+                              <Heart size={16} className={fav ? "fill-current" : ""} />
                             </button>
                           )}
                         </div>
 
-                        {/* BODY */}
                         <div className="p-2.5 md:p-4">
                           <h3 className="font-semibold text-[12px] md:text-sm text-zinc-900 line-clamp-1">{p.title}</h3>
 
@@ -2086,10 +2097,11 @@ useLayoutEffect(() => {
                                   <button
                                     type="button"
                                     disabled={!inStock}
-                                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] md:text-xs font-medium shadow-sm transition ${inStock
-                                      ? "bg-black text-white hover:bg-black/90"
-                                      : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
-                                      }`}
+                                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] md:text-xs font-medium shadow-sm transition ${
+                                      inStock
+                                        ? "bg-black text-white hover:bg-black/90"
+                                        : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                                    }`}
                                     onClick={(e) => {
                                       stopCardNav(e);
                                       if (!inStock) return;
@@ -2111,10 +2123,7 @@ useLayoutEffect(() => {
                   })}
                 </div>
 
-
-                {/* Pagination (unchanged) */}
                 <div className="mt-5 md:mt-8">
-                  {/* Mobile */}
                   <div className="md:hidden rounded-2xl bg-white/85 backdrop-blur p-3 shadow-sm border border-zinc-200">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -2189,7 +2198,6 @@ useLayoutEffect(() => {
                     </form>
                   </div>
 
-                  {/* Desktop */}
                   <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm text-zinc-600">
                       Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
@@ -2243,16 +2251,18 @@ useLayoutEffect(() => {
                           {pagesDesktop.map((n, idx) => {
                             const prev = pagesDesktop[idx - 1];
                             const showEllipsis = prev != null && n - prev > 1;
+
                             return (
                               <span key={`d-${n}`} className="inline-flex items-center">
                                 {showEllipsis && <span className="px-1 text-sm text-zinc-500">…</span>}
                                 <button
                                   type="button"
                                   onClick={() => goTo(n)}
-                                  className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
-                                    ? "bg-zinc-900 text-white border border-zinc-900"
-                                    : "bg-white hover:bg-zinc-50 border border-zinc-200 hover:border-zinc-300"
-                                    }`}
+                                  className={`px-3 py-1.5 text-xs rounded-xl ${
+                                    n === currentPage
+                                      ? "bg-zinc-900 text-white border border-zinc-900"
+                                      : "bg-white hover:bg-zinc-50 border border-zinc-200 hover:border-zinc-300"
+                                  }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
                                   {n}
@@ -2286,7 +2296,6 @@ useLayoutEffect(() => {
         </div>
       </div>
 
-      {/* Refine Drawer */}
       <AnimatePresence>
         {refineOpen && (
           <motion.div
@@ -2298,13 +2307,8 @@ useLayoutEffect(() => {
             aria-modal="true"
             role="dialog"
           >
-            {/* Backdrop */}
-            <div
-              className="absolute inset-0 bg-black/40 pointer-events-auto"
-              onClick={closeRefine}
-            />
+            <div className="absolute inset-0 bg-black/40 pointer-events-auto" onClick={closeRefine} />
 
-            {/* Panel */}
             <motion.div
               className="absolute inset-y-0 right-0 w-[88%] max-w-sm bg-white rounded-tl-3xl rounded-bl-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 border border-zinc-200 pointer-events-auto"
               initial={{ x: "100%" }}
@@ -2329,7 +2333,6 @@ useLayoutEffect(() => {
                 </button>
               </div>
 
-              {/* Search in drawer */}
               <div className="relative">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
@@ -2383,8 +2386,9 @@ useLayoutEffect(() => {
                           <li key={p.id} className="mb-2 last:mb-0">
                             <button
                               type="button"
-                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
-                                }`}
+                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
+                                active ? "bg-black/5" : ""
+                              }`}
                               onClick={() => {
                                 closeRefine();
                                 nav(`/products/${p.id}`);
@@ -2421,14 +2425,13 @@ useLayoutEffect(() => {
                 )}
               </div>
 
-              {/* Sort + Per page */}
               <div className="grid grid-cols-1 gap-3">
                 <div className="text-sm inline-flex items-center gap-2">
                   <ArrowUpDown size={16} className="text-zinc-600" />
                   <label className="opacity-70 min-w-[44px]">Sort</label>
                   <select
                     value={sortKey}
-                    onChange={(e) => setSortKey(e.target.value as any)}
+                    onChange={(e) => setSortKey(e.target.value as SortKey)}
                     className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 border border-zinc-200"
                   >
                     <option value="relevance">Relevance</option>
@@ -2452,7 +2455,6 @@ useLayoutEffect(() => {
                 </div>
               </div>
 
-              {/* In-stock + clear */}
               <div className="flex items-center justify-between gap-3">
                 <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
                   <input
@@ -2492,6 +2494,6 @@ useLayoutEffect(() => {
           </motion.div>
         )}
       </AnimatePresence>
-    </SiteLayout >
+    </SiteLayout>
   );
 }

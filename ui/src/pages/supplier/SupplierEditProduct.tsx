@@ -18,48 +18,38 @@ import SiteLayout from "../../layouts/SiteLayout";
 import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
 import { useAuthStore } from "../../store/auth";
-import { useCatalogMeta } from "../../hooks/useCatalogMeta";
+import { useCatalogMeta, type CatalogAttribute } from "../../hooks/useCatalogMeta";
 
 /* =========================================================
    Config
 ========================================================= */
 const MAX_IMAGES_PER_PRODUCT = 5;
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
 /* =========================================================
    Helpers
 ========================================================= */
-// ✅ Turn any stored image string into a public browser-loadable src.
-// Also provides fallback candidates (api host vs ui host).
+
 function imageSrcCandidates(input: any): string[] {
   const raw = String(input ?? "").trim();
   if (!raw) return [];
 
-  // allow data URLs
   if (/^data:image\//i.test(raw)) return [raw];
 
-  // absolute: keep as-is but ALSO try to convert API host -> UI host if it contains /uploads/
   if (/^https?:\/\//i.test(raw)) {
     const u = raw;
-    // If it's pointing to the api subdomain, also try the UI domain version
-    // e.g. https://api.dayspringhouse.com/uploads/x.jpg -> https://dayspringhouse.com/uploads/x.jpg
     const apiToUi = u.replace("://api.", "://");
     return uniqStrings([u, apiToUi]);
   }
 
-  // already rooted
   if (raw.startsWith("/")) return [raw];
-
-  // common upload paths without leading slash
   if (raw.startsWith("uploads/")) return [`/${raw}`];
   if (raw.startsWith("public/uploads/")) return [`/${raw.replace(/^public\//, "")}`];
-
-  // last resort: if it looks like a file path
   if (/\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i.test(raw)) return [`/${raw}`];
 
   return [];
 }
 
-/** ✅ Returns FIRST candidate as "primary" src */
 function toPublicImageSrc(input: any): string | null {
   const c = imageSrcCandidates(input);
   return c.length ? c[0] : null;
@@ -71,53 +61,37 @@ function parseUrlList(s: string) {
     .map((t) => t.trim())
     .filter(Boolean);
 }
+
 function toMoneyNumber(v: any) {
+  if (v === "" || v == null) return 0;
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
+
 function toIntNonNeg(v: any) {
   if (v === "" || v == null) return 0;
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.trunc(n));
 }
+
 function uid(prefix = "id") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
 function rowHasAnySelection(selections: Record<string, string>) {
   return Object.values(selections || {}).some((v) => !!String(v || "").trim());
 }
 
-/**
- * ✅ Normalize image URLs coming from server (common patterns):
- * - "uploads/abc.jpg"      => "/uploads/abc.jpg"
- * - "public/uploads/..."   => "/uploads/..."
- * - already "/uploads/.."  => keep
- * - absolute http(s)       => keep
- * - data:image/...         => keep
- */
 function normalizeImageUrl(input: any): string | null {
   const raw = String(input ?? "").trim();
   if (!raw) return null;
-
-  // data URLs
   if (/^data:image\//i.test(raw)) return raw;
-
-  // absolute
   if (/^https?:\/\//i.test(raw)) return raw;
-
-  // already rooted
   if (raw.startsWith("/")) return raw;
-
-  // common upload paths without leading slash
   if (raw.startsWith("uploads/")) return `/${raw}`;
   if (raw.startsWith("public/uploads/")) return `/${raw.replace(/^public\//, "")}`;
-
-  // accept other relative-ish image paths if they look like files
-  if (/\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i.test(raw) && raw.includes("/")) {
-    return `/${raw}`;
-  }
-
+  if (/\.(png|jpe?g|webp|gif|avif|bmp|svg)$/i.test(raw) && raw.includes("/")) return `/${raw}`;
   return null;
 }
 
@@ -136,16 +110,9 @@ function uniqStrings(arr: string[]) {
 
 function limitImages(urls: any[], limit = MAX_IMAGES_PER_PRODUCT) {
   const normalized = urls.map(normalizeImageUrl).filter(Boolean) as string[];
-  const clean = uniqStrings(normalized);
-  return clean.slice(0, limit);
+  return uniqStrings(normalized).slice(0, limit);
 }
 
-/**
- * ✅ Partial selections are allowed.
- * Duplicate key is based on whatever is selected.
- * - none selected => DEFAULT
- * - partial => includes only selected pairs
- */
 function sparseComboKey(selections: Record<string, string>, attrOrder: string[]) {
   const parts: string[] = [];
   for (const aid of attrOrder) {
@@ -155,11 +122,6 @@ function sparseComboKey(selections: Record<string, string>, attrOrder: string[])
   return parts.length ? parts.join("|") : "DEFAULT";
 }
 
-/**
- * ✅ STRICT key that includes blanks.
- * Used to compare BASE combo (attributes section) against VARIANT combos.
- * If all SELECT attrs match (including blanks), it’s considered the same combo.
- */
 function strictComboKey(selections: Record<string, string>, attrOrder: string[]) {
   return attrOrder.map((aid) => `${aid}=${String(selections?.[aid] || "")}`).join("|");
 }
@@ -182,167 +144,134 @@ function formatComboLabel(
 }
 
 function autoSkuFromTitle(input: string) {
-  const s = String(input ?? "")
+  return String(input ?? "")
     .trim()
     .toUpperCase()
     .replace(/&/g, " AND ")
     .replace(/[^A-Z0-9]+/g, "-")
     .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-
-  return s.slice(0, 48);
+    .replace(/^-|-$/g, "")
+    .slice(0, 48);
 }
 
-function Card({
-  title,
-  subtitle,
-  right,
-  children,
-  className = "",
-}: {
-  title: React.ReactNode;
-  subtitle?: React.ReactNode;
-  right?: React.ReactNode;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={`rounded-2xl border bg-white/90 shadow-sm overflow-hidden ${className}`}>
-      <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">{title}</div>
-          {subtitle ? <div className="text-[11px] sm:text-xs text-zinc-500 mt-0.5">{subtitle}</div> : null}
-        </div>
-        {right ? <div className="shrink-0">{right}</div> : null}
-      </div>
-      <div className="p-4 sm:p-5">{children}</div>
-    </div>
-  );
+function tryParseJson(v: any) {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (!s) return null;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }
 
-function AddNewLink({
-  label,
-  onClick,
-  disabled,
-  title,
-}: {
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  title?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className={[
-        "text-[11px] font-semibold underline underline-offset-2",
-        "text-violet-700 hover:text-violet-800",
-        disabled ? "opacity-50 cursor-not-allowed" : "",
-      ].join(" ")}
-    >
-      {label}
-    </button>
-  );
+function normalizeImages(raw: any): string[] {
+  const candidates = [raw?.imagesJson, raw?.images, raw?.imageUrls, raw?.productImages, raw?.Images];
+
+  for (const c of candidates) {
+    if (!c) continue;
+
+    if (typeof c === "string") {
+      const parsed = tryParseJson(c);
+      if (Array.isArray(parsed)) {
+        const arr = parsed
+          .map((x) => (typeof x === "string" ? x : x?.url || x?.path || x?.src))
+          .filter(Boolean);
+        if (arr.length) return arr;
+      }
+
+      const list = parseUrlList(c);
+      if (list.length) return list;
+      continue;
+    }
+
+    if (Array.isArray(c)) {
+      const arr = c
+        .map((x) => (typeof x === "string" ? x : x?.url || x?.path || x?.src))
+        .filter(Boolean);
+      if (arr.length) return arr;
+      continue;
+    }
+
+    if (typeof c === "object") {
+      const maybeUrls = c?.urls || c?.items || c?.data;
+      if (Array.isArray(maybeUrls)) {
+        const arr = maybeUrls
+          .map((x) => (typeof x === "string" ? x : x?.url || x?.path || x?.src))
+          .filter(Boolean);
+        if (arr.length) return arr;
+      }
+    }
+  }
+
+  return [];
 }
 
-/* =========================================================
-   Types
-========================================================= */
+function normalizeVariantOptions(raw: any): Array<{ attributeId: string; valueId: string }> {
+  const arr = Array.isArray(raw) ? raw : [];
 
-type SupplierProductDetail = {
-  id: string;
-  title: string;
-  description?: string | null;
-  sku: string;
-  status: string;
+  const pickAttributeId = (o: any) =>
+    String(o?.attributeId ?? o?.attribute?.id ?? o?.attributeValue?.attributeId ?? o?.value?.attributeId ?? "").trim();
 
-  imagesJson: any;
+  const pickValueId = (o: any) =>
+    String(o?.valueId ?? o?.attributeValueId ?? o?.value?.id ?? o?.attributeValue?.id ?? "").trim();
 
-  categoryId?: string | null;
-  brandId?: string | null;
-  inStock: boolean;
+  const m = new Map<string, string>();
+  for (const o of arr) {
+    const aid = pickAttributeId(o);
+    const vid = pickValueId(o);
+    if (!aid || !vid) continue;
+    m.set(aid, vid);
+  }
 
-  retailPrice?: number | null;
-  autoPrice?: any;
+  return Array.from(m.entries()).map(([attributeId, valueId]) => ({ attributeId, valueId }));
+}
 
-  offer?: {
-    id?: string;
-    basePrice: number;
-    currency?: string;
-    inStock?: boolean;
-    isActive?: boolean;
-    leadDays?: number | null;
-    availableQty?: number;
-  } | null;
+function extractVariantOptions(v: any): Array<{ attributeId: string; valueId: string }> {
+  const candidates = [
+    v?.options,
+    v?.variantOptions,
+    v?.VariantOption,
+    v?.ProductVariantOption,
+    v?.attributeValues,
+    v?.AttributeValues,
+  ];
 
-  supplierVariantOffers?: Array<{
-    id: string;
-    variantId: string;
-    unitPrice: number;
-    availableQty: number;
-    inStock?: boolean;
-    isActive?: boolean;
-    currency?: string;
-    leadDays?: number | null;
-  }>;
+  for (const c of candidates) {
+    if (!Array.isArray(c)) continue;
+    const out = normalizeVariantOptions(c);
+    if (out.length) return out;
+  }
 
-  pendingOfferChanges?: Array<{
-    id: string;
-    scope: "BASE_OFFER" | "VARIANT_OFFER" | string;
-    supplierProductOfferId?: string | null;
-    supplierVariantOfferId?: string | null;
-    variantId?: string | null;
-    proposedPatch?: any;
-    requestedAt?: string;
-  }>;
+  return [];
+}
 
-  variants?: Array<any>;
-  attributeValues?: Array<{ attributeId: string; valueId: string }>;
-  attributeTexts?: Array<{ attributeId: string; value: string }>;
-  attributeSelections?: Array<any>;
+function normalizeVariants(raw: any): any[] {
+  const candidates = [
+    raw?.variants,
+    raw?.ProductVariant,
+    raw?.productVariants,
+    raw?.ProductVariants,
+    raw?.ProductVariant?.items,
+    raw?.productVariants?.items,
+  ];
 
-  attributeOptions?: Array<any>;
-  ProductAttributeText?: Array<any>;
+  for (const c of candidates) {
+    if (!c) continue;
 
-  ProductVariant?: Array<any>;
-  productVariants?: Array<any>;
-  images?: any;
-  imageUrls?: any;
-};
+    if (typeof c === "string") {
+      const parsed = tryParseJson(c);
+      if (Array.isArray(parsed)) return parsed;
+      continue;
+    }
 
-type VariantRow = {
-  id: string;
-  variantId?: string;
-  selections: Record<string, string>;
-  availableQty: string;
+    if (Array.isArray(c)) return c;
 
-  /** ✅ per-variant price (unitPrice / retailPrice) */
-  unitPrice: string;
+    if (typeof c === "object" && Array.isArray(c?.items)) return c.items;
+  }
 
-  /** display-only: approved/active unit price for this variant (offersOnly mode) */
-  activeUnitPrice?: number;
-
-  isExisting?: boolean;
-  comboLabel?: string;
-  rawOptions?: Array<{ attributeId: string; valueId: string }>;
-  variantOfferId?: string;
-};
-
-type DupInfo = {
-  duplicateRowIds: Set<string>;
-  duplicateLabels: string[];
-  explain: string | null;
-
-  /** if any existing/real variant row is DEFAULT, that conflicts with base combo */
-  invalidDefaultRowIds: Set<string>;
-};
-
-/* =========================
-   ✅ Normalizers
-========================= */
+  return [];
+}
 
 type AttrSelection =
   | { attributeId: string; text?: string; valueId?: string; valueIds?: string[] }
@@ -420,139 +349,157 @@ function normalizeAttributeSelections(p: any) {
   return { texts, values };
 }
 
-function tryParseJson(v: any) {
-  if (typeof v !== "string") return null;
-  const s = v.trim();
-  if (!s) return null;
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
-}
+function getPendingMaps(p: any) {
+  const pending: any[] =
+    (Array.isArray(p?.pendingOfferChanges) && p.pendingOfferChanges) ||
+    (Array.isArray(p?.offerChangeRequests) && p.offerChangeRequests) ||
+    [];
 
-function normalizeImages(raw: any): string[] {
-  const candidates = [raw?.imagesJson, raw?.images, raw?.imageUrls, raw?.productImages, raw?.Images];
-
-  for (const c of candidates) {
-    if (!c) continue;
-
-    if (typeof c === "string") {
-      const parsed = tryParseJson(c);
-      if (Array.isArray(parsed)) {
-        const arr = parsed
-          .map((x) => (typeof x === "string" ? x : x?.url || x?.path || x?.src))
-          .filter(Boolean);
-        if (arr.length) return arr;
-      }
-
-      const list = parseUrlList(c);
-      if (list.length) return list;
-      continue;
-    }
-
-    if (Array.isArray(c)) {
-      const arr = c
-        .map((x) => (typeof x === "string" ? x : x?.url || x?.path || x?.src))
-        .filter(Boolean);
-      if (arr.length) return arr;
-      continue;
-    }
-
-    if (typeof c === "object") {
-      const maybeUrls = (c as any)?.urls || (c as any)?.items || (c as any)?.data;
-      if (Array.isArray(maybeUrls)) {
-        const arr = maybeUrls
-          .map((x) => (typeof x === "string" ? x : (x as any)?.url || (x as any)?.path || (x as any)?.src))
-          .filter(Boolean);
-        if (arr.length) return arr;
-      }
-    }
-  }
-
-  return [];
-}
-
-function extractVariantOptions(v: any): Array<{ attributeId: string; valueId: string }> {
-  const out: Array<{ attributeId: string; valueId: string }> = [];
-
-  const candidates = [
-    v?.options,
-    v?.variantOptions,
-    v?.VariantOption,
-    v?.ProductVariantOption,
-    v?.attributeValues,
-    v?.AttributeValues,
-  ];
-
-  for (const c of candidates) {
-    if (!c) continue;
-    if (!Array.isArray(c)) continue;
-
-    for (const o of c) {
-      const aid =
-        (o as any)?.attributeId ??
-        (o as any)?.attribute?.id ??
-        (o as any)?.attributeValue?.attributeId ??
-        (o as any)?.Attribute?.id;
-      const vid =
-        (o as any)?.valueId ??
-        (o as any)?.value?.id ??
-        (o as any)?.attributeValueId ??
-        (o as any)?.AttributeValue?.id ??
-        (o as any)?.attributeValue?.valueId ??
-        (o as any)?.attributeValue?.id;
-
-      if (aid && vid) out.push({ attributeId: String(aid), valueId: String(vid) });
-    }
-
-    if (out.length) return out;
-  }
-
-  return out;
-}
-
-function normalizeVariants(raw: any): any[] {
-  const candidates = [
-    raw?.variants,
-    raw?.ProductVariant,
-    raw?.productVariants,
-    raw?.ProductVariants,
-    raw?.ProductVariant?.items,
-    raw?.productVariants?.items,
-  ];
-
-  for (const c of candidates) {
-    if (!c) continue;
-
-    if (typeof c === "string") {
-      const parsed = tryParseJson(c);
-      if (Array.isArray(parsed)) return parsed;
-      continue;
-    }
-
-    if (Array.isArray(c)) return c;
-
-    if (typeof c === "object" && Array.isArray((c as any)?.items)) return (c as any).items;
-  }
-
-  return [];
-}
-
-function buildPendingMaps(p: any) {
-  const pending: any[] = Array.isArray(p?.pendingOfferChanges) ? p.pendingOfferChanges : [];
   const base = pending.find((x) => String(x?.scope || "").toUpperCase() === "BASE_OFFER") || null;
 
   const variantMap = new Map<string, any>();
   for (const x of pending) {
     if (String(x?.scope || "").toUpperCase() !== "VARIANT_OFFER") continue;
-    const vid = String(x?.variantId ?? "").trim();
+    const vid = String(
+      x?.variantId ??
+        x?.supplierVariantOffer?.variantId ??
+        x?.supplierVariantOfferId ??
+        ""
+    ).trim();
     if (!vid) continue;
     variantMap.set(vid, x);
   }
 
   return { base, variantMap };
 }
+
+/* =========================================================
+   UI bits
+========================================================= */
+
+function Card({
+  title,
+  subtitle,
+  right,
+  children,
+  className = "",
+}: {
+  title: React.ReactNode;
+  subtitle?: React.ReactNode;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={`rounded-2xl border bg-white/90 shadow-sm overflow-hidden ${className}`}>
+      <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">{title}</div>
+          {subtitle ? <div className="text-[11px] sm:text-xs text-zinc-500 mt-0.5">{subtitle}</div> : null}
+        </div>
+        {right ? <div className="shrink-0">{right}</div> : null}
+      </div>
+      <div className="p-4 sm:p-5">{children}</div>
+    </div>
+  );
+}
+
+function AddNewLink({
+  label,
+  onClick,
+  disabled,
+  title,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={[
+        "text-[11px] font-semibold underline underline-offset-2",
+        "text-violet-700 hover:text-violet-800",
+        disabled ? "opacity-50 cursor-not-allowed" : "",
+      ].join(" ")}
+    >
+      {label}
+    </button>
+  );
+}
+
+/* =========================================================
+   Types
+========================================================= */
+
+type SupplierProductDetail = {
+  id: string;
+  title: string;
+  description?: string | null;
+  sku: string;
+  status: string;
+  imagesJson: any;
+  categoryId?: string | null;
+  brandId?: string | null;
+  inStock: boolean;
+  retailPrice?: number | null;
+  autoPrice?: any;
+  offer?: {
+    id?: string;
+    basePrice: number;
+    currency?: string;
+    inStock?: boolean;
+    isActive?: boolean;
+    leadDays?: number | null;
+    availableQty?: number;
+  } | null;
+  supplierVariantOffers?: Array<{
+    id: string;
+    variantId: string;
+    unitPrice: number;
+    availableQty: number;
+    inStock?: boolean;
+    isActive?: boolean;
+    currency?: string;
+    leadDays?: number | null;
+  }>;
+  pendingOfferChanges?: Array<any>;
+  offerChangeRequests?: Array<any>;
+  variants?: Array<any>;
+  ProductVariant?: Array<any>;
+  productVariants?: Array<any>;
+  attributeValues?: Array<{ attributeId: string; valueId: string }>;
+  attributeTexts?: Array<{ attributeId: string; value: string }>;
+  attributeSelections?: Array<any>;
+  attributeOptions?: Array<any>;
+  ProductAttributeText?: Array<any>;
+  images?: any;
+  imageUrls?: any;
+};
+
+type VariantRow = {
+  id: string;
+  variantId?: string;
+  selections: Record<string, string>;
+  availableQty: string;
+  unitPrice: string;
+  activeUnitPrice?: number;
+  isExisting?: boolean;
+  comboLabel?: string;
+  rawOptions?: Array<{ attributeId: string; valueId: string }>;
+  variantOfferId?: string;
+};
+
+type DupInfo = {
+  duplicateRowIds: Set<string>;
+  duplicateLabels: string[];
+  explain: string | null;
+  invalidDefaultRowIds: Set<string>;
+};
 
 /* =========================================================
    Component
@@ -564,7 +511,6 @@ export default function SupplierEditProduct() {
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
 
-  // ✅ cookie-auth session
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const role = useAuthStore((s: any) => s.user?.role) as string | undefined;
 
@@ -572,14 +518,11 @@ export default function SupplierEditProduct() {
     useAuthStore.getState().bootstrap?.().catch?.(() => null);
   }, []);
 
-  // ✅ if opened from catalog: offers-only mode
   const offersOnly = String(searchParams.get("scope") ?? "") === "offers_mine";
 
   const [err, setErr] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [dupWarn, setDupWarn] = useState<string | null>(null);
-
-  // ✅ mobile summary like Add page
   const [summaryOpen, setSummaryOpen] = useState(false);
 
   const [title, setTitle] = useState("");
@@ -590,12 +533,15 @@ export default function SupplierEditProduct() {
   const [description, setDescription] = useState("");
   const [availableQty, setAvailableQty] = useState<string>("0");
 
-  // ---------- Images (match Add page UX: immediate previews for local files) ----------
   const [imageUrls, setImageUrls] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [uploadedUrls, setUploadedUrls] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const fileKey = (f: File) => `${f.name}-${f.size}-${f.lastModified}`;
+  const filePreviewMapRef = useRef<Record<string, string>>({});
+  const [, bumpPreview] = useState(0);
 
   const [selectedAttrs, setSelectedAttrs] = useState<Record<string, string | string[]>>({});
   const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
@@ -619,7 +565,6 @@ export default function SupplierEditProduct() {
     description: string;
     images: string[];
     attr: Record<string, string | string[]>;
-    multiAttrValues: Record<string, Set<string>>;
     existingVariantIds: Set<string>;
   } | null>(null);
 
@@ -638,24 +583,24 @@ export default function SupplierEditProduct() {
     []
   );
 
-const CATALOG_REQUESTS_PATH = "/supplier/catalog-requests";
-type CatalogReqSection = "categories" | "brands" | "attributes" | "attribute-values";
+  const CATALOG_REQUESTS_PATH = "/supplier/catalog-requests";
+  type CatalogReqSection = "categories" | "brands" | "attributes" | "attribute-values";
 
-function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?: Record<string, string>) {
-  const sp = new URLSearchParams();
-  sp.set("section", section);
-  if (focus) sp.set("focus", focus);
-  for (const [k, v] of Object.entries(extra || {})) {
-    if (v != null && String(v).trim() !== "") sp.set(k, String(v));
+  function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?: Record<string, string>) {
+    const sp = new URLSearchParams();
+    sp.set("section", section);
+    if (focus) sp.set("focus", focus);
+    for (const [k, v] of Object.entries(extra || {})) {
+      if (v != null && String(v).trim() !== "") sp.set(k, String(v));
+    }
+    return { pathname: CATALOG_REQUESTS_PATH, search: `?${sp.toString()}` };
   }
 
-  return { pathname: CATALOG_REQUESTS_PATH, search: `?${sp.toString()}` };
-}
-
-  // ✅ cookie-auth: meta loads once session is hydrated
   const { categories, brands, attributes, categoriesQ, brandsQ } = useCatalogMeta({
     enabled: hydrated,
   });
+
+  const activeAttrs = useMemo(() => (attributes ?? []).filter((a) => a?.isActive !== false), [attributes]);
 
   const selectableAttrs = useMemo(
     () => (attributes ?? []).filter((a) => a.type === "SELECT" && a.isActive !== false),
@@ -678,7 +623,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     return m;
   }, [selectableAttrs]);
 
-  // keep rows aligned to current selectable attributes
   useEffect(() => {
     if (!selectableAttrs.length) return;
     const ids = selectableAttrs.map((a) => a.id);
@@ -701,7 +645,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     );
   }, [selectableAttrs]);
 
-  // ✅ cookie-auth detail load
   const detailQ = useQuery<SupplierProductDetail>({
     queryKey: ["supplier", offersOnly ? "catalog-product" : "product", id, offersOnly ? "offersOnly" : "full"],
     enabled: hydrated && !!id && isSupplier,
@@ -715,10 +658,9 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
           ];
 
       let lastErr: any = null;
-
       for (const url of attempts) {
         try {
-          const res = await api.get(url, { withCredentials: true });
+          const res = await api.get(url, AXIOS_COOKIE_CFG);
           const root = (res as any)?.data;
           const d = root?.data ?? root?.data?.data ?? root;
           if (d && d.id) return d as SupplierProductDetail;
@@ -728,7 +670,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
           lastErr = e;
         }
       }
-
       throw lastErr || new Error("Failed to load product");
     },
     staleTime: 30_000,
@@ -737,7 +678,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
   const productStatusUpper = useMemo(() => String(detailQ.data?.status ?? "").toUpperCase(), [detailQ.data?.status]);
 
-  // ✅ LOCK ONLY when actually LIVE/ACTIVE
   const isLive = useMemo(() => {
     if (offersOnly) return false;
     const s = String(productStatusUpper || "").toUpperCase();
@@ -756,7 +696,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     return toMoneyNumber(retailPrice);
   }, [isLive, retailPrice]);
 
-  // ✅ draft row = no variantId and no option selection
   const isRealVariantRow = (r: VariantRow) => !!r.variantId || rowHasAnySelection(r.selections);
 
   const variantQtyTotal = useMemo(() => {
@@ -771,14 +710,13 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     () => variantRows.some((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections)),
     [variantRows]
   );
+
   const effectiveQty = totalQty;
 
   const computeDupInfo = (rows: VariantRow[]): DupInfo => {
     const seen = new Map<string, string>();
     const dups = new Set<string>();
     const dupKeys = new Set<string>();
-
-    // ✅ Also block any *real* variant that resolves to DEFAULT (base combo)
     const invalidDefaultRowIds = new Set<string>();
 
     const realRows = rows.filter(isRealVariantRow);
@@ -786,7 +724,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     for (const row of realRows) {
       const key = sparseComboKey(row.selections, attrOrder);
 
-      // DEFAULT reserved for base only.
       if (key === "DEFAULT" && !!row.variantId) {
         invalidDefaultRowIds.add(row.id);
       }
@@ -809,9 +746,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
     const dupExplain =
       dups.size > 0
-        ? `Duplicate variant combinations found: ${labels.join(
-            " • "
-          )}. Please change options or remove one of the duplicate rows.`
+        ? `Duplicate variant combinations found: ${labels.join(" • ")}. Please change options or remove one of the duplicate rows.`
         : null;
 
     const defaultExplain =
@@ -840,15 +775,9 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     setDupWarn(liveDup.explain);
   }, [liveDup.explain]);
 
-  const activeAttrs = useMemo(() => (attributes ?? []).filter((a) => a?.isActive !== false), [attributes]);
-
   const canEditCore = !offersOnly;
   const canAddNewCombos = !offersOnly;
   const canEditAttributes = !offersOnly;
-
-  /* =========================================================
-     ✅ BaseCombo vs VariantCombo guard (STRICT)
-  ========================================================= */
 
   const baseComboSelections = useMemo(() => {
     const sel: Record<string, string> = {};
@@ -895,7 +824,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
   const setAttr = (attributeId: string, value: string | string[]) => {
     if (offersOnly) return;
 
-    // ✅ Prevent changing BASE SELECT attributes to match an existing variant combo
     const isSelectAttr = attrOrder.includes(String(attributeId));
     if (isSelectAttr && typeof value === "string") {
       const nextSelected = { ...selectedAttrs, [attributeId]: value };
@@ -917,7 +845,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
         if (conflicts) {
           setErr("That base attribute combination matches an existing variant combo. Change base attributes or the variant.");
-          // ✅ do NOT block — let user rectify
         }
       }
     }
@@ -935,7 +862,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     return String(v ?? "");
   };
 
-  // REVIEW logic is only relevant for owned products
   const nonStockChangesRequireReview = useMemo(() => {
     if (offersOnly) return false;
     if (!isLive) return false;
@@ -981,7 +907,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       attrChanged ||
       newCombosAdded
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     offersOnly,
     isLive,
@@ -997,7 +922,10 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     variantRows,
   ]);
 
-  // ---------- HYDRATE (BASE FIELDS + VARIANTS) ----------
+  /* =========================================================
+     Detail hydration
+  ========================================================= */
+
   useEffect(() => {
     const p = detailQ.data as any;
     if (!p?.id) return;
@@ -1013,7 +941,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     setBrandId(p.brandId ?? "");
     setDescription(p.description ?? "");
 
-    const productFallback = Number(p.retailPrice ?? 0) || Number((p as any).autoPrice ?? 0) || 0;
+    const productFallback = Number(p.retailPrice ?? 0) || Number(p.autoPrice ?? 0) || 0;
     const baseP = Number(p.offer?.basePrice ?? productFallback ?? 0) || 0;
 
     initialBasePriceRef.current = baseP;
@@ -1021,8 +949,8 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     if (offersOnly) {
       setActiveBasePrice(baseP);
 
-      const { base, variantMap } = buildPendingMaps(p);
-      const basePatch = base?.proposedPatch ?? null;
+      const { base, variantMap } = getPendingMaps(p);
+      const basePatch = base?.proposedPatch ?? base?.patchJson ?? null;
 
       setPendingBasePatch(basePatch);
       setPendingVariantPatchByVariantId(variantMap);
@@ -1037,7 +965,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       setRetailPrice(String(baseP));
     }
 
-    // ✅ Images: normalize + limit to 5 (so server paths like "uploads/.." show immediately)
     const urls = limitImages(normalizeImages(p), MAX_IMAGES_PER_PRODUCT);
     setImageUrls(urls.join("\n"));
     setUploadedUrls([]);
@@ -1076,7 +1003,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
       const qty = myOffer?.availableQty ?? v?.availableQty ?? 0;
 
-      // ✅ hydrate per-variant price
       const offerUnit = Number(myOffer?.unitPrice ?? NaN);
       const variantRetail = Number(v?.retailPrice ?? NaN) || Number(v?.unitPrice ?? NaN) || Number(v?.price ?? NaN);
 
@@ -1085,8 +1011,8 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       const unitForInput = offersOnly
         ? activeUnitPrice
         : Number.isFinite(variantRetail) && variantRetail > 0
-        ? variantRetail
-        : baseP;
+          ? variantRetail
+          : baseP;
 
       return {
         id: uid("vr"),
@@ -1113,13 +1039,10 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       description: p.description ?? "",
       images: urls,
       attr: {},
-      multiAttrValues: {},
       existingVariantIds: new Set(vr.filter((x) => x.variantId).map((x) => String(x.variantId))),
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailQ.data?.id]);
+  }, [detailQ.data?.id, offersOnly, selectableAttrs, attrOrder, attrNameById, valueNameById]);
 
-  // ---------- HYDRATE (ATTRIBUTES ONLY) ----------
   useEffect(() => {
     const p = detailQ.data as any;
     if (!p?.id) return;
@@ -1133,7 +1056,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       (Array.isArray(p?.ProductAttributeText) && p.ProductAttributeText.length > 0);
 
     if (!hasAttrPayload) return;
-
     if (hydratedAttrsForIdRef.current === p.id) return;
     hydratedAttrsForIdRef.current = p.id;
 
@@ -1150,7 +1072,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
     for (const a of attributes ?? []) {
       if (a.type === "MULTISELECT") nextSel[a.id] = grouped[a.id] || [];
-      if (a.type === "SELECT") nextSel[a.id] = (grouped[a.id]?.[0] ?? "") as any;
+      if (a.type === "SELECT") nextSel[a.id] = grouped[a.id]?.[0] ?? "";
       if (a.type === "TEXT" && nextSel[a.id] == null) nextSel[a.id] = "";
     }
 
@@ -1159,20 +1081,52 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     const snap = initialSnapshotRef.current;
     if (snap && snap.id === p.id) {
       snap.attr = { ...nextSel };
-
-      const multiSets: Record<string, Set<string>> = {};
-      for (const a of attributes ?? []) {
-        if (a.type !== "MULTISELECT") continue;
-        const arr = Array.isArray(nextSel[a.id]) ? (nextSel[a.id] as string[]).map(String) : [];
-        multiSets[a.id] = new Set(arr);
-      }
-      snap.multiAttrValues = multiSets;
     }
-  }, [detailQ.data?.id, detailQ.data, (attributes ?? []).length]);
+  }, [detailQ.data?.id, detailQ.data, attributes]);
+
+  /* =========================================================
+     Image UX
+  ========================================================= */
+
+  useEffect(() => {
+    const wanted = new Set(files.map(fileKey));
+    const map = filePreviewMapRef.current;
+
+    for (const f of files) {
+      const k = fileKey(f);
+      if (!map[k]) map[k] = URL.createObjectURL(f);
+    }
+
+    for (const k of Object.keys(map)) {
+      if (!wanted.has(k)) {
+        try {
+          URL.revokeObjectURL(map[k]);
+        } catch {
+          //
+        }
+        delete map[k];
+      }
+    }
+
+    bumpPreview((x) => x + 1);
+  }, [files]);
+
+  useEffect(() => {
+    return () => {
+      const map = filePreviewMapRef.current;
+      for (const k of Object.keys(map)) {
+        try {
+          URL.revokeObjectURL(map[k]);
+        } catch {
+          //
+        }
+        delete map[k];
+      }
+    };
+  }, []);
 
   const UPLOAD_ENDPOINT = "/api/uploads";
 
-  // ---------- Images (max 5) ----------
   const urlPreviews = useMemo(() => limitImages(parseUrlList(imageUrls), MAX_IMAGES_PER_PRODUCT), [imageUrls]);
 
   const allUrlPreviews = useMemo(() => {
@@ -1180,19 +1134,18 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
   }, [urlPreviews, uploadedUrls]);
 
   const filePreviews = useMemo(() => {
-    return files.map((f) => ({ file: f, url: URL.createObjectURL(f) }));
+    const map = filePreviewMapRef.current;
+    return files
+      .map((f) => {
+        const k = fileKey(f);
+        return { file: f, url: map[k] };
+      })
+      .filter((x) => !!x.url);
   }, [files]);
-
-  useEffect(() => {
-    return () => {
-      filePreviews.forEach((p) => URL.revokeObjectURL(p.url));
-    };
-  }, [filePreviews]);
 
   const imageCount = allUrlPreviews.length;
   const imageOverLimit = imageCount > MAX_IMAGES_PER_PRODUCT;
 
-  // "claimed" = urls in textarea + already uploaded urls (not counting selected files)
   const claimedByTextAndUploaded = useMemo(() => {
     return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT).length;
   }, [urlPreviews, uploadedUrls]);
@@ -1220,6 +1173,11 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     setImageUrls(next.join("\n"));
   }
 
+  function removeSelectedFile(file: File) {
+    setFiles((prev) => prev.filter((f) => f !== file));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
   function onPickFiles(nextPicked: File[]) {
     if (offersOnly) return;
     setErr(null);
@@ -1235,11 +1193,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
       const toAdd = nextPicked.slice(0, room);
       if (toAdd.length < nextPicked.length) {
-        setErr(
-          `Only ${MAX_IMAGES_PER_PRODUCT} images max. Added ${toAdd.length}; ignored ${
-            nextPicked.length - toAdd.length
-          }.`
-        );
+        setErr(`Only ${MAX_IMAGES_PER_PRODUCT} images max. Added ${toAdd.length}; ignored ${nextPicked.length - toAdd.length}.`);
       }
       return [...prev, ...toAdd];
     });
@@ -1260,21 +1214,19 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     for (const x of candidates) {
       if (typeof x === "string") out.push(x);
       else if (x && typeof x === "object") {
-        if (typeof (x as any).url === "string") out.push((x as any).url);
-        if (typeof (x as any).path === "string") out.push((x as any).path);
-        if (typeof (x as any).location === "string") out.push((x as any).location);
+        if (typeof x.url === "string") out.push(x.url);
+        if (typeof x.path === "string") out.push(x.path);
+        if (typeof x.location === "string") out.push(x.location);
       }
     }
 
     return limitImages(out, MAX_IMAGES_PER_PRODUCT);
   }
 
-  // ✅ cookie-auth upload (enforces max images) — keeps previews and merges into uploadedUrls
   async function uploadLocalFiles(): Promise<string[]> {
     if (offersOnly) return [];
     if (!files.length) return [];
 
-    // enforce max before uploading
     const already = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT);
     const room = Math.max(0, MAX_IMAGES_PER_PRODUCT - already.length);
     if (files.length > room) {
@@ -1288,7 +1240,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       setUploading(true);
 
       const res = await api.post(UPLOAD_ENDPOINT, fd, {
-        withCredentials: true,
+        ...AXIOS_COOKIE_CFG,
         headers: { "Content-Type": "multipart/form-data" },
       });
 
@@ -1297,7 +1249,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
         throw new Error("Upload succeeded but no image URLs were returned. Check /api/uploads response shape.");
       }
 
-      // Only take what fits right now
       const spaceNow = Math.max(
         0,
         MAX_IMAGES_PER_PRODUCT - limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT).length
@@ -1313,6 +1264,10 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       setUploading(false);
     }
   }
+
+  /* =========================================================
+     Variant row actions
+  ========================================================= */
 
   const setVariantRowsAndCheck = (next: VariantRow[]) => {
     setVariantRows(next);
@@ -1332,7 +1287,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     const selections: Record<string, string> = {};
     selectableAttrs.forEach((a) => (selections[a.id] = ""));
 
-    // ✅ start variant price from current base input
     const baseNow = toMoneyNumber(retailPrice);
     const next = [...variantRows, { id: uid("vr"), selections, availableQty: "", unitPrice: String(baseNow || 0) }];
     setVariantRowsAndCheck(next);
@@ -1346,16 +1300,12 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       r.id === rowId ? { ...r, selections: { ...r.selections, [attributeId]: valueId } } : r
     );
 
-    // ✅ Prevent a variant combo from matching base combo (STRICT)
     if (attrOrder.length && baseComboHasAny) {
       const changed = next.find((r) => r.id === rowId);
       if (changed && rowHasAnySelection(changed.selections)) {
         const changedKey = strictComboKey(changed.selections, attrOrder);
         if (changedKey === baseComboKey) {
-          setErr(
-            "That variant combination matches your base attributes selection (base combo). Change the variant options or base attributes."
-          );
-          // ✅ do NOT block — let user rectify
+          setErr("That variant combination matches your base attributes selection (base combo). Change the variant options or base attributes.");
         }
       }
     }
@@ -1376,9 +1326,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
   async function removeOfferForVariant(row: VariantRow) {
     if (!row.variantOfferId) return;
 
-    await api.delete(`/api/supplier/catalog/offers/variant/${row.variantOfferId}`, {
-      withCredentials: true,
-    });
+    await api.delete(`/api/supplier/catalog/offers/variant/${row.variantOfferId}`, AXIOS_COOKIE_CFG);
 
     setVariantRows((rows) =>
       rows.map((r) => (r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r))
@@ -1418,10 +1366,14 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     setRetailPrice(e.target.value);
   };
 
-  // ---------- Payload builders (aligned with schema) ----------
+  /* =========================================================
+     Payload builders
+  ========================================================= */
+
   function buildAttributeSelectionsPayload() {
     const out: Array<{ attributeId: string; text?: string; valueId?: string; valueIds?: string[] }> = [];
-    for (const a of (attributes ?? []) as any[]) {
+
+    for (const a of (attributes ?? []) as CatalogAttribute[]) {
       if (!a?.id) continue;
       const aid = String(a.id);
 
@@ -1441,20 +1393,18 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
         const vals = Array.isArray(getAttrVal(aid)) ? (getAttrVal(aid) as string[]) : [];
         const clean = vals.map(String).map((x) => x.trim()).filter(Boolean);
         if (clean.length) out.push({ attributeId: aid, valueIds: clean });
-        continue;
       }
     }
+
     return out;
   }
 
-  function buildVariantsPayload() {
-    // ✅ variants must have at least one option selected (prevents DEFAULT/base-only)
+  function buildOwnedVariantsPayload() {
     const rows = variantRows.filter((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections));
-
     const basePrice = toMoneyNumber(retailPrice);
 
     return rows.map((r) => {
-      const opts = attrOrder
+      const options = attrOrder
         .map((aid) => {
           const vid = String(r.selections?.[aid] ?? "").trim();
           if (!vid) return null;
@@ -1466,13 +1416,16 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       const finalUnit = rowUnit > 0 ? rowUnit : basePrice;
 
       return {
-        ...(r.variantId ? { id: String(r.variantId) } : {}),
-        retailPrice: finalUnit,
+        ...(r.variantId ? { variantId: String(r.variantId) } : {}),
+        sku: undefined,
+        unitPrice: finalUnit,
         availableQty: toIntNonNeg(r.availableQty),
+        qty: toIntNonNeg(r.availableQty),
+        quantity: toIntNonNeg(r.availableQty),
         inStock: toIntNonNeg(r.availableQty) > 0,
         isActive: true,
         imagesJson: [],
-        options: opts,
+        options,
       };
     });
   }
@@ -1483,8 +1436,10 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     const existingRows = args.variantRows.filter((r) => !!r.variantId);
 
     const variants = existingRows.map((r) => ({
-      id: String(r.variantId),
+      variantId: String(r.variantId),
       availableQty: toIntNonNeg(r.availableQty),
+      qty: toIntNonNeg(r.availableQty),
+      quantity: toIntNonNeg(r.availableQty),
       inStock: toIntNonNeg(r.availableQty) > 0,
     }));
 
@@ -1493,13 +1448,15 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
     return {
       availableQty: baseQty,
+      qty: baseQty,
+      quantity: baseQty,
       inStock: total > 0,
       variants,
       stockOnly: true,
     };
   }
 
-  function buildPayload(imagesJson: string[]) {
+  function buildOwnedPayload(imagesJson: string[]) {
     const price = toMoneyNumber(retailPrice);
     const baseQty = baseQtyPreview;
 
@@ -1510,6 +1467,8 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       offer: {
         basePrice: price,
         availableQty: baseQty,
+        qty: baseQty,
+        quantity: baseQty,
         inStock: totalQty > 0,
         isActive: true,
         currency: "NGN",
@@ -1521,10 +1480,12 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       imagesJson,
 
       availableQty: baseQty,
+      qty: baseQty,
+      quantity: baseQty,
       inStock: totalQty > 0,
 
       attributeSelections: buildAttributeSelectionsPayload(),
-      variants: buildVariantsPayload(),
+      variants: buildOwnedVariantsPayload(),
       stockOnly: false,
     };
 
@@ -1536,17 +1497,22 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
     return core;
   }
 
+  /* =========================================================
+     Save mutation
+  ========================================================= */
+
   const updateM = useMutation({
     mutationFn: async () => {
       setErr(null);
       setOkMsg(null);
+
       if (imageOverLimit || hasBaseComboConflict || hasDuplicates || hasInvalidDefaultVariant) {
         throw new Error(
           imageOverLimit
             ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
             : baseComboWarn
-            ? baseComboWarn
-            : dupWarn || "Fix the errors above to save."
+              ? baseComboWarn
+              : dupWarn || "Fix the errors above to save."
         );
       }
 
@@ -1554,27 +1520,20 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
       const imagesFromUi = getAllImagesFromUi();
       if (imagesFromUi.length > MAX_IMAGES_PER_PRODUCT) {
-        throw new Error(
-          `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Please remove ${
-            imagesFromUi.length - MAX_IMAGES_PER_PRODUCT
-          } image(s).`
-        );
+        throw new Error(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Please remove ${imagesFromUi.length - MAX_IMAGES_PER_PRODUCT} image(s).`);
       }
 
       const basePrice = toMoneyNumber(retailPrice);
       if (!Number.isFinite(basePrice) || basePrice <= 0) throw new Error("Price must be greater than 0");
 
-      // ✅ block base combo matching a variant combo
       if (hasBaseComboConflict) {
         throw new Error(baseComboWarn || "Base combo matches a variant combo. Please change one of them.");
       }
 
-      // ✅ block invalid DEFAULT variant
       if (hasInvalidDefaultVariant) {
         throw new Error("A variant row cannot be DEFAULT (no options selected). DEFAULT is reserved for the base combo.");
       }
 
-      // ✅ validate per-variant price when the row is a real variant combo
       const realVariantRows = variantRows.filter((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections));
       for (const r of realVariantRows) {
         const rowUnit = toMoneyNumber(r.unitPrice);
@@ -1593,12 +1552,14 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
             productId: id,
             basePrice,
             availableQty: baseQty,
+            qty: baseQty,
+            quantity: baseQty,
             leadDays: null,
             isActive: true,
             inStock: baseInStock,
             currency: "NGN",
           },
-          { withCredentials: true }
+          AXIOS_COOKIE_CFG
         );
 
         const tasks: Promise<any>[] = [];
@@ -1609,7 +1570,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
           if (qty <= 0) {
             if (r.variantOfferId) {
-              tasks.push(api.delete(`/api/supplier/catalog/offers/variant/${r.variantOfferId}`, { withCredentials: true }));
+              tasks.push(api.delete(`/api/supplier/catalog/offers/variant/${r.variantOfferId}`, AXIOS_COOKIE_CFG));
             }
             continue;
           }
@@ -1627,12 +1588,14 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                 variantId: r.variantId,
                 unitPrice,
                 availableQty: qty,
+                qty,
+                quantity: qty,
                 leadDays: null,
                 isActive: true,
                 inStock: qty > 0,
                 currency: "NGN",
               },
-              { withCredentials: true }
+              AXIOS_COOKIE_CFG
             )
           );
         }
@@ -1641,10 +1604,10 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
         return { ok: true };
       }
 
-      // ---------- owned-product path ----------
       if (!title.trim()) throw new Error("Title is required");
       if (!sku.trim()) throw new Error("SKU is required");
       if (!String(description ?? "").trim()) throw new Error("Description is required");
+      if (!brandId) throw new Error("Brand is required");
 
       const snap = initialSnapshotRef.current;
       if (isLive && snap) {
@@ -1670,7 +1633,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
       const stockOnlyUpdate = isLive && !nonStockChangesRequireReview;
 
-      // ✅ Build final images list (normalized + clamped) — matches Add page
       const rawList = parseUrlList(imageUrls);
       const urlList = limitImages(rawList, MAX_IMAGES_PER_PRODUCT);
       if (rawList.length !== urlList.length) {
@@ -1678,22 +1640,18 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       }
 
       const current = limitImages([...urlList, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT);
-
       const freshlyUploaded = files.length ? await uploadLocalFiles() : [];
       const merged = limitImages([...current, ...freshlyUploaded], MAX_IMAGES_PER_PRODUCT);
 
       const payload = stockOnlyUpdate
         ? buildStockOnlyPayload({ baseQty: baseQtyPreview, variantRows })
         : {
-            ...buildPayload(merged),
+            ...buildOwnedPayload(merged),
             submitForReview: isLive && nonStockChangesRequireReview,
             stockOnly: false,
           };
 
-      const { data } = await api.patch(`/api/supplier/products/${id}`, payload, {
-        withCredentials: true,
-      });
-
+      const { data } = await api.patch(`/api/supplier/products/${id}`, payload, AXIOS_COOKIE_CFG);
       return data;
     },
     onSuccess: async () => {
@@ -1701,7 +1659,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
       if (offersOnly) {
         setOkMsg("Saved ✅ Stock updates apply immediately. Price changes may be pending admin approval.");
-        (detailQ as any)?.refetch?.();
+        detailQ.refetch?.();
         setTimeout(() => nav("/supplier/catalog-offers", { replace: true }), 700);
         return;
       }
@@ -1717,7 +1675,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
       setTimeout(() => nav("/supplier/products", { replace: true }), 700);
     },
     onError: (e: any) => {
-      setErr(e?.response?.data?.error || e?.message || "Failed to update");
+      setErr(e?.response?.data?.userMessage || e?.response?.data?.error || e?.message || "Failed to update");
     },
   });
 
@@ -1746,8 +1704,8 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
         imageOverLimit
           ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
           : baseComboWarn
-          ? baseComboWarn
-          : dupWarn || "Fix the errors above to save."
+            ? baseComboWarn
+            : dupWarn || "Fix the errors above to save."
       );
       return;
     }
@@ -1757,7 +1715,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
   return (
     <SiteLayout>
       <SupplierLayout>
-        {/* Sticky mobile save bar + summary (like Add form) */}
         <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
           <div className="px-4 py-3 flex items-center gap-3">
             <button
@@ -1818,7 +1775,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
         </div>
 
         <div className="mt-4 sm:mt-6 space-y-4 pb-28 sm:pb-8">
-          {/* Header */}
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
             <div className="min-w-0">
               <motion.h1
@@ -1826,17 +1782,16 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                 animate={{ opacity: 1, y: 0 }}
                 className="text-[20px] sm:text-2xl font-bold tracking-tight text-zinc-900 leading-tight"
               >
-                {offersOnly ? "Offer this product" : "Edit product"}
+                {offersOnly ? "Edit offer" : "Edit product"}
               </motion.h1>
 
               {offersOnly ? (
                 <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
-                  Catalog product: you can only edit <b>your offer</b> (price/stock per variant).
+                  Catalog product: you can only edit <b>your offer</b> (base price/stock and existing variant offers).
                 </p>
               ) : isLive ? (
                 <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
-                  This product is <b>{productStatusUpper || "LIVE"}</b>. <b>Stock updates</b> are immediate. Other
-                  changes may be <b>submitted for review</b>.
+                  This product is <b>{productStatusUpper || "LIVE"}</b>. <b>Stock updates</b> are immediate. Other changes may be <b>submitted for review</b>.
                 </p>
               ) : (
                 <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
@@ -1864,7 +1819,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
             </div>
           </div>
 
-          {/* Alerts */}
           {guardMsg && (
             <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">{guardMsg}</div>
           )}
@@ -1883,8 +1837,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
           {imageOverLimit && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              <b>Images limit:</b> You have <b>{imageCount}</b> images. Max is <b>{MAX_IMAGES_PER_PRODUCT}</b>. Remove{" "}
-              <b>{imageCount - MAX_IMAGES_PER_PRODUCT}</b>.
+              <b>Images limit:</b> You have <b>{imageCount}</b> images. Max is <b>{MAX_IMAGES_PER_PRODUCT}</b>. Remove <b>{imageCount - MAX_IMAGES_PER_PRODUCT}</b>.
             </div>
           )}
 
@@ -1915,18 +1868,16 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
             </div>
           )}
 
-          {/* Layout */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2 space-y-4">
-              {/* Basic info */}
               <Card
                 title="Basic information"
                 subtitle={
                   offersOnly
-                    ? "Catalog product details are read-only. Set your offer price and stock."
+                    ? "Catalog product details are read-only. Set your supplier offer."
                     : isLive
-                    ? "LIVE listing: Title/SKU/base price are locked. Stock updates are always allowed."
-                    : undefined
+                      ? "LIVE listing: Title/SKU/base price are locked. Stock updates are always allowed."
+                      : undefined
                 }
               >
                 <div className="space-y-3">
@@ -1968,7 +1919,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     <div className="sm:col-span-2 lg:col-span-1">
                       <label className="block text-[11px] font-semibold text-zinc-700 mb-1">
-                        {offersOnly ? "Your base offer price (NGN) *" : "Retail price (NGN) *"}
+                        {offersOnly ? "Your base offer price (NGN) *" : "Base price (NGN) *"}
                       </label>
                       <input
                         value={retailPrice}
@@ -2094,7 +2045,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                     />
                   </div>
 
-                  {/* Attributes */}
                   <div
                     className={`rounded-2xl border bg-white overflow-hidden ${
                       hasBaseComboConflict ? "border-rose-300 ring-2 ring-rose-200" : ""
@@ -2108,8 +2058,8 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                             {offersOnly
                               ? "Catalog product attributes are read-only."
                               : isLive
-                              ? "LIVE listing: edits may require review."
-                              : "You can edit attributes freely while not LIVE."}
+                                ? "LIVE listing: edits may require review."
+                                : "You can edit attributes freely while not LIVE."}
                           </div>
                         </div>
 
@@ -2125,8 +2075,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
                       {hasBaseComboConflict && (
                         <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800">
-                          <b>Conflict:</b> This base combo matches a variant combo. Change the base SELECT attributes (or
-                          the variant).
+                          <b>Conflict:</b> This base combo matches a variant combo. Change the base SELECT attributes or the variant.
                         </div>
                       )}
                     </div>
@@ -2136,14 +2085,14 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                         <div className="text-sm text-zinc-500">No active attributes configured.</div>
                       )}
 
-                      {activeAttrs.map((a: any) => {
+                      {activeAttrs.map((a: CatalogAttribute) => {
                         const label = "add new " + a.name.toLowerCase();
                         const addValuesBtn =
                           a?.type === "SELECT" || a?.type === "MULTISELECT" ? (
                             <AddNewLink
-                              label= {label}
+                              label={label}
                               onClick={() =>
-                                nav(goToCatalogRequests("attribute-values", "value",{ attributeId: String(a.id || "") }))
+                                nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
                               }
                               title={`Request new values for ${a.name}`}
                             />
@@ -2155,7 +2104,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                             <div key={a.id}>
                               <div className="flex items-center justify-between gap-2 mb-1">
                                 <label className="block text-[11px] font-semibold text-zinc-700">{a.name}</label>
-                                {/* no values for TEXT */}
                               </div>
                               <input
                                 value={val}
@@ -2236,7 +2184,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                 </div>
               </Card>
 
-              {/* Images */}
               <Card
                 title="Images"
                 subtitle={
@@ -2268,8 +2215,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                   <div className="flex items-center justify-between text-xs">
                     <div className="text-zinc-600">
                       Images used:{" "}
-                      <b className={imageOverLimit ? "text-rose-700" : "text-zinc-900"}>{imageCount}</b> /{" "}
-                      {MAX_IMAGES_PER_PRODUCT}
+                      <b className={imageOverLimit ? "text-rose-700" : "text-zinc-900"}>{imageCount}</b> / {MAX_IMAGES_PER_PRODUCT}
                       {files.length > 0 && (
                         <>
                           {" "}
@@ -2313,7 +2259,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                       <div className="text-xs font-semibold text-zinc-800 mb-2">Image previews</div>
 
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {/* URL previews (text + already uploaded) */}
                         {allUrlPreviews.slice(0, MAX_IMAGES_PER_PRODUCT).map((u) => (
                           <div key={u} className="rounded-xl border overflow-hidden bg-white">
                             <div className="aspect-[4/3] bg-zinc-100 relative">
@@ -2326,8 +2271,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                                   const img = e.currentTarget as HTMLImageElement;
                                   const current = img.getAttribute("data-try") ?? "";
                                   const list = imageSrcCandidates(u);
-
-                                  // if no current, we were using list[0]
                                   const idx = current ? list.indexOf(current) : 0;
                                   const next = list[idx + 1];
 
@@ -2352,8 +2295,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                                     if (inText) removeTextUrl(u);
                                     else removeUploadedUrl(u);
                                   }}
-                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full
-                    bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
                                   aria-label="Remove image"
                                   title="Remove"
                                 >
@@ -2365,7 +2307,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                           </div>
                         ))}
 
-                        {/* Local file previews */}
                         {!offersOnly &&
                           filePreviews.slice(0, MAX_IMAGES_PER_PRODUCT - allUrlPreviews.length).map(({ file, url }) => (
                             <div key={url} className="rounded-xl border overflow-hidden bg-white">
@@ -2373,9 +2314,8 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                                 <img src={url} alt={file.name} className="w-full h-full object-cover" />
                                 <button
                                   type="button"
-                                  onClick={() => setFiles((prev) => prev.filter((f) => f !== file))}
-                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full
-                    bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                  onClick={() => removeSelectedFile(file)}
+                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
                                   aria-label="Remove selected file"
                                   title="Remove"
                                 >
@@ -2432,15 +2372,14 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                 </div>
               </Card>
 
-              {/* Variants */}
               <Card
                 title="Variant combinations"
                 subtitle={
                   offersOnly
                     ? "Catalog product: set price + qty for existing variants. You can’t create new combos."
                     : isLive
-                    ? "LIVE listing: update qty only. Prices/options are locked."
-                    : "Add/remove combos while not LIVE. Variants must have at least one option selected (DEFAULT is base-only)."
+                      ? "LIVE listing: update qty only. Prices/options are locked."
+                      : "Add/remove combos while not LIVE. Variants must have at least one option selected (DEFAULT is base-only)."
                 }
                 right={
                   <button
@@ -2477,7 +2416,8 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                         : toMoneyNumber(row.unitPrice) || basePriceForPreview;
 
                       const pendingVar = row.variantId ? pendingVariantPatchByVariantId.get(String(row.variantId)) : null;
-                      const pendingVarUnitPrice = Number(pendingVar?.proposedPatch?.unitPrice ?? NaN);
+                      const pendingPatch = pendingVar?.proposedPatch ?? pendingVar?.patchJson ?? null;
+                      const pendingVarUnitPrice = Number(pendingPatch?.unitPrice ?? NaN);
                       const hasPendingVarPrice =
                         offersOnly &&
                         Number.isFinite(pendingVarUnitPrice) &&
@@ -2501,9 +2441,8 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                             hasAnyIssue ? "border-rose-400 ring-2 ring-rose-200" : ""
                           }`}
                         >
-                          {/* option selects */}
                           <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-                            {selectableAttrs.map((attr: any) => {
+                            {selectableAttrs.map((attr: CatalogAttribute) => {
                               const valueId = row.selections[attr.id] || "";
                               return (
                                 <select
@@ -2531,7 +2470,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                             })}
                           </div>
 
-                          {/* info + actions */}
                           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                             <div className="min-w-0">
                               <div className="text-xs text-zinc-700">
@@ -2617,8 +2555,8 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                                       ? "Remove your variant offer for this variant."
                                       : "Nothing to remove."
                                     : isLive && row.isExisting
-                                    ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
-                                    : undefined
+                                      ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
+                                      : undefined
                                 }
                               >
                                 <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
@@ -2646,7 +2584,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
                 </div>
               </Card>
 
-              {/* Desktop full-width save (matches Add page pattern) */}
               <div className="hidden sm:block">
                 <button
                   type="button"
@@ -2659,7 +2596,6 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
               </div>
             </div>
 
-            {/* Right summary */}
             <div className="hidden lg:block space-y-4">
               <Card title="Update summary" subtitle="What will be saved">
                 <div className="p-0 text-sm text-zinc-700 space-y-2">
@@ -2675,7 +2611,7 @@ function goToCatalogRequests(section: CatalogReqSection, focus?: string, extra?:
 
                   <div className="space-y-1">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-zinc-500">{offersOnly ? "Active offer price" : "Retail price"}</span>
+                      <span className="text-zinc-500">{offersOnly ? "Active offer price" : "Base price"}</span>
                       <b className="text-zinc-900">
                         {ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}
                       </b>

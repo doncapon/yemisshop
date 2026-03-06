@@ -171,6 +171,115 @@ async function assertNoDuplicateSupplierBrandSkuTx(
   }
 }
 
+async function recomputeProductStockTx(tx: Prisma.TransactionClient, productId: string) {
+  const [baseAgg, variantAgg] = await Promise.all([
+    tx.supplierProductOffer.aggregate({
+      where: {
+        productId,
+        isActive: true,
+        inStock: true,
+      },
+      _sum: { availableQty: true },
+    }),
+    tx.supplierVariantOffer.aggregate({
+      where: {
+        productId,
+        isActive: true,
+        inStock: true,
+      },
+      _sum: { availableQty: true },
+    }),
+  ]);
+
+  const baseQty = Number(baseAgg._sum?.availableQty ?? 0);
+  const variantQty = Number(variantAgg._sum?.availableQty ?? 0);
+  const total = Math.max(0, Math.trunc(baseQty + variantQty));
+
+  await tx.product.update({
+    where: { id: productId },
+    data: {
+      availableQty: total,
+      inStock: total > 0,
+    } as any,
+  });
+}
+
+
+async function upsertSupplierProductOffer(
+  tx: Prisma.TransactionClient,
+  supplierId: string,
+  productId: string,
+  input: {
+    basePrice: number | string | Prisma.Decimal;
+    currency?: string;
+    inStock?: boolean;
+    isActive?: boolean;
+    leadDays?: number | null;
+    availableQty?: number;
+  },
+  warnings: string[]
+) {
+  let {
+    basePrice,
+    currency = "NGN",
+    inStock = true,
+    isActive = true,
+    leadDays = null,
+    availableQty = 0,
+  } = input;
+
+  const basePriceNum =
+    basePrice instanceof Prisma.Decimal ? Number(basePrice) : Number(basePrice ?? 0);
+
+  const guarded = await maybeDeactivateIfPayoutNotReadyTx(
+    tx as any,
+    supplierId,
+    { isActive, inStock, availableQty: Math.max(0, Math.trunc(availableQty ?? 0)), basePrice: basePriceNum },
+    "Base offer",
+    warnings
+  );
+
+  isActive = guarded.isActive !== false;
+  inStock = guarded.inStock !== false;
+
+  const qtyInt = Math.max(0, Math.trunc(availableQty ?? 0));
+
+  const data: any = {
+    supplierId,
+    basePrice: toDecimal(basePrice),
+    currency,
+    inStock,
+    isActive,
+    leadDays,
+    availableQty: qtyInt,
+  };
+
+  const existing = await tx.supplierProductOffer.findFirst({
+    where: { productId, supplierId },
+    select: { id: true },
+  });
+
+  let offer;
+  if (existing) {
+    offer = await tx.supplierProductOffer.update({
+      where: { id: existing.id },
+      data,
+    });
+  } else {
+    offer = await tx.supplierProductOffer.create({
+      data: {
+        productId,
+        ...data,
+      },
+    });
+  }
+
+  await recomputeProductStockTx(tx, productId);
+  await refreshProductAutoPriceIfAutoMode(tx, productId);
+
+  return offer;
+}
+
 /* ========================================================================== */
 /* Supplier context                                                            */
 /* ========================================================================== */
@@ -529,70 +638,6 @@ async function maybeDeactivateIfPayoutNotReadyTx(
   return forceNonPurchasable(offerInput);
 }
 
-async function upsertSupplierProductOffer(
-  tx: Prisma.TransactionClient,
-  supplierId: string, // still used for payout readiness checks (product supplier)
-  productId: string,
-  input: {
-    basePrice: number | string | Prisma.Decimal;
-    currency?: string;
-    inStock?: boolean;
-    isActive?: boolean;
-    leadDays?: number | null;
-    availableQty?: number;
-  },
-  warnings: string[]
-) {
-  let { basePrice, currency = "NGN", inStock = true, isActive = true, leadDays = null, availableQty = 0 } = input;
-
-  const basePriceNum = basePrice instanceof Prisma.Decimal ? Number(basePrice) : Number(basePrice ?? 0);
-
-  const guarded = await maybeDeactivateIfPayoutNotReadyTx(
-    tx as any,
-    supplierId,
-    { isActive, inStock, availableQty: Math.max(0, Math.trunc(availableQty ?? 0)), basePrice: basePriceNum },
-    "Base offer",
-    warnings
-  );
-
-  isActive = guarded.isActive !== false; // default true unless explicitly false
-  inStock = guarded.inStock !== false;
-
-  const qtyInt = Math.max(0, Math.trunc(availableQty ?? 0));
-
-  const data: any = {
-    basePrice: toDecimal(basePrice),
-    currency,
-    inStock,
-    isActive,
-    leadDays,
-    availableQty: qtyInt,
-  };
-
-  // 🔧 productId is not unique anymore → manual upsert
-  const existing = await tx.supplierProductOffer.findFirst({
-    where: { productId },
-    select: { id: true },
-  });
-
-  let offer;
-  if (existing) {
-    offer = await tx.supplierProductOffer.update({
-      where: { id: existing.id },
-      data,
-    });
-  } else {
-    offer = await tx.supplierProductOffer.create({
-      data: {
-        productId,
-        ...data,
-      },
-    });
-  }
-
-  await refreshProductAutoPriceIfAutoMode(tx, productId);
-  return offer;
-}
 /* -------------------------- Attributes writer --------------------------- */
 
 async function writeProductAttributes(
@@ -1325,6 +1370,152 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
   }
 });
 
+router.post("/attach", requireAuth, requireSupplier, async (req, res) => {
+  try {
+    const s = await getSupplierForUser(req.user!.id);
+    if (!s) return res.status(403).json({ error: "Supplier profile not found for this user" });
+
+    const payload = AttachSchema.parse(req.body ?? {});
+    const productId = String(payload.productId).trim();
+
+    const product = await prisma.product.findFirst({
+      where: {
+        id: productId,
+        isDeleted: false,
+        status: { in: ["LIVE", "ACTIVE", "PUBLISHED"] as any },
+      },
+      select: {
+        id: true,
+        title: true,
+        sku: true,
+        status: true,
+        ProductVariant: {
+          where: { isActive: true, archivedAt: null } as any,
+          select: { id: true },
+        },
+      },
+    });
+
+    if (!product) {
+      return res.status(404).json({ error: "Product not found or not attachable" });
+    }
+
+    const warnings: string[] = [];
+
+    const result = await prisma.$transaction(async (tx) => {
+      const baseQty =
+        pickQty(
+          payload.offer?.availableQty,
+          (payload.offer as any)?.qty,
+          (payload.offer as any)?.quantity
+        ) ?? 0;
+
+      const baseOffer = await upsertSupplierProductOffer(
+        tx,
+        s.id,
+        productId,
+        {
+          basePrice: payload.offer.basePrice,
+          currency: payload.offer.currency ?? "NGN",
+          inStock: payload.offer.inStock ?? baseQty > 0,
+          isActive: payload.offer.isActive ?? true,
+          leadDays: payload.offer.leadDays ?? null,
+          availableQty: baseQty,
+        },
+        warnings
+      );
+
+      const validVariantIds = new Set(
+        ((product as any).ProductVariant ?? []).map((v: any) => String(v.id))
+      );
+
+      for (const v of payload.variants ?? []) {
+        const variantId = String(v.variantId).trim();
+        if (!variantId || !validVariantIds.has(variantId)) continue;
+
+        const vQty = pickQty(v.availableQty, (v as any).qty, (v as any).quantity) ?? 0;
+        const unitPriceNum = Number(asNumber(v.unitPrice) ?? 0);
+
+        const guardedVar = await maybeDeactivateIfPayoutNotReadyTx(
+          tx as any,
+          s.id,
+          {
+            isActive: v.isActive ?? true,
+            inStock: v.inStock ?? vQty > 0,
+            availableQty: vQty,
+            basePrice: unitPriceNum,
+          },
+          "Variant offer",
+          warnings
+        );
+
+        const existing = await tx.supplierVariantOffer.findFirst({
+          where: { supplierId: s.id, variantId },
+          select: { id: true },
+        });
+
+        if (existing) {
+          await tx.supplierVariantOffer.update({
+            where: { id: existing.id },
+            data: {
+              productId,
+              supplierId: s.id,
+              supplierProductOfferId: baseOffer.id,
+              unitPrice: toDecimal(unitPriceNum),
+              currency: payload.offer.currency ?? "NGN",
+              availableQty: vQty,
+              inStock: guardedVar.inStock !== false,
+              isActive: guardedVar.isActive !== false,
+              leadDays: payload.offer.leadDays ?? null,
+            } as any,
+          });
+        } else {
+          await tx.supplierVariantOffer.create({
+            data: {
+              productId,
+              variantId,
+              supplierId: s.id,
+              supplierProductOfferId: baseOffer.id,
+              unitPrice: toDecimal(unitPriceNum),
+              currency: payload.offer.currency ?? "NGN",
+              availableQty: vQty,
+              inStock: guardedVar.inStock !== false,
+              isActive: guardedVar.isActive !== false,
+              leadDays: payload.offer.leadDays ?? null,
+            } as any,
+          });
+        }
+      }
+
+      await recomputeProductStockTx(tx, productId);
+      await refreshProductAutoPriceIfAutoMode(tx, productId);
+
+      return tx.product.findUnique({ where: { id: productId } });
+    });
+
+    await safeNotifyAdmins({
+      type: NotificationType.SUPPLIER_OFFER_CHANGE_SUBMITTED,
+      title: "Supplier attached to existing product",
+      body: `${s.name ?? "A supplier"} added an offer to ${product.title} (${product.sku}).`,
+      data: {
+        supplierId: s.id,
+        supplierName: s.name ?? null,
+        productId: product.id,
+        productSku: product.sku,
+      },
+    });
+
+    return res.status(201).json({ data: result, warnings });
+  } catch (e: any) {
+    console.error("[supplier.products ATTACH] error:", e);
+    return res.status(Number(e?.statusCode) || 500).json({
+      error: e?.message || "Internal Server Error",
+      code: e?.code,
+      userMessage: e?.userMessage,
+    });
+  }
+});
+
 /* ============================================================
    Eligibility endpoint (bulk) — schema-aligned
 ============================================================ */
@@ -1414,6 +1605,41 @@ router.get("/delete-eligibility", requireAuth, async (req: any, res) => {
   }
 });
 
+
+
+
+
+const AttachSchema = z.object({
+  productId: z.string().min(1),
+  offer: z.object({
+    basePrice: z.union([z.number(), z.string()]),
+    currency: z.string().optional(),
+    inStock: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+    leadDays: zCoerceIntNullableOpt(),
+    availableQty: zCoerceIntNonNegOpt(),
+    qty: zCoerceIntNonNegOpt(),
+    quantity: zCoerceIntNonNegOpt(),
+  }),
+  variants: z.array(
+    z.object({
+      variantId: z.string().min(1),
+      unitPrice: z.union([z.number(), z.string()]).optional().nullable(),
+      availableQty: z.union([z.number(), z.string()]).optional().nullable(),
+      qty: z.union([z.number(), z.string()]).optional().nullable(),
+      quantity: z.union([z.number(), z.string()]).optional().nullable(),
+      inStock: z.boolean().optional(),
+      isActive: z.boolean().optional(),
+    })
+  ).optional(),
+});
+
+
+
+
+
+
+
 /* ------------------------------ GET /:id ------------------------------ */
 router.get("/:id", requireAuth, async (req, res) => {
   const ctx = await resolveSupplierContext(req);
@@ -1443,8 +1669,10 @@ router.get("/:id", requireAuth, async (req, res) => {
         },
       },
       [variantSupplierOffersRel]: {
+        where: { supplierId: s.id },
         select: {
           id: true,
+          supplierId: true,
           unitPrice: true,
           availableQty: true,
           inStock: true,
@@ -1458,10 +1686,11 @@ router.get("/:id", requireAuth, async (req, res) => {
     },
     orderBy: { createdAt: "asc" },
   };
-
   include[productBaseOffersRel] = {
+    where: { supplierId: s.id },
     select: {
       id: true,
+      supplierId: true,
       basePrice: true,
       currency: true,
       inStock: true,
@@ -1679,6 +1908,25 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
         (hasOwnerId && String((product as any).ownerId || "") === String(userId)) ||
         (hasUserId && String((product as any).userId || "") === String(userId));
 
+      const myBaseOffer = await tx.supplierProductOffer.findFirst({
+        where: { productId, supplierId },
+        select: { id: true },
+      });
+
+      const myVariantOffers = await tx.supplierVariantOffer.findMany({
+        where: { productId, supplierId },
+        select: { id: true, variantId: true },
+      });
+
+      const otherBaseOffersCount = await tx.supplierProductOffer.count({
+        where: {
+          productId,
+          supplierId: { not: supplierId },
+        },
+      });
+
+      const isSharedAttachmentOnly = !owned || otherBaseOffersCount > 0;
+
       if (!owned) {
         const err: any = new Error("You can’t delete this product because you don’t own it.");
         err.statusCode = 403;
@@ -1715,7 +1963,21 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
 
       const ProductAttributeOption = getDelegate(tx, "productAttributeOption");
       if (ProductAttributeOption) await ProductAttributeOption.deleteMany({ where: { productId } });
+      
+      if (isSharedAttachmentOnly) {
+        await tx.supplierVariantOffer.deleteMany({
+          where: { productId, supplierId },
+        });
 
+        await tx.supplierProductOffer.deleteMany({
+          where: { productId, supplierId },
+        });
+
+        await recomputeProductStockTx(tx, productId);
+        await refreshProductAutoPriceIfAutoMode(tx, productId);
+
+        return { id: productId, detached: true };
+      }
       const ProductAttributeText = getDelegate(tx, "productAttributeText");
       if (ProductAttributeText) await ProductAttributeText.deleteMany({ where: { productId } });
 
@@ -2028,9 +2290,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           if (!variantId) continue;
 
           // ✅ schema: SupplierVariantOffer unique by variantId (NO supplierId field)
-          const existingVarOffer = await tx.supplierVariantOffer.findUnique({
-            where: { variantId },
-            select: { unitPrice: true, availableQty: true, inStock: true, isActive: true },
+          const existingVarOffer = await tx.supplierVariantOffer.findFirst({
+            where: { variantId, supplierId: s.id },
+            select: { id: true, unitPrice: true, availableQty: true, inStock: true, isActive: true },
           });
 
           const nextUnitPriceNum = unitPriceProvided
@@ -2059,46 +2321,47 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
             await tx.productVariant.update({ where: { id: variantId }, data: { availableQty: vQtyNonNeg, inStock: nextStock } as any });
           }
 
-          await tx.supplierVariantOffer.upsert({
-            where: { variantId },
-            update: {
-              productId: id,
-              supplierProductOfferId: baseOffer?.id ?? null,
-              ...(unitPriceProvided ? { unitPrice: toDecimal(nextUnitPriceNum) } : {}),
-              currency: nextCurrency,
-              ...(vQtyProvided ? { availableQty: nextQty } : {}),
-              inStock: nextStock,
-              isActive: nextActive,
-              leadDays: nextLeadDays ?? null,
-            } as any,
-            create: {
-              productId: id,
-              variantId,
-              supplierProductOfferId: baseOffer?.id ?? null,
-              unitPrice: toDecimal(nextUnitPriceNum),
-              currency: nextCurrency,
-              availableQty: nextQty,
-              inStock: nextStock,
-              isActive: nextActive,
-              leadDays: nextLeadDays ?? null,
-            } as any,
+          const existingSupplierVariantOffer = await tx.supplierVariantOffer.findFirst({
+            where: { supplierId: s.id, variantId },
+            select: { id: true },
           });
+
+          if (existingSupplierVariantOffer) {
+            await tx.supplierVariantOffer.update({
+              where: { id: existingSupplierVariantOffer.id },
+              data: {
+                productId: id,
+                supplierId: s.id,
+                supplierProductOfferId: baseOffer?.id ?? null,
+                ...(unitPriceProvided ? { unitPrice: toDecimal(nextUnitPriceNum) } : {}),
+                currency: nextCurrency,
+                ...(vQtyProvided ? { availableQty: nextQty } : {}),
+                inStock: nextStock,
+                isActive: nextActive,
+                leadDays: nextLeadDays ?? null,
+              } as any,
+            });
+          } else {
+            await tx.supplierVariantOffer.create({
+              data: {
+                productId: id,
+                variantId,
+                supplierId: s.id,
+                supplierProductOfferId: baseOffer?.id ?? null,
+                unitPrice: toDecimal(nextUnitPriceNum),
+                currency: nextCurrency,
+                availableQty: nextQty,
+                inStock: nextStock,
+                isActive: nextActive,
+                leadDays: nextLeadDays ?? null,
+              } as any,
+            });
+          }
         }
       }
 
       if (ownedBySupplier) {
-        const baseQty = (baseOffer?.availableQty ?? existingBaseOffer?.availableQty ?? 0) as number;
-
-        const variantAgg = await tx.supplierVariantOffer.aggregate({
-          where: { productId: id, isActive: true },
-          _sum: { availableQty: true },
-        });
-
-        const variantQty = Number(variantAgg._sum?.availableQty ?? 0);
-        const effectiveQty = Math.max(0, Math.trunc(baseQty + variantQty));
-
-        await tx.product.update({ where: { id }, data: { availableQty: effectiveQty as any, inStock: effectiveQty > 0 } as any });
-
+        await recomputeProductStockTx(tx, id);
         await refreshProductAutoPriceIfAutoMode(tx, id);
       }
 
@@ -2137,6 +2400,76 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       code: e?.code,
       userMessage: e?.userMessage,
     });
+  }
+});
+
+router.get("/catalog/search", requireAuth, requireSupplier, async (req, res) => {
+  try {
+    const s = await getSupplierForUser(req.user!.id);
+    if (!s) return res.status(403).json({ error: "Supplier profile not found for this user" });
+
+    const q = String(req.query.q ?? "").trim();
+    const take = Math.min(50, Math.max(1, Number(req.query.take) || 20));
+
+    const where: Prisma.ProductWhereInput = {
+      isDeleted: false,
+      status: { in: ["LIVE", "ACTIVE", "PUBLISHED"] as any },
+      ...(q
+        ? {
+          OR: [
+            { title: { contains: q, mode: "insensitive" } },
+            { sku: { contains: q, mode: "insensitive" } },
+            { description: { contains: q, mode: "insensitive" } },
+          ],
+        }
+        : {}),
+    };
+
+    const items = await prisma.product.findMany({
+      where,
+      take,
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        title: true,
+        sku: true,
+        status: true,
+        imagesJson: true,
+        brandId: true,
+        categoryId: true,
+        supplierId: true,
+        supplierProductOffers: {
+          where: { supplierId: s.id },
+          select: {
+            id: true,
+            basePrice: true,
+            currency: true,
+            availableQty: true,
+            isActive: true,
+            inStock: true,
+          },
+          take: 1,
+        },
+      },
+    });
+
+    return res.json({
+      data: items.map((p: any) => ({
+        id: p.id,
+        title: p.title,
+        sku: p.sku,
+        status: p.status,
+        imagesJson: Array.isArray(p.imagesJson) ? p.imagesJson : [],
+        brandId: p.brandId ?? null,
+        categoryId: p.categoryId ?? null,
+        alreadyAttached: !!p.supplierProductOffers?.[0],
+        myOffer: p.supplierProductOffers?.[0] ?? null,
+        isOwnedByMe: String(p.supplierId ?? "") === String(s.id),
+      })),
+    });
+  } catch (e: any) {
+    console.error("GET /api/supplier/products/catalog/search failed:", e);
+    return res.status(500).json({ error: e?.message || "Failed to search supplier catalog" });
   }
 });
 

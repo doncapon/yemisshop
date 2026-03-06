@@ -42,6 +42,7 @@ type ToastPayload = {
   rows?: MiniCartRow[];
   focus?: ToastFocus | null;
   opts?: ToastOpts;
+  preserveOrder?: boolean;
 };
 
 const EVENT = "mini-cart-toast:v1";
@@ -61,7 +62,7 @@ export function showMiniCartToast(
       : arg1;
 
     window.dispatchEvent(new CustomEvent(EVENT, { detail }));
-  } catch {}
+  } catch { }
 }
 
 /* ---------------- helpers ---------------- */
@@ -123,15 +124,30 @@ function normalizePayload(d: ToastPayload | null | undefined) {
     d?.focus?.productId
       ? { productId: String(d.focus.productId), variantId: d.focus.variantId ?? null }
       : last
-      ? { productId: String(last.productId), variantId: last.variantId ?? null }
-      : null;
+        ? { productId: String(last.productId), variantId: last.variantId ?? null }
+        : null;
 
-  return { cart, focus, opts: d?.opts };
+  return { cart, focus, opts: d?.opts, preserveOrder: !!d?.preserveOrder };
 }
 
-/* ---------------- group cart ---------------- */
-/** Group by correct identity and keep most-recent at top. */
-function groupCart(cart: MiniCartRow[]): MiniCartRow[] {
+function isSameFocus(row: MiniCartRow, focus?: ToastFocus | null) {
+  if (!focus?.productId) return false;
+
+  const rowKind = normKind(row);
+  const rowVariantId = rowKind === "BASE" ? null : normVariantId(row);
+  const focusVariantId = focus.variantId ?? null;
+
+  return (
+    str(row.productId) === str(focus.productId) &&
+    String(rowVariantId ?? null) === String(focusVariantId ?? null)
+  );
+}
+
+function groupCart(
+  cart: MiniCartRow[],
+  focus?: ToastFocus | null,
+  preserveOrder: boolean = false
+): MiniCartRow[] {
   const map = new Map<string, MiniCartRow & { _lastIndex: number }>();
 
   cart.forEach((row, index) => {
@@ -142,7 +158,6 @@ function groupCart(cart: MiniCartRow[]): MiniCartRow[] {
       existing.qty += row.qty;
       existing._lastIndex = index;
 
-      // keep best snapshots
       existing.title = existing.title || row.title;
       existing.image = existing.image || row.image;
       existing.unitPrice = existing.unitPrice ?? row.unitPrice;
@@ -155,9 +170,17 @@ function groupCart(cart: MiniCartRow[]): MiniCartRow[] {
     }
   });
 
-  // MOST RECENT FIRST
   return Array.from(map.values())
-    .sort((a, b) => b._lastIndex - a._lastIndex)
+    .sort((a, b) => {
+      if (!preserveOrder) {
+        const aFocused = isSameFocus(a, focus) ? 1 : 0;
+        const bFocused = isSameFocus(b, focus) ? 1 : 0;
+
+        if (aFocused !== bFocused) return bFocused - aFocused;
+      }
+
+      return b._lastIndex - a._lastIndex;
+    })
     .map(({ _lastIndex, ...rest }) => rest);
 }
 
@@ -206,8 +229,8 @@ async function fetchAvailabilityForRows(rows: MiniCartRow[]): Promise<Availabili
       const arr = Array.isArray((data as any)?.data)
         ? (data as any).data
         : Array.isArray(data)
-        ? data
-        : [];
+          ? data
+          : [];
 
       const lines: Record<string, Availability> = {};
       const byProduct: Record<string, { generic: number; perVariant: Record<string, number> }> = {};
@@ -385,9 +408,8 @@ function MiniCartQtyEditor({
         type="button"
         disabled={!canDec}
         onClick={() => update(value - 1)}
-        className={`w-7 h-7 rounded-full border bg-white hover:bg-zinc-50 ${
-          !canDec ? "opacity-50 cursor-not-allowed" : ""
-        }`}
+        className={`w-7 h-7 rounded-full border bg-white hover:bg-zinc-50 ${!canDec ? "opacity-50 cursor-not-allowed" : ""
+          }`}
       >
         −
       </button>
@@ -405,9 +427,8 @@ function MiniCartQtyEditor({
         type="button"
         disabled={!canInc}
         onClick={() => update(value + 1)}
-        className={`w-7 h-7 rounded-full border bg-white hover:bg-zinc-50 ${
-          !canInc ? "opacity-50 cursor-not-allowed" : ""
-        }`}
+        className={`w-7 h-7 rounded-full border bg-white hover:bg-zinc-50 ${!canInc ? "opacity-50 cursor-not-allowed" : ""
+          }`}
       >
         +
       </button>
@@ -422,6 +443,7 @@ export default function MiniCartToastHost() {
     cart: MiniCartRow[];
     focus: ToastFocus | null;
     opts?: ToastOpts;
+    preserveOrder?: boolean;
   } | null>(null);
 
   const timerRef = React.useRef<number | null>(null);
@@ -453,10 +475,10 @@ export default function MiniCartToastHost() {
 
   React.useEffect(() => {
     const onToast = (e: any) => {
-      const { cart, focus, opts } = normalizePayload(e.detail);
+      const { cart, focus, opts, preserveOrder } = normalizePayload(e.detail);
       if (!cart.length) return;
 
-      setPayload({ cart, focus, opts });
+      setPayload({ cart, focus, opts, preserveOrder });
       setOpen(true);
       startTimer(opts?.duration ?? 5000);
     };
@@ -467,8 +489,20 @@ export default function MiniCartToastHost() {
 
   // ✅ IMPORTANT: safe defaults so hooks always run
   const cartForCalc = payload?.cart ?? [];
-  const groupedCart = React.useMemo(() => groupCart(cartForCalc), [cartForCalc]);
-
+  const groupedCart = React.useMemo(
+    () =>
+      groupCart(
+        cartForCalc,
+        payload?.focus ?? null,
+        !!payload?.preserveOrder
+      ),
+    [
+      cartForCalc,
+      payload?.focus?.productId,
+      payload?.focus?.variantId,
+      payload?.preserveOrder,
+    ]
+  );
   // ✅ availability for the toast
   const [avail, setAvail] = React.useState<AvailabilityPayload | null>(null);
   React.useEffect(() => {
@@ -486,6 +520,22 @@ export default function MiniCartToastHost() {
     };
     // keep dependency stable
   }, [groupedCart.map(cartKey).join(",")]);
+
+  const closeToast = React.useCallback(() => {
+    stopTimer();
+    setOpen(false);
+
+    window.setTimeout(() => {
+      setPayload(null);
+      setNotice(null);
+    }, 220); // match your transition duration feel
+  }, [stopTimer]);
+  React.useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    };
+  }, []);
 
   // ✅ reconcile effect (safe: uses defaults)
   const didReconcileRef = React.useRef<string>("");
@@ -563,13 +613,19 @@ export default function MiniCartToastHost() {
   if (!payload) return null;
 
   return createPortal(
-    <div className="fixed right-4 top-4 z-[99999]">
+    <div className="fixed right-4 top-4 z-[99999] pointer-events-none">
       <div
         onMouseEnter={stopTimer}
-        onMouseLeave={() => startTimer(payload?.opts?.duration ?? 5000)}
-        className={`w-[92vw] max-w-[420px] rounded-2xl border bg-white shadow-2xl overflow-hidden transition-all ${
-          open ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3"
-        }`}
+        onMouseLeave={() => {
+          stopTimer();
+          timerRef.current = window.setTimeout(() => {
+            closeToast();
+          }, 300);
+        }}
+        className={`w-[92vw] max-w-[420px] rounded-2xl border bg-white shadow-2xl overflow-hidden transition-all ${open
+          ? "opacity-100 translate-y-0 pointer-events-auto"
+          : "opacity-0 translate-y-3 pointer-events-none"
+          }`}
       >
         {/* Header */}
         <div className="p-4 bg-gradient-to-r from-fuchsia-600 to-pink-600 text-white">
@@ -578,7 +634,7 @@ export default function MiniCartToastHost() {
               <ShoppingCart size={18} />
               <span>{payload.opts?.title ?? "Added to cart"}</span>
             </div>
-            <button type="button" onClick={() => setOpen(false)}>
+            <button type="button" onClick={closeToast}>
               <X size={16} />
             </button>
           </div>
@@ -587,12 +643,12 @@ export default function MiniCartToastHost() {
         {/* Items */}
         <div className="p-4">
           <div className="max-h-[55vh] overflow-y-auto pr-1 space-y-3">
-             {/* ✅ red disappearing note */}
-          {notice ? (
-            <div className="mt-2 text-[12px] font-semibold text-white bg-rose-600/80 rounded-lg px-2 py-1">
-              {notice}
-            </div>
-          ) : null}
+            {/* ✅ red disappearing note */}
+            {notice ? (
+              <div className="mt-2 text-[12px] font-semibold text-white bg-rose-600/80 rounded-lg px-2 py-1">
+                {notice}
+              </div>
+            ) : null}
             {items.map((it) => {
               const unit = money(it.unitPrice ?? it.price);
               const line = unit * it.qty;
@@ -644,9 +700,9 @@ export default function MiniCartToastHost() {
                                 unitPriceCache: unit,
                                 selectedOptions: Array.isArray(it.selectedOptions)
                                   ? it.selectedOptions.map((o) => ({
-                                      attribute: o.attribute,
-                                      value: o.value,
-                                    }))
+                                    attribute: o.attribute,
+                                    value: o.value,
+                                  }))
                                   : [],
                               } as any);
 
@@ -656,10 +712,11 @@ export default function MiniCartToastHost() {
                                 cart: rows,
                                 focus: { productId: it.productId, variantId: it.variantId ?? null },
                                 opts: payload.opts,
+                                preserveOrder: true,
                               });
 
                               window.dispatchEvent(new Event("cart:updated"));
-                            } catch {}
+                            } catch { }
                           }}
                         />
 
@@ -682,13 +739,14 @@ export default function MiniCartToastHost() {
           <div className="mt-4 flex justify-between">
             <button
               type="button"
-              onClick={() => setOpen(false)}
+              onClick={closeToast}
               className="text-sm px-3 py-2 border rounded-xl bg-white hover:bg-zinc-50"
             >
               Continue shopping
             </button>
 
-            <Link to="/cart" onClick={() => setOpen(false)} className="text-sm px-3 py-2 rounded-xl bg-zinc-900 text-white">
+            <Link to="/cart" onClick={closeToast}
+              className="text-sm px-3 py-2 rounded-xl bg-zinc-900 text-white">
               View cart →
             </Link>
           </div>
