@@ -1,6 +1,6 @@
 // src/pages/ProductDetail.tsx
 import * as React from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate, Link, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
@@ -469,6 +469,8 @@ function pickBestOffer(params: {
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+
   const queryClient = useQueryClient();
   const { openModal } = useModal();
   const user = useAuthStore((s) => s.user);
@@ -677,6 +679,15 @@ export default function ProductDetail() {
       };
     },
   });
+
+  // ✅ toast scheduling (must be at component level, not inside callbacks)
+  const toastTimerRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   const myReviewQ = useQuery<{ rating: number; comment: string } | null>({
     queryKey: ["product-my-review", id],
@@ -1244,6 +1255,7 @@ export default function ProductDetail() {
         const msg =
           purchaseMeta.helperNote ||
           "Please select an available option (variant or base) before adding this item to your cart.";
+
         try {
           openModal({ title: "Select options", message: msg });
         } catch {
@@ -1268,11 +1280,14 @@ export default function ProductDetail() {
 
       const unitPriceClient = toNum(computed.final, 0);
 
-      const variantImg = variantId ? (product.variants || []).find((v) => v.id === variantId)?.imagesJson?.[0] : undefined;
+      const variantImg = variantId
+        ? (product.variants || []).find((v) => v.id === variantId)?.imagesJson?.[0]
+        : undefined;
+
       const primaryImg = variantImg || (product.imagesJson || [])[0] || null;
 
-      const axesForLabels = axes;
-      const { attrNameById, valueNameByAttrId } = buildLabelMaps(axesForLabels);
+      // labels for cart row (UI only)
+      const { attrNameById, valueNameByAttrId } = buildLabelMaps(axes);
       const selectedOptionsLabeled = selectedOptionsWire.map(({ attributeId, valueId }) => ({
         attributeId,
         attribute: attrNameById.get(attributeId) ?? "",
@@ -1295,20 +1310,29 @@ export default function ProductDetail() {
 
       const addQty = Math.max(1, Number(qty) || 1);
 
+      // ✅ server cart first (cookie mode)
       if (isLoggedIn) {
         await api.post(
           "/api/cart/items",
           {
-            productId: product.id, variantId, kind: lineKind, qty: addQty, selectedOptions: selectedOptionsWire, optionsKey,
-            titleSnapshot: product.title ?? "", imageSnapshot: primaryImg ?? null, unitPriceCache: unitPriceClient
+            productId: product.id,
+            variantId,
+            kind: lineKind,
+            qty: addQty,
+            selectedOptions: selectedOptionsWire,
+            optionsKey,
+            titleSnapshot: product.title ?? "",
+            imageSnapshot: primaryImg ?? null,
+            unitPriceCache: unitPriceClient,
           },
           AXIOS_COOKIE_CFG
         );
       }
 
-      // ✅ yield a tick before synchronous storage + toast work
+      // ✅ yield a tick before local storage + toast (keeps UI smooth)
       await new Promise<void>((r) => setTimeout(r, 0));
 
+      // ✅ local cart single source of truth
       upsertCartLine({
         productId: String(product.id),
         variantId: variantId ?? null,
@@ -1323,8 +1347,9 @@ export default function ProductDetail() {
 
       window.dispatchEvent(new Event("cart:updated"));
 
-      // ✅ toast in another tick so it never blocks UI interactions
-      setTimeout(() => {
+      // ✅ toast (coalesced)
+      if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = window.setTimeout(() => {
         const linesAfter = readCartLines();
         showMiniCartToast(
           toMiniCartRows(linesAfter),
@@ -1332,10 +1357,20 @@ export default function ProductDetail() {
           { title: "Added to cart", duration: 3500, maxItems: 4, mode: "add" }
         );
       }, 0);
+    } catch (err: any) {
+      console.error(err);
+      const msg = err?.response?.data?.message || err?.message || "Could not update cart.";
+      try {
+        openModal({ title: "Cart", message: msg });
+      } catch {
+        alert(msg);
+      }
     } finally {
       setIsAdding(false);
     }
   }, [isAdding, product, purchaseMeta, selected, computed.final, axes, openModal, qty]);
+
+
 
   /* ---------------- Review handlers ---------------- */
   const handleSubmitReview = React.useCallback(
@@ -1637,15 +1672,36 @@ export default function ProductDetail() {
   /* ---------------- Bottom half starts here ---------------- */
   const displayPrice = toNum(computed.final, 0);
   const priceLabel = NGN.format(displayPrice > 0 ? displayPrice : 0);
-
   return (
     <SiteLayout>
       <div className="bg-gradient-to-b from-zinc-50 to-white">
+
+
+        {/* Top bar */}
         <div className="max-w-6xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
           <div className="flex items-center justify-between gap-3">
+            {/*
+      IMPORTANT:
+      Avoid navigate(-1) here. Browser back can restore Catalog via BFCache,
+      and with window virtualizers that often results in a "dead" page.
+      We navigate explicitly to the route that brought us here.
+    */}
             <button
               type="button"
-              onClick={() => navigate(-1)}
+              onClick={() => {
+                const from = String((location.state as any)?.from || "").trim();
+                const y = (window.history.state as any)?.__catalogScrollY;
+
+                const restoreScrollY = typeof y === "number" ? y : undefined;
+
+                // Prefer the originating page if it was passed (Catalog already does this).
+                if (from.startsWith("/")) {
+                  navigate(from, { replace: true, state: { restoreScrollY } });
+                } else {
+                  // fallback if someone landed on product detail directly
+                  navigate("/catalog", { replace: true, state: { restoreScrollY } });
+                }
+              }}
               className={`touch-manipulation text-sm px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}`}
             >
               ← Back
@@ -1662,6 +1718,10 @@ export default function ProductDetail() {
             </div>
           </div>
         </div>
+
+
+
+
 
         {/* MAIN GRID */}
         <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-[360px]:gap-5">

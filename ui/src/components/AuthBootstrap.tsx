@@ -12,31 +12,52 @@ function isAuthError(e: any) {
 
 export default function AuthBootstrap() {
   const ran = useRef(false);
+  const cancelled = useRef(false);
 
   useEffect(() => {
     if (ran.current) return;
     ran.current = true;
 
-    (async () => {
+    const run = async () => {
       try {
         const { data } = await api.get("/api/auth/me", AXIOS_COOKIE_CFG);
 
+        if (cancelled.current) return;
+
         if (data?.id) {
-          useAuthStore.setState({ user: data, hydrated: true } as any);
+          useAuthStore.setState({
+            user: data,
+            hydrated: true,
+          } as any);
         } else {
-          useAuthStore.setState({ user: null, hydrated: true } as any);
+          useAuthStore.setState({
+            user: null,
+            hydrated: true,
+          } as any);
         }
       } catch (e: any) {
-        // ✅ only clear user on actual auth errors
+        if (cancelled.current) return;
+
         if (isAuthError(e)) {
-          useAuthStore.setState({ user: null, hydrated: true } as any);
+          // normal case when logged out
+          useAuthStore.setState({
+            user: null,
+            hydrated: true,
+          } as any);
         } else {
-          // ✅ network/proxy failure: don't destroy session; just mark hydrated
-          // (otherwise you get kicked off checkout when API temporarily unreachable)
-          useAuthStore.setState({ hydrated: true } as any);
+          // network issue — don't destroy existing session
+          useAuthStore.setState({
+            hydrated: true,
+          } as any);
         }
       }
-    })();
+    };
+
+    run();
+
+    return () => {
+      cancelled.current = true;
+    };
   }, []);
 
   return null;

@@ -14,6 +14,25 @@ export default function SiteLayout({ children }: Props) {
     captureAttributionFromUrl();
   }, []);
 
+  // ✅ global safety reset in case a modal/drawer/backdrop left the app "frozen"
+  useEffect(() => {
+    const body = document.body;
+    const html = document.documentElement;
+
+    body.style.overflow = "";
+    body.style.pointerEvents = "";
+    html.style.overflow = "";
+    html.style.pointerEvents = "";
+
+    body.classList.remove("overflow-hidden");
+    html.classList.remove("overflow-hidden");
+
+    return () => {
+      body.style.pointerEvents = "";
+      html.style.pointerEvents = "";
+    };
+  }, []);
+
   return (
     <div className="min-h-screen w-full overflow-x-hidden flex flex-col bg-gradient-to-b from-primary-50/40 via-bg-soft to-bg-soft text-ink">
       <MiniCartToastHost />
@@ -22,8 +41,7 @@ export default function SiteLayout({ children }: Props) {
       {/* Global overlays */}
       <ConsentBanner />
 
-      <main className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
-        {/* Removed duplicate px-4 to avoid double padding */}
+      <main className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8 flex-1">
         <div className="max-w-6xl mx-auto py-4 md:py-8">{children}</div>
       </main>
     </div>
