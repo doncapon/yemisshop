@@ -1209,11 +1209,16 @@ export default function ProductDetail() {
     return { disableAddToCart: false, helperNote: null, mode: "VARIANT" as const, variantId: matchedVariantId };
   }, [axes.length, axisIds, canBuyBase, selected, isAtBaseDefaults, variantStockQty, matchedVariantId, stockByVariantId]);
 
-  // show warning only when it's specifically the invalid-combo case
+  const selectedCount = React.useMemo(() => {
+    return axisIds.filter((aid) => !!String(selected?.[aid] ?? "").trim()).length;
+  }, [axisIds, selected]);
+
+  const allAxesSelected = axes.length > 0 && selectedCount === axisIds.length;
+
   const showInvalidCombo =
     !!axes.length &&
     !isAtBaseDefaults(selected) &&
-    selectionPairsOf(selected).length > 0 &&
+    allAxesSelected &&
     !matchedVariantId;
 
 
@@ -1516,7 +1521,20 @@ export default function ProductDetail() {
     computed?.final,
     totalStockQty,
   ]);
+  
   const imageStageRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    const shouldReset =
+      !axes.length ||
+      isAtBaseDefaults(selected) ||
+      !!matchedVariantId;
+
+    if (!shouldReset) return;
+
+    setQty((prev) => (prev === 1 ? prev : 1));
+  }, [selected, matchedVariantId, axes.length, isAtBaseDefaults]);
+
 
   React.useEffect(() => {
     const dispose = setSeo({
@@ -1569,8 +1587,9 @@ export default function ProductDetail() {
             // Available means: this choice can lead to at least 1 sellable variant (given current partial selection)
             const isAvailable = partialSelectionMatchesAnySellable(candidate);
 
-            // Only enforce disabling once the user started picking (otherwise it can feel “blocked”)
-            const disabled = hasAnyPicked && !isAvailable;
+            // IMPORTANT:
+            // Never disable the currently active chip, otherwise user cannot click again to deselect it.
+            const disabled = !active && hasAnyPicked && !isAvailable;
 
             // ✅ styles
             const availableCls =
@@ -1579,6 +1598,8 @@ export default function ProductDetail() {
               "opacity-45 border-zinc-200 bg-zinc-50 text-zinc-500 cursor-not-allowed";
             const selectedOkCls = "ring-2 ring-fuchsia-500 border-fuchsia-500";
             const selectedWarnCls = "ring-2 ring-amber-400 border-amber-400";
+
+
 
             return (
               <button
