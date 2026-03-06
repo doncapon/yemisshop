@@ -11,6 +11,8 @@ import {
   Package,
   X,
   ChevronDown,
+  Link2,
+  CheckCircle2,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -23,7 +25,7 @@ import { useCatalogMeta, type CatalogAttribute } from "../../hooks/useCatalogMet
 /* =========================================================
    Config
 ========================================================= */
-const MAX_IMAGES_PER_PRODUCT = 5;
+const MAX_IMAGES = 5;
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
 /* =========================================================
@@ -108,21 +110,12 @@ function uniqStrings(arr: string[]) {
   return out;
 }
 
-function limitImages(urls: any[], limit = MAX_IMAGES_PER_PRODUCT) {
+function limitImages(urls: any[], limit = MAX_IMAGES) {
   const normalized = urls.map(normalizeImageUrl).filter(Boolean) as string[];
   return uniqStrings(normalized).slice(0, limit);
 }
 
-function sparseComboKey(selections: Record<string, string>, attrOrder: string[]) {
-  const parts: string[] = [];
-  for (const aid of attrOrder) {
-    const vid = String(selections?.[aid] || "").trim();
-    if (vid) parts.push(`${aid}=${vid}`);
-  }
-  return parts.length ? parts.join("|") : "DEFAULT";
-}
-
-function strictComboKey(selections: Record<string, string>, attrOrder: string[]) {
+function comboKeyFromSelections(selections: Record<string, string>, attrOrder: string[]) {
   return attrOrder.map((aid) => `${aid}=${String(selections?.[aid] || "")}`).join("|");
 }
 
@@ -138,9 +131,9 @@ function formatComboLabel(
     if (!vid) continue;
     const an = attrNameById.get(aid) ?? aid;
     const vn = valueNameById.get(vid) ?? vid;
-    pairs.push(`${an}=${vn}`);
+    pairs.push(`${an}: ${vn}`);
   }
-  return pairs.length ? pairs.join(", ") : "DEFAULT (no options selected)";
+  return pairs.length ? pairs.join(" • ") : "Variant combo";
 }
 
 function autoSkuFromTitle(input: string) {
@@ -373,9 +366,9 @@ function getPendingMaps(p: any) {
   return { base, variantMap };
 }
 
-/* =========================================================
-   UI bits
-========================================================= */
+/* =========================
+   Small UI building blocks
+========================= */
 
 function Card({
   title,
@@ -384,23 +377,66 @@ function Card({
   children,
   className = "",
 }: {
-  title: React.ReactNode;
-  subtitle?: React.ReactNode;
+  title: string;
+  subtitle?: string;
   right?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
 }) {
   return (
-    <div className={`rounded-2xl border bg-white/90 shadow-sm overflow-hidden ${className}`}>
-      <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70 flex items-start justify-between gap-3">
+    <div className={["rounded-2xl border bg-white/90 shadow-sm overflow-hidden", className].join(" ")}>
+      <div className="px-4 sm:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">{title}</div>
-          {subtitle ? <div className="text-[11px] sm:text-xs text-zinc-500 mt-0.5">{subtitle}</div> : null}
+          <div className="text-sm font-semibold text-zinc-900 truncate">{title}</div>
+          {subtitle ? <div className="text-xs text-zinc-500 mt-0.5">{subtitle}</div> : null}
         </div>
         {right ? <div className="shrink-0">{right}</div> : null}
       </div>
       <div className="p-4 sm:p-5">{children}</div>
     </div>
+  );
+}
+
+function Label({ children }: { children: React.ReactNode }) {
+  return <label className="block text-xs font-semibold text-zinc-700 mb-1">{children}</label>;
+}
+
+function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      {...props}
+      className={[
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
+        props.className || "",
+      ].join(" ")}
+    />
+  );
+}
+
+function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select
+      {...props}
+      className={[
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
+        props.className || "",
+      ].join(" ")}
+    />
+  );
+}
+
+function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      {...props}
+      className={[
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
+        props.className || "",
+      ].join(" ")}
+    />
   );
 }
 
@@ -498,7 +534,6 @@ type DupInfo = {
   duplicateRowIds: Set<string>;
   duplicateLabels: string[];
   explain: string | null;
-  invalidDefaultRowIds: Set<string>;
 };
 
 /* =========================================================
@@ -545,6 +580,7 @@ export default function SupplierEditProduct() {
 
   const [selectedAttrs, setSelectedAttrs] = useState<Record<string, string | string[]>>({});
   const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
+  const [editingVariantRowId, setEditingVariantRowId] = useState<string | null>(null);
 
   const initialBasePriceRef = useRef<number>(0);
 
@@ -555,6 +591,9 @@ export default function SupplierEditProduct() {
   );
 
   const [skuTouched, setSkuTouched] = useState(false);
+  const [flashBaseCombo, setFlashBaseCombo] = useState(false);
+  const [flashVariantRowId, setFlashVariantRowId] = useState<string | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
 
   const initialSnapshotRef = useRef<{
     id: string;
@@ -596,7 +635,7 @@ export default function SupplierEditProduct() {
     return { pathname: CATALOG_REQUESTS_PATH, search: `?${sp.toString()}` };
   }
 
-  const { categories, brands, attributes, categoriesQ, brandsQ } = useCatalogMeta({
+  const { categories, brands, attributes, categoriesQ, brandsQ, attributesQ } = useCatalogMeta({
     enabled: hydrated,
   });
 
@@ -622,6 +661,25 @@ export default function SupplierEditProduct() {
     }
     return m;
   }, [selectableAttrs]);
+
+  const triggerConflictFlash = (rowId?: string) => {
+    if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+
+    setFlashBaseCombo(true);
+    setFlashVariantRowId(rowId || null);
+
+    flashTimerRef.current = window.setTimeout(() => {
+      setFlashBaseCombo(false);
+      setFlashVariantRowId(null);
+      flashTimerRef.current = null;
+    }, 1200);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectableAttrs.length) return;
@@ -705,29 +763,22 @@ export default function SupplierEditProduct() {
   const baseQtyPreview = useMemo(() => toIntNonNeg(availableQty), [availableQty]);
   const totalQty = useMemo(() => baseQtyPreview + variantQtyTotal, [baseQtyPreview, variantQtyTotal]);
   const inStockPreview = totalQty > 0;
+  const effectiveQty = totalQty;
 
   const variantsEnabled = useMemo(
     () => variantRows.some((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections)),
     [variantRows]
   );
 
-  const effectiveQty = totalQty;
-
   const computeDupInfo = (rows: VariantRow[]): DupInfo => {
     const seen = new Map<string, string>();
     const dups = new Set<string>();
     const dupKeys = new Set<string>();
-    const invalidDefaultRowIds = new Set<string>();
 
-    const realRows = rows.filter(isRealVariantRow);
+    const realRows = rows.filter((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections));
 
     for (const row of realRows) {
-      const key = sparseComboKey(row.selections, attrOrder);
-
-      if (key === "DEFAULT" && !!row.variantId) {
-        invalidDefaultRowIds.add(row.id);
-      }
-
+      const key = comboKeyFromSelections(row.selections, attrOrder);
       const first = seen.get(key);
       if (first) {
         dups.add(first);
@@ -739,45 +790,29 @@ export default function SupplierEditProduct() {
     }
 
     const labels = Array.from(dupKeys).map((k) => {
-      if (k === "DEFAULT") return "DEFAULT (no options selected)";
-      const sample = realRows.find((r) => sparseComboKey(r.selections, attrOrder) === k);
+      const sample = realRows.find((r) => comboKeyFromSelections(r.selections, attrOrder) === k);
       return sample ? formatComboLabel(sample.selections, attrOrder, attrNameById, valueNameById) : k;
     });
 
-    const dupExplain =
+    const explain =
       dups.size > 0
         ? `Duplicate variant combinations found: ${labels.join(" • ")}. Please change options or remove one of the duplicate rows.`
         : null;
 
-    const defaultExplain =
-      invalidDefaultRowIds.size > 0
-        ? "A variant row cannot be DEFAULT (no options selected). DEFAULT is reserved for the base product combo."
-        : null;
-
-    const explain = [dupExplain, defaultExplain].filter(Boolean).join(" ");
-
     return {
       duplicateRowIds: dups,
       duplicateLabels: labels,
-      explain: explain || null,
-      invalidDefaultRowIds,
+      explain,
     };
   };
 
   const liveDup = useMemo(() => computeDupInfo(variantRows), [variantRows, attrOrder, attrNameById, valueNameById]);
   const duplicateRowIds = liveDup.duplicateRowIds;
-  const invalidDefaultRowIds = liveDup.invalidDefaultRowIds;
-
   const hasDuplicates = duplicateRowIds.size > 0;
-  const hasInvalidDefaultVariant = invalidDefaultRowIds.size > 0;
 
   useEffect(() => {
     setDupWarn(liveDup.explain);
   }, [liveDup.explain]);
-
-  const canEditCore = !offersOnly;
-  const canAddNewCombos = !offersOnly;
-  const canEditAttributes = !offersOnly;
 
   const baseComboSelections = useMemo(() => {
     const sel: Record<string, string> = {};
@@ -789,142 +824,30 @@ export default function SupplierEditProduct() {
   }, [selectedAttrs, attrOrder]);
 
   const baseComboHasAny = useMemo(() => rowHasAnySelection(baseComboSelections), [baseComboSelections]);
-  const baseComboKey = useMemo(() => strictComboKey(baseComboSelections, attrOrder), [baseComboSelections, attrOrder]);
+  const baseComboKey = useMemo(() => comboKeyFromSelections(baseComboSelections, attrOrder), [baseComboSelections, attrOrder]);
 
-  const baseComboConflict = useMemo(() => {
-    if (!attrOrder.length) return { rowIds: new Set<string>(), labels: [] as string[] };
-    if (!baseComboHasAny) return { rowIds: new Set<string>(), labels: [] as string[] };
-
-    const ids = new Set<string>();
-    const labels: string[] = [];
-
+  const baseComboConflictRowIds = useMemo(() => {
+    if (!baseComboHasAny) return new Set<string>();
+    const out = new Set<string>();
     for (const row of variantRows) {
       if (!isRealVariantRow(row)) continue;
       if (!rowHasAnySelection(row.selections)) continue;
-
-      const key = strictComboKey(row.selections, attrOrder);
-      if (key === baseComboKey) {
-        ids.add(row.id);
-        const lbl = row.comboLabel || formatComboLabel(row.selections, attrOrder, attrNameById, valueNameById);
-        labels.push(lbl);
-      }
+      const key = comboKeyFromSelections(row.selections, attrOrder);
+      if (key === baseComboKey) out.add(row.id);
     }
+    return out;
+  }, [variantRows, attrOrder, baseComboHasAny, baseComboKey]);
 
-    return { rowIds: ids, labels: Array.from(new Set(labels)) };
-  }, [variantRows, attrOrder, baseComboHasAny, baseComboKey, attrNameById, valueNameById]);
-
-  const hasBaseComboConflict = baseComboConflict.rowIds.size > 0;
+  const hasBaseComboConflict = baseComboConflictRowIds.size > 0;
 
   const baseComboWarn = useMemo(() => {
     if (!hasBaseComboConflict) return null;
-    const list = baseComboConflict.labels.length ? baseComboConflict.labels.join(" • ") : "a variant row";
-    return `Base attributes selection matches ${list}. Base combo must be different from all variant combos.`;
-  }, [hasBaseComboConflict, baseComboConflict.labels]);
+    return "Your BaseCombo (Attributes) matches one or more VariantCombo rows. Change the base selection or update/remove the variant row(s).";
+  }, [hasBaseComboConflict]);
 
-  const setAttr = (attributeId: string, value: string | string[]) => {
-    if (offersOnly) return;
-
-    const isSelectAttr = attrOrder.includes(String(attributeId));
-    if (isSelectAttr && typeof value === "string") {
-      const nextSelected = { ...selectedAttrs, [attributeId]: value };
-
-      const nextBase: Record<string, string> = {};
-      for (const aid of attrOrder) {
-        const v = nextSelected?.[aid];
-        nextBase[aid] = typeof v === "string" ? String(v || "").trim() : "";
-      }
-
-      const nextHasAny = rowHasAnySelection(nextBase);
-      if (nextHasAny) {
-        const nextKey = strictComboKey(nextBase, attrOrder);
-        const conflicts = variantRows.some((r) => {
-          if (!isRealVariantRow(r)) return false;
-          if (!rowHasAnySelection(r.selections)) return false;
-          return strictComboKey(r.selections, attrOrder) === nextKey;
-        });
-
-        if (conflicts) {
-          setErr("That base attribute combination matches an existing variant combo. Change base attributes or the variant.");
-        }
-      }
-    }
-
-    setSelectedAttrs((prev) => ({ ...prev, [attributeId]: value }));
-  };
-
-  useEffect(() => {
-    setSkuTouched(false);
-  }, [detailQ.data?.id]);
-
-  const getAttrVal = (attributeId: string) => {
-    const v = selectedAttrs?.[attributeId];
-    if (Array.isArray(v)) return v;
-    return String(v ?? "");
-  };
-
-  const nonStockChangesRequireReview = useMemo(() => {
-    if (offersOnly) return false;
-    if (!isLive) return false;
-    const snap = initialSnapshotRef.current;
-    if (!snap || snap.id !== (detailQ.data as any)?.id) return false;
-
-    const titleChanged = (title ?? "").trim() !== (snap.title ?? "").trim();
-    const skuChanged = (sku ?? "").trim() !== (snap.sku ?? "").trim();
-    const catChanged = String(categoryId ?? "") !== String(snap.categoryId ?? "");
-    const brandChanged = String(brandId ?? "") !== String(snap.brandId ?? "");
-    const descChanged = String(description ?? "").trim() !== String(snap.description ?? "").trim();
-
-    const currentImgs = getAllImagesFromUi().slice(0, MAX_IMAGES_PER_PRODUCT);
-    const norm = (arr: string[]) => Array.from(new Set(arr.map(String))).sort();
-    const imagesChanged = JSON.stringify(norm(currentImgs)) !== JSON.stringify(norm(snap.images));
-
-    const attrChanged = (() => {
-      const allIds = new Set<string>([...Object.keys(snap.attr || {}), ...Object.keys(selectedAttrs || {})]);
-      for (const aid of allIds) {
-        const prev = snap.attr[aid];
-        const cur = selectedAttrs[aid];
-
-        if (Array.isArray(prev) || Array.isArray(cur)) {
-          const p = Array.isArray(prev) ? prev.map(String).sort() : [];
-          const c = Array.isArray(cur) ? cur.map(String).sort() : [];
-          if (JSON.stringify(p) !== JSON.stringify(c)) return true;
-        } else {
-          if (String(prev ?? "").trim() !== String(cur ?? "").trim()) return true;
-        }
-      }
-      return false;
-    })();
-
-    const newCombosAdded = variantRows.some((r) => !r.variantId && rowHasAnySelection(r.selections));
-
-    return (
-      titleChanged ||
-      skuChanged ||
-      catChanged ||
-      brandChanged ||
-      descChanged ||
-      imagesChanged ||
-      attrChanged ||
-      newCombosAdded
-    );
-  }, [
-    offersOnly,
-    isLive,
-    detailQ.data,
-    title,
-    sku,
-    categoryId,
-    brandId,
-    description,
-    imageUrls,
-    uploadedUrls,
-    selectedAttrs,
-    variantRows,
-  ]);
-
-  /* =========================================================
-     Detail hydration
-  ========================================================= */
+  const canEditCore = !offersOnly;
+  const canAddNewCombos = !offersOnly && !isLive;
+  const canEditAttributes = !offersOnly;
 
   useEffect(() => {
     const p = detailQ.data as any;
@@ -940,6 +863,9 @@ export default function SupplierEditProduct() {
     setCategoryId(p.categoryId ?? "");
     setBrandId(p.brandId ?? "");
     setDescription(p.description ?? "");
+    setErr(null);
+    setOkMsg(null);
+    setEditingVariantRowId(null);
 
     const productFallback = Number(p.retailPrice ?? 0) || Number(p.autoPrice ?? 0) || 0;
     const baseP = Number(p.offer?.basePrice ?? productFallback ?? 0) || 0;
@@ -965,7 +891,7 @@ export default function SupplierEditProduct() {
       setRetailPrice(String(baseP));
     }
 
-    const urls = limitImages(normalizeImages(p), MAX_IMAGES_PER_PRODUCT);
+    const urls = limitImages(normalizeImages(p), MAX_IMAGES);
     setImageUrls(urls.join("\n"));
     setUploadedUrls([]);
     setFiles([]);
@@ -1127,10 +1053,10 @@ export default function SupplierEditProduct() {
 
   const UPLOAD_ENDPOINT = "/api/uploads";
 
-  const urlPreviews = useMemo(() => limitImages(parseUrlList(imageUrls), MAX_IMAGES_PER_PRODUCT), [imageUrls]);
+  const urlPreviews = useMemo(() => limitImages(parseUrlList(imageUrls), MAX_IMAGES), [imageUrls]);
 
   const allUrlPreviews = useMemo(() => {
-    return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT);
+    return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
   }, [urlPreviews, uploadedUrls]);
 
   const filePreviews = useMemo(() => {
@@ -1143,15 +1069,16 @@ export default function SupplierEditProduct() {
       .filter((x) => !!x.url);
   }, [files]);
 
-  const imageCount = allUrlPreviews.length;
-  const imageOverLimit = imageCount > MAX_IMAGES_PER_PRODUCT;
+  const imagesCount = allUrlPreviews.length;
+  const fileCount = files.length;
+  const imageOverLimit = imagesCount > MAX_IMAGES;
 
   const claimedByTextAndUploaded = useMemo(() => {
-    return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT).length;
+    return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES).length;
   }, [urlPreviews, uploadedUrls]);
 
   const remainingSlotsExcludingSelectedFiles = useMemo(
-    () => Math.max(0, MAX_IMAGES_PER_PRODUCT - claimedByTextAndUploaded),
+    () => Math.max(0, MAX_IMAGES - claimedByTextAndUploaded),
     [claimedByTextAndUploaded]
   );
 
@@ -1160,7 +1087,7 @@ export default function SupplierEditProduct() {
   }, [remainingSlotsExcludingSelectedFiles, files.length]);
 
   function getAllImagesFromUi(): string[] {
-    return limitImages([...parseUrlList(imageUrls), ...uploadedUrls], MAX_IMAGES_PER_PRODUCT);
+    return limitImages([...parseUrlList(imageUrls), ...uploadedUrls], MAX_IMAGES);
   }
 
   function removeUploadedUrl(u: string) {
@@ -1186,14 +1113,14 @@ export default function SupplierEditProduct() {
     setFiles((prev) => {
       const room = Math.max(0, remainingSlotsExcludingSelectedFiles - prev.length);
       if (room <= 0) {
-        setErr(`You can only add up to ${MAX_IMAGES_PER_PRODUCT} images. Remove one to add another.`);
+        setErr(`You can only add up to ${MAX_IMAGES} images. Remove one to add another.`);
         if (fileInputRef.current) fileInputRef.current.value = "";
         return prev;
       }
 
       const toAdd = nextPicked.slice(0, room);
       if (toAdd.length < nextPicked.length) {
-        setErr(`Only ${MAX_IMAGES_PER_PRODUCT} images max. Added ${toAdd.length}; ignored ${nextPicked.length - toAdd.length}.`);
+        setErr(`Only ${MAX_IMAGES} images max. Added ${toAdd.length}; ignored ${nextPicked.length - toAdd.length}.`);
       }
       return [...prev, ...toAdd];
     });
@@ -1220,17 +1147,17 @@ export default function SupplierEditProduct() {
       }
     }
 
-    return limitImages(out, MAX_IMAGES_PER_PRODUCT);
+    return limitImages(out, MAX_IMAGES);
   }
 
   async function uploadLocalFiles(): Promise<string[]> {
     if (offersOnly) return [];
     if (!files.length) return [];
 
-    const already = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT);
-    const room = Math.max(0, MAX_IMAGES_PER_PRODUCT - already.length);
+    const already = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
+    const room = Math.max(0, MAX_IMAGES - already.length);
     if (files.length > room) {
-      throw new Error(`You can only upload ${room} more image(s). Max is ${MAX_IMAGES_PER_PRODUCT}.`);
+      throw new Error(`You can only upload ${room} more image(s). Max is ${MAX_IMAGES}.`);
     }
 
     const fd = new FormData();
@@ -1251,11 +1178,11 @@ export default function SupplierEditProduct() {
 
       const spaceNow = Math.max(
         0,
-        MAX_IMAGES_PER_PRODUCT - limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT).length
+        MAX_IMAGES - limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES).length
       );
       const take = clean.slice(0, spaceNow);
 
-      setUploadedUrls((prev) => limitImages([...prev, ...take], MAX_IMAGES_PER_PRODUCT));
+      setUploadedUrls((prev) => limitImages([...prev, ...take], MAX_IMAGES));
       setFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
 
@@ -1266,15 +1193,30 @@ export default function SupplierEditProduct() {
   }
 
   /* =========================================================
-     Variant row actions
+     Variant helpers
   ========================================================= */
 
-  const setVariantRowsAndCheck = (next: VariantRow[]) => {
+  function getVariantRowLabel(row: VariantRow) {
+    return formatComboLabel(row.selections, attrOrder, attrNameById, valueNameById);
+  }
+
+  function findVariantMatchingKey(key: string, exceptRowId?: string) {
+    for (const row of variantRows) {
+      if (exceptRowId && row.id === exceptRowId) continue;
+      if (!isRealVariantRow(row)) continue;
+      if (!rowHasAnySelection(row.selections)) continue;
+      const k = comboKeyFromSelections(row.selections, attrOrder);
+      if (k === key) return row;
+    }
+    return null;
+  }
+
+  function setVariantRowsAndCheck(next: VariantRow[]) {
     setVariantRows(next);
     const info = computeDupInfo(next);
     setDupWarn(info.explain);
     if (!info.explain) setDupWarn(null);
-  };
+  }
 
   function addVariantRow() {
     setErr(null);
@@ -1282,35 +1224,161 @@ export default function SupplierEditProduct() {
       setErr("You can’t create new variant combinations for a catalog product. You can only offer existing variants.");
       return;
     }
+    if (isLive) {
+      setErr("This product is LIVE. You can’t create new variant combinations here.");
+      return;
+    }
     if (!selectableAttrs.length) return;
 
     const selections: Record<string, string> = {};
     selectableAttrs.forEach((a) => (selections[a.id] = ""));
 
-    const baseNow = toMoneyNumber(retailPrice);
-    const next = [...variantRows, { id: uid("vr"), selections, availableQty: "", unitPrice: String(baseNow || 0) }];
-    setVariantRowsAndCheck(next);
+    const newRow: VariantRow = {
+      id: uid("vr"),
+      selections,
+      availableQty: "",
+      unitPrice: retailPrice || "",
+      isExisting: false,
+    };
+
+    setVariantRows((prev) => [...prev, newRow]);
+    setEditingVariantRowId(newRow.id);
   }
 
-  function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
+  function generateVariantMatrix() {
     setErr(null);
-    if (offersOnly) return;
 
-    const next = variantRows.map((r) =>
-      r.id === rowId ? { ...r, selections: { ...r.selections, [attributeId]: valueId } } : r
-    );
+    if (offersOnly) {
+      setErr("You can’t generate new combos for a catalog product.");
+      return;
+    }
+    if (isLive) {
+      setErr("This product is LIVE. You can’t generate new variant combinations here.");
+      return;
+    }
 
-    if (attrOrder.length && baseComboHasAny) {
-      const changed = next.find((r) => r.id === rowId);
-      if (changed && rowHasAnySelection(changed.selections)) {
-        const changedKey = strictComboKey(changed.selections, attrOrder);
-        if (changedKey === baseComboKey) {
-          setErr("That variant combination matches your base attributes selection (base combo). Change the variant options or base attributes.");
+    const pickedAttrs = selectableAttrs
+      .map((attr) => {
+        const selectedValueId = String(selectedAttrs[attr.id] ?? "").trim();
+        if (!selectedValueId) return null;
+
+        return {
+          attributeId: attr.id,
+          valueId: selectedValueId,
+        };
+      })
+      .filter(Boolean) as Array<{ attributeId: string; valueId: string }>;
+
+    if (!pickedAttrs.length) {
+      setErr("Select at least one attribute value before generating combo.");
+      return;
+    }
+
+    const selections: Record<string, string> = {};
+    pickedAttrs.forEach((x) => {
+      selections[x.attributeId] = x.valueId;
+    });
+
+    let nextSelections = { ...selections };
+    let nextKey = comboKeyFromSelections(nextSelections, attrOrder);
+
+    const rowExists = (key: string) =>
+      variantRows.some((row) => {
+        if (!isRealVariantRow(row)) return false;
+        if (!rowHasAnySelection(row.selections)) return false;
+        return comboKeyFromSelections(row.selections, attrOrder) === key;
+      });
+
+    if (baseComboHasAny && nextKey === baseComboKey) {
+      let adjusted = false;
+
+      for (const attr of selectableAttrs) {
+        const currentValueId = String(nextSelections[attr.id] || "").trim();
+        if (!currentValueId) continue;
+
+        const alternative = (attr.values || []).find((v) => {
+          if (String(v.id) === currentValueId) return false;
+
+          const candidate = { ...nextSelections, [attr.id]: String(v.id) };
+          const candidateKey = comboKeyFromSelections(candidate, attrOrder);
+
+          if (baseComboHasAny && candidateKey === baseComboKey) return false;
+          if (rowExists(candidateKey)) return false;
+
+          return true;
+        });
+
+        if (alternative) {
+          nextSelections = { ...nextSelections, [attr.id]: String(alternative.id) };
+          nextKey = comboKeyFromSelections(nextSelections, attrOrder);
+          adjusted = true;
+          break;
+        }
+      }
+
+      if (!adjusted) {
+        const firstSelectedAttr = selectableAttrs.find((a) => String(nextSelections[a.id] || "").trim());
+        if (firstSelectedAttr) {
+          nextSelections = { ...nextSelections, [firstSelectedAttr.id]: "" };
+          setErr("The generated combo matched your BaseCombo, so one selection was cleared. Choose a different value and save combo.");
         }
       }
     }
 
-    setVariantRowsAndCheck(next);
+    const finalKey = comboKeyFromSelections(nextSelections, attrOrder);
+
+    if (rowHasAnySelection(nextSelections) && rowExists(finalKey)) {
+      setErr("That variant combination already exists.");
+      return;
+    }
+
+    const nextRow: VariantRow = {
+      id: uid("vr"),
+      selections: nextSelections,
+      availableQty: "",
+      unitPrice: retailPrice || "",
+      isExisting: false,
+    };
+
+    setVariantRows((prev) => [...prev, nextRow]);
+    setEditingVariantRowId(nextRow.id);
+  }
+
+  function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
+    setErr(null);
+    if (offersOnly || isLive) return;
+
+    setVariantRows((rows) => {
+      const next = rows.map((r) =>
+        r.id === rowId ? { ...r, selections: { ...r.selections, [attributeId]: valueId } } : r
+      );
+
+      const changed = next.find((r) => r.id === rowId);
+      if (!changed) return rows;
+      if (!rowHasAnySelection(changed.selections)) return next;
+
+      const changedKey = comboKeyFromSelections(changed.selections, attrOrder);
+
+      if (baseComboHasAny && changedKey === baseComboKey) {
+        setErr("That VariantCombo matches your BaseCombo selection in Attributes. Change either the base selection or the variant row.");
+        triggerConflictFlash(rowId);
+        return next;
+      }
+
+      const dup = next.find((r) => {
+        if (r.id === rowId) return false;
+        if (!isRealVariantRow(r)) return false;
+        if (!rowHasAnySelection(r.selections)) return false;
+        return comboKeyFromSelections(r.selections, attrOrder) === changedKey;
+      });
+
+      if (dup) {
+        setErr("That variant combination already exists. Please choose a different combination.");
+        triggerConflictFlash(rowId);
+        return next;
+      }
+      return next;
+    });
   }
 
   function updateVariantQty(rowId: string, v: string) {
@@ -1329,7 +1397,9 @@ export default function SupplierEditProduct() {
     await api.delete(`/api/supplier/catalog/offers/variant/${row.variantOfferId}`, AXIOS_COOKIE_CFG);
 
     setVariantRows((rows) =>
-      rows.map((r) => (r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r))
+      rows.map((r) =>
+        r.id === row.id ? { ...r, variantOfferId: undefined, availableQty: "0" } : r
+      )
     );
   }
 
@@ -1355,7 +1425,97 @@ export default function SupplierEditProduct() {
 
     const next = variantRows.filter((r) => r.id !== rowId);
     setVariantRowsAndCheck(next);
+
+    if (editingVariantRowId === rowId) {
+      setEditingVariantRowId(null);
+    }
   }
+
+  function validateVariantRow(row: VariantRow) {
+    if (!rowHasAnySelection(row.selections)) {
+      return "Choose at least one attribute value for this combo.";
+    }
+
+    const rowKey = comboKeyFromSelections(row.selections, attrOrder);
+
+    if (baseComboHasAny && rowKey === baseComboKey) {
+      return "This VariantCombo matches your BaseCombo. Change one of the selections before saving.";
+    }
+
+    const dup = variantRows.find((r) => {
+      if (r.id === row.id) return false;
+      if (!isRealVariantRow(r)) return false;
+      if (!rowHasAnySelection(r.selections)) return false;
+      return comboKeyFromSelections(r.selections, attrOrder) === rowKey;
+    });
+
+    if (dup) {
+      return "That variant combination already exists.";
+    }
+
+    const price = toMoneyNumber(row.unitPrice);
+    if (!offersOnly && !isLive && price <= 0) {
+      return "Variant price must be greater than 0.";
+    }
+
+    return null;
+  }
+
+  function saveVariantRow(rowId: string) {
+    const row = variantRows.find((r) => r.id === rowId);
+    if (!row) return;
+
+    const validationError = validateVariantRow(row);
+    if (validationError) {
+      setErr(validationError);
+      triggerConflictFlash(rowId);
+      return;
+    }
+
+    setErr(null);
+    setEditingVariantRowId(null);
+  }
+
+  const setBaseSelectAttr = (attributeId: string, valueId: string) => {
+    if (!canEditAttributes) return;
+
+    setErr(null);
+
+    setSelectedAttrs((prev) => {
+      const next = { ...prev, [attributeId]: valueId };
+
+      const nextBaseSel: Record<string, string> = {};
+      for (const aid of attrOrder) {
+        const v = next[aid];
+        nextBaseSel[aid] = typeof v === "string" ? String(v || "").trim() : "";
+      }
+
+      const nextHasAny = rowHasAnySelection(nextBaseSel);
+      const nextKey = comboKeyFromSelections(nextBaseSel, attrOrder);
+
+      if (nextHasAny) {
+        const hit = findVariantMatchingKey(nextKey);
+        if (hit) {
+          setErr("That BaseCombo matches an existing VariantCombo row. Change the base selection or update/remove the variant row.");
+          triggerConflictFlash(hit.id);
+        }
+      }
+
+      return next;
+    });
+  };
+
+  const setAttr = (attributeId: string, value: string | string[]) => {
+    if (!canEditAttributes) return;
+
+    const attr = activeAttrs.find((a) => a.id === attributeId);
+    if (attr?.type === "SELECT" && typeof value === "string") {
+      setBaseSelectAttr(attributeId, value);
+      return;
+    }
+
+    setSelectedAttrs((prev) => ({ ...prev, [attributeId]: value }));
+  };
 
   const onChangeBasePrice = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (isLive) {
@@ -1365,6 +1525,63 @@ export default function SupplierEditProduct() {
     }
     setRetailPrice(e.target.value);
   };
+
+  function getAttrVal(attributeId: string) {
+    const v = selectedAttrs?.[attributeId];
+    if (Array.isArray(v)) return v;
+    return String(v ?? "");
+  }
+
+  const nonStockChangesRequireReview = useMemo(() => {
+    if (offersOnly) return false;
+    if (!isLive) return false;
+    const snap = initialSnapshotRef.current;
+    if (!snap || snap.id !== (detailQ.data as any)?.id) return false;
+
+    const titleChanged = (title ?? "").trim() !== (snap.title ?? "").trim();
+    const skuChanged = (sku ?? "").trim() !== (snap.sku ?? "").trim();
+    const catChanged = String(categoryId ?? "") !== String(snap.categoryId ?? "");
+    const brandChanged = String(brandId ?? "") !== String(snap.brandId ?? "");
+    const descChanged = String(description ?? "").trim() !== String(snap.description ?? "").trim();
+
+    const currentImgs = getAllImagesFromUi().slice(0, MAX_IMAGES);
+    const norm = (arr: string[]) => Array.from(new Set(arr.map(String))).sort();
+    const imagesChanged = JSON.stringify(norm(currentImgs)) !== JSON.stringify(norm(snap.images));
+
+    const attrChanged = (() => {
+      const allIds = new Set<string>([...Object.keys(snap.attr || {}), ...Object.keys(selectedAttrs || {})]);
+      for (const aid of allIds) {
+        const prev = snap.attr[aid];
+        const cur = selectedAttrs[aid];
+
+        if (Array.isArray(prev) || Array.isArray(cur)) {
+          const p = Array.isArray(prev) ? prev.map(String).sort() : [];
+          const c = Array.isArray(cur) ? cur.map(String).sort() : [];
+          if (JSON.stringify(p) !== JSON.stringify(c)) return true;
+        } else {
+          if (String(prev ?? "").trim() !== String(cur ?? "").trim()) return true;
+        }
+      }
+      return false;
+    })();
+
+    const newCombosAdded = variantRows.some((r) => !r.variantId && rowHasAnySelection(r.selections));
+
+    return titleChanged || skuChanged || catChanged || brandChanged || descChanged || imagesChanged || attrChanged || newCombosAdded;
+  }, [
+    offersOnly,
+    isLive,
+    detailQ.data,
+    title,
+    sku,
+    categoryId,
+    brandId,
+    description,
+    imageUrls,
+    uploadedUrls,
+    selectedAttrs,
+    variantRows,
+  ]);
 
   /* =========================================================
      Payload builders
@@ -1506,10 +1723,10 @@ export default function SupplierEditProduct() {
       setErr(null);
       setOkMsg(null);
 
-      if (imageOverLimit || hasBaseComboConflict || hasDuplicates || hasInvalidDefaultVariant) {
+      if (imageOverLimit || hasBaseComboConflict || hasDuplicates) {
         throw new Error(
           imageOverLimit
-            ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
+            ? `Max ${MAX_IMAGES} images allowed. Remove extra images to continue.`
             : baseComboWarn
               ? baseComboWarn
               : dupWarn || "Fix the errors above to save."
@@ -1519,8 +1736,8 @@ export default function SupplierEditProduct() {
       if (!id) throw new Error("Missing product id");
 
       const imagesFromUi = getAllImagesFromUi();
-      if (imagesFromUi.length > MAX_IMAGES_PER_PRODUCT) {
-        throw new Error(`Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Please remove ${imagesFromUi.length - MAX_IMAGES_PER_PRODUCT} image(s).`);
+      if (imagesFromUi.length > MAX_IMAGES) {
+        throw new Error(`Max ${MAX_IMAGES} images allowed. Please remove ${imagesFromUi.length - MAX_IMAGES} image(s).`);
       }
 
       const basePrice = toMoneyNumber(retailPrice);
@@ -1530,14 +1747,10 @@ export default function SupplierEditProduct() {
         throw new Error(baseComboWarn || "Base combo matches a variant combo. Please change one of them.");
       }
 
-      if (hasInvalidDefaultVariant) {
-        throw new Error("A variant row cannot be DEFAULT (no options selected). DEFAULT is reserved for the base combo.");
-      }
-
       const realVariantRows = variantRows.filter((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections));
       for (const r of realVariantRows) {
         const rowUnit = toMoneyNumber(r.unitPrice);
-        if (!Number.isFinite(rowUnit) || rowUnit <= 0) {
+        if (!offersOnly && !isLive && (!Number.isFinite(rowUnit) || rowUnit <= 0)) {
           throw new Error("Each variant must have a valid price greater than 0.");
         }
       }
@@ -1634,14 +1847,14 @@ export default function SupplierEditProduct() {
       const stockOnlyUpdate = isLive && !nonStockChangesRequireReview;
 
       const rawList = parseUrlList(imageUrls);
-      const urlList = limitImages(rawList, MAX_IMAGES_PER_PRODUCT);
+      const urlList = limitImages(rawList, MAX_IMAGES);
       if (rawList.length !== urlList.length) {
         setImageUrls(urlList.join("\n"));
       }
 
-      const current = limitImages([...urlList, ...uploadedUrls], MAX_IMAGES_PER_PRODUCT);
+      const current = limitImages([...urlList, ...uploadedUrls], MAX_IMAGES);
       const freshlyUploaded = files.length ? await uploadLocalFiles() : [];
-      const merged = limitImages([...current, ...freshlyUploaded], MAX_IMAGES_PER_PRODUCT);
+      const merged = limitImages([...current, ...freshlyUploaded], MAX_IMAGES);
 
       const payload = stockOnlyUpdate
         ? buildStockOnlyPayload({ baseQty: baseQtyPreview, variantRows })
@@ -1679,10 +1892,11 @@ export default function SupplierEditProduct() {
     },
   });
 
-  const hasBlockingError = imageOverLimit || hasBaseComboConflict || hasDuplicates || hasInvalidDefaultVariant;
+  const hasBlockingError = imageOverLimit || hasBaseComboConflict || hasDuplicates;
 
-  const saveDisabled =
-    updateM.isPending || uploading || detailQ.isLoading || !hydrated || !isSupplier || hasBlockingError;
+  const isSubmitting = updateM.isPending;
+  const submitDisabled =
+    isSubmitting || uploading || detailQ.isLoading || !hydrated || !isSupplier || hasBlockingError;
 
   const hasPendingBase =
     offersOnly &&
@@ -1702,7 +1916,7 @@ export default function SupplierEditProduct() {
     if (hasBlockingError) {
       setErr(
         imageOverLimit
-          ? `Max ${MAX_IMAGES_PER_PRODUCT} images allowed. Remove extra images to continue.`
+          ? `Max ${MAX_IMAGES} images allowed. Remove extra images to continue.`
           : baseComboWarn
             ? baseComboWarn
             : dupWarn || "Fix the errors above to save."
@@ -1719,12 +1933,12 @@ export default function SupplierEditProduct() {
           <div className="px-4 py-3 flex items-center gap-3">
             <button
               type="button"
-              disabled={saveDisabled}
+              disabled={submitDisabled}
               onClick={doSave}
               className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
             >
               <Save size={16} />
-              {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
+              {isSubmitting ? "Submitting…" : offersOnly ? "Save offer" : "Save changes"}
             </button>
             <button
               type="button"
@@ -1741,129 +1955,154 @@ export default function SupplierEditProduct() {
             <div className="px-4 pb-4">
               <div className="rounded-2xl border bg-white p-4 text-sm text-zinc-700 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-zinc-500">Status</span>
-                  <b className="text-zinc-900">{productStatusUpper || "—"}</b>
+                  <span className="text-zinc-500">Mode</span>
+                  <b className="text-zinc-900">{offersOnly ? "Attach existing" : "Create new"}</b>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-zinc-500">Price</span>
-                  <b className="text-zinc-900">
-                    {ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}
-                  </b>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-zinc-500">Stock</span>
-                  <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
-                    {effectiveQty} ({inStockPreview ? "In stock" : "Out of stock"})
-                  </b>
-                </div>
-                <div className="text-[11px] text-zinc-600">
-                  Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-zinc-500">Images</span>
-                  <b className="text-zinc-900">
-                    {imageCount}/{MAX_IMAGES_PER_PRODUCT}
-                  </b>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-zinc-500">Variant rows</span>
-                  <b className="text-zinc-900">{variantRows.length}</b>
-                </div>
+
+                {!offersOnly ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Base price</span>
+                      <b className="text-zinc-900">{retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}</b>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Stock</span>
+                      <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
+                        {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
+                      </b>
+                    </div>
+                    <div className="text-[11px] text-zinc-600">
+                      Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Images</span>
+                      <b className="text-zinc-900">{imagesCount}/{MAX_IMAGES}</b>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Selected product</span>
+                      <b className="text-zinc-900 truncate max-w-[180px]">{title || "—"}</b>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Base offer</span>
+                      <b className="text-zinc-900">
+                        {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                      </b>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Total qty</span>
+                      <b className={totalQty > 0 ? "text-emerald-700" : "text-rose-700"}>{totalQty}</b>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )}
         </div>
 
-        <div className="mt-4 sm:mt-6 space-y-4 pb-28 sm:pb-8">
+        <div className="mt-6 space-y-4 pb-28 sm:pb-10">
           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-            <div className="min-w-0">
+            <div>
               <motion.h1
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="text-[20px] sm:text-2xl font-bold tracking-tight text-zinc-900 leading-tight"
+                className="text-2xl font-bold tracking-tight text-zinc-900"
               >
                 {offersOnly ? "Edit offer" : "Edit product"}
               </motion.h1>
 
-              {offersOnly ? (
-                <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
-                  Catalog product: you can only edit <b>your offer</b> (base price/stock and existing variant offers).
-                </p>
-              ) : isLive ? (
-                <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
-                  This product is <b>{productStatusUpper || "LIVE"}</b>. <b>Stock updates</b> are immediate. Other changes may be <b>submitted for review</b>.
-                </p>
-              ) : (
-                <p className="text-[13px] sm:text-sm text-zinc-600 mt-1 leading-snug">
-                  You can edit this product freely while it is <b>{productStatusUpper || "PENDING"}</b>.
-                </p>
-              )}
+              <p className="text-sm text-zinc-600 mt-1">
+                {offersOnly
+                  ? "Update your supplier offer on an existing catalog product."
+                  : isLive
+                    ? "Edit your product. Stock updates are immediate; some other changes may need review."
+                    : "Edit your product details, attributes, images and variant combinations."}
+              </p>
+
+              <div className="mt-2 text-xs text-zinc-500">
+                Status: <span className="font-medium text-zinc-800">{productStatusUpper || "—"}</span>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:flex gap-2">
+            <div className="hidden sm:flex gap-2">
               <Link
                 to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
-                className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5"
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
               >
                 <ArrowLeft size={16} /> Back
               </Link>
-
               <button
                 type="button"
-                disabled={saveDisabled}
+                disabled={submitDisabled}
                 onClick={doSave}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-[13px] sm:text-sm font-semibold disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
               >
-                <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
+                {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
+                {isSubmitting ? "Submitting…" : offersOnly ? "Save offer" : "Save changes"}
               </button>
+            </div>
+
+            <div className="sm:hidden">
+              <Link
+                to={offersOnly ? "/supplier/catalog-offers" : "/supplier/products"}
+                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+              >
+                <ArrowLeft size={16} /> Back
+              </Link>
             </div>
           </div>
 
           {guardMsg && (
-            <div className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">{guardMsg}</div>
+            <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
+              {guardMsg}
+            </div>
           )}
 
           {!offersOnly && isLive && nonStockChangesRequireReview && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
               <b>Review notice:</b> You’ve made changes beyond stock. Saving will submit changes for <b>admin review</b>.
             </div>
           )}
 
           {offersOnly && hasPendingBase && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
               <b>Pending approval:</b> Active price remains <b>{ngn.format(activeBasePriceForDisplay)}</b>.
             </div>
           )}
 
           {imageOverLimit && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              <b>Images limit:</b> You have <b>{imageCount}</b> images. Max is <b>{MAX_IMAGES_PER_PRODUCT}</b>. Remove <b>{imageCount - MAX_IMAGES_PER_PRODUCT}</b>.
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              Max {MAX_IMAGES} images allowed. Remove extra images before saving.
             </div>
           )}
 
           {baseComboWarn && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              <b>Base/Variant conflict:</b> {baseComboWarn}
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              {baseComboWarn}
             </div>
           )}
 
           {dupWarn && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
-              <b>Variant issue:</b> {dupWarn}
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              {dupWarn}
             </div>
           )}
 
           {err && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">{err}</div>
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+              {err}
+            </div>
           )}
           {okMsg && (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
               {okMsg}
             </div>
           )}
 
           {detailQ.isError && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
               Could not load product.
             </div>
           )}
@@ -1874,106 +2113,90 @@ export default function SupplierEditProduct() {
                 title="Basic information"
                 subtitle={
                   offersOnly
-                    ? "Catalog product details are read-only. Set your supplier offer."
-                    : isLive
-                      ? "LIVE listing: Title/SKU/base price are locked. Stock updates are always allowed."
-                      : undefined
+                    ? "Catalog product details are read-only. Update your supplier offer values below."
+                    : "What customers will see in the catalog"
                 }
               >
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Title *</label>
-                      <input
+                      <Label>Title *</Label>
+                      <Input
                         value={title}
                         onChange={(e) => {
                           const nextTitle = e.target.value;
                           setTitle(nextTitle);
-
                           if (!offersOnly && !isLive && !skuTouched) {
                             setSku(autoSkuFromTitle(nextTitle));
                           }
                         }}
                         disabled={!canEditCore || isLive}
                         readOnly={!canEditCore || isLive}
-                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
+                        placeholder="e.g. Air Fryer 4L"
                       />
                     </div>
+
                     <div>
-                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">SKU *</label>
-                      <input
+                      <Label>
+                        SKU <span className="text-zinc-400 font-normal">{isLive ? "(locked)" : ""}</span>
+                      </Label>
+                      <Input
                         value={sku}
                         onChange={(e) => {
                           const v = e.target.value;
                           setSku(v);
-                          if (v.trim() === "") setSkuTouched(false);
-                          else setSkuTouched(true);
+                          setSkuTouched(!!v.trim());
                         }}
                         disabled={!canEditCore || isLive}
                         readOnly={!canEditCore || isLive}
-                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
+                        placeholder="e.g. AFRY-4L-BLK"
                       />
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                    <div className="sm:col-span-2 lg:col-span-1">
-                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">
-                        {offersOnly ? "Your base offer price (NGN) *" : "Base price (NGN) *"}
-                      </label>
-                      <input
+                    <div>
+                      <Label>{offersOnly ? "Base offer price (NGN) *" : "Base price (NGN) *"}</Label>
+                      <Input
                         value={retailPrice}
                         onChange={onChangeBasePrice}
                         inputMode="decimal"
                         disabled={isLive}
                         readOnly={isLive}
-                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
+                        placeholder="e.g. 25000"
                       />
-
                       {!!retailPrice && (
                         <div className="text-[11px] text-zinc-500 mt-1">
                           Preview: <b>{ngn.format(basePriceForPreview)}</b>
                         </div>
                       )}
-
                       {offersOnly && (
                         <div className="text-[11px] text-zinc-600 mt-1">
                           Active (approved): <b>{ngn.format(activeBasePriceForDisplay)}</b>
                         </div>
                       )}
-
                       {offersOnly && hasPendingBase && (
                         <div className="text-[11px] text-amber-700 mt-1">
                           Pending: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
                         </div>
                       )}
-
                       {offersOnly && showRequestedButNotPending && (
                         <div className="text-[11px] text-zinc-500 mt-1">
                           Will submit for approval: <b>{ngn.format(requestedBasePriceForDisplay)}</b>
                         </div>
                       )}
-
-                      {!offersOnly && isLive && (
-                        <div className="text-[11px] text-amber-700 mt-1">
-                          LIVE listing: price is <b>locked</b>.
-                        </div>
-                      )}
                     </div>
 
                     <div>
-                      <label className="block text-[11px] font-semibold text-zinc-700 mb-1">
-                        {offersOnly ? "Your base offer quantity" : "Base quantity"}
-                      </label>
-                      <input
+                      <Label>{offersOnly ? "Base quantity" : "Base quantity"}</Label>
+                      <Input
                         value={availableQty}
                         onChange={(e) => setAvailableQty(e.target.value)}
                         inputMode="numeric"
-                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white"
                         placeholder="e.g. 20"
                       />
                       <div className="text-[11px] text-zinc-500 mt-1">
-                        Total = <b>{baseQtyPreview}</b> (base) + <b>{variantQtyTotal}</b> (variants) = <b>{totalQty}</b>
+                        Total: <b>{baseQtyPreview}</b> + <b>{variantQtyTotal}</b> = <b>{totalQty}</b>
                       </div>
                       <div className="text-[11px] text-zinc-500 mt-1">
                         In-stock:{" "}
@@ -1981,25 +2204,21 @@ export default function SupplierEditProduct() {
                           {inStockPreview ? "YES" : "NO"}
                         </b>
                       </div>
-                      {variantsEnabled && (
-                        <div className="text-[11px] text-zinc-500 mt-1">Variant quantities add on top.</div>
-                      )}
                     </div>
 
                     <div>
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <label className="block text-[11px] font-semibold text-zinc-700">Category</label>
+                      <div className="flex items-center justify-between mb-1">
+                        <Label>Category</Label>
                         <AddNewLink
                           label="Add new category"
                           onClick={() => nav(goToCatalogRequests("categories", "category"))}
                           title="Request a new category"
                         />
                       </div>
-                      <select
+                      <Select
                         value={categoryId}
                         onChange={(e) => setCategoryId(e.target.value)}
                         disabled={!canEditCore}
-                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
                       >
                         <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
                         {categories.map((c) => (
@@ -2007,23 +2226,22 @@ export default function SupplierEditProduct() {
                             {c.name}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
 
                     <div>
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <label className="block text-[11px] font-semibold text-zinc-700">Brand</label>
+                      <div className="flex items-center justify-between mb-1">
+                        <Label>Brand *</Label>
                         <AddNewLink
                           label="Add new brand"
                           onClick={() => nav(goToCatalogRequests("brands", "brand"))}
                           title="Request a new brand"
                         />
                       </div>
-                      <select
+                      <Select
                         value={brandId}
                         onChange={(e) => setBrandId(e.target.value)}
                         disabled={!canEditCore}
-                        className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
                       >
                         <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
                         {brands.map((b) => (
@@ -2031,155 +2249,19 @@ export default function SupplierEditProduct() {
                             {b.name}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Description *</label>
-                    <textarea
+                    <Label>Description *</Label>
+                    <Textarea
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
+                      className="min-h-[110px]"
                       disabled={!canEditCore}
-                      className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white min-h-[110px] disabled:opacity-60"
+                      placeholder="Write a clear, detailed description…"
                     />
-                  </div>
-
-                  <div
-                    className={`rounded-2xl border bg-white overflow-hidden ${
-                      hasBaseComboConflict ? "border-rose-300 ring-2 ring-rose-200" : ""
-                    }`}
-                  >
-                    <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">Attributes</div>
-                          <div className="text-[11px] sm:text-xs text-zinc-500 mt-0.5">
-                            {offersOnly
-                              ? "Catalog product attributes are read-only."
-                              : isLive
-                                ? "LIVE listing: edits may require review."
-                                : "You can edit attributes freely while not LIVE."}
-                          </div>
-                        </div>
-
-                        <div className="shrink-0 flex flex-col items-end gap-1">
-                          <AddNewLink
-                            label="Add new attribute"
-                            onClick={() => nav(goToCatalogRequests("attributes", "attribute"))}
-                            title="Request a new attribute"
-                          />
-                          <div className="text-[10px] text-zinc-500">Need a new value? Use “Add values”.</div>
-                        </div>
-                      </div>
-
-                      {hasBaseComboConflict && (
-                        <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800">
-                          <b>Conflict:</b> This base combo matches a variant combo. Change the base SELECT attributes or the variant.
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {activeAttrs.length === 0 && (
-                        <div className="text-sm text-zinc-500">No active attributes configured.</div>
-                      )}
-
-                      {activeAttrs.map((a: CatalogAttribute) => {
-                        const label = "add new " + a.name.toLowerCase();
-                        const addValuesBtn =
-                          a?.type === "SELECT" || a?.type === "MULTISELECT" ? (
-                            <AddNewLink
-                              label={label}
-                              onClick={() =>
-                                nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
-                              }
-                              title={`Request new values for ${a.name}`}
-                            />
-                          ) : null;
-
-                        if (a.type === "TEXT") {
-                          const val = String(getAttrVal(a.id) ?? "");
-                          return (
-                            <div key={a.id}>
-                              <div className="flex items-center justify-between gap-2 mb-1">
-                                <label className="block text-[11px] font-semibold text-zinc-700">{a.name}</label>
-                              </div>
-                              <input
-                                value={val}
-                                onChange={(e) => setAttr(a.id, e.target.value)}
-                                disabled={!canEditAttributes}
-                                className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60"
-                                placeholder={a.placeholder || "Enter value..."}
-                              />
-                            </div>
-                          );
-                        }
-
-                        if (a.type === "SELECT") {
-                          const val = String(getAttrVal(a.id) ?? "");
-                          const highlight = hasBaseComboConflict && attrOrder.includes(String(a.id));
-                          return (
-                            <div key={a.id}>
-                              <div className="flex items-center justify-between gap-2 mb-1">
-                                <label className="block text-[11px] font-semibold text-zinc-700">{a.name}</label>
-                                {addValuesBtn}
-                              </div>
-                              <select
-                                value={val}
-                                onChange={(e) => setAttr(a.id, e.target.value)}
-                                disabled={!canEditAttributes}
-                                className={`w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60 ${
-                                  highlight ? "border-rose-300 ring-2 ring-rose-100" : ""
-                                }`}
-                              >
-                                <option value="">— Select —</option>
-                                {(a.values || []).map((v: any) => (
-                                  <option key={v.id} value={v.id}>
-                                    {v.name}
-                                  </option>
-                                ))}
-                              </select>
-                              {highlight && (
-                                <div className="text-[11px] text-rose-700 mt-1">
-                                  This base selection is conflicting with a variant combo.
-                                </div>
-                              )}
-                            </div>
-                          );
-                        }
-
-                        if (a.type === "MULTISELECT") {
-                          const vals = Array.isArray(getAttrVal(a.id)) ? (getAttrVal(a.id) as string[]) : [];
-                          return (
-                            <div key={a.id}>
-                              <div className="flex items-center justify-between gap-2 mb-1">
-                                <label className="block text-[11px] font-semibold text-zinc-700">{a.name}</label>
-                                {addValuesBtn}
-                              </div>
-                              <select
-                                multiple
-                                value={vals}
-                                onChange={(e) => {
-                                  const ids = Array.from(e.target.selectedOptions).map((o) => o.value);
-                                  setAttr(a.id, ids);
-                                }}
-                                disabled={!canEditAttributes}
-                                className="w-full rounded-xl border px-3 py-2.5 text-sm bg-white disabled:opacity-60 min-h-[42px]"
-                              >
-                                {(a.values || []).map((v: any) => (
-                                  <option key={v.id} value={v.id}>
-                                    {v.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                          );
-                        }
-
-                        return null;
-                      })}
-                    </div>
                   </div>
                 </div>
               </Card>
@@ -2188,15 +2270,14 @@ export default function SupplierEditProduct() {
                 title="Images"
                 subtitle={
                   offersOnly
-                    ? "Catalog images are read-only."
-                    : `Paste URLs or upload images. Max ${MAX_IMAGES_PER_PRODUCT} images per product.`
+                    ? `Catalog images are read-only here.`
+                    : `Paste URLs or upload images (max ${MAX_IMAGES}).`
                 }
                 right={
                   <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 cursor-pointer ${
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${
                       offersOnly ? "opacity-60 pointer-events-none" : ""
                     }`}
-                    title={offersOnly ? "Catalog images are read-only." : undefined}
                   >
                     <ImagePlus size={16} /> Add files
                     <input
@@ -2214,12 +2295,11 @@ export default function SupplierEditProduct() {
                 <div className="space-y-3">
                   <div className="flex items-center justify-between text-xs">
                     <div className="text-zinc-600">
-                      Images used:{" "}
-                      <b className={imageOverLimit ? "text-rose-700" : "text-zinc-900"}>{imageCount}</b> / {MAX_IMAGES_PER_PRODUCT}
-                      {files.length > 0 && (
+                      Images used: <b>{imagesCount}</b> / {MAX_IMAGES}
+                      {fileCount > 0 && (
                         <>
                           {" "}
-                          • Selected files: <b>{files.length}</b>
+                          • Selected files: <b>{fileCount}</b>
                         </>
                       )}
                     </div>
@@ -2231,27 +2311,20 @@ export default function SupplierEditProduct() {
                   </div>
 
                   <div>
-                    <label className="block text-[11px] font-semibold text-zinc-700 mb-1">Image URLs (one per line)</label>
-                    <textarea
+                    <Label>Image URLs (one per line)</Label>
+                    <Textarea
                       value={imageUrls}
                       onChange={(e) => {
                         if (offersOnly) return;
                         setErr(null);
                         const raw = parseUrlList(e.target.value);
-                        const capped = limitImages(raw, MAX_IMAGES_PER_PRODUCT);
+                        const capped = limitImages(raw, MAX_IMAGES);
                         setImageUrls(capped.join("\n"));
                       }}
+                      className="min-h-[90px] text-xs"
                       disabled={offersOnly}
-                      className={`w-full rounded-xl border px-3 py-2.5 text-xs bg-white min-h-[90px] disabled:opacity-60 ${
-                        imageOverLimit ? "border-rose-300" : ""
-                      }`}
                       placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
                     />
-                    {!offersOnly && imageOverLimit && (
-                      <div className="text-[11px] text-rose-700 mt-1">
-                        Remove extra URLs. Saving is blocked until you have {MAX_IMAGES_PER_PRODUCT} or fewer.
-                      </div>
-                    )}
                   </div>
 
                   {(allUrlPreviews.length > 0 || filePreviews.length > 0) && (
@@ -2259,7 +2332,7 @@ export default function SupplierEditProduct() {
                       <div className="text-xs font-semibold text-zinc-800 mb-2">Image previews</div>
 
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {allUrlPreviews.slice(0, MAX_IMAGES_PER_PRODUCT).map((u) => (
+                        {allUrlPreviews.slice(0, MAX_IMAGES).map((u) => (
                           <div key={u} className="rounded-xl border overflow-hidden bg-white">
                             <div className="aspect-[4/3] bg-zinc-100 relative">
                               <img
@@ -2284,7 +2357,6 @@ export default function SupplierEditProduct() {
                                   img.style.display = "none";
                                 }}
                               />
-
                               {!offersOnly && (
                                 <button
                                   type="button"
@@ -2308,23 +2380,25 @@ export default function SupplierEditProduct() {
                         ))}
 
                         {!offersOnly &&
-                          filePreviews.slice(0, MAX_IMAGES_PER_PRODUCT - allUrlPreviews.length).map(({ file, url }) => (
-                            <div key={url} className="rounded-xl border overflow-hidden bg-white">
-                              <div className="aspect-[4/3] bg-zinc-100 relative">
-                                <img src={url} alt={file.name} className="w-full h-full object-cover" />
-                                <button
-                                  type="button"
-                                  onClick={() => removeSelectedFile(file)}
-                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
-                                  aria-label="Remove selected file"
-                                  title="Remove"
-                                >
-                                  <X size={18} className="text-rose-700" />
-                                </button>
+                          filePreviews
+                            .slice(0, Math.max(0, MAX_IMAGES - allUrlPreviews.length))
+                            .map(({ file, url }) => (
+                              <div key={url} className="rounded-xl border overflow-hidden bg-white">
+                                <div className="aspect-[4/3] bg-zinc-100 relative">
+                                  <img src={url} alt={file.name} className="w-full h-full object-cover" />
+                                  <button
+                                    type="button"
+                                    onClick={() => removeSelectedFile(file)}
+                                    className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                    aria-label="Remove selected file"
+                                    title="Remove"
+                                  >
+                                    <X size={18} className="text-rose-700" />
+                                  </button>
+                                </div>
+                                <div className="p-2 text-[10px] text-zinc-600 truncate">{file.name}</div>
                               </div>
-                              <div className="p-2 text-[10px] text-zinc-600 truncate">{file.name}</div>
-                            </div>
-                          ))}
+                            ))}
                       </div>
                     </div>
                   )}
@@ -2335,7 +2409,7 @@ export default function SupplierEditProduct() {
                         Selected files: <span className="font-mono">{files.length}</span>
                       </div>
 
-                      <div className="mt-3 grid grid-cols-2 sm:flex gap-2">
+                      <div className="mt-3 flex flex-col sm:flex-row gap-2">
                         <button
                           type="button"
                           onClick={async () => {
@@ -2347,7 +2421,7 @@ export default function SupplierEditProduct() {
                             }
                           }}
                           disabled={uploading || !files.length}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-[13px] sm:text-sm font-semibold disabled:opacity-60"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
                         >
                           {uploading ? "Uploading…" : "Upload now"}
                         </button>
@@ -2358,17 +2432,155 @@ export default function SupplierEditProduct() {
                             setFiles([]);
                             if (fileInputRef.current) fileInputRef.current.value = "";
                           }}
-                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5"
+                          className="inline-flex items-center justify-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
                         >
-                          <Trash2 size={16} /> Clear
+                          <Trash2 size={16} /> Clear files
                         </button>
                       </div>
                     </div>
                   )}
+                </div>
+              </Card>
 
-                  {allUrlPreviews.length === 0 && filePreviews.length === 0 && (
-                    <div className="text-xs text-zinc-500">No images found on this product yet.</div>
+              <Card
+                title="Attributes"
+                subtitle={
+                  offersOnly
+                    ? "Catalog product attributes are read-only."
+                    : "Optional details used for filtering and variant setup."
+                }
+                className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300 ring-2 ring-rose-100" : ""}
+                right={
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <AddNewLink
+                      label="Add new attribute"
+                      onClick={() => nav(goToCatalogRequests("attributes", "attribute"))}
+                    />
+                  </div>
+                }
+              >
+                <div className="space-y-3">
+                  {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
+                  {!attributesQ.isLoading && activeAttrs.length === 0 && (
+                    <div className="text-sm text-zinc-500">No active attributes configured.</div>
                   )}
+
+                  {selectableAttrs.length > 0 && (
+                    <div
+                      className={[
+                        "rounded-xl border px-3 py-2 text-[12px]",
+                        hasBaseComboConflict || flashBaseCombo
+                          ? "bg-rose-50 border-rose-200 text-rose-800"
+                          : "bg-amber-50 border-amber-200 text-amber-800",
+                      ].join(" ")}
+                    >
+                      The selected <b>SELECT</b> attributes here form your <b>BaseCombo</b>. Variant combos below must be different.
+                      {(hasBaseComboConflict || flashBaseCombo) && (
+                        <>
+                          {" "}
+                          <b>Fix:</b> change either the base selection or the highlighted variant row(s).
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {activeAttrs.map((a: CatalogAttribute) => {
+                      if (a.type === "TEXT") {
+                        const v = String(getAttrVal(a.id) ?? "");
+                        return (
+                          <div key={a.id}>
+                            <Label>{a.name}</Label>
+                            <Input
+                              value={v}
+                              onChange={(e) => setAttr(a.id, e.target.value)}
+                              disabled={!canEditAttributes}
+                              placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
+                            />
+                          </div>
+                        );
+                      }
+
+                      if (a.type === "SELECT") {
+                        const v = String(getAttrVal(a.id) ?? "");
+                        const label = "add new " + a.name.toLowerCase();
+
+                        return (
+                          <div key={a.id}>
+                            <div className="flex items-center justify-between mb-1">
+                              <Label>{a.name}</Label>
+                              <AddNewLink
+                                label={label}
+                                onClick={() =>
+                                  nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
+                                }
+                                title={`Request new values for ${a.name}`}
+                              />
+                            </div>
+                            <Select
+                              value={v}
+                              onChange={(e) => setAttr(a.id, e.target.value)}
+                              disabled={!canEditAttributes}
+                              className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300" : ""}
+                            >
+                              <option value="">— Select —</option>
+                              {(a.values || []).map((x) => (
+                                <option key={x.id} value={x.id}>
+                                  {x.name}
+                                </option>
+                              ))}
+                            </Select>
+                          </div>
+                        );
+                      }
+
+                      const arr = Array.isArray(getAttrVal(a.id)) ? (getAttrVal(a.id) as string[]) : [];
+                      const label = "add new " + a.name.toLowerCase();
+
+                      return (
+                        <div key={a.id} className="sm:col-span-2 rounded-2xl border bg-white p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-xs font-semibold text-zinc-700">{a.name}</div>
+                            <AddNewLink
+                              label={label}
+                              onClick={() =>
+                                nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
+                              }
+                              title={`Request new values for ${a.name}`}
+                            />
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {(a.values || []).map((x) => {
+                              const checked = arr.includes(x.id);
+                              return (
+                                <label
+                                  key={x.id}
+                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
+                                    checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="hidden"
+                                    checked={checked}
+                                    onChange={() => {
+                                      if (!canEditAttributes) return;
+                                      setSelectedAttrs((s) => {
+                                        const prev = Array.isArray(s[a.id]) ? (s[a.id] as string[]) : [];
+                                        const next = checked ? prev.filter((id) => id !== x.id) : [...prev, x.id];
+                                        return { ...s, [a.id]: next };
+                                      });
+                                    }}
+                                  />
+                                  {x.name}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </Card>
 
@@ -2376,210 +2588,268 @@ export default function SupplierEditProduct() {
                 title="Variant combinations"
                 subtitle={
                   offersOnly
-                    ? "Catalog product: set price + qty for existing variants. You can’t create new combos."
+                    ? "Set supplier-specific stock and price for each existing variant."
                     : isLive
-                      ? "LIVE listing: update qty only. Prices/options are locked."
-                      : "Add/remove combos while not LIVE. Variants must have at least one option selected (DEFAULT is base-only)."
+                      ? "LIVE listing: existing combos stay fixed; qty updates are allowed."
+                      : "Add combinations of SELECT attributes with qty and price."
                 }
                 right={
-                  <button
-                    type="button"
-                    onClick={addVariantRow}
-                    disabled={!selectableAttrs.length || !canAddNewCombos}
-                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[13px] sm:text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
-                  >
-                    <Plus size={16} /> Add row
-                  </button>
+                  <div className="flex gap-2 flex-wrap">
+                    {!offersOnly && !isLive && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={generateVariantMatrix}
+                          disabled={!selectableAttrs.some((a) => String(selectedAttrs[a.id] ?? "").trim() !== "")}
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+                        >
+                          Generate combo
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={addVariantRow}
+                          disabled={!selectableAttrs.length || !canAddNewCombos}
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
+                        >
+                          <Plus size={16} /> Add row
+                        </button>
+                      </>
+                    )}
+
+                    {offersOnly && (
+                      <div className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-700">
+                        {variantRows.length} variant(s)
+                      </div>
+                    )}
+                  </div>
                 }
               >
                 <div className="space-y-2">
-                  {!selectableAttrs.length && <div className="text-sm text-zinc-500">No SELECT attributes available.</div>}
+                  {!selectableAttrs.length && (
+                    <div className="text-sm text-zinc-500">
+                      No SELECT attributes available. Create SELECT attributes to enable variants.
+                    </div>
+                  )}
 
-                  {variantRows.length === 0 ? (
-                    <div className="text-sm text-zinc-500">No variants returned for this product.</div>
-                  ) : (
-                    variantRows.map((row) => {
-                      const comboText =
-                        row.comboLabel || formatComboLabel(row.selections, attrOrder, attrNameById, valueNameById);
+                  {variantRows.map((row) => {
+                    const isDup = duplicateRowIds.has(row.id);
+                    const isBaseConflict = baseComboConflictRowIds.has(row.id);
+                    const isFlashing = flashVariantRowId === row.id;
+                    const isEditing = editingVariantRowId === row.id && !offersOnly && !isLive && !row.isExisting;
 
-                      const isDup = duplicateRowIds.has(row.id);
-                      const isInvalidDefault = invalidDefaultRowIds.has(row.id);
-                      const isBaseConflict = baseComboConflict.rowIds.has(row.id);
-
-                      const rowQty = toIntNonNeg(row.availableQty);
-                      const rowInStock = rowQty > 0;
-
-                      const disableRemove = offersOnly ? !row.variantOfferId && rowQty <= 0 : isLive && row.isExisting;
-
-                      const activeUnitPrice = offersOnly
+                    const variantPriceNum = toMoneyNumber(row.unitPrice);
+                    const effectiveVariantPrice =
+                      offersOnly
                         ? Number(row.activeUnitPrice ?? activeBasePriceForDisplay)
-                        : toMoneyNumber(row.unitPrice) || basePriceForPreview;
+                        : variantPriceNum > 0
+                          ? variantPriceNum
+                          : toMoneyNumber(retailPrice);
 
-                      const pendingVar = row.variantId ? pendingVariantPatchByVariantId.get(String(row.variantId)) : null;
-                      const pendingPatch = pendingVar?.proposedPatch ?? pendingVar?.patchJson ?? null;
-                      const pendingVarUnitPrice = Number(pendingPatch?.unitPrice ?? NaN);
-                      const hasPendingVarPrice =
-                        offersOnly &&
-                        Number.isFinite(pendingVarUnitPrice) &&
-                        pendingVarUnitPrice > 0 &&
-                        pendingVarUnitPrice !== Number(row.activeUnitPrice ?? activeBasePriceForDisplay);
+                    const label = row.comboLabel || getVariantRowLabel(row);
+                    const rowQty = toIntNonNeg(row.availableQty);
 
-                      const selectionLocked = offersOnly || row.isExisting || isLive;
-                      const priceLocked = (!offersOnly && isLive) || false;
+                    const pendingVar = row.variantId ? pendingVariantPatchByVariantId.get(String(row.variantId)) : null;
+                    const pendingPatch = pendingVar?.proposedPatch ?? pendingVar?.patchJson ?? null;
+                    const pendingVarUnitPrice = Number(pendingPatch?.unitPrice ?? NaN);
+                    const hasPendingVarPrice =
+                      offersOnly &&
+                      Number.isFinite(pendingVarUnitPrice) &&
+                      pendingVarUnitPrice > 0 &&
+                      pendingVarUnitPrice !== Number(row.activeUnitPrice ?? activeBasePriceForDisplay);
 
-                      const isDraftNoSelection = !row.variantId && !rowHasAnySelection(row.selections);
-                      const draftHasEdits =
-                        isDraftNoSelection &&
-                        (String(row.availableQty || "").trim() !== "" || String(row.unitPrice || "").trim() !== "");
-
-                      const hasAnyIssue = isDup || isInvalidDefault || isBaseConflict;
-
+                    if (!isEditing) {
                       return (
                         <div
                           key={row.id}
-                          className={`rounded-2xl border bg-white p-3 space-y-2 ${
-                            hasAnyIssue ? "border-rose-400 ring-2 ring-rose-200" : ""
-                          }`}
+                          className={[
+                            "rounded-2xl border bg-zinc-50 p-3",
+                            isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
+                          ].join(" ")}
                         >
-                          <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-                            {selectableAttrs.map((attr: CatalogAttribute) => {
-                              const valueId = row.selections[attr.id] || "";
-                              return (
-                                <select
-                                  key={attr.id}
-                                  value={valueId}
-                                  onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
-                                  className={`rounded-xl border px-3 py-2 text-xs bg-white ${
-                                    hasAnyIssue ? "border-rose-300" : ""
-                                  }`}
-                                  disabled={selectionLocked}
-                                  title={
-                                    selectionLocked
-                                      ? "Variant options are fixed; edit price/qty only."
-                                      : "Select variant option value."
-                                  }
-                                >
-                                  <option value="">{attr.name}</option>
-                                  {(attr.values || []).map((v: any) => (
-                                    <option key={v.id} value={v.id}>
-                                      {v.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              );
-                            })}
-                          </div>
-
-                          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="text-xs text-zinc-700">
-                                <span className="text-zinc-500">Combo:</span>{" "}
-                                <b className={hasAnyIssue ? "text-rose-700" : "text-zinc-900"}>{comboText}</b>
+                              <div className="text-sm font-semibold text-zinc-900">{label}</div>
+                              <div className="text-xs text-zinc-600 mt-1">
+                                Qty: <b>{rowQty || 0}</b> · Price:{" "}
+                                <b>{row.unitPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
                               </div>
 
-                              <div className="text-[11px] text-zinc-500 mt-1 flex flex-wrap gap-3">
-                                <span>
-                                  {offersOnly ? "Unit (approved):" : "Unit:"}{" "}
-                                  <b className="text-zinc-900">{ngn.format(activeUnitPrice)}</b>
-                                </span>
-                                <span>
-                                  Qty: <b className="text-zinc-900">{rowQty}</b>
-                                </span>
-                                <span
-                                  className={`font-semibold px-2 py-0.5 rounded-full border ${
-                                    rowInStock
-                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                      : "bg-rose-50 text-rose-700 border-rose-200"
-                                  }`}
-                                >
-                                  {rowInStock ? "In stock" : "Out of stock"}
-                                </span>
-                              </div>
-
-                              {offersOnly && hasPendingBase && (
-                                <div className="text-[11px] text-amber-700 mt-1">
-                                  Requested base: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b> (pending)
-                                </div>
-                              )}
                               {offersOnly && hasPendingVarPrice && (
                                 <div className="text-[11px] text-amber-700 mt-1">
                                   Requested variant: <b>{ngn.format(pendingVarUnitPrice)}</b> (pending)
                                 </div>
                               )}
 
-                              {draftHasEdits && (
-                                <div className="text-[11px] text-amber-700 mt-1">
-                                  Select at least one option to create a variant. Otherwise this row is ignored.
+                              {(isDup || isBaseConflict) && (
+                                <div className="text-[12px] text-rose-700 mt-2">
+                                  {isDup ? "Duplicate variant combination." : null}
+                                  {isDup && isBaseConflict ? " " : null}
+                                  {isBaseConflict ? "This VariantCombo matches your BaseCombo." : null}
                                 </div>
                               )}
                             </div>
 
-                            <div className="sm:ml-auto flex flex-wrap items-center gap-2">
-                              <span className="text-xs text-zinc-500">Price</span>
-                              <input
-                                value={row.unitPrice}
-                                onChange={(e) => updateVariantPrice(row.id, e.target.value)}
-                                inputMode="decimal"
-                                disabled={priceLocked}
-                                readOnly={priceLocked}
-                                className={`w-28 rounded-xl border px-3 py-2 text-xs bg-white ${
-                                  hasAnyIssue ? "border-rose-300" : ""
-                                } ${priceLocked ? "opacity-60" : ""}`}
-                                placeholder="e.g. 25000"
-                                title={priceLocked ? "LIVE listing: variant price is locked." : "Set this variant unit price."}
-                              />
-
-                              <span className="text-xs text-zinc-500">Qty</span>
-                              <input
-                                value={row.availableQty}
-                                onChange={(e) => updateVariantQty(row.id, e.target.value)}
-                                inputMode="numeric"
-                                className={`w-24 rounded-xl border px-3 py-2 text-xs bg-white ${
-                                  hasAnyIssue ? "border-rose-300" : ""
-                                }`}
-                                placeholder="e.g. 5"
-                              />
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {offersOnly || isLive || row.isExisting ? (
+                                <>
+                                  <span className="text-xs text-zinc-500">Price</span>
+                                  <Input
+                                    value={row.unitPrice}
+                                    onChange={(e) => updateVariantPrice(row.id, e.target.value)}
+                                    inputMode="decimal"
+                                    className="w-28 text-xs"
+                                    placeholder="e.g. 25000"
+                                  />
+                                  <span className="text-xs text-zinc-500">Qty</span>
+                                  <Input
+                                    value={row.availableQty}
+                                    onChange={(e) => updateVariantQty(row.id, e.target.value)}
+                                    inputMode="numeric"
+                                    className="w-24 text-xs"
+                                    placeholder="e.g. 5"
+                                  />
+                                </>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setErr(null);
+                                    setEditingVariantRowId(row.id);
+                                  }}
+                                  className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50"
+                                >
+                                  Edit combo
+                                </button>
+                              )}
 
                               <button
                                 type="button"
                                 onClick={() => removeVariantRow(row.id)}
-                                disabled={disableRemove}
-                                className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold ${
-                                  disableRemove
-                                    ? "bg-zinc-50 text-zinc-400 border-zinc-200 cursor-not-allowed"
-                                    : "bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200"
-                                }`}
-                                title={
-                                  offersOnly
-                                    ? row.variantOfferId
-                                      ? "Remove your variant offer for this variant."
-                                      : "Nothing to remove."
-                                    : isLive && row.isExisting
-                                      ? "LIVE listing: you can’t delete existing variants. Set qty to 0 instead."
-                                      : undefined
-                                }
+                                className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100"
                               >
                                 <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
                               </button>
                             </div>
                           </div>
-
-                          {hasAnyIssue && (
-                            <div className="text-[11px] text-rose-700">
-                              {isBaseConflict
-                                ? "Invalid: this variant combo matches your base attributes selection (base combo)."
-                                : null}
-                              {isBaseConflict && (isInvalidDefault || isDup) ? " " : null}
-                              {isInvalidDefault
-                                ? "Invalid: a variant cannot be DEFAULT (no options selected). DEFAULT is reserved for base."
-                                : null}
-                              {(isBaseConflict || isInvalidDefault) && isDup ? " " : null}
-                              {isDup ? "Duplicate combination. Change options or remove one of the matching rows." : null}
-                            </div>
-                          )}
                         </div>
                       );
-                    })
+                    }
+
+                    return (
+                      <div
+                        key={row.id}
+                        className={[
+                          "rounded-2xl border bg-white p-3 space-y-3",
+                          isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
+                        ].join(" ")}
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                          <div className="text-sm font-semibold text-zinc-900">Editing combo</div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => saveVariantRow(row.id)}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold"
+                            >
+                              Save combo
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => setEditingVariantRowId(null)}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50"
+                            >
+                              Done
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => removeVariantRow(row.id)}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100"
+                            >
+                              <Trash2 size={14} /> Remove
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 items-start">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {selectableAttrs.map((attr) => {
+                              const valueId = row.selections[attr.id] || "";
+                              const label = "add new " + attr.name.toLowerCase();
+
+                              return (
+                                <div key={attr.id}>
+                                  <div className="flex items-center justify-between mb-1">
+                                    <div className="text-[11px] font-semibold text-zinc-600">{attr.name}</div>
+                                    <AddNewLink
+                                      label={label}
+                                      onClick={() =>
+                                        nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(attr.id || "") }))
+                                      }
+                                      title={`Request new values for ${attr.name}`}
+                                    />
+                                  </div>
+                                  <Select
+                                    value={valueId}
+                                    onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
+                                    className={isBaseConflict || isFlashing ? "border-rose-300" : ""}
+                                  >
+                                    <option value="">Select…</option>
+                                    {(attr.values || []).map((v) => (
+                                      <option key={v.id} value={v.id}>
+                                        {v.name}
+                                      </option>
+                                    ))}
+                                  </Select>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div>
+                              <div className="text-[11px] font-semibold text-zinc-600 mb-1">Qty</div>
+                              <Input
+                                value={row.availableQty}
+                                onChange={(e) => updateVariantQty(row.id, e.target.value)}
+                                inputMode="numeric"
+                                placeholder="e.g. 5"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="text-[11px] font-semibold text-zinc-600 mb-1">Variant price (NGN)</div>
+                              <Input
+                                value={row.unitPrice}
+                                onChange={(e) => updateVariantPrice(row.id, e.target.value)}
+                                inputMode="decimal"
+                                placeholder={retailPrice ? `e.g. ${retailPrice}` : "e.g. 25000"}
+                              />
+                              <div className="text-[11px] text-zinc-500 mt-1">
+                                Preview: <b>{effectiveVariantPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {(isDup || isBaseConflict) && (
+                          <div className="text-[12px] text-rose-700">
+                            {isDup ? "Duplicate variant combination." : null}
+                            {isDup && isBaseConflict ? " " : null}
+                            {isBaseConflict ? "This VariantCombo matches your BaseCombo (Attributes section)." : null}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {variantRows.length === 0 && (
+                    <div className="text-sm text-zinc-500">
+                      No variant rows found for this product.
+                    </div>
                   )}
                 </div>
               </Card>
@@ -2587,103 +2857,128 @@ export default function SupplierEditProduct() {
               <div className="hidden sm:block">
                 <button
                   type="button"
-                  disabled={saveDisabled}
+                  disabled={submitDisabled}
                   onClick={doSave}
                   className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
                 >
-                  <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
+                  {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
+                  {isSubmitting ? "Submitting…" : offersOnly ? "Save offer" : "Save changes"}
                 </button>
               </div>
             </div>
 
             <div className="hidden lg:block space-y-4">
-              <Card title="Update summary" subtitle="What will be saved">
-                <div className="p-0 text-sm text-zinc-700 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-zinc-500">Status</span>
-                    <b className="text-zinc-900">{productStatusUpper || "—"}</b>
+              <Card title="Submission summary" subtitle="What will be sent to the backend">
+                <div className="text-sm text-zinc-700 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-zinc-500">Flow</span>
+                    <b className="text-zinc-900">{offersOnly ? "Attach existing product" : "Create new product"}</b>
                   </div>
 
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-zinc-500">Title</span>
-                    <b className="text-zinc-900 truncate max-w-[60%]">{title.trim() ? title.trim() : "—"}</b>
-                  </div>
-
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-zinc-500">{offersOnly ? "Active offer price" : "Base price"}</span>
-                      <b className="text-zinc-900">
-                        {ngn.format(offersOnly ? activeBasePriceForDisplay : basePriceForPreview)}
-                      </b>
-                    </div>
-
-                    {offersOnly && (
-                      <div className="flex items-center justify-between text-[11px] text-zinc-600">
-                        <span className="text-zinc-500">Requested (input)</span>
-                        <b className="text-zinc-900">{ngn.format(requestedBasePriceForDisplay)}</b>
+                  {!offersOnly ? (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Title</span>
+                        <b className="text-zinc-900 truncate max-w-[180px]">{title.trim() ? title.trim() : "—"}</b>
                       </div>
-                    )}
 
-                    {offersOnly && hasPendingBase && (
-                      <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
-                        Pending approval: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Base price</span>
+                        <b className="text-zinc-900">{retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}</b>
                       </div>
-                    )}
-                  </div>
 
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-zinc-500 inline-flex items-center gap-2">
-                      <Package size={14} /> Offer stock
-                    </span>
-                    <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
-                      {effectiveQty} ({inStockPreview ? "In stock" : "Out of stock"})
-                    </b>
-                  </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">SKU</span>
+                        <b className="text-zinc-900 truncate max-w-[180px]">{sku.trim() ? sku.trim() : "—"}</b>
+                      </div>
 
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-zinc-500">Variant rows</span>
-                    <b className="text-zinc-900">{variantRows.length}</b>
-                  </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500 inline-flex items-center gap-2">
+                          <Package size={14} /> Stock
+                        </span>
+                        <b className={inStockPreview ? "text-emerald-700" : "text-rose-700"}>
+                          {totalQty} ({inStockPreview ? "In stock" : "Out of stock"})
+                        </b>
+                      </div>
 
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-zinc-500">Images</span>
-                    <b className={imageOverLimit ? "text-rose-700" : "text-zinc-900"}>
-                      {imageCount}/{MAX_IMAGES_PER_PRODUCT}
-                    </b>
-                  </div>
+                      <div className="text-[11px] text-zinc-600">
+                        Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                      </div>
 
-                  {!offersOnly && isLive && nonStockChangesRequireReview && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
-                      Non-stock changes → <b>admin review</b>.
-                    </div>
-                  )}
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Images</span>
+                        <b className="text-zinc-900">{imagesCount}/{MAX_IMAGES}</b>
+                      </div>
 
-                  {(hasBaseComboConflict || hasDuplicates || hasInvalidDefaultVariant) && (
-                    <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 text-xs">
-                      Saving is blocked until base/variant conflicts and variant issues are fixed.
-                    </div>
-                  )}
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Variant rows</span>
+                        <b className="text-zinc-900">{variantRows.length}</b>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Selected product</span>
+                        <b className="text-zinc-900 truncate max-w-[180px]">{title || "—"}</b>
+                      </div>
 
-                  {imageOverLimit && (
-                    <div className="rounded-xl border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 text-xs">
-                      Saving is blocked until images are ≤ {MAX_IMAGES_PER_PRODUCT}.
-                    </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Existing SKU</span>
+                        <b className="text-zinc-900 truncate max-w-[180px]">{sku || "—"}</b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Base offer</span>
+                        <b className="text-zinc-900">{retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}</b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Total qty</span>
+                        <b className={totalQty > 0 ? "text-emerald-700" : "text-rose-700"}>{totalQty}</b>
+                      </div>
+
+                      <div className="text-[11px] text-zinc-600">
+                        Base: <b>{baseQtyPreview}</b> • Variants total: <b>{variantQtyTotal}</b>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-500">Variant offers</span>
+                        <b className="text-zinc-900">{variantRows.length}</b>
+                      </div>
+
+                      {offersOnly && hasPendingBase && (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-[11px]">
+                          Pending approval: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </Card>
 
               <button
                 type="button"
-                disabled={saveDisabled}
+                disabled={submitDisabled}
                 onClick={doSave}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
               >
-                <Save size={16} /> {updateM.isPending ? "Saving…" : offersOnly ? "Save offer" : "Save changes"}
+                {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
+                {isSubmitting ? "Submitting…" : offersOnly ? "Save offer" : "Save changes"}
               </button>
+
+              {offersOnly && detailQ.data && (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <CheckCircle2 size={16} />
+                    Existing product mode
+                  </div>
+                  <div className="mt-2 text-xs">
+                    Core product details stay read-only here. You are only updating supplier-specific offer and stock.
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-
-          <div className="h-6" />
         </div>
       </SupplierLayout>
     </SiteLayout>

@@ -7,6 +7,7 @@ import { requireAuth, requireSupplier } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { requiredString } from "../lib/http.js";
 import { notifyAdmins } from "../services/notifications.service.js";
+import { AnyCaaRecord } from "dns";
 
 const router = Router();
 
@@ -1194,7 +1195,7 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
     const warnings: string[] = [];
 
-    const txResult = await prisma.$transaction(async (tx) => {
+    const txResult = await prisma.$transaction(async (tx: any) => {
       // ✅ supplier+brand aware unique SKU + friendly guard
       const sku = await ensureUniqueProductSku(tx as any, computedSkuBase, { brandId: brandIdNorm, supplierId: s.id });
       await assertNoDuplicateSupplierBrandSkuTx(tx as any, { supplierId: s.id, brandId: brandIdNorm, sku });
@@ -1288,29 +1289,48 @@ router.post("/", requireAuth, requireSupplier, async (req, res) => {
 
           if (!variantId) continue;
 
-          // ✅ schema: SupplierVariantOffer unique by variantId (NO supplierId field)
+          const supplierId = String(s.id || "");
+          if (!supplierId) {
+            throw Object.assign(new Error("Supplier account not found"), { statusCode: 400 });
+          }
+
+          const productId = String(product.id);
+          const qty = vQtyNonNeg;
+          const unitPrice = unitPriceNum;
+          const leadDaysNum =
+            v?.leadDays == null || v?.leadDays === ""
+              ? null
+              : Math.max(0, Math.trunc(Number(v.leadDays)));
+
           await tx.supplierVariantOffer.upsert({
-            where: { variantId },
+            where: {
+              supplier_variant_offer_unique: {
+                variantId,
+                supplierId,
+              },
+            },
             update: {
-              productId: product.id,
+              productId,
+              supplierId,
               supplierProductOfferId: baseOffer.id,
-              unitPrice: toDecimal(unitPriceNum),
-              currency: baseOffer.currency ?? "NGN",
-              availableQty: vQtyNonNeg,
-              inStock: !!finalInStock,
-              isActive: !!finalIsActive,
-              leadDays: baseOffer.leadDays ?? null,
+              unitPrice: new Prisma.Decimal(unitPrice),
+              currency: "NGN",
+              availableQty: qty,
+              inStock: qty > 0,
+              isActive: finalIsActive,
+              leadDays: leadDaysNum,
             },
             create: {
-              productId: product.id,
+              productId,
               variantId,
+              supplierId,
               supplierProductOfferId: baseOffer.id,
-              unitPrice: toDecimal(unitPriceNum),
-              currency: baseOffer.currency ?? "NGN",
-              availableQty: vQtyNonNeg,
-              inStock: !!finalInStock,
-              isActive: !!finalIsActive,
-              leadDays: baseOffer.leadDays ?? null,
+              unitPrice: new Prisma.Decimal(unitPrice),
+              currency: "NGN",
+              availableQty: qty,
+              inStock: qty > 0,
+              isActive: finalIsActive,
+              leadDays: leadDaysNum,
             },
           });
         }
@@ -1963,7 +1983,7 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
 
       const ProductAttributeOption = getDelegate(tx, "productAttributeOption");
       if (ProductAttributeOption) await ProductAttributeOption.deleteMany({ where: { productId } });
-      
+
       if (isSharedAttachmentOnly) {
         await tx.supplierVariantOffer.deleteMany({
           where: { productId, supplierId },

@@ -205,8 +205,8 @@ function limitImages(urls: any[], limit = MAX_IMAGES) {
 function formatVariantLabel(
   variant: ExistingProductDetail["variants"] extends infer T
     ? T extends Array<infer U>
-      ? U
-      : never
+    ? U
+    : never
     : never,
   attributeGuide: ExistingProductDetail["attributeGuide"] = []
 ) {
@@ -376,6 +376,10 @@ export default function SupplierAddProduct() {
   const [flashBaseCombo, setFlashBaseCombo] = useState(false);
   const [flashVariantRowId, setFlashVariantRowId] = useState<string | null>(null);
   const flashTimerRef = useRef<number | null>(null);
+  const [attrsSaved, setAttrsSaved] = useState(false);
+  const [editingAttrs, setEditingAttrs] = useState(false);
+  const [editingVariantRowId, setEditingVariantRowId] = useState<string | null>(null);
+
 
   const ngn = useMemo(
     () =>
@@ -398,6 +402,98 @@ export default function SupplierAddProduct() {
       if (v != null && String(v).trim() !== "") sp.set(k, String(v));
     }
     return { pathname: CATALOG_REQUESTS_PATH, search: `?${sp.toString()}` };
+  }
+
+  function generateVariantMatrix() {
+    setErr(null);
+
+    const pickedAttrs = selectableAttrs
+      .map((attr) => {
+        const selectedValueId = String(selectedAttrs[attr.id] ?? "").trim();
+        if (!selectedValueId) return null;
+
+        return {
+          attributeId: attr.id,
+          valueId: selectedValueId,
+        };
+      })
+      .filter(Boolean) as Array<{ attributeId: string; valueId: string }>;
+
+    if (!pickedAttrs.length) {
+      setErr("Select at least one attribute value before generating combo.");
+      return;
+    }
+
+    const selections: Record<string, string> = {};
+    pickedAttrs.forEach((x) => {
+      selections[x.attributeId] = x.valueId;
+    });
+
+    let nextSelections = { ...selections };
+    let nextKey = comboKeyFromSelections(nextSelections, attrOrder);
+
+    const rowExists = (key: string) =>
+      variantRows.some((row) => {
+        if (!rowHasAnySelection(row.selections)) return false;
+        return comboKeyFromSelections(row.selections, attrOrder) === key;
+      });
+
+    // If generated combo matches base combo, try to auto-switch one attribute
+    if (baseComboHasAny && nextKey === baseComboKey) {
+      let adjusted = false;
+
+      for (const attr of selectableAttrs) {
+        const currentValueId = String(nextSelections[attr.id] || "").trim();
+        if (!currentValueId) continue;
+
+        const alternative = (attr.values || []).find((v) => {
+          if (String(v.id) === currentValueId) return false;
+
+          const candidate = { ...nextSelections, [attr.id]: String(v.id) };
+          const candidateKey = comboKeyFromSelections(candidate, attrOrder);
+
+          if (baseComboHasAny && candidateKey === baseComboKey) return false;
+          if (rowExists(candidateKey)) return false;
+
+          return true;
+        });
+
+        if (alternative) {
+          nextSelections = { ...nextSelections, [attr.id]: String(alternative.id) };
+          nextKey = comboKeyFromSelections(nextSelections, attrOrder);
+          adjusted = true;
+          break;
+        }
+      }
+
+      // If no alternative exists, still open a row and clear one field so user sees it
+      if (!adjusted) {
+        const firstSelectedAttr = selectableAttrs.find((a) => String(nextSelections[a.id] || "").trim());
+        if (firstSelectedAttr) {
+          nextSelections = { ...nextSelections, [firstSelectedAttr.id]: "" };
+          setErr(
+            "The generated combo matched your BaseCombo, so one selection was cleared. Choose a different value and save combo."
+          );
+        }
+      }
+    }
+
+    const finalKey = comboKeyFromSelections(nextSelections, attrOrder);
+
+    if (rowHasAnySelection(nextSelections) && rowExists(finalKey)) {
+      setErr("That variant combination already exists.");
+      return;
+    }
+
+    const nextRow: VariantRow = {
+      id: uid("vr"),
+      selections: nextSelections,
+      availableQty: "",
+      unitPrice: retailPrice || "",
+    };
+
+    setVariantRows((prev) => [...prev, nextRow]);
+    setEditingVariantRowId(nextRow.id);
   }
 
   const triggerConflictFlash = (rowId?: string) => {
@@ -663,19 +759,20 @@ export default function SupplierAddProduct() {
   /* =========================
      Variant helpers for create mode
   ========================= */
-
   function addVariantRow() {
     const selections: Record<string, string> = {};
     selectableAttrs.forEach((a) => (selections[a.id] = ""));
-    setVariantRows((prev) => [
-      ...prev,
-      {
-        id: uid("vr"),
-        selections,
-        availableQty: "",
-        unitPrice: retailPrice || "",
-      },
-    ]);
+
+    const newRow: VariantRow = {
+      id: uid("vr"),
+      selections,
+      availableQty: "",
+      unitPrice: retailPrice || "",
+    };
+
+    setVariantRows((prev) => [...prev, newRow]);
+    setEditingVariantRowId(newRow.id);
+    setErr(null);
   }
 
   function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
@@ -723,6 +820,70 @@ export default function SupplierAddProduct() {
 
   function removeVariantRow(rowId: string) {
     setVariantRows((rows) => rows.filter((r) => r.id !== rowId));
+  }
+
+  function getVariantRowLabel(row: VariantRow) {
+    const labels = attrOrder
+      .map((aid) => {
+        const attr = selectableAttrs.find((a) => a.id === aid);
+        const valueId = String(row.selections?.[aid] || "").trim();
+        if (!attr || !valueId) return null;
+        const val = attr.values?.find((v) => String(v.id) === valueId);
+        return `${attr.name}: ${val?.name || valueId}`;
+      })
+      .filter(Boolean)
+      .join(" • ");
+
+    return labels || "Variant combo";
+  }
+
+  function validateVariantRow(row: VariantRow) {
+    const picks = attrOrder.filter((aid) => String(row.selections?.[aid] || "").trim());
+
+    if (!picks.length) return "Choose at least one attribute value for this combo.";
+
+    for (const aid of picks) {
+      const valueId = String(row.selections?.[aid] || "").trim();
+      if (!valueId) return "Complete the combo selection before saving.";
+    }
+
+    const rowKey = comboKeyFromSelections(row.selections, attrOrder);
+
+    if (baseComboHasAny && rowKey === baseComboKey) {
+      return "This VariantCombo matches your BaseCombo. Change one of the selections before saving.";
+    }
+
+    const dup = variantRows.find((r) => {
+      if (r.id === row.id) return false;
+      if (!rowHasAnySelection(r.selections)) return false;
+      return comboKeyFromSelections(r.selections, attrOrder) === rowKey;
+    });
+
+    if (dup) {
+      return "That variant combination already exists.";
+    }
+
+    const price = toMoneyNumber(row.unitPrice);
+    if (price <= 0) {
+      return "Variant price must be greater than 0.";
+    }
+
+    return null;
+  }
+
+  function saveVariantRow(rowId: string) {
+    const row = variantRows.find((r) => r.id === rowId);
+    if (!row) return;
+
+    const validationError = validateVariantRow(row);
+    if (validationError) {
+      setErr(validationError);
+      triggerConflictFlash(rowId);
+      return;
+    }
+
+    setErr(null);
+    setEditingVariantRowId(null);
   }
 
   /* =========================
@@ -1201,6 +1362,64 @@ export default function SupplierAddProduct() {
   const baseComboBorder =
     hasBaseComboConflict || flashBaseCombo ? "border-rose-300 ring-2 ring-rose-100" : "";
 
+
+  const savedAttributeSummary = useMemo(() => {
+    return activeAttrs
+      .map((attr) => {
+        const raw = selectedAttrs[attr.id];
+        if (raw == null) return null;
+
+        if (attr.type === "TEXT") {
+          const value = String(raw || "").trim();
+          if (!value) return null;
+          return {
+            id: attr.id,
+            name: attr.name,
+            valueText: value,
+          };
+        }
+
+        if (attr.type === "SELECT") {
+          const valueId = String(raw || "").trim();
+          if (!valueId) return null;
+          const found = attr.values?.find((v) => String(v.id) === valueId);
+          return {
+            id: attr.id,
+            name: attr.name,
+            valueText: found?.name || valueId,
+          };
+        }
+
+        if (attr.type === "MULTISELECT") {
+          const ids = Array.isArray(raw) ? raw.map(String).filter(Boolean) : [];
+          if (!ids.length) return null;
+          const labels = ids.map((id) => attr.values?.find((v) => String(v.id) === id)?.name || id);
+          return {
+            id: attr.id,
+            name: attr.name,
+            valueText: labels.join(", "),
+          };
+        }
+
+        return null;
+      })
+      .filter(Boolean) as Array<{ id: string; name: string; valueText: string }>;
+  }, [activeAttrs, selectedAttrs]);
+
+  const canSaveAttrs = useMemo(() => {
+    return savedAttributeSummary.length > 0;
+  }, [savedAttributeSummary]);
+
+  const canSaveVariants = useMemo(() => {
+    return variantRows.some((row) => rowHasAnySelection(row.selections));
+  }, [variantRows]);
+
+  const canGenerateVariants = useMemo(() => {
+    return selectableAttrs.some((a) => {
+      const v = selectedAttrs[a.id];
+      return typeof v === "string" && String(v).trim() !== "";
+    });
+  }, [selectableAttrs, selectedAttrs]);
   /* =========================
      Render helpers
   ========================= */
@@ -1716,64 +1935,137 @@ export default function SupplierAddProduct() {
                     subtitle="Optional details used for filtering and variant setup."
                     className={baseComboBorder}
                     right={
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {!attrsSaved ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!canSaveAttrs) {
+                                setErr("Choose at least one attribute value before saving.");
+                                return;
+                              }
+                              setAttrsSaved(true);
+                              setEditingAttrs(false);
+                            }}
+                            className="text-xs font-semibold px-3 py-1.5 rounded-lg border bg-zinc-900 text-white disabled:opacity-50"
+                            disabled={!canSaveAttrs}
+                          >
+                            Save
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingAttrs(true);
+                              setAttrsSaved(false);
+                            }}
+                            className="text-xs font-semibold px-3 py-1.5 rounded-lg border bg-white hover:bg-zinc-50"
+                          >
+                            Edit
+                          </button>
+                        )}
+
                         <AddNewLink
                           label="Add new attribute"
                           onClick={() => nav(goToCatalogRequests("attributes", "attribute"))}
-                          title="Request a new attribute"
                         />
                       </div>
                     }
                   >
-                    <div className="space-y-3">
-                      {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
-                      {!attributesQ.isLoading && activeAttrs.length === 0 && (
-                        <div className="text-sm text-zinc-500">No active attributes configured.</div>
-                      )}
+                    {attrsSaved && !editingAttrs ? (
+                      <div className="rounded-xl border bg-zinc-50 p-3 space-y-2 text-sm">
+                        {savedAttributeSummary.length ? (
+                          savedAttributeSummary.map((item) => (
+                            <div key={item.id} className="flex items-start justify-between gap-3">
+                              <span className="font-medium text-zinc-700">{item.name}</span>
+                              <span className="text-zinc-900 text-right">{item.valueText}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-zinc-500">No saved attributes yet.</div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
+                        {!attributesQ.isLoading && activeAttrs.length === 0 && (
+                          <div className="text-sm text-zinc-500">No active attributes configured.</div>
+                        )}
 
-                      {selectableAttrs.length > 0 && (
-                        <div
-                          className={[
-                            "rounded-xl border px-3 py-2 text-[12px]",
-                            hasBaseComboConflict || flashBaseCombo
-                              ? "bg-rose-50 border-rose-200 text-rose-800"
-                              : "bg-amber-50 border-amber-200 text-amber-800",
-                          ].join(" ")}
-                        >
-                          The selected <b>SELECT</b> attributes here form your <b>BaseCombo</b>. Variant combos below must be different.
-                          {(hasBaseComboConflict || flashBaseCombo) && (
-                            <>
-                              {" "}
-                              <b>Fix:</b> change either the base selection or the highlighted variant row(s).
-                            </>
-                          )}
-                        </div>
-                      )}
+                        {selectableAttrs.length > 0 && (
+                          <div
+                            className={[
+                              "rounded-xl border px-3 py-2 text-[12px]",
+                              hasBaseComboConflict || flashBaseCombo
+                                ? "bg-rose-50 border-rose-200 text-rose-800"
+                                : "bg-amber-50 border-amber-200 text-amber-800",
+                            ].join(" ")}
+                          >
+                            The selected <b>SELECT</b> attributes here form your <b>BaseCombo</b>. Variant combos below must be different.
+                            {(hasBaseComboConflict || flashBaseCombo) && (
+                              <>
+                                {" "}
+                                <b>Fix:</b> change either the base selection or the highlighted variant row(s).
+                              </>
+                            )}
+                          </div>
+                        )}
 
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {activeAttrs.map((a: CatalogAttribute) => {
-                          if (a.type === "TEXT") {
-                            const v = String(selectedAttrs[a.id] ?? "");
-                            return (
-                              <div key={a.id}>
-                                <Label>{a.name}</Label>
-                                <Input
-                                  value={v}
-                                  onChange={(e) => setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))}
-                                  placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
-                                />
-                              </div>
-                            );
-                          }
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          {activeAttrs.map((a: CatalogAttribute) => {
+                            if (a.type === "TEXT") {
+                              const v = String(selectedAttrs[a.id] ?? "");
+                              return (
+                                <div key={a.id}>
+                                  <Label>{a.name}</Label>
+                                  <Input
+                                    value={v}
+                                    onChange={(e) => setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))}
+                                    placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
+                                  />
+                                </div>
+                              );
+                            }
 
-                          if (a.type === "SELECT") {
-                            const v = String(selectedAttrs[a.id] ?? "");
+                            if (a.type === "SELECT") {
+                              const v = String(selectedAttrs[a.id] ?? "");
+                              const label = "add new " + a.name.toLowerCase();
+
+                              return (
+                                <div key={a.id}>
+                                  <div className="flex items-center justify-between mb-1">
+                                    <Label>{a.name}</Label>
+                                    <AddNewLink
+                                      label={label}
+                                      onClick={() =>
+                                        nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
+                                      }
+                                      title={`Request new values for ${a.name}`}
+                                    />
+                                  </div>
+                                  <Select
+                                    value={v}
+                                    onChange={(e) => setBaseSelectAttr(a.id, e.target.value)}
+                                    className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300" : ""}
+                                  >
+                                    <option value="">— Select —</option>
+                                    {(a.values || []).map((x) => (
+                                      <option key={x.id} value={x.id}>
+                                        {x.name}
+                                      </option>
+                                    ))}
+                                  </Select>
+                                </div>
+                              );
+                            }
+
+                            const arr = Array.isArray(selectedAttrs[a.id]) ? (selectedAttrs[a.id] as string[]) : [];
                             const label = "add new " + a.name.toLowerCase();
 
                             return (
-                              <div key={a.id}>
-                                <div className="flex items-center justify-between mb-1">
-                                  <Label>{a.name}</Label>
+                              <div key={a.id} className="sm:col-span-2 rounded-2xl border bg-white p-3">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="text-xs font-semibold text-zinc-700">{a.name}</div>
                                   <AddNewLink
                                     label={label}
                                     onClick={() =>
@@ -1782,83 +2074,62 @@ export default function SupplierAddProduct() {
                                     title={`Request new values for ${a.name}`}
                                   />
                                 </div>
-                                <Select
-                                  value={v}
-                                  onChange={(e) => setBaseSelectAttr(a.id, e.target.value)}
-                                  className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300" : ""}
-                                >
-                                  <option value="">— Select —</option>
-                                  {(a.values || []).map((x) => (
-                                    <option key={x.id} value={x.id}>
-                                      {x.name}
-                                    </option>
-                                  ))}
-                                </Select>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {(a.values || []).map((x) => {
+                                    const checked = arr.includes(x.id);
+                                    return (
+                                      <label
+                                        key={x.id}
+                                        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                          }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          className="hidden"
+                                          checked={checked}
+                                          onChange={() => {
+                                            setSelectedAttrs((s) => {
+                                              const prev = Array.isArray(s[a.id]) ? (s[a.id] as string[]) : [];
+                                              const next = checked ? prev.filter((id) => id !== x.id) : [...prev, x.id];
+                                              return { ...s, [a.id]: next };
+                                            });
+                                          }}
+                                        />
+                                        {x.name}
+                                      </label>
+                                    );
+                                  })}
+                                </div>
                               </div>
                             );
-                          }
-
-                          const arr = Array.isArray(selectedAttrs[a.id]) ? (selectedAttrs[a.id] as string[]) : [];
-                          const label = "add new " + a.name.toLowerCase();
-
-                          return (
-                            <div key={a.id} className="sm:col-span-2 rounded-2xl border bg-white p-3">
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="text-xs font-semibold text-zinc-700">{a.name}</div>
-                                <AddNewLink
-                                  label={label}
-                                  onClick={() =>
-                                    nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
-                                  }
-                                  title={`Request new values for ${a.name}`}
-                                />
-                              </div>
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                {(a.values || []).map((x) => {
-                                  const checked = arr.includes(x.id);
-                                  return (
-                                    <label
-                                      key={x.id}
-                                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
-                                        checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-                                      }`}
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        className="hidden"
-                                        checked={checked}
-                                        onChange={() => {
-                                          setSelectedAttrs((s) => {
-                                            const prev = Array.isArray(s[a.id]) ? (s[a.id] as string[]) : [];
-                                            const next = checked ? prev.filter((id) => id !== x.id) : [...prev, x.id];
-                                            return { ...s, [a.id]: next };
-                                          });
-                                        }}
-                                      />
-                                      {x.name}
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          );
-                        })}
+                          })}
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </Card>
 
                   <Card
                     title="Variant combinations"
                     subtitle="Add combinations of SELECT attributes with qty and price."
                     right={
-                      <button
-                        type="button"
-                        onClick={addVariantRow}
-                        disabled={!selectableAttrs.length}
-                        className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
-                      >
-                        <Plus size={16} /> Add row
-                      </button>
+                      <div className="flex gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={generateVariantMatrix}
+                          disabled={!canGenerateVariants}
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
+                        >
+                          Generate combo
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={addVariantRow}
+                          className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                        >
+                          <Plus size={16} /> Add row
+                        </button>
+                      </div>
                     }
                   >
                     <div className="space-y-2">
@@ -1872,9 +2143,62 @@ export default function SupplierAddProduct() {
                         const isDup = duplicateRowIds.has(row.id);
                         const isBaseConflict = baseComboConflictRowIds.has(row.id);
                         const isFlashing = flashVariantRowId === row.id;
+                        const isEditing = editingVariantRowId === row.id;
 
                         const variantPriceNum = toMoneyNumber(row.unitPrice);
                         const effectiveVariantPrice = variantPriceNum > 0 ? variantPriceNum : toMoneyNumber(retailPrice);
+                        const label = getVariantRowLabel(row);
+
+                        if (!isEditing) {
+                          return (
+                            <div
+                              key={row.id}
+                              className={[
+                                "rounded-2xl border bg-zinc-50 p-3",
+                                isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
+                              ].join(" ")}
+                            >
+                              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="text-sm font-semibold text-zinc-900">{label}</div>
+                                  <div className="text-xs text-zinc-600 mt-1">
+                                    Qty: <b>{row.availableQty || 0}</b> · Price:{" "}
+                                    <b>{row.unitPrice ? ngn.format(toMoneyNumber(row.unitPrice)) : "—"}</b>
+                                  </div>
+
+                                  {(isDup || isBaseConflict) && (
+                                    <div className="text-[12px] text-rose-700 mt-2">
+                                      {isDup ? "Duplicate variant combination." : null}
+                                      {isDup && isBaseConflict ? " " : null}
+                                      {isBaseConflict ? "This VariantCombo matches your BaseCombo." : null}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setErr(null);
+                                      setEditingVariantRowId(row.id);
+                                    }}
+                                    className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50"
+                                  >
+                                    Edit combo
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => removeVariantRow(row.id)}
+                                    className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100"
+                                  >
+                                    <Trash2 size={14} /> Remove
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        }
 
                         return (
                           <div
@@ -1884,6 +2208,36 @@ export default function SupplierAddProduct() {
                               isDup || isBaseConflict || isFlashing ? "border-rose-300 ring-2 ring-rose-100" : "",
                             ].join(" ")}
                           >
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                              <div className="text-sm font-semibold text-zinc-900">Editing combo</div>
+
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => saveVariantRow(row.id)}
+                                  className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold"
+                                >
+                                  Save combo
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingVariantRowId(null)}
+                                  className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50"
+                                >
+                                  Done
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => removeVariantRow(row.id)}
+                                  className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100"
+                                >
+                                  <Trash2 size={14} /> Remove
+                                </button>
+                              </div>
+                            </div>
+
                             <div className="grid grid-cols-1 gap-3 items-start">
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                 {selectableAttrs.map((attr) => {
@@ -1942,16 +2296,6 @@ export default function SupplierAddProduct() {
                                     Preview: <b>{effectiveVariantPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
                                   </div>
                                 </div>
-
-                                <div className="flex sm:justify-end">
-                                  <button
-                                    type="button"
-                                    onClick={() => removeVariantRow(row.id)}
-                                    className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2.5 text-sm font-semibold hover:bg-rose-100"
-                                  >
-                                    <Trash2 size={14} /> Remove
-                                  </button>
-                                </div>
                               </div>
                             </div>
 
@@ -1968,7 +2312,7 @@ export default function SupplierAddProduct() {
 
                       {variantRows.length === 0 && (
                         <div className="text-sm text-zinc-500">
-                          No variant rows yet. Click “Add row” to create combinations.
+                          No variant rows yet. Click “Generate combo” or “Add row” to create one.
                         </div>
                       )}
                     </div>
