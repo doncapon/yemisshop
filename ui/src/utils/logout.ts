@@ -1,6 +1,7 @@
 // src/utils/logout.ts
 import api from "../api/client.js";
 import { useAuthStore } from "../store/auth";
+import { readCartLines } from "./cartModel";
 
 type NavigateFn = (to: string, opts?: { replace?: boolean }) => void;
 
@@ -36,31 +37,94 @@ function userCartKey(userId: string) {
   return `${USER_CART_KEY_PREFIX}${userId}${CART_KEY_SUFFIX}`;
 }
 
-/** Copy current user's cart to guest cart so it persists after logout */
-function migrateUserCartToGuest() {
+type LocalCartLine = {
+  id?: string;
+  productId: string;
+  variantId?: string | null;
+  supplierId?: string | null;
+  qty: number;
+  kind?: "BASE" | "VARIANT";
+  optionsKey?: string | null;
+};
+
+function getActiveUserId() {
+  return String(useAuthStore.getState().user?.id ?? "");
+}
+
+/**
+ * Snapshot the currently active browser cart while auth still exists.
+ * This is the cart we want to sync to the server before logout.
+ */
+function readBrowserCartSnapshot(): LocalCartLine[] {
   try {
-    const uid = useAuthStore.getState().user?.id;
-    if (!uid) return;
-
-    const uKey = userCartKey(String(uid));
-    const raw = localStorage.getItem(uKey);
-
-    // If user cart exists, move/copy it to guest
-    if (raw) {
-      localStorage.setItem(GUEST_CART_KEY, raw);
-      return;
-    }
-
-    // Fallback: if legacy cart exists, keep it too
-    const legacy = localStorage.getItem("cart");
-    if (legacy) localStorage.setItem(GUEST_CART_KEY, legacy);
+    const lines = readCartLines() as LocalCartLine[];
+    if (!Array.isArray(lines)) return [];
+    return lines.filter((l) => l && l.productId && Number(l.qty) > 0);
   } catch {
-    // ignore
+    return [];
   }
 }
 
+/**
+ * Best-effort server cart sync before logout.
+ * Replace URL list with your real cart endpoint if needed.
+ */
+async function pushBrowserCartToServer(lines: LocalCartLine[]) {
+  if (!Array.isArray(lines) || !lines.length) return;
+
+  const items = lines
+    .filter((l) => l && l.productId && Number(l.qty) > 0)
+    .map((l) => ({
+      productId: String(l.productId),
+      variantId: l.variantId ?? null,
+      supplierId: l.supplierId ?? null,
+      qty: Math.max(1, Number(l.qty) || 1),
+      kind: l.kind ?? (l.variantId ? "VARIANT" : "BASE"),
+      optionsKey: l.optionsKey ?? null,
+    }));
+
+  if (!items.length) return;
+
+  const urls = [
+    "/cart/sync",
+    "/api/cart/sync",
+    "/cart/merge",
+    "/api/cart/merge",
+  ];
+
+  for (const url of urls) {
+    try {
+      await api.post(url, { items }, { withCredentials: true });
+      return;
+    } catch {
+      // try next compatible route
+    }
+  }
+}
+
+/** Reset browser cart after logout */
+function clearBrowserCart() {
+  try {
+    const uid = getActiveUserId();
+    if (uid) {
+      localStorage.removeItem(userCartKey(uid));
+    }
+  } catch {}
+
+  try {
+    localStorage.removeItem(GUEST_CART_KEY);
+  } catch {}
+
+  try {
+    localStorage.removeItem("cart"); // legacy only
+  } catch {}
+
+  try {
+    window.dispatchEvent(new Event("cart:updated"));
+  } catch {}
+}
+
 async function tryServerLogout() {
-  // survive any baseURL config
   const urls = ["/auth/logout", "/api/auth/logout"];
   for (const url of urls) {
     try {
@@ -73,19 +137,32 @@ async function tryServerLogout() {
 }
 
 export async function performLogout(redirectTo = "/", navigate?: NavigateFn) {
-  // ✅ IMPORTANT: mark first so any immediate bootstrap() sees it
+  // mark first so any immediate bootstrap() sees it
   markJustLoggedOut();
 
-  // ✅ Preserve cart BEFORE auth is cleared
-  migrateUserCartToGuest();
+  // capture cart before auth is cleared
+  const browserCartSnapshot = readBrowserCartSnapshot();
+
+  // best-effort: store browser cart in server cart first
+  try {
+    await Promise.race([
+      pushBrowserCartToServer(browserCartSnapshot),
+      sleep(1200),
+    ]);
+  } catch {
+    // ignore
+  }
 
   const st = useAuthStore.getState();
 
   try {
-    // best-effort cookie clear (don’t block UX)
+    // best-effort cookie clear
     await Promise.race([tryServerLogout(), sleep(800)]);
   } finally {
-    // ✅ Clear auth state
+    // clear browser cart completely after sync
+    clearBrowserCart();
+
+    // clear auth state
     try {
       st.clear?.();
     } catch {}
@@ -93,20 +170,13 @@ export async function performLogout(redirectTo = "/", navigate?: NavigateFn) {
       useAuthStore.setState({ user: null } as any);
     } catch {}
 
-    // ✅ DO NOT delete guest cart here (it is now the active cart after logout)
-    // If you still want to remove legacy key, keep this:
-    try {
-      localStorage.removeItem("cart"); // legacy only
-      window.dispatchEvent(new Event("cart:updated"));
-    } catch {}
-
-    // ✅ Clear persisted auth snapshot keys (safe)
+    // clear persisted auth snapshot keys
     try {
       localStorage.removeItem("auth_store_v1");
       sessionStorage.removeItem("auth_store_v1");
     } catch {}
 
-    // ✅ Redirect
+    // redirect
     if (navigate) {
       navigate(redirectTo, { replace: true });
       return;

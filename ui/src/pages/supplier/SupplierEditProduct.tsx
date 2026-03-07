@@ -342,28 +342,65 @@ function normalizeAttributeSelections(p: any) {
   return { texts, values };
 }
 
-function getPendingMaps(p: any) {
+function getPendingOfferMaps(p: any) {
   const pending: any[] =
     (Array.isArray(p?.pendingOfferChanges) && p.pendingOfferChanges) ||
     (Array.isArray(p?.offerChangeRequests) && p.offerChangeRequests) ||
     [];
 
-  const base = pending.find((x) => String(x?.scope || "").toUpperCase() === "BASE_OFFER") || null;
+  const onlyPending = pending.filter(
+    (x) => String(x?.status || "PENDING").toUpperCase() === "PENDING"
+  );
+
+  const base =
+    onlyPending.find((x) => String(x?.scope || "").toUpperCase() === "BASE_OFFER") || null;
 
   const variantMap = new Map<string, any>();
-  for (const x of pending) {
+  for (const x of onlyPending) {
     if (String(x?.scope || "").toUpperCase() !== "VARIANT_OFFER") continue;
     const vid = String(
       x?.variantId ??
-        x?.supplierVariantOffer?.variantId ??
-        x?.supplierVariantOfferId ??
-        ""
+      x?.supplierVariantOffer?.variantId ??
+      x?.supplierVariantOfferId ??
+      ""
     ).trim();
     if (!vid) continue;
     variantMap.set(vid, x);
   }
 
   return { base, variantMap };
+}
+
+function getPendingProductChange(p: any) {
+  const pending: any[] =
+    (Array.isArray(p?.pendingProductChanges) && p.pendingProductChanges) ||
+    (Array.isArray(p?.productChangeRequests) && p.productChangeRequests) ||
+    [];
+
+  const onlyPending = pending.filter(
+    (x) => String(x?.status || "PENDING").toUpperCase() === "PENDING"
+  );
+
+  if (!onlyPending.length) return null;
+
+  return onlyPending.sort((a, b) => {
+    const da = new Date(a?.requestedAt || a?.createdAt || 0).getTime();
+    const db = new Date(b?.requestedAt || b?.createdAt || 0).getTime();
+    return db - da;
+  })[0];
+}
+
+function buildPendingVariantPatchMapFromProductPatch(productPatch: any) {
+  const m = new Map<string, any>();
+  const rows = Array.isArray(productPatch?.variants) ? productPatch.variants : [];
+
+  for (const r of rows) {
+    const vid = String(r?.variantId ?? "").trim();
+    if (!vid) continue;
+    m.set(vid, r);
+  }
+
+  return m;
 }
 
 /* =========================
@@ -484,6 +521,8 @@ type SupplierProductDetail = {
   inStock: boolean;
   retailPrice?: number | null;
   autoPrice?: any;
+  hasPendingChanges?: boolean;
+
   offer?: {
     id?: string;
     basePrice: number;
@@ -493,6 +532,7 @@ type SupplierProductDetail = {
     leadDays?: number | null;
     availableQty?: number;
   } | null;
+
   supplierVariantOffers?: Array<{
     id: string;
     variantId: string;
@@ -503,16 +543,23 @@ type SupplierProductDetail = {
     currency?: string;
     leadDays?: number | null;
   }>;
+
   pendingOfferChanges?: Array<any>;
   offerChangeRequests?: Array<any>;
+
+  pendingProductChanges?: Array<any>;
+  productChangeRequests?: Array<any>;
+
   variants?: Array<any>;
   ProductVariant?: Array<any>;
   productVariants?: Array<any>;
+
   attributeValues?: Array<{ attributeId: string; valueId: string }>;
   attributeTexts?: Array<{ attributeId: string; value: string }>;
   attributeSelections?: Array<any>;
   attributeOptions?: Array<any>;
   ProductAttributeText?: Array<any>;
+
   images?: any;
   imageUrls?: any;
 };
@@ -595,6 +642,10 @@ export default function SupplierEditProduct() {
   const [flashVariantRowId, setFlashVariantRowId] = useState<string | null>(null);
   const flashTimerRef = useRef<number | null>(null);
 
+  const [pendingProductPatch, setPendingProductPatch] = useState<any | null>(null);
+  const [pendingProductVariantPatchByVariantId, setPendingProductVariantPatchByVariantId] =
+    useState<Map<string, any>>(() => new Map());
+
   const initialSnapshotRef = useRef<{
     id: string;
     title: string;
@@ -605,6 +656,8 @@ export default function SupplierEditProduct() {
     images: string[];
     attr: Record<string, string | string[]>;
     existingVariantIds: Set<string>;
+    basePrice: number;
+    variantPriceByVariantId: Record<string, number>;
   } | null>(null);
 
   const hydratedBaseForIdRef = useRef<string | null>(null);
@@ -638,6 +691,16 @@ export default function SupplierEditProduct() {
   const { categories, brands, attributes, categoriesQ, brandsQ, attributesQ } = useCatalogMeta({
     enabled: hydrated,
   });
+
+
+  function getInitialVariantPriceMap(rows: VariantRow[]) {
+    const out: Record<string, number> = {};
+    for (const r of rows) {
+      if (!r.variantId) continue;
+      out[String(r.variantId)] = toMoneyNumber(r.unitPrice);
+    }
+    return out;
+  }
 
   const activeAttrs = useMemo(() => (attributes ?? []).filter((a) => a?.isActive !== false), [attributes]);
 
@@ -710,10 +773,10 @@ export default function SupplierEditProduct() {
       const attempts = offersOnly
         ? [`/api/supplier/products/${id}`, `/api/supplier/products/${id}?include=offer,variants,images,attributes`]
         : [
-            `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
-            `/api/supplier/products/${id}?include=offer,variants`,
-            `/api/supplier/products/${id}`,
-          ];
+          `/api/supplier/products/${id}?include=offer,variants,images,attributes`,
+          `/api/supplier/products/${id}?include=offer,variants`,
+          `/api/supplier/products/${id}`,
+        ];
 
       let lastErr: any = null;
       for (const url of attempts) {
@@ -763,12 +826,6 @@ export default function SupplierEditProduct() {
   const baseQtyPreview = useMemo(() => toIntNonNeg(availableQty), [availableQty]);
   const totalQty = useMemo(() => baseQtyPreview + variantQtyTotal, [baseQtyPreview, variantQtyTotal]);
   const inStockPreview = totalQty > 0;
-  const effectiveQty = totalQty;
-
-  const variantsEnabled = useMemo(
-    () => variantRows.some((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections)),
-    [variantRows]
-  );
 
   const computeDupInfo = (rows: VariantRow[]): DupInfo => {
     const seen = new Map<string, string>();
@@ -855,7 +912,6 @@ export default function SupplierEditProduct() {
 
     if (hydratedBaseForIdRef.current === p.id) return;
     hydratedBaseForIdRef.current = p.id;
-
     hydratedAttrsForIdRef.current = null;
 
     setTitle(p.title || "");
@@ -868,28 +924,49 @@ export default function SupplierEditProduct() {
     setEditingVariantRowId(null);
 
     const productFallback = Number(p.retailPrice ?? 0) || Number(p.autoPrice ?? 0) || 0;
-    const baseP = Number(p.offer?.basePrice ?? productFallback ?? 0) || 0;
+    const approvedBasePrice = Number(p.offer?.basePrice ?? productFallback ?? 0) || 0;
 
-    initialBasePriceRef.current = baseP;
+    initialBasePriceRef.current = approvedBasePrice;
+    setActiveBasePrice(approvedBasePrice);
+
+    let displayedBasePrice = approvedBasePrice;
 
     if (offersOnly) {
-      setActiveBasePrice(baseP);
-
-      const { base, variantMap } = getPendingMaps(p);
+      const { base, variantMap } = getPendingOfferMaps(p);
       const basePatch = base?.proposedPatch ?? base?.patchJson ?? null;
 
       setPendingBasePatch(basePatch);
       setPendingVariantPatchByVariantId(variantMap);
 
       const requested = Number(basePatch?.basePrice ?? NaN);
-      if (Number.isFinite(requested) && requested > 0) setRetailPrice(String(requested));
-      else setRetailPrice(String(baseP));
+      if (Number.isFinite(requested) && requested > 0) {
+        displayedBasePrice = requested;
+      }
+
+      setPendingProductPatch(null);
+      setPendingProductVariantPatchByVariantId(new Map());
     } else {
-      setActiveBasePrice(0);
       setPendingBasePatch(null);
       setPendingVariantPatchByVariantId(new Map());
-      setRetailPrice(String(baseP));
+
+      const pendingProductReq = getPendingProductChange(p);
+      const productPatch =
+        pendingProductReq?.proposedPatch ??
+        pendingProductReq?.patchJson ??
+        null;
+
+      const pendingVariantMap = buildPendingVariantPatchMapFromProductPatch(productPatch);
+
+      setPendingProductPatch(productPatch);
+      setPendingProductVariantPatchByVariantId(pendingVariantMap);
+
+      const requestedBasePrice = Number(productPatch?.basePrice ?? NaN);
+      if (Number.isFinite(requestedBasePrice) && requestedBasePrice > 0) {
+        displayedBasePrice = requestedBasePrice;
+      }
     }
+
+    setRetailPrice(String(displayedBasePrice));
 
     const urls = limitImages(normalizeImages(p), MAX_IMAGES);
     setImageUrls(urls.join("\n"));
@@ -900,12 +977,22 @@ export default function SupplierEditProduct() {
     const baseQty = p.offer ? (p.offer.availableQty ?? 0) : (p.availableQty ?? 0);
     setAvailableQty(String(Number(baseQty) || 0));
 
-    const myVarOffers: Array<any> = Array.isArray(p?.supplierVariantOffers) ? p.supplierVariantOffers : [];
+    const myVarOffers: Array<any> = Array.isArray(p?.supplierVariantOffers)
+      ? p.supplierVariantOffers
+      : [];
+
     const offerByVariantId = new Map<string, any>();
     for (const o of myVarOffers) {
       const vid = String(o?.variantId ?? "").trim();
       if (vid) offerByVariantId.set(vid, o);
     }
+
+    const pendingProductReq = !offersOnly ? getPendingProductChange(p) : null;
+    const productPatch =
+      pendingProductReq?.proposedPatch ??
+      pendingProductReq?.patchJson ??
+      null;
+    const pendingProductVariantMap = buildPendingVariantPatchMapFromProductPatch(productPatch);
 
     const vList = normalizeVariants(p);
 
@@ -913,13 +1000,23 @@ export default function SupplierEditProduct() {
       const rawOptions = extractVariantOptions(v);
 
       const selections: Record<string, string> = {};
-      selectableAttrs.forEach((a) => (selections[a.id] = ""));
+      selectableAttrs.forEach((a) => {
+        selections[a.id] = "";
+      });
 
       for (const o of rawOptions) {
-        if (selections[o.attributeId] != null) selections[o.attributeId] = o.valueId;
+        if (selections[o.attributeId] != null) {
+          selections[o.attributeId] = o.valueId;
+        }
       }
 
-      const comboLabel = formatComboLabel(selections, attrOrder, attrNameById, valueNameById);
+      const comboLabel = formatComboLabel(
+        selections,
+        attrOrder,
+        attrNameById,
+        valueNameById
+      );
+
       const variantId = String(v?.id ?? v?.variantId ?? "").trim();
 
       const myOffer =
@@ -929,16 +1026,26 @@ export default function SupplierEditProduct() {
 
       const qty = myOffer?.availableQty ?? v?.availableQty ?? 0;
 
-      const offerUnit = Number(myOffer?.unitPrice ?? NaN);
-      const variantRetail = Number(v?.retailPrice ?? NaN) || Number(v?.unitPrice ?? NaN) || Number(v?.price ?? NaN);
+      const approvedOfferUnit = Number(myOffer?.unitPrice ?? NaN);
+      const variantRetail =
+        Number(v?.retailPrice ?? NaN) ||
+        Number(v?.unitPrice ?? NaN) ||
+        Number(v?.price ?? NaN);
 
-      const activeUnitPrice = Number.isFinite(offerUnit) && offerUnit > 0 ? offerUnit : baseP;
+      const approvedUnitPrice =
+        Number.isFinite(approvedOfferUnit) && approvedOfferUnit > 0
+          ? approvedOfferUnit
+          : Number.isFinite(variantRetail) && variantRetail > 0
+            ? variantRetail
+            : approvedBasePrice;
 
-      const unitForInput = offersOnly
-        ? activeUnitPrice
-        : Number.isFinite(variantRetail) && variantRetail > 0
-          ? variantRetail
-          : baseP;
+      const pendingVariantPatch = pendingProductVariantMap.get(variantId);
+      const pendingUnitPrice = Number(pendingVariantPatch?.unitPrice ?? NaN);
+
+      const displayedUnitPrice =
+        !offersOnly && Number.isFinite(pendingUnitPrice) && pendingUnitPrice > 0
+          ? pendingUnitPrice
+          : approvedUnitPrice;
 
       return {
         id: uid("vr"),
@@ -947,8 +1054,8 @@ export default function SupplierEditProduct() {
         selections,
         comboLabel,
         availableQty: String(Number(qty) || 0),
-        unitPrice: String(Number(unitForInput) || 0),
-        activeUnitPrice: offersOnly ? activeUnitPrice : undefined,
+        unitPrice: String(Number(displayedUnitPrice) || 0),
+        activeUnitPrice: approvedUnitPrice,
         rawOptions,
         variantOfferId: myOffer?.id ? String(myOffer.id) : undefined,
       };
@@ -965,7 +1072,11 @@ export default function SupplierEditProduct() {
       description: p.description ?? "",
       images: urls,
       attr: {},
-      existingVariantIds: new Set(vr.filter((x) => x.variantId).map((x) => String(x.variantId))),
+      existingVariantIds: new Set(
+        vr.filter((x) => x.variantId).map((x) => String(x.variantId))
+      ),
+      basePrice: displayedBasePrice,
+      variantPriceByVariantId: getInitialVariantPriceMap(vr),
     };
   }, [detailQ.data?.id, offersOnly, selectableAttrs, attrOrder, attrNameById, valueNameById]);
 
@@ -1093,6 +1204,11 @@ export default function SupplierEditProduct() {
   function removeUploadedUrl(u: string) {
     setUploadedUrls((prev) => prev.filter((x) => x !== u));
   }
+
+  const hasPendingReviewRequest =
+    (!!pendingProductPatch && !offersOnly) ||
+    (!!pendingBasePatch && offersOnly) ||
+    pendingVariantPatchByVariantId.size > 0;
 
   function removeTextUrl(u: string) {
     const raw = parseUrlList(imageUrls);
@@ -1454,7 +1570,7 @@ export default function SupplierEditProduct() {
     }
 
     const price = toMoneyNumber(row.unitPrice);
-    if (!offersOnly && !isLive && price <= 0) {
+    if (price <= 0) {
       return "Variant price must be greater than 0.";
     }
 
@@ -1518,11 +1634,7 @@ export default function SupplierEditProduct() {
   };
 
   const onChangeBasePrice = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (isLive) {
-      setErr("This product is LIVE. Base price is locked. You can update stock/qty only.");
-      setRetailPrice(String(Number(initialBasePriceRef.current ?? 0)));
-      return;
-    }
+    setErr(null);
     setRetailPrice(e.target.value);
   };
 
@@ -1535,6 +1647,7 @@ export default function SupplierEditProduct() {
   const nonStockChangesRequireReview = useMemo(() => {
     if (offersOnly) return false;
     if (!isLive) return false;
+
     const snap = initialSnapshotRef.current;
     if (!snap || snap.id !== (detailQ.data as any)?.id) return false;
 
@@ -1543,6 +1656,9 @@ export default function SupplierEditProduct() {
     const catChanged = String(categoryId ?? "") !== String(snap.categoryId ?? "");
     const brandChanged = String(brandId ?? "") !== String(snap.brandId ?? "");
     const descChanged = String(description ?? "").trim() !== String(snap.description ?? "").trim();
+
+    const currentBasePrice = toMoneyNumber(retailPrice);
+    const basePriceChanged = currentBasePrice !== Number(snap.basePrice ?? 0);
 
     const currentImgs = getAllImagesFromUi().slice(0, MAX_IMAGES);
     const norm = (arr: string[]) => Array.from(new Set(arr.map(String))).sort();
@@ -1565,9 +1681,27 @@ export default function SupplierEditProduct() {
       return false;
     })();
 
+    const variantPriceChanged = variantRows.some((r) => {
+      if (!r.variantId) return false;
+      const prev = Number(snap.variantPriceByVariantId?.[String(r.variantId)] ?? 0);
+      const cur = toMoneyNumber(r.unitPrice);
+      return prev !== cur;
+    });
+
     const newCombosAdded = variantRows.some((r) => !r.variantId && rowHasAnySelection(r.selections));
 
-    return titleChanged || skuChanged || catChanged || brandChanged || descChanged || imagesChanged || attrChanged || newCombosAdded;
+    return (
+      titleChanged ||
+      skuChanged ||
+      catChanged ||
+      brandChanged ||
+      descChanged ||
+      imagesChanged ||
+      attrChanged ||
+      basePriceChanged ||
+      variantPriceChanged ||
+      newCombosAdded
+    );
   }, [
     offersOnly,
     isLive,
@@ -1577,6 +1711,7 @@ export default function SupplierEditProduct() {
     categoryId,
     brandId,
     description,
+    retailPrice,
     imageUrls,
     uploadedUrls,
     selectedAttrs,
@@ -1750,7 +1885,7 @@ export default function SupplierEditProduct() {
       const realVariantRows = variantRows.filter((r) => isRealVariantRow(r) && rowHasAnySelection(r.selections));
       for (const r of realVariantRows) {
         const rowUnit = toMoneyNumber(r.unitPrice);
-        if (!offersOnly && !isLive && (!Number.isFinite(rowUnit) || rowUnit <= 0)) {
+        if (!Number.isFinite(rowUnit) || rowUnit <= 0) {
           throw new Error("Each variant must have a valid price greater than 0.");
         }
       }
@@ -1832,14 +1967,6 @@ export default function SupplierEditProduct() {
         }
       }
 
-      if (isLive) {
-        const attemptedBase = toMoneyNumber(retailPrice);
-        const lockedBase = Number(initialBasePriceRef.current ?? 0);
-        if (attemptedBase !== lockedBase) {
-          throw new Error("This product is LIVE. Base price is locked. Only stock/qty updates are allowed.");
-        }
-      }
-
       if (hasDuplicates) {
         throw new Error(dupWarn || "You can’t save because there are duplicate variant combinations.");
       }
@@ -1859,10 +1986,10 @@ export default function SupplierEditProduct() {
       const payload = stockOnlyUpdate
         ? buildStockOnlyPayload({ baseQty: baseQtyPreview, variantRows })
         : {
-            ...buildOwnedPayload(merged),
-            submitForReview: isLive && nonStockChangesRequireReview,
-            stockOnly: false,
-          };
+          ...buildOwnedPayload(merged),
+          submitForReview: isLive && nonStockChangesRequireReview,
+          stockOnly: false,
+        };
 
       const { data } = await api.patch(`/api/supplier/products/${id}`, payload, AXIOS_COOKIE_CFG);
       return data;
@@ -1879,8 +2006,8 @@ export default function SupplierEditProduct() {
 
       const stockOnlyUpdate = isLive && !nonStockChangesRequireReview;
 
-      if (isLive && !stockOnlyUpdate && nonStockChangesRequireReview) {
-        setOkMsg("Saved ✅ Changes submitted for review. Listing may become PENDING until approved.");
+      if (isLive && !stockOnlyUpdate) {
+        setOkMsg("Saved ✅ Price/content changes were submitted for admin approval. Stock-only values still update immediately.");
       } else {
         setOkMsg(stockOnlyUpdate ? "Stock updated ✅" : "Saved ✅");
       }
@@ -1895,8 +2022,6 @@ export default function SupplierEditProduct() {
   const hasBlockingError = imageOverLimit || hasBaseComboConflict || hasDuplicates;
 
   const isSubmitting = updateM.isPending;
-  const submitDisabled =
-    isSubmitting || uploading || detailQ.isLoading || !hydrated || !isSupplier || hasBlockingError;
 
   const hasPendingBase =
     offersOnly &&
@@ -1912,7 +2037,29 @@ export default function SupplierEditProduct() {
 
   const guardMsg = !hydrated ? "Loading session…" : !isSupplier ? "This page is for suppliers only." : null;
 
+  const hasPendingNonStockBlock =
+    isLive &&
+    hasPendingReviewRequest &&
+    nonStockChangesRequireReview;
+
+
+  const submitDisabled =
+    isSubmitting ||
+    uploading ||
+    detailQ.isLoading ||
+    !hydrated ||
+    !isSupplier ||
+    hasBlockingError ||
+    hasPendingNonStockBlock;
+
   const doSave = () => {
+    if (hasPendingNonStockBlock) {
+      setErr(
+        "A non-stock change request is already pending for this product. You can still update stock/qty, but price/content changes must wait for admin review."
+      );
+      return;
+    }
+
     if (hasBlockingError) {
       setErr(
         imageOverLimit
@@ -1923,6 +2070,7 @@ export default function SupplierEditProduct() {
       );
       return;
     }
+
     updateM.mutate();
   };
 
@@ -1950,6 +2098,13 @@ export default function SupplierEditProduct() {
               <ChevronDown size={16} className={summaryOpen ? "rotate-180 transition" : "transition"} />
             </button>
           </div>
+
+          {hasPendingNonStockBlock && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+              <b>Pending approval:</b> You already have a change request under review for this product.
+              You can still update stock/qty, but other changes must wait until admin approves or rejects the pending request.
+            </div>
+          )}
 
           {summaryOpen && (
             <div className="px-4 pb-4">
@@ -2062,7 +2217,13 @@ export default function SupplierEditProduct() {
 
           {!offersOnly && isLive && nonStockChangesRequireReview && (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-              <b>Review notice:</b> You’ve made changes beyond stock. Saving will submit changes for <b>admin review</b>.
+              <b>Review notice:</b> Price/content changes on a LIVE product will be submitted for <b>admin approval</b>. Stock-only changes still apply immediately.
+            </div>
+          )}
+
+          {!offersOnly && isLive && pendingProductPatch && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
+              <b>Pending approval:</b> This product already has a submitted change request under review.
             </div>
           )}
 
@@ -2161,8 +2322,6 @@ export default function SupplierEditProduct() {
                         value={retailPrice}
                         onChange={onChangeBasePrice}
                         inputMode="decimal"
-                        disabled={isLive}
-                        readOnly={isLive}
                         placeholder="e.g. 25000"
                       />
                       {!!retailPrice && (
@@ -2275,9 +2434,8 @@ export default function SupplierEditProduct() {
                 }
                 right={
                   <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${
-                      offersOnly ? "opacity-60 pointer-events-none" : ""
-                    }`}
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${offersOnly ? "opacity-60 pointer-events-none" : ""
+                      }`}
                   >
                     <ImagePlus size={16} /> Add files
                     <input
@@ -2555,9 +2713,8 @@ export default function SupplierEditProduct() {
                               return (
                                 <label
                                   key={x.id}
-                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
-                                    checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-                                  }`}
+                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+                                    }`}
                                 >
                                   <input
                                     type="checkbox"
@@ -2674,6 +2831,24 @@ export default function SupplierEditProduct() {
                                 Qty: <b>{rowQty || 0}</b> · Price:{" "}
                                 <b>{row.unitPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
                               </div>
+
+                              {!offersOnly &&
+                                isLive &&
+                                row.variantId &&
+                                pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice != null &&
+                                Number(pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice) !==
+                                Number(row.activeUnitPrice ?? effectiveVariantPrice) && (
+                                  <div className="text-[11px] text-amber-700 mt-1">
+                                    Pending variant:{" "}
+                                    <b>
+                                      {ngn.format(
+                                        Number(
+                                          pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice ?? 0
+                                        )
+                                      )}
+                                    </b>
+                                  </div>
+                                )}
 
                               {offersOnly && hasPendingVarPrice && (
                                 <div className="text-[11px] text-amber-700 mt-1">
@@ -2886,6 +3061,21 @@ export default function SupplierEditProduct() {
                         <span className="text-zinc-500">Base price</span>
                         <b className="text-zinc-900">{retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}</b>
                       </div>
+
+                      {!offersOnly && isLive && (
+                        <div className="text-[11px] text-zinc-600 mt-1">
+                          Active (approved): <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
+                        </div>
+                      )}
+
+                      {!offersOnly &&
+                        isLive &&
+                        pendingProductPatch?.basePrice != null &&
+                        Number(pendingProductPatch.basePrice) !== Number(activeBasePriceForDisplay) && (
+                          <div className="text-[11px] text-amber-700 mt-1">
+                            Pending: <b>{ngn.format(Number(pendingProductPatch.basePrice ?? 0))}</b>
+                          </div>
+                        )}
 
                       <div className="flex items-center justify-between">
                         <span className="text-zinc-500">SKU</span>

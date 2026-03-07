@@ -54,12 +54,219 @@ function parsePrefixedId(id: string): { kind: "BASE" | "VARIANT" | "LEGACY"; raw
   return { kind: "LEGACY", rawId: s };
 }
 
+function normalizeVariantOptions(raw: any): Array<{ attributeId: string; valueId: string }> {
+  const arr = Array.isArray(raw) ? raw : [];
+
+  const pickAttributeId = (o: any) =>
+    String(o?.attributeId ?? o?.attribute?.id ?? o?.attributeValue?.attributeId ?? o?.value?.attributeId ?? "").trim();
+
+  const pickValueId = (o: any) =>
+    String(o?.valueId ?? o?.attributeValueId ?? o?.value?.id ?? o?.attributeValue?.id ?? "").trim();
+
+  const m = new Map<string, string>();
+  for (const o of arr) {
+    const aid = pickAttributeId(o);
+    const vid = pickValueId(o);
+    if (!aid || !vid) continue;
+    m.set(aid, vid);
+  }
+
+  return Array.from(m.entries()).map(([attributeId, valueId]) => ({ attributeId, valueId }));
+}
+
+function comboKey(options: Array<{ attributeId: string; valueId: string }>) {
+  return (options || [])
+    .slice()
+    .sort((a, b) => {
+      const ak = `${a.attributeId}:${a.valueId}`;
+      const bk = `${b.attributeId}:${b.valueId}`;
+      return ak.localeCompare(bk);
+    })
+    .map((o) => `${o.attributeId}=${o.valueId}`)
+    .join("|");
+}
+
+function mergePatches(offerPatch: any, productPatch: any) {
+  const out: Record<string, any> = {};
+
+  if (productPatch && typeof productPatch === "object") {
+    Object.assign(out, productPatch);
+  }
+  if (offerPatch && typeof offerPatch === "object") {
+    Object.assign(out, offerPatch);
+  }
+
+  return out;
+}
+
+async function createOrGetVariantByCombo(
+  tx: Prisma.TransactionClient,
+  args: {
+    productId: string;
+    skuBase: string;
+    desiredSku?: string | null;
+    options: Array<{ attributeId: string; valueId: string }>;
+    qty: number;
+    inStock: boolean;
+  }
+) {
+  const { productId, skuBase, desiredSku, options, qty, inStock } = args;
+  const cleanOptions = normalizeVariantOptions(options);
+  if (!cleanOptions.length) return null;
+
+  const key = comboKey(cleanOptions);
+
+  const existingVariants = await tx.productVariant.findMany({
+    where: { productId },
+    select: {
+      id: true,
+      options: { select: { attributeId: true, valueId: true } },
+    },
+  });
+
+  for (const v of existingVariants) {
+    const k = comboKey(
+      (v.options || []).map((o) => ({
+        attributeId: String(o.attributeId),
+        valueId: String(o.valueId),
+      }))
+    );
+    if (k === key) return v.id;
+  }
+
+  const baseSku =
+    String(desiredSku ?? "").trim() ||
+    `${String(skuBase || "VAR").trim().toUpperCase()}-VAR-${Date.now()}`;
+
+  const created = await tx.productVariant.create({
+    data: {
+      productId,
+      sku: baseSku,
+      retailPrice: null,
+      inStock,
+      imagesJson: [],
+      availableQty: qty,
+      isActive: true,
+      archivedAt: null,
+    } as any,
+    select: { id: true },
+  });
+
+  await tx.productVariantOption.createMany({
+    data: cleanOptions.map((o) => ({
+      variantId: created.id,
+      attributeId: o.attributeId,
+      valueId: o.valueId,
+      unitPrice: null,
+    })),
+    skipDuplicates: true,
+  });
+
+  return created.id;
+}
+
+async function writeProductAttributes(
+  tx: Prisma.TransactionClient,
+  productId: string,
+  attributeSelections?: Array<{ attributeId: string; valueId?: string; valueIds?: string[]; text?: string }>
+) {
+  if (!attributeSelections) return;
+
+  await tx.productAttributeOption.deleteMany({ where: { productId } });
+  await tx.productAttributeText.deleteMany({ where: { productId } });
+
+  const optionRows: Array<{ productId: string; attributeId: string; valueId: string }> = [];
+
+  for (const sel of attributeSelections) {
+    const attributeId = String(sel?.attributeId ?? "").trim();
+    if (!attributeId) continue;
+
+    if (typeof sel?.text === "string" && sel.text.trim()) {
+      await tx.productAttributeText.create({
+        data: {
+          productId,
+          attributeId,
+          value: sel.text.trim(),
+        },
+      });
+      continue;
+    }
+
+    if (sel?.valueId) {
+      optionRows.push({
+        productId,
+        attributeId,
+        valueId: String(sel.valueId),
+      });
+      continue;
+    }
+
+    if (Array.isArray(sel?.valueIds)) {
+      for (const valueId of sel.valueIds) {
+        if (!valueId) continue;
+        optionRows.push({
+          productId,
+          attributeId,
+          valueId: String(valueId),
+        });
+      }
+    }
+  }
+
+  if (optionRows.length) {
+    await tx.productAttributeOption.createMany({
+      data: optionRows,
+      skipDuplicates: true,
+    });
+  }
+}
+
+async function refreshProductPendingStateTx(tx: Prisma.TransactionClient, productId: string) {
+  const [offerPendingCount, productPendingCount] = await Promise.all([
+    tx.supplierOfferChangeRequest.count({
+      where: { productId, status: "PENDING" },
+    }),
+    tx.productChangeRequest.count({
+      where: { productId, status: "PENDING" },
+    }),
+  ]);
+
+  const hasPendingChanges = offerPendingCount + productPendingCount > 0;
+
+  await tx.product.update({
+    where: { id: productId },
+    data: {
+      hasPendingChanges,
+      status: hasPendingChanges ? ("PENDING" as any) : ("LIVE" as any),
+    } as any,
+  });
+
+  return { hasPendingChanges };
+}
+
+async function refreshProductPendingFlagTx(tx: Prisma.TransactionClient, productId: string) {
+  const [offerPendingCount, productPendingCount] = await Promise.all([
+    tx.supplierOfferChangeRequest.count({
+      where: { productId, status: "PENDING" },
+    }),
+    tx.productChangeRequest.count({
+      where: { productId, status: "PENDING" },
+    }),
+  ]);
+
+  await tx.product.update({
+    where: { id: productId },
+    data: {
+      hasPendingChanges: offerPendingCount + productPendingCount > 0,
+    } as any,
+  });
+}
+
 /**
  * Hard-delete safety:
  * Block deletes if product OR any of its variants have ever been used in orders.
  */
 async function assertProductOffersDeletable(productId: string) {
-  // 1) direct product usage
   const hitByProduct = await prisma.orderItem.findFirst({
     where: { productId },
     select: { id: true },
@@ -67,13 +274,12 @@ async function assertProductOffersDeletable(productId: string) {
 
   if (hitByProduct) {
     const err: any = new Error(
-      "Cannot delete supplier offers: this product has been used in orders.",
+      "Cannot delete supplier offers: this product has been used in orders."
     );
     err.statusCode = 409;
     throw err;
   }
 
-  // 2) variant usage (if your order items attach via variantId)
   const variants = await prisma.productVariant.findMany({
     where: { productId },
     select: { id: true },
@@ -89,7 +295,7 @@ async function assertProductOffersDeletable(productId: string) {
 
   if (hitByVariant) {
     const err: any = new Error(
-      "Cannot delete supplier offers: a variant of this product has been used in orders.",
+      "Cannot delete supplier offers: a variant of this product has been used in orders."
     );
     err.statusCode = 409;
     throw err;
@@ -118,24 +324,210 @@ async function assertSupplierMatchesProduct(productId: string, supplierIdMaybe?:
   }
 }
 
+async function applyProductChangePatchTx(
+  tx: Prisma.TransactionClient,
+  row: {
+    productId: string;
+    supplierId?: string | null;
+    proposedPatch?: any;
+    product?: {
+      supplierId?: string | null;
+    } | null;
+  }
+) {
+  const productId = String(row.productId);
+  const patch = (row.proposedPatch ?? {}) as any;
+
+  const productData: any = {};
+
+  if (patch.description !== undefined) productData.description = patch.description ?? "";
+  if (patch.categoryId !== undefined) productData.categoryId = patch.categoryId ?? null;
+  if (patch.brandId !== undefined) productData.brandId = patch.brandId ?? null;
+  if (patch.imagesJson !== undefined) {
+    productData.imagesJson = Array.isArray(patch.imagesJson) ? patch.imagesJson : [];
+  }
+  if (patch.communicationCost !== undefined) {
+    productData.communicationCost =
+      patch.communicationCost == null ? null : toDecimal(patch.communicationCost);
+  }
+
+  if (Object.keys(productData).length) {
+    await tx.product.update({
+      where: { id: productId },
+      data: productData,
+    });
+  }
+
+  if (patch.attributeSelections !== undefined) {
+    await writeProductAttributes(
+      tx,
+      productId,
+      Array.isArray(patch.attributeSelections) ? patch.attributeSelections : []
+    );
+  }
+
+  if (Array.isArray(patch.variants) && patch.variants.length) {
+    const productRow = await tx.product.findUnique({
+      where: { id: productId },
+      select: { id: true, sku: true },
+    });
+
+    const supplierId = String(row.supplierId ?? row.product?.supplierId ?? "");
+
+    let baseOffer: any = null;
+    if (supplierId) {
+      baseOffer = await tx.supplierProductOffer.findFirst({
+        where: { productId, supplierId },
+        select: { id: true, basePrice: true, currency: true, leadDays: true, isActive: true },
+      });
+    }
+
+    for (const item of patch.variants) {
+      if (String(item?.action || "") !== "CREATE_VARIANT_COMBO") continue;
+
+      const options = normalizeVariantOptions(item?.options ?? []);
+      if (!options.length) continue;
+
+      const qty = Math.max(0, Math.trunc(Number(item?.availableQty ?? 0)));
+      const unitPrice = Number(item?.unitPrice ?? baseOffer?.basePrice ?? 0);
+      const isActive = item?.isActive !== undefined ? !!item.isActive : true;
+      const inStock = item?.inStock !== undefined ? !!item.inStock : qty > 0;
+
+      const variantId = await createOrGetVariantByCombo(tx, {
+        productId,
+        skuBase: String(productRow?.sku || "PRODUCT"),
+        desiredSku: item?.sku ?? null,
+        options,
+        qty,
+        inStock,
+      });
+
+      if (!variantId || !supplierId) continue;
+
+      const existingVarOffer = await tx.supplierVariantOffer.findFirst({
+        where: { variantId, supplierId },
+        select: { id: true },
+      });
+
+      if (existingVarOffer) {
+        await tx.supplierVariantOffer.update({
+          where: { id: existingVarOffer.id },
+          data: {
+            productId,
+            supplierId,
+            supplierProductOfferId: baseOffer?.id ?? null,
+            unitPrice: toDecimal(unitPrice),
+            currency: baseOffer?.currency ?? "NGN",
+            availableQty: qty,
+            inStock,
+            isActive,
+            leadDays: baseOffer?.leadDays ?? null,
+          },
+        });
+      } else {
+        await tx.supplierVariantOffer.create({
+          data: {
+            productId,
+            variantId,
+            supplierId,
+            supplierProductOfferId: baseOffer?.id ?? null,
+            unitPrice: toDecimal(unitPrice),
+            currency: baseOffer?.currency ?? "NGN",
+            availableQty: qty,
+            inStock,
+            isActive,
+            leadDays: baseOffer?.leadDays ?? null,
+          },
+        });
+      }
+    }
+  }
+}
+
+async function autoApproveLinkedProductChangesTx(
+  tx: Prisma.TransactionClient,
+  args: {
+    productId: string;
+    excludeRequestId?: string | null;
+  }
+) {
+  const productRequests = await tx.productChangeRequest.findMany({
+    where: {
+      productId: args.productId,
+      status: "PENDING",
+      ...(args.excludeRequestId ? { id: { not: args.excludeRequestId } } : {}),
+    },
+    include: {
+      product: {
+        select: {
+          id: true,
+          supplierId: true,
+        },
+      },
+    },
+    orderBy: { requestedAt: "asc" },
+  });
+
+  for (const productReq of productRequests) {
+    await applyProductChangePatchTx(tx, productReq);
+
+    await tx.productChangeRequest.update({
+      where: { id: productReq.id },
+      data: {
+        status: "APPROVED",
+        reviewedAt: new Date(),
+        reviewNote: "Auto-approved together with linked offer change request.",
+      },
+    });
+  }
+
+  return { count: productRequests.length };
+}
+
+async function autoRejectLinkedProductChangesTx(
+  tx: Prisma.TransactionClient,
+  args: {
+    productId: string;
+    excludeRequestId?: string | null;
+    reasonText: string;
+  }
+) {
+  const productRequests = await tx.productChangeRequest.findMany({
+    where: {
+      productId: args.productId,
+      status: "PENDING",
+      ...(args.excludeRequestId ? { id: { not: args.excludeRequestId } } : {}),
+    },
+    select: { id: true },
+    orderBy: { requestedAt: "asc" },
+  });
+
+  for (const productReq of productRequests) {
+    await tx.productChangeRequest.update({
+      where: { id: productReq.id },
+      data: {
+        status: "REJECTED",
+        reviewedAt: new Date(),
+        reviewNote: `Auto-rejected together with linked offer change request. ${args.reasonText}`.trim(),
+      },
+    });
+  }
+
+  return { count: productRequests.length };
+}
+
 /* ----------------------------------------------------------------------------
  * Schemas
  * --------------------------------------------------------------------------*/
 
-/**
- * PATCH BASE
- */
 const patchBaseSchema = z
   .object({
-    supplierId: z.string().min(1).optional(), // validated against Product.supplierId
-
-    price: coerceNumber(0).optional(), // maps to basePrice
+    supplierId: z.string().min(1).optional(),
+    price: coerceNumber(0).optional(),
     currency: z.string().min(1).optional(),
     availableQty: coerceInt(0).optional(),
     leadDays: coerceInt(0).nullable().optional(),
     isActive: coerceBool.optional(),
-
-    // optional conversion request (BASE -> VARIANT) if caller sends variantId
     variantId: z
       .preprocess((v) => {
         if (v === "" || v == null) return undefined;
@@ -145,20 +537,12 @@ const patchBaseSchema = z
   })
   .passthrough();
 
-/**
- * PATCH VARIANT
- *
- * IMPORTANT: allow variantId: null so the UI can request VARIANT -> BASE conversion.
- */
 const patchVariantSchema = z
   .object({
     supplierId: z.string().min(1).optional(),
-
-    // string id OR null (for convert-to-base). We *don't* preprocess null away.
     variantId: z.string().min(1).nullable().optional(),
-
-    unitPrice: coerceNumber(0).optional(), // legacy name
-    price: coerceNumber(0).optional(), // preferred name
+    unitPrice: coerceNumber(0).optional(),
+    price: coerceNumber(0).optional(),
     currency: z.string().min(1).optional(),
     availableQty: coerceInt(0).optional(),
     leadDays: coerceInt(0).nullable().optional(),
@@ -166,22 +550,16 @@ const patchVariantSchema = z
   })
   .passthrough();
 
-/**
- * CREATE (single price field: `price`)
- */
 const createSchema = z
   .object({
     kind: z.enum(["BASE", "VARIANT"]).optional(),
-
     supplierId: z.string().min(1).optional(),
-
     variantId: z
       .preprocess((v) => {
         if (v === "" || v == null) return null;
         return String(v);
       }, z.string().min(1).nullable())
       .optional(),
-
     price: coerceNumber(0),
     currency: z.string().min(1).default("NGN"),
     availableQty: coerceInt(0, 0).optional(),
@@ -191,58 +569,56 @@ const createSchema = z
   .superRefine((val, ctx) => {
     const inferredKind: "BASE" | "VARIANT" = val.kind ?? (val.variantId ? "VARIANT" : "BASE");
 
-    if (inferredKind === "BASE") {
-      if (val.variantId != null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["variantId"],
-          message: "variantId must be null/omitted for BASE offer",
-        });
-      }
+    if (inferredKind === "BASE" && val.variantId != null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["variantId"],
+        message: "variantId must be null/omitted for BASE offer",
+      });
     }
 
-    if (inferredKind === "VARIANT") {
-      if (!val.variantId) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["variantId"],
-          message: "variantId is required for VARIANT offer",
-        });
-      }
+    if (inferredKind === "VARIANT" && !val.variantId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["variantId"],
+        message: "variantId is required for VARIANT offer",
+      });
     }
   });
 
+const changeListSchema = z.object({
+  status: z.enum(["PENDING", "APPROVED", "REJECTED", "CANCELED", "EXPIRED"]).optional().default("PENDING"),
+});
+
+const rejectSchema = z.object({
+  reason: z.string().trim().optional(),
+});
+
 /* ----------------------------------------------------------------------------
- * Unified DTO (derived supplier from Product)
+ * Unified DTO
  * --------------------------------------------------------------------------*/
 function toDtoBase(
   base: any,
   supplierMeta?: { supplierId: string; supplierName?: string | null },
-  flags?: { hasOrders?: boolean },
+  flags?: { hasOrders?: boolean }
 ) {
   const basePriceNum = base.basePrice != null ? Number(base.basePrice) : 0;
 
   return {
     id: `base:${base.id}`,
     kind: "BASE" as const,
-
     productId: String(base.productId),
-
     supplierId: supplierMeta?.supplierId ? String(supplierMeta.supplierId) : "",
     supplierName: supplierMeta?.supplierName ?? undefined,
-
     variantId: null as null,
     variantSku: undefined as undefined,
-
     basePrice: basePriceNum,
     unitPrice: undefined as undefined,
-
     currency: base.currency ?? "NGN",
     availableQty: base.availableQty ?? 0,
     leadDays: base.leadDays ?? undefined,
     isActive: !!base.isActive,
     inStock: !!base.inStock,
-
     hasOrders: !!flags?.hasOrders,
   };
 }
@@ -250,33 +626,79 @@ function toDtoBase(
 function toDtoVariant(
   v: any,
   supplierMeta?: { supplierId: string; supplierName?: string | null },
-  flags?: { hasOrders?: boolean },
+  flags?: { hasOrders?: boolean }
 ) {
   const unitPriceNum = v.unitPrice != null ? Number(v.unitPrice) : 0;
 
   return {
     id: `variant:${v.id}`,
     kind: "VARIANT" as const,
-
     productId: String(v.productId),
-
     supplierId: supplierMeta?.supplierId ? String(supplierMeta.supplierId) : "",
     supplierName: supplierMeta?.supplierName ?? undefined,
-
     variantId: String(v.variantId),
     variantSku: v.variant?.sku ?? undefined,
-
     basePrice: undefined as undefined,
     unitPrice: unitPriceNum,
-
     currency: v.currency ?? "NGN",
     availableQty: v.availableQty ?? 0,
     leadDays: v.leadDays ?? undefined,
     isActive: !!v.isActive,
     inStock: !!v.inStock,
-
     hasOrders: !!flags?.hasOrders,
   };
+}
+
+async function markProductRejectedTx(
+  tx: Prisma.TransactionClient,
+  productId: string
+) {
+  const [offerPendingCount, productPendingCount] = await Promise.all([
+    tx.supplierOfferChangeRequest.count({
+      where: { productId, status: "PENDING" },
+    }),
+    tx.productChangeRequest.count({
+      where: { productId, status: "PENDING" },
+    }),
+  ]);
+
+  const hasPendingChanges = offerPendingCount + productPendingCount > 0;
+
+  await tx.product.update({
+    where: { id: productId },
+    data: {
+      hasPendingChanges,
+      status: hasPendingChanges ? ("PENDING" as any) : ("REJECTED" as any),
+    } as any,
+  });
+
+  return { hasPendingChanges };
+}
+
+async function markProductApprovedOrLiveTx(
+  tx: Prisma.TransactionClient,
+  productId: string
+) {
+  const [offerPendingCount, productPendingCount] = await Promise.all([
+    tx.supplierOfferChangeRequest.count({
+      where: { productId, status: "PENDING" },
+    }),
+    tx.productChangeRequest.count({
+      where: { productId, status: "PENDING" },
+    }),
+  ]);
+
+  const hasPendingChanges = offerPendingCount + productPendingCount > 0;
+
+  await tx.product.update({
+    where: { id: productId },
+    data: {
+      hasPendingChanges,
+      status: hasPendingChanges ? ("PENDING" as any) : ("LIVE" as any),
+    } as any,
+  });
+
+  return { hasPendingChanges };
 }
 
 /* ----------------------------------------------------------------------------
@@ -285,25 +707,22 @@ function toDtoVariant(
 router.use(requireAuth, requireAdmin);
 
 /* ----------------------------------------------------------------------------
- * ROUTES
+ * Offer CRUD routes
  * --------------------------------------------------------------------------*/
 
-/**
- * Shared handler: GET bulk offers for many products
- */
 const bulkOffersHandler = wrap(async (req, res) => {
   const productIdsRaw = String(req.query.productIds ?? "").trim();
   const productIdSingle = String(req.query.productId ?? "").trim();
 
   const ids = productIdsRaw
     ? Array.from(
-        new Set(
-          productIdsRaw
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean),
-        ),
+      new Set(
+        productIdsRaw
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
       )
+    )
     : productIdSingle
       ? [productIdSingle]
       : [];
@@ -321,13 +740,10 @@ const bulkOffersHandler = wrap(async (req, res) => {
     },
   });
 
-  const supplierByProductId = new Map<
-    string,
-    { supplierId: string; supplierName?: string | null }
-  >();
+  const supplierByProductId = new Map<string, { supplierId: string; supplierName?: string | null }>();
   for (const p of products) {
     supplierByProductId.set(String(p.id), {
-      supplierId: String(p.supplierId),
+      supplierId: String(p.supplierId ?? ""),
       supplierName: p.supplier?.name ?? null,
     });
   }
@@ -347,7 +763,6 @@ const bulkOffersHandler = wrap(async (req, res) => {
         inStock: true,
       },
     }),
-
     prisma.supplierVariantOffer.findMany({
       where: { productId: { in: ids } },
       orderBy: { createdAt: "desc" },
@@ -357,62 +772,43 @@ const bulkOffersHandler = wrap(async (req, res) => {
     }),
   ]);
 
-  // ---- hasOrders flags ----
   const baseIds = baseOffers.map((b) => b.id);
   const variantIds = variantOffers.map((v) => v.id);
 
   const [baseOrderRows, variantOrderRows] = await Promise.all([
     baseIds.length
       ? prisma.orderItem.findMany({
-          where: { chosenSupplierProductOfferId: { in: baseIds } },
-          select: { chosenSupplierProductOfferId: true },
-        })
+        where: { chosenSupplierProductOfferId: { in: baseIds } },
+        select: { chosenSupplierProductOfferId: true },
+      })
       : [],
     variantIds.length
       ? prisma.orderItem.findMany({
-          where: { chosenSupplierVariantOfferId: { in: variantIds } },
-          select: { chosenSupplierVariantOfferId: true },
-        })
+        where: { chosenSupplierVariantOfferId: { in: variantIds } },
+        select: { chosenSupplierVariantOfferId: true },
+      })
       : [],
   ]);
 
-  const baseUsedSet = new Set(
-    baseOrderRows.map((o) => o.chosenSupplierProductOfferId),
-  );
-  const variantUsedSet = new Set(
-    variantOrderRows.map((o) => o.chosenSupplierVariantOfferId),
-  );
+  const baseUsedSet = new Set(baseOrderRows.map((o) => o.chosenSupplierProductOfferId));
+  const variantUsedSet = new Set(variantOrderRows.map((o) => o.chosenSupplierVariantOfferId));
 
   const out: any[] = [];
   for (const b of baseOffers as any[]) {
     const supplierMeta = supplierByProductId.get(String(b.productId));
-    out.push(
-      toDtoBase(b, supplierMeta, { hasOrders: baseUsedSet.has(b.id) }),
-    );
+    out.push(toDtoBase(b, supplierMeta, { hasOrders: baseUsedSet.has(b.id) }));
   }
   for (const v of variantOffers as any[]) {
     const supplierMeta = supplierByProductId.get(String(v.productId));
-    out.push(
-      toDtoVariant(v, supplierMeta, { hasOrders: variantUsedSet.has(v.id) }),
-    );
+    out.push(toDtoVariant(v, supplierMeta, { hasOrders: variantUsedSet.has(v.id) }));
   }
 
   return res.json({ data: out });
 });
 
-/**
- * GET /api/admin/supplier-offers?productIds=a,b,c
- */
 router.get("/supplier-offers", bulkOffersHandler);
-
-/**
- * Compatibility if mounted at /api/admin/supplier-offers
- */
 router.get("/", bulkOffersHandler);
 
-/**
- * GET /api/admin/products/:productId/supplier-offers
- */
 router.get(
   "/products/:productId/supplier-offers",
   wrap(async (req, res) => {
@@ -425,7 +821,7 @@ router.get(
     if (!product) return res.status(404).json({ error: "Product not found" });
 
     const supplierMeta = {
-      supplierId: String(product.supplierId),
+      supplierId: String(product.supplierId ?? ""),
       supplierName: product.supplier?.name ?? null,
     };
 
@@ -444,7 +840,6 @@ router.get(
           inStock: true,
         },
       }),
-
       prisma.supplierVariantOffer.findMany({
         where: { productId },
         orderBy: { createdAt: "desc" },
@@ -459,12 +854,9 @@ router.get(
     for (const v of variantOffers as any[]) out.push(toDtoVariant(v, supplierMeta));
 
     return res.json({ data: out });
-  }),
+  })
 );
 
-/**
- * POST /api/admin/products/:productId/supplier-offers
- */
 router.post(
   "/products/:productId/supplier-offers",
   wrap(async (req, res) => {
@@ -484,7 +876,6 @@ router.post(
       });
     }
 
-    // accept supplierId but validate it matches product
     await assertSupplierMatchesProduct(productId, parsed.supplierId ?? null);
 
     const variantId = parsed.variantId ?? null;
@@ -504,11 +895,10 @@ router.post(
       supplierName: product.supplier?.name ?? null,
     };
 
-    // ---------------- BASE ----------------
     if (kind === "BASE" || !variantId) {
       const data = {
         productId,
-        supplierId, // required
+        supplierId,
         basePrice: toDecimal(price),
         currency: parsed.currency ?? "NGN",
         availableQty: qty,
@@ -517,84 +907,82 @@ router.post(
         inStock,
       };
 
-      // At most one base offer per product+supplier
       const existing = await prisma.supplierProductOffer.findFirst({
         where: { productId, supplierId },
         select: { id: true },
       });
 
-      let upserted;
-      if (existing) {
-        upserted = await prisma.supplierProductOffer.update({
+      const upserted = existing
+        ? await prisma.supplierProductOffer.update({
           where: { id: existing.id },
           data,
-        });
-      } else {
-        upserted = await prisma.supplierProductOffer.create({
-          data,
-        });
-      }
+        })
+        : await prisma.supplierProductOffer.create({ data });
 
       await recomputeProductStockTx(prisma as any, productId);
       return res.status(201).json({ data: toDtoBase(upserted, supplierMeta) });
     }
 
-    // ---------------- VARIANT ----------------
     const variant = await prisma.productVariant.findUnique({
       where: { id: String(variantId) },
       select: { id: true, productId: true },
     });
     if (!variant || String(variant.productId) !== productId) {
-      return res
-        .status(400)
-        .json({ error: "variantId does not belong to this product" });
+      return res.status(400).json({ error: "variantId does not belong to this product" });
     }
 
-    // Link to base if exists; DO NOT create base automatically
     const base = await prisma.supplierProductOffer.findFirst({
       where: { productId, supplierId },
       select: { id: true, currency: true },
     });
 
-    const created = await prisma.supplierVariantOffer.upsert({
-      where: { variantId: String(variantId) }, // unique in schema
-      create: {
-        productId,
-        variantId: String(variantId),
-        supplierProductOfferId: base?.id ?? null,
-        supplierId, // required
-        unitPrice: toDecimal(price),
-        currency: parsed.currency ?? base?.currency ?? "NGN",
-        availableQty: qty,
-        leadDays: parsed.leadDays == null ? null : parsed.leadDays,
-        isActive,
-        inStock,
-      },
-      update: {
-        productId,
-        supplierProductOfferId: base?.id ?? null,
-        supplierId, // keep in sync
-        unitPrice: toDecimal(price),
-        currency: parsed.currency ?? base?.currency ?? "NGN",
-        availableQty: qty,
-        leadDays: parsed.leadDays == null ? null : parsed.leadDays,
-        isActive,
-        inStock,
-      },
-      include: {
-        variant: { select: { id: true, sku: true, productId: true } },
-      },
+    const existingVariant = await prisma.supplierVariantOffer.findFirst({
+      where: { variantId: String(variantId), supplierId },
+      select: { id: true },
     });
+
+    const created = existingVariant
+      ? await prisma.supplierVariantOffer.update({
+        where: { id: existingVariant.id },
+        data: {
+          productId,
+          variantId: String(variantId),
+          supplierProductOfferId: base?.id ?? null,
+          supplierId,
+          unitPrice: toDecimal(price),
+          currency: parsed.currency ?? base?.currency ?? "NGN",
+          availableQty: qty,
+          leadDays: parsed.leadDays == null ? null : parsed.leadDays,
+          isActive,
+          inStock,
+        },
+        include: {
+          variant: { select: { id: true, sku: true, productId: true } },
+        },
+      })
+      : await prisma.supplierVariantOffer.create({
+        data: {
+          productId,
+          variantId: String(variantId),
+          supplierProductOfferId: base?.id ?? null,
+          supplierId,
+          unitPrice: toDecimal(price),
+          currency: parsed.currency ?? base?.currency ?? "NGN",
+          availableQty: qty,
+          leadDays: parsed.leadDays == null ? null : parsed.leadDays,
+          isActive,
+          inStock,
+        },
+        include: {
+          variant: { select: { id: true, sku: true, productId: true } },
+        },
+      });
 
     await recomputeProductStockTx(prisma as any, productId);
     return res.status(201).json({ data: toDtoVariant(created, supplierMeta) });
-  }),
+  })
 );
 
-/**
- * PATCH /api/admin/supplier-offers/:id
- * id: base:<id> | variant:<id>
- */
 router.patch(
   "/supplier-offers/:id",
   wrap(async (req, res, next) => {
@@ -603,16 +991,11 @@ router.patch(
 
       if (parsedId.kind === "LEGACY") {
         return res.status(400).json({
-          error:
-            "Legacy offer id received. Use base:<id> or variant:<id> with the new 2-table system.",
+          error: "Legacy offer id received. Use base:<id> or variant:<id> with the new 2-table system.",
         });
       }
 
-      // helper: is this specific offer row referenced in any order item?
-      async function assertOfferRowNotUsedInOrdersOrThrow(
-        kind: "BASE" | "VARIANT",
-        rawId: string,
-      ) {
+      async function assertOfferRowNotUsedInOrdersOrThrow(kind: "BASE" | "VARIANT", rawId: string) {
         const hit = await prisma.orderItem.findFirst({
           where:
             kind === "BASE"
@@ -623,14 +1006,13 @@ router.patch(
 
         if (hit) {
           const err: any = new Error(
-            "Cannot convert/delete this offer because it has been used in orders. You can still PATCH price/qty/isActive on the same row.",
+            "Cannot convert/delete this offer because it has been used in orders. You can still PATCH price/qty/isActive on the same row."
           );
           err.statusCode = 409;
           throw err;
         }
       }
 
-      // ------------------------------ BASE PATCH ------------------------------
       if (parsedId.kind === "BASE") {
         const patch = patchBaseSchema.parse(req.body ?? {});
 
@@ -660,13 +1042,12 @@ router.patch(
 
         await assertSupplierMatchesProduct(productId, patch.supplierId ?? null);
 
-        const supplierId = String(product.supplierId);
+        const supplierId = String(product.supplierId ?? existing.supplierId);
         const supplierMeta = {
           supplierId,
           supplierName: product.supplier?.name ?? null,
         };
 
-        // OPTIONAL convert BASE -> VARIANT if variantId provided
         const wantsConvertToVariant = !!patch.variantId;
         if (wantsConvertToVariant) {
           await assertOfferRowNotUsedInOrdersOrThrow("BASE", existing.id);
@@ -678,31 +1059,21 @@ router.patch(
             select: { id: true, productId: true },
           });
           if (!variant || String(variant.productId) !== productId) {
-            return res
-              .status(400)
-              .json({ error: "variantId does not belong to this product" });
+            return res.status(400).json({ error: "variantId does not belong to this product" });
           }
 
           const nextPrice =
-            patch.price !== undefined
-              ? Number(patch.price)
-              : existing.basePrice != null
-                ? Number(existing.basePrice)
-                : 0;
+            patch.price !== undefined ? Number(patch.price) : existing.basePrice != null ? Number(existing.basePrice) : 0;
 
           if (!Number.isFinite(nextPrice) || nextPrice <= 0) {
             return res.status(400).json({ error: "price must be greater than 0" });
           }
 
           const nextQty =
-            patch.availableQty !== undefined
-              ? Number(patch.availableQty)
-              : Number(existing.availableQty ?? 0);
+            patch.availableQty !== undefined ? Number(patch.availableQty) : Number(existing.availableQty ?? 0);
 
-          const nextIsActive =
-            patch.isActive !== undefined ? !!patch.isActive : !!existing.isActive;
+          const nextIsActive = patch.isActive !== undefined ? !!patch.isActive : !!existing.isActive;
           const nextInStock = !!nextIsActive && nextQty > 0;
-
           const nextCurrency = patch.currency ?? existing.currency ?? "NGN";
           const nextLeadDays =
             patch.leadDays !== undefined
@@ -712,36 +1083,46 @@ router.patch(
               : existing.leadDays ?? null;
 
           const moved = await prisma.$transaction(async (tx) => {
-            const created = await tx.supplierVariantOffer.upsert({
-              where: { variantId: targetVariantId },
-              create: {
-                productId,
-                variantId: targetVariantId,
-                supplierProductOfferId: null,
-                supplierId,
-                unitPrice: toDecimal(nextPrice),
-                currency: nextCurrency,
-                availableQty: nextQty,
-                leadDays: nextLeadDays,
-                isActive: nextIsActive,
-                inStock: nextInStock,
-              },
-              update: {
-                productId,
-                supplierProductOfferId: null,
-                supplierId,
-                unitPrice: toDecimal(nextPrice),
-                currency: nextCurrency,
-                availableQty: nextQty,
-                leadDays: nextLeadDays,
-                isActive: nextIsActive,
-                inStock: nextInStock,
-              },
-              include: { variant: { select: { id: true, sku: true, productId: true } } },
+            const existingVariant = await tx.supplierVariantOffer.findFirst({
+              where: { variantId: targetVariantId, supplierId },
+              select: { id: true },
             });
 
+            const row = existingVariant
+              ? await tx.supplierVariantOffer.update({
+                where: { id: existingVariant.id },
+                data: {
+                  productId,
+                  variantId: targetVariantId,
+                  supplierProductOfferId: null,
+                  supplierId,
+                  unitPrice: toDecimal(nextPrice),
+                  currency: nextCurrency,
+                  availableQty: nextQty,
+                  leadDays: nextLeadDays,
+                  isActive: nextIsActive,
+                  inStock: nextInStock,
+                },
+                include: { variant: { select: { id: true, sku: true, productId: true } } },
+              })
+              : await tx.supplierVariantOffer.create({
+                data: {
+                  productId,
+                  variantId: targetVariantId,
+                  supplierProductOfferId: null,
+                  supplierId,
+                  unitPrice: toDecimal(nextPrice),
+                  currency: nextCurrency,
+                  availableQty: nextQty,
+                  leadDays: nextLeadDays,
+                  isActive: nextIsActive,
+                  inStock: nextInStock,
+                },
+                include: { variant: { select: { id: true, sku: true, productId: true } } },
+              });
+
             await tx.supplierProductOffer.delete({ where: { id: existing.id } });
-            return created;
+            return row;
           });
 
           await recomputeProductStockTx(prisma as any, productId);
@@ -755,9 +1136,7 @@ router.patch(
           });
         }
 
-        // TRUE PATCH update only
-        const data: any = {};
-        data.supplierId = supplierId; // keep offer's supplier in sync
+        const data: any = { supplierId };
 
         if (patch.currency) data.currency = patch.currency;
 
@@ -778,11 +1157,8 @@ router.patch(
         if (patch.isActive !== undefined) data.isActive = !!patch.isActive;
 
         const nextQty =
-          data.availableQty !== undefined
-            ? Number(data.availableQty)
-            : Number(existing.availableQty ?? 0);
-        const nextActive =
-          data.isActive !== undefined ? !!data.isActive : !!existing.isActive;
+          data.availableQty !== undefined ? Number(data.availableQty) : Number(existing.availableQty ?? 0);
+        const nextActive = data.isActive !== undefined ? !!data.isActive : !!existing.isActive;
         data.inStock = !!nextActive && nextQty > 0;
 
         const updated = await prisma.supplierProductOffer.update({
@@ -810,7 +1186,6 @@ router.patch(
         });
       }
 
-      // ---------------------------- VARIANT PATCH -----------------------------
       const patch = patchVariantSchema.parse(req.body ?? {});
       const existing = await prisma.supplierVariantOffer.findUnique({
         where: { id: parsedId.rawId },
@@ -828,13 +1203,12 @@ router.patch(
 
       await assertSupplierMatchesProduct(productId, patch.supplierId ?? null);
 
-      const supplierId = String(product.supplierId);
+      const supplierId = String(product.supplierId ?? existing.supplierId);
       const supplierMeta = {
         supplierId,
         supplierName: product.supplier?.name ?? null,
       };
 
-      // convert VARIANT -> BASE if caller explicitly sends variantId: null
       const rawVariantId = (req.body as any)?.variantId;
       const wantsConvertToBase = rawVariantId === null;
 
@@ -856,14 +1230,10 @@ router.patch(
         }
 
         const nextQty =
-          patch.availableQty !== undefined
-            ? Number(patch.availableQty)
-            : Number(existing.availableQty ?? 0);
+          patch.availableQty !== undefined ? Number(patch.availableQty) : Number(existing.availableQty ?? 0);
 
-        const nextIsActive =
-          patch.isActive !== undefined ? !!patch.isActive : !!existing.isActive;
+        const nextIsActive = patch.isActive !== undefined ? !!patch.isActive : !!existing.isActive;
         const nextInStock = !!nextIsActive && nextQty > 0;
-
         const nextCurrency = patch.currency ?? existing.currency ?? "NGN";
         const nextLeadDays =
           patch.leadDays !== undefined
@@ -873,7 +1243,6 @@ router.patch(
             : existing.leadDays ?? null;
 
         const moved = await prisma.$transaction(async (tx) => {
-          // Upsert base per product+supplier
           const existingBase = await tx.supplierProductOffer.findFirst({
             where: { productId, supplierId },
             select: { id: true },
@@ -890,9 +1259,8 @@ router.patch(
             inStock: nextInStock,
           };
 
-          let createdBase;
-          if (existingBase) {
-            createdBase = await tx.supplierProductOffer.update({
+          const baseRow = existingBase
+            ? await tx.supplierProductOffer.update({
               where: { id: existingBase.id },
               data: baseData,
               select: {
@@ -905,9 +1273,8 @@ router.patch(
                 isActive: true,
                 inStock: true,
               },
-            });
-          } else {
-            createdBase = await tx.supplierProductOffer.create({
+            })
+            : await tx.supplierProductOffer.create({
               data: baseData,
               select: {
                 id: true,
@@ -920,10 +1287,9 @@ router.patch(
                 inStock: true,
               },
             });
-          }
 
           await tx.supplierVariantOffer.delete({ where: { id: existing.id } });
-          return createdBase;
+          return baseRow;
         });
 
         await recomputeProductStockTx(prisma as any, productId);
@@ -937,9 +1303,7 @@ router.patch(
         });
       }
 
-      // TRUE PATCH update only
-      const data: any = {};
-      data.supplierId = supplierId; // keep variant's supplier consistent
+      const data: any = { supplierId };
 
       if (patch.currency) data.currency = patch.currency;
 
@@ -966,34 +1330,28 @@ router.patch(
       }
       if (patch.isActive !== undefined) data.isActive = !!patch.isActive;
 
-      // allow changing variantId (must belong to same product)
       if (patch.variantId && typeof patch.variantId === "string") {
         const variant = await prisma.productVariant.findUnique({
           where: { id: String(patch.variantId) },
           select: { id: true, productId: true },
         });
         if (!variant || String(variant.productId) !== productId) {
-          return res
-            .status(400)
-            .json({ error: "variantId does not belong to this product" });
+          return res.status(400).json({ error: "variantId does not belong to this product" });
         }
         data.variantId = String(patch.variantId);
       }
 
-      // keep link to base if exists (per product+supplier)
       const base = await prisma.supplierProductOffer.findFirst({
         where: { productId, supplierId },
         select: { id: true },
       });
+
       data.supplierProductOfferId = base?.id ?? null;
       data.productId = productId;
 
       const nextQty =
-        data.availableQty !== undefined
-          ? Number(data.availableQty)
-          : Number(existing.availableQty ?? 0);
-      const nextActive =
-        data.isActive !== undefined ? !!data.isActive : !!existing.isActive;
+        data.availableQty !== undefined ? Number(data.availableQty) : Number(existing.availableQty ?? 0);
+      const nextActive = data.isActive !== undefined ? !!data.isActive : !!existing.isActive;
       data.inStock = !!nextActive && nextQty > 0;
 
       let updated: any;
@@ -1005,9 +1363,7 @@ router.patch(
         });
       } catch (e: any) {
         if (e?.code === "P2002") {
-          return res
-            .status(409)
-            .json({ error: "Duplicate variant offer for this variantId." });
+          return res.status(409).json({ error: "Duplicate variant offer for this supplier + variantId." });
         }
         throw e;
       }
@@ -1024,11 +1380,10 @@ router.patch(
       if (err instanceof z.ZodError) {
         return res.status(400).json({ error: "Invalid payload", details: err.issues });
       }
-      if (err?.statusCode)
-        return res.status(err.statusCode).json({ error: err.message });
+      if (err?.statusCode) return res.status(err.statusCode).json({ error: err.message });
       next(err);
     }
-  }),
+  })
 );
 
 router.delete(
@@ -1038,13 +1393,11 @@ router.delete(
 
     if (parsedId.kind === "LEGACY") {
       return res.status(400).json({
-        error:
-          "Legacy offer id received. Use base:<id> or variant:<id> with the new 2-table system.",
+        error: "Legacy offer id received. Use base:<id> or variant:<id> with the new 2-table system.",
       });
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      // ---------------- VARIANT ----------------
       if (parsedId.kind === "VARIANT") {
         const row = await tx.supplierVariantOffer.findUnique({
           where: { id: parsedId.rawId },
@@ -1068,26 +1421,11 @@ router.delete(
         await assertProductOffersDeletable(pid);
 
         await tx.supplierVariantOffer.delete({ where: { id: parsedId.rawId } });
-
-        const stillThere = await tx.supplierVariantOffer.findUnique({
-          where: { id: parsedId.rawId },
-          select: { id: true },
-        });
-        if (stillThere) {
-          return {
-            ok: false,
-            status: 500,
-            msg:
-              "Delete did not remove the record. You likely have a Prisma soft-delete middleware or DB trigger. " +
-              "Check prisma.$use() and deletedAt/isDeleted logic for supplierVariantOffer.",
-          };
-        }
-
         await recomputeProductStockTx(tx, pid);
+
         return { ok: true, deleted: `variant:${parsedId.rawId}`, productId: pid };
       }
 
-      // ---------------- BASE ----------------
       const base = await tx.supplierProductOffer.findUnique({
         where: { id: parsedId.rawId },
         select: { id: true, productId: true },
@@ -1107,29 +1445,14 @@ router.delete(
 
       await assertProductOffersDeletable(pid);
 
-      // detach any linked variant offers
       await tx.supplierVariantOffer.updateMany({
         where: { supplierProductOfferId: base.id },
         data: { supplierProductOfferId: null },
       });
 
       await tx.supplierProductOffer.delete({ where: { id: base.id } });
-
-      const stillThere = await tx.supplierProductOffer.findUnique({
-        where: { id: base.id },
-        select: { id: true },
-      });
-      if (stillThere) {
-        return {
-          ok: false,
-          status: 500,
-          msg:
-            "Delete did not remove the record. You likely have a Prisma soft-delete middleware or DB trigger. " +
-            "Check prisma.$use() and deletedAt/isDeleted logic for supplierProductOffer.",
-        };
-      }
-
       await recomputeProductStockTx(tx, pid);
+
       return { ok: true, deleted: `base:${base.id}`, productId: pid };
     });
 
@@ -1142,12 +1465,9 @@ router.delete(
       deleted: (result as any).deleted,
       productId: (result as any).productId,
     });
-  }),
+  })
 );
 
-/**
- * DELETE /api/admin/products/:productId/supplier-offers
- */
 router.delete(
   "/products/:productId/supplier-offers",
   wrap(async (req, res) => {
@@ -1175,12 +1495,9 @@ router.delete(
     });
 
     return res.json({ ok: true, productId, ...deleted });
-  }),
+  })
 );
 
-/**
- * POST /api/admin/products/:productId/supplier-offers/repair
- */
 router.post(
   "/products/:productId/supplier-offers/repair",
   wrap(async (req, res) => {
@@ -1197,18 +1514,22 @@ router.post(
         where: { productId },
         select: {
           id: true,
+          supplierId: true,
           supplierProductOfferId: true,
         },
-      });
-
-      const base = await tx.supplierProductOffer.findFirst({
-        where: { productId },
-        select: { id: true },
       });
 
       let fixedBaseLink = 0;
 
       for (const vo of variantOffers as any[]) {
+        const base = await tx.supplierProductOffer.findFirst({
+          where: {
+            productId,
+            supplierId: String(vo.supplierId),
+          },
+          select: { id: true },
+        });
+
         if (base) {
           if (!vo.supplierProductOfferId || String(vo.supplierProductOfferId) !== String(base.id)) {
             await tx.supplierVariantOffer.update({
@@ -1217,14 +1538,12 @@ router.post(
             });
             fixedBaseLink += 1;
           }
-        } else {
-          if (vo.supplierProductOfferId) {
-            await tx.supplierVariantOffer.update({
-              where: { id: String(vo.id) },
-              data: { supplierProductOfferId: null },
-            });
-            fixedBaseLink += 1;
-          }
+        } else if (vo.supplierProductOfferId) {
+          await tx.supplierVariantOffer.update({
+            where: { id: String(vo.id) },
+            data: { supplierProductOfferId: null },
+          });
+          fixedBaseLink += 1;
         }
       }
 
@@ -1233,7 +1552,454 @@ router.post(
     });
 
     return res.json({ ok: true, productId, ...result });
-  }),
+  })
+);
+
+/* ----------------------------------------------------------------------------
+ * Approval routes - Offer Change Requests
+ * --------------------------------------------------------------------------*/
+
+router.get(
+  "/offer-change-requests",
+  wrap(async (req, res) => {
+    const parsed = changeListSchema.parse(req.query ?? {});
+    const status = parsed.status;
+
+    const [items, linkedProductRequests] = await Promise.all([
+      prisma.supplierOfferChangeRequest.findMany({
+        where: { status },
+        orderBy: { requestedAt: "desc" },
+        include: {
+          supplier: { select: { id: true, name: true } },
+          product: { select: { id: true, title: true, sku: true } },
+          supplierProductOffer: {
+            select: {
+              id: true,
+              basePrice: true,
+              currency: true,
+              availableQty: true,
+              leadDays: true,
+              isActive: true,
+              inStock: true,
+            },
+          },
+          supplierVariantOffer: {
+            select: {
+              id: true,
+              variantId: true,
+              unitPrice: true,
+              currency: true,
+              availableQty: true,
+              leadDays: true,
+              isActive: true,
+              inStock: true,
+            },
+          },
+        },
+      }),
+      prisma.productChangeRequest.findMany({
+        where: {
+          status,
+        },
+        select: {
+          id: true,
+          productId: true,
+          proposedPatch: true,
+        },
+      }),
+    ]);
+
+    const latestPendingProductPatchByProductId = new Map<string, any>();
+    for (const row of linkedProductRequests) {
+      latestPendingProductPatchByProductId.set(String(row.productId), {
+        id: row.id,
+        proposedPatch: row.proposedPatch ?? {},
+      });
+    }
+
+    return res.json({
+      data: {
+        items: items.map((x) => {
+          const linkedProductPatch = latestPendingProductPatchByProductId.get(String(x.productId));
+          return {
+            id: x.id,
+            status: x.status,
+            scope: x.scope,
+            supplierId: x.supplierId,
+            productId: x.productId,
+            variantId: x.supplierVariantOffer?.variantId ?? null,
+            proposedPatch: mergePatches(x.patchJson ?? {}, linkedProductPatch?.proposedPatch ?? {}),
+            currentSnapshot:
+              x.scope === "BASE_OFFER"
+                ? x.supplierProductOffer ?? {}
+                : x.supplierVariantOffer ?? {},
+            requestedAt: x.requestedAt,
+            supplier: x.supplier,
+            product: x.product,
+            linkedProductChangeRequestId: linkedProductPatch?.id ?? null,
+          };
+        }),
+      },
+    });
+  })
+);
+
+router.post(
+  "/offer-change-requests/:id/approve",
+  wrap(async (req: any, res) => {
+    const id = requiredString(req.params.id);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const row = await tx.supplierOfferChangeRequest.findUnique({
+        where: { id },
+        include: {
+          supplierProductOffer: true,
+          supplierVariantOffer: true,
+          product: {
+            select: { id: true, supplierId: true, supplier: { select: { name: true } } },
+          },
+        },
+      });
+
+      if (!row) {
+        return { status: 404, body: { error: "Offer change request not found" } };
+      }
+
+      if (row.status !== "PENDING") {
+        return {
+          status: 409,
+          body: { error: `Only PENDING requests can be approved. Current status: ${row.status}` },
+        };
+      }
+
+      const patch = (row.patchJson ?? {}) as any;
+      const productId = String(row.productId);
+      const supplierId = String(row.supplierId ?? row.product?.supplierId ?? "");
+
+      if (row.scope === "BASE_OFFER") {
+        const existingBase =
+          row.supplierProductOffer ??
+          (await tx.supplierProductOffer.findFirst({
+            where: { productId, supplierId },
+          }));
+
+        if (!existingBase) {
+          return { status: 404, body: { error: "Base offer not found for approval" } };
+        }
+
+        const nextAvailableQty = Number(existingBase.availableQty ?? 0);
+        const nextIsActive =
+          patch.isActive !== undefined ? !!patch.isActive : !!existingBase.isActive;
+        const nextPrice =
+          patch.basePrice !== undefined
+            ? Number(patch.basePrice)
+            : Number(existingBase.basePrice ?? 0);
+
+        if (!Number.isFinite(nextPrice) || nextPrice <= 0) {
+          return { status: 400, body: { error: "Approved basePrice must be greater than 0" } };
+        }
+
+        await tx.supplierProductOffer.update({
+          where: { id: existingBase.id },
+          data: {
+            basePrice: toDecimal(nextPrice),
+            currency: patch.currency ?? existingBase.currency ?? "NGN",
+            leadDays: patch.leadDays !== undefined ? patch.leadDays : existingBase.leadDays,
+            isActive: nextIsActive,
+            availableQty: nextAvailableQty,
+            inStock: nextAvailableQty > 0 && nextIsActive,
+          },
+        });
+      } else {
+        const existingVariant =
+          row.supplierVariantOffer ??
+          (await tx.supplierVariantOffer.findFirst({
+            where: { id: row.supplierVariantOfferId ?? "" },
+          }));
+
+        if (!existingVariant) {
+          return { status: 404, body: { error: "Variant offer not found for approval" } };
+        }
+
+        const nextAvailableQty = Number(existingVariant.availableQty ?? 0);
+        const nextIsActive =
+          patch.isActive !== undefined ? !!patch.isActive : !!existingVariant.isActive;
+        const nextUnitPrice =
+          patch.unitPrice !== undefined
+            ? Number(patch.unitPrice)
+            : Number(existingVariant.unitPrice ?? 0);
+
+        if (!Number.isFinite(nextUnitPrice) || nextUnitPrice <= 0) {
+          return { status: 400, body: { error: "Approved unitPrice must be greater than 0" } };
+        }
+
+        await tx.supplierVariantOffer.update({
+          where: { id: existingVariant.id },
+          data: {
+            unitPrice: toDecimal(nextUnitPrice),
+            currency: patch.currency ?? existingVariant.currency ?? "NGN",
+            leadDays: patch.leadDays !== undefined ? patch.leadDays : existingVariant.leadDays,
+            isActive: nextIsActive,
+            availableQty: nextAvailableQty,
+            inStock: nextAvailableQty > 0 && nextIsActive,
+          },
+        });
+      }
+
+      await autoApproveLinkedProductChangesTx(tx, { productId });
+
+      await tx.supplierOfferChangeRequest.update({
+        where: { id: row.id },
+        data: {
+          status: "APPROVED",
+          reviewedAt: new Date(),
+        },
+      });
+
+      await recomputeProductStockTx(tx, productId);
+      await markProductApprovedOrLiveTx(tx, productId);
+
+      return { status: 200, body: { ok: true, approved: true, id: row.id, productId } };
+    });
+
+    return res.status(result.status).json(result.body);
+  })
+);
+
+router.post(
+  "/offer-change-requests/:id/reject",
+  wrap(async (req: any, res) => {
+    const id = requiredString(req.params.id);
+    const parsed = rejectSchema.parse(req.body ?? {});
+    const reasonText = parsed.reason?.trim() || "Rejected by admin";
+
+    const result = await prisma.$transaction(async (tx) => {
+      const row = await tx.supplierOfferChangeRequest.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          productId: true,
+          status: true,
+          supplierId: true,
+        },
+      });
+
+      if (!row) {
+        return { status: 404, body: { error: "Offer change request not found" } };
+      }
+
+      if (row.status !== "PENDING") {
+        return {
+          status: 409,
+          body: {
+            error: `Only PENDING requests can be rejected. Current status: ${row.status}`,
+          },
+        };
+      }
+
+      await autoRejectLinkedProductChangesTx(tx, {
+        productId: String(row.productId),
+        reasonText,
+      });
+
+      await tx.supplierOfferChangeRequest.update({
+        where: { id: row.id },
+        data: {
+          status: "REJECTED",
+          reviewedAt: new Date(),
+          reviewNote: reasonText,
+        },
+      });
+
+      await markProductRejectedTx(tx, String(row.productId));
+
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          rejected: true,
+          id: row.id,
+          productId: row.productId,
+          reason: reasonText,
+        },
+      };
+    });
+
+    return res.status(result.status).json(result.body);
+  })
+);
+
+/* ----------------------------------------------------------------------------
+ * Approval routes - Product Change Requests
+ * --------------------------------------------------------------------------*/
+
+router.get(
+  "/product-change-requests",
+  wrap(async (req, res) => {
+    const parsed = changeListSchema.parse(req.query ?? {});
+    const status = parsed.status;
+
+    const [items, pendingOfferRows] = await Promise.all([
+      prisma.productChangeRequest.findMany({
+        where: { status },
+        orderBy: { requestedAt: "desc" },
+        include: {
+          supplier: { select: { id: true, name: true } },
+          product: { select: { id: true, title: true, sku: true } },
+        },
+      }),
+      status === "PENDING"
+        ? prisma.supplierOfferChangeRequest.findMany({
+          where: { status: "PENDING" },
+          select: { productId: true },
+        })
+        : Promise.resolve([] as Array<{ productId: string }>),
+    ]);
+
+    const hiddenProductIds = new Set(
+      (pendingOfferRows || []).map((x) => String(x.productId))
+    );
+
+    const visibleItems =
+      status === "PENDING"
+        ? items.filter((x) => !hiddenProductIds.has(String(x.productId)))
+        : items;
+
+    return res.json({
+      data: {
+        items: visibleItems.map((x) => ({
+          id: x.id,
+          status: x.status,
+          supplierId: x.supplierId,
+          productId: x.productId,
+          proposedPatch: x.proposedPatch ?? {},
+          currentSnapshot: x.currentSnapshot ?? {},
+          requestedAt: x.requestedAt,
+          supplier: x.supplier,
+          product: x.product,
+        })),
+      },
+    });
+  })
+);
+
+router.post(
+  "/product-change-requests/:id/approve",
+  wrap(async (req: any, res) => {
+    const id = requiredString(req.params.id);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const row = await tx.productChangeRequest.findUnique({
+        where: { id },
+        include: {
+          product: {
+            select: {
+              id: true,
+              title: true,
+              sku: true,
+              supplierId: true,
+              description: true,
+              categoryId: true,
+              brandId: true,
+              imagesJson: true,
+              communicationCost: true,
+            },
+          },
+        },
+      });
+
+      if (!row) {
+        return { status: 404, body: { error: "Product change request not found" } };
+      }
+
+      if (row.status !== "PENDING") {
+        return {
+          status: 409,
+          body: { error: `Only PENDING requests can be approved. Current status: ${row.status}` },
+        };
+      }
+
+      const productId = String(row.productId);
+
+      await applyProductChangePatchTx(tx, row);
+
+      await tx.productChangeRequest.update({
+        where: { id: row.id },
+        data: {
+          status: "APPROVED",
+          reviewedAt: new Date(),
+        },
+      });
+
+      await markProductApprovedOrLiveTx(tx, productId);
+      await recomputeProductStockTx(tx, productId);
+
+      return {
+        status: 200,
+        body: { ok: true, approved: true, id: row.id, productId },
+      };
+    });
+
+    return res.status(result.status).json(result.body);
+  })
+);
+
+router.post(
+  "/product-change-requests/:id/reject",
+  wrap(async (req: any, res) => {
+    const id = requiredString(req.params.id);
+    const parsed = rejectSchema.parse(req.body ?? {});
+    const reasonText = parsed.reason?.trim() || "Rejected by admin";
+
+    const result = await prisma.$transaction(async (tx) => {
+      const row = await tx.productChangeRequest.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          productId: true,
+          status: true,
+          supplierId: true,
+        },
+      });
+
+      if (!row) {
+        return { status: 404, body: { error: "Product change request not found" } };
+      }
+
+      if (row.status !== "PENDING") {
+        return {
+          status: 409,
+          body: {
+            error: `Only PENDING requests can be rejected. Current status: ${row.status}`,
+          },
+        };
+      }
+
+      await tx.productChangeRequest.update({
+        where: { id: row.id },
+        data: {
+          status: "REJECTED",
+          reviewedAt: new Date(),
+          reviewNote: reasonText,
+        },
+      });
+
+      await markProductRejectedTx(tx, String(row.productId));
+
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          rejected: true,
+          id: row.id,
+          productId: row.productId,
+          reason: reasonText,
+        },
+      };
+    });
+
+    return res.status(result.status).json(result.body);
+  })
 );
 
 export default router;

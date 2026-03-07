@@ -11,11 +11,13 @@ import {
 import api from "../../api/client";
 import SiteLayout from "../../layouts/SiteLayout";
 import { useAuthStore } from "../../store/auth";
+import { useCatalogMeta } from "../../hooks/useCatalogMeta";
 
 type ChangeItem = {
   id: string;
+  requestType: "OFFER" | "PRODUCT";
   status: "PENDING" | "APPROVED" | "REJECTED" | string;
-  scope: "BASE_OFFER" | "VARIANT_OFFER" | string;
+  scope?: "BASE_OFFER" | "VARIANT_OFFER" | "PRODUCT" | string;
   supplierId: string;
   productId: string;
   variantId?: string | null;
@@ -32,7 +34,6 @@ function fmtDate(s?: string) {
   return Number.isFinite(+d) ? d.toLocaleString() : s;
 }
 
-/* ---------------- Cookie auth helpers ---------------- */
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 
 function isAuthError(e: any) {
@@ -40,21 +41,331 @@ function isAuthError(e: any) {
   return status === 401 || status === 403;
 }
 
+function getRequestPatch(x: any) {
+  return x?.proposedPatch ?? x?.patchJson ?? x?.proposed_patch ?? {};
+}
+
+function getRequestSnapshot(x: any) {
+  return (
+    x?.currentSnapshot ??
+    x?.current_snapshot ??
+    x?.snapshotJson ??
+    x?.currentValues ??
+    {}
+  );
+}
+
+function deepMap(value: any, fn: (node: any) => any): any {
+  const mapped = fn(value);
+
+  if (Array.isArray(mapped)) {
+    return mapped.map((item) => deepMap(item, fn));
+  }
+
+  if (mapped && typeof mapped === "object") {
+    return Object.fromEntries(
+      Object.entries(mapped).map(([k, v]) => [k, deepMap(v, fn)])
+    );
+  }
+
+  return mapped;
+}
+
+function getMetaAttributes(meta: any): any[] {
+  if (Array.isArray(meta?.attributes)) return meta.attributes;
+  if (Array.isArray(meta?.catalogAttributes)) return meta.catalogAttributes;
+  if (Array.isArray(meta?.data?.attributes)) return meta.data.attributes;
+  if (Array.isArray(meta?.data?.catalogAttributes)) return meta.data.catalogAttributes;
+  return [];
+}
+
+function getAttributeValues(attr: any): any[] {
+  if (Array.isArray(attr?.values)) return attr.values;
+  if (Array.isArray(attr?.attributeValues)) return attr.attributeValues;
+  if (Array.isArray(attr?.options)) return attr.options;
+  if (Array.isArray(attr?.items)) return attr.items;
+  return [];
+}
+
+function formatValueLabel(meta?: {
+  name?: string | null;
+  code?: string | null;
+}) {
+  if (!meta) return undefined;
+  const name = String(meta.name ?? "").trim();
+  const code = String(meta.code ?? "").trim();
+
+  if (name && code && code.toLowerCase() !== name.toLowerCase()) {
+    return `${name} (${code})`;
+  }
+  return name || code || undefined;
+}
+
+function prettifyAttributeSelections(
+  input: any,
+  attributeNameById: Map<string, string>,
+  valueMetaById: Map<string, { name?: string | null; code?: string | null; attributeId?: string | null }>
+) {
+  if (!Array.isArray(input)) return input;
+
+  return input.map((row: any) => {
+    const attributeId = String(row?.attributeId ?? "").trim();
+    const valueId = String(row?.valueId ?? "").trim();
+
+    const valueIds = Array.isArray(row?.valueIds)
+      ? row.valueIds.map((v: any) => String(v)).filter(Boolean)
+      : [];
+
+    const attributeName =
+      row?.attributeName ??
+      (attributeId ? attributeNameById.get(attributeId) ?? attributeId : undefined);
+
+    const valueMeta = valueId ? valueMetaById.get(valueId) : undefined;
+    const valueName =
+      row?.valueName ??
+      formatValueLabel(valueMeta) ??
+      (valueId || undefined);
+
+    const valueNames =
+      valueIds.length > 0
+        ? valueIds.map((id: any) => {
+          const meta = valueMetaById.get(String(id));
+          return formatValueLabel(meta) ?? String(id);
+        })
+        : undefined;
+
+    return {
+      ...row,
+      ...(attributeId ? { attributeId } : {}),
+      ...(attributeName ? { attributeName } : {}),
+      ...(valueId ? { valueId } : {}),
+      ...(valueName ? { valueName } : {}),
+      ...(valueIds.length ? { valueIds } : {}),
+      ...(valueNames?.length ? { valueNames } : {}),
+    };
+  });
+}
+
+function prettifyVariantOptions(
+  input: any,
+  attributeNameById: Map<string, string>,
+  valueMetaById: Map<string, { name?: string | null; code?: string | null; attributeId?: string | null }>
+) {
+  if (!Array.isArray(input)) return input;
+
+  return input.map((row: any) => {
+    const attributeId = String(
+      row?.attributeId ??
+      row?.attribute?.id ??
+      row?.attributeValue?.attributeId ??
+      row?.value?.attributeId ??
+      ""
+    ).trim();
+
+    const valueId = String(
+      row?.valueId ??
+      row?.attributeValueId ??
+      row?.attributeValue?.id ??
+      row?.value?.id ??
+      ""
+    ).trim();
+
+    const attributeName =
+      row?.attributeName ??
+      row?.attribute?.name ??
+      (attributeId ? attributeNameById.get(attributeId) ?? attributeId : undefined);
+
+    const valueMeta = valueId ? valueMetaById.get(valueId) : undefined;
+    const valueName =
+      row?.valueName ??
+      row?.value?.name ??
+      row?.attributeValue?.name ??
+      formatValueLabel(valueMeta) ??
+      (valueId || undefined);
+
+    return {
+      ...row,
+      ...(attributeId ? { attributeId } : {}),
+      ...(attributeName ? { attributeName } : {}),
+      ...(valueId ? { valueId } : {}),
+      ...(valueName ? { valueName } : {}),
+    };
+  });
+}
+
+function prettifySingleIdPair(
+  node: any,
+  attributeNameById: Map<string, string>,
+  valueMetaById: Map<string, { name?: string | null; code?: string | null; attributeId?: string | null }>
+) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return node;
+
+  const attributeId = String(node?.attributeId ?? "").trim();
+  const valueId = String(node?.valueId ?? "").trim();
+
+  if (!attributeId && !valueId) return node;
+
+  const next = { ...node };
+
+  if (attributeId && !next.attributeName) {
+    next.attributeName = attributeNameById.get(attributeId) ?? attributeId;
+  }
+
+  if (valueId && !next.valueName) {
+    next.valueName = formatValueLabel(valueMetaById.get(valueId)) ?? valueId;
+  }
+
+  return next;
+}
+
+function prettifyPayload(
+  payload: any,
+  attributeNameById: Map<string, string>,
+  valueMetaById: Map<string, { name?: string | null; code?: string | null; attributeId?: string | null }>
+) {
+  return deepMap(payload, (node) => {
+    if (!node || typeof node !== "object") return node;
+
+    if (Array.isArray(node?.attributeSelections)) {
+      return {
+        ...node,
+        attributeSelections: prettifyAttributeSelections(
+          node.attributeSelections,
+          attributeNameById,
+          valueMetaById
+        ),
+      };
+    }
+
+    if (Array.isArray(node?.options)) {
+      return {
+        ...node,
+        options: prettifyVariantOptions(
+          node.options,
+          attributeNameById,
+          valueMetaById
+        ),
+      };
+    }
+
+    if (Array.isArray(node?.variantOptions)) {
+      return {
+        ...node,
+        variantOptions: prettifyVariantOptions(
+          node.variantOptions,
+          attributeNameById,
+          valueMetaById
+        ),
+      };
+    }
+
+    if (Array.isArray(node?.VariantOptions)) {
+      return {
+        ...node,
+        VariantOptions: prettifyVariantOptions(
+          node.VariantOptions,
+          attributeNameById,
+          valueMetaById
+        ),
+      };
+    }
+
+    if (Array.isArray(node?.attributes)) {
+      return {
+        ...node,
+        attributes: prettifyVariantOptions(
+          node.attributes,
+          attributeNameById,
+          valueMetaById
+        ),
+      };
+    }
+
+    if (Array.isArray(node?.optionSelections)) {
+      return {
+        ...node,
+        optionSelections: prettifyVariantOptions(
+          node.optionSelections,
+          attributeNameById,
+          valueMetaById
+        ),
+      };
+    }
+
+    return prettifySingleIdPair(node, attributeNameById, valueMetaById);
+  });
+}
+
+function summarizeAttributeSelections(input: any) {
+  if (!Array.isArray(input) || input.length === 0) return "";
+
+  return input
+    .map((row: any) => {
+      const a =
+        String(
+          row?.attributeName ??
+          row?.attribute ??
+          row?.attributeId ??
+          ""
+        ).trim();
+
+      const single =
+        String(
+          row?.valueName ??
+          row?.value ??
+          row?.valueId ??
+          ""
+        ).trim();
+
+      const multi = Array.isArray(row?.valueNames)
+        ? row.valueNames.map((x: any) => String(x)).filter(Boolean)
+        : Array.isArray(row?.valueIds)
+          ? row.valueIds.map((x: any) => String(x)).filter(Boolean)
+          : [];
+
+      const text = String(row?.text ?? "").trim();
+
+      if (multi.length) return `${a}: ${multi.join(", ")}`;
+      if (single) return `${a}: ${single}`;
+      if (text) return `${a}: ${text}`;
+      return a;
+    })
+    .filter(Boolean)
+    .join(" • ");
+}
+
+function summarizePatch(patch: any) {
+  if (!patch || typeof patch !== "object") return "";
+
+  const bits: string[] = [];
+
+  const attrSummary = summarizeAttributeSelections(patch.attributeSelections);
+  if (attrSummary) bits.push(attrSummary);
+
+  if (patch.description) bits.push(`Description updated`);
+  if (patch.categoryId) bits.push(`Category changed`);
+  if (patch.brandId) bits.push(`Brand changed`);
+
+  if (Array.isArray(patch.variants) && patch.variants.length) {
+    bits.push(`${patch.variants.length} variant change(s)`);
+  }
+
+  if (patch.basePrice != null) bits.push(`Base price: ${patch.basePrice}`);
+  if (patch.unitPrice != null) bits.push(`Unit price: ${patch.unitPrice}`);
+  if (patch.leadDays != null) bits.push(`Lead days: ${patch.leadDays}`);
+  if (patch.isActive != null) bits.push(`Active: ${patch.isActive ? "Yes" : "No"}`);
+
+  return bits.join(" • ");
+}
+
 export default function AdminOfferChangeRequests() {
   const qc = useQueryClient();
-
-  // Keep store reads (useful for role-based UI), but no token is used in requests
   const storeUser = useAuthStore((s) => s.user);
 
   const [tab, setTab] = useState<"PENDING" | "APPROVED" | "REJECTED">("PENDING");
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
-  /**
-   * ✅ Cookie-session auth gate:
-   * We first check /api/profile/me using cookies. If 401/403, we show error state.
-   * This matches your other cookie-mode pages.
-   */
   const meQ = useQuery({
     queryKey: ["me-min"],
     queryFn: async () =>
@@ -70,17 +381,77 @@ export default function AdminOfferChangeRequests() {
   const authReady = meQ.isSuccess || meQ.isError;
   const queriesEnabled = authReady && !(meQ.isError && isAuthError(meQ.error));
 
+  const catalogMeta = useCatalogMeta({ enabled: queriesEnabled }) as any;
+  const attributes = useMemo(() => getMetaAttributes(catalogMeta), [catalogMeta]);
+
+  const attributeNameById = useMemo(() => {
+    const m = new Map<string, string>();
+
+    for (const a of attributes) {
+      const attributeId = String(a?.id ?? "").trim();
+      if (!attributeId) continue;
+      m.set(attributeId, String(a?.name ?? attributeId));
+    }
+
+    return m;
+  }, [attributes]);
+
+  const valueMetaById = useMemo(() => {
+    const m = new Map<
+      string,
+      { name?: string | null; code?: string | null; attributeId?: string | null }
+    >();
+
+    for (const a of attributes) {
+      const attributeId = String(a?.id ?? "").trim() || null;
+      const values = getAttributeValues(a);
+
+      for (const v of values) {
+        const valueId = String(v?.id ?? "").trim();
+        if (!valueId) continue;
+
+        m.set(valueId, {
+          name: v?.name ?? null,
+          code: v?.code ?? null,
+          attributeId: String(v?.attributeId ?? attributeId ?? "").trim() || null,
+        });
+      }
+    }
+
+    return m;
+  }, [attributes]);
+
   const listQ = useQuery({
-    queryKey: ["admin", "offer-change-requests", tab],
+    queryKey: ["admin", "change-requests", tab],
     enabled: queriesEnabled,
     queryFn: async () => {
-      const res = await api.get(
-        `/api/admin/offer-change-requests?status=${tab}`,
-        AXIOS_COOKIE_CFG
-      );
-      const root = (res as any)?.data;
-      const items = root?.data?.items ?? root?.items ?? [];
-      return items as ChangeItem[];
+      const [offerRes, productRes] = await Promise.all([
+        api.get(`/api/admin/offer-change-requests?status=${tab}`, AXIOS_COOKIE_CFG),
+        api.get(`/api/admin/product-change-requests?status=${tab}`, AXIOS_COOKIE_CFG),
+      ]);
+
+      const offerRoot = (offerRes as any)?.data;
+      const productRoot = (productRes as any)?.data;
+
+      const offerItems = (offerRoot?.data?.items ?? offerRoot?.items ?? []).map((x: any) => ({
+        ...x,
+        requestType: "OFFER" as const,
+      }));
+
+      const productItems = (productRoot?.data?.items ?? productRoot?.items ?? []).map((x: any) => ({
+        ...x,
+        requestType: "PRODUCT" as const,
+        scope: "PRODUCT",
+        variantId: null,
+      }));
+
+      const merged = [...offerItems, ...productItems].sort((a, b) => {
+        const ta = new Date(a?.requestedAt ?? 0).getTime();
+        const tb = new Date(b?.requestedAt ?? 0).getTime();
+        return tb - ta;
+      });
+
+      return merged as ChangeItem[];
     },
     staleTime: 10_000,
     refetchOnWindowFocus: false,
@@ -92,47 +463,85 @@ export default function AdminOfferChangeRequests() {
     if (!term) return items;
 
     return items.filter((x) => {
+      const prettyPatch = prettifyPayload(
+        getRequestPatch(x),
+        attributeNameById,
+        valueMetaById
+      );
+
+      const prettySnapshot = prettifyPayload(
+        getRequestSnapshot(x),
+        attributeNameById,
+        valueMetaById
+      );
+
       const hay = [
         x?.supplier?.name,
         x?.product?.title,
         x?.product?.sku,
         x?.scope,
+        x?.requestType,
         x?.status,
         x?.variantId,
-        JSON.stringify(x?.proposedPatch ?? {}),
+        JSON.stringify(prettyPatch ?? {}),
+        JSON.stringify(prettySnapshot ?? {}),
       ]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
+
       return hay.includes(term);
     });
-  }, [listQ.data, q]);
-
+  }, [listQ.data, q, attributeNameById, valueMetaById]);
   const approveM = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await api.post(
-        `/api/admin/offer-change-requests/${id}/approve`,
-        {},
-        AXIOS_COOKIE_CFG
-      );
+    mutationFn: async ({
+      id,
+      requestType,
+    }: {
+      id: string;
+      requestType: "OFFER" | "PRODUCT";
+    }) => {
+      const url =
+        requestType === "PRODUCT"
+          ? `/api/admin/product-change-requests/${id}/approve`
+          : `/api/admin/offer-change-requests/${id}/approve`;
+
+      const res = await api.post(url, {}, AXIOS_COOKIE_CFG);
       return (res as any)?.data;
     },
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "change-requests"] });
       qc.invalidateQueries({ queryKey: ["admin", "offer-change-requests"] });
+      qc.invalidateQueries({ queryKey: ["admin", "product-change-requests"] });
     },
   });
 
   const rejectM = useMutation({
-    mutationFn: async ({ id, reason }: { id: string; reason?: string }) => {
+    mutationFn: async ({
+      id,
+      reason,
+      requestType,
+    }: {
+      id: string;
+      reason?: string;
+      requestType: "OFFER" | "PRODUCT";
+    }) => {
+      const url =
+        requestType === "PRODUCT"
+          ? `/api/admin/product-change-requests/${id}/reject`
+          : `/api/admin/offer-change-requests/${id}/reject`;
+
       const res = await api.post(
-        `/api/admin/offer-change-requests/${id}/reject`,
+        url,
         { reason: reason || "Rejected by admin" },
         AXIOS_COOKIE_CFG
       );
       return (res as any)?.data;
     },
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "change-requests"] });
       qc.invalidateQueries({ queryKey: ["admin", "offer-change-requests"] });
+      qc.invalidateQueries({ queryKey: ["admin", "product-change-requests"] });
     },
   });
 
@@ -187,11 +596,10 @@ export default function AdminOfferChangeRequests() {
                 key={t}
                 type="button"
                 onClick={() => setTab(t)}
-                className={`px-4 py-2 text-sm font-semibold ${
-                  tab === t
-                    ? "bg-zinc-900 text-white"
-                    : "bg-white text-zinc-800 hover:bg-black/5"
-                }`}
+                className={`px-4 py-2 text-sm font-semibold ${tab === t
+                  ? "bg-zinc-900 text-white"
+                  : "bg-white text-zinc-800 hover:bg-black/5"
+                  }`}
                 disabled={!queriesEnabled}
               >
                 {t}
@@ -200,10 +608,7 @@ export default function AdminOfferChangeRequests() {
           </div>
 
           <div className="flex-1 relative">
-            <Search
-              className="absolute left-3 top-2.5 text-zinc-400"
-              size={16}
-            />
+            <Search className="absolute left-3 top-2.5 text-zinc-400" size={16} />
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -240,6 +645,18 @@ export default function AdminOfferChangeRequests() {
               const productTitle = x?.product?.title ?? x.productId;
               const sku = x?.product?.sku ?? "—";
 
+              const prettyProposedPatch = prettifyPayload(
+                getRequestPatch(x),
+                attributeNameById,
+                valueMetaById
+              );
+
+              const prettyCurrentSnapshot = prettifyPayload(
+                getRequestSnapshot(x),
+                attributeNameById,
+                valueMetaById
+              );
+
               return (
                 <div
                   key={x.id}
@@ -249,30 +666,26 @@ export default function AdminOfferChangeRequests() {
                     <div className="flex-1">
                       <div className="text-sm font-semibold text-zinc-900">
                         {productTitle}{" "}
-                        <span className="text-zinc-400 font-normal">
-                          ({sku})
-                        </span>
+                        <span className="text-zinc-400 font-normal">({sku})</span>
                       </div>
+
                       <div className="text-xs text-zinc-600 mt-1">
-                        Supplier:{" "}
-                        <b className="text-zinc-900">{supplierName}</b> • Scope:{" "}
+                        Supplier: <b className="text-zinc-900">{supplierName}</b> • Type:{" "}
+                        <b className="text-zinc-900">{x.requestType}</b> • Scope:{" "}
                         <b className="text-zinc-900">{x.scope}</b>
                         {x.variantId ? (
                           <>
                             {" "}
-                            • Variant:{" "}
-                            <b className="text-zinc-900">{x.variantId}</b>
+                            • Variant: <b className="text-zinc-900">{x.variantId}</b>
                           </>
-                        ) : null}
-                        {" "}
-                        • Requested:{" "}
-                        <b className="text-zinc-900">{fmtDate(x.requestedAt)}</b>
+                        ) : null}{" "}
+                        • Requested: <b className="text-zinc-900">{fmtDate(x.requestedAt)}</b>
                       </div>
 
                       <div className="text-xs text-zinc-700 mt-2">
                         <span className="text-zinc-500">Proposed patch:</span>{" "}
-                        <span className="font-mono">
-                          {JSON.stringify(x.proposedPatch ?? {})}
+                        <span className="break-words">
+                          summarizePatch(prettyProposedPatch)
                         </span>
                       </div>
                     </div>
@@ -283,11 +696,7 @@ export default function AdminOfferChangeRequests() {
                         onClick={() => toggleExpanded(x.id)}
                         className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
                       >
-                        {isOpen ? (
-                          <ChevronUp size={16} />
-                        ) : (
-                          <ChevronDown size={16} />
-                        )}
+                        {isOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                         Details
                       </button>
 
@@ -296,7 +705,9 @@ export default function AdminOfferChangeRequests() {
                           <button
                             type="button"
                             disabled={approveM.isPending || rejectM.isPending}
-                            onClick={() => approveM.mutate(x.id)}
+                            onClick={() =>
+                              approveM.mutate({ id: x.id, requestType: x.requestType })
+                            }
                             className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
                           >
                             <CheckCircle2 size={16} /> Approve
@@ -306,11 +717,16 @@ export default function AdminOfferChangeRequests() {
                             type="button"
                             disabled={approveM.isPending || rejectM.isPending}
                             onClick={() => {
-                              const reason =
-                                window.prompt(
-                                  "Reason for rejection (optional):"
-                                ) || "Rejected";
-                              rejectM.mutate({ id: x.id, reason });
+                              const input = window.prompt("Reason for rejection (optional):");
+                              if (input === null) return;
+
+                              const reason = input.trim() || "Rejected by admin";
+
+                              rejectM.mutate({
+                                id: x.id,
+                                reason,
+                                requestType: x.requestType,
+                              });
                             }}
                             className="inline-flex items-center gap-2 rounded-xl bg-rose-600 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
                           >
@@ -323,18 +739,14 @@ export default function AdminOfferChangeRequests() {
 
                   {isOpen && (
                     <div className="border-t bg-zinc-50 p-4 text-xs text-zinc-800 space-y-2">
-                      <div className="font-semibold text-zinc-900">
-                        Current snapshot
-                      </div>
+                      <div className="font-semibold text-zinc-900">Current snapshot</div>
                       <pre className="rounded-xl border bg-white p-3 overflow-auto">
-                        {JSON.stringify(x.currentSnapshot ?? {}, null, 2)}
+                        {JSON.stringify(prettyCurrentSnapshot ?? {}, null, 2)}
                       </pre>
 
-                      <div className="font-semibold text-zinc-900 mt-3">
-                        Proposed patch
-                      </div>
+                      <div className="font-semibold text-zinc-900 mt-3">Proposed patch</div>
                       <pre className="rounded-xl border bg-white p-3 overflow-auto">
-                        {JSON.stringify(x.proposedPatch ?? {}, null, 2)}
+                        {JSON.stringify(prettyProposedPatch ?? {}, null, 2)}
                       </pre>
                     </div>
                   )}

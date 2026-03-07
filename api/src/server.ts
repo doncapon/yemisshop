@@ -72,7 +72,6 @@ import notificationsRouter from "./routes/notifications.js";
 import ridersRouter from "./routes/riders.js";
 import privacyRouter from "./routes/privacy.js";
 import supplierCatalogOffers from "./routes/supplierCatalogOffers.js";
-import adminOfferChangeRequests from "./routes/adminOfferChangeRequests.js";
 import adminUsersRouter from "./routes/adminUsers.js";
 import checkoutShippingRouter from "./routes/checkoutShipping.js";
 import productReviewsRouter from "./routes/productReviews.js";
@@ -364,7 +363,6 @@ app.use("/api/admin", adminCatalogMeta);
 app.use("/api/admin/catalog-requests", adminCatalogRequests);
 app.use("/api/admin/payouts", adminPayouts);
 app.use("/api/admin/refunds", adminRefundsRouter);
-app.use("/api/admin/offer-change-requests", adminOfferChangeRequests);
 app.use("/api/admin", adminUsersRouter);
 
 /* ---------------- Supplier routes ---------------- */

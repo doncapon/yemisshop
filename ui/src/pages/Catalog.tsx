@@ -749,7 +749,9 @@ export default function Catalog() {
   const [query, setQuery] = useState("");
   const [showSuggest, setShowSuggest] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const desktopInputRef = useRef<HTMLInputElement | null>(null);
+  const mobileInputRef = useRef<HTMLInputElement | null>(null);
   const suggestRef = useRef<HTMLDivElement | null>(null);
 
   const [refineOpen, setRefineOpen] = useState(false);
@@ -757,14 +759,6 @@ export default function Catalog() {
   const [inStockOnly, setInStockOnly] = useState(true);
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>({});
   const [gridCols, setGridCols] = useState(2);
-
-  useEffect(() => {
-    setRefineOpen(false);
-    setShowSuggest(false);
-    setTouchStartX(null);
-    document.body.style.overflow = "";
-    (document.activeElement as HTMLElement | null)?.blur?.();
-  }, [location.key]);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 768px)");
@@ -798,30 +792,34 @@ export default function Catalog() {
   const closeRefine = () => {
     setRefineOpen(false);
     setShowSuggest(false);
+    setTouchStartX(null);
   };
 
-  useEffect(() => {
-    const t = window.setInterval(() => {
-      if (!refineOpen) {
-        if (document.body.style.overflow === "hidden") document.body.style.overflow = "";
-        if ((document.body.style as any).pointerEvents === "none") (document.body.style as any).pointerEvents = "";
-      }
-    }, 1500);
+  /* ---------------- Navigation / overlay stability ---------------- */
 
-    return () => window.clearInterval(t);
+  useEffect(() => {
+    setRefineOpen(false);
+    setShowSuggest(false);
+    setTouchStartX(null);
+    document.body.style.overflow = "";
+    (document.activeElement as HTMLElement | null)?.blur?.();
+  }, [location.key]);
+
+  useEffect(() => {
+    document.body.style.overflow = refineOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
   }, [refineOpen]);
 
   useEffect(() => {
-    const resetUi = () => {
-      setRefineOpen(false);
-      setShowSuggest(false);
-      setTouchStartX(null);
-      document.body.style.overflow = "";
-      (document.activeElement as HTMLElement | null)?.blur?.();
-    };
-
     const onPageShow = (ev: PageTransitionEvent) => {
-      if ((ev as any).persisted) resetUi();
+      if (ev.persisted) {
+        setRefineOpen(false);
+        setShowSuggest(false);
+        setTouchStartX(null);
+        document.body.style.overflow = "";
+      }
     };
 
     const onPageHide = () => {
@@ -887,20 +885,6 @@ export default function Catalog() {
 
     void run();
   };
-
-  useEffect(() => {
-  const handlePageShow = (event: PageTransitionEvent) => {
-    if (event.persisted) {
-      window.location.reload();
-    }
-  };
-
-  window.addEventListener("pageshow", handlePageShow);
-
-  return () => {
-    window.removeEventListener("pageshow", handlePageShow);
-  };
-}, []);
 
   /* ---------------- Products query ---------------- */
 
@@ -1021,24 +1005,27 @@ export default function Catalog() {
   }, [productsQ.data]);
 
   useLayoutEffect(() => {
-    const y = (location.state as any)?.restoreScrollY;
+    const state = location.state as any;
+    const y = state?.restoreScrollY;
 
-    if (typeof y === "number") {
-      requestAnimationFrame(() => {
-        window.scrollTo({ top: y, behavior: "auto" });
+    if (typeof y !== "number") return;
 
-        try {
-          const hs = window.history.state || {};
-          const usr = { ...(hs.usr || {}) };
-          delete usr.restoreScrollY;
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: y, behavior: "auto" });
 
-          window.history.replaceState({ ...hs, usr }, "", window.location.href);
-        } catch {
-          //
-        }
-      });
-    }
-  }, [location.key]);
+      try {
+        nav(location.pathname + location.search, {
+          replace: true,
+          state: {
+            ...(state || {}),
+            restoreScrollY: undefined,
+          },
+        });
+      } catch {
+        //
+      }
+    });
+  }, [location.key, location.pathname, location.search, location.state, nav]);
 
   /* ---------------- Categories ---------------- */
 
@@ -1393,7 +1380,11 @@ export default function Catalog() {
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
       const t = e.target as Node;
-      if (suggestRef.current && !suggestRef.current.contains(t) && inputRef.current && !inputRef.current.contains(t)) {
+      const clickedDesktopInput = !!desktopInputRef.current?.contains(t);
+      const clickedMobileInput = !!mobileInputRef.current?.contains(t);
+      const clickedSuggest = !!suggestRef.current?.contains(t);
+
+      if (!clickedSuggest && !clickedDesktopInput && !clickedMobileInput) {
         setShowSuggest(false);
       }
     }
@@ -1421,15 +1412,6 @@ export default function Catalog() {
   const [jumpVal, setJumpVal] = useState<string>("");
 
   useEffect(() => setJumpVal(""), [totalPages]);
-
-  useEffect(() => {
-    document.body.style.overflow = "";
-    (document.body.style as any).pointerEvents = "";
-    setRefineOpen(false);
-    setShowSuggest(false);
-    setTouchStartX(null);
-    (document.activeElement as HTMLElement | null)?.blur?.();
-  }, [location.key]);
 
   /* =========================================================
      Add to cart
@@ -1624,7 +1606,7 @@ export default function Catalog() {
           <div className="relative max-w-2xl">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
             <input
-              ref={inputRef}
+              ref={desktopInputRef}
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
@@ -1643,7 +1625,7 @@ export default function Catalog() {
                 } else if (e.key === "Enter") {
                   e.preventDefault();
                   const pick = suggestions[activeIdx];
-                  if (pick) nav(`/products/${pick.id}`);
+                  if (pick) goToProduct(pick.id);
                   setShowSuggest(false);
                 } else if (e.key === "Escape") {
                   setShowSuggest(false);
@@ -1673,7 +1655,7 @@ export default function Catalog() {
                           }`}
                           onClick={() => {
                             setShowSuggest(false);
-                            nav(`/products/${p.id}`);
+                            goToProduct(p.id);
                           }}
                         >
                           {p.imagesJson?.[0] ? (
@@ -2040,12 +2022,7 @@ export default function Catalog() {
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
-                                  nav(`/products/${p.id}`, {
-                                    state: {
-                                      from: location.pathname + location.search,
-                                      restoreScrollY: window.scrollY,
-                                    },
-                                  });
+                                  goToProduct(p.id);
                                 }}
                               >
                                 Choose options
@@ -2337,7 +2314,7 @@ export default function Catalog() {
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
                   <input
-                    ref={inputRef}
+                    ref={mobileInputRef}
                     value={query}
                     onChange={(e) => {
                       setQuery(e.target.value);
@@ -2358,7 +2335,7 @@ export default function Catalog() {
                         const pick = suggestions[activeIdx];
                         if (pick) {
                           closeRefine();
-                          nav(`/products/${pick.id}`);
+                          goToProduct(pick.id);
                         }
                         setShowSuggest(false);
                       } else if (e.key === "Escape") {
@@ -2391,7 +2368,7 @@ export default function Catalog() {
                               }`}
                               onClick={() => {
                                 closeRefine();
-                                nav(`/products/${p.id}`);
+                                goToProduct(p.id);
                               }}
                             >
                               {p.imagesJson?.[0] ? (
