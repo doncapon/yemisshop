@@ -382,7 +382,7 @@ export default function Navbar() {
                     to="/"
                     end
                     icon={showShopNav ? <LayoutGrid size={18} /> : <Home size={18} />}
-                    label="Catalogue"
+                    label="Products"
                   />
 
                   {showSupplierNav && (
@@ -722,7 +722,7 @@ export default function Navbar() {
                     <>
                       <MobileMenuButton
                         icon={<LayoutGrid size={18} />}
-                        label="Catalogue"
+                        label="Products"
                         onClick={() => {
                           setMobileMoreOpen(false);
                           nav("/");

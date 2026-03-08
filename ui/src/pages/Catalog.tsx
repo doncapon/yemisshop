@@ -869,7 +869,6 @@ export default function Catalog() {
   const [showSuggest, setShowSuggest] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
 
-
   const [refineOpen, setRefineOpen] = useState(false);
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [inStockOnly, setInStockOnly] = useState(true);
@@ -877,14 +876,13 @@ export default function Catalog() {
 
   const desktopInputRef = useRef<HTMLInputElement | null>(null);
   const mobileInputRef = useRef<HTMLInputElement | null>(null);
-  const suggestRef = useRef<HTMLDivElement | null>(null);
+  const desktopSuggestRef = useRef<HTMLDivElement | null>(null);
+  const mobileSuggestRef = useRef<HTMLDivElement | null>(null);
   const restoredScrollKeyRef = useRef<string | null>(null);
 
   const navigatingRef = useRef(false);
-  const toastTimerRef = useRef<number | null>(null);
-  const clicksRef = useRef<Record<string, number>>({});
+  const productClicksRef = useRef<Record<string, number>>({});
   const deferredQuery = useDeferredValue(query);
-
 
   function isFromCardAction(target: EventTarget | null) {
     const el = target as HTMLElement | null;
@@ -913,7 +911,6 @@ export default function Catalog() {
     });
   }, [location.pathname, location.search, nav]);
 
-
   const closeRefine = () => {
     setRefineOpen(false);
     setShowSuggest(false);
@@ -923,34 +920,56 @@ export default function Catalog() {
   /* ---------------- Navigation / overlay stability ---------------- */
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem("productClicks:v1");
+      productClicksRef.current = raw ? JSON.parse(raw) || {} : {};
+    } catch {
+      productClicksRef.current = {};
+    }
+  }, []);
+
+  useEffect(() => {
     navigatingRef.current = false;
     setRefineOpen(false);
     setShowSuggest(false);
     setTouchStartX(null);
     document.body.style.overflow = "";
+    document.documentElement.style.overflow = "";
     (document.activeElement as HTMLElement | null)?.blur?.();
   }, [location.key]);
 
   useEffect(() => {
-    document.body.style.overflow = refineOpen ? "hidden" : "";
-    return () => {
+    const prevBodyOverflow = document.body.style.overflow;
+    const prevHtmlOverflow = document.documentElement.style.overflow;
+
+    if (refineOpen) {
+      document.body.style.overflow = "hidden";
+      document.documentElement.style.overflow = "hidden";
+    } else {
       document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    }
+
+    return () => {
+      document.body.style.overflow = prevBodyOverflow;
+      document.documentElement.style.overflow = prevHtmlOverflow;
     };
   }, [refineOpen]);
 
   useEffect(() => {
-    const onPageShow = (ev: PageTransitionEvent) => {
-      if (ev.persisted) {
-        setRefineOpen(false);
-        setShowSuggest(false);
-        setTouchStartX(null);
-        document.body.style.overflow = "";
-      }
+    const resetUi = () => {
+      setRefineOpen(false);
+      setShowSuggest(false);
+      setTouchStartX(null);
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
     };
 
-    const onPageHide = () => {
-      document.body.style.overflow = "";
+    const onPageShow = (ev: PageTransitionEvent) => {
+      if (ev.persisted) resetUi();
     };
+
+    const onPageHide = () => resetUi();
 
     window.addEventListener("pageshow", onPageShow as any);
     window.addEventListener("pagehide", onPageHide as any);
@@ -1419,6 +1438,7 @@ export default function Catalog() {
     selectedBucketIdxs,
     selectedBrands,
     deferredQuery,
+    query,
     PRICE_BUCKETS,
     inStockOnly,
     marginPercent,
@@ -1433,14 +1453,7 @@ export default function Catalog() {
     if (sortKey !== "relevance") return filtered;
 
     const purchased = purchasedQ.data ?? {};
-    const clicks = (() => {
-      try {
-        const raw = localStorage.getItem("productClicks:v1");
-        return raw ? JSON.parse(raw) || {} : {};
-      } catch {
-        return {};
-      }
-    })();
+    const clicks = productClicksRef.current;
 
     return filtered
       .map((p) => {
@@ -1504,9 +1517,15 @@ export default function Catalog() {
       const t = e.target as Node;
       const clickedDesktopInput = !!desktopInputRef.current?.contains(t);
       const clickedMobileInput = !!mobileInputRef.current?.contains(t);
-      const clickedSuggest = !!suggestRef.current?.contains(t);
+      const clickedDesktopSuggest = !!desktopSuggestRef.current?.contains(t);
+      const clickedMobileSuggest = !!mobileSuggestRef.current?.contains(t);
 
-      if (!clickedSuggest && !clickedDesktopInput && !clickedMobileInput) {
+      if (
+        !clickedDesktopInput &&
+        !clickedMobileInput &&
+        !clickedDesktopSuggest &&
+        !clickedMobileSuggest
+      ) {
         setShowSuggest(false);
       }
     }
@@ -1669,7 +1688,7 @@ export default function Catalog() {
                 className="hidden md:inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium bg-white/90 text-zinc-800 shadow-sm active:scale-[0.98] transition border border-zinc-200 hover:border-zinc-300"
               >
                 <SlidersHorizontal size={18} />
-                Refine
+                Filter categories & brands
               </button>
             </div>
           </div>
@@ -1687,7 +1706,7 @@ export default function Catalog() {
             className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-medium bg-white/90 text-zinc-800 shadow-sm active:scale-[0.97] transition border border-zinc-200 hover:border-zinc-300"
           >
             <SlidersHorizontal size={14} />
-            Refine
+            Filter categories & brands
           </button>
         </div>
 
@@ -1722,7 +1741,7 @@ export default function Catalog() {
               onClick={() => setRefineOpen(true)}
             >
               <SlidersHorizontal size={14} />
-              Edit
+              Edit filters
             </button>
           </div>
         )}
@@ -1763,7 +1782,7 @@ export default function Catalog() {
 
             {showSuggest && query && suggestions.length > 0 && (
               <div
-                ref={suggestRef}
+                ref={desktopSuggestRef}
                 className="absolute left-0 right-0 mt-2 bg-white rounded-2xl shadow-2xl z-30 overflow-hidden border border-zinc-200"
               >
                 <ul className="max-h-[45vh] overflow-auto p-2">
@@ -1775,8 +1794,7 @@ export default function Catalog() {
                       <li key={p.id} className="mb-2 last:mb-0">
                         <button
                           type="button"
-                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
-                            }`}
+                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""}`}
                           onClick={() => {
                             setShowSuggest(false);
                             goToProduct(p.id);
@@ -1814,11 +1832,224 @@ export default function Catalog() {
           </div>
         </div>
 
+        {/* Mobile-only controls moved above product tiles */}
+        <div className="md:hidden mb-3 rounded-2xl border border-zinc-200 bg-white/90 p-3 shadow-sm">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+            <input
+              ref={mobileInputRef}
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setShowSuggest(true);
+                setActiveIdx(0);
+              }}
+              onFocus={() => query && setShowSuggest(true)}
+              onKeyDown={(e) => {
+                if (!showSuggest || suggestions.length === 0) return;
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setActiveIdx((i) => Math.max(i - 1, 0));
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  const pick = suggestions[activeIdx];
+                  if (pick) goToProduct(pick.id);
+                  setShowSuggest(false);
+                } else if (e.key === "Escape") {
+                  setShowSuggest(false);
+                }
+              }}
+              placeholder="Search products, brands, or categories…"
+              className="w-full rounded-2xl pl-10 pr-4 py-2.5 bg-white border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+              aria-label="Search products"
+            />
+
+            {showSuggest && query && suggestions.length > 0 && (
+              <div
+                ref={mobileSuggestRef}
+                className="absolute left-0 right-0 mt-2 bg-white rounded-2xl shadow-2xl z-30 overflow-hidden border border-zinc-200"
+              >
+                <ul className="max-h-[45vh] overflow-auto p-2">
+                  {suggestions.map((p, i) => {
+                    const active = i === activeIdx;
+                    const minPrice = priceForFiltering(p, marginPercent);
+
+                    return (
+                      <li key={p.id} className="mb-2 last:mb-0">
+                        <button
+                          type="button"
+                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""}`}
+                          onClick={() => {
+                            setShowSuggest(false);
+                            goToProduct(p.id);
+                          }}
+                        >
+                          {p.imagesJson?.[0] ? (
+                            <img
+                              src={resolveImageUrl(p.imagesJson?.[0])}
+                              alt=""
+                              aria-hidden="true"
+                              onError={(e) => (e.currentTarget as HTMLImageElement).remove()}
+                              className="w-16 h-16 object-cover rounded-xl border border-zinc-200"
+                            />
+                          ) : (
+                            <div className="w-16 h-16 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
+                              —
+                            </div>
+                          )}
+
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold truncate">{p.title}</div>
+                            <div className="text-xs opacity-80 truncate">
+                              {ngn.format(minPrice || 0)}
+                              {p.categoryName ? ` • ${p.categoryName}` : ""}
+                              {p.brand?.name ? ` • ${p.brand.name}` : ""}
+                            </div>
+                          </div>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="min-w-0">
+              <label className="mb-1 block text-[11px] font-medium text-zinc-700">Sort</label>
+              <select
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value as SortKey)}
+                className="w-full rounded-xl px-3 py-2 text-[12px] bg-white border border-zinc-200"
+              >
+                <option value="relevance">Relevance</option>
+                <option value="price-asc">Price: Low → High</option>
+                <option value="price-desc">Price: High → Low</option>
+              </select>
+            </div>
+
+            <div className="min-w-0">
+              <label className="mb-1 block text-[11px] font-medium text-zinc-700">Per page</label>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
+                className="w-full rounded-xl px-3 py-2 text-[12px] bg-white border border-zinc-200"
+              >
+                <option value={8}>8</option>
+                <option value={12}>12</option>
+                <option value={16}>16</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
+              <input
+                type="checkbox"
+                checked={inStockOnly}
+                onChange={(e) => setInStockOnly(e.target.checked)}
+                className="h-4 w-4 rounded border-zinc-300"
+              />
+              In stock
+            </label>
+
+            <button
+              type="button"
+              onClick={() => setRefineOpen(true)}
+              className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-medium bg-white text-zinc-800 shadow-sm border border-zinc-200 hover:border-zinc-300"
+            >
+              <SlidersHorizontal size={14} />
+              Filter categories & brands
+            </button>
+          </div>
+
+          {/* Mobile pagination moved to top, below per-page */}
+          {sorted.length > 0 && (
+            <div className="mt-3 rounded-2xl bg-white/85 backdrop-blur p-3 shadow-sm border border-zinc-200">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
+                    Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
+                  </div>
+                  <div className="text-[11px] text-zinc-500">
+                    Page {currentPage} / {totalPages}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 grid grid-cols-4 gap-2">
+                <button
+                  type="button"
+                  onClick={() => goTo(1)}
+                  className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
+                >
+                  First
+                </button>
+                <button
+                  type="button"
+                  onClick={() => goTo(currentPage - 1)}
+                  className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
+                >
+                  Prev
+                </button>
+                <button
+                  type="button"
+                  onClick={() => goTo(currentPage + 1)}
+                  className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
+                >
+                  Next
+                </button>
+                <button
+                  type="button"
+                  onClick={() => goTo(totalPages)}
+                  className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
+                >
+                  Last
+                </button>
+              </div>
+
+              <form
+                className="mt-3 flex items-center gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const n = Number(jumpVal);
+                  if (Number.isFinite(n)) goTo(n);
+                }}
+              >
+                <label className="text-[11px] font-semibold tracking-tight text-zinc-700 shrink-0">Go to</label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  min={1}
+                  max={totalPages}
+                  value={jumpVal}
+                  onChange={(e) => setJumpVal(e.target.value)}
+                  placeholder={`${currentPage}`}
+                  className="h-9 w-full min-w-0 rounded-xl px-3 text-[12px] font-semibold bg-white border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+                  aria-label="Jump to page"
+                />
+                <button
+                  type="submit"
+                  disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
+                  className="h-9 shrink-0 rounded-xl px-4 text-[12px] font-semibold bg-zinc-900 text-white disabled:opacity-40 active:scale-[0.99] transition"
+                >
+                  Go
+                </button>
+              </form>
+            </div>
+          )}
+        </div>
+
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
           <aside className="hidden md:block">
             <div className="sticky top-24 rounded-2xl bg-white/90 p-4 border border-zinc-200">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-zinc-900">Refine</h3>
+                <h3 className="text-sm font-semibold text-zinc-900">Filter categories & brands</h3>
                 {(anyActiveFilter || hasSearch) && (
                   <button
                     type="button"
@@ -2218,80 +2449,6 @@ export default function Catalog() {
                 </div>
 
                 <div className="mt-5 md:mt-8">
-                  <div className="md:hidden rounded-2xl bg-white/85 backdrop-blur p-3 shadow-sm border border-zinc-200">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
-                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
-                        </div>
-                        <div className="text-[11px] text-zinc-500">
-                          Page {currentPage} / {totalPages}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-4 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => goTo(1)}
-                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
-                      >
-                        First
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => goTo(currentPage - 1)}
-                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
-                      >
-                        Prev
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => goTo(currentPage + 1)}
-                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
-                      >
-                        Next
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => goTo(totalPages)}
-                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
-                      >
-                        Last
-                      </button>
-                    </div>
-
-                    <form
-                      className="mt-3 flex items-center gap-2"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        const n = Number(jumpVal);
-                        if (Number.isFinite(n)) goTo(n);
-                      }}
-                    >
-                      <label className="text-[11px] font-semibold tracking-tight text-zinc-700 shrink-0">Go to</label>
-                      <input
-                        type="number"
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        min={1}
-                        max={totalPages}
-                        value={jumpVal}
-                        onChange={(e) => setJumpVal(e.target.value)}
-                        placeholder={`${currentPage}`}
-                        className="h-9 w-full min-w-0 rounded-xl px-3 text-[12px] font-semibold bg-white border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
-                        aria-label="Jump to page"
-                      />
-                      <button
-                        type="submit"
-                        disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
-                        className="h-9 shrink-0 rounded-xl px-4 text-[12px] font-semibold bg-zinc-900 text-white disabled:opacity-40 active:scale-[0.99] transition"
-                      >
-                        Go
-                      </button>
-                    </form>
-                  </div>
-
                   <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm text-zinc-600">
                       Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
@@ -2412,153 +2569,22 @@ export default function Catalog() {
             >
               <div className="flex items-center justify-between">
                 <div className="min-w-0">
-                  <h3 className="text-base font-semibold text-zinc-900">Refine</h3>
-                  <p className="text-[11px] text-zinc-600">Search, sort, page size, and filters.</p>
+                  <h3 className="text-base font-semibold text-zinc-900">Filter categories & brands</h3>
+                  <p className="text-[11px] text-zinc-600">Choose categories, brands, and price ranges.</p>
                 </div>
 
                 <button
                   type="button"
                   onClick={closeRefine}
                   className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-zinc-100 text-zinc-700 active:scale-95 transition"
-                  aria-label="Close refine panel"
+                  aria-label="Close filters panel"
                 >
                   <X size={18} />
                 </button>
               </div>
 
-              <div className="relative">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
-                  <input
-                    ref={mobileInputRef}
-                    value={query}
-                    onChange={(e) => {
-                      setQuery(e.target.value);
-                      setShowSuggest(true);
-                      setActiveIdx(0);
-                    }}
-                    onFocus={() => query && setShowSuggest(true)}
-                    onKeyDown={(e) => {
-                      if (!showSuggest || suggestions.length === 0) return;
-                      if (e.key === "ArrowDown") {
-                        e.preventDefault();
-                        setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                      } else if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        setActiveIdx((i) => Math.max(i - 1, 0));
-                      } else if (e.key === "Enter") {
-                        e.preventDefault();
-                        const pick = suggestions[activeIdx];
-                        if (pick) {
-                          closeRefine();
-                          goToProduct(pick.id);
-                        }
-                        setShowSuggest(false);
-                      } else if (e.key === "Escape") {
-                        setShowSuggest(false);
-                      }
-                    }}
-                    placeholder="Search products, brands, or categories…"
-                    className="rounded-2xl pl-9 pr-4 py-2.5 w-full bg-white/90 backdrop-blur transition border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
-                    aria-label="Search products"
-                  />
-                </div>
-
-                {showSuggest && query && suggestions.length > 0 && (
-                  <div
-                    ref={suggestRef}
-                    className="mt-2 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden border border-zinc-200"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <ul className="max-h-[45vh] overflow-auto p-2">
-                      {suggestions.map((p, i) => {
-                        const active = i === activeIdx;
-                        const minPrice = priceForFiltering(p, marginPercent);
-
-                        return (
-                          <li key={p.id} className="mb-2 last:mb-0">
-                            <button
-                              type="button"
-                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
-                                }`}
-                              onClick={() => {
-                                closeRefine();
-                                goToProduct(p.id);
-                              }}
-                            >
-                              {p.imagesJson?.[0] ? (
-                                <img
-                                  src={resolveImageUrl(p.imagesJson?.[0])}
-                                  alt=""
-                                  aria-hidden="true"
-                                  onError={(e) => (e.currentTarget as HTMLImageElement).remove()}
-                                  className="w-16 h-16 object-cover rounded-xl border border-zinc-200"
-                                />
-                              ) : (
-                                <div className="w-16 h-16 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
-                                  —
-                                </div>
-                              )}
-
-                              <div className="min-w-0">
-                                <div className="text-sm font-semibold truncate">{p.title}</div>
-                                <div className="text-xs opacity-80 truncate">
-                                  {ngn.format(minPrice || 0)}
-                                  {p.categoryName ? ` • ${p.categoryName}` : ""}
-                                  {p.brand?.name ? ` • ${p.brand.name}` : ""}
-                                </div>
-                              </div>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                )}
-              </div>
-
-              <div className="grid grid-cols-1 gap-3">
-                <div className="text-sm inline-flex items-center gap-2">
-                  <ArrowUpDown size={16} className="text-zinc-600" />
-                  <label className="opacity-70 min-w-[44px]">Sort</label>
-                  <select
-                    value={sortKey}
-                    onChange={(e) => setSortKey(e.target.value as SortKey)}
-                    className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 border border-zinc-200"
-                  >
-                    <option value="relevance">Relevance</option>
-                    <option value="price-asc">Price: Low → High</option>
-                    <option value="price-desc">Price: High → Low</option>
-                  </select>
-                </div>
-
-                <div className="text-sm inline-flex items-center gap-2">
-                  <LayoutGrid size={16} className="text-zinc-600" />
-                  <label className="opacity-70 min-w-[72px]">Per page</label>
-                  <select
-                    value={pageSize}
-                    onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
-                    className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 border border-zinc-200"
-                  >
-                    <option value={8}>8</option>
-                    <option value={12}>12</option>
-                    <option value={16}>16</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
-                  <input
-                    type="checkbox"
-                    checked={inStockOnly}
-                    onChange={(e) => setInStockOnly(e.target.checked)}
-                    className="h-4 w-4 rounded border-zinc-300"
-                  />
-                  In stock
-                </label>
-
-                {(anyActiveFilter || hasSearch) && (
+              {(anyActiveFilter || hasSearch) && (
+                <div className="flex items-center justify-end">
                   <button
                     type="button"
                     className="text-[12px] font-medium text-fuchsia-700 hover:underline"
@@ -2570,7 +2596,165 @@ export default function Catalog() {
                   >
                     Clear all
                   </button>
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-[12px] font-semibold text-zinc-900">Categories</h4>
+                  <button
+                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    onClick={() => setSelectedCategories([])}
+                    disabled={selectedCategories.length === 0}
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                {categoryTreeUi ? (
+                  <ul className="space-y-1.5 max-h-56 overflow-auto pr-1">
+                    {categoryTreeUi.map(({ node, count, depth, hasChildren }) => {
+                      const checked = selectedCategories.includes(node.id);
+                      const expanded = !!expandedCats[node.id];
+                      const pad = Math.min(20, depth * 10);
+
+                      return (
+                        <li key={node.id}>
+                          <div
+                            className={`w-full flex items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white border-zinc-900"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              }`}
+                            style={{ paddingLeft: 8 + pad }}
+                          >
+                            {hasChildren ? (
+                              <button
+                                type="button"
+                                onClick={() => toggleExpand(node.id)}
+                                className={`inline-flex items-center justify-center w-6 h-6 rounded-lg ${checked ? "text-white/90 hover:bg-white/10" : "text-zinc-600 hover:bg-black/5"
+                                  }`}
+                                aria-label={expanded ? "Collapse category" : "Expand category"}
+                              >
+                                {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                              </button>
+                            ) : (
+                              <span className="inline-flex w-6 h-6" />
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => toggleCategory(node.id)}
+                              className="min-w-0 flex-1 text-left"
+                              title={node.name}
+                            >
+                              <span className="truncate">{node.name}</span>
+                            </button>
+
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({count})
+                            </span>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <ul className="space-y-1.5 max-h-56 overflow-auto pr-1">
+                    {categories.length === 0 && <Shimmer />}
+                    {categories.map((c) => {
+                      const checked = selectedCategories.includes(c.id);
+                      return (
+                        <li key={c.id}>
+                          <button
+                            onClick={() => toggleCategory(c.id)}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              }`}
+                          >
+                            <span className="truncate">{c.name}</span>
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({c.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 )}
+              </div>
+
+              {brands.length > 0 && (
+                <div className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-[12px] font-semibold text-zinc-900">Brands</h4>
+                    <button
+                      className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                      onClick={() => setSelectedBrands([])}
+                      disabled={selectedBrands.length === 0}
+                    >
+                      Reset
+                    </button>
+                  </div>
+
+                  <ul className="space-y-1.5 max-h-44 overflow-auto pr-1">
+                    {brands.map((b) => {
+                      const checked = selectedBrands.includes(b.name);
+                      return (
+                        <li key={b.name}>
+                          <button
+                            onClick={() => toggleBrand(b.name)}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              }`}
+                          >
+                            <span className="truncate">{b.name}</span>
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({b.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-[12px] font-semibold text-zinc-900">Price</h4>
+                  <button
+                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    onClick={() => setSelectedBucketIdxs([])}
+                    disabled={selectedBucketIdxs.length === 0}
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                <ul className="space-y-1.5 max-h-52 overflow-auto pr-1">
+                  {visiblePriceBuckets.length === 0 && <Shimmer />}
+                  {visiblePriceBuckets.map(({ bucket, idx, count }) => {
+                    const checked = selectedBucketIdxs.includes(idx);
+                    return (
+                      <li key={bucket.label}>
+                        <button
+                          onClick={() => toggleBucket(idx)}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                            }`}
+                        >
+                          <span>{bucket.label}</span>
+                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            ({count})
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
               </div>
 
               <div className="pt-2 flex items-center justify-between gap-3">

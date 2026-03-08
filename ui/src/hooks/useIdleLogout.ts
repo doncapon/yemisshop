@@ -1,10 +1,9 @@
 // src/hooks/useIdleLogout.ts
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
-import api from "../api/client";
+import { performLogout } from "../utils/logout";
 import { useAuthStore } from "../store/auth";
 
-const AXIOS_COOKIE_CFG = { withCredentials: true as const };
 const RETURN_TO_KEY = "auth:returnTo";
 
 function isProtectedPath(p: string) {
@@ -28,21 +27,19 @@ function isProtectedPath(p: string) {
 export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
   const hydrated = useAuthStore((s) => s.hydrated);
   const user = useAuthStore((s) => s.user);
-  const clear = useAuthStore((s) => s.clear);
 
   const loc = useLocation();
 
   const timerRef = useRef<number | null>(null);
-  const kickingRef = useRef(false); // ✅ prevents double fire
+  const kickingRef = useRef(false);
   const [shouldKick, setShouldKick] = useState(false);
 
-  // Arm / re-arm the timer based on activity
   useEffect(() => {
     if (!hydrated) return;
     if (!user?.id) return;
 
     const reset = () => {
-      if (kickingRef.current) return; // ✅ don't re-arm while logging out
+      if (kickingRef.current) return;
       if (timerRef.current) window.clearTimeout(timerRef.current);
       timerRef.current = window.setTimeout(() => setShouldKick(true), timeoutMs) as any;
     };
@@ -58,7 +55,6 @@ export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
     };
   }, [hydrated, user?.id, timeoutMs]);
 
-  // ✅ Idle logout + HARD redirect (full refresh)
   useEffect(() => {
     if (!shouldKick) return;
     if (!hydrated) return;
@@ -66,34 +62,20 @@ export function useIdleLogout(timeoutMs = 20 * 60 * 1000) {
 
     kickingRef.current = true;
 
-    (async () => {
+    const path = `${loc.pathname}${loc.search}`;
+
+    if (isProtectedPath(loc.pathname)) {
       try {
-        await api.post("/api/auth/logout", {}, AXIOS_COOKIE_CFG);
+        sessionStorage.setItem(RETURN_TO_KEY, path);
       } catch {
-        // ignore
+        //
       }
+    }
 
-      try {
-        clear();
-      } catch {
-        // ignore
-      }
+    const target = isProtectedPath(loc.pathname)
+      ? `/login?reason=idle&from=${encodeURIComponent(path)}`
+      : "/login?reason=idle";
 
-      const path = `${loc.pathname}${loc.search}`;
-
-      // keep return target only for protected pages
-      if (isProtectedPath(loc.pathname)) {
-        try {
-          sessionStorage.setItem(RETURN_TO_KEY, path);
-        } catch {}
-      }
-
-      // ✅ HARD NAVIGATION (refresh-style) to login
-      const target = isProtectedPath(loc.pathname)
-        ? `/login?reason=idle&from=${encodeURIComponent(path)}`
-        : "/login?reason=idle";
-
-      window.location.replace(target);
-    })();
-  }, [shouldKick, hydrated, clear, loc.pathname, loc.search]);
+    void performLogout(target);
+  }, [shouldKick, hydrated, loc.pathname, loc.search]);
 }

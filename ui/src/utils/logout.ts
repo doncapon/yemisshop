@@ -1,27 +1,26 @@
 // src/utils/logout.ts
 import api from "../api/client.js";
 import { useAuthStore } from "../store/auth";
-import { readCartLines } from "./cartModel";
+import { readCartLines, writeCartLines } from "./cartModel";
 
 type NavigateFn = (to: string, opts?: { replace?: boolean }) => void;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Cart keys */
 const GUEST_CART_KEY = "cart:guest:v2";
 const USER_CART_KEY_PREFIX = "cart:user:";
 const CART_KEY_SUFFIX = ":v2";
 
 const LAST_LOGOUT_AT_KEY = "auth:lastLogoutAt";
 
-/** Mark a logout so bootstrap/me checks don't instantly "re-log you in" for a second */
 export function markJustLoggedOut() {
   try {
     sessionStorage.setItem(LAST_LOGOUT_AT_KEY, String(Date.now()));
-  } catch {}
+  } catch {
+    //
+  }
 }
 
-/** True if user logged out within the last `ms` */
 export function wasJustLoggedOut(ms = 3000) {
   try {
     const raw = sessionStorage.getItem(LAST_LOGOUT_AT_KEY);
@@ -52,8 +51,8 @@ function getActiveUserId() {
 }
 
 /**
- * Snapshot the currently active browser cart while auth still exists.
- * This is the cart we want to sync to the server before logout.
+ * If you later want "sync before logout", keep this helper.
+ * For now we are clearing cart on logout/idle logout, so no server push is needed.
  */
 function readBrowserCartSnapshot(): LocalCartLine[] {
   try {
@@ -65,63 +64,39 @@ function readBrowserCartSnapshot(): LocalCartLine[] {
   }
 }
 
-/**
- * Best-effort server cart sync before logout.
- * Replace URL list with your real cart endpoint if needed.
- */
-async function pushBrowserCartToServer(lines: LocalCartLine[]) {
-  if (!Array.isArray(lines) || !lines.length) return;
-
-  const items = lines
-    .filter((l) => l && l.productId && Number(l.qty) > 0)
-    .map((l) => ({
-      productId: String(l.productId),
-      variantId: l.variantId ?? null,
-      supplierId: l.supplierId ?? null,
-      qty: Math.max(1, Number(l.qty) || 1),
-      kind: l.kind ?? (l.variantId ? "VARIANT" : "BASE"),
-      optionsKey: l.optionsKey ?? null,
-    }));
-
-  if (!items.length) return;
-
-  const urls = [
-    "/cart/sync",
-    "/api/cart/sync",
-    "/cart/merge",
-    "/api/cart/merge",
-  ];
-
-  for (const url of urls) {
-    try {
-      await api.post(url, { items }, { withCredentials: true });
-      return;
-    } catch {
-      // try next compatible route
-    }
-  }
-}
-
-/** Reset browser cart after logout */
 function clearBrowserCart() {
+  try {
+    writeCartLines([]);
+  } catch {
+    //
+  }
+
   try {
     const uid = getActiveUserId();
     if (uid) {
       localStorage.removeItem(userCartKey(uid));
     }
-  } catch {}
+  } catch {
+    //
+  }
 
   try {
     localStorage.removeItem(GUEST_CART_KEY);
-  } catch {}
+  } catch {
+    //
+  }
 
   try {
-    localStorage.removeItem("cart"); // legacy only
-  } catch {}
+    localStorage.removeItem("cart");
+  } catch {
+    //
+  }
 
   try {
     window.dispatchEvent(new Event("cart:updated"));
-  } catch {}
+  } catch {
+    //
+  }
 }
 
 async function tryServerLogout() {
@@ -131,56 +106,56 @@ async function tryServerLogout() {
       await api.post(url, {}, { withCredentials: true });
       return;
     } catch {
-      // try next
+      //
     }
   }
 }
 
-export async function performLogout(redirectTo = "/", navigate?: NavigateFn) {
-  // mark first so any immediate bootstrap() sees it
-  markJustLoggedOut();
-
-  // capture cart before auth is cleared
-  const browserCartSnapshot = readBrowserCartSnapshot();
-
-  // best-effort: store browser cart in server cart first
+function clearAuthSnapshots() {
   try {
-    await Promise.race([
-      pushBrowserCartToServer(browserCartSnapshot),
-      sleep(1200),
-    ]);
+    localStorage.removeItem("auth_store_v1");
+    sessionStorage.removeItem("auth_store_v1");
   } catch {
-    // ignore
+    //
   }
 
-  const st = useAuthStore.getState();
+  try {
+    localStorage.removeItem("auth");
+    sessionStorage.removeItem("auth");
+  } catch {
+    //
+  }
 
   try {
-    // best-effort cookie clear
-    await Promise.race([tryServerLogout(), sleep(800)]);
+    useAuthStore.getState().clear?.();
+  } catch {
+    //
+  }
+
+  try {
+    useAuthStore.setState({ user: null } as any);
+  } catch {
+    //
+  }
+}
+
+export async function performLogout(redirectTo = "/", navigate?: NavigateFn) {
+  markJustLoggedOut();
+
+  // Read once in case you later want analytics/debugging, but do not preserve it.
+  readBrowserCartSnapshot();
+
+  try {
+    await Promise.race([tryServerLogout(), sleep(1200)]);
   } finally {
-    // clear browser cart completely after sync
     clearBrowserCart();
+    clearAuthSnapshots();
 
-    // clear auth state
-    try {
-      st.clear?.();
-    } catch {}
-    try {
-      useAuthStore.setState({ user: null } as any);
-    } catch {}
-
-    // clear persisted auth snapshot keys
-    try {
-      localStorage.removeItem("auth_store_v1");
-      sessionStorage.removeItem("auth_store_v1");
-    } catch {}
-
-    // redirect
     if (navigate) {
       navigate(redirectTo, { replace: true });
       return;
     }
-    window.location.assign(redirectTo);
+
+    window.location.replace(redirectTo);
   }
 }

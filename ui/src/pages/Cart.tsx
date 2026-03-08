@@ -53,14 +53,12 @@ const API_ORIGIN =
     .replace(/\/+$/, "") || "https://api.dayspringhouse.com";
 
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
-const CART_BFCACHE_REFRESH_KEY = "__cart_bfcache_refresh_once__";
 
 /* ---------------- Helpers ---------------- */
 
 function resolveImageUrl(input?: any): string | undefined {
   if (input == null) return undefined;
 
-  // Handle arrays directly
   if (Array.isArray(input)) {
     for (const item of input) {
       const resolved = resolveImageUrl(item);
@@ -69,7 +67,6 @@ function resolveImageUrl(input?: any): string | undefined {
     return undefined;
   }
 
-  // Handle objects directly
   if (typeof input === "object") {
     const candidate =
       input.url ??
@@ -85,7 +82,6 @@ function resolveImageUrl(input?: any): string | undefined {
   const s = String(input ?? "").trim();
   if (!s) return undefined;
 
-  // Handle JSON-looking strings
   if (
     (s.startsWith("[") && s.endsWith("]")) ||
     (s.startsWith("{") && s.endsWith("}"))
@@ -94,7 +90,7 @@ function resolveImageUrl(input?: any): string | undefined {
       const parsed = JSON.parse(s);
       return resolveImageUrl(parsed);
     } catch {
-      // fall through
+      //
     }
   }
 
@@ -118,51 +114,6 @@ function resolveImageUrl(input?: any): string | undefined {
 function asMoney(v: any, d = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
-}
-
-function mergeCartItemsByLine(items: CartItem[]): CartItem[] {
-  const map = new Map<string, CartItem>();
-
-  for (const item of items) {
-    const key = lineKeyFor(item);
-    const existing = map.get(key);
-
-    if (!existing) {
-      map.set(key, {
-        ...item,
-        sourceIds: item.id ? [String(item.id)] : [],
-      });
-      continue;
-    }
-
-    const existingQty = Math.max(1, Number(existing.qty) || 1);
-    const nextQty = Math.max(1, Number(item.qty) || 1);
-
-    const chosenUnit =
-      asMoney(existing.unitPrice, 0) > 0
-        ? asMoney(existing.unitPrice, 0)
-        : asMoney(item.unitPrice, 0);
-
-    const merged: CartItem = {
-      ...existing,
-      id: existing.id || item.id,
-      sourceIds: [
-        ...(existing.sourceIds ?? []),
-        ...(item.id ? [String(item.id)] : []),
-      ].filter(Boolean),
-      title: String(existing.title || item.title || ""),
-      image: existing.image || item.image,
-      qty: existingQty + nextQty,
-      unitPrice: chosenUnit,
-      totalPrice: round2(chosenUnit * (existingQty + nextQty)),
-      selectedOptions:
-        (existing.selectedOptions?.length ? existing.selectedOptions : item.selectedOptions) ?? [],
-    };
-
-    map.set(key, merged);
-  }
-
-  return Array.from(map.values());
 }
 
 function round2(n: number) {
@@ -282,6 +233,51 @@ function cartSignature(items: CartItem[]) {
       ].join("::");
     })
     .join("||");
+}
+
+function mergeCartItemsByLine(items: CartItem[]): CartItem[] {
+  const map = new Map<string, CartItem>();
+
+  for (const item of items) {
+    const key = lineKeyFor(item);
+    const existing = map.get(key);
+
+    if (!existing) {
+      map.set(key, {
+        ...item,
+        sourceIds: item.id ? [String(item.id)] : [],
+      });
+      continue;
+    }
+
+    const existingQty = Math.max(1, Number(existing.qty) || 1);
+    const nextQty = Math.max(1, Number(item.qty) || 1);
+
+    const chosenUnit =
+      asMoney(existing.unitPrice, 0) > 0
+        ? asMoney(existing.unitPrice, 0)
+        : asMoney(item.unitPrice, 0);
+
+    const merged: CartItem = {
+      ...existing,
+      id: existing.id || item.id,
+      sourceIds: [
+        ...(existing.sourceIds ?? []),
+        ...(item.id ? [String(item.id)] : []),
+      ].filter(Boolean),
+      title: String(existing.title || item.title || ""),
+      image: existing.image || item.image,
+      qty: existingQty + nextQty,
+      unitPrice: chosenUnit,
+      totalPrice: round2(chosenUnit * (existingQty + nextQty)),
+      selectedOptions:
+        (existing.selectedOptions?.length ? existing.selectedOptions : item.selectedOptions) ?? [],
+    };
+
+    map.set(key, merged);
+  }
+
+  return Array.from(map.values());
 }
 
 /* ---------------- Server cart helpers ---------------- */
@@ -448,8 +444,27 @@ export default function Cart() {
         mirrorAuthedCartToLocal(serverItems);
         setHydrated(true);
         return;
-      } catch {
+      } catch (err: any) {
         if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+
+        const status = Number(err?.response?.status || 0);
+
+        // Session expired / invalid auth
+        if (status === 401) {
+          try {
+            writeCartLines([]);
+          } catch {
+            //
+          }
+
+          safeSetCart([]);
+          setHydrated(true);
+          window.dispatchEvent(new Event("cart:updated"));
+          window.dispatchEvent(new Event("auth:expired"));
+          return;
+        }
+
+        // Non-auth failure: keep local fallback if you really want resilience
         const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
         safeSetCart(localItems);
         setHydrated(true);
@@ -465,16 +480,14 @@ export default function Cart() {
 
   useEffect(() => {
     isMountedRef.current = true;
-    sessionStorage.removeItem(CART_BFCACHE_REFRESH_KEY);
 
     const onPageShow = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
 
-      const alreadyRefreshed = sessionStorage.getItem(CART_BFCACHE_REFRESH_KEY) === "1";
-      if (!alreadyRefreshed) {
-        sessionStorage.setItem(CART_BFCACHE_REFRESH_KEY, "1");
-        window.location.replace(window.location.href);
-      }
+      activeRequestIdRef.current += 1;
+      focusedQtyKeyRef.current = null;
+      clearAllNotes();
+      void loadCart();
     };
 
     const onPageHide = () => {
@@ -483,8 +496,13 @@ export default function Cart() {
       clearAllNotes();
     };
 
+    const onCartUpdated = () => {
+      void loadCart();
+    };
+
     window.addEventListener("pageshow", onPageShow as EventListener);
     window.addEventListener("pagehide", onPageHide as EventListener);
+    window.addEventListener("cart:updated", onCartUpdated);
 
     return () => {
       isMountedRef.current = false;
@@ -494,8 +512,9 @@ export default function Cart() {
 
       window.removeEventListener("pageshow", onPageShow as EventListener);
       window.removeEventListener("pagehide", onPageHide as EventListener);
+      window.removeEventListener("cart:updated", onCartUpdated);
     };
-  }, [clearAllNotes]);
+  }, [clearAllNotes, loadCart]);
 
   useEffect(() => {
     let cancelled = false;
@@ -598,6 +617,8 @@ export default function Cart() {
           return nextCart;
         });
 
+        window.dispatchEvent(new Event("cart:updated"));
+
         if (sourceKey) setQtyDraft((prev) => ({ ...prev, [sourceKey]: String(nextQty) }));
         return;
       }
@@ -608,7 +629,6 @@ export default function Cart() {
         await serverSetQty(target, nextQty);
         if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
 
-        // ✅ mirror latest visible cart into local storage
         setCart((prev) => {
           const mirrored = prev.map((it) => {
             if (!sameLine(it, target)) return it;
@@ -642,7 +662,7 @@ export default function Cart() {
         }
       }
     },
-    [isAuthed, loadCart, persistGuestCart, setLocalQtyState, showQtyNote]
+    [isAuthed, loadCart, mirrorAuthedCartToLocal, persistGuestCart, setLocalQtyState, showQtyNote]
   );
 
   const remove = useCallback(
@@ -670,7 +690,6 @@ export default function Cart() {
         await serverSetQty(target, 0);
         if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
 
-        // ✅ keep local mirror in sync for Catalog / Navbar / mini-cart
         mirrorAuthedCartToLocal(next);
         window.dispatchEvent(new Event("cart:updated"));
       } catch {
