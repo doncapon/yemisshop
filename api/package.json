@@ -2,9 +2,6 @@
   "name": "ecommerce-api",
   "version": "0.2.0",
   "type": "module",
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
-  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
@@ -17,7 +14,7 @@
     "seed": "prisma db seed",
     "seed:shipping": "tsx prisma/seed-shipping.ts",
     "seed:catalog": "tsx prisma/seedCategories.ts",
-    "seed:product": "tsx prisma/seedProduct.ts",
+    "seed:products": "tsx prisma/seedCategories.ts",
     "postdeploy": "npm run seed",
     "prestart": "prisma migrate deploy && echo '--- PWD ---' && pwd && echo '--- ls -la ---' && ls -la && echo '--- ls -R dist ---' && ls -R dist || true"
   },
