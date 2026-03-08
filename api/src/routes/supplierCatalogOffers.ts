@@ -31,7 +31,6 @@ function sameBool(a: any, b: any) {
 }
 
 async function getSupplierForUser(userId: string) {
-  // Include userId because you reference it later in GET /:id
   const s = await prisma.supplier.findUnique({
     where: { userId },
     select: { id: true, status: true, userId: true },
@@ -51,7 +50,6 @@ const SOCR_MODEL =
 const SOCR_FIELDS = new Set<string>((SOCR_MODEL?.fields ?? []).map((f) => f.name));
 const hasSOCRField = (name: string) => SOCR_FIELDS.has(name);
 
-// Find a “patch json” field name that exists in YOUR schema
 const SOCR_PATCH_KEY =
   ([
     "proposedPatch",
@@ -65,7 +63,6 @@ const SOCR_PATCH_KEY =
     "deltaJson",
   ].find(hasSOCRField) as string | undefined) ?? null;
 
-// Find a “snapshot json” field name that exists in YOUR schema
 const SOCR_SNAPSHOT_KEY =
   ([
     "currentSnapshot",
@@ -81,7 +78,7 @@ const SOCR_REQUESTED_BY_KEY =
     "requestedByUserId",
     "requestedById",
     "requestedBy",
-  ].find(hasSOCRField) as string | undefined) ?? "requestedByUserId"; // fallback to what you used
+  ].find(hasSOCRField) as string | undefined) ?? "requestedByUserId";
 
 function socrSet(key: string | null, value: any) {
   return key ? { [key]: value } : {};
@@ -91,11 +88,6 @@ function socrIf(name: string, value: any) {
   return hasSOCRField(name) ? { [name]: value } : {};
 }
 
-/**
- * Queue or update a pending change request WITHOUT relying on schema-specific @@unique names.
- * Also avoids compile-time Prisma type errors by using tx as any, BUT keeps runtime safe
- * by only setting fields that exist in the DMMF.
- */
 async function queuePendingChangeRequest(
   tx: any,
   args: {
@@ -147,7 +139,6 @@ async function queuePendingChangeRequest(
     ...socrSet(SOCR_PATCH_KEY, args.patch),
     ...(SOCR_REQUESTED_BY_KEY ? { [SOCR_REQUESTED_BY_KEY]: args.requestedByUserId } : {}),
     ...socrIf("requestedAt", new Date()),
-    // clear any previous review fields if they exist
     ...socrIf("reviewedAt", null),
     ...socrIf("reviewedByUserId", null),
     ...socrIf("reviewedById", null),
@@ -163,7 +154,6 @@ async function queuePendingChangeRequest(
     ? await model.update({ where: { id: existing.id }, data: updateData, select })
     : await model.create({ data: baseData, select });
 
-  // ✅ normalize to what your frontend was expecting
   return {
     ...row,
     proposedPatch: SOCR_PATCH_KEY ? row?.[SOCR_PATCH_KEY] ?? null : null,
@@ -172,8 +162,6 @@ async function queuePendingChangeRequest(
 
 /**
  * GET /api/supplier/catalog/products
- * - Suppliers can browse products from OTHER suppliers (or products with no supplierId)
- * - Search by title, sku, variant sku, attribute name/value name
  */
 router.get("/products", requireAuth, async (req: any, res) => {
   const role = req.user?.role;
@@ -287,7 +275,7 @@ router.get("/products", requireAuth, async (req: any, res) => {
             updatedAt: true,
             pendingChangeId: true,
           },
-          take: 1, // defensive, in case of legacy duplicates
+          take: 1,
         },
         supplierVariantOffers: {
           select: {
@@ -357,16 +345,12 @@ router.get("/:id", requireAuth, async (req: any, res) => {
       id,
       isDeleted: false,
       OR: [
-        // own product
         { supplierId: s.id } as any,
-        // legacy owner/user links
         ...(s.userId
           ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[])
           : []),
-        // legacy “has my offers” filters – now just kept for compatibility
         { supplierProductOffers: { some: {} } } as any,
         { supplierVariantOffers: { some: {} } } as any,
-        // public LIVE products from catalog
         {
           AND: [
             { status: "LIVE" as any },
@@ -387,10 +371,10 @@ router.get("/:id", requireAuth, async (req: any, res) => {
               value: { select: { id: true, name: true, code: true } },
             },
           },
-          // ✅ no supplierId filter – one canonical offer per variant
           supplierVariantOffers: {
             select: {
               id: true,
+              supplierId: true,
               unitPrice: true,
               availableQty: true,
               inStock: true,
@@ -404,10 +388,10 @@ router.get("/:id", requireAuth, async (req: any, res) => {
         orderBy: { createdAt: "asc" },
       },
 
-      // ✅ no supplierId filter – one canonical base offer per product
       supplierProductOffers: {
         select: {
           id: true,
+          supplierId: true,
           basePrice: true,
           currency: true,
           inStock: true,
@@ -540,14 +524,6 @@ router.get("/:id", requireAuth, async (req: any, res) => {
   });
 });
 
-/**
- * PUT /api/supplier/catalog/offers/base
- * Supplier edits the canonical base offer for THEIR product.
- */
-/**
- * PUT /api/supplier/catalog/offers/base
- * Supplier edits the canonical base offer for THEIR product.
- */
 router.put("/offers/base", requireAuth, async (req: any, res) => {
   const role = req.user?.role;
   const userId = String(req.user?.id ?? "").trim();
@@ -572,7 +548,6 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
     })
     .parse(req.body);
 
-  // Product must be LIVE and owned by this supplier
   const p = await prisma.product.findUnique({
     where: { id: body.productId },
     select: { id: true, isDeleted: true, status: true, supplierId: true },
@@ -587,11 +562,12 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
       .json({ error: "You can only edit offers for your own products" });
   }
 
-  // Canonical base offer is 1:1 per (productId, supplierId)
-  const existing = await prisma.supplierProductOffer.findFirst({
+  const existing = await prisma.supplierProductOffer.findUnique({
     where: {
-      productId: body.productId,
-      supplierId, // ✅ now exists in your schema
+      supplier_product_offer_unique: {
+        productId: body.productId,
+        supplierId,
+      },
     },
     select: {
       id: true,
@@ -608,12 +584,11 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
     },
   });
 
-  // ---------------- CREATE NEW OFFER ----------------
   if (!existing) {
     const created = await prisma.supplierProductOffer.create({
       data: {
         productId: body.productId,
-        supplierId, // ✅ REQUIRED by your model
+        supplierId,
         basePrice: body.basePrice,
         availableQty: body.availableQty,
         leadDays: body.leadDays ?? null,
@@ -639,7 +614,6 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
     return res.json({ data: created, meta: { reviewQueued: false } });
   }
 
-  // ---------------- UPDATE EXISTING OFFER ----------------
   const immediateChanged =
     (existing.availableQty ?? 0) !== body.availableQty ||
     sameBool(existing.inStock, body.inStock) === false;
@@ -667,7 +641,6 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
   const result = await prisma.$transaction(async (tx) => {
     let updatedOffer = existing;
 
-    // qty / stock can be applied immediately
     if (immediateChanged) {
       updatedOffer = await tx.supplierProductOffer.update({
         where: { id: existing.id },
@@ -721,10 +694,6 @@ router.put("/offers/base", requireAuth, async (req: any, res) => {
   });
 });
 
-/**
- * PUT /api/supplier/catalog/offers/variant
- * Supplier edits the canonical offer for a specific variant of THEIR product.
- */
 router.put("/offers/variant", requireAuth, async (req: any, res) => {
   const role = req.user?.role;
   const userId = String(req.user?.id ?? "").trim();
@@ -780,20 +749,29 @@ router.put("/offers/variant", requireAuth, async (req: any, res) => {
       .json({ error: "You can only edit offers for your own products" });
   }
 
-  // Base offer must exist for this product
-  const baseOffer = await prisma.supplierProductOffer.findFirst({
-    where: { productId: body.productId },
+  const baseOffer = await prisma.supplierProductOffer.findUnique({
+    where: {
+      supplier_product_offer_unique: {
+        productId: body.productId,
+        supplierId,
+      },
+    },
     select: { id: true },
   });
+
   if (!baseOffer) {
     return res
       .status(400)
       .json({ error: "Create a base offer for this product first." });
   }
 
-  // Variant offer is 1:1 with variantId
   const existing = await prisma.supplierVariantOffer.findUnique({
-    where: { variantId: body.variantId },
+    where: {
+      supplier_variant_offer_unique: {
+        variantId: body.variantId,
+        supplierId,
+      },
+    },
     select: {
       id: true,
       productId: true,
@@ -813,6 +791,7 @@ router.put("/offers/variant", requireAuth, async (req: any, res) => {
       data: {
         productId: body.productId,
         variantId: body.variantId,
+        supplierId,
         supplierProductOfferId: baseOffer.id,
         unitPrice: body.unitPrice,
         availableQty: body.availableQty,
@@ -914,10 +893,6 @@ router.put("/offers/variant", requireAuth, async (req: any, res) => {
   });
 });
 
-/**
- * DELETE /api/supplier/catalog/offers/variant/:id
- * Remove variant-level canonical offer (only if variant belongs to this supplier).
- */
 router.delete("/offers/variant/:id", requireAuth, async (req: any, res) => {
   const role = req.user?.role;
   const userId = String(req.user?.id ?? "").trim();
@@ -935,11 +910,12 @@ router.delete("/offers/variant/:id", requireAuth, async (req: any, res) => {
     where: { id },
     select: {
       id: true,
+      supplierId: true,
       product: { select: { supplierId: true } },
     },
   });
 
-  if (!found || found.product.supplierId !== supplierId) {
+  if (!found || found.supplierId !== supplierId || found.product.supplierId !== supplierId) {
     return res.status(404).json({ error: "Not found" });
   }
 
@@ -947,10 +923,6 @@ router.delete("/offers/variant/:id", requireAuth, async (req: any, res) => {
   return res.json({ ok: true });
 });
 
-/**
- * DELETE /api/supplier/catalog/offers/base/:productId
- * Remove base + variant offers for a product owned by this supplier.
- */
 router.delete("/offers/base/:productId", requireAuth, async (req: any, res) => {
   const role = req.user?.role;
   const userId = String(req.user?.id ?? "").trim();
@@ -973,14 +945,20 @@ router.delete("/offers/base/:productId", requireAuth, async (req: any, res) => {
     return res.status(404).json({ error: "Product not found" });
   }
 
-  const base = await prisma.supplierProductOffer.findFirst({
-    where: { productId },
+  const base = await prisma.supplierProductOffer.findUnique({
+    where: {
+      supplier_product_offer_unique: {
+        productId,
+        supplierId,
+      },
+    },
     select: { id: true },
   });
+
   if (!base) return res.status(404).json({ error: "Not found" });
 
   await prisma.$transaction([
-    prisma.supplierVariantOffer.deleteMany({ where: { productId } }),
+    prisma.supplierVariantOffer.deleteMany({ where: { productId, supplierId } }),
     prisma.supplierProductOffer.delete({ where: { id: base.id } }),
   ]);
 
