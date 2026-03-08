@@ -782,6 +782,48 @@ async function setServerCartQty(input: {
   );
 }
 
+function TruncatedTitle({
+  text,
+  className = "",
+}: {
+  text: string;
+  className?: string;
+}) {
+  const ref = React.useRef<HTMLHeadingElement | null>(null);
+  const [isTruncated, setIsTruncated] = React.useState(false);
+
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const check = () => {
+      const truncated = el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight;
+      setIsTruncated(truncated);
+    };
+
+    check();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(check);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, [text]);
+
+  return (
+    <h3
+      ref={ref}
+      className={className}
+      title={isTruncated ? text : undefined}
+    >
+      {text}
+    </h3>
+  );
+}
+
 /* =========================================================
    Component
 ========================================================= */
@@ -1376,7 +1418,7 @@ export default function Catalog() {
     selectedCategoryEffective,
     selectedBucketIdxs,
     selectedBrands,
-    deferredQuery,  
+    deferredQuery,
     PRICE_BUCKETS,
     inStockOnly,
     marginPercent,
@@ -2084,8 +2126,10 @@ export default function Catalog() {
                         </div>
 
                         <div className="p-2.5 md:p-4">
-                          <h3 className="font-semibold text-[12px] md:text-sm text-zinc-900 line-clamp-1">{p.title}</h3>
-
+                          <TruncatedTitle
+                            text={p.title}
+                            className="font-semibold text-[12px] md:text-sm text-zinc-900 line-clamp-1"
+                          />
                           <div className="text-[10px] md:text-xs text-zinc-500 line-clamp-1">
                             {p.brand?.name ? `${p.brand.name} • ` : ""}
                             {p.categoryName?.trim() || "Uncategorized"}
