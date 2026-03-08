@@ -1,5 +1,5 @@
 // src/pages/Catalog.tsx
-import React, { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client.js";
 import { useNavigate, useLocation } from "react-router-dom";
@@ -127,28 +127,59 @@ function decToNumber(v: any): number {
 
 function normalizeImages(val: any): string[] {
   if (!val) return [];
-  if (Array.isArray(val)) return val.map(String).map((s) => s.trim()).filter(Boolean);
 
-  if (typeof val === "string") {
-    const s = val.trim();
-    if (!s) return [];
+  const out: string[] = [];
 
-    try {
-      if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith('"') && s.endsWith('"'))) {
-        const parsed = JSON.parse(s);
-        return normalizeImages(parsed);
-      }
-    } catch {
-      //
+  const pushOne = (input: any) => {
+    if (input == null) return;
+
+    if (Array.isArray(input)) {
+      for (const item of input) pushOne(item);
+      return;
     }
 
-    return s
-      .split(/[\n,]/g)
-      .map((t) => t.trim())
-      .filter(Boolean);
-  }
+    if (typeof input === "object") {
+      const candidate =
+        input.url ??
+        input.src ??
+        input.image ??
+        input.imageUrl ??
+        input.absoluteUrl ??
+        null;
 
-  return [];
+      if (candidate != null) pushOne(candidate);
+      return;
+    }
+
+    if (typeof input === "string") {
+      const s = input.trim();
+      if (!s) return;
+
+      if (
+        (s.startsWith("[") && s.endsWith("]")) ||
+        (s.startsWith("{") && s.endsWith("}"))
+      ) {
+        try {
+          pushOne(JSON.parse(s));
+          return;
+        } catch {
+          //
+        }
+      }
+
+      const parts = s.split(/[\n,]/g).map((t) => t.trim()).filter(Boolean);
+      if (parts.length > 1) {
+        for (const p of parts) pushOne(p);
+        return;
+      }
+
+      out.push(s);
+    }
+  };
+
+  pushOne(val);
+
+  return out.filter(Boolean);
 }
 
 const isLive = (x?: { status?: string | null }) => String(x?.status ?? "").trim().toUpperCase() === "LIVE";
@@ -289,10 +320,10 @@ function getDisplayRetailPrice(p: Product, marginPercent: number): number {
     Number(p.retailPrice) > 0
       ? Number(p.retailPrice)
       : Number(p.autoPrice) > 0
-      ? Number(p.autoPrice)
-      : Number(p.displayBasePrice) > 0
-      ? Number(p.displayBasePrice)
-      : 0;
+        ? Number(p.autoPrice)
+        : Number(p.displayBasePrice) > 0
+          ? Number(p.displayBasePrice)
+          : 0;
 
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
 }
@@ -343,21 +374,56 @@ function getApiOrigin(): string {
 
 const API_ORIGIN = getApiOrigin();
 
-function resolveImageUrl(input?: string | null): string | undefined {
+function resolveImageUrl(input?: any): string | undefined {
+  if (input == null) return undefined;
+
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const resolved = resolveImageUrl(item);
+      if (resolved) return resolved;
+    }
+    return undefined;
+  }
+
+  if (typeof input === "object") {
+    const candidate =
+      input.url ??
+      input.src ??
+      input.image ??
+      input.imageUrl ??
+      input.absoluteUrl ??
+      null;
+
+    return candidate ? resolveImageUrl(candidate) : undefined;
+  }
+
   const s = String(input ?? "").trim();
   if (!s) return undefined;
+
+  if (
+    (s.startsWith("[") && s.endsWith("]")) ||
+    (s.startsWith("{") && s.endsWith("}"))
+  ) {
+    try {
+      return resolveImageUrl(JSON.parse(s));
+    } catch {
+      //
+    }
+  }
 
   if (/^(https?:\/\/|data:|blob:)/i.test(s)) return s;
   if (s.startsWith("//")) return `${window.location.protocol}${s}`;
 
   if (s.startsWith("/")) {
-    if (s.startsWith("/uploads/")) return `${API_ORIGIN}${s}`;
-    if (s.startsWith("/api/uploads/")) return `${API_ORIGIN}${s}`;
+    if (s.startsWith("/uploads/") || s.startsWith("/api/uploads/")) return `${API_ORIGIN}${s}`;
     return `${window.location.origin}${s}`;
   }
 
-  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) return `${API_ORIGIN}/${s}`;
-  return `${window.location.origin}/${s}`;
+  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) {
+    return `${API_ORIGIN}/${s.replace(/^\/+/, "")}`;
+  }
+
+  return `${window.location.origin}/${s.replace(/^\/+/, "")}`;
 }
 
 /* =========================================================
@@ -372,6 +438,8 @@ function usePurchasedCounts(enabledOverride = true) {
     enabled: !!user && enabledOverride,
     retry: 0,
     staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     queryFn: async () => {
       try {
         const { data } = await api.get("/api/orders/mine", {
@@ -382,8 +450,8 @@ function usePurchasedCounts(enabledOverride = true) {
         const orders: any[] = Array.isArray((data as any)?.data)
           ? (data as any).data
           : Array.isArray(data)
-          ? (data as any)
-          : [];
+            ? (data as any)
+            : [];
 
         const map: Record<string, number> = {};
         for (const o of orders) {
@@ -702,7 +770,16 @@ async function setServerCartQty(input: {
     return;
   }
 
-  await api.patch(`/api/cart/items/${found.id}`, { qty: input.qty }, AXIOS_COOKIE_CFG);
+  await api.patch(
+    `/api/cart/items/${found.id}`,
+    {
+      qty: input.qty,
+      titleSnapshot: input.titleSnapshot ?? null,
+      imageSnapshot: input.imageSnapshot ?? null,
+      unitPriceCache: input.unitPriceCache ?? null,
+    },
+    AXIOS_COOKIE_CFG
+  );
 }
 
 /* =========================================================
@@ -724,11 +801,11 @@ export default function Catalog() {
   const includeStr = "brand,category,variants,attributes,offers" as const;
 
   /* ---------------- Settings ---------------- */
-
   const settingsQ = useQuery<number>({
     queryKey: ["settings", "public", "marginPercent"],
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: 0,
     queryFn: async () => {
       const { data } = await api.get<PublicSettings>("/api/settings/public");
@@ -750,44 +827,50 @@ export default function Catalog() {
   const [showSuggest, setShowSuggest] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
 
-  const desktopInputRef = useRef<HTMLInputElement | null>(null);
-  const mobileInputRef = useRef<HTMLInputElement | null>(null);
-  const suggestRef = useRef<HTMLDivElement | null>(null);
 
   const [refineOpen, setRefineOpen] = useState(false);
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [inStockOnly, setInStockOnly] = useState(true);
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>({});
-  const [gridCols, setGridCols] = useState(2);
 
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 768px)");
-    const apply = () => setGridCols(mq.matches ? 4 : 2);
+  const desktopInputRef = useRef<HTMLInputElement | null>(null);
+  const mobileInputRef = useRef<HTMLInputElement | null>(null);
+  const suggestRef = useRef<HTMLDivElement | null>(null);
+  const restoredScrollKeyRef = useRef<string | null>(null);
 
-    apply();
+  const navigatingRef = useRef(false);
+  const toastTimerRef = useRef<number | null>(null);
+  const clicksRef = useRef<Record<string, number>>({});
+  const deferredQuery = useDeferredValue(query);
 
-    if ((mq as any).addEventListener) mq.addEventListener("change", apply);
-    else (mq as any).addListener(apply);
 
-    return () => {
-      if ((mq as any).removeEventListener) mq.removeEventListener("change", apply);
-      else (mq as any).removeListener(apply);
-    };
-  }, []);
-
-  function stopCardNav(e: React.SyntheticEvent) {
-    e.preventDefault();
-    e.stopPropagation();
+  function isFromCardAction(target: EventTarget | null) {
+    const el = target as HTMLElement | null;
+    return !!el?.closest('[data-stop-card-nav="true"]');
   }
 
-  function goToProduct(productId: string) {
-    nav(`/products/${productId}`, {
-      state: {
-        from: location.pathname + location.search,
-        restoreScrollY: window.scrollY,
-      },
+  const goToProduct = useCallback((productId: string) => {
+    if (navigatingRef.current) return;
+    navigatingRef.current = true;
+
+    setRefineOpen(false);
+    setShowSuggest(false);
+    setTouchStartX(null);
+
+    window.requestAnimationFrame(() => {
+      nav(`/products/${productId}`, {
+        state: {
+          from: location.pathname + location.search,
+          restoreScrollY: window.scrollY,
+        },
+      });
+
+      window.setTimeout(() => {
+        navigatingRef.current = false;
+      }, 250);
     });
-  }
+  }, [location.pathname, location.search, nav]);
+
 
   const closeRefine = () => {
     setRefineOpen(false);
@@ -798,6 +881,7 @@ export default function Catalog() {
   /* ---------------- Navigation / overlay stability ---------------- */
 
   useEffect(() => {
+    navigatingRef.current = false;
     setRefineOpen(false);
     setShowSuggest(false);
     setTouchStartX(null);
@@ -891,6 +975,8 @@ export default function Catalog() {
   const productsQ = useQuery<Product[]>({
     queryKey: ["products", { include: includeStr, status: "LIVE" }],
     staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     queryFn: async () => {
       const { data } = await api.get("/api/products", {
         params: { include: includeStr, status: "LIVE" },
@@ -899,46 +985,46 @@ export default function Catalog() {
       const raw: any[] = Array.isArray(data)
         ? data
         : Array.isArray((data as any)?.data)
-        ? (data as any).data
-        : [];
+          ? (data as any).data
+          : [];
 
       return (raw || [])
         .filter((x) => x && x.id != null)
         .map((x) => {
           const variants: Variant[] = Array.isArray(x.variants)
             ? x.variants.map((v: any) => ({
-                id: String(v.id),
-                sku: v.sku ?? null,
-                retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
-                inStock: v.inStock === true,
-                imagesJson: normalizeImages(v.imagesJson),
-                availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
-                offers: Array.isArray(v.offers)
-                  ? v.offers.map((o: any) => ({
-                      id: String(o.id),
-                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                      isActive: o.isActive === true,
-                      inStock: o.inStock === true,
-                      availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
-                      unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                      basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
-                      currency: o.currency ?? "NGN",
-                      leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
-                      supplierRatingAvg:
-                        o.supplierRatingAvg != null
-                          ? decToNumber(o.supplierRatingAvg)
-                          : o.supplier?.ratingAvg != null
-                          ? decToNumber(o.supplier.ratingAvg)
-                          : null,
-                      supplierRatingCount:
-                        o.supplierRatingCount != null
-                          ? Number(o.supplierRatingCount)
-                          : o.supplier?.ratingCount != null
-                          ? Number(o.supplier.ratingCount)
-                          : null,
-                    }))
-                  : [],
-              }))
+              id: String(v.id),
+              sku: v.sku ?? null,
+              retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
+              inStock: v.inStock === true,
+              imagesJson: normalizeImages(v.imagesJson),
+              availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+              offers: Array.isArray(v.offers)
+                ? v.offers.map((o: any) => ({
+                  id: String(o.id),
+                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                  basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                  currency: o.currency ?? "NGN",
+                  leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
+                  supplierRatingAvg:
+                    o.supplierRatingAvg != null
+                      ? decToNumber(o.supplierRatingAvg)
+                      : o.supplier?.ratingAvg != null
+                        ? decToNumber(o.supplier.ratingAvg)
+                        : null,
+                  supplierRatingCount:
+                    o.supplierRatingCount != null
+                      ? Number(o.supplierRatingCount)
+                      : o.supplier?.ratingCount != null
+                        ? Number(o.supplier.ratingCount)
+                        : null,
+                }))
+                : [],
+            }))
             : [];
 
           const baseSource =
@@ -960,14 +1046,14 @@ export default function Catalog() {
               o.supplierRatingAvg != null
                 ? decToNumber(o.supplierRatingAvg)
                 : o.supplier?.ratingAvg != null
-                ? decToNumber(o.supplier.ratingAvg)
-                : null,
+                  ? decToNumber(o.supplier.ratingAvg)
+                  : null,
             supplierRatingCount:
               o.supplierRatingCount != null
                 ? Number(o.supplierRatingCount)
                 : o.supplier?.ratingCount != null
-                ? Number(o.supplier.ratingCount)
-                : null,
+                  ? Number(o.supplier.ratingCount)
+                  : null,
           }));
 
           const catNameRaw = String(x.categoryName ?? x.category?.name ?? "").trim();
@@ -1004,34 +1090,27 @@ export default function Catalog() {
     return list.filter((p) => isLive(p));
   }, [productsQ.data]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const state = location.state as any;
     const y = state?.restoreScrollY;
 
     if (typeof y !== "number") return;
+    if (restoredScrollKeyRef.current === location.key) return;
 
-    requestAnimationFrame(() => {
+    restoredScrollKeyRef.current = location.key;
+
+    window.requestAnimationFrame(() => {
       window.scrollTo({ top: y, behavior: "auto" });
-
-      try {
-        nav(location.pathname + location.search, {
-          replace: true,
-          state: {
-            ...(state || {}),
-            restoreScrollY: undefined,
-          },
-        });
-      } catch {
-        //
-      }
     });
-  }, [location.key, location.pathname, location.search, location.state, nav]);
+  }, [location.key, location.state]);
 
   /* ---------------- Categories ---------------- */
 
   const categoriesTreeQ = useQuery<CategoryNode[]>({
     queryKey: ["categories", "tree"],
     staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: 0,
     queryFn: async () => {
       const attempts = [
@@ -1069,8 +1148,9 @@ export default function Catalog() {
     queryKey: ["favorites", "mine"],
     enabled: !isSupplier && isAuthed,
     retry: (count, e: any) => (Number(e?.response?.status) === 401 ? false : count < 2),
-    refetchOnWindowFocus: true,
-    staleTime: 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: 30_000,
     queryFn: async () => {
       const { data } = await api.get("/api/favorites/mine", { withCredentials: true });
 
@@ -1140,7 +1220,7 @@ export default function Catalog() {
   const norm = (s: string) => s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
   const suggestions = useMemo(() => {
-    const q = norm(query.trim());
+    const q = norm(deferredQuery.trim());
     if (!q) return [];
 
     const scored = products.map((p) => {
@@ -1162,7 +1242,7 @@ export default function Catalog() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 8)
       .map((x) => x.p);
-  }, [products, query]);
+  }, [products, deferredQuery]);
 
   const selectedCategoryEffective = useMemo(() => {
     const base = new Set(selectedCategories);
@@ -1175,10 +1255,10 @@ export default function Catalog() {
   }, [selectedCategories, catTreeHelpers]);
 
   const { categories, brands, visiblePriceBuckets, filtered, categoryTreeUi } = useMemo(() => {
-    const q = norm(query.trim());
+    const q = norm(deferredQuery.trim());
 
     const categoryQueryMatch =
-      catTreeHelpers && query
+      catTreeHelpers && deferredQuery
         ? [...catTreeHelpers.byId.values()].filter((c) => norm(c.name).includes(norm(query)))
         : [];
 
@@ -1296,7 +1376,7 @@ export default function Catalog() {
     selectedCategoryEffective,
     selectedBucketIdxs,
     selectedBrands,
-    query,
+    deferredQuery,  
     PRICE_BUCKETS,
     inStockOnly,
     marginPercent,
@@ -1422,10 +1502,12 @@ export default function Catalog() {
       const qty = Math.max(0, Math.floor(Number(nextQty) || 0));
       const unitPriceCache = getDisplayRetailPrice(p, marginPercent) || 0;
 
-      const primaryImg =
+      const primaryImgRaw =
         p.imagesJson?.[0] ||
         p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
         null;
+
+      const primaryImg = resolveImageUrl(primaryImgRaw) ?? null;
 
       const optionsKey = "";
 
@@ -1440,14 +1522,15 @@ export default function Catalog() {
         imageSnapshot: primaryImg ?? null,
         unitPriceCache: Number.isFinite(unitPriceCache) ? unitPriceCache : 0,
       });
-
       window.dispatchEvent(new Event("cart:updated"));
 
-      showMiniCartToast(
-        toMiniCartRows(nextLines),
-        { productId: p.id, variantId: null },
-        { mode: qty > 0 ? "add" : "remove" }
-      );
+      window.setTimeout(() => {
+        showMiniCartToast(
+          toMiniCartRows(nextLines),
+          { productId: p.id, variantId: null },
+          { mode: qty > 0 ? "add" : "remove" }
+        );
+      }, 0);
 
       syncServerQtyCoalesced(p, qty, unitPriceCache, primaryImg);
     } catch (err: any) {
@@ -1479,7 +1562,7 @@ export default function Catalog() {
   const anyActiveFilter =
     selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly;
 
-  const hasSearch = !!query.trim();
+  const hasSearch = !!deferredQuery.trim();
   const toggleExpand = (id: string) => setExpandedCats((m) => ({ ...m, [id]: !m[id] }));
 
   /* ---------------- Render guards ---------------- */
@@ -1650,9 +1733,8 @@ export default function Catalog() {
                       <li key={p.id} className="mb-2 last:mb-0">
                         <button
                           type="button"
-                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
-                            active ? "bg-black/5" : ""
-                          }`}
+                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
+                            }`}
                           onClick={() => {
                             setShowSuggest(false);
                             goToProduct(p.id);
@@ -1770,20 +1852,18 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`w-full flex items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white border-zinc-900"
-                                : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
-                            }`}
+                            className={`w-full flex items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white border-zinc-900"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex items-center justify-center w-6 h-6 rounded-lg ${
-                                  checked ? "text-white/90 hover:bg-white/10" : "text-zinc-600 hover:bg-black/5"
-                                }`}
+                                className={`inline-flex items-center justify-center w-6 h-6 rounded-lg ${checked ? "text-white/90 hover:bg-white/10" : "text-zinc-600 hover:bg-black/5"
+                                  }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -1818,11 +1898,10 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
-                            }`}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              }`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -1855,11 +1934,10 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
-                            }`}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
+                              }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -1893,11 +1971,10 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                            checked
-                              ? "bg-zinc-900 text-white"
-                              : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
-                          }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
+                            }`}
                         >
                           <span>{bucket.label}</span>
                           <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -1938,8 +2015,12 @@ export default function Catalog() {
                         key={p.id}
                         role="link"
                         tabIndex={0}
-                        onClick={() => goToProduct(p.id)}
+                        onClick={(e) => {
+                          if (isFromCardAction(e.target)) return;
+                          goToProduct(p.id);
+                        }}
                         onKeyDown={(e) => {
+                          if (isFromCardAction(e.target)) return;
                           if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();
                             goToProduct(p.id);
@@ -1975,6 +2056,7 @@ export default function Catalog() {
                           {!isSupplier && (
                             <button
                               type="button"
+                              data-stop-card-nav="true"
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
@@ -1989,11 +2071,10 @@ export default function Catalog() {
 
                                 toggleFav.mutate({ productId: p.id });
                               }}
-                              className={`absolute right-2 top-2 z-10 inline-flex items-center justify-center w-8 h-8 rounded-full border shadow-sm transition ${
-                                fav
-                                  ? "bg-rose-50 border-rose-200 text-rose-600"
-                                  : "bg-white/95 border-zinc-200 text-zinc-400 hover:text-rose-600 hover:border-rose-200"
-                              }`}
+                              className={`absolute right-2 top-2 z-10 inline-flex items-center justify-center w-8 h-8 rounded-full border shadow-sm transition ${fav
+                                ? "bg-rose-50 border-rose-200 text-rose-600"
+                                : "bg-white/95 border-zinc-200 text-zinc-400 hover:text-rose-600 hover:border-rose-200"
+                                }`}
                               aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
                               title={fav ? "Remove from wishlist" : "Add to wishlist"}
                             >
@@ -2018,6 +2099,7 @@ export default function Catalog() {
                             {hasVariants ? (
                               <button
                                 type="button"
+                                data-stop-card-nav="true"
                                 className="inline-flex items-center rounded-full bg-black/40 px-3 py-1.5 text-[11px] md:text-xs font-medium text-white hover:bg-black/55 transition"
                                 onClick={(e) => {
                                   e.preventDefault();
@@ -2028,25 +2110,19 @@ export default function Catalog() {
                                 Choose options
                               </button>
                             ) : (
-                              <div
-                                onClick={stopCardNav}
-                                onMouseDown={stopCardNav}
-                                onPointerDown={stopCardNav}
-                                onTouchStart={stopCardNav}
-                              >
+                              <div data-stop-card-nav="true">
                                 {baseQtyInCart > 0 ? (
                                   <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
                                     <button
                                       type="button"
+                                      data-stop-card-nav="true"
                                       aria-label="Decrease quantity"
                                       className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-sm font-semibold"
                                       onClick={(e) => {
-                                        stopCardNav(e);
+                                        e.preventDefault();
+                                        e.stopPropagation();
                                         void setCartQty(p, baseQtyInCart - 1);
                                       }}
-                                      onMouseDown={stopCardNav}
-                                      onPointerDown={stopCardNav}
-                                      onTouchStart={stopCardNav}
                                     >
                                       −
                                     </button>
@@ -2057,15 +2133,14 @@ export default function Catalog() {
 
                                     <button
                                       type="button"
+                                      data-stop-card-nav="true"
                                       aria-label="Increase quantity"
                                       className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-sm font-semibold"
                                       onClick={(e) => {
-                                        stopCardNav(e);
+                                        e.preventDefault();
+                                        e.stopPropagation();
                                         void setCartQty(p, baseQtyInCart + 1);
                                       }}
-                                      onMouseDown={stopCardNav}
-                                      onPointerDown={stopCardNav}
-                                      onTouchStart={stopCardNav}
                                     >
                                       +
                                     </button>
@@ -2073,20 +2148,18 @@ export default function Catalog() {
                                 ) : (
                                   <button
                                     type="button"
+                                    data-stop-card-nav="true"
                                     disabled={!inStock}
-                                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] md:text-xs font-medium shadow-sm transition ${
-                                      inStock
-                                        ? "bg-black text-white hover:bg-black/90"
-                                        : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
-                                    }`}
+                                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] md:text-xs font-medium shadow-sm transition ${inStock
+                                      ? "bg-black text-white hover:bg-black/90"
+                                      : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                                      }`}
                                     onClick={(e) => {
-                                      stopCardNav(e);
+                                      e.preventDefault();
+                                      e.stopPropagation();
                                       if (!inStock) return;
                                       void setCartQty(p, 1);
                                     }}
-                                    onMouseDown={stopCardNav}
-                                    onPointerDown={stopCardNav}
-                                    onTouchStart={stopCardNav}
                                   >
                                     Add to cart
                                   </button>
@@ -2235,11 +2308,10 @@ export default function Catalog() {
                                 <button
                                   type="button"
                                   onClick={() => goTo(n)}
-                                  className={`px-3 py-1.5 text-xs rounded-xl ${
-                                    n === currentPage
-                                      ? "bg-zinc-900 text-white border border-zinc-900"
-                                      : "bg-white hover:bg-zinc-50 border border-zinc-200 hover:border-zinc-300"
-                                  }`}
+                                  className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
+                                    ? "bg-zinc-900 text-white border border-zinc-900"
+                                    : "bg-white hover:bg-zinc-50 border border-zinc-200 hover:border-zinc-300"
+                                    }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
                                   {n}
@@ -2363,9 +2435,8 @@ export default function Catalog() {
                           <li key={p.id} className="mb-2 last:mb-0">
                             <button
                               type="button"
-                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
-                                active ? "bg-black/5" : ""
-                              }`}
+                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""
+                                }`}
                               onClick={() => {
                                 closeRefine();
                                 goToProduct(p.id);

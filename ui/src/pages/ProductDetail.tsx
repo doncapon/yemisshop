@@ -73,23 +73,23 @@ type ProductWire = {
   variants?: VariantWire[];
   offers?: OfferWire[];
   attributes?:
-  | {
-    options?: Array<{
-      attributeId: string;
-      valueId: string;
-      attribute?: { id: string; name: string };
-      value?: { id: string; name: string };
-      attributeName?: string;
-      valueName?: string;
-    }>;
-    texts?: Array<{
-      attributeId: string;
-      value: string;
-      attribute?: { id: string; name: string };
-      attributeName?: string;
-    }>;
-  }
-  | null;
+    | {
+        options?: Array<{
+          attributeId: string;
+          valueId: string;
+          attribute?: { id: string; name: string };
+          value?: { id: string; name: string };
+          attributeName?: string;
+          valueName?: string;
+        }>;
+        texts?: Array<{
+          attributeId: string;
+          value: string;
+          attribute?: { id: string; name: string };
+          attributeName?: string;
+        }>;
+      }
+    | null;
 
   // ⭐ Rating fields
   ratingAvg?: number | null;
@@ -148,6 +148,82 @@ function applyMargin(supplierPrice: number, marginPercent: number) {
   return round2(supplierPrice * (1 + m / 100));
 }
 
+function getApiOrigin(): string {
+  const base = String((api as any)?.defaults?.baseURL || "").trim();
+
+  if (/^https?:\/\//i.test(base)) {
+    try {
+      return new URL(base).origin;
+    } catch {
+      return window.location.origin;
+    }
+  }
+
+  const env = (import.meta as any)?.env;
+  const fromEnv = String(env?.VITE_API_URL || env?.VITE_API_ORIGIN || "").trim();
+
+  if (fromEnv && /^https?:\/\//i.test(fromEnv)) {
+    try {
+      return new URL(fromEnv).origin;
+    } catch {
+      //
+    }
+  }
+
+  return window.location.origin;
+}
+
+const API_ORIGIN = getApiOrigin();
+
+function resolveImageUrl(input?: any): string | undefined {
+  if (input == null) return undefined;
+
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const resolved = resolveImageUrl(item);
+      if (resolved) return resolved;
+    }
+    return undefined;
+  }
+
+  if (typeof input === "object") {
+    const candidate =
+      input.url ??
+      input.src ??
+      input.image ??
+      input.imageUrl ??
+      input.absoluteUrl ??
+      null;
+
+    return candidate ? resolveImageUrl(candidate) : undefined;
+  }
+
+  const s = String(input ?? "").trim();
+  if (!s) return undefined;
+
+  if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith("{") && s.endsWith("}"))) {
+    try {
+      return resolveImageUrl(JSON.parse(s));
+    } catch {
+      //
+    }
+  }
+
+  if (/^(https?:\/\/|data:|blob:)/i.test(s)) return s;
+  if (s.startsWith("//")) return `${window.location.protocol}${s}`;
+
+  if (s.startsWith("/")) {
+    if (s.startsWith("/uploads/") || s.startsWith("/api/uploads/")) return `${API_ORIGIN}${s}`;
+    return `${window.location.origin}${s}`;
+  }
+
+  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) {
+    return `${API_ORIGIN}/${s.replace(/^\/+/, "")}`;
+  }
+
+  return `${window.location.origin}/${s.replace(/^\/+/, "")}`;
+}
+
 function selectionPairsOf(sel: Record<string, string>) {
   return Object.entries(sel)
     .filter(([, v]) => !!String(v || "").trim())
@@ -186,23 +262,21 @@ function normalizeVariants(p: any): VariantWire[] {
     imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
     options: Array.isArray(v.options)
       ? v.options
-        .map((o: any) => ({
-          attributeId: String(o.attributeId ?? o.attribute?.id ?? ""),
-          valueId: String(o.valueId ?? o.value?.id ?? ""),
-          unitPrice: readOptionUnit(o),
-          attribute: o.attribute
-            ? { id: String(o.attribute.id), name: String(o.attribute.name), type: o.attribute.type }
-            : undefined,
-          value: o.value
-            ? { id: String(o.value.id), name: String(o.value.name), code: o.value.code ?? null }
-            : undefined,
-        }))
-        .filter((o: any) => o.attributeId && o.valueId)
+          .map((o: any) => ({
+            attributeId: String(o.attributeId ?? o.attribute?.id ?? ""),
+            valueId: String(o.valueId ?? o.value?.id ?? ""),
+            unitPrice: readOptionUnit(o),
+            attribute: o.attribute
+              ? { id: String(o.attribute.id), name: String(o.attribute.name), type: o.attribute.type }
+              : undefined,
+            value: o.value
+              ? { id: String(o.value.id), name: String(o.value.name), code: o.value.code ?? null }
+              : undefined,
+          }))
+          .filter((o: any) => o.attributeId && o.valueId)
       : [],
   }));
 }
-
-
 
 function offersFromSchema(p: any): OfferWire[] {
   const base: any[] = Array.isArray(p?.supplierProductOffers) ? p.supplierProductOffers : [];
@@ -467,6 +541,62 @@ function pickBestOffer(params: {
   return best;
 }
 
+async function setServerCartLine(input: {
+  productId: string;
+  variantId?: string | null;
+  kind: "BASE" | "VARIANT";
+  qty: number;
+  selectedOptions: Array<{ attributeId: string; valueId: string }>;
+  optionsKey: string;
+  titleSnapshot?: string | null;
+  imageSnapshot?: string | null;
+  unitPriceCache?: number | null;
+}) {
+  const { data } = await api.get("/api/cart", AXIOS_COOKIE_CFG);
+  const items: any[] = Array.isArray((data as any)?.items) ? (data as any).items : [];
+
+  const found = items.find((x) => {
+    return (
+      String(x.productId) === String(input.productId) &&
+      String(x.variantId ?? null) === String(input.variantId ?? null) &&
+      String(x.kind ?? "").toUpperCase() === String(input.kind).toUpperCase() &&
+      String(x.optionsKey ?? "") === String(input.optionsKey ?? "")
+    );
+  });
+
+  if (!found?.id) {
+    await api.post(
+      "/api/cart/items",
+      {
+        productId: input.productId,
+        variantId: input.variantId ?? null,
+        kind: input.kind,
+        qty: input.qty,
+        selectedOptions: input.selectedOptions,
+        optionsKey: input.optionsKey,
+        titleSnapshot: input.titleSnapshot ?? null,
+        imageSnapshot: input.imageSnapshot ?? null,
+        unitPriceCache: input.unitPriceCache ?? null,
+      },
+      AXIOS_COOKIE_CFG
+    );
+    return;
+  }
+
+  await api.patch(
+    `/api/cart/items/${found.id}`,
+    {
+      qty: Math.max(1, Number(found.qty || 0) + Number(input.qty || 0)),
+      selectedOptions: input.selectedOptions,
+      optionsKey: input.optionsKey,
+      titleSnapshot: input.titleSnapshot ?? null,
+      imageSnapshot: input.imageSnapshot ?? null,
+      unitPriceCache: input.unitPriceCache ?? null,
+    },
+    AXIOS_COOKIE_CFG
+  );
+}
+
 /* ---------------- Component ---------------- */
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
@@ -500,7 +630,7 @@ export default function ProductDetail() {
   const [isZooming, setIsZooming] = React.useState(false);
   const [zoomPos, setZoomPos] = React.useState({ x: 0.5, y: 0.5 });
   const MAGNIFIER_SIZE = 160;
-  const MAGNIFIER_ZOOM = 6; // increase this for stronger zoom
+  const MAGNIFIER_ZOOM = 6;
 
   const handleZoomMove = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -534,7 +664,6 @@ export default function ProductDetail() {
       y: Math.max(0, Math.min(100, y)),
     });
   }, []);
-
 
   /* ---------------- Settings ---------------- */
   const settingsQ = useQuery<number>({
@@ -649,11 +778,11 @@ export default function ProductDetail() {
         bestSupplierRating:
           rawBestSupplierRating && typeof rawBestSupplierRating === "object"
             ? {
-              ratingAvg:
-                typeof rawBestSupplierRating.ratingAvg === "number" ? Number(rawBestSupplierRating.ratingAvg) : null,
-              ratingCount:
-                typeof rawBestSupplierRating.ratingCount === "number" ? Number(rawBestSupplierRating.ratingCount) : null,
-            }
+                ratingAvg:
+                  typeof rawBestSupplierRating.ratingAvg === "number" ? Number(rawBestSupplierRating.ratingAvg) : null,
+                ratingCount:
+                  typeof rawBestSupplierRating.ratingCount === "number" ? Number(rawBestSupplierRating.ratingCount) : null,
+              }
             : null,
       };
 
@@ -701,13 +830,6 @@ export default function ProductDetail() {
     },
   });
 
-  React.useEffect(() => {
-    setMainIndex(0);
-    setBrokenByIndex({});
-    setIsZooming(false);
-    setZoomPos({ x: 50, y: 50 });
-  }, [product?.id]);
-
   /* ---------------- Ratings / Reviews ---------------- */
   const [ratingInput, setRatingInput] = React.useState<number>(0);
   const [commentInput, setCommentInput] = React.useState<string>("");
@@ -728,7 +850,7 @@ export default function ProductDetail() {
     },
   });
 
-  // ✅ toast scheduling (must be at component level, not inside callbacks)
+  // ✅ toast scheduling
   const toastTimerRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
@@ -822,7 +944,7 @@ export default function ProductDetail() {
     product?.bestSupplierRating?.ratingCount,
   ]);
 
-  /* ---------------- Variants / Axes (FAST) ---------------- */
+  /* ---------------- Variants / Axes ---------------- */
   const allVariants = product?.variants ?? [];
   const stockByVariantId = productQ.data?.stockByVariantId ?? {};
   const totalStockQty = productQ.data?.totalStockQty ?? 0;
@@ -893,11 +1015,6 @@ export default function ProductDetail() {
     return out;
   }, [axes, baseDefaultsFromAttributes]);
 
-  const isAllEmptySelection = React.useCallback(
-    (sel: Record<string, string>) => axisIds.every((aid) => !String(sel?.[aid] ?? "").trim()),
-    [axisIds]
-  );
-
   const isAtBaseDefaults = React.useCallback(
     (sel: Record<string, string>) => {
       if (!axisIds.length) return true;
@@ -909,78 +1026,6 @@ export default function ProductDetail() {
     },
     [axisIds, baseDefaults]
   );
-
-  React.useEffect(() => {
-    if (!product || !axes.length) return;
-
-    const initial = computeInitialSelection();
-
-    setSelected((prev) => {
-      const same =
-        Object.keys(initial).length === Object.keys(prev).length &&
-        Object.keys(initial).every((k) => prev[k] === initial[k]);
-
-      return same ? prev : initial;
-    });
-
-    setQty((q) => (q === 1 ? q : 1));
-
-  }, [product?.id, axes.length]);
-
-  // Build quick lookup of sellable variant option maps (only stock > 0)
-  const sellableVariantOptionMaps = React.useMemo(() => {
-    const out: Array<{ variantId: string; map: Record<string, string> }> = [];
-
-    for (const v of allVariants) {
-      const vid = String(v.id);
-      if (!sellableVariantIds.has(vid)) continue; // stock > 0 (from your productQ computation)
-
-      const m: Record<string, string> = {};
-      for (const o of v.options || []) {
-        const a = String(o.attributeId ?? "").trim();
-        const val = String(o.valueId ?? "").trim();
-        if (a && val) m[a] = val;
-      }
-      out.push({ variantId: vid, map: m });
-    }
-
-    return out;
-  }, [allVariants, sellableVariantIds]);
-
-  const partialSelectionMatchesAnySellable = React.useCallback(
-    (partial: Record<string, string>) => {
-      // only compare the axes that are currently set (non-empty)
-      const pairs = Object.entries(partial).filter(([, v]) => !!String(v || "").trim());
-      if (!pairs.length) return sellableVariantOptionMaps.length > 0;
-
-      outer: for (const row of sellableVariantOptionMaps) {
-        const m = row.map;
-        for (const [aid, vid] of pairs) {
-          if (String(m[aid] ?? "") !== String(vid)) continue outer;
-        }
-        return true;
-      }
-      return false;
-    },
-    [sellableVariantOptionMaps]
-  );
-
-  const variantIdByKey = React.useMemo(() => {
-    const m = new Map<string, string>();
-    for (const v of allVariants) {
-      const pairs: string[] = [];
-      for (const o of v.options || []) {
-        const aId = String(o.attributeId ?? "").trim();
-        const vId = String(o.valueId ?? "").trim();
-        if (!aId || !vId) continue;
-        pairs.push(`${aId}:${vId}`);
-      }
-      if (!pairs.length) continue;
-      pairs.sort();
-      m.set(pairs.join("|"), v.id);
-    }
-    return m;
-  }, [allVariants]);
 
   const [selected, setSelected] = React.useState<Record<string, string>>({});
   const [qty, setQty] = React.useState<number>(1);
@@ -1020,18 +1065,61 @@ export default function ProductDetail() {
     const initial = computeInitialSelection();
     setSelected(initial);
     setQty(1);
+  }, [product?.id, axes.length, computeInitialSelection, product]);
 
-  }, [product?.id, axes.length]);
+  // Build quick lookup of sellable variant option maps
+  const sellableVariantOptionMaps = React.useMemo(() => {
+    const out: Array<{ variantId: string; map: Record<string, string> }> = [];
 
+    for (const v of allVariants) {
+      const vid = String(v.id);
+      if (!sellableVariantIds.has(vid)) continue;
 
-  const optionAvailabilityForAxis = React.useCallback(
-    (axisId: string, valueId: string) => {
-      const candidate = { ...selected, [axisId]: valueId };
-      return partialSelectionMatchesAnySellable(candidate);
+      const m: Record<string, string> = {};
+      for (const o of v.options || []) {
+        const a = String(o.attributeId ?? "").trim();
+        const val = String(o.valueId ?? "").trim();
+        if (a && val) m[a] = val;
+      }
+      out.push({ variantId: vid, map: m });
+    }
+
+    return out;
+  }, [allVariants, sellableVariantIds]);
+
+  const partialSelectionMatchesAnySellable = React.useCallback(
+    (partial: Record<string, string>) => {
+      const pairs = Object.entries(partial).filter(([, v]) => !!String(v || "").trim());
+      if (!pairs.length) return sellableVariantOptionMaps.length > 0;
+
+      outer: for (const row of sellableVariantOptionMaps) {
+        const m = row.map;
+        for (const [aid, vid] of pairs) {
+          if (String(m[aid] ?? "") !== String(vid)) continue outer;
+        }
+        return true;
+      }
+      return false;
     },
-    [selected, partialSelectionMatchesAnySellable]
+    [sellableVariantOptionMaps]
   );
 
+  const variantIdByKey = React.useMemo(() => {
+    const m = new Map<string, string>();
+    for (const v of allVariants) {
+      const pairs: string[] = [];
+      for (const o of v.options || []) {
+        const aId = String(o.attributeId ?? "").trim();
+        const vId = String(o.valueId ?? "").trim();
+        if (!aId || !vId) continue;
+        pairs.push(`${aId}:${vId}`);
+      }
+      if (!pairs.length) continue;
+      pairs.sort();
+      m.set(pairs.join("|"), v.id);
+    }
+    return m;
+  }, [allVariants]);
 
   const matchedVariantId = React.useMemo(() => {
     const key = selectionKeyFromSelected(selected);
@@ -1215,22 +1303,25 @@ export default function ProductDetail() {
 
   const allAxesSelected = axes.length > 0 && selectedCount === axisIds.length;
 
-  const showInvalidCombo =
-    !!axes.length &&
-    !isAtBaseDefaults(selected) &&
-    allAxesSelected &&
-    !matchedVariantId;
+  const showInvalidCombo = !!axes.length && !isAtBaseDefaults(selected) && allAxesSelected && !matchedVariantId;
 
-
-  /* ---------------- Images (simple) ---------------- */
+  /* ---------------- Images ---------------- */
   function isUrlish(s?: string) {
-    return !!s && /^(https?:\/\/|data:image\/|\/)/i.test(s);
+    return !!resolveImageUrl(s);
   }
 
   const images = React.useMemo(() => {
-    const arr = Array.isArray(product?.imagesJson) ? product.imagesJson : [];
-    return arr.map(String).filter((u) => isUrlish(u));
-  }, [product?.imagesJson]);
+    const variantImgs =
+      matchedVariant?.imagesJson?.map((u) => resolveImageUrl(u)).filter(Boolean as any) ?? [];
+
+    const baseImgs =
+      (Array.isArray(product?.imagesJson) ? product.imagesJson : [])
+        .map((u) => resolveImageUrl(u))
+        .filter(Boolean as any) ?? [];
+
+    const merged = [...variantImgs, ...baseImgs].filter(Boolean) as string[];
+    return Array.from(new Set(merged));
+  }, [product?.imagesJson, matchedVariant?.imagesJson]);
 
   const [mainIndex, setMainIndex] = React.useState(0);
   const [brokenByIndex, setBrokenByIndex] = React.useState<Record<number, boolean>>({});
@@ -1238,7 +1329,9 @@ export default function ProductDetail() {
   React.useEffect(() => {
     setMainIndex(0);
     setBrokenByIndex({});
-  }, [product?.id]);
+    setIsZooming(false);
+    setZoomPos({ x: 50, y: 50 });
+  }, [product?.id, matchedVariant?.id]);
 
   function NoImageBox({ className = "" }: { className?: string }) {
     return (
@@ -1316,78 +1409,76 @@ export default function ProductDetail() {
 
       const selectedOptionsWire = Object.entries(selected)
         .filter(([, v]) => !!String(v || "").trim())
-        .map(([attributeId, valueId]) => ({ attributeId, valueId }));
+        .map(([attributeId, valueId]) => ({
+          attributeId: String(attributeId),
+          valueId: String(valueId),
+        }));
 
       const optionsKey =
         variantId && selectedOptionsWire.length
           ? selectedOptionsWire
-            .map((x) => `${String(x.attributeId)}:${String(x.valueId)}`)
-            .sort()
-            .join("|")
+              .map((x) => `${x.attributeId}:${x.valueId}`)
+              .sort()
+              .join("|")
           : "";
 
       const unitPriceClient = toNum(computed.final, 0);
 
-      const variantImg = variantId
-        ? (product.variants || []).find((v) => v.id === variantId)?.imagesJson?.[0]
-        : undefined;
+      const matchedVariantRow = variantId
+        ? (product.variants || []).find((v) => String(v.id) === String(variantId))
+        : null;
 
-      const primaryImg = variantImg || (product.imagesJson || [])[0] || null;
+      const variantImgRaw = matchedVariantRow?.imagesJson?.[0] ?? null;
+      const productImgRaw = (product.imagesJson || [])[0] ?? null;
 
-      // labels for cart row (UI only)
+      const primaryImg = resolveImageUrl(variantImgRaw) || resolveImageUrl(productImgRaw) || null;
+
       const { attrNameById, valueNameByAttrId } = buildLabelMaps(axes);
       const selectedOptionsLabeled = selectedOptionsWire.map(({ attributeId, valueId }) => ({
         attributeId,
         attribute: attrNameById.get(attributeId) ?? "",
         valueId,
-        value: valueId ? valueNameByAttrId.get(attributeId)?.get(valueId) ?? "" : "",
+        value: valueNameByAttrId.get(attributeId)?.get(valueId) ?? "",
       }));
 
       const isLoggedIn = !!useAuthStore.getState().user?.id;
       const existingLines = (readCartLines() as any[]) || [];
-      const lineKind = variantId ? "VARIANT" : "BASE";
+      const lineKind: "BASE" | "VARIANT" = variantId ? "VARIANT" : "BASE";
 
       const existingForCombo = existingLines.find((ln) => {
         return (
           String(ln.productId) === String(product.id) &&
           String(ln.variantId ?? null) === String(variantId ?? null) &&
-          String(ln.optionsKey ?? "") === optionsKey &&
-          String(ln.kind ?? lineKind) === lineKind
+          String(ln.optionsKey ?? "") === String(optionsKey) &&
+          String(ln.kind ?? lineKind).toUpperCase() === String(lineKind).toUpperCase()
         );
       });
 
       const addQty = Math.max(1, Number(qty) || 1);
 
-      // ✅ server cart first (cookie mode)
       if (isLoggedIn) {
-        await api.post(
-          "/api/cart/items",
-          {
-            productId: product.id,
-            variantId,
-            kind: lineKind,
-            qty: addQty,
-            selectedOptions: selectedOptionsWire,
-            optionsKey,
-            titleSnapshot: product.title ?? "",
-            imageSnapshot: primaryImg ?? null,
-            unitPriceCache: unitPriceClient,
-          },
-          AXIOS_COOKIE_CFG
-        );
+        await setServerCartLine({
+          productId: String(product.id),
+          variantId: variantId ?? null,
+          kind: lineKind,
+          qty: addQty,
+          selectedOptions: selectedOptionsWire,
+          optionsKey,
+          titleSnapshot: product.title ?? "",
+          imageSnapshot: primaryImg ?? null,
+          unitPriceCache: unitPriceClient,
+        });
       }
 
-      // ✅ yield a tick before local storage + toast (keeps UI smooth)
       await new Promise<void>((r) => setTimeout(r, 0));
 
-      // ✅ local cart single source of truth
       upsertCartLine({
         productId: String(product.id),
         variantId: variantId ?? null,
         kind: lineKind,
         optionsKey,
         qty: (existingForCombo?.qty ?? 0) + addQty,
-        selectedOptions: selectedOptionsLabeled ?? [],
+        selectedOptions: selectedOptionsLabeled,
         titleSnapshot: product.title ?? null,
         imageSnapshot: primaryImg ?? null,
         unitPriceCache: Number.isFinite(unitPriceClient) ? unitPriceClient : 0,
@@ -1395,7 +1486,6 @@ export default function ProductDetail() {
 
       window.dispatchEvent(new Event("cart:updated"));
 
-      // ✅ toast (coalesced)
       if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
       toastTimerRef.current = window.setTimeout(() => {
         const linesAfter = readCartLines();
@@ -1417,8 +1507,6 @@ export default function ProductDetail() {
       setIsAdding(false);
     }
   }, [isAdding, product, purchaseMeta, selected, computed.final, axes, openModal, qty]);
-
-
 
   /* ---------------- Review handlers ---------------- */
   const handleSubmitReview = React.useCallback(
@@ -1484,7 +1572,12 @@ export default function ProductDetail() {
         .trim()
         .slice(0, 155) || `Buy ${product.title} on DaySpring House.`;
 
-    const img = Array.isArray(product.imagesJson) && product.imagesJson.length > 0 ? absUrl(String(product.imagesJson[0])) : "";
+    const ogSrcRaw =
+      matchedVariant?.imagesJson?.[0] ||
+      (Array.isArray(product.imagesJson) && product.imagesJson.length > 0 ? product.imagesJson[0] : "") ||
+      "";
+    const ogSrc = resolveImageUrl(ogSrcRaw) || "";
+    const img = ogSrc ? absUrl(ogSrc) : "";
 
     const price = Number.isFinite(Number(computed?.final)) && Number(computed.final) > 0 ? Number(computed.final) : null;
 
@@ -1498,14 +1591,14 @@ export default function ProductDetail() {
       ...(product.brand?.name ? { brand: { "@type": "Brand", name: product.brand.name } } : {}),
       ...(price != null
         ? {
-          offers: {
-            "@type": "Offer",
-            priceCurrency: "NGN",
-            price: String(price),
-            availability: (totalStockQty ?? 0) > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
-            url: canonical,
-          },
-        }
+            offers: {
+              "@type": "Offer",
+              priceCurrency: "NGN",
+              price: String(price),
+              availability: (totalStockQty ?? 0) > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
+              url: canonical,
+            },
+          }
         : {}),
     };
 
@@ -1515,26 +1608,22 @@ export default function ProductDetail() {
     product?.title,
     product?.description,
     product?.brand?.name,
-    product?.imagesJson?.[0],
+    product?.imagesJson,
+    matchedVariant?.imagesJson,
     SITE_ORIGIN,
     absUrl,
     computed?.final,
     totalStockQty,
   ]);
-  
+
   const imageStageRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
-    const shouldReset =
-      !axes.length ||
-      isAtBaseDefaults(selected) ||
-      !!matchedVariantId;
-
+    const shouldReset = !axes.length || isAtBaseDefaults(selected) || !!matchedVariantId;
     if (!shouldReset) return;
 
     setQty((prev) => (prev === 1 ? prev : 1));
   }, [selected, matchedVariantId, axes.length, isAtBaseDefaults]);
-
 
   React.useEffect(() => {
     const dispose = setSeo({
@@ -1577,29 +1666,17 @@ export default function ProductDetail() {
         <div className="flex flex-wrap gap-2">
           {axis.values.map((opt) => {
             const active = value === opt.id;
-
-            // Candidate selection if user picks this chip
             const candidate = { ...selected, [axis.id]: opt.id };
-
-            // If they haven't started selecting at all, don't grey everything out
             const hasAnyPicked = axisIds.some((aid) => !!String(selected?.[aid] ?? "").trim());
-
-            // Available means: this choice can lead to at least 1 sellable variant (given current partial selection)
             const isAvailable = partialSelectionMatchesAnySellable(candidate);
-
-            // IMPORTANT:
-            // Never disable the currently active chip, otherwise user cannot click again to deselect it.
             const disabled = !active && hasAnyPicked && !isAvailable;
 
-            // ✅ styles
             const availableCls =
               "border-emerald-300/80 bg-emerald-50/30 hover:bg-emerald-50/60 text-zinc-900";
             const unavailableCls =
               "opacity-45 border-zinc-200 bg-zinc-50 text-zinc-500 cursor-not-allowed";
             const selectedOkCls = "ring-2 ring-fuchsia-500 border-fuchsia-500";
             const selectedWarnCls = "ring-2 ring-amber-400 border-amber-400";
-
-
 
             return (
               <button
@@ -1609,12 +1686,15 @@ export default function ProductDetail() {
                 onClick={() => {
                   if (disabled) return;
                   onChange(active ? "" : opt.id);
-                }} className={[
+                }}
+                className={[
                   "px-2.5 py-1.5 rounded-xl border text-sm md:text-base transition flex items-center gap-2",
                   silverBorder,
                   silverShadowSm,
                   active
-                    ? (showInvalidCombo ? selectedWarnCls : selectedOkCls)
+                    ? showInvalidCombo
+                      ? selectedWarnCls
+                      : selectedOkCls
                     : disabled
                       ? unavailableCls
                       : isAvailable
@@ -1623,7 +1703,6 @@ export default function ProductDetail() {
                 ].join(" ")}
                 title={disabled ? "Not available with current selections" : ""}
               >
-                {/* tiny status dot (keeps it compact) */}
                 {!active && !disabled && isAvailable && (
                   <span className="inline-block size-1.5 rounded-full bg-emerald-500" />
                 )}
@@ -1646,14 +1725,8 @@ export default function ProductDetail() {
 
           {axis.values.map((opt) => {
             const active = value === opt.id;
-
-            // If clicked, this would be the next state for this axis
             const candidate = { ...selected, [axis.id]: opt.id };
-
-            // Check if that candidate can still lead to a sellable variant
             const isAvailable = partialSelectionMatchesAnySellable(candidate);
-
-            // We allow deselecting an active chip even if it currently looks unavailable
             const disabled = !active && !isAvailable;
 
             const availableCls =
@@ -1698,7 +1771,6 @@ export default function ProductDetail() {
     );
   }
 
-
   function VariantWarning({
     message,
     innerRef,
@@ -1711,8 +1783,9 @@ export default function ProductDetail() {
     return (
       <div
         ref={innerRef}
-        className={`rounded-2xl border border-amber-300 bg-amber-50 text-amber-900 ${silverShadowSm} ${compact ? "px-3 py-2 text-xs" : "px-4 py-3 text-sm"
-          }`}
+        className={`rounded-2xl border border-amber-300 bg-amber-50 text-amber-900 ${silverShadowSm} ${
+          compact ? "px-3 py-2 text-xs" : "px-4 py-3 text-sm"
+        }`}
         role="alert"
         aria-live="polite"
       >
@@ -1728,6 +1801,7 @@ export default function ProductDetail() {
       </div>
     );
   }
+
   /* ---------------- MUST-BE-BEFORE-RETURN hooks ---------------- */
   const maxQty = React.useMemo(() => {
     if (purchaseMeta.disableAddToCart) return 1;
@@ -1757,7 +1831,7 @@ export default function ProductDetail() {
     el.scrollBy({ left: dir * step, behavior: "smooth" });
   }, []);
 
-  /* ---------------- SINGLE Render guards (ONLY ONCE) ---------------- */
+  /* ---------------- SINGLE Render guards ---------------- */
   if (productQ.isLoading) {
     return (
       <SiteLayout>
@@ -1784,20 +1858,13 @@ export default function ProductDetail() {
   /* ---------------- Bottom half starts here ---------------- */
   const displayPrice = toNum(computed.final, 0);
   const priceLabel = NGN.format(displayPrice > 0 ? displayPrice : 0);
+
   return (
     <SiteLayout>
       <div className="bg-gradient-to-b from-zinc-50 to-white">
-
-
         {/* Top bar */}
         <div className="max-w-6xl mx-auto px-4 md:px-6 pt-4 md:pt-6">
           <div className="flex items-center justify-between gap-3">
-            {/*
-      IMPORTANT:
-      Avoid navigate(-1) here. Browser back can restore Catalog via BFCache,
-      and with window virtualizers that often results in a "dead" page.
-      We navigate explicitly to the route that brought us here.
-    */}
             <button
               type="button"
               onClick={() => {
@@ -1828,10 +1895,6 @@ export default function ProductDetail() {
           </div>
         </div>
 
-
-
-
-
         {/* MAIN GRID */}
         <div className="max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-6 grid grid-cols-1 md:grid-cols-2 gap-6 max-[360px]:gap-5">
           {/* LEFT */}
@@ -1858,7 +1921,6 @@ export default function ProductDetail() {
                       onError={() => setBrokenByIndex((prev) => ({ ...prev, [mainIndex]: true }))}
                     />
 
-                    {/* optional small hover lens marker on main image */}
                     {isZooming && (
                       <div
                         className="pointer-events-none absolute hidden md:block h-20 w-20 rounded-full border border-white/90 bg-white/10 shadow-lg backdrop-blur-[1px]"
@@ -1869,6 +1931,7 @@ export default function ProductDetail() {
                         }}
                       />
                     )}
+
                     {isZooming && (
                       <div className="pointer-events-none absolute right-3 bottom-3 hidden md:block">
                         <div className="h-40 w-40 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
@@ -1884,7 +1947,7 @@ export default function ProductDetail() {
                         </div>
                       </div>
                     )}
-                    {/* mobile zoom badge */}
+
                     <div className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white">
                       Zoom
                     </div>
@@ -1922,6 +1985,38 @@ export default function ProductDetail() {
               )}
             </div>
 
+            {images.length > 1 && (
+              <div className="grid grid-cols-5 gap-2 sm:gap-3">
+                {images.map((src, idx) => {
+                  const broken = !!brokenByIndex[idx];
+                  if (!src || broken) return null;
+
+                  const active = idx === mainIndex;
+                  return (
+                    <button
+                      key={`${src}-${idx}`}
+                      type="button"
+                      onClick={() => setMainIndex(idx)}
+                      className={`relative overflow-hidden rounded-xl bg-white ${
+                        active ? "ring-2 ring-fuchsia-500 border-fuchsia-500" : silverBorder
+                      } ${silverShadowSm}`}
+                      style={{ aspectRatio: "1 / 1" }}
+                      aria-label={`Show image ${idx + 1}`}
+                    >
+                      <img
+                        src={src}
+                        alt=""
+                        aria-hidden="true"
+                        className="w-full h-full object-cover"
+                        loading="lazy"
+                        onError={() => setBrokenByIndex((prev) => ({ ...prev, [idx]: true }))}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             {/* Description on desktop */}
             <div className={`hidden md:block ${cardCls} p-4 md:p-5`}>
               <h2 className="text-base font-semibold mb-1">Description</h2>
@@ -1954,7 +2049,6 @@ export default function ProductDetail() {
                           : "Retail price"}
                   </div>
 
-                  {/* ⭐ Rating summary */}
                   {ratingSummary.avg != null && (
                     <div className="mt-2 flex items-center gap-2 text-sm text-zinc-700">
                       <div className="flex items-center gap-0.5 text-amber-500 text-base">
@@ -1986,7 +2080,6 @@ export default function ProductDetail() {
                 </div>
               ) : null}
 
-
               {axes.length > 0 && (
                 <div className="mt-4 space-y-4">
                   {axes.map((axis) => (
@@ -2006,9 +2099,7 @@ export default function ProductDetail() {
                   )}
 
                   {showInvalidCombo && (
-                    <VariantWarning
-                      message="This combination is not available. Try a different set of options."
-                    />
+                    <VariantWarning message="This combination is not available. Try a different set of options." />
                   )}
 
                   <div className="flex items-center gap-2">
@@ -2075,14 +2166,15 @@ export default function ProductDetail() {
                 <button
                   type="button"
                   onClick={() => {
-                    if (isAdding) return; // ✅ don't do anything while cart is updating
+                    if (isAdding) return;
                     setQty((prev) => {
                       const next = Math.max(1, maxQty);
-                      return prev === next ? prev : next; // ✅ no-op if already max
+                      return prev === next ? prev : next;
                     });
                   }}
-                  className={`px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm}
-                  ${purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""}`}
+                  className={`px-3 py-2 rounded-xl bg-white hover:bg-zinc-50 ${silverBorder} ${silverShadowSm} ${
+                    purchaseMeta.disableAddToCart || maxQty <= 1 ? "opacity-60 cursor-not-allowed" : ""
+                  }`}
                 >
                   Max
                 </button>
@@ -2093,10 +2185,11 @@ export default function ProductDetail() {
                   type="button"
                   onClick={handleAddToCart}
                   disabled={purchaseMeta.disableAddToCart || isAdding}
-                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${purchaseMeta.disableAddToCart
-                    ? "bg-zinc-300 cursor-not-allowed"
-                    : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
-                    }`}
+                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-semibold text-white touch-manipulation ${
+                    purchaseMeta.disableAddToCart
+                      ? "bg-zinc-300 cursor-not-allowed"
+                      : "bg-fuchsia-600 hover:bg-fuchsia-700 active:bg-fuchsia-800"
+                  }`}
                 >
                   {isAdding ? "Adding…" : "Add to cart"}
                 </button>
@@ -2179,10 +2272,11 @@ export default function ProductDetail() {
                       <button
                         type="submit"
                         disabled={saveReviewMutation.isPending}
-                        className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${saveReviewMutation.isPending
-                          ? "bg-zinc-400 cursor-not-allowed"
-                          : "bg-fuchsia-600 hover:bg-fuchsia-700"
-                          }`}
+                        className={`px-3 py-2 rounded-xl text-sm font-semibold text-white ${
+                          saveReviewMutation.isPending
+                            ? "bg-zinc-400 cursor-not-allowed"
+                            : "bg-fuchsia-600 hover:bg-fuchsia-700"
+                        }`}
                       >
                         {saveReviewMutation.isPending ? "Saving…" : myReviewQ.data ? "Update review" : "Submit review"}
                       </button>
@@ -2254,7 +2348,8 @@ export default function ProductDetail() {
                 {similarQ.data.map((sp) => {
                   const basePrice = sp.retailPrice != null && Number.isFinite(Number(sp.retailPrice)) ? Number(sp.retailPrice) : null;
                   const showPrice = basePrice != null ? NGN.format(applyMargin(basePrice, marginPercent)) : "—";
-                  const img = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
+                  const imgRaw = Array.isArray(sp.imagesJson) && sp.imagesJson.length ? sp.imagesJson[0] : "";
+                  const img = resolveImageUrl(imgRaw) || "";
 
                   return (
                     <Link
