@@ -1162,6 +1162,10 @@ function supplierOfferOrderBy() {
 }
 
 /* ------------------------------- CREATE ---------------------------------- */
+
+
+
+
 router.get("/", requireAuth, async (req, res) => {
   try {
     const ctx = await resolveSupplierContext(req);
@@ -1205,22 +1209,20 @@ router.get("/", requireAuth, async (req, res) => {
       ...(brandId ? { brandId } : {}),
       ...(q
         ? {
-          AND: [
-            {
-              OR: [
-                { title: { contains: q, mode: "insensitive" } },
-                { sku: { contains: q, mode: "insensitive" } },
-                { description: { contains: q, mode: "insensitive" } },
-              ],
-            },
-          ],
-        }
+            AND: [
+              {
+                OR: [
+                  { title: { contains: q, mode: "insensitive" } },
+                  { sku: { contains: q, mode: "insensitive" } },
+                  { description: { contains: q, mode: "insensitive" } },
+                ],
+              },
+            ],
+          }
         : {}),
-      ...(
-        status !== "ANY" && status !== "PENDING" && status !== "REJECTED"
-          ? { status: status as any }
-          : {}
-      ),
+      ...(status !== "ANY" && status !== "PENDING" && status !== "REJECTED"
+        ? { status: status as any }
+        : {}),
     };
 
     const [items, rawTotal] = await Promise.all([
@@ -1268,43 +1270,43 @@ router.get("/", requireAuth, async (req, res) => {
 
       productIds.length
         ? prisma.supplierVariantOffer.groupBy({
-          by: ["productId"],
-          where: {
-            productId: { in: productIds },
-            supplierId: s.id,
-            isActive: true,
-            inStock: true,
-            availableQty: { gt: 0 },
-            unitPrice: { gt: new Prisma.Decimal("0") },
-          } as any,
-          _min: { unitPrice: true },
-        })
+            by: ["productId"],
+            where: {
+              productId: { in: productIds },
+              supplierId: s.id,
+              isActive: true,
+              inStock: true,
+              availableQty: { gt: 0 },
+              unitPrice: { gt: new Prisma.Decimal("0") },
+            } as any,
+            _min: { unitPrice: true },
+          })
         : Promise.resolve([] as any[]),
 
       productIds.length
         ? prisma.supplierProductOffer.groupBy({
-          by: ["productId"],
-          where: {
-            productId: { in: productIds },
-            supplierId: s.id,
-            isActive: true,
-            inStock: true,
-          } as any,
-          _sum: { availableQty: true },
-        })
+            by: ["productId"],
+            where: {
+              productId: { in: productIds },
+              supplierId: s.id,
+              isActive: true,
+              inStock: true,
+            } as any,
+            _sum: { availableQty: true },
+          })
         : Promise.resolve([] as any[]),
 
       productIds.length
         ? prisma.supplierVariantOffer.groupBy({
-          by: ["productId"],
-          where: {
-            productId: { in: productIds },
-            supplierId: s.id,
-            isActive: true,
-            inStock: true,
-          } as any,
-          _sum: { availableQty: true },
-        })
+            by: ["productId"],
+            where: {
+              productId: { in: productIds },
+              supplierId: s.id,
+              isActive: true,
+              inStock: true,
+            } as any,
+            _sum: { availableQty: true },
+          })
         : Promise.resolve([] as any[]),
     ]);
 
@@ -1753,244 +1755,6 @@ router.get("/catalog/search", requireAuth, requireSupplier, async (req, res) => 
   }
 });
 
-
-
-
-/* ------------------------------ GET /:id ------------------------------ */
-router.get("/:id", requireAuth, async (req, res) => {
-  const ctx = await resolveSupplierContext(req);
-  if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
-
-  const s = ctx.supplier;
-  const id = requiredString(req.params.id);
-
-  const productVariantsRel = "ProductVariant";
-  const productBaseOffersRel = "supplierProductOffers";
-  const productBrandRel = "brand";
-
-  const variantOptionsRel = "options";
-  const variantSupplierOffersRel = "supplierVariantOffers";
-
-  const include: any = {};
-
-  include[productVariantsRel] = {
-    where: { isActive: true, archivedAt: null } as any,
-    include: {
-      [variantOptionsRel]: {
-        select: {
-          attributeId: true,
-          valueId: true,
-          attribute: { select: { id: true, name: true, type: true } },
-          value: { select: { id: true, name: true, code: true } },
-        },
-      },
-      [variantSupplierOffersRel]: {
-        where: { supplierId: s.id },
-        select: {
-          id: true,
-          supplierId: true,
-          unitPrice: true,
-          availableQty: true,
-          inStock: true,
-          isActive: true,
-          leadDays: true,
-          currency: true,
-          variantId: true,
-        },
-        take: 1,
-      },
-    },
-    orderBy: { createdAt: "asc" },
-  };
-  include[productBaseOffersRel] = {
-    where: { supplierId: s.id },
-    select: {
-      id: true,
-      supplierId: true,
-      basePrice: true,
-      currency: true,
-      inStock: true,
-      isActive: true,
-      leadDays: true,
-      availableQty: true,
-      updatedAt: true,
-      createdAt: true,
-    },
-    ...(supplierOfferOrderBy() ? { orderBy: supplierOfferOrderBy() as any } : {}),
-    take: 1,
-  };
-
-  include[productBrandRel] = { select: { id: true, name: true } };
-
-  // Access control: supplier can see own product, or LIVE products (read-only viewing)
-  const p = await prisma.product.findFirst({
-    where: {
-      id,
-      isDeleted: false,
-      OR: [
-        { supplierId: s.id } as any,
-        ...(s.userId ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[]) : []),
-        { status: "LIVE" as any },
-      ],
-    },
-    include,
-  });
-
-  if (!p) return res.status(404).json({ error: "Not found" });
-
-  const myOffer = (p as any)[productBaseOffersRel]?.[0] ?? null;
-
-  const basePrice = myOffer?.basePrice != null ? Number(myOffer.basePrice) : 0;
-  const baseQty = myOffer?.availableQty ?? (p as any).availableQty ?? 0;
-  const currency = myOffer?.currency ?? "NGN";
-
-  let [attributeValues, attributeTexts] = await Promise.all([
-    prisma.productAttributeOption.findMany({ where: { productId: id }, select: { attributeId: true, valueId: true } }),
-    prisma.productAttributeText.findMany({ where: { productId: id }, select: { attributeId: true, value: true } }),
-  ]);
-
-  if (!attributeValues.length) {
-    attributeValues = await prisma.productVariantOption.findMany({
-      where: { variant: { productId: id } } as any,
-      select: { attributeId: true, valueId: true },
-      distinct: ["attributeId", "valueId"] as any,
-    });
-  }
-
-  const attrIds = Array.from(new Set(attributeValues.map((x: any) => String(x.attributeId))));
-  const valIds = Array.from(new Set(attributeValues.map((x: any) => String(x.valueId))));
-
-  const [attrs, vals] = await Promise.all([
-    attrIds.length
-      ? (prisma as any).attribute.findMany({
-        where: { id: { in: attrIds } },
-        select: { id: true, name: true, type: true, isActive: true },
-      })
-      : Promise.resolve([]),
-    valIds.length
-      ? (prisma as any).attributeValue.findMany({
-        where: { id: { in: valIds } },
-        select: { id: true, name: true, code: true, attributeId: true, isActive: true, position: true },
-      })
-      : Promise.resolve([]),
-  ]);
-
-  const attrById = new Map<string, any>((attrs as any[]).map((a: any) => [String(a.id), a]));
-
-  const valsByAttr = new Map<string, any[]>();
-  for (const v of vals as any[]) {
-    const aid = String(v.attributeId ?? "");
-    if (!aid) continue;
-    const list = valsByAttr.get(aid) ?? [];
-    list.push(v);
-    valsByAttr.set(aid, list);
-  }
-
-  const attributeGuide = attrIds.map((attributeId: any) => {
-    const a = attrById.get(attributeId);
-    const values = (valsByAttr.get(attributeId) ?? [])
-      .map((v: any) => ({ id: String(v.id), name: String(v.name ?? ""), code: v.code ?? null }))
-      .sort((x: any, y: any) => String(x.name).localeCompare(String(y.name)));
-
-    return { attributeId, attributeName: a?.name ?? attributeId, attributeType: a?.type ?? null, values };
-  });
-
-  const attributeTextGuide = (attributeTexts as any[]).map((t: any) => {
-    const a = attrById.get(String(t.attributeId));
-    return {
-      attributeId: String(t.attributeId),
-      attributeName: a?.name ?? String(t.attributeId),
-      attributeType: a?.type ?? null,
-      value: String(t.value ?? ""),
-    };
-  });
-
-  const variantsRelData = (p as any)[productVariantsRel] ?? [];
-  const variants = Array.isArray(variantsRelData)
-    ? variantsRelData.map((v: any) => {
-      const vo = v?.[variantSupplierOffersRel]?.[0] ?? null;
-      return {
-        id: v.id,
-        sku: v.sku,
-        unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
-        availableQty: vo?.availableQty ?? v.availableQty ?? 0,
-        inStock: vo?.inStock ?? v.inStock,
-        isActive: vo?.isActive ?? true,
-        supplierVariantOffer: vo
-          ? {
-            id: vo.id,
-            unitPrice: Number(vo.unitPrice ?? 0),
-            availableQty: vo.availableQty ?? 0,
-            inStock: vo.inStock ?? true,
-            isActive: vo.isActive ?? true,
-            leadDays: vo.leadDays ?? null,
-            currency: vo.currency ?? "NGN",
-          }
-          : null,
-        options: Array.isArray(v?.[variantOptionsRel])
-          ? v[variantOptionsRel].map((o: any) => ({ attributeId: o.attributeId, valueId: o.valueId }))
-          : [],
-      };
-    })
-    : [];
-
-  const moderationByProduct = await getLatestModerationByProduct(String(s.id), [id]);
-  const moderation = moderationByProduct[id] ?? {
-    moderationStatus: null,
-    moderationMessage: null,
-    moderationReviewedAt: null,
-  };
-
-  const hasPendingChanges =
-    Boolean((p as any).hasPendingChanges) ||
-    moderation.moderationStatus === "PENDING" ||
-    String((p as any).status ?? "").toUpperCase() === "PENDING";
-
-  const isRejected =
-    !hasPendingChanges && moderation.moderationStatus === "REJECTED";
-
-  return res.json({
-    data: {
-      attributeGuide,
-      attributeTextGuide,
-      attributeValues,
-      attributeTexts,
-
-      id: (p as any).id,
-      title: (p as any).title,
-      description: (p as any).description,
-      sku: (p as any).sku,
-      status: (p as any).status,
-      imagesJson: Array.isArray((p as any).imagesJson) ? (p as any).imagesJson : [],
-      categoryId: (p as any).categoryId ?? null,
-      brandId: (p as any).brandId ?? null,
-      brand: (p as any)[productBrandRel] ?? null,
-
-      basePrice,
-      currency,
-      availableQty: baseQty,
-
-      offer: myOffer
-        ? {
-          id: myOffer.id,
-          basePrice,
-          currency: myOffer.currency,
-          inStock: myOffer.inStock,
-          isActive: myOffer.isActive,
-          leadDays: myOffer.leadDays ?? null,
-          availableQty: myOffer.availableQty ?? 0,
-        }
-        : null,
-
-      variants,
-      hasPendingChanges,
-      moderationStatus: hasPendingChanges ? "PENDING" : moderation.moderationStatus,
-      moderationMessage: isRejected ? moderation.moderationMessage : null,
-      moderationReviewedAt: isRejected ? moderation.moderationReviewedAt : null,
-    },
-  });
-});
-
 /* ------------------------------ DELETE /:id ------------------------------ */
 
 function getDelegate(tx: any, name: string) {
@@ -2156,7 +1920,9 @@ router.delete("/:id", requireAuth, async (req: any, res) => {
 router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
   try {
     const s = await getSupplierForUser(req.user!.id);
-    if (!s) return res.status(403).json({ error: "Supplier profile not found for this user" });
+    if (!s) {
+      return res.status(403).json({ error: "Supplier profile not found for this user" });
+    }
 
     const id = requiredString(req.params.id);
 
@@ -2166,13 +1932,25 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
     if (payload.imagesJson) assertMaxImages(payload.imagesJson);
 
+    assertMoneyWithinDbLimit(payload.basePrice ?? payload.offer?.basePrice, "Base price");
+    if (payload.communicationCost != null) {
+      assertMoneyWithinDbLimit(payload.communicationCost, "Communication cost");
+    }
+    for (const v of payload.variants ?? []) {
+      assertMoneyWithinDbLimit((v as any)?.unitPrice, "Variant price");
+    }
+
     const stockOnlyFlag = payload.stockOnly === true || payload?.meta?.stockOnly === true;
 
     const product = await prisma.product.findFirst({
       where: {
         id,
         isDeleted: false,
-        OR: [{ supplierId: s.id } as any, { ownerId: req.user!.id } as any, { userId: req.user!.id } as any],
+        OR: [
+          { supplierId: s.id } as any,
+          { ownerId: req.user!.id } as any,
+          { userId: req.user!.id } as any,
+        ],
       },
       select: {
         id: true,
@@ -2200,56 +1978,32 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
     const statusUpper = String((product as any).status ?? "").toUpperCase();
 
-    const isLiveLocked =
+    const isPublishedState =
       statusUpper === "LIVE" ||
       statusUpper === "ACTIVE" ||
       statusUpper === "PUBLISHED";
 
+    const isPendingState = statusUpper === "PENDING";
     const isRejectedState = statusUpper === "REJECTED";
+    const hasPendingFlag = Boolean((product as any).hasPendingChanges);
 
     /**
-     * Only products that have already gone live should use moderated edit flow.
-     * Rejected / never-live products remain directly editable.
+     * Review-managed products:
+     * - already live/published
+     * - already pending review
+     * - previously rejected and being re-submitted
      */
-    const requiresApprovalFlow = isLiveLocked;
+    const requiresApprovalFlow =
+      isPublishedState || isPendingState || isRejectedState || hasPendingFlag;
 
-    const pendingCheck = await prisma.$transaction(async (tx) => {
-      const existingPendingProductChange = await tx.productChangeRequest.findFirst({
-        where: {
-          productId: id,
-          supplierId: s.id,
-          status: "PENDING",
-        },
-        select: { id: true },
-      });
-
-      const existingPendingOfferChanges = await tx.supplierOfferChangeRequest.findMany({
-        where: {
-          productId: id,
-          supplierId: s.id,
-          status: "PENDING",
-        },
-        select: { id: true, scope: true },
-      });
-
-      return {
-        hasPendingReviewAlready:
-          !!existingPendingProductChange || existingPendingOfferChanges.length > 0,
-      };
-    });
-
-    if (isLiveLocked && pendingCheck.hasPendingReviewAlready && !stockOnlyFlag) {
-      return res.status(409).json({
-        error: "A change request is already pending review for this product.",
-        code: "PRODUCT_CHANGE_ALREADY_PENDING",
-        userMessage:
-          "You already have a pending change awaiting admin review. You can still update stock, but other changes must wait until the current request is reviewed.",
-      });
-    }
-
-    if (isLiveLocked) {
-      const incomingTitle = payload.title !== undefined ? String(payload.title ?? "").trim() : undefined;
-      const incomingSku = payload.sku !== undefined ? String(payload.sku ?? "").trim() : undefined;
+    /**
+     * Title + SKU remain locked once product is review-managed.
+     */
+    if (requiresApprovalFlow) {
+      const incomingTitle =
+        payload.title !== undefined ? String(payload.title ?? "").trim() : undefined;
+      const incomingSku =
+        payload.sku !== undefined ? String(payload.sku ?? "").trim() : undefined;
 
       const curTitle = String((product as any).title ?? "").trim();
       const curSku = String((product as any).sku ?? "").trim();
@@ -2259,9 +2013,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
       if (titleChanged || skuChanged) {
         return res.status(400).json({
-          error: "This product is LIVE. Title and SKU are locked.",
-          code: "PRODUCT_LIVE_CORE_LOCKED",
-          userMessage: "This product is LIVE. Title and SKU can’t be changed.",
+          error: "This product is under review. Title and SKU are locked.",
+          code: "PRODUCT_REVIEW_CORE_LOCKED",
+          userMessage: "This product is under review. Title and SKU can’t be changed.",
         });
       }
     }
@@ -2320,6 +2074,54 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         existingVariantOfferByVariantId.set(String(row.variantId), row);
       }
 
+      const existingPendingProductChange = await tx.productChangeRequest.findFirst({
+        where: {
+          productId: id,
+          supplierId: s.id,
+          status: "PENDING",
+        },
+        select: {
+          id: true,
+          proposedPatch: true,
+          currentSnapshot: true,
+        } as any,
+      });
+
+      const existingPendingOfferChanges = await tx.supplierOfferChangeRequest.findMany({
+        where: {
+          productId: id,
+          supplierId: s.id,
+          status: "PENDING",
+        },
+        select: {
+          id: true,
+          scope: true,
+          supplierProductOfferId: true,
+          supplierVariantOfferId: true,
+          patchJson: true,
+        } as any,
+      });
+
+      const existingPendingBaseOfferChange =
+        existingPendingOfferChanges.find(
+          (x: any) => String(x.scope ?? "").toUpperCase() === "BASE_OFFER"
+        ) ?? null;
+
+      const existingPendingVariantOfferByKey = new Map<string, any>();
+      for (const row of existingPendingOfferChanges) {
+        if (String(row.scope ?? "").toUpperCase() !== "VARIANT_OFFER") continue;
+
+        const offerIdKey = row?.supplierVariantOfferId
+          ? `offer:${String(row.supplierVariantOfferId)}`
+          : null;
+
+        const patchVariantId = String((row as any)?.patchJson?.variantId ?? "").trim();
+        const variantIdKey = patchVariantId ? `variant:${patchVariantId}` : null;
+
+        if (offerIdKey) existingPendingVariantOfferByKey.set(offerIdKey, row);
+        if (variantIdKey) existingPendingVariantOfferByKey.set(variantIdKey, row);
+      }
+
       const nextBaseQty = pickQty(
         payload.offer?.availableQty,
         (payload.offer as any)?.qty,
@@ -2373,10 +2175,11 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         proposedPatch: any;
         currentSnapshot: any;
       }> = [];
-
       const liveVariantStructurePatch: any[] = [];
 
-      const nextImages = payload.imagesJson ? normalizeImagesJson(payload.imagesJson) : undefined;
+      const nextImages = payload.imagesJson
+        ? normalizeImagesJson(payload.imagesJson)
+        : undefined;
 
       // ------------------------------------------------
       // 1) REVIEW-REQUIRED PRODUCT: queue reviewable core changes
@@ -2411,7 +2214,8 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
             (product as any).communicationCost != null
               ? String((product as any).communicationCost)
               : null;
-          const nextComms = payload.communicationCost == null ? null : String(payload.communicationCost);
+          const nextComms =
+            payload.communicationCost == null ? null : String(payload.communicationCost);
 
           if (currentComms !== nextComms) {
             liveProductCurrent.communicationCost = currentComms;
@@ -2457,9 +2261,16 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       let baseOffer: any = existingBaseOffer;
 
       if (touchesBaseOffer) {
-        const qty = Math.max(0, Math.trunc(nextBaseQty ?? existingBaseOffer?.availableQty ?? 0));
+        const qty = Math.max(
+          0,
+          Math.trunc(nextBaseQty ?? existingBaseOffer?.availableQty ?? 0)
+        );
 
         if (requiresApprovalFlow) {
+          /**
+           * Stock applies immediately.
+           * Reviewable pricing/status changes are stored in pending request.
+           */
           baseOffer = await upsertSupplierProductOffer(
             tx,
             s.id,
@@ -2502,7 +2313,7 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
             payload.offer?.currency !== undefined &&
             String(nextCurrency) !== String(currentCurrency);
 
-          if (basePriceChanged || leadDaysChanged || activeChanged || currencyChanged) {
+          if (!stockOnlyFlag && (basePriceChanged || leadDaysChanged || activeChanged || currencyChanged)) {
             if (basePriceChanged) liveBaseOfferPatch.basePrice = nextBasePriceNum;
             if (leadDaysChanged) liveBaseOfferPatch.leadDays = nextLeadDays ?? null;
             if (activeChanged) liveBaseOfferPatch.isActive = !!nextIsActive;
@@ -2559,7 +2370,10 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
           const vQtyNonNeg = Math.max(0, Math.trunc(vQty ?? 0));
 
           const unitPriceProvided =
-            v?.unitPrice !== undefined && v?.unitPrice !== null && String(v.unitPrice) !== "";
+            v?.unitPrice !== undefined &&
+            v?.unitPrice !== null &&
+            String(v.unitPrice) !== "";
+
           const unitPriceNumMaybe = unitPriceProvided
             ? Number(asNumber(v?.unitPrice) ?? 0)
             : undefined;
@@ -2572,24 +2386,28 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
               where: { id: directId, productId: id },
               select: { id: true, sku: true },
             });
+
             if (!ok) {
               const e: any = new Error("Invalid variantId for this product");
               e.statusCode = 400;
               e.code = "INVALID_VARIANT";
               throw e;
             }
+
             variantId = directId;
           } else {
             if (requiresApprovalFlow) {
-              liveVariantStructurePatch.push({
-                action: "CREATE_VARIANT_COMBO",
-                sku: v?.sku ?? null,
-                options: opts,
-                availableQty: vQtyNonNeg,
-                unitPrice: unitPriceNumMaybe ?? null,
-                inStock: v?.inStock ?? (vQtyProvided ? vQtyNonNeg > 0 : true),
-                isActive: v?.isActive ?? true,
-              });
+              if (!stockOnlyFlag) {
+                liveVariantStructurePatch.push({
+                  action: "CREATE_VARIANT_COMBO",
+                  sku: v?.sku ?? null,
+                  options: opts,
+                  availableQty: vQtyNonNeg,
+                  unitPrice: unitPriceNumMaybe ?? null,
+                  inStock: v?.inStock ?? (vQtyProvided ? vQtyNonNeg > 0 : true),
+                  isActive: v?.isActive ?? true,
+                });
+              }
               continue;
             }
 
@@ -2617,11 +2435,15 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
               ? Number(existingVarOffer.unitPrice)
               : Number(baseOffer?.basePrice ?? 0);
 
-          const nextQty = vQtyProvided ? vQtyNonNeg : Number(existingVarOffer?.availableQty ?? 0);
+          const nextQty = vQtyProvided
+            ? vQtyNonNeg
+            : Number(existingVarOffer?.availableQty ?? 0);
 
           const nextActiveRaw = (v?.isActive ?? existingVarOffer?.isActive ?? true) as boolean;
-          const nextStockRaw = (v?.inStock ??
-            (vQtyProvided ? vQtyNonNeg > 0 : existingVarOffer?.inStock ?? true)) as boolean;
+          const nextStockRaw = (
+            v?.inStock ??
+            (vQtyProvided ? vQtyNonNeg > 0 : existingVarOffer?.inStock ?? true)
+          ) as boolean;
 
           const guardedVar = await maybeDeactivateIfPayoutNotReadyTx(
             tx as any,
@@ -2651,6 +2473,7 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
               existingVarOffer?.unitPrice != null
                 ? Number(existingVarOffer.unitPrice)
                 : Number(baseOffer?.basePrice ?? 0);
+
             const currentLeadDays = existingVarOffer?.leadDays ?? null;
             const currentIsActive = existingVarOffer?.isActive ?? true;
             const currentCurrency = existingVarOffer?.currency ?? nextCurrency;
@@ -2673,7 +2496,10 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
               v?.currency !== undefined &&
               String(v.currency ?? nextCurrency) !== String(currentCurrency);
 
-            if (variantPriceChanged || variantLeadChanged || variantActiveChanged || variantCurrencyChanged) {
+            if (
+              !stockOnlyFlag &&
+              (variantPriceChanged || variantLeadChanged || variantActiveChanged || variantCurrencyChanged)
+            ) {
               const proposedPatch: any = { variantId };
 
               if (variantPriceChanged) proposedPatch.unitPrice = nextUnitPriceNum;
@@ -2725,6 +2551,7 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
                 where: { id: existingSupplierVariantOffer.id },
                 data: {
                   productId: id,
+                  variantId,
                   supplierId: s.id,
                   supplierProductOfferId: baseOffer?.id ?? null,
                   ...(unitPriceProvided ? { unitPrice: toDecimal(nextUnitPriceNum) } : {}),
@@ -2759,17 +2586,28 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       // 4) NON-REVIEW direct product edits
       // ------------------------------------------------
       if (!requiresApprovalFlow && ownedBySupplier && !stockOnlyFlag) {
-        const nextImagesDirect = payload.imagesJson ? normalizeImagesJson(payload.imagesJson) : undefined;
+        const nextImagesDirect = payload.imagesJson
+          ? normalizeImagesJson(payload.imagesJson)
+          : undefined;
 
         await tx.product.update({
           where: { id },
           data: {
             ...(payload.title !== undefined ? { title: payload.title } : {}),
-            ...(payload.description !== undefined ? { description: payload.description ?? "" } : {}),
-            ...(payload.categoryId !== undefined ? { categoryId: payload.categoryId ?? null } : {}),
+            ...(payload.description !== undefined
+              ? { description: payload.description ?? "" }
+              : {}),
+            ...(payload.categoryId !== undefined
+              ? { categoryId: payload.categoryId ?? null }
+              : {}),
             ...(payload.brandId !== undefined ? { brandId: payload.brandId ?? null } : {}),
             ...(payload.communicationCost !== undefined
-              ? { communicationCost: payload.communicationCost == null ? null : toDecimal(payload.communicationCost) }
+              ? {
+                communicationCost:
+                  payload.communicationCost == null
+                    ? null
+                    : toDecimal(payload.communicationCost),
+              }
               : {}),
             ...(nextImagesDirect !== undefined ? { imagesJson: nextImagesDirect } : {}),
           } as any,
@@ -2799,7 +2637,9 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
             : String((product as any).title ?? "").trim();
 
         const mustRecomputeSku =
-          payload.title !== undefined || payload.brandId !== undefined || payload.sku !== undefined;
+          payload.title !== undefined ||
+          payload.brandId !== undefined ||
+          payload.sku !== undefined;
 
         if (mustRecomputeSku) {
           const computed = makeSkuFromSupplierBrandTitle({
@@ -2829,47 +2669,123 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       }
 
       // ------------------------------------------------
-      // 5) create pending review rows for live product edits
+      // 5) UPSERT pending review rows for moderation-managed edits
       // ------------------------------------------------
       let hasPendingChanges = false;
 
-      if (requiresApprovalFlow) {
+      if (requiresApprovalFlow && !stockOnlyFlag) {
+        // BASE OFFER pending row
         if (Object.keys(liveBaseOfferPatch).length > 0) {
-          await tx.supplierOfferChangeRequest.create({
-            data: {
-              supplierId: s.id,
-              productId: id,
-              supplierProductOfferId: existingBaseOffer?.id ?? null,
-              scope: "BASE_OFFER",
-              status: "PENDING",
-              patchJson: liveBaseOfferPatch,
-              note: isRejectedState
-                ? "Rejected base offer updated and re-submitted by supplier"
-                : "Live base offer change submitted by supplier",
-              requestedByUserId: req.user!.id,
-            } as any,
-          });
+          if (existingPendingBaseOfferChange?.id) {
+            await tx.supplierOfferChangeRequest.update({
+              where: { id: existingPendingBaseOfferChange.id },
+              data: {
+                supplierProductOfferId: existingBaseOffer?.id ?? null,
+                patchJson: liveBaseOfferPatch,
+                note: isRejectedState
+                  ? "Rejected base offer updated and re-submitted by supplier"
+                  : "Pending base offer updated by supplier",
+                requestedByUserId: req.user!.id,
+                status: "PENDING",
+              } as any,
+            });
+          } else {
+            await tx.supplierOfferChangeRequest.create({
+              data: {
+                supplierId: s.id,
+                productId: id,
+                supplierProductOfferId: existingBaseOffer?.id ?? null,
+                scope: "BASE_OFFER",
+                status: "PENDING",
+                patchJson: liveBaseOfferPatch,
+                note: isRejectedState
+                  ? "Rejected base offer updated and re-submitted by supplier"
+                  : "Live base offer change submitted by supplier",
+                requestedByUserId: req.user!.id,
+              } as any,
+            });
+          }
           hasPendingChanges = true;
+        } else if (existingPendingBaseOfferChange?.id) {
+          await tx.supplierOfferChangeRequest.delete({
+            where: { id: existingPendingBaseOfferChange.id },
+          });
         }
+
+        // VARIANT OFFER pending rows
+        const desiredPendingVariantKeys = new Set<string>();
 
         for (const item of liveVariantOfferRequests) {
-          await tx.supplierOfferChangeRequest.create({
-            data: {
-              supplierId: s.id,
-              productId: id,
-              supplierVariantOfferId: item.supplierVariantOfferId,
-              scope: "VARIANT_OFFER",
-              status: "PENDING",
-              patchJson: item.proposedPatch,
-              note: isRejectedState
-                ? "Rejected variant offer updated and re-submitted by supplier"
-                : "Live variant offer change submitted by supplier",
-              requestedByUserId: req.user!.id,
-            } as any,
-          });
+          const key =
+            item.supplierVariantOfferId != null
+              ? `offer:${String(item.supplierVariantOfferId)}`
+              : `variant:${String(item.variantId)}`;
+
+          desiredPendingVariantKeys.add(key);
+
+          const existingPendingRow =
+            existingPendingVariantOfferByKey.get(
+              item.supplierVariantOfferId != null
+                ? `offer:${String(item.supplierVariantOfferId)}`
+                : `variant:${String(item.variantId)}`
+            ) ??
+            existingPendingVariantOfferByKey.get(`variant:${String(item.variantId)}`) ??
+            null;
+
+          if (existingPendingRow?.id) {
+            await tx.supplierOfferChangeRequest.update({
+              where: { id: existingPendingRow.id },
+              data: {
+                supplierVariantOfferId: item.supplierVariantOfferId,
+                patchJson: item.proposedPatch,
+                note: isRejectedState
+                  ? "Rejected variant offer updated and re-submitted by supplier"
+                  : "Pending variant offer updated by supplier",
+                requestedByUserId: req.user!.id,
+                status: "PENDING",
+              } as any,
+            });
+          } else {
+            await tx.supplierOfferChangeRequest.create({
+              data: {
+                supplierId: s.id,
+                productId: id,
+                supplierVariantOfferId: item.supplierVariantOfferId,
+                scope: "VARIANT_OFFER",
+                status: "PENDING",
+                patchJson: item.proposedPatch,
+                note: isRejectedState
+                  ? "Rejected variant offer updated and re-submitted by supplier"
+                  : "Live variant offer change submitted by supplier",
+                requestedByUserId: req.user!.id,
+              } as any,
+            });
+          }
+
           hasPendingChanges = true;
         }
 
+        for (const row of existingPendingOfferChanges) {
+          if (String(row.scope ?? "").toUpperCase() !== "VARIANT_OFFER") continue;
+
+          const offerKey = row?.supplierVariantOfferId
+            ? `offer:${String(row.supplierVariantOfferId)}`
+            : null;
+          const patchVariantId = String((row as any)?.patchJson?.variantId ?? "").trim();
+          const variantKey = patchVariantId ? `variant:${patchVariantId}` : null;
+
+          const keep =
+            (offerKey && desiredPendingVariantKeys.has(offerKey)) ||
+            (variantKey && desiredPendingVariantKeys.has(variantKey));
+
+          if (!keep) {
+            await tx.supplierOfferChangeRequest.delete({
+              where: { id: row.id },
+            });
+          }
+        }
+
+        // PRODUCT pending row
         const productPatchForReview: any = {};
         const currentSnapshotForReview: any = {};
 
@@ -2886,28 +2802,44 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
         }
 
         if (Object.keys(productPatchForReview).length > 0) {
-          await tx.productChangeRequest.create({
-            data: {
-              productId: id,
-              supplierId: s.id,
-              status: "PENDING",
-              proposedPatch: productPatchForReview,
-              currentSnapshot: currentSnapshotForReview,
-              requestedByUserId: req.user!.id,
-            } as any,
-          });
+          if (existingPendingProductChange?.id) {
+            await tx.productChangeRequest.update({
+              where: { id: existingPendingProductChange.id },
+              data: {
+                proposedPatch: productPatchForReview,
+                currentSnapshot: currentSnapshotForReview,
+                requestedByUserId: req.user!.id,
+                status: "PENDING",
+              } as any,
+            });
+          } else {
+            await tx.productChangeRequest.create({
+              data: {
+                productId: id,
+                supplierId: s.id,
+                status: "PENDING",
+                proposedPatch: productPatchForReview,
+                currentSnapshot: currentSnapshotForReview,
+                requestedByUserId: req.user!.id,
+              } as any,
+            });
+          }
           hasPendingChanges = true;
+        } else if (existingPendingProductChange?.id) {
+          await tx.productChangeRequest.delete({
+            where: { id: existingPendingProductChange.id },
+          });
         }
 
-        if (hasPendingChanges) {
-          await tx.product.update({
-            where: { id },
-            data: {
-              hasPendingChanges: true,
-              status: "PENDING",
-            } as any,
-          });
+        await tx.product.update({
+          where: { id },
+          data: {
+            hasPendingChanges,
+            ...(hasPendingChanges ? { status: "PENDING" } : {}),
+          } as any,
+        });
 
+        if (hasPendingChanges) {
           warnings.push("Your changes were submitted for admin approval.");
         }
       }
@@ -2920,9 +2852,12 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
 
     await safeNotifyAdmins({
       type: NotificationType.PRODUCT_CHANGE_SUBMITTED,
-      title: requiresApprovalFlow ? "Live supplier product change submitted" : "Supplier product updated",
+      title: requiresApprovalFlow
+        ? "Live supplier product change submitted"
+        : "Supplier product updated",
       body: `${s.name ?? "A supplier"} ${requiresApprovalFlow ? "submitted changes for" : "updated"
-        } a product: ${(updated as any)?.title ?? (product as any)?.title ?? "Unknown"} (${(updated as any)?.sku ?? (product as any)?.sku ?? id}).`,
+        } a product: ${(updated as any)?.title ?? (product as any)?.title ?? "Unknown"
+        } (${(updated as any)?.sku ?? (product as any)?.sku ?? id}).`,
       data: {
         supplierId: s.id,
         supplierName: s.name ?? null,
@@ -2940,12 +2875,17 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
       return res.status(409).json({
         error: "A product with this Supplier, Brand and SKU already exists.",
         code: "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU",
-        userMessage: "You already have a product for that brand/title. Please change title or brand.",
+        userMessage:
+          "You already have a product for that brand/title. Please change title or brand.",
         meta: e?.meta,
       });
     }
 
-    if (isNumericOverflowError(e) || e?.code === "NUMERIC_FIELD_OVERFLOW" || e?.code === "MONEY_LIMIT_EXCEEDED") {
+    if (
+      isNumericOverflowError(e) ||
+      e?.code === "NUMERIC_FIELD_OVERFLOW" ||
+      e?.code === "MONEY_LIMIT_EXCEEDED"
+    ) {
       return res.status(400).json({
         error: "One or more money values are too large.",
         code: e?.code ?? "NUMERIC_FIELD_OVERFLOW",
@@ -2961,7 +2901,375 @@ router.patch("/:id", requireAuth, requireSupplier, async (req, res) => {
     return res.status(status).json({
       error: status >= 500 ? "Failed to save product changes" : e?.message || "Request failed",
       code: e?.code,
-      userMessage: e?.userMessage ?? "We couldn’t save your changes. Please review the form and try again.",
+      userMessage:
+        e?.userMessage ??
+        "We couldn’t save your changes. Please review the form and try again.",
+    });
+  }
+});
+
+router.get("/:id", requireAuth, async (req, res) => {
+  try {
+    const ctx = await resolveSupplierContext(req);
+    if (!ctx.ok) return res.status(ctx.status).json({ error: ctx.error });
+
+    const s = ctx.supplier;
+    const id = requiredString(req.params.id);
+
+    const productVariantsRel = "ProductVariant";
+    const productBaseOffersRel = "supplierProductOffers";
+    const productBrandRel = "brand";
+
+    const variantOptionsRel = "options";
+    const variantSupplierOffersRel = "supplierVariantOffers";
+
+    const include: any = {};
+
+    include[productVariantsRel] = {
+      where: { isActive: true, archivedAt: null } as any,
+      include: {
+        [variantOptionsRel]: {
+          select: {
+            attributeId: true,
+            valueId: true,
+            attribute: { select: { id: true, name: true, type: true } },
+            value: { select: { id: true, name: true, code: true } },
+          },
+        },
+        [variantSupplierOffersRel]: {
+          where: { supplierId: s.id },
+          select: {
+            id: true,
+            supplierId: true,
+            unitPrice: true,
+            availableQty: true,
+            inStock: true,
+            isActive: true,
+            leadDays: true,
+            currency: true,
+            variantId: true,
+          },
+          take: 1,
+        },
+      },
+      orderBy: { createdAt: "asc" },
+    };
+
+    include[productBaseOffersRel] = {
+      where: { supplierId: s.id },
+      select: {
+        id: true,
+        supplierId: true,
+        basePrice: true,
+        currency: true,
+        inStock: true,
+        isActive: true,
+        leadDays: true,
+        availableQty: true,
+        ...(modelHasField("SupplierProductOffer", "updatedAt") ? { updatedAt: true } : {}),
+        ...(modelHasField("SupplierProductOffer", "createdAt") ? { createdAt: true } : {}),
+      },
+      ...(supplierOfferOrderBy() ? { orderBy: supplierOfferOrderBy() as any } : {}),
+      take: 1,
+    };
+
+    include[productBrandRel] = { select: { id: true, name: true } };
+
+    const p = await prisma.product.findFirst({
+      where: {
+        id,
+        isDeleted: false,
+        OR: [
+          { supplierId: s.id } as any,
+          ...(s.userId
+            ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[])
+            : []),
+          { status: "LIVE" as any },
+        ],
+      },
+      include,
+    });
+
+    if (!p) return res.status(404).json({ error: "Not found" });
+
+    const ownedBySupplier =
+      String((p as any).supplierId ?? "") === String(s.id) ||
+      (s.userId &&
+        (String((p as any).ownerId ?? "") === String(s.userId) ||
+          String((p as any).userId ?? "") === String(s.userId)));
+
+    const myOffer = (p as any)[productBaseOffersRel]?.[0] ?? null;
+
+    const basePrice = myOffer?.basePrice != null ? Number(myOffer.basePrice) : 0;
+    const baseQty = myOffer?.availableQty ?? (p as any).availableQty ?? 0;
+    const currency = myOffer?.currency ?? "NGN";
+
+    let [attributeValues, attributeTexts] = await Promise.all([
+      prisma.productAttributeOption.findMany({
+        where: { productId: id },
+        select: { attributeId: true, valueId: true },
+      }),
+      prisma.productAttributeText.findMany({
+        where: { productId: id },
+        select: { attributeId: true, value: true },
+      }),
+    ]);
+
+    if (!attributeValues.length) {
+      attributeValues = await prisma.productVariantOption.findMany({
+        where: { variant: { productId: id } } as any,
+        select: { attributeId: true, valueId: true },
+        distinct: ["attributeId", "valueId"] as any,
+      });
+    }
+
+    const attrIds = Array.from(new Set(attributeValues.map((x: any) => String(x.attributeId))));
+    const valIds = Array.from(new Set(attributeValues.map((x: any) => String(x.valueId))));
+
+    const [attrs, vals] = await Promise.all([
+      attrIds.length
+        ? (prisma as any).attribute.findMany({
+            where: { id: { in: attrIds } },
+            select: { id: true, name: true, type: true, isActive: true },
+          })
+        : Promise.resolve([]),
+      valIds.length
+        ? (prisma as any).attributeValue.findMany({
+            where: { id: { in: valIds } },
+            select: {
+              id: true,
+              name: true,
+              code: true,
+              attributeId: true,
+              isActive: true,
+              position: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const attrById = new Map<string, any>((attrs as any[]).map((a: any) => [String(a.id), a]));
+
+    const valsByAttr = new Map<string, any[]>();
+    for (const v of vals as any[]) {
+      const aid = String(v.attributeId ?? "");
+      if (!aid) continue;
+      const list = valsByAttr.get(aid) ?? [];
+      list.push(v);
+      valsByAttr.set(aid, list);
+    }
+
+    const attributeGuide = attrIds.map((attributeId: any) => {
+      const a = attrById.get(attributeId);
+      const values = (valsByAttr.get(attributeId) ?? [])
+        .map((v: any) => ({
+          id: String(v.id),
+          name: String(v.name ?? ""),
+          code: v.code ?? null,
+        }))
+        .sort((x: any, y: any) => String(x.name).localeCompare(String(y.name)));
+
+      return {
+        attributeId,
+        attributeName: a?.name ?? attributeId,
+        attributeType: a?.type ?? null,
+        values,
+      };
+    });
+
+    const attributeTextGuide = (attributeTexts as any[]).map((t: any) => {
+      const a = attrById.get(String(t.attributeId));
+      return {
+        attributeId: String(t.attributeId),
+        attributeName: a?.name ?? String(t.attributeId),
+        attributeType: a?.type ?? null,
+        value: String(t.value ?? ""),
+      };
+    });
+
+    const variantsRelData = (p as any)[productVariantsRel] ?? [];
+    const variants = Array.isArray(variantsRelData)
+      ? variantsRelData.map((v: any) => {
+          const vo = v?.[variantSupplierOffersRel]?.[0] ?? null;
+          return {
+            id: v.id,
+            sku: v.sku,
+            unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
+            availableQty: vo?.availableQty ?? v.availableQty ?? 0,
+            inStock: vo?.inStock ?? v.inStock,
+            isActive: vo?.isActive ?? true,
+            supplierVariantOffer: vo
+              ? {
+                  id: vo.id,
+                  unitPrice: Number(vo.unitPrice ?? 0),
+                  availableQty: vo.availableQty ?? 0,
+                  inStock: vo.inStock ?? true,
+                  isActive: vo.isActive ?? true,
+                  leadDays: vo.leadDays ?? null,
+                  currency: vo.currency ?? "NGN",
+                  variantId: vo.variantId ?? v.id,
+                }
+              : null,
+            options: Array.isArray(v?.[variantOptionsRel])
+              ? v[variantOptionsRel].map((o: any) => ({
+                  attributeId: o.attributeId,
+                  valueId: o.valueId,
+                }))
+              : [],
+          };
+        })
+      : [];
+
+    const moderationByProduct = await getLatestModerationByProduct(String(s.id), [id]);
+    const moderation = moderationByProduct[id] ?? {
+      moderationStatus: null,
+      moderationMessage: null,
+      moderationReviewedAt: null,
+    };
+
+    const hasPendingChanges =
+      Boolean((p as any).hasPendingChanges) ||
+      moderation.moderationStatus === "PENDING" ||
+      String((p as any).status ?? "").toUpperCase() === "PENDING";
+
+    const isRejected =
+      !hasPendingChanges && moderation.moderationStatus === "REJECTED";
+
+    let pendingProductChanges: any[] = [];
+    let pendingOfferChanges: any[] = [];
+
+    if (ownedBySupplier) {
+      const productChangeSelect: any = {
+        id: true,
+        status: true,
+        proposedPatch: true,
+        currentSnapshot: true,
+        requestedByUserId: true,
+      };
+
+      if (modelHasField("ProductChangeRequest", "createdAt")) {
+        productChangeSelect.createdAt = true;
+      }
+      if (modelHasField("ProductChangeRequest", "updatedAt")) {
+        productChangeSelect.updatedAt = true;
+      }
+      if (modelHasField("ProductChangeRequest", "requestedAt")) {
+        productChangeSelect.requestedAt = true;
+      }
+
+      const productChangeOrderBy =
+        modelHasField("ProductChangeRequest", "updatedAt")
+          ? ({ updatedAt: "desc" } as any)
+          : modelHasField("ProductChangeRequest", "createdAt")
+            ? ({ createdAt: "desc" } as any)
+            : modelHasField("ProductChangeRequest", "requestedAt")
+              ? ({ requestedAt: "desc" } as any)
+              : undefined;
+
+      pendingProductChanges = await prisma.productChangeRequest.findMany({
+        where: {
+          productId: id,
+          supplierId: s.id,
+          status: "PENDING",
+        },
+        select: productChangeSelect,
+        ...(productChangeOrderBy ? { orderBy: productChangeOrderBy } : {}),
+      });
+
+      const offerChangeSelect: any = {
+        id: true,
+        scope: true,
+        status: true,
+        supplierProductOfferId: true,
+        supplierVariantOfferId: true,
+        patchJson: true,
+        note: true,
+        requestedByUserId: true,
+      };
+
+      if (modelHasField("SupplierOfferChangeRequest", "createdAt")) {
+        offerChangeSelect.createdAt = true;
+      }
+      if (modelHasField("SupplierOfferChangeRequest", "updatedAt")) {
+        offerChangeSelect.updatedAt = true;
+      }
+      if (modelHasField("SupplierOfferChangeRequest", "requestedAt")) {
+        offerChangeSelect.requestedAt = true;
+      }
+
+      const offerChangeOrderBy =
+        modelHasField("SupplierOfferChangeRequest", "updatedAt")
+          ? ({ updatedAt: "desc" } as any)
+          : modelHasField("SupplierOfferChangeRequest", "createdAt")
+            ? ({ createdAt: "desc" } as any)
+            : modelHasField("SupplierOfferChangeRequest", "requestedAt")
+              ? ({ requestedAt: "desc" } as any)
+              : undefined;
+
+      pendingOfferChanges = await prisma.supplierOfferChangeRequest.findMany({
+        where: {
+          productId: id,
+          supplierId: s.id,
+          status: "PENDING",
+        },
+        select: offerChangeSelect,
+        ...(offerChangeOrderBy ? { orderBy: offerChangeOrderBy } : {}),
+      });
+    }
+
+    return res.json({
+      data: {
+        attributeGuide,
+        attributeTextGuide,
+        attributeValues,
+        attributeTexts,
+
+        id: (p as any).id,
+        title: (p as any).title,
+        description: (p as any).description,
+        sku: (p as any).sku,
+        status: (p as any).status,
+        imagesJson: Array.isArray((p as any).imagesJson) ? (p as any).imagesJson : [],
+        categoryId: (p as any).categoryId ?? null,
+        brandId: (p as any).brandId ?? null,
+        brand: (p as any)[productBrandRel] ?? null,
+
+        basePrice,
+        currency,
+        availableQty: baseQty,
+
+        offer: myOffer
+          ? {
+              id: myOffer.id,
+              basePrice,
+              currency: myOffer.currency,
+              inStock: myOffer.inStock,
+              isActive: myOffer.isActive,
+              leadDays: myOffer.leadDays ?? null,
+              availableQty: myOffer.availableQty ?? 0,
+              ...(myOffer.updatedAt != null ? { updatedAt: myOffer.updatedAt } : {}),
+              ...(myOffer.createdAt != null ? { createdAt: myOffer.createdAt } : {}),
+            }
+          : null,
+
+        variants,
+
+        pendingProductChanges,
+        productChangeRequests: pendingProductChanges,
+
+        pendingOfferChanges,
+        offerChangeRequests: pendingOfferChanges,
+
+        hasPendingChanges,
+        moderationStatus: hasPendingChanges ? "PENDING" : moderation.moderationStatus,
+        moderationMessage: isRejected ? moderation.moderationMessage : null,
+        moderationReviewedAt: isRejected ? moderation.moderationReviewedAt : null,
+      },
+    });
+  } catch (e: any) {
+    console.error("GET /api/supplier/products/:id failed:", e);
+    return res.status(500).json({
+      error: e?.message || "Failed to load supplier product",
     });
   }
 });

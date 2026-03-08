@@ -657,6 +657,15 @@ export default function AdminOfferChangeRequests() {
                 valueMetaById
               );
 
+              const scopeLabel =
+                x.requestType === "OFFER"
+                  ? x.scope === "BASE_OFFER"
+                    ? "Base offer"
+                    : x.scope === "VARIANT_OFFER"
+                      ? "Variant offer"
+                      : "Offer"
+                  : "Product";
+
               return (
                 <div
                   key={x.id}
@@ -672,7 +681,7 @@ export default function AdminOfferChangeRequests() {
                       <div className="text-xs text-zinc-600 mt-1">
                         Supplier: <b className="text-zinc-900">{supplierName}</b> • Type:{" "}
                         <b className="text-zinc-900">{x.requestType}</b> • Scope:{" "}
-                        <b className="text-zinc-900">{x.scope}</b>
+                        <b className="text-zinc-900">{scopeLabel}</b>
                         {x.variantId ? (
                           <>
                             {" "}
@@ -683,9 +692,9 @@ export default function AdminOfferChangeRequests() {
                       </div>
 
                       <div className="text-xs text-zinc-700 mt-2">
-                        <span className="text-zinc-500">Proposed patch:</span>{" "}
+                        <span className="text-zinc-500">Change summary:</span>{" "}
                         <span className="break-words">
-                          summarizePatch(prettyProposedPatch)
+                          {summarizePatch(prettyProposedPatch) || "View details"}
                         </span>
                       </div>
                     </div>

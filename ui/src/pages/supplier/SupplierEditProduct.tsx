@@ -443,7 +443,7 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       className={[
-        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed",
         "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
         props.className || "",
       ].join(" ")}
@@ -456,7 +456,7 @@ function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
     <select
       {...props}
       className={[
-        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed",
         "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
         props.className || "",
       ].join(" ")}
@@ -469,7 +469,7 @@ function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
     <textarea
       {...props}
       className={[
-        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed",
         "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
         props.className || "",
       ].join(" ")}
@@ -582,6 +582,22 @@ type DupInfo = {
   duplicateLabels: string[];
   explain: string | null;
 };
+
+function getPendingBasePatchFromDetail(p: any) {
+  const pending: any[] =
+    (Array.isArray(p?.pendingOfferChanges) && p.pendingOfferChanges) ||
+    (Array.isArray(p?.offerChangeRequests) && p.offerChangeRequests) ||
+    [];
+
+  const onlyPending = pending.filter(
+    (x) => String(x?.status || "PENDING").toUpperCase() === "PENDING"
+  );
+
+  const baseRow =
+    onlyPending.find((x) => String(x?.scope || "").toUpperCase() === "BASE_OFFER") || null;
+
+  return baseRow?.proposedPatch ?? baseRow?.patchJson ?? null;
+}
 
 /* =========================================================
    Component
@@ -796,14 +812,59 @@ export default function SupplierEditProduct() {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
-
-  const productStatusUpper = useMemo(() => String(detailQ.data?.status ?? "").toUpperCase(), [detailQ.data?.status]);
+  const productStatusUpper = useMemo(
+    () => String(detailQ.data?.status ?? "").toUpperCase(),
+    [detailQ.data?.status]
+  );
 
   const isLive = useMemo(() => {
     if (offersOnly) return false;
-    const s = String(productStatusUpper || "").toUpperCase();
-    return s === "LIVE" || s === "ACTIVE";
+    return productStatusUpper === "LIVE" || productStatusUpper === "ACTIVE";
   }, [offersOnly, productStatusUpper]);
+
+  const isPendingReview = useMemo(() => {
+    if (offersOnly) return false;
+    return productStatusUpper === "PENDING";
+  }, [offersOnly, productStatusUpper]);
+
+  const isRejected = useMemo(() => {
+    if (offersOnly) return false;
+    return productStatusUpper === "REJECTED";
+  }, [offersOnly, productStatusUpper]);
+
+  const isPublishedLike = useMemo(() => {
+    if (offersOnly) return false;
+    return (
+      productStatusUpper === "LIVE" ||
+      productStatusUpper === "ACTIVE" ||
+      productStatusUpper === "PUBLISHED"
+    );
+  }, [offersOnly, productStatusUpper]);
+
+  /**
+   * Review-managed means backend moderation rules apply.
+   * Title/SKU stay locked here.
+   */
+  const isReviewManaged = useMemo(() => {
+    if (offersOnly) return false;
+    return isPublishedLike || isPendingReview || isRejected;
+  }, [offersOnly, isPublishedLike, isPendingReview, isRejected]);
+
+  const titleSkuLocked = isReviewManaged;
+
+  const pendingSubmissionNotice = useMemo(() => {
+    if (offersOnly) return null;
+    if (isPendingReview) {
+      return "A change is already under review. Your latest save will update the pending submission.";
+    }
+    if (isRejected) {
+      return "This product was rejected previously. Edit the fields below and save to resubmit for approval.";
+    }
+    if (isLive) {
+      return "Price/content changes will be sent for admin approval. Stock changes still apply immediately.";
+    }
+    return null;
+  }, [offersOnly, isPendingReview, isRejected, isLive]);
 
   const activeBasePriceForDisplay = useMemo(() => {
     if (offersOnly) return Number(activeBasePrice ?? 0);
@@ -903,8 +964,15 @@ export default function SupplierEditProduct() {
   }, [hasBaseComboConflict]);
 
   const canEditCore = !offersOnly;
-  const canAddNewCombos = !offersOnly && !isLive;
   const canEditAttributes = !offersOnly;
+  const canEditTitleSku = !offersOnly && !titleSkuLocked;
+
+  /**
+   * Keep current variant-row creation rule conservative:
+   * existing LIVE / ACTIVE / PENDING / REJECTED review-managed products
+   * should not let supplier think they can freely create local combos.
+   */
+  const canAddNewCombos = !offersOnly && !isReviewManaged;
 
   useEffect(() => {
     const p = detailQ.data as any;
@@ -932,35 +1000,18 @@ export default function SupplierEditProduct() {
     let displayedBasePrice = approvedBasePrice;
 
     if (offersOnly) {
-      const { base, variantMap } = getPendingOfferMaps(p);
+      const { base } = getPendingOfferMaps(p);
       const basePatch = base?.proposedPatch ?? base?.patchJson ?? null;
-
-      setPendingBasePatch(basePatch);
-      setPendingVariantPatchByVariantId(variantMap);
 
       const requested = Number(basePatch?.basePrice ?? NaN);
       if (Number.isFinite(requested) && requested > 0) {
         displayedBasePrice = requested;
       }
-
-      setPendingProductPatch(null);
-      setPendingProductVariantPatchByVariantId(new Map());
     } else {
-      setPendingBasePatch(null);
-      setPendingVariantPatchByVariantId(new Map());
+      const { base } = getPendingOfferMaps(p);
+      const basePatch = base?.proposedPatch ?? base?.patchJson ?? null;
 
-      const pendingProductReq = getPendingProductChange(p);
-      const productPatch =
-        pendingProductReq?.proposedPatch ??
-        pendingProductReq?.patchJson ??
-        null;
-
-      const pendingVariantMap = buildPendingVariantPatchMapFromProductPatch(productPatch);
-
-      setPendingProductPatch(productPatch);
-      setPendingProductVariantPatchByVariantId(pendingVariantMap);
-
-      const requestedBasePrice = Number(productPatch?.basePrice ?? NaN);
+      const requestedBasePrice = Number(basePatch?.basePrice ?? NaN);
       if (Number.isFinite(requestedBasePrice) && requestedBasePrice > 0) {
         displayedBasePrice = requestedBasePrice;
       }
@@ -1075,7 +1126,7 @@ export default function SupplierEditProduct() {
       existingVariantIds: new Set(
         vr.filter((x) => x.variantId).map((x) => String(x.variantId))
       ),
-      basePrice: displayedBasePrice,
+      basePrice: approvedBasePrice,
       variantPriceByVariantId: getInitialVariantPriceMap(vr),
     };
   }, [detailQ.data?.id, offersOnly, selectableAttrs, attrOrder, attrNameById, valueNameById]);
@@ -1204,11 +1255,6 @@ export default function SupplierEditProduct() {
   function removeUploadedUrl(u: string) {
     setUploadedUrls((prev) => prev.filter((x) => x !== u));
   }
-
-  const hasPendingReviewRequest =
-    (!!pendingProductPatch && !offersOnly) ||
-    (!!pendingBasePatch && offersOnly) ||
-    pendingVariantPatchByVariantId.size > 0;
 
   function removeTextUrl(u: string) {
     const raw = parseUrlList(imageUrls);
@@ -1340,10 +1386,11 @@ export default function SupplierEditProduct() {
       setErr("You can’t create new variant combinations for a catalog product. You can only offer existing variants.");
       return;
     }
-    if (isLive) {
-      setErr("This product is LIVE. You can’t create new variant combinations here.");
+    if (isReviewManaged) {
+      setErr("This product is in review-managed flow. You can’t create new variant combinations here.");
       return;
     }
+
     if (!selectableAttrs.length) return;
 
     const selections: Record<string, string> = {};
@@ -1368,8 +1415,8 @@ export default function SupplierEditProduct() {
       setErr("You can’t generate new combos for a catalog product.");
       return;
     }
-    if (isLive) {
-      setErr("This product is LIVE. You can’t generate new variant combinations here.");
+    if (isReviewManaged) {
+      setErr("This product is in review-managed flow. You can’t generate new variant combinations here.");
       return;
     }
 
@@ -1462,7 +1509,7 @@ export default function SupplierEditProduct() {
 
   function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
     setErr(null);
-    if (offersOnly || isLive) return;
+    if (offersOnly || isReviewManaged) return;
 
     setVariantRows((rows) => {
       const next = rows.map((r) =>
@@ -1534,8 +1581,8 @@ export default function SupplierEditProduct() {
       return;
     }
 
-    if (isLive && row.isExisting) {
-      setErr("This product is LIVE. You can’t delete an existing variant. Set its qty to 0 instead.");
+    if (isReviewManaged && row.isExisting) {
+      setErr("This product is in review-managed flow. You can’t delete an existing variant. Set its qty to 0 instead.");
       return;
     }
 
@@ -1646,7 +1693,7 @@ export default function SupplierEditProduct() {
 
   const nonStockChangesRequireReview = useMemo(() => {
     if (offersOnly) return false;
-    if (!isLive) return false;
+    if (!isReviewManaged) return false;
 
     const snap = initialSnapshotRef.current;
     if (!snap || snap.id !== (detailQ.data as any)?.id) return false;
@@ -1704,7 +1751,7 @@ export default function SupplierEditProduct() {
     );
   }, [
     offersOnly,
-    isLive,
+    isReviewManaged,
     detailQ.data,
     title,
     sku,
@@ -1841,7 +1888,7 @@ export default function SupplierEditProduct() {
       stockOnly: false,
     };
 
-    if (!isLive) {
+    if (!titleSkuLocked) {
       core.title = title.trim();
       core.sku = sku.trim();
     }
@@ -1958,12 +2005,12 @@ export default function SupplierEditProduct() {
       if (!brandId) throw new Error("Brand is required");
 
       const snap = initialSnapshotRef.current;
-      if (isLive && snap) {
+      if (isReviewManaged && snap) {
         if ((title ?? "").trim() !== (snap.title ?? "").trim()) {
-          throw new Error("This product is LIVE. Title is locked. Only stock/qty updates are allowed.");
+          throw new Error("This product is under review-managed flow. Title is locked.");
         }
         if ((sku ?? "").trim() !== (snap.sku ?? "").trim()) {
-          throw new Error("This product is LIVE. SKU is locked. Only stock/qty updates are allowed.");
+          throw new Error("This product is under review-managed flow. SKU is locked.");
         }
       }
 
@@ -1971,7 +2018,7 @@ export default function SupplierEditProduct() {
         throw new Error(dupWarn || "You can’t save because there are duplicate variant combinations.");
       }
 
-      const stockOnlyUpdate = isLive && !nonStockChangesRequireReview;
+      const stockOnlyUpdate = isReviewManaged && !nonStockChangesRequireReview;
 
       const rawList = parseUrlList(imageUrls);
       const urlList = limitImages(rawList, MAX_IMAGES);
@@ -1987,7 +2034,7 @@ export default function SupplierEditProduct() {
         ? buildStockOnlyPayload({ baseQty: baseQtyPreview, variantRows })
         : {
           ...buildOwnedPayload(merged),
-          submitForReview: isLive && nonStockChangesRequireReview,
+          submitForReview: isReviewManaged && nonStockChangesRequireReview,
           stockOnly: false,
         };
 
@@ -2004,7 +2051,7 @@ export default function SupplierEditProduct() {
         return;
       }
 
-      const stockOnlyUpdate = isLive && !nonStockChangesRequireReview;
+      const stockOnlyUpdate = isReviewManaged && !nonStockChangesRequireReview;
 
       if (isLive && !stockOnlyUpdate) {
         setOkMsg("Saved ✅ Price/content changes were submitted for admin approval. Stock-only values still update immediately.");
@@ -2037,11 +2084,14 @@ export default function SupplierEditProduct() {
 
   const guardMsg = !hydrated ? "Loading session…" : !isSupplier ? "This page is for suppliers only." : null;
 
-  const hasPendingNonStockBlock =
-    isLive &&
-    hasPendingReviewRequest &&
-    nonStockChangesRequireReview;
-
+  const hasPendingNonStockBlock = false;
+  const saveButtonLabel = useMemo(() => {
+    if (isSubmitting) return "Submitting…";
+    if (offersOnly) return "Save offer";
+    if (isPendingReview) return "Update pending submission";
+    if (isRejected) return "Resubmit changes";
+    return "Save changes";
+  }, [isSubmitting, offersOnly, isPendingReview, isRejected]);
 
   const submitDisabled =
     isSubmitting ||
@@ -2049,17 +2099,9 @@ export default function SupplierEditProduct() {
     detailQ.isLoading ||
     !hydrated ||
     !isSupplier ||
-    hasBlockingError ||
-    hasPendingNonStockBlock;
+    hasBlockingError;
 
   const doSave = () => {
-    if (hasPendingNonStockBlock) {
-      setErr(
-        "A non-stock change request is already pending for this product. You can still update stock/qty, but price/content changes must wait for admin review."
-      );
-      return;
-    }
-
     if (hasBlockingError) {
       setErr(
         imageOverLimit
@@ -2074,6 +2116,61 @@ export default function SupplierEditProduct() {
     updateM.mutate();
   };
 
+  useEffect(() => {
+    const p = detailQ.data as any;
+    if (!p?.id) return;
+
+    const { base, variantMap } = getPendingOfferMaps(p);
+    const basePatch = base?.proposedPatch ?? base?.patchJson ?? null;
+
+    setPendingBasePatch(basePatch);
+    setPendingVariantPatchByVariantId(variantMap);
+
+    if (offersOnly) {
+      setPendingProductPatch(null);
+      setPendingProductVariantPatchByVariantId(new Map());
+      return;
+    }
+
+    const pendingProductReq = getPendingProductChange(p);
+    const productPatch =
+      pendingProductReq?.proposedPatch ??
+      pendingProductReq?.patchJson ??
+      null;
+
+    setPendingProductPatch(productPatch);
+    setPendingProductVariantPatchByVariantId(
+      buildPendingVariantPatchMapFromProductPatch(productPatch)
+    );
+  }, [detailQ.data, offersOnly]);
+
+
+  const latestPendingBasePatch = useMemo(
+    () => getPendingBasePatchFromDetail(detailQ.data),
+    [detailQ.data]
+  );
+
+  const pendingBaseValue = useMemo(() => {
+    const raw =
+      latestPendingBasePatch?.basePrice ??
+      latestPendingBasePatch?.offer?.basePrice ??
+      latestPendingBasePatch?.price ??
+      null;
+
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [latestPendingBasePatch]);
+  const hasPendingBaseForUi = useMemo(() => {
+    return !offersOnly && pendingBaseValue != null;
+  }, [offersOnly, pendingBaseValue]);
+
+  const pendingBaseMatchesForm = useMemo(() => {
+    if (!hasPendingBaseForUi) return false;
+
+    const current = toMoneyNumber(retailPrice);
+    return current > 0 && current === pendingBaseValue;
+  }, [hasPendingBaseForUi, pendingBaseValue, retailPrice]);
+
   return (
     <SiteLayout>
       <SupplierLayout>
@@ -2086,7 +2183,7 @@ export default function SupplierEditProduct() {
               className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
             >
               <Save size={16} />
-              {isSubmitting ? "Submitting…" : offersOnly ? "Save offer" : "Save changes"}
+              {saveButtonLabel}
             </button>
             <button
               type="button"
@@ -2111,8 +2208,17 @@ export default function SupplierEditProduct() {
               <div className="rounded-2xl border bg-white p-4 text-sm text-zinc-700 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-500">Mode</span>
-                  <b className="text-zinc-900">{offersOnly ? "Attach existing" : "Create new"}</b>
-                </div>
+                  <b className="text-zinc-900">
+                    {offersOnly
+                      ? "Attach existing"
+                      : isPendingReview
+                        ? "Update pending submission"
+                        : isRejected
+                          ? "Resubmit for approval"
+                          : isReviewManaged
+                            ? "Review-managed product"
+                            : "Create new"}
+                  </b>                </div>
 
                 {!offersOnly ? (
                   <>
@@ -2171,9 +2277,13 @@ export default function SupplierEditProduct() {
               <p className="text-sm text-zinc-600 mt-1">
                 {offersOnly
                   ? "Update your supplier offer on an existing catalog product."
-                  : isLive
-                    ? "Edit your product. Stock updates are immediate; some other changes may need review."
-                    : "Edit your product details, attributes, images and variant combinations."}
+                  : isPendingReview
+                    ? "A submission is already pending. You can keep editing eligible fields and your next save will update that pending submission."
+                    : isRejected
+                      ? "This product was previously rejected. Update the eligible fields below and save to resubmit for approval."
+                      : isLive
+                        ? "Edit your product. Stock updates are immediate; some other changes may need review."
+                        : "Edit your product details, attributes, images and variant combinations."}
               </p>
 
               <div className="mt-2 text-xs text-zinc-500">
@@ -2195,7 +2305,7 @@ export default function SupplierEditProduct() {
                 className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
               >
                 {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
-                {isSubmitting ? "Submitting…" : offersOnly ? "Save offer" : "Save changes"}
+                {saveButtonLabel}
               </button>
             </div>
 
@@ -2215,15 +2325,22 @@ export default function SupplierEditProduct() {
             </div>
           )}
 
-          {!offersOnly && isLive && nonStockChangesRequireReview && (
+          {!offersOnly && pendingSubmissionNotice && (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-              <b>Review notice:</b> Price/content changes on a LIVE product will be submitted for <b>admin approval</b>. Stock-only changes still apply immediately.
+              <b>
+                {isPendingReview
+                  ? "Pending approval:"
+                  : isRejected
+                    ? "Rejected previously:"
+                    : "Review notice:"}
+              </b>{" "}
+              {pendingSubmissionNotice}
             </div>
           )}
 
-          {!offersOnly && isLive && pendingProductPatch && (
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-              <b>Pending approval:</b> This product already has a submitted change request under review.
+          {!offersOnly && titleSkuLocked && (
+            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 text-zinc-800 px-4 py-3 text-sm">
+              <b>Locked fields:</b> Title and SKU can’t be changed while this product is in the review-managed flow.
             </div>
           )}
 
@@ -2281,37 +2398,59 @@ export default function SupplierEditProduct() {
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <Label>Title *</Label>
+                      <Label>
+                        Title *{" "}
+                        {titleSkuLocked ? (
+                          <span className="text-zinc-400 font-normal">(locked during review flow)</span>
+                        ) : null}
+                      </Label>
                       <Input
                         value={title}
                         onChange={(e) => {
+                          if (!canEditTitleSku) return;
                           const nextTitle = e.target.value;
                           setTitle(nextTitle);
-                          if (!offersOnly && !isLive && !skuTouched) {
+                          if (!offersOnly && !isReviewManaged && !skuTouched) {
                             setSku(autoSkuFromTitle(nextTitle));
                           }
                         }}
-                        disabled={!canEditCore || isLive}
-                        readOnly={!canEditCore || isLive}
+                        disabled={!canEditTitleSku}
+                        readOnly={!canEditTitleSku}
+                        className={!canEditTitleSku ? "bg-zinc-100 text-zinc-500 cursor-not-allowed" : ""}
                         placeholder="e.g. Air Fryer 4L"
                       />
+                      {titleSkuLocked && (
+                        <div className="text-[11px] text-zinc-500 mt-1">
+                          Title is locked while this product is LIVE, PENDING, or under review.
+                        </div>
+                      )}
                     </div>
 
                     <div>
                       <Label>
-                        SKU <span className="text-zinc-400 font-normal">{isLive ? "(locked)" : ""}</span>
+                        SKU{" "}
+                        <span className="text-zinc-400 font-normal">
+                          {titleSkuLocked ? "(locked during review flow)" : ""}
+                        </span>
                       </Label>
                       <Input
                         value={sku}
                         onChange={(e) => {
+                          if (!canEditTitleSku) return;
                           const v = e.target.value;
                           setSku(v);
                           setSkuTouched(!!v.trim());
                         }}
-                        disabled={!canEditCore || isLive}
-                        readOnly={!canEditCore || isLive}
+                        disabled={!canEditTitleSku}
+                        readOnly={!canEditTitleSku}
+                        className={!canEditTitleSku ? "bg-zinc-100 text-zinc-500 cursor-not-allowed" : ""}
                         placeholder="e.g. AFRY-4L-BLK"
                       />
+                      {titleSkuLocked && (
+                        <div className="text-[11px] text-zinc-500 mt-1">
+                          SKU is locked while this product is LIVE, PENDING, or under review.
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -2324,6 +2463,35 @@ export default function SupplierEditProduct() {
                         inputMode="decimal"
                         placeholder="e.g. 25000"
                       />
+
+                      {!offersOnly && isReviewManaged && (
+                        <div className="text-[11px] text-zinc-600 mt-1">
+                          Approved: <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
+                        </div>
+                      )}
+                      {hasPendingBaseForUi && pendingBaseValue != null && (
+                        <div className="text-[11px] text-amber-700 mt-1">
+                          Pending approval price: <b>{ngn.format(pendingBaseValue)}</b>
+                          {pendingBaseMatchesForm
+                            ? " — this matches your current input."
+                            : " — change the amount if you want to replace the pending request."}
+                        </div>
+                      )}
+                      
+                      {pendingBaseMatchesForm && (
+                        <div className="text-[11px] text-amber-700 mt-1">
+                          This price is already pending approval. Saving again will not change the pending price unless you enter a different amount.
+                        </div>
+                      )}
+
+                      {!offersOnly &&
+                        isReviewManaged &&
+                        pendingBasePatch?.basePrice != null &&
+                        Number(pendingBasePatch.basePrice) !== Number(activeBasePriceForDisplay) && (
+                          <div className="text-[11px] text-amber-700 mt-1">
+                            Pending: <b>{ngn.format(Number(pendingBasePatch.basePrice ?? 0))}</b>
+                          </div>
+                        )}
                       {!!retailPrice && (
                         <div className="text-[11px] text-zinc-500 mt-1">
                           Preview: <b>{ngn.format(basePriceForPreview)}</b>
@@ -2378,6 +2546,7 @@ export default function SupplierEditProduct() {
                         value={categoryId}
                         onChange={(e) => setCategoryId(e.target.value)}
                         disabled={!canEditCore}
+                        className={!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}
                       >
                         <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
                         {categories.map((c) => (
@@ -2386,6 +2555,12 @@ export default function SupplierEditProduct() {
                           </option>
                         ))}
                       </Select>
+
+                      {!offersOnly && isReviewManaged && (
+                        <div className="text-[11px] text-amber-700 mt-1">
+                          Category changes will update the pending submission, not the live product immediately.
+                        </div>
+                      )}
                     </div>
 
                     <div>
@@ -2401,6 +2576,7 @@ export default function SupplierEditProduct() {
                         value={brandId}
                         onChange={(e) => setBrandId(e.target.value)}
                         disabled={!canEditCore}
+                        className={!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}
                       >
                         <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
                         {brands.map((b) => (
@@ -2409,6 +2585,12 @@ export default function SupplierEditProduct() {
                           </option>
                         ))}
                       </Select>
+
+                      {!offersOnly && isReviewManaged && (
+                        <div className="text-[11px] text-amber-700 mt-1">
+                          Brand changes will update the pending submission, not the live product immediately.
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -2417,11 +2599,17 @@ export default function SupplierEditProduct() {
                     <Textarea
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
-                      className="min-h-[110px]"
+                      className={`min-h-[110px] ${!canEditCore ? "bg-zinc-100 text-zinc-500" : ""}`}
                       disabled={!canEditCore}
                       placeholder="Write a clear, detailed description…"
                     />
                   </div>
+
+                  {!offersOnly && isReviewManaged && (
+                    <div className="text-[11px] text-amber-700 mt-1">
+                      Description edits are allowed, but they will go through approval before appearing live.
+                    </div>
+                  )}
                 </div>
               </Card>
 
@@ -2430,7 +2618,9 @@ export default function SupplierEditProduct() {
                 subtitle={
                   offersOnly
                     ? `Catalog images are read-only here.`
-                    : `Paste URLs or upload images (max ${MAX_IMAGES}).`
+                    : isReviewManaged
+                      ? `Paste URLs or upload images (max ${MAX_IMAGES}). Image changes will update the pending submission.`
+                      : `Paste URLs or upload images (max ${MAX_IMAGES}).`
                 }
                 right={
                   <label
@@ -2605,8 +2795,11 @@ export default function SupplierEditProduct() {
                 subtitle={
                   offersOnly
                     ? "Catalog product attributes are read-only."
-                    : "Optional details used for filtering and variant setup."
+                    : isReviewManaged
+                      ? "Optional details used for filtering and variant setup. Attribute changes will update the pending submission."
+                      : "Optional details used for filtering and variant setup."
                 }
+
                 className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300 ring-2 ring-rose-100" : ""}
                 right={
                   <div className="flex items-center gap-2 flex-wrap">
@@ -2746,13 +2939,13 @@ export default function SupplierEditProduct() {
                 subtitle={
                   offersOnly
                     ? "Set supplier-specific stock and price for each existing variant."
-                    : isLive
-                      ? "LIVE listing: existing combos stay fixed; qty updates are allowed."
+                    : isReviewManaged
+                      ? "Review-managed listing: existing combos stay fixed here; qty updates are immediate, and price edits update the pending submission."
                       : "Add combinations of SELECT attributes with qty and price."
                 }
                 right={
                   <div className="flex gap-2 flex-wrap">
-                    {!offersOnly && !isLive && (
+                    {!offersOnly && canAddNewCombos && (
                       <>
                         <button
                           type="button"
@@ -2789,11 +2982,17 @@ export default function SupplierEditProduct() {
                     </div>
                   )}
 
+                  {!offersOnly && isReviewManaged && (
+                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[12px] text-zinc-700">
+                      Existing variant rows can still have stock updated immediately. Any review-managed price changes will be submitted through the approval flow.
+                    </div>
+                  )}
+
                   {variantRows.map((row) => {
                     const isDup = duplicateRowIds.has(row.id);
                     const isBaseConflict = baseComboConflictRowIds.has(row.id);
                     const isFlashing = flashVariantRowId === row.id;
-                    const isEditing = editingVariantRowId === row.id && !offersOnly && !isLive && !row.isExisting;
+                    const isEditing = editingVariantRowId === row.id && !offersOnly && !isReviewManaged && !row.isExisting;
 
                     const variantPriceNum = toMoneyNumber(row.unitPrice);
                     const effectiveVariantPrice =
@@ -2866,7 +3065,7 @@ export default function SupplierEditProduct() {
                             </div>
 
                             <div className="flex items-center gap-2 flex-wrap">
-                              {offersOnly || isLive || row.isExisting ? (
+                              {offersOnly || isReviewManaged || row.isExisting ? (
                                 <>
                                   <span className="text-xs text-zinc-500">Price</span>
                                   <Input
@@ -3037,7 +3236,7 @@ export default function SupplierEditProduct() {
                   className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
                 >
                   {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
-                  {isSubmitting ? "Submitting…" : offersOnly ? "Save offer" : "Save changes"}
+                  {saveButtonLabel}
                 </button>
               </div>
             </div>
@@ -3047,7 +3246,17 @@ export default function SupplierEditProduct() {
                 <div className="text-sm text-zinc-700 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-zinc-500">Flow</span>
-                    <b className="text-zinc-900">{offersOnly ? "Attach existing product" : "Create new product"}</b>
+                    <b className="text-zinc-900">
+                      {offersOnly
+                        ? "Attach existing product"
+                        : isPendingReview
+                          ? "Update pending submission"
+                          : isRejected
+                            ? "Resubmit for approval"
+                            : isReviewManaged
+                              ? "Review-managed product"
+                              : "Create new product"}
+                    </b>
                   </div>
 
                   {!offersOnly ? (
@@ -3153,7 +3362,7 @@ export default function SupplierEditProduct() {
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
               >
                 {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
-                {isSubmitting ? "Submitting…" : offersOnly ? "Save offer" : "Save changes"}
+                {saveButtonLabel}
               </button>
 
               {offersOnly && detailQ.data && (

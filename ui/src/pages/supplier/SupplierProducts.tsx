@@ -47,6 +47,7 @@ type SupplierProductListItem = {
   inStock: boolean;
   imagesJson: string[];
   createdAt: string;
+  updatedAt?: string | null;
   categoryId?: string | null;
   brandId?: string | null;
   availableQty?: number;
@@ -72,24 +73,26 @@ type DeleteEligibility = {
 function Badge({
   children,
   tone = "neutral",
+  className = "",
 }: {
   children: React.ReactNode;
   tone?: "neutral" | "warning" | "danger" | "success" | "info";
+  className?: string;
 }) {
   const cls =
     tone === "warning"
       ? "border-amber-200 bg-amber-50 text-amber-800"
       : tone === "danger"
-        ? "border-rose-200 bg-rose-50 text-rose-700"
-        : tone === "success"
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-          : tone === "info"
-            ? "border-blue-200 bg-blue-50 text-blue-700"
-            : "border-zinc-200 bg-zinc-50 text-zinc-700";
+      ? "border-rose-200 bg-rose-50 text-rose-700"
+      : tone === "success"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+      : tone === "info"
+      ? "border-blue-200 bg-blue-50 text-blue-700"
+      : "border-zinc-200 bg-zinc-50 text-zinc-700";
 
   return (
     <span
-      className={`inline-flex items-center px-2 py-1 rounded-full text-[11px] border ${cls}`}
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] border leading-4 ${cls} ${className}`}
     >
       {children}
     </span>
@@ -104,15 +107,26 @@ function normStr(v: any) {
 }
 
 function fmtDateTime(value?: string | null) {
-  if (!value) return "";
+  if (!value) return "—";
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
+  if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleString("en-GB", {
     year: "numeric",
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+  });
+}
+
+function fmtDateShort(value?: string | null) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
   });
 }
 
@@ -130,14 +144,17 @@ function ModerationPanel({
   if (status === "REJECTED" && message) {
     return (
       <div
-        className={`rounded-2xl border border-rose-200 bg-rose-50 ${compact ? "px-3 py-2" : "px-3 py-2.5"
-          }`}
+        className={`rounded-2xl border border-rose-200 bg-rose-50 ${
+          compact ? "px-2.5 py-2" : "px-3 py-2.5"
+        }`}
       >
-        <div className="text-[11px] font-semibold text-rose-800">
+        <div className="text-[10px] font-semibold text-rose-800">
           Product change rejected
         </div>
-        <div className="mt-1 text-[11px] leading-snug text-rose-700">{message}</div>
-        {reviewedAt ? (
+        <div className="mt-1 text-[10px] leading-snug text-rose-700 line-clamp-3">
+          {message}
+        </div>
+        {reviewedAt !== "—" ? (
           <div className="mt-1 text-[10px] text-rose-600">Reviewed {reviewedAt}</div>
         ) : null}
       </div>
@@ -147,20 +164,23 @@ function ModerationPanel({
   if (status === "PENDING" || item.hasPendingChanges) {
     return (
       <div
-        className={`rounded-2xl border border-amber-200 bg-amber-50 ${compact ? "px-3 py-2" : "px-3 py-2.5"
-          }`}
+        className={`rounded-2xl border border-amber-200 bg-amber-50 ${
+          compact ? "px-2.5 py-2" : "px-3 py-2.5"
+        }`}
       >
-        <div className="text-[11px] font-semibold text-amber-800">
+        <div className="text-[10px] font-semibold text-amber-800">
           Awaiting admin review
         </div>
-        <div className="mt-1 text-[11px] leading-snug text-amber-700">
+        <div className="mt-1 text-[10px] leading-snug text-amber-700 line-clamp-2">
           Your latest product changes are pending approval.
         </div>
       </div>
     );
   }
 
-  return null;
+  return (
+    <div className="text-[10px] text-zinc-500">—</div>
+  );
 }
 
 function useDebouncedValue<T>(value: T, delay = 300) {
@@ -267,6 +287,31 @@ function PaginationBar({
   );
 }
 
+function SortButton({
+  label,
+  active,
+  dir,
+  onClick,
+  className = "",
+}: {
+  label: string;
+  active: boolean;
+  dir: "asc" | "desc";
+  onClick: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-1 hover:text-zinc-900 ${className}`}
+    >
+      {label}
+      {active ? (dir === "asc" ? "↑" : "↓") : "↕"}
+    </button>
+  );
+}
+
 export default function SupplierProductsPage() {
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
   const role = useAuthStore((s: any) => s.user?.role);
@@ -339,7 +384,9 @@ export default function SupplierProductsPage() {
     setPage(1);
   }, [debouncedQ, status, categoryId, brandId, adminSupplierId]);
 
-  const [sortBy, setSortBy] = useState<"createdAt" | "status" | "basePrice">("createdAt");
+  const [sortBy, setSortBy] = useState<"title" | "status" | "basePrice" | "updatedAt">(
+    "updatedAt"
+  );
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const productsQ = useQuery({
@@ -503,13 +550,13 @@ export default function SupplierProductsPage() {
         staleTime: 0,
       });
     } catch {
-      // edit page will still load
+      //
     }
     nav(withSupplierCtx(`/supplier/products/${productId}/edit`));
   };
 
   useEffect(() => {
-    setSortBy("createdAt");
+    setSortBy("updatedAt");
     setSortDir("desc");
   }, [debouncedQ, status, categoryId, brandId, adminSupplierId]);
 
@@ -529,7 +576,12 @@ export default function SupplierProductsPage() {
     list.sort((a, b) => {
       let cmp = 0;
 
-      if (sortBy === "status") {
+      if (sortBy === "title") {
+        cmp = String(a.title ?? "").localeCompare(String(b.title ?? ""), undefined, {
+          sensitivity: "base",
+          numeric: true,
+        });
+      } else if (sortBy === "status") {
         cmp = statusRank(a.status) - statusRank(b.status);
         if (cmp === 0) {
           cmp = String(a.title ?? "").localeCompare(String(b.title ?? ""));
@@ -540,9 +592,12 @@ export default function SupplierProductsPage() {
           cmp = String(a.title ?? "").localeCompare(String(b.title ?? ""));
         }
       } else {
-        const ta = new Date(a.createdAt ?? 0).getTime();
-        const tb = new Date(b.createdAt ?? 0).getTime();
+        const ta = new Date(a.updatedAt ?? a.createdAt ?? 0).getTime();
+        const tb = new Date(b.updatedAt ?? b.createdAt ?? 0).getTime();
         cmp = ta - tb;
+        if (cmp === 0) {
+          cmp = String(a.title ?? "").localeCompare(String(b.title ?? ""));
+        }
       }
 
       return sortDir === "asc" ? cmp : -cmp;
@@ -551,13 +606,13 @@ export default function SupplierProductsPage() {
     return list;
   }, [items, sortBy, sortDir]);
 
-  const toggleSort = (field: "status" | "basePrice") => {
+  const toggleSort = (field: "title" | "status" | "basePrice" | "updatedAt") => {
     if (sortBy === field) {
       setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
       return;
     }
     setSortBy(field);
-    setSortDir(field === "status" ? "asc" : "desc");
+    setSortDir(field === "status" || field === "title" ? "asc" : "desc");
   };
 
   return (
@@ -654,47 +709,47 @@ export default function SupplierProductsPage() {
             {(showFilters ||
               typeof window === "undefined" ||
               window.matchMedia("(min-width: 640px)").matches) && (
-                <div className="px-3 sm:px-5 pb-4 sm:pb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <select
-                    value={status}
-                    onChange={(e) => setStatus(e.target.value as any)}
-                    className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
-                  >
-                    <option value="ANY">Any status</option>
-                    <option value="PENDING">PENDING</option>
-                    <option value="LIVE">LIVE</option>
-                    <option value="APPROVED">APPROVED</option>
-                    <option value="PUBLISHED">PUBLISHED</option>
-                    <option value="REJECTED">REJECTED</option>
-                  </select>
+              <div className="px-3 sm:px-5 pb-4 sm:pb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <select
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as any)}
+                  className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+                >
+                  <option value="ANY">Any status</option>
+                  <option value="PENDING">PENDING</option>
+                  <option value="LIVE">LIVE</option>
+                  <option value="APPROVED">APPROVED</option>
+                  <option value="PUBLISHED">PUBLISHED</option>
+                  <option value="REJECTED">REJECTED</option>
+                </select>
 
-                  <select
-                    value={categoryId}
-                    onChange={(e) => setCategoryId(e.target.value)}
-                    className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
-                  >
-                    <option value="">All categories</option>
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
+                <select
+                  value={categoryId}
+                  onChange={(e) => setCategoryId(e.target.value)}
+                  className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+                >
+                  <option value="">All categories</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
 
-                  <select
-                    value={brandId}
-                    onChange={(e) => setBrandId(e.target.value)}
-                    className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
-                  >
-                    <option value="">All brands</option>
-                    {brands.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
+                <select
+                  value={brandId}
+                  onChange={(e) => setBrandId(e.target.value)}
+                  className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+                >
+                  <option value="">All brands</option>
+                  {brands.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </Card>
 
           <Card>
@@ -766,6 +821,7 @@ export default function SupplierProductsPage() {
                       typeof p.availableQty === "number" &&
                       p.availableQty <= lowStockThreshold;
                     const del = canDeleteOf(p.id);
+                    const modifiedAt = p.updatedAt ?? p.createdAt;
 
                     return (
                       <div key={p.id} className="rounded-2xl border bg-white p-3">
@@ -783,7 +839,7 @@ export default function SupplierProductsPage() {
                             <div className="font-semibold text-[13px] text-zinc-900 line-clamp-2">
                               {p.title}
                             </div>
-                            <div className="mt-1 text-[11px] text-zinc-500">
+                            <div className="mt-1 text-[11px] text-zinc-500 break-words">
                               SKU: <span className="font-medium">{p.sku || "—"}</span>
                             </div>
 
@@ -798,8 +854,8 @@ export default function SupplierProductsPage() {
                               )}
                               {(p.moderationStatus === "PENDING" ||
                                 p.hasPendingChanges) && (
-                                  <Badge tone="warning">Pending review</Badge>
-                                )}
+                                <Badge tone="warning">Pending review</Badge>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -817,20 +873,31 @@ export default function SupplierProductsPage() {
                             <div className="opacity-70">Brand</div>
                             <div className="font-medium text-zinc-900 truncate">{br}</div>
                           </div>
+                          <div className="rounded-xl border bg-zinc-50 px-3 py-2">
+                            <div className="opacity-70">Modified</div>
+                            <div className="font-medium text-zinc-900">{fmtDateShort(modifiedAt)}</div>
+                          </div>
+                          <div className="rounded-xl border bg-zinc-50 px-3 py-2">
+                            <div className="opacity-70">Price</div>
+                            <div className="font-medium text-zinc-900">₦{fmtPrice(p.basePrice)}</div>
+                          </div>
                         </div>
 
                         <div className="mt-3 flex items-center justify-between gap-3">
-                          <div className="text-[14px] font-semibold text-zinc-900">
-                            ₦{fmtPrice(p.basePrice)}
-                          </div>
-                          {typeof p.availableQty === "number" && (
+                          {typeof p.availableQty === "number" ? (
                             <div className="text-[11px] text-zinc-500">
                               Qty:{" "}
                               <span className="font-medium text-zinc-800">
                                 {p.availableQty}
                               </span>
                             </div>
+                          ) : (
+                            <div />
                           )}
+
+                          <div className="text-[11px] text-zinc-500">
+                            {fmtDateTime(modifiedAt)}
+                          </div>
                         </div>
 
                         <div className="mt-3 grid grid-cols-2 gap-2">
@@ -848,9 +915,10 @@ export default function SupplierProductsPage() {
                             title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
                             onClick={() => confirmAndDelete(p)}
                             className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold transition
-                              ${del.canDelete && !deleteM.isPending
-                                ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
-                                : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                              ${
+                                del.canDelete && !deleteM.isPending
+                                  ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
+                                  : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
                               }`}
                           >
                             <Trash2 size={14} /> Delete
@@ -869,123 +937,181 @@ export default function SupplierProductsPage() {
               )}
             </div>
 
-            <div className="hidden sm:block p-5 overflow-auto">
-              <table className="min-w-[1380px] w-full table-fixed text-sm">
+            <div className="hidden sm:block p-4 lg:p-5">
+              <table className="w-full table-fixed text-[12px] lg:text-[13px]">
+                <colgroup>
+                  <col className="w-[17%]" />
+                  <col className="w-[14%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[8%]" />
+                  <col className="w-[17%]" />
+                  <col className="w-[7%]" />
+                  <col className="w-[7%]" />
+                  <col className="w-[10%]" />
+                </colgroup>
+
                 <thead>
-                  <tr className="text-xs text-zinc-500">
-                    <th className="text-left font-semibold py-2">Product</th>
-                    <th className="text-left font-semibold py-2">SKU</th>
-                    <th className="text-left font-semibold py-2">Category</th>
-                    <th className="text-left font-semibold py-2">Brand</th>
-                    <th className="text-left font-semibold py-2">
-                      <button
-                        type="button"
+                  <tr className="text-[11px] text-zinc-500 border-b">
+                    <th className="text-left font-semibold py-2 pr-3">
+                      <SortButton
+                        label="Product"
+                        active={sortBy === "title"}
+                        dir={sortDir}
+                        onClick={() => toggleSort("title")}
+                      />
+                    </th>
+                    <th className="text-left font-semibold py-2 pr-3">SKU</th>
+                    <th className="text-left font-semibold py-2 pr-3">Category</th>
+                    <th className="text-left font-semibold py-2 pr-3">Brand</th>
+                    <th className="text-left font-semibold py-2 pr-3">
+                      <SortButton
+                        label="Status"
+                        active={sortBy === "status"}
+                        dir={sortDir}
                         onClick={() => toggleSort("status")}
-                        className="inline-flex items-center gap-1 hover:text-zinc-900"
-                      >
-                        Status
-                        {sortBy === "status" ? (sortDir === "asc" ? "↑" : "↓") : "↕"}
-                      </button>
+                      />
                     </th>
-                    <th className="text-left font-semibold py-2">Review</th>
-                    <th className="text-left font-semibold py-2">Stock</th>
-                    <th className="text-left font-semibold py-2">
-                      <button
-                        type="button"
+                    <th className="text-left font-semibold py-2 pr-3">Review</th>
+                    <th className="text-left font-semibold py-2 pr-3">Stock</th>
+                    <th className="text-left font-semibold py-2 pr-3">
+                      <SortButton
+                        label="Price"
+                        active={sortBy === "basePrice"}
+                        dir={sortDir}
                         onClick={() => toggleSort("basePrice")}
-                        className="inline-flex items-center gap-1 hover:text-zinc-900"
-                      >
-                        Price
-                        {sortBy === "basePrice" ? (sortDir === "asc" ? "↑" : "↓") : "↕"}
-                      </button>
+                      />
                     </th>
-                    <th className="text-left font-semibold py-2">Actions</th>
+                    <th className="text-left font-semibold py-2">
+                      <SortButton
+                        label="Modified"
+                        active={sortBy === "updatedAt"}
+                        dir={sortDir}
+                        onClick={() => toggleSort("updatedAt")}
+                      />
+                    </th>
                   </tr>
                 </thead>
 
                 <tbody className="text-zinc-800">
                   {sortedItems.map((p) => {
                     const del = canDeleteOf(p.id);
+                    const modifiedAt = p.updatedAt ?? p.createdAt;
+                    const low =
+                      typeof p.availableQty === "number" &&
+                      p.availableQty <= lowStockThreshold;
 
                     return (
-                      <tr key={p.id} className="border-t align-top">
-                        <td className="py-3 pr-6 font-semibold">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="truncate block max-w-[300px]">{p.title}</span>
-                            {typeof p.availableQty === "number" &&
-                              p.availableQty <= lowStockThreshold && (
-                                <Badge tone="warning">Low stock</Badge>
-                              )}
-                          </div>
-                        </td>
-
-                        <td className="py-3  pr-2">{p.sku}</td>
-                        <td className="py-3">
-                          {p.categoryId ? categoryNameById.get(p.categoryId) ?? "—" : "—"}
-                        </td>
-                        <td className="py-3">
-                          {p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—"}
-                        </td>
-
-                        <td className="py-3">
-                          <div className="flex flex-col gap-2">
-                            <span className="inline-flex w-fit px-2 py-1 rounded-full text-[11px] border bg-zinc-50 text-zinc-700 border-zinc-200">
-                              {p.status}
-                            </span>
-
-                            {p.moderationStatus === "REJECTED" && (
-                              <Badge tone="danger">Rejected</Badge>
-                            )}
-                            {(p.moderationStatus === "PENDING" ||
-                              p.hasPendingChanges) && (
-                                <Badge tone="warning">Pending review</Badge>
-                              )}
-                          </div>
-                        </td>
-
-                        <td className="py-3 pr-6 max-w-[320px]">
-                          <ModerationPanel item={p} />
-                        </td>
-
-                        <td className="py-3 px-6 whitespace-nowrap">
-                          <div>{p.inStock ? "In stock" : "Out"}</div>
-                          {typeof p.availableQty === "number" && (
-                            <div className="mt-1 text-[11px] text-zinc-500">
-                              Qty: {p.availableQty}
+                      <tr key={p.id} className="border-b last:border-b-0 align-top">
+                        <td className="py-3 pr-3">
+                          <div className="min-w-0">
+                            <div className="flex items-start gap-2 min-w-0">
+                              <div className="font-semibold text-[13px] text-zinc-900 leading-5 line-clamp-2 break-words">
+                                {p.title}
+                              </div>
                             </div>
-                          )}
+
+                            <div className="mt-1 flex flex-wrap gap-1.5">
+                              {low && <Badge tone="warning">Low stock</Badge>}
+                              {p.isDerived && <Badge tone="info">Derived</Badge>}
+                            </div>
+                          </div>
                         </td>
 
-                        <td className="py-3 whitespace-nowrap gap-2">₦{fmtPrice(p.basePrice)}</td>
-
-                        <td className="py-3 whitespace-nowrap">
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => goEdit(p.id)}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-xs hover:bg-black/5"
-                            >
-                              <Pencil size={14} /> Edit
-                            </button>
-
-                            <button
-                              type="button"
-                              disabled={!del.canDelete || deleteM.isPending}
-                              title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
-                              onClick={() => confirmAndDelete(p)}
-                              className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs transition
-        ${del.canDelete && !deleteM.isPending
-                                  ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
-                                  : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
-                                }`}
-                            >
-                              <Trash2 size={14} /> Delete
-                            </button>
+                        <td className="py-3 pr-3">
+                          <div className="text-[11px] text-zinc-700 leading-5 break-words line-clamp-3">
+                            {p.sku || "—"}
                           </div>
+                        </td>
 
-                          {!del.canDelete && del.reason && (
-                            <div className="mt-1 text-[11px] text-zinc-500">{del.reason}</div>
-                          )}
+                        <td className="py-3 pr-3">
+                          <div className="text-[12px] text-zinc-700 leading-5 line-clamp-2 break-words">
+                            {p.categoryId ? categoryNameById.get(p.categoryId) ?? "—" : "—"}
+                          </div>
+                        </td>
+
+                        <td className="py-3 pr-3">
+                          <div className="text-[12px] text-zinc-700 leading-5 line-clamp-2 break-words">
+                            {p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—"}
+                          </div>
+                        </td>
+
+                        <td className="py-3 pr-3">
+                          <div className="flex flex-col gap-1.5">
+                            <Badge className="w-fit">{p.status}</Badge>
+                            {p.moderationStatus === "REJECTED" && (
+                              <Badge tone="danger" className="w-fit">
+                                Rejected
+                              </Badge>
+                            )}
+                            {(p.moderationStatus === "PENDING" || p.hasPendingChanges) && (
+                              <Badge tone="warning" className="w-fit">
+                                Pending
+                              </Badge>
+                            )}
+                          </div>
+                        </td>
+
+                        <td className="py-3 pr-3">
+                          <ModerationPanel item={p} compact />
+                        </td>
+
+                        <td className="py-3 pr-3">
+                          <div className="text-[12px] leading-5">
+                            <div className={p.inStock ? "text-zinc-900" : "text-zinc-500"}>
+                              {p.inStock ? "In stock" : "Out"}
+                            </div>
+                            {typeof p.availableQty === "number" && (
+                              <div className="text-[11px] text-zinc-500">
+                                Qty: {p.availableQty}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+
+                        <td className="py-3 pr-3">
+                          <div className="text-[12px] font-semibold text-zinc-900 whitespace-nowrap">
+                            ₦{fmtPrice(p.basePrice)}
+                          </div>
+                        </td>
+
+                        <td className="py-3">
+                          <div className="space-y-2">
+                            <div className="text-[11px] text-zinc-600 leading-5">
+                              {fmtDateShort(modifiedAt)}
+                            </div>
+
+                            <div className="flex flex-wrap gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => goEdit(p.id)}
+                                className="inline-flex items-center gap-1 rounded-lg border bg-white px-2 py-1.5 text-[11px] hover:bg-black/5"
+                              >
+                                <Pencil size={12} /> Edit
+                              </button>
+
+                              <button
+                                type="button"
+                                disabled={!del.canDelete || deleteM.isPending}
+                                title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
+                                onClick={() => confirmAndDelete(p)}
+                                className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] transition
+                                  ${
+                                    del.canDelete && !deleteM.isPending
+                                      ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
+                                      : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                                  }`}
+                              >
+                                <Trash2 size={12} /> Delete
+                              </button>
+                            </div>
+
+                            {!del.canDelete && del.reason && (
+                              <div className="text-[10px] text-zinc-500 leading-snug break-words">
+                                {del.reason}
+                              </div>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );

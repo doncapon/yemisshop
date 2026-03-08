@@ -21,8 +21,10 @@ const MIN_BRANDS_PER_BASE = 2;
 const MAX_BRANDS_PER_BASE = 4;
 
 const log = (...a: any[]) => console.log("[seedProduct]", ...a);
+
 const randInt = (min: number, max: number) =>
   Math.floor(Math.random() * (max - min + 1)) + min;
+
 const chance = (p: number) => Math.random() < p;
 
 function pick<T>(arr: T[], n: number) {
@@ -31,7 +33,7 @@ function pick<T>(arr: T[], n: number) {
   return copy.slice(0, Math.max(0, Math.min(n, copy.length)));
 }
 
-function pics(seed: string | number) {
+function pics(seed: string | number): string[] {
   return [
     `https://picsum.photos/seed/dayspring-extra-${seed}/800/600`,
     `https://picsum.photos/seed/dayspring-extra-${seed}-b/800/600`,
@@ -62,7 +64,7 @@ function productKeyForSupplier(title: string, brandId: string) {
 }
 
 /**
- * ✅ Supplier-level uniqueness for "base products":
+ * Supplier-level uniqueness for seeded "base products":
  * one supplier should not get duplicate occurrences of the same (title + brandId)
  * - checks BOTH the current run (usedBySupplier) and the existing DB
  */
@@ -76,11 +78,9 @@ async function pickSupplierForItemDbSafe(
   const shuffled = [...suppliers].sort(() => Math.random() - 0.5);
 
   for (const s of shuffled) {
-    // 1) in-run protection
     const set = usedBySupplier.get(s.id) ?? new Set<string>();
     if (set.has(key)) continue;
 
-    // 2) DB protection
     const existsInDb = await prisma.product.findFirst({
       where: {
         isDeleted: false,
@@ -94,7 +94,6 @@ async function pickSupplierForItemDbSafe(
     if (!existsInDb) return s.id;
   }
 
-  // fallback (rare): everyone already has it; just return random supplier
   return suppliers[randInt(0, suppliers.length - 1)].id;
 }
 
@@ -303,26 +302,48 @@ function variantParcelOverride(base: ParcelSeed) {
     heightCm: toDec2(h),
     isFragileOverride: base.isFragile || chance(0.05),
     isBulkyOverride: base.isBulky || chance(0.05),
-    shippingClassOverride: (base.isBulky ? "BULKY" : base.isFragile ? "FRAGILE" : "STANDARD") as string,
+    shippingClassOverride: (base.isBulky
+      ? "BULKY"
+      : base.isFragile
+        ? "FRAGILE"
+        : "STANDARD") as string,
   };
 }
 
 /* ----------------------------------------------------------------------------
-  Product attribute options
+  Product attribute setup
 ---------------------------------------------------------------------------- */
 
-async function ensureProductAttributeOptions(
+async function ensureProductAttributeSetup(
   productId: string,
   attrs: Awaited<ReturnType<typeof getAttributes>>
 ) {
   for (const a of attrs) {
+    await prisma.productAttribute.upsert({
+      where: {
+        productId_attributeId: {
+          productId,
+          attributeId: a.attributeId,
+        },
+      },
+      update: {},
+      create: {
+        productId,
+        attributeId: a.attributeId,
+      },
+    });
+
     for (const v of a.values) {
       try {
         await prisma.productAttributeOption.create({
-          data: { productId, attributeId: a.attributeId, valueId: v.id },
+          data: {
+            productId,
+            attributeId: a.attributeId,
+            valueId: v.id,
+          },
         });
       } catch {
-        // ignore duplicates
+        // ignore duplicate compound unique
       }
     }
   }
@@ -353,11 +374,27 @@ async function createVariantsForProduct(args: {
   }[] = [];
 
   if (color && size) {
+    await prisma.productAttribute.upsert({
+      where: { productId_attributeId: { productId, attributeId: color.attributeId } },
+      update: {},
+      create: { productId, attributeId: color.attributeId },
+    });
+
+    await prisma.productAttribute.upsert({
+      where: { productId_attributeId: { productId, attributeId: size.attributeId } },
+      update: {},
+      create: { productId, attributeId: size.attributeId },
+    });
+
     const colors = color.values.slice(0, Math.min(4, color.values.length));
     const sizes = size.values.slice(0, Math.min(4, size.values.length));
 
     const combos: Array<{ c: string; s: string }> = [];
-    for (const c of colors) for (const s of sizes) combos.push({ c: c.id, s: s.id });
+    for (const c of colors) {
+      for (const s of sizes) {
+        combos.push({ c: c.id, s: s.id });
+      }
+    }
 
     const chosen = pick(combos, randInt(3, Math.min(6, combos.length)));
     const seen = new Set<string>();
@@ -387,7 +424,7 @@ async function createVariantsForProduct(args: {
           isBulkyOverride: override.isBulkyOverride,
           shippingClassOverride: override.shippingClassOverride,
           inStock: true,
-          imagesJson: pics(vSku) as any,
+          imagesJson: pics(vSku),
           isActive: true,
           availableQty: 0,
           options: {
@@ -407,6 +444,12 @@ async function createVariantsForProduct(args: {
   }
 
   if (material) {
+    await prisma.productAttribute.upsert({
+      where: { productId_attributeId: { productId, attributeId: material.attributeId } },
+      update: {},
+      create: { productId, attributeId: material.attributeId },
+    });
+
     const mats = material.values.slice(0, Math.min(5, material.values.length));
     const chosen = pick(mats, randInt(2, Math.min(4, mats.length)));
 
@@ -431,7 +474,7 @@ async function createVariantsForProduct(args: {
           isBulkyOverride: override.isBulkyOverride,
           shippingClassOverride: override.shippingClassOverride,
           inStock: true,
-          imagesJson: pics(vSku) as any,
+          imagesJson: pics(vSku),
           isActive: true,
           availableQty: 0,
           options: {
@@ -464,34 +507,31 @@ function supplierUnitPriceFromVariantRetail(variantRetail: number): Prisma.Decim
   return new Prisma.Decimal(val);
 }
 
-async function ensureBaseOfferForProduct(args: { productId: string; retail: number; supplierId: string }) {
+async function ensureBaseOfferForProduct(args: {
+  productId: string;
+  retail: number;
+  supplierId: string;
+}) {
   const { productId, retail, supplierId } = args;
   const availableQty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
 
-  const existing = await prisma.supplierProductOffer.findFirst({
-    where: { productId, supplierId },
-    select: { id: true },
-  });
-
-  if (!existing) {
-    return prisma.supplierProductOffer.create({
-      data: {
+  return prisma.supplierProductOffer.upsert({
+    where: {
+      supplier_product_offer_unique: {
         productId,
         supplierId,
-        basePrice: supplierBaseFromRetail(retail),
-        availableQty,
-        inStock: availableQty > 0,
-        isActive: true,
-        leadDays: randInt(1, 7),
-        currency: "NGN",
       },
-      select: { id: true, availableQty: true, productId: true },
-    });
-  }
-
-  return prisma.supplierProductOffer.update({
-    where: { id: existing.id },
-    data: {
+    },
+    update: {
+      basePrice: supplierBaseFromRetail(retail),
+      availableQty,
+      inStock: availableQty > 0,
+      isActive: true,
+      leadDays: randInt(1, 7),
+      currency: "NGN",
+    },
+    create: {
+      productId,
       supplierId,
       basePrice: supplierBaseFromRetail(retail),
       availableQty,
@@ -521,11 +561,15 @@ async function ensureVariantOffersForVariants(args: {
     const qty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
 
     await prisma.supplierVariantOffer.upsert({
-      where: { variantId: v.id },
+      where: {
+        supplier_variant_offer_unique: {
+          variantId: v.id,
+          supplierId,
+        },
+      },
       update: {
         productId,
         supplierProductOfferId: baseOfferId,
-        supplierId,
         unitPrice: supplierUnitPriceFromVariantRetail(vr),
         availableQty: qty,
         inStock: qty > 0,
@@ -536,8 +580,8 @@ async function ensureVariantOffersForVariants(args: {
       create: {
         productId,
         variantId: v.id,
-        supplierProductOfferId: baseOfferId,
         supplierId,
+        supplierProductOfferId: baseOfferId,
         unitPrice: supplierUnitPriceFromVariantRetail(vr),
         availableQty: qty,
         inStock: qty > 0,
@@ -552,30 +596,45 @@ async function ensureVariantOffersForVariants(args: {
   for (const v of variants) {
     const agg = await prisma.supplierVariantOffer.aggregate({
       _sum: { availableQty: true },
-      where: { variantId: v.id, isActive: true, inStock: true },
+      where: {
+        variantId: v.id,
+        isActive: true,
+        inStock: true,
+      },
     });
 
     const sum = Number(agg._sum.availableQty || 0);
+
     await prisma.productVariant.update({
       where: { id: v.id },
-      data: { availableQty: sum, inStock: sum > 0 },
+      data: {
+        availableQty: sum,
+        inStock: sum > 0,
+      },
     });
   }
 }
 
 async function recomputeProductAvailability(productId: string) {
-  const base = await prisma.supplierProductOffer.findFirst({
-    where: { productId, isActive: true, inStock: true },
-    select: { availableQty: true },
+  const baseAgg = await prisma.supplierProductOffer.aggregate({
+    _sum: { availableQty: true },
+    where: {
+      productId,
+      isActive: true,
+      inStock: true,
+    },
   });
-
-  const baseQty = base ? Number(base.availableQty ?? 0) : 0;
 
   const varAgg = await prisma.supplierVariantOffer.aggregate({
     _sum: { availableQty: true },
-    where: { productId, isActive: true, inStock: true },
+    where: {
+      productId,
+      isActive: true,
+      inStock: true,
+    },
   });
 
+  const baseQty = Number(baseAgg._sum.availableQty ?? 0);
   const variantQty = Number(varAgg._sum.availableQty ?? 0);
   const total = Math.max(0, Math.trunc(baseQty + variantQty));
 
@@ -688,30 +747,38 @@ async function seedExtraProducts(args: {
 
   const usedBySupplier = new Map<string, Set<string>>();
   const rootCategories = categories.filter((c) => !c.parentId);
-  const leafCategories = categories.filter((c) => !categories.some((x) => x.parentId === c.id));
-  const categoryPool = leafCategories.length ? leafCategories : rootCategories.length ? rootCategories : categories;
+  const leafCategories = categories.filter(
+    (c) => !categories.some((x) => x.parentId === c.id)
+  );
+  const categoryPool = leafCategories.length
+    ? leafCategories
+    : rootCategories.length
+      ? rootCategories
+      : categories;
 
   for (const item of plan) {
-    // ✅ extra safety: skip if SKU already exists (should be rare with nextExtraSeedIndex)
     const existingBySku = await prisma.product.findFirst({
       where: { sku: item.sku, isDeleted: false },
       select: { id: true },
     });
+
     if (existingBySku) {
       log(`Skipping existing SKU ${item.sku}`);
       continue;
     }
 
-    // ✅ pick supplier in a DB-safe way (no duplicate title+brand per supplier)
-    const supplierId = await pickSupplierForItemDbSafe(suppliers, usedBySupplier, item.title, item.brandId);
+    const supplierId = await pickSupplierForItemDbSafe(
+      suppliers,
+      usedBySupplier,
+      item.title,
+      item.brandId
+    );
 
-    // mark used for this run
     const key = productKeyForSupplier(item.title, item.brandId);
     const set = usedBySupplier.get(supplierId) ?? new Set<string>();
     set.add(key);
     usedBySupplier.set(supplierId, set);
 
-    // ✅ final DB guard (in case of race / parallel runs)
     const existsTitleBrandSupplier = await prisma.product.findFirst({
       where: {
         isDeleted: false,
@@ -721,6 +788,7 @@ async function seedExtraProducts(args: {
       },
       select: { id: true },
     });
+
     if (existsTitleBrandSupplier) {
       log(`Skipping duplicate (title+brand+supplier exists): ${item.title}`);
       continue;
@@ -736,7 +804,7 @@ async function seedExtraProducts(args: {
         retailPrice: toDec(item.retail),
         sku: item.sku,
         status: "LIVE",
-        imagesJson: pics(`${item.sku}-${item.brandId}`) as any,
+        imagesJson: pics(`${item.sku}-${item.brandId}`),
         isDeleted: false,
         availableQty: 0,
         inStock: true,
@@ -751,18 +819,18 @@ async function seedExtraProducts(args: {
         shippingClass: parcel.shippingClass,
         freeShipping: false,
 
-        supplier: { connect: { id: supplierId } },
-        category: { connect: { id: category.id } },
-        brand: { connect: { id: item.brandId } },
+        supplierId,
+        categoryId: category.id,
+        brandId: item.brandId,
 
-        owner: { connect: { id: superAdminId } },
-        createdBy: { connect: { id: superAdminId } },
-        updatedBy: { connect: { id: superAdminId } },
+        ownerId: superAdminId,
+        createdById: superAdminId,
+        updatedById: superAdminId,
       },
       select: { id: true, sku: true, title: true },
     });
 
-    await ensureProductAttributeOptions(product.id, attrs);
+    await ensureProductAttributeSetup(product.id, attrs);
 
     const baseOffer = await ensureBaseOfferForProduct({
       productId: product.id,
