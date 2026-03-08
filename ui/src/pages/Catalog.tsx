@@ -1966,83 +1966,6 @@ export default function Catalog() {
               Filter categories & brands
             </button>
           </div>
-
-          {/* Mobile pagination moved to top, below per-page */}
-          {sorted.length > 0 && (
-            <div className="mt-3 rounded-2xl bg-white/85 backdrop-blur p-3 shadow-sm border border-zinc-200">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
-                    Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
-                  </div>
-                  <div className="text-[11px] text-zinc-500">
-                    Page {currentPage} / {totalPages}
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-3 grid grid-cols-4 gap-2">
-                <button
-                  type="button"
-                  onClick={() => goTo(1)}
-                  className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
-                >
-                  First
-                </button>
-                <button
-                  type="button"
-                  onClick={() => goTo(currentPage - 1)}
-                  className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
-                >
-                  Prev
-                </button>
-                <button
-                  type="button"
-                  onClick={() => goTo(currentPage + 1)}
-                  className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
-                >
-                  Next
-                </button>
-                <button
-                  type="button"
-                  onClick={() => goTo(totalPages)}
-                  className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
-                >
-                  Last
-                </button>
-              </div>
-
-              <form
-                className="mt-3 flex items-center gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const n = Number(jumpVal);
-                  if (Number.isFinite(n)) goTo(n);
-                }}
-              >
-                <label className="text-[11px] font-semibold tracking-tight text-zinc-700 shrink-0">Go to</label>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  min={1}
-                  max={totalPages}
-                  value={jumpVal}
-                  onChange={(e) => setJumpVal(e.target.value)}
-                  placeholder={`${currentPage}`}
-                  className="h-9 w-full min-w-0 rounded-xl px-3 text-[12px] font-semibold bg-white border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
-                  aria-label="Jump to page"
-                />
-                <button
-                  type="submit"
-                  disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
-                  className="h-9 shrink-0 rounded-xl px-4 text-[12px] font-semibold bg-zinc-900 text-white disabled:opacity-40 active:scale-[0.99] transition"
-                >
-                  Go
-                </button>
-              </form>
-            </div>
-          )}
         </div>
 
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
@@ -2449,6 +2372,81 @@ export default function Catalog() {
                 </div>
 
                 <div className="mt-5 md:mt-8">
+                  <div className="md:hidden rounded-2xl bg-white/85 backdrop-blur p-3 shadow-sm border border-zinc-200">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
+                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
+                        </div>
+                        <div className="text-[11px] text-zinc-500">
+                          Page {currentPage} / {totalPages}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-4 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => goTo(1)}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
+                      >
+                        First
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goTo(currentPage - 1)}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
+                      >
+                        Prev
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goTo(currentPage + 1)}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
+                      >
+                        Next
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => goTo(totalPages)}
+                        className="h-9 rounded-xl bg-white text-[11px] font-semibold text-zinc-700 border border-zinc-200 hover:border-zinc-300 active:scale-[0.99] transition"
+                      >
+                        Last
+                      </button>
+                    </div>
+
+                    <form
+                      className="mt-3 flex items-center gap-2"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const n = Number(jumpVal);
+                        if (Number.isFinite(n)) goTo(n);
+                      }}
+                    >
+                      <label className="text-[11px] font-semibold tracking-tight text-zinc-700 shrink-0">Go to</label>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        min={1}
+                        max={totalPages}
+                        value={jumpVal}
+                        onChange={(e) => setJumpVal(e.target.value)}
+                        placeholder={`${currentPage}`}
+                        className="h-9 w-full min-w-0 rounded-xl px-3 text-[12px] font-semibold bg-white border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+                        aria-label="Jump to page"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!jumpVal || Number(jumpVal) < 1 || Number(jumpVal) > totalPages}
+                        className="h-9 shrink-0 rounded-xl px-4 text-[12px] font-semibold bg-zinc-900 text-white disabled:opacity-40 active:scale-[0.99] transition"
+                      >
+                        Go
+                      </button>
+                    </form>
+                  </div>
+
+
                   <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm text-zinc-600">
                       Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
