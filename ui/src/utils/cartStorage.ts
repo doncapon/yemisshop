@@ -38,13 +38,33 @@ function isExpired(expiresAt: number) {
   return Number.isFinite(expiresAt) && expiresAt > 0 ? nowMs() > expiresAt : false;
 }
 
+/**
+ * Prevent re-entrant "cart:updated" storms:
+ * - Dispatch async (breaks call stack recursion)
+ * - Guard so repeated writes in the same tick don't spam
+ */
+let dispatchQueued = false;
+function dispatchCartUpdatedAsync() {
+  if (dispatchQueued) return;
+  dispatchQueued = true;
+
+  setTimeout(() => {
+    dispatchQueued = false;
+    try {
+      window.dispatchEvent(new Event("cart:updated"));
+    } catch {}
+  }, 0);
+}
+
 export function loadCartRaw(): any[] {
   const key = activeKey();
   const v2 = safeParse(localStorage.getItem(key)) as CartStorageV2 | null;
 
   if (v2?.v === 2 && Array.isArray(v2.items)) {
     if (isExpired(v2.expiresAt)) {
-      localStorage.removeItem(key);
+      try {
+        localStorage.removeItem(key);
+      } catch {}
       return [];
     }
     return v2.items;
@@ -59,8 +79,9 @@ export function loadCartRaw(): any[] {
   return [];
 }
 
-export function saveCartRaw(items: any[]) {
+export function saveCartRaw(items: any[], opts?: { silent?: boolean }) {
   const key = activeKey();
+
   const payload: CartStorageV2 = {
     v: 2,
     items: Array.isArray(items) ? items : [],
@@ -68,22 +89,32 @@ export function saveCartRaw(items: any[]) {
     expiresAt: nowMs() + daysToMs(key.startsWith(USER_CART_KEY_PREFIX) ? 90 : GUEST_CART_TTL_DAYS),
   };
 
-  localStorage.setItem(key, JSON.stringify(payload));
+  try {
+    localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // ignore quota/security errors
+  }
 
   // kill legacy key so it can’t resurrect from old writers
   try {
     localStorage.removeItem("cart");
   } catch {}
 
-  window.dispatchEvent(new Event("cart:updated"));
+  if (opts?.silent) return;
+
+  dispatchCartUpdatedAsync();
 }
 
-export function clearAllCartKeysForLogout() {
+export function clearAllCartKeysForLogout(opts?: { silent?: boolean }) {
   const uid = useAuthStore.getState().user?.id ? String(useAuthStore.getState().user!.id) : null;
 
-  localStorage.removeItem(GUEST_CART_KEY);
-  localStorage.removeItem("cart"); // legacy
-  if (uid) localStorage.removeItem(userCartKey(uid));
+  try {
+    localStorage.removeItem(GUEST_CART_KEY);
+    localStorage.removeItem("cart"); // legacy
+    if (uid) localStorage.removeItem(userCartKey(uid));
+  } catch {}
 
-  window.dispatchEvent(new Event("cart:updated"));
+  if (opts?.silent) return;
+
+  dispatchCartUpdatedAsync();
 }

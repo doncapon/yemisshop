@@ -11,6 +11,8 @@ import SuppliersOfferManager from "./SuppliersOfferManager";
    Types
 ============================ */
 
+
+
 type SupplierOfferLite = {
   id: string;
   productId: string;
@@ -207,6 +209,17 @@ function availOf(o: any): number {
   return 0;
 }
 
+
+type ProductAttributeEnabledRow = {
+  attributeId?: string;
+  attribute?: {
+    id: string;
+    name?: string;
+    type?: string;
+    isActive?: boolean;
+  };
+};
+
 /**
  * ✅ detect whether an offer row explicitly provides any quantity field.
  * If qty isn't provided, we still consider the price for "best/cheapest" selection.
@@ -377,6 +390,7 @@ function findDuplicateCombos(rows: VariantRow[], attrs: AttrDef[]): Record<strin
   return errors;
 }
 
+
 /* ============================
    Variants persistence (tries multiple endpoints)
 ============================ */
@@ -441,6 +455,8 @@ async function persistVariantsStrict(productId: string, variants: any[], opts?: 
   console.error("No variants bulk endpoint found. Last error:", lastErr?.response?.status, lastErr?.response?.data);
   throw new Error("Your API does not expose a variants bulk endpoint. Add one server-side or update the frontend to match your backend route.");
 }
+
+
 
 /* ============================
    Component
@@ -541,6 +557,9 @@ export function ManageProducts({
     return <span>{sort.dir === "asc" ? "↑" : "↓"}</span>;
   };
 
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<10 | 20 | 30 | 50>(10);
+
   function extractOfferProductId(o: any): string | null {
     return normalizeNullableId(o?.productId?.id ?? o?.product?.id ?? o?.productId);
   }
@@ -625,6 +644,8 @@ export function ManageProducts({
     }
     return by;
   }, [rows]);
+
+
 
   const variantIdsHash = useMemo(() => {
     return rows
@@ -757,6 +778,85 @@ export function ManageProducts({
       return byProduct;
     },
   });
+
+
+
+  function PaginationBar() {
+    if (totalRows === 0) return null;
+
+    const from = totalRows === 0 ? 0 : startIndex + 1;
+    const to = Math.min(endIndex, totalRows);
+
+    return (
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-2xl border bg-white shadow-sm p-3">
+        <div className="text-sm text-slate-600">
+          Showing <span className="font-medium">{from}</span>–<span className="font-medium">{to}</span> of{" "}
+          <span className="font-medium">{totalRows}</span>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-slate-600">Rows</label>
+            <select
+              value={pageSize}
+              onChange={(e) => {
+                setPageSize(Number(e.target.value) as 10 | 20 | 30 | 50);
+                setPage(1);
+              }}
+              className="rounded-xl border px-3 py-2 text-sm bg-white"
+            >
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={30}>30</option>
+              <option value={50}>50</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => goToPage(1)}
+              disabled={currentPage === 1}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              First
+            </button>
+
+            <button
+              type="button"
+              onClick={() => goToPage(currentPage - 1)}
+              disabled={currentPage === 1}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              Prev
+            </button>
+
+            <div className="text-sm text-slate-600 px-2">
+              Page <span className="font-medium">{currentPage}</span> / <span className="font-medium">{totalPages}</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => goToPage(currentPage + 1)}
+              disabled={currentPage === totalPages}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              Next
+            </button>
+
+            <button
+              type="button"
+              onClick={() => goToPage(totalPages)}
+              disabled={currentPage === totalPages}
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              Last
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Derive availability + computed pricing into rows
   const rowsWithDerived: AdminProduct[] = useMemo(() => {
@@ -1076,7 +1176,10 @@ export function ManageProducts({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showEditor, setShowEditor] = useState(false);
 
-  const selectableAttrs = useMemo(() => (attrsQ.data || []).filter((a) => a.type === "SELECT" && a.isActive), [attrsQ.data]);
+  const allSelectableAttrs = useMemo(
+    () => (attrsQ.data || []).filter((a) => a.type === "SELECT" && a.isActive),
+    [attrsQ.data]
+  );
 
   const [variantRows, setVariantRows] = useState<VariantRow[]>([]);
   const [offerVariants, setOfferVariants] = useState<any[]>([]);
@@ -1096,9 +1199,15 @@ export function ManageProducts({
     );
   }
 
+
+  const enabledSelectableAttrs = useMemo(() => {
+    const enabledIds = new Set(Object.keys(selectedAttrs || {}));
+    return allSelectableAttrs.filter((a) => enabledIds.has(String(a.id)));
+  }, [allSelectableAttrs, selectedAttrs]);
+
   useEffect(() => {
-    if (!selectableAttrs.length) return;
-    const ids = selectableAttrs.map((a) => a.id);
+    const ids = enabledSelectableAttrs.map((a) => a.id);
+
     setVariantRows((rows) =>
       rows.map((row) => {
         const next: Record<string, string> = {};
@@ -1108,7 +1217,7 @@ export function ManageProducts({
         return { ...row, selections: next };
       })
     );
-  }, [selectableAttrs]);
+  }, [enabledSelectableAttrs]);
 
   const DRAFT_KEY = useMemo(() => `adminProductDraft:${editingId ?? "new"}`, [editingId]);
   const skipDraftLoadRef = useRef(false);
@@ -1286,10 +1395,9 @@ export function ManageProducts({
     };
 
   const baseComboKey = useMemo(() => {
-    // only consider the SELECT attrs you actually use as variant dimensions
-    const attrs = (selectableAttrs || []).map((a) => ({ id: a.id, name: a.name }));
+    const attrs = (enabledSelectableAttrs || []).map((a) => ({ id: a.id, name: a.name }));
     return buildBaseComboKeyFromSelectedAttrs(selectedAttrs, attrs);
-  }, [selectableAttrs, selectedAttrs]);
+  }, [enabledSelectableAttrs, selectedAttrs]);
 
   const visibleVariantRows = useMemo(() => {
     const rows = Array.isArray(variantRows) ? variantRows : [];
@@ -1300,11 +1408,11 @@ export function ManageProducts({
     });
   }, [variantRows]);
   const comboErrors = useMemo(() => {
-    const dup = findDuplicateCombos(visibleVariantRows ?? [], selectableAttrs ?? []);
-    const baseConf = findBaseVsVariantConflicts(visibleVariantRows ?? [], selectableAttrs ?? [], baseComboKey);
+    const dup = findDuplicateCombos(visibleVariantRows ?? [], enabledSelectableAttrs ?? []);
+    const baseConf = findBaseVsVariantConflicts(visibleVariantRows ?? [], enabledSelectableAttrs ?? [], baseComboKey);
 
     return { ...dup, ...baseConf };
-  }, [visibleVariantRows, selectableAttrs, baseComboKey]);
+  }, [visibleVariantRows, enabledSelectableAttrs, baseComboKey]);
 
   const hasDuplicateCombos = Object.keys(comboErrors).length > 0;
   const emptyRowErrors = useMemo(() => findEmptyRowErrors(visibleVariantRows ?? []), [visibleVariantRows]);
@@ -1411,7 +1519,7 @@ export function ManageProducts({
       const refreshed = await fetchProductFull(pid);
 
       const nextRowsRaw = buildVariantRowsFromServerVariants(refreshed.variants || []);
-      const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, selectableAttrs);
+      const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, enabledSelectableAttrs);
 
       setVariantRows(nextRows);
       initialVariantIdsRef.current = new Set(nextRows.map((r) => r.id).filter((id) => isRealVariantId(id)));
@@ -1519,7 +1627,7 @@ export function ManageProducts({
 
   function makeEmptySelections() {
     const selections: Record<string, string> = {};
-    (selectableAttrs || []).forEach((a) => (selections[a.id] = ""));
+    (enabledSelectableAttrs || []).forEach((a) => (selections[a.id] = ""));
     return selections;
   }
 
@@ -1710,6 +1818,12 @@ export function ManageProducts({
       return next;
     });
 
+    const enabledAttributeRows: ProductAttributeEnabledRow[] =
+      (Array.isArray(prod?.attributes?.enabled) && prod.attributes.enabled) ||
+      (Array.isArray(prod?.enabledAttributes) && prod.enabledAttributes) ||
+      (Array.isArray(prod?.productAttributes) && prod.productAttributes) ||
+      [];
+
     const attributeValues =
       (Array.isArray(prod?.attributes?.options) && prod.attributes.options) ||
       (Array.isArray(prod?.attributeValues) && prod.attributeValues) ||
@@ -1730,6 +1844,7 @@ export function ManageProducts({
       variantsNormalized,
       supplierId,
       imagesJson: Array.isArray(prod?.imagesJson) ? prod.imagesJson : [],
+      enabledAttributeRows,
       attributeValues,
       attributeTexts,
     };
@@ -1876,6 +1991,65 @@ export function ManageProducts({
     return false;
   }
 
+  function summarizeBaseProductDefaults(
+    selectedAttrs: Record<string, string | string[]>,
+    attrs: AdminAttribute[]
+  ) {
+    const lines: Array<{ attributeId: string; label: string; value: string }> = [];
+
+    for (const a of attrs || []) {
+      if (!(a.id in selectedAttrs)) continue;
+
+      const raw = selectedAttrs[a.id];
+
+      if (a.type === "TEXT") {
+        const text = String(raw ?? "").trim();
+        if (text) {
+          lines.push({
+            attributeId: a.id,
+            label: a.name,
+            value: text,
+          });
+        }
+        continue;
+      }
+
+      if (a.type === "SELECT") {
+        const vid = String(raw ?? "").trim();
+        if (!vid) continue;
+
+        const val = a.values?.find((v) => String(v.id) === vid);
+        lines.push({
+          attributeId: a.id,
+          label: a.name,
+          value: String(val?.name ?? vid),
+        });
+        continue;
+      }
+
+      if (a.type === "MULTISELECT") {
+        const vids = (Array.isArray(raw) ? raw : [raw])
+          .map((v) => String(v ?? "").trim())
+          .filter(Boolean);
+
+        if (!vids.length) continue;
+
+        const names = vids.map((vid) => {
+          const val = a.values?.find((v) => String(v.id) === vid);
+          return String(val?.name ?? vid);
+        });
+
+        lines.push({
+          attributeId: a.id,
+          label: a.name,
+          value: names.join(", "),
+        });
+      }
+    }
+
+    return lines;
+  }
+
   /* ---------------- Payload builder (variants) ---------------- */
   function buildProductPayload({
     base,
@@ -1902,107 +2076,150 @@ export function ManageProducts({
   }) {
     const payload: any = { ...base };
 
+    const enabledAttributeIds: string[] = [];
     const attributeSelections: any[] = [];
-    const attributeValues: Array<{ attributeId: string; valueId?: string; valueIds?: string[] }> = [];
-    const attributeTexts: Array<{ attributeId: string; value: string }> = [];
 
+    // ✅ BASE PRODUCT DEFAULTS
+    // These are the default/base values for the product itself.
     for (const a of attrsAll) {
+      if (!(a.id in selectedAttrs)) continue;
+
+      enabledAttributeIds.push(String(a.id));
+
       const sel = selectedAttrs[a.id];
-      if (sel == null || (Array.isArray(sel) && sel.length === 0) || (typeof sel === "string" && sel.trim() === "")) continue;
+
+      // enabled but no default/base value picked
+      if (
+        sel == null ||
+        (typeof sel === "string" && sel.trim() === "") ||
+        (Array.isArray(sel) && sel.length === 0)
+      ) {
+        continue;
+      }
 
       if (a.type === "TEXT") {
-        attributeSelections.push({ attributeId: a.id, text: String(sel) });
-        attributeTexts.push({ attributeId: a.id, value: String(sel) });
-      } else if (a.type === "SELECT") {
-        const valueId = String(sel);
-        attributeSelections.push({ attributeId: a.id, valueId });
-        attributeValues.push({ attributeId: a.id, valueId });
-      } else if (a.type === "MULTISELECT") {
-        const valueIds = (sel as string[]).map(String);
-        attributeSelections.push({ attributeId: a.id, valueIds });
-        attributeValues.push({ attributeId: a.id, valueIds });
+        const text = String(sel).trim();
+        if (text) {
+          attributeSelections.push({
+            attributeId: a.id,
+            text,
+          });
+        }
+        continue;
+      }
+
+      if (a.type === "SELECT") {
+        const valueId = String(sel).trim();
+        if (valueId) {
+          attributeSelections.push({
+            attributeId: a.id,
+            valueId,
+          });
+        }
+        continue;
+      }
+
+      if (a.type === "MULTISELECT") {
+        const valueIds = (Array.isArray(sel) ? sel : [sel])
+          .map((v) => String(v).trim())
+          .filter(Boolean);
+
+        if (valueIds.length) {
+          attributeSelections.push({
+            attributeId: a.id,
+            valueIds,
+          });
+        }
       }
     }
 
-    if (attributeSelections.length) payload.attributeSelections = attributeSelections;
-    if (attributeValues.length) payload.attributeValues = attributeValues;
-    if (attributeTexts.length) payload.attributeTexts = attributeTexts;
+    payload.enabledAttributeIds = Array.from(new Set(enabledAttributeIds));
+    payload.attributeSelections = attributeSelections;
 
+    // ✅ VARIANTS ONLY
+    // Do NOT create any fake "base" variant here.
     const selectable = (attrsAll || []).filter((a) => a.type === "SELECT" && a.isActive);
     const selectableById = new Map(selectable.map((a) => [String(a.id), a]));
 
-    if (variantRows.length > 0) {
-      const variants: any[] = [];
+    const variants: any[] = [];
 
-      const isRealVariantIdLocal = (id?: string) =>
-        !!id && !id.startsWith("vr-") && !id.startsWith("new-") && !id.startsWith("temp-") && !id.startsWith("tmp:") && !id.startsWith("tmp-");
+    const isRealVariantIdLocal = (id?: string) =>
+      !!id &&
+      !id.startsWith("vr-") &&
+      !id.startsWith("new-") &&
+      !id.startsWith("temp-") &&
+      !id.startsWith("tmp:") &&
+      !id.startsWith("tmp-");
 
-      for (const row of variantRows) {
-        const picks = Object.entries(row.selections || {}).filter(([, valueId]) => !!valueId);
-        if (picks.length === 0) continue;
+    for (const row of variantRows || []) {
+      const picks = Object.entries(row.selections || {})
+        .map(([attributeId, valueId]) => ({
+          attributeId: String(attributeId),
+          valueId: String(valueId || "").trim(),
+        }))
+        .filter((x) => !!x.valueId);
 
-        let retailPriceToSend: number | null = null;
+      // skip empty rows
+      if (!picks.length) continue;
 
-        const baseRetailFallback =
-          typeof base.retailPrice === "number" && Number.isFinite(base.retailPrice) && base.retailPrice > 0
-            ? base.retailPrice
-            : toNumberLoose((base as any).retailPrice) ?? null;
+      let retailPriceToSend: number | null = null;
 
-        if (editingId) {
-          const computed = computedVariantRetail(row);
+      const baseRetailFallback =
+        typeof base.retailPrice === "number" && Number.isFinite(base.retailPrice) && base.retailPrice > 0
+          ? base.retailPrice
+          : toNumberLoose((base as any).retailPrice) ?? null;
 
-          // ✅ always give server a price
-          retailPriceToSend =
-            computed.hasComputed && computed.variantRetail > 0
-              ? computed.variantRetail
-              : baseRetailFallback;
-        } else {
-          // ✅ CREATE: respect user input per row, else base fallback
-          const rowRetail = toNumberLoose(row?.retailPrice);
-          retailPriceToSend = rowRetail != null && rowRetail > 0 ? rowRetail : baseRetailFallback;
-        }
-
-
-        const options = picks.map(([attributeId, valueId]) => {
-          return { attributeId, valueId, attributeValueId: valueId };
-        });
-
-        const labelParts: string[] = [];
-
-        for (const [attributeId, valueId] of picks) {
-          const attr = selectableById.get(String(attributeId));
-          const val = attr?.values?.find((v) => String(v.id) === String(valueId));
-          const name = String(val?.name ?? "").trim();
-          if (name) labelParts.push(skuSafePart(name));
-        }
-
-        const comboLabel = labelParts.filter(Boolean).join("-");
-
-        // If editing, we already have server SKU in pending.sku (read-only)
-        // If creating, don't send variant sku; server will generate unique variant SKUs.
-        const canSendVariantSku = !!editingId && !!pending.sku;
-        const productSku = canSendVariantSku ? skuSafePart(pending.sku) : "";
-
-        const sku =
-          canSendVariantSku && productSku && comboLabel
-            ? `${productSku}-${comboLabel}`
-            : canSendVariantSku && productSku
-              ? productSku
-              : undefined;
-
-        variants.push({
-          ...(isRealVariantIdLocal(row.id) ? { id: row.id } : {}),
-          ...(sku ? { sku } : {}),
-          ...(retailPriceToSend != null ? { retailPrice: retailPriceToSend } : {}),
-          options,
-          optionSelections: options,
-          attributes: options.map((o: any) => ({ attributeId: o.attributeId, valueId: o.valueId })),
-        });
+      if (editingId) {
+        const computed = computedVariantRetail(row);
+        retailPriceToSend =
+          computed.hasComputed && computed.variantRetail > 0
+            ? computed.variantRetail
+            : baseRetailFallback;
+      } else {
+        const rowRetail = toNumberLoose(row?.retailPrice);
+        retailPriceToSend = rowRetail != null && rowRetail > 0 ? rowRetail : baseRetailFallback;
       }
 
-      payload.variants = variants.length ? variants : [];
-      payload.variantOptions = variants.length ? variants.map((v: any) => v.options) : [];
+      const options = picks.map((o) => ({
+        attributeId: o.attributeId,
+        valueId: o.valueId,
+        attributeValueId: o.valueId,
+      }));
+
+      const labelParts: string[] = [];
+      for (const o of picks) {
+        const attr = selectableById.get(String(o.attributeId));
+        const val = attr?.values?.find((v) => String(v.id) === String(o.valueId));
+        const name = String(val?.name ?? "").trim();
+        if (name) labelParts.push(skuSafePart(name));
+      }
+
+      const comboLabel = labelParts.filter(Boolean).join("-");
+      const canSendVariantSku = !!editingId && !!pending.sku;
+      const productSku = canSendVariantSku ? skuSafePart(pending.sku) : "";
+
+      const sku =
+        canSendVariantSku && productSku && comboLabel
+          ? `${productSku}-${comboLabel}`
+          : canSendVariantSku && productSku
+            ? productSku
+            : undefined;
+
+      variants.push({
+        ...(isRealVariantIdLocal(row.id) ? { id: row.id } : {}),
+        ...(sku ? { sku } : {}),
+        ...(retailPriceToSend != null ? { retailPrice: retailPriceToSend } : {}),
+        options,
+        optionSelections: options,
+        attributes: options.map((o: any) => ({
+          attributeId: o.attributeId,
+          valueId: o.valueId,
+        })),
+      });
     }
+
+    payload.variants = variants;
+    payload.variantOptions = variants.map((v: any) => v.options);
 
     return payload;
   }
@@ -2121,20 +2338,109 @@ export function ManageProducts({
     const variants = Array.isArray((fullPayload as any).variants) ? (fullPayload as any).variants : [];
 
     if (editingId) {
-      const hadVariantsBefore = initialVariantIdsRef.current.size > 0;
-      const isNowNoVariants = variants.length === 0;
+      const {
+        variants: _variants,
+        variantOptions: _variantOptions,
+        ...payloadForPatch
+      } = fullPayload as any;
 
-      if (hadVariantsBefore && isNowNoVariants && !clearAllVariantsIntent) {
-        openModal({
-          title: "Variants",
-          message: "This save would remove ALL existing variants. If you really want to make this a simple product, click “Remove all variants” first, then Save.",
-        });
-        return;
+      const userTouchedVariants = variantsDirty || clearAllVariantsIntent;
+
+      if (userTouchedVariants) {
+        const submittedIds = new Set(
+          (variants || [])
+            .map((v: any) => normalizeNullableId(v?.id))
+            .filter(Boolean) as string[]
+        );
+
+        const missingLocked = Array.from(lockedVariantIds).filter((id) => !submittedIds.has(id));
+
+        if (missingLocked.length > 0) {
+          openModal({
+            title: "Cannot remove variants in use",
+            message: `You tried to remove ${missingLocked.length} variant(s) that are linked to supplier offers. Remove/disable the supplier offers first, or keep those variants.`,
+          });
+          return;
+        }
       }
+
+
+
+      updateM.mutate(
+        { id: editingId, ...payloadForPatch },
+        {
+          onSuccess: async () => {
+            const pid = editingId;
+            const touched = variantsDirty || clearAllVariantsIntent;
+
+            if (pid && touched) {
+              try {
+                const replaceFlag = shouldReplaceVariants({
+                  variantRows: variants || [],
+                  initialVariantIds: initialVariantIdsRef.current,
+                  clearAllVariantsIntent,
+                });
+
+                await persistVariantsStrict(pid, variants || [], { replace: replaceFlag });
+
+                setVariantsDirty(false);
+                setClearAllVariantsIntent(false);
+
+                qc.invalidateQueries({
+                  queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }],
+                });
+              } catch (e) {
+                console.error("Failed to persist variants on update", e);
+                setSaveBanner(friendlyErrorMessage(e, "Failed to save variants"));
+                restoreSnapshot();
+                openModal({
+                  title: "Products",
+                  message: friendlyErrorMessage(e, "Failed to save variants"),
+                });
+                return;
+              }
+            }
+
+            try {
+              if (pid) {
+                const refreshed = await fetchProductFull(pid);
+                const nextRowsRaw = buildVariantRowsFromServerVariants(refreshed.variants || []);
+                const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, enabledSelectableAttrs);
+
+                setVariantRows(nextRows);
+                initialVariantIdsRef.current = new Set(
+                  nextRows.map((r) => r.id).filter((id) => isRealVariantId(id))
+                );
+                setOfferVariants(refreshed.variants || []);
+
+                qc.invalidateQueries({
+                  queryKey: ["admin", "products", "locked-variant-ids", { productId: pid }],
+                });
+              }
+            } catch (e) {
+              console.warn("Product saved but refresh failed", e);
+            }
+
+            await Promise.all([
+              qc.invalidateQueries({ queryKey: ["admin", "products", "manage"] }),
+              qc.invalidateQueries({ queryKey: ["admin", "overview"] }),
+              qc.invalidateQueries({ queryKey: ["admin", "products", "offers-summary"] }),
+              qc.invalidateQueries({ queryKey: ["admin", "products", "offer-price-caps"] }),
+              pid ? qc.invalidateQueries({ queryKey: ["admin", "product", pid, "variants"] }) : Promise.resolve(),
+              pid ? qc.invalidateQueries({ queryKey: ["admin", "products", pid, "supplier-offers"] }) : Promise.resolve(),
+            ]);
+
+            alert("Product changes saved.");
+          },
+        }
+      );
+
+      return;
     }
 
+
     if (editingId) {
-      const { variantOptions, ...payloadForPatch } = fullPayload as any;
+      const { variants: _variants, variantOptions: _variantOptions, ...payloadForPatch } = fullPayload as any;
       const userTouchedVariants = variantsDirty || clearAllVariantsIntent;
 
       if (userTouchedVariants) {
@@ -2186,7 +2492,7 @@ export function ManageProducts({
               if (pid) {
                 const refreshed = await fetchProductFull(pid);
                 const nextRowsRaw = buildVariantRowsFromServerVariants(refreshed.variants || []);
-                const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, selectableAttrs);
+                const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, enabledSelectableAttrs);
 
                 setVariantRows(nextRows);
                 initialVariantIdsRef.current = new Set(nextRows.map((r) => r.id).filter((id) => isRealVariantId(id)));
@@ -2218,7 +2524,13 @@ export function ManageProducts({
       return;
     }
 
-    createM.mutate(fullPayload, {
+    const {
+      variants: _variants,
+      variantOptions: _variantOptions,
+      ...payloadForCreate
+    } = fullPayload as any;
+
+    createM.mutate(payloadForCreate, {
       onSuccess: async (res) => {
         const created = (res?.data ?? res) as any;
         const pid = created?.id || created?.product?.id || created?.data?.id;
@@ -2230,7 +2542,7 @@ export function ManageProducts({
 
             const refreshed = await fetchProductFull(pid);
             const nextRowsRaw = buildVariantRowsFromServerVariants(refreshed.variants || []);
-            const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, selectableAttrs);
+            const nextRows = dedupeVariantRowsByCombo(nextRowsRaw, enabledSelectableAttrs);
 
             setVariantRows(nextRows);
             initialVariantIdsRef.current = new Set(nextRows.map((r) => r.id).filter((id) => isRealVariantId(id)));
@@ -2382,57 +2694,83 @@ export function ManageProducts({
 
     return arr;
   }, [filteredRows, sort, statusRank]);
-  
 
- const supplierVariants = useMemo(() => {
-  const skuByVariantId = new Map<string, string>();
+  useEffect(() => {
+    setPage(1);
+  }, [preset, debouncedQ, sort.key, sort.dir]);
 
-  const norm = (x: any) => {
-    if (x == null) return null;
-    const s = String(x).trim();
-    if (!s || s === "null" || s === "undefined") return null;
-    return s;
-  };
 
-  for (const v of offerVariants || []) {
-    const vid =
-      norm(v?.id) ||
-      norm(v?.variantId) ||
-      norm(v?.variant?.id) ||
-      norm(v?.id?.id) ||
-      norm(v?.variantId?.id);
-    const sku = String(v?.sku || "").trim();
-    if (vid && sku) skuByVariantId.set(vid, sku);
+  const totalRows = displayRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = startIndex + pageSize;
+
+  const paginatedRows = useMemo(() => {
+    return displayRows.slice(startIndex, endIndex);
+  }, [displayRows, startIndex, endIndex]);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  function goToPage(next: number) {
+    setPage(Math.min(Math.max(1, next), totalPages));
   }
 
-  const rows = (variantRows || []).filter((r) => isRealVariantId(String(r?.id ?? "")));
 
-  const toLabelFromSelections = (r: VariantRow) => {
-    const parts: string[] = [];
-    for (const a of selectableAttrs || []) {
-      const valId = String(r?.selections?.[a.id] ?? "").trim();
-      if (!valId) continue;
-      const valName = a?.values?.find((vv) => String(vv.id) === valId)?.name;
-      parts.push(String(valName || "").trim() || valId);
+
+  const supplierVariants = useMemo(() => {
+    const skuByVariantId = new Map<string, string>();
+
+    const norm = (x: any) => {
+      if (x == null) return null;
+      const s = String(x).trim();
+      if (!s || s === "null" || s === "undefined") return null;
+      return s;
+    };
+
+    for (const v of offerVariants || []) {
+      const vid =
+        norm(v?.id) ||
+        norm(v?.variantId) ||
+        norm(v?.variant?.id) ||
+        norm(v?.id?.id) ||
+        norm(v?.variantId?.id);
+      const sku = String(v?.sku || "").trim();
+      if (vid && sku) skuByVariantId.set(vid, sku);
     }
-    return parts.filter(Boolean).join(" / ");
-  };
 
-  return rows
-    .map((r, index) => {
-      const vid = norm(r?.id);
-      if (!vid) return null;
+    const rows = (variantRows || []).filter((r) => isRealVariantId(String(r?.id ?? "")));
 
-      const serverSku = skuByVariantId.get(vid);
-      const labelFromSelections = toLabelFromSelections(r);
-      const label = serverSku || labelFromSelections || `Variant ${index + 1}`;
+    const toLabelFromSelections = (r: VariantRow) => {
+      const parts: string[] = [];
+      for (const a of enabledSelectableAttrs || []) {
+        const valId = String(r?.selections?.[a.id] ?? "").trim();
+        if (!valId) continue;
+        const valName = a?.values?.find((vv) => String(vv.id) === valId)?.name;
+        parts.push(String(valName || "").trim() || valId);
+      }
+      return parts.filter(Boolean).join(" / ");
+    };
 
-      // NOTE: sku is the “suffix” piece here – SuppliersOfferManager
-      // will decide how to combine it with productSku.
-      return { id: vid, sku: serverSku || label, label };
-    })
-    .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
-}, [variantRows, selectableAttrs, offerVariants]);
+
+
+    return rows
+      .map((r, index) => {
+        const vid = norm(r?.id);
+        if (!vid) return null;
+
+        const serverSku = skuByVariantId.get(vid);
+        const labelFromSelections = toLabelFromSelections(r);
+        const label = serverSku || labelFromSelections || `Variant ${index + 1}`;
+
+        // NOTE: sku is the “suffix” piece here – SuppliersOfferManager
+        // will decide how to combine it with productSku.
+        return { id: vid, sku: serverSku || label, label };
+      })
+      .filter(Boolean) as Array<{ id: string; sku: string; label: string }>;
+  }, [variantRows, enabledSelectableAttrs, offerVariants]);
 
   /* ---------------- Primary actions ---------------- */
 
@@ -2517,6 +2855,32 @@ export function ManageProducts({
     setSelectedAttrs((prev) => ({ ...prev, [attrId]: value }));
   }
 
+
+  function toggleAttributeEnabled(attrId: string, enabled: boolean) {
+    setSelectedAttrs((prev) => {
+      const next = { ...prev };
+
+      if (enabled) {
+        if (!(attrId in next)) next[attrId] = "";
+        return next;
+      }
+
+      delete next[attrId];
+      return next;
+    });
+
+    setVariantRows((prev) => {
+      const rows = Array.isArray(prev) ? prev : [];
+      return rows.map((row) => {
+        const nextSelections = { ...(row.selections || {}) };
+        delete nextSelections[attrId];
+        return { ...row, selections: nextSelections };
+      });
+    });
+
+    touchVariants();
+  }
+
   const presetButtons: Array<{ key: FilterPreset; label: string }> = [
     { key: "all", label: "All" },
     { key: "pending", label: "Pending" },
@@ -2562,12 +2926,42 @@ export function ManageProducts({
       };
 
       const nextSel: Record<string, string | string[]> = {};
-      (full.attributeValues || full.attributeSelections || []).forEach((av: any) => {
-        if (Array.isArray(av.valueIds)) nextSel[av.attributeId] = av.valueIds;
-        else if (av.valueId) nextSel[av.attributeId] = av.valueId;
+
+      // 1) enable attributes first, even if no base value exists
+      (full.enabledAttributeRows || []).forEach((row: any) => {
+        const aid = String(row?.attributeId ?? row?.attribute?.id ?? "").trim();
+        if (!aid) return;
+        if (!(aid in nextSel)) nextSel[aid] = "";
       });
+
+      // 2) overlay selected option defaults
+      (full.attributeValues || []).forEach((av: any) => {
+        const aid = String(av?.attributeId ?? av?.attribute?.id ?? "").trim();
+        const vid = String(av?.valueId ?? av?.value?.id ?? "").trim();
+        if (!aid) return;
+
+        if (!vid) {
+          if (!(aid in nextSel)) nextSel[aid] = "";
+          return;
+        }
+
+        const prev = nextSel[aid];
+
+        if (Array.isArray(prev)) {
+          if (!prev.includes(vid)) nextSel[aid] = [...prev, vid];
+        } else if (typeof prev === "string" && prev && prev !== vid) {
+          // defensive fallback if duplicate rows come back for same attr
+          nextSel[aid] = [prev, vid];
+        } else {
+          nextSel[aid] = vid;
+        }
+      });
+
+      // 3) overlay text defaults
       (full.attributeTexts || []).forEach((at: any) => {
-        nextSel[at.attributeId] = at.value;
+        const aid = String(at?.attributeId ?? at?.attribute?.id ?? "").trim();
+        if (!aid) return;
+        nextSel[aid] = String(at?.value ?? "");
       });
 
       const serverVariants = (full as any).variants || (full as any).variantsNormalized || [];
@@ -2598,7 +2992,9 @@ export function ManageProducts({
   /* ============================
      Render
   ============================ */
-
+    const baseDefaultsSummary = useMemo(() => {
+      return summarizeBaseProductDefaults(selectedAttrs, activeAttrs || []);
+    }, [selectedAttrs, activeAttrs]);
   return (
     <div
       className="space-y-4"
@@ -2945,233 +3341,298 @@ export function ManageProducts({
 
                   <div className="mt-3 space-y-3">
                     {(activeAttrs || []).map((a) => {
+                      const enabled = a.id in selectedAttrs;
                       const val = selectedAttrs[a.id];
 
-                      if (a.type === "TEXT") {
-                        return (
-                          <div key={a.id}>
-                            <label className="text-sm font-medium text-slate-700">{a.name}</label>
-                            <input
-                              value={typeof val === "string" ? val : ""}
-                              onChange={(e) => setAttr(a.id, e.target.value)}
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                              placeholder={a.placeholder || "Enter text…"}
-                            />
-                          </div>
-                        );
-                      }
-
-                      if (a.type === "SELECT") {
-                        return (
-                          <div key={a.id}>
-                            <label className="text-sm font-medium text-slate-700">{a.name}</label>
-                            <select
-                              value={typeof val === "string" ? val : ""}
-                              onChange={(e) => setAttr(a.id, e.target.value)}
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                            >
-                              <option value="">Select…</option>
-                              {(a.values || []).filter((v) => v.isActive).map((v) => (
-                                <option key={v.id} value={v.id}>
-                                  {v.name}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        );
-                      }
-
-                      const selected = Array.isArray(val) ? val : [];
                       return (
-                        <div key={a.id}>
-                          <label className="text-sm font-medium text-slate-700">{a.name}</label>
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {(a.values || []).filter((v) => v.isActive).map((v) => {
-                              const on = selected.includes(v.id);
-                              return (
-                                <button
-                                  key={v.id}
-                                  type="button"
-                                  onClick={() => {
-                                    const next = on ? selected.filter((x) => x !== v.id) : [...selected, v.id];
-                                    setAttr(a.id, next);
-                                  }}
-                                  className={
-                                    on
-                                      ? "px-3 py-1.5 rounded-full bg-slate-900 text-white text-xs"
-                                      : "px-3 py-1.5 rounded-full border text-xs hover:bg-slate-50"
-                                  }
-                                >
-                                  {v.name}
-                                </button>
-                              );
-                            })}
+                        <div key={a.id} className="rounded-xl border border-slate-200 p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-medium text-slate-800">{a.name}</div>
+                              <div className="text-[11px] text-slate-500">
+                                {enabled ? "Enabled for this product" : "Disabled for this product"}
+                              </div>
+                            </div>
+
+                            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={enabled}
+                                onChange={(e) => toggleAttributeEnabled(a.id, e.target.checked)}
+                              />
+                              Enable
+                            </label>
                           </div>
+
+                          {enabled && (
+                            <div className="mt-3">
+                              {a.type === "TEXT" && (
+                                <div>
+                                  <label className="text-xs font-medium text-slate-700">
+                                    Default/base text value (optional)
+                                  </label>
+                                  <input
+                                    value={typeof val === "string" ? val : ""}
+                                    onChange={(e) => setAttr(a.id, e.target.value)}
+                                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                                    placeholder={a.placeholder || "Leave empty if no base value"}
+                                  />
+                                </div>
+                              )}
+
+                              {a.type === "SELECT" && (
+                                <div>
+                                  <label className="text-xs font-medium text-slate-700">
+                                    Default/base option (optional)
+                                  </label>
+                                  <select
+                                    value={typeof val === "string" ? val : ""}
+                                    onChange={(e) => setAttr(a.id, e.target.value)}
+                                    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                                  >
+                                    <option value="">No base value</option>
+                                    {(a.values || [])
+                                      .filter((v) => v.isActive)
+                                      .map((v) => (
+                                        <option key={v.id} value={v.id}>
+                                          {v.name}
+                                        </option>
+                                      ))}
+                                  </select>
+                                </div>
+                              )}
+
+                              {a.type === "MULTISELECT" && (
+                                <div>
+                                  <div className="text-xs font-medium text-slate-700">
+                                    Default/base values (optional)
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {(a.values || [])
+                                      .filter((v) => v.isActive)
+                                      .map((v) => {
+                                        const selected = Array.isArray(val) ? val : [];
+                                        const on = selected.includes(v.id);
+
+                                        return (
+                                          <button
+                                            key={v.id}
+                                            type="button"
+                                            onClick={() => {
+                                              const next = on
+                                                ? selected.filter((x) => x !== v.id)
+                                                : [...selected, v.id];
+                                              setAttr(a.id, next);
+                                            }}
+                                            className={
+                                              on
+                                                ? "px-3 py-1.5 rounded-full bg-slate-900 text-white text-xs"
+                                                : "px-3 py-1.5 rounded-full border text-xs hover:bg-slate-50"
+                                            }
+                                          >
+                                            {v.name}
+                                          </button>
+                                        );
+                                      })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
-                    {activeAttrs.length === 0 && <div className="text-sm text-slate-500">No attributes configured.</div>}
+
+                    {activeAttrs.length === 0 && (
+                      <div className="text-sm text-slate-500">No attributes configured.</div>
+                    )}
                   </div>
                 </div>
 
-                {/* Variants editor */}
-                <div className="rounded-xl border p-3">
-                  <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
-                    <div>
-                      <div className="text-sm font-semibold text-slate-800">Variants</div>
-                      <div className="text-xs text-slate-500">Add option combinations (Color / Size etc).</div>
-                    </div>
 
-                    <div className="flex gap-2">
-                      <button type="button" onClick={addVariantCombo} className="rounded-lg bg-slate-900 text-white px-3 py-2 text-sm hover:bg-slate-800">
-                        + Add variant
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setVariantRows([]);
-                          setClearAllVariantsIntent(true);
-                          touchVariants();
-                        }}
-                        className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
-                        title="This will remove all variants on save (editing only)."
-                      >
-                        Remove all
-                      </button>
-                    </div>
-                  </div>
-
-                  {hasDuplicateCombos && (
-                    <div className="mt-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2 text-xs">
-                      You have duplicate variant combinations. Fix them before saving.
-                    </div>
-                  )}
-
-                  {Object.keys(emptyRowErrors).length > 0 && (
-                    <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 text-xs">
-                      One or more rows have no selections. Pick at least 1 option or remove the row.
-                    </div>
-                  )}
-
-                  {selectableAttrs.length === 0 ? (
-                    <div className="mt-3 text-sm text-slate-500">
-                      No SELECT attributes found. Create SELECT attributes to build variant combinations.
-                    </div>
-                  ) : (
-                    <div className="mt-3 overflow-x-auto">
-                      <table className="min-w-[720px] w-full text-sm">
-                        <thead className="bg-slate-50 text-slate-700">
-                          <tr className="text-left">
-                            {selectableAttrs.map((a) => (
-                              <th key={a.id} className="p-2">
-                                {a.name}
-                              </th>
-                            ))}
-                            <th className="p-2">Retail</th>
-                            <th className="p-2">Lock</th>
-                            <th className="p-2">Action</th>
-                          </tr>
-                        </thead>
-
-                        <tbody>
-                          {(visibleVariantRows || []).map((r, idx) => {
-                            const rk = rowKey(r, idx);
-                            const dupErr = comboErrors[rk];
-                            const emptyErr = emptyRowErrors[rk];
-
-                            const isLocked = isRealVariantId(String(r.id)) && lockedVariantIds.has(String(r.id));
-                            const computed = computedVariantRetail(r);
-
-                            const retailLabel =
-                              editingId && computed.variantRetail === -1
-                                ? "—"
-                                : `₦${Number((editingId ? computed.variantRetail : toNumberLoose(r.retailPrice) ?? 0) || 0).toLocaleString()}`;
-
-                            return (
-                              <tr key={rk} className="border-t">
-                                {selectableAttrs.map((a) => {
-                                  const cur = String(r?.selections?.[a.id] ?? "");
-                                  return (
-                                    <td key={a.id} className="p-2 align-top">
-                                      <select
-                                        value={cur}
-                                        onChange={(e) => setVariantRowSelection(r.id, a.id, e.target.value || "")}
-                                        className="w-full rounded-lg border px-2 py-1.5 text-sm"
-                                        disabled={isLocked}
-                                        title={isLocked ? "Locked (variant has supplier offers)" : ""}
-                                      >
-                                        <option value="">—</option>
-                                        {(a.values || []).filter((v) => v.isActive).map((v) => (
-                                          <option key={v.id} value={v.id}>
-                                            {v.name}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </td>
-                                  );
-                                })}
-
-                                <td className="p-2 align-top">
-                                  {editingId ? (
-                                    <div className="text-sm">{retailLabel}</div>
-                                  ) : (
-                                    <input
-                                      value={r.retailPrice}
-                                      onChange={(e) => setVariantRowRetailPrice(r.id, e.target.value)}
-                                      className="w-full rounded-lg border px-2 py-1.5 text-sm"
-                                      placeholder="(optional)"
-                                      inputMode="decimal"
-                                    />
-                                  )}
-                                  {(dupErr || emptyErr) && <div className="mt-1 text-[11px] text-rose-600">{dupErr || emptyErr}</div>}
-                                </td>
-
-                                <td className="p-2 align-top">
-                                  <span
-                                    className={
-                                      isLocked
-                                        ? "text-xs rounded-full bg-slate-900 text-white px-2 py-1"
-                                        : "text-xs rounded-full bg-slate-100 text-slate-700 px-2 py-1"
-                                    }
-                                  >
-                                    {isLocked ? "LOCKED" : "—"}
-                                  </span>
-                                </td>
-
-                                <td className="p-2 align-top">
-                                  <button
-                                    type="button"
-                                    onClick={() => removeVariantRow(r.id)}
-                                    className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
-                                    disabled={isLocked}
-                                    title={isLocked ? "Cannot remove locked variant" : "Remove row"}
-                                  >
-                                    Remove
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-
-                          {visibleVariantRows.length === 0 && (
-                            <tr>
-                              <td colSpan={selectableAttrs.length + 3} className="p-3 text-slate-500">
-                                No variants yet. Click “Add variant” to create option combinations.
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-
-                  {editingId && clearAllVariantsIntent && (
-                    <div className="mt-2 text-xs text-amber-700">“Remove all variants” is armed. Saving will replace server variants with none.</div>
-                  )}
-                </div>
               </div>
             </div>
+
+            <div className="mt-4 rounded-xl border p-3 bg-slate-50">
+              <div className="text-sm font-semibold text-slate-800">Base product defaults</div>
+              <div className="text-xs text-slate-500">
+                These default attribute values represent the base product. They are not a variant row.
+              </div>
+
+              {baseDefaultsSummary.length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {baseDefaultsSummary.map((item) => (
+                    <div
+                      key={item.attributeId}
+                      className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700"
+                    >
+                      <span className="font-medium">{item.label}:</span> {item.value}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-2 text-sm text-slate-500">
+                  No base/default attribute values selected yet.
+                </div>
+              )}
+            </div>
+
+            {/* Variants editor */}
+            <div className="mt-4 rounded-xl border p-3">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800">Variants</div>
+                  <div className="text-xs text-slate-500">Add option combinations (Color / Size etc).</div>
+                </div>
+
+                <div className="flex gap-2">
+                  <button type="button" onClick={addVariantCombo} className="rounded-lg bg-slate-900 text-white px-3 py-2 text-sm hover:bg-slate-800">
+                    + Add variant
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVariantRows([]);
+                      setClearAllVariantsIntent(true);
+                      touchVariants();
+                    }}
+                    className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50"
+                    title="This will remove all variants on save (editing only)."
+                  >
+                    Remove all
+                  </button>
+                </div>
+              </div>
+
+              {hasDuplicateCombos && (
+                <div className="mt-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2 text-xs">
+                  You have duplicate variant combinations. Fix them before saving.
+                </div>
+              )}
+
+              {Object.keys(emptyRowErrors).length > 0 && (
+                <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 text-xs">
+                  One or more rows have no selections. Pick at least 1 option or remove the row.
+                </div>
+              )}
+
+              {enabledSelectableAttrs.length === 0 ? (
+                <div className="mt-3 text-sm text-slate-500">
+                  No SELECT attributes found. Create SELECT attributes to build variant combinations.
+                </div>
+              ) : (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="min-w-[1100px] w-full text-sm table-fixed">
+                    <thead className="bg-slate-50 text-slate-700">
+                      <tr className="text-left">
+                        {enabledSelectableAttrs.map((a) => (
+                          <th key={a.id} className="p-2 min-w-[180px] w-[180px]">
+                            {a.name}
+                          </th>
+                        ))}
+                        <th className="p-2 min-w-[130px] w-[130px]">Retail</th>
+                        <th className="p-2 min-w-[100px] w-[100px]">Lock</th>
+                        <th className="p-2 min-w-[120px] w-[120px]">Action</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {(visibleVariantRows || []).map((r, idx) => {
+                        const rk = rowKey(r, idx);
+                        const dupErr = comboErrors[rk];
+                        const emptyErr = emptyRowErrors[rk];
+
+                        const isLocked = isRealVariantId(String(r.id)) && lockedVariantIds.has(String(r.id));
+                        const computed = computedVariantRetail(r);
+
+                        const retailLabel =
+                          editingId && computed.variantRetail === -1
+                            ? "—"
+                            : `₦${Number((editingId ? computed.variantRetail : toNumberLoose(r.retailPrice) ?? 0) || 0).toLocaleString()}`;
+
+                        return (
+                          <tr key={rk} className="border-t">
+                            {enabledSelectableAttrs.map((a) => {
+                              const cur = String(r?.selections?.[a.id] ?? "");
+                              return (
+                                <td key={a.id} className="p-2 align-top min-w-[180px] w-[180px]">                                  <select
+                                  value={cur}
+                                  onChange={(e) => setVariantRowSelection(r.id, a.id, e.target.value || "")}
+                                  className="w-full min-w-[170px] rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 shadow-sm"
+                                  disabled={isLocked}
+                                  title={isLocked ? "Locked (variant has supplier offers)" : ""}
+                                >
+                                  <option value="">—</option>
+                                  {(a.values || []).filter((v) => v.isActive).map((v) => (
+                                    <option key={v.id} value={v.id}>
+                                      {v.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                </td>
+                              );
+                            })}
+
+                            <td className="p-2 align-top min-w-[130px] w-[130px]">
+                              {editingId ? (
+                                <div className="text-sm">{retailLabel}</div>
+                              ) : (
+                                <input
+                                  value={r.retailPrice}
+                                  onChange={(e) => setVariantRowRetailPrice(r.id, e.target.value)}
+                                  className="w-full min-w-[120px] rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800 shadow-sm"
+                                  placeholder="(optional)"
+                                  inputMode="decimal"
+                                />
+                              )}
+                              {(dupErr || emptyErr) && <div className="mt-1 text-[11px] text-rose-600">{dupErr || emptyErr}</div>}
+                            </td>
+
+                            <td className="p-2 align-top min-w-[130px] w-[130px]">
+                              <span
+                                className={
+                                  isLocked
+                                    ? "text-xs rounded-full bg-slate-900 text-white px-2 py-1"
+                                    : "text-xs rounded-full bg-slate-100 text-slate-700 px-2 py-1"
+                                }
+                              >
+                                {isLocked ? "LOCKED" : "—"}
+                              </span>
+                            </td>
+
+                            <td className="p-2 align-top min-w-[130px] w-[130px]">
+                              <button
+                                type="button"
+                                onClick={() => removeVariantRow(r.id)}
+                                className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+                                disabled={isLocked}
+                                title={isLocked ? "Cannot remove locked variant" : "Remove row"}
+                              >
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                      {visibleVariantRows.length === 0 && (
+                        <tr>
+                          <td colSpan={enabledSelectableAttrs.length + 3} className="p-3 text-slate-500">
+                            No variants yet. Click “Add variant” to create option combinations.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {editingId && clearAllVariantsIntent && (
+                <div className="mt-2 text-xs text-amber-700">“Remove all variants” is armed. Saving will replace server variants with none.</div>
+              )}
+            </div>
+
 
             {/* Save buttons */}
             <div className="mt-4 flex flex-col sm:flex-row gap-2 justify-end">
@@ -3250,10 +3711,11 @@ export function ManageProducts({
         </div>
       </div>
 
-      {/* ================= Mobile Cards (neater) ================= */}
+      <PaginationBar />
+
       {/* ================= Mobile Cards (neater) ================= */}
       <div className="md:hidden space-y-3">
-        {displayRows.map((p) => {
+        {paginatedRows.map((p) => {
           const action = primaryActionForRow(p);
           const price = displayRetailForRow(p);
           const status = getStatus(p);
@@ -3379,6 +3841,9 @@ ove-500">Offers</div>
         )}
       </div>
 
+      <div className="md:hidden">
+        <PaginationBar />
+      </div>
 
       {/* ================= Desktop Table ================= */}
       <div className="hidden md:block rounded-2xl border bg-white shadow-sm overflow-hidden">
@@ -3409,7 +3874,7 @@ ove-500">Offers</div>
             </thead>
 
             <tbody>
-              {displayRows.map((p) => {
+              {paginatedRows.map((p) => {
                 const action = primaryActionForRow(p);
                 const price = displayRetailForRow(p);
 
@@ -3500,6 +3965,7 @@ ove-500">Offers</div>
           </table>
         </div>
       </div>
+      <PaginationBar />
     </div>
   );
 }

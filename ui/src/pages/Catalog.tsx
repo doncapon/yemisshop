@@ -1,28 +1,29 @@
 // src/pages/Catalog.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client.js";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useAuthStore } from "../store/auth";
 import { useModal } from "../components/ModalProvider";
-import { motion } from "framer-motion";
 import {
   Search,
   SlidersHorizontal,
-  Star,
-  Heart,
-  HeartOff,
   LayoutGrid,
   ArrowUpDown,
   X,
+  ChevronRight,
+  ChevronDown,
+  Heart,
 } from "lucide-react";
 
 import SiteLayout from "../layouts/SiteLayout.js";
 import { showMiniCartToast } from "../components/cart/MiniCartToast";
 import { readCartLines, upsertCartLine, qtyInCart, toMiniCartRows } from "../utils/cartModel";
 
+import { AnimatePresence, motion } from "framer-motion";
+
 /* =========================================================
-   Types — aligned to your Prisma schema
+   Types — aligned to public products route
 ========================================================= */
 
 type CartItemKind = "BASE" | "VARIANT";
@@ -35,8 +36,11 @@ type SupplierOfferLite = {
   inStock?: boolean;
   availableQty?: number | null;
 
-  basePrice?: number | null; // SupplierProductOffer.basePrice
-  unitPrice?: number | null; // SupplierVariantOffer.unitPrice
+  basePrice?: number | null;
+  unitPrice?: number | null;
+
+  currency?: string | null;
+  leadDays?: number | null;
 
   supplierRatingAvg?: number | null;
   supplierRatingCount?: number | null;
@@ -45,11 +49,10 @@ type SupplierOfferLite = {
 type Variant = {
   id: string;
   sku?: string | null;
-
-  retailPrice?: number | null; // ProductVariant.retailPrice
+  retailPrice?: number | null;
   inStock?: boolean | null;
   imagesJson?: string[];
-
+  availableQty?: number | null;
   offers?: SupplierOfferLite[];
 };
 
@@ -58,11 +61,17 @@ type Product = {
   title: string;
   description?: string;
 
-  retailPrice?: number | null; // Product.retailPrice
-  computedRetailPrice?: number | null; // kept for compatibility
+  sku?: string | null;
+
+  retailPrice?: number | null;
+  computedRetailPrice?: number | null;
+  autoPrice?: number | null;
+  displayBasePrice?: number | null;
+  offersFrom?: number | null;
   commissionPctInt?: number | null;
 
   inStock?: boolean | null;
+  availableQty?: number | null;
   imagesJson?: string[];
 
   categoryId?: string | null;
@@ -83,6 +92,24 @@ type PublicSettings = {
   marginPercent?: number;
 };
 
+type CategoryNode = {
+  id: string;
+  name: string;
+  slug?: string;
+  parentId?: string | null;
+  position?: number;
+  children: CategoryNode[];
+};
+
+type CategoryFlat = {
+  id: string;
+  name: string;
+  parentId?: string | null;
+  position?: number | null;
+  isActive?: boolean | null;
+  children?: CategoryFlat[];
+};
+
 const ngn = new Intl.NumberFormat("en-NG", {
   style: "currency",
   currency: "NGN",
@@ -101,24 +128,30 @@ function decToNumber(v: any): number {
 function normalizeImages(val: any): string[] {
   if (!val) return [];
   if (Array.isArray(val)) return val.map(String).map((s) => s.trim()).filter(Boolean);
+
   if (typeof val === "string") {
     const s = val.trim();
     if (!s) return [];
+
     try {
       if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith('"') && s.endsWith('"'))) {
         const parsed = JSON.parse(s);
         return normalizeImages(parsed);
       }
     } catch {
-      // ignore
+      //
     }
-    return s.split(/[\n,]/g).map((t) => t.trim()).filter(Boolean);
+
+    return s
+      .split(/[\n,]/g)
+      .map((t) => t.trim())
+      .filter(Boolean);
   }
+
   return [];
 }
 
-const isLive = (x?: { status?: string | null }) =>
-  String(x?.status ?? "").trim().toUpperCase() === "LIVE";
+const isLive = (x?: { status?: string | null }) => String(x?.status ?? "").trim().toUpperCase() === "LIVE";
 
 /* =========================================================
    Stock + offers helpers
@@ -126,9 +159,11 @@ const isLive = (x?: { status?: string | null }) =>
 
 function offerStockOk(o?: SupplierOfferLite): boolean {
   if (!o || o.isActive === false) return false;
+
   const qty = o.availableQty;
   const hasQty = qty != null && Number.isFinite(Number(qty));
   const qtyOk = !hasQty ? true : Number(qty) > 0;
+
   return o.inStock === true || qtyOk;
 }
 
@@ -136,23 +171,17 @@ function collectAllOffers(p: Product): SupplierOfferLite[] {
   const out: SupplierOfferLite[] = [];
   if (Array.isArray(p.supplierProductOffers)) out.push(...p.supplierProductOffers);
   if (Array.isArray(p.variants)) {
-    for (const v of p.variants) if (Array.isArray(v.offers)) out.push(...v.offers);
+    for (const v of p.variants) {
+      if (Array.isArray(v.offers)) out.push(...v.offers);
+    }
   }
   return out;
 }
 
-function sumActivePositiveQty(offers?: SupplierOfferLite[]): number {
-  let sum = 0;
-  if (!Array.isArray(offers)) return sum;
-  for (const o of offers) {
-    if (!o || o.isActive === false) continue;
-    const q = Number(o.availableQty);
-    if (Number.isFinite(q) && q > 0) sum += q;
-  }
-  return sum;
-}
-
 function availableNow(p: Product): boolean {
+  const directQty = Number(p.availableQty);
+  if (Number.isFinite(directQty) && directQty > 0) return true;
+
   const offers = collectAllOffers(p);
 
   if (offers.some((o) => o?.isActive === true && o?.inStock === true)) return true;
@@ -164,39 +193,69 @@ function availableNow(p: Product): boolean {
   }
 
   if (p.inStock === true) return true;
-  if (Array.isArray(p.variants) && p.variants.some((v) => v.inStock === true)) return true;
+  if (Array.isArray(p.variants) && p.variants.some((v) => v.inStock === true || (Number(v.availableQty) || 0) > 0)) {
+    return true;
+  }
 
   return false;
 }
 
 /* =========================================================
-   Pricing — aligned with Favorites/Wishlist
-   price = marginPercent% on cheapest active supplier offer,
-   fallback to computedRetailPrice / retailPrice
+   Pricing
 ========================================================= */
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-function cheapestActiveOfferPrice(p: Product): number | null {
+function applyMargin(raw: number | null | undefined, marginPercent: number): number | null {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const m = Math.max(0, Number(marginPercent) || 0);
+  const out = round2(n * (1 + m / 100));
+  return Number.isFinite(out) && out > 0 ? out : null;
+}
+
+function cheapestActiveBaseOfferPrice(p: Product): number | null {
+  const offers = Array.isArray(p.supplierProductOffers) ? p.supplierProductOffers : [];
+  let best: number | null = null;
+
+  for (const o of offers) {
+    if (!o || o.isActive === false || !offerStockOk(o)) continue;
+    const raw = o.basePrice ?? o.unitPrice ?? null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    if (best == null || n < best) best = n;
+  }
+
+  return best;
+}
+
+function cheapestActiveVariantOfferPrice(p: Product): number | null {
+  let best: number | null = null;
+
+  const variants = Array.isArray(p.variants) ? p.variants : [];
+  for (const v of variants) {
+    const offers = Array.isArray(v.offers) ? v.offers : [];
+    for (const o of offers) {
+      if (!o || o.isActive === false || !offerStockOk(o)) continue;
+      const raw = o.unitPrice ?? o.basePrice ?? null;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      if (best == null || n < best) best = n;
+    }
+  }
+
+  return best;
+}
+
+function cheapestActiveAnyOfferPrice(p: Product): number | null {
   const offers = collectAllOffers(p);
   let best: number | null = null;
 
   for (const o of offers) {
-    if (!o) continue;
-
-    // same semantics as favourites.ts:
-    const isActive = o.isActive !== false;
-    const inStock = o.inStock !== false;
-    const qty = Number(o.availableQty ?? 0) || 0;
-
-    if (!isActive || !inStock || qty <= 0) continue;
-
+    if (!o || o.isActive === false || !offerStockOk(o)) continue;
     const raw = o.unitPrice ?? o.basePrice ?? null;
-    if (raw == null) continue;
-
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) continue;
-
     if (best == null || n < best) best = n;
   }
 
@@ -204,17 +263,38 @@ function cheapestActiveOfferPrice(p: Product): number | null {
 }
 
 function getDisplayRetailPrice(p: Product, marginPercent: number): number {
-  const cheapest = cheapestActiveOfferPrice(p);
-  if (cheapest != null) {
-    const m = Math.max(0, Number(marginPercent) || 0);
-    const out = round2(cheapest * (1 + m / 100));
-    if (Number.isFinite(out) && out > 0) return out;
+  const apiComputed = Number(p.computedRetailPrice);
+  if (Number.isFinite(apiComputed) && apiComputed > 0) return apiComputed;
+
+  const hasOptions = Array.isArray(p.variants) && p.variants.length > 0;
+
+  if (hasOptions) {
+    const baseRaw = cheapestActiveBaseOfferPrice(p);
+    const baseRetail = applyMargin(baseRaw, marginPercent);
+    if (baseRetail != null) return baseRetail;
+
+    const varRaw = cheapestActiveVariantOfferPrice(p);
+    const varRetail = applyMargin(varRaw, marginPercent);
+    if (varRetail != null) return varRetail;
+  } else {
+    const anyRaw = cheapestActiveAnyOfferPrice(p);
+    const anyRetail = applyMargin(anyRaw, marginPercent);
+    if (anyRetail != null) return anyRetail;
   }
 
-  // Fallback: whatever the backend put on the product
-  const raw = (p as any).computedRetailPrice ?? p.retailPrice ?? 0;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : 0;
+  const offersFromRetail = applyMargin(p.offersFrom, marginPercent);
+  if (offersFromRetail != null) return offersFromRetail;
+
+  const raw =
+    Number(p.retailPrice) > 0
+      ? Number(p.retailPrice)
+      : Number(p.autoPrice) > 0
+      ? Number(p.autoPrice)
+      : Number(p.displayBasePrice) > 0
+      ? Number(p.displayBasePrice)
+      : 0;
+
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
 }
 
 function priceForFiltering(p: Product, marginPercent: number): number {
@@ -222,10 +302,9 @@ function priceForFiltering(p: Product, marginPercent: number): number {
 }
 
 /* =========================================================
-   Sellable flag (uses availability + price)
+   Sellable flag
 ========================================================= */
 
-// marginPercent is injected at call sites
 function productSellable(p: Product, marginPercent: number): boolean {
   if (!isLive(p)) return false;
   if (!availableNow(p)) return false;
@@ -239,6 +318,7 @@ function productSellable(p: Product, marginPercent: number): boolean {
 
 function getApiOrigin(): string {
   const base = String((api as any)?.defaults?.baseURL || "").trim();
+
   if (/^https?:\/\//i.test(base)) {
     try {
       return new URL(base).origin;
@@ -246,15 +326,18 @@ function getApiOrigin(): string {
       return window.location.origin;
     }
   }
+
   const env = (import.meta as any)?.env;
   const fromEnv = String(env?.VITE_API_URL || env?.VITE_API_ORIGIN || "").trim();
+
   if (fromEnv && /^https?:\/\//i.test(fromEnv)) {
     try {
       return new URL(fromEnv).origin;
     } catch {
-      // ignore
+      //
     }
   }
+
   return window.location.origin;
 }
 
@@ -290,11 +373,10 @@ function usePurchasedCounts(enabledOverride = true) {
     retry: 0,
     staleTime: 30_000,
     queryFn: async () => {
-      const LIMIT = 200;
       try {
         const { data } = await api.get("/api/orders/mine", {
           withCredentials: true,
-          params: { limit: LIMIT },
+          params: { limit: 200 },
         });
 
         const orders: any[] = Array.isArray((data as any)?.data)
@@ -316,12 +398,7 @@ function usePurchasedCounts(enabledOverride = true) {
         }
 
         return map;
-      } catch (e: any) {
-        console.error(
-          "usePurchasedCounts /api/orders/mine failed:",
-          e?.response?.status,
-          e?.response?.data || e?.message
-        );
+      } catch {
         return {};
       }
     },
@@ -355,6 +432,7 @@ function generateDynamicPriceBuckets(maxPrice: number, baseStep = 1_000): PriceB
 
   const thresholds: number[] = [baseStep];
   let mult = 5;
+
   while (thresholds[thresholds.length - 1] < maxPrice) {
     thresholds.push(thresholds[thresholds.length - 1] * mult);
     mult = mult === 5 ? 2 : 5;
@@ -383,8 +461,10 @@ function bestSupplierRatingScore(p: Product): number {
 
   for (const o of offers) {
     if (!o || o.isActive === false) continue;
+
     const avg = Number(o.supplierRatingAvg);
     const cnt = Number(o.supplierRatingCount);
+
     if (!Number.isFinite(avg) || avg <= 0) continue;
 
     const weight = Number.isFinite(cnt) && cnt > 0 ? Math.min(1, Math.log10(cnt + 1) / 3) : 0;
@@ -393,6 +473,137 @@ function bestSupplierRatingScore(p: Product): number {
   }
 
   return best;
+}
+
+/* =========================================================
+   Category tree helpers
+========================================================= */
+
+function flattenCategoryTree(input: any): CategoryFlat[] {
+  const out: CategoryFlat[] = [];
+
+  const walk = (n: any, parentId: string | null) => {
+    if (!n) return;
+
+    const id = String(n.id ?? "");
+    const name = String(n.name ?? "");
+    if (!id || !name) return;
+
+    const node: CategoryFlat = {
+      id,
+      name,
+      parentId: n.parentId != null ? String(n.parentId) : parentId,
+      position: Number.isFinite(Number(n.position)) ? Number(n.position) : 0,
+      isActive: n.isActive != null ? !!n.isActive : true,
+    };
+
+    out.push(node);
+
+    const kids: any[] = Array.isArray(n.children) ? n.children : Array.isArray(n.items) ? n.items : [];
+    for (const c of kids) walk(c, id);
+  };
+
+  const arr: any[] = Array.isArray(input) ? input : Array.isArray(input?.data) ? input.data : [];
+  for (const n of arr) walk(n, null);
+
+  return out;
+}
+
+function buildCategoryForest(list: CategoryFlat[]): CategoryNode[] {
+  const byId = new Map<string, CategoryNode>();
+
+  for (const c of list) {
+    const id = String(c.id);
+    const name = String(c.name);
+    const parentId = c.parentId != null ? String(c.parentId) : null;
+    const position = Number.isFinite(Number(c.position)) ? Number(c.position) : 0;
+    byId.set(id, { id, name, parentId, position, children: [] });
+  }
+
+  const roots: CategoryNode[] = [];
+  for (const node of byId.values()) {
+    if (node.parentId && byId.has(node.parentId)) {
+      byId.get(node.parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  const sortRec = (nodes: CategoryNode[]) => {
+    nodes.sort((a, b) => {
+      const pa = Number.isFinite(a.position) ? a.position : 0;
+      const pb = Number.isFinite(b.position) ? b.position : 0;
+      if (pa !== pb) return (pa as number) - (pb as number);
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+    for (const n of nodes) sortRec(n.children);
+  };
+
+  sortRec(roots);
+  return roots;
+}
+
+function buildDescendantMap(roots: CategoryNode[]) {
+  const byId = new Map<string, CategoryNode>();
+  const childrenById = new Map<string, string[]>();
+
+  const walk = (n: CategoryNode) => {
+    byId.set(n.id, n);
+    childrenById.set(n.id, n.children.map((c) => c.id));
+    for (const c of n.children) walk(c);
+  };
+
+  for (const r of roots) walk(r);
+
+  const allDescCache = new Map<string, Set<string>>();
+  const getAllDesc = (id: string): Set<string> => {
+    if (allDescCache.has(id)) return allDescCache.get(id)!;
+
+    const out = new Set<string>();
+    const stack = [...(childrenById.get(id) || [])];
+
+    while (stack.length) {
+      const x = stack.pop()!;
+      if (out.has(x)) continue;
+      out.add(x);
+      const kids = childrenById.get(x) || [];
+      for (const k of kids) stack.push(k);
+    }
+
+    allDescCache.set(id, out);
+    return out;
+  };
+
+  return { byId, childrenById, getAllDesc };
+}
+
+function computeCategoryCountsFromProducts(products: Product[]) {
+  const map = new Map<string, { id: string; name: string; count: number }>();
+
+  for (const p of products) {
+    const id = p.categoryId ?? "uncategorized";
+    const name = p.categoryName?.trim() || "Uncategorized";
+    const prev = map.get(id) ?? { id, name, count: 0 };
+    prev.count += 1;
+    map.set(id, prev);
+  }
+
+  return map;
+}
+
+function aggregateCountsToParents(roots: CategoryNode[], directCounts: Map<string, number>): Map<string, number> {
+  const out = new Map<string, number>();
+
+  const dfs = (n: CategoryNode): number => {
+    let sum = directCounts.get(n.id) || 0;
+    for (const c of n.children) sum += dfs(c);
+    out.set(n.id, sum);
+    return sum;
+  };
+
+  for (const r of roots) dfs(r);
+
+  return out;
 }
 
 /* =========================================================
@@ -438,7 +649,7 @@ function MotionCircleLoader({ label = "Loading…" }: { label?: string }) {
 }
 
 /* =========================================================
-   CART (server) helpers
+   CART helpers
 ========================================================= */
 
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
@@ -500,21 +711,24 @@ async function setServerCartQty(input: {
 
 export default function Catalog() {
   const user = useAuthStore((s) => s.user);
-  const isSupplier = user?.role === "SUPPLIER";
-  const isAuthed = !!user;
+  const role = String(user?.role ?? "");
+  const isSupplier = role === "SUPPLIER";
+  const isAuthed = !!user?.id;
 
   const { openModal } = useModal();
   const nav = useNavigate();
   const qc = useQueryClient();
+  const location = useLocation();
 
   const HIDE_OOS = false;
   const includeStr = "brand,category,variants,attributes,offers" as const;
 
-  /* ---------------- Settings (marginPercent) ---------------- */
+  /* ---------------- Settings ---------------- */
 
   const settingsQ = useQuery<number>({
     queryKey: ["settings", "public", "marginPercent"],
-    staleTime: 10_000,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
     retry: 0,
     queryFn: async () => {
       const { data } = await api.get<PublicSettings>("/api/settings/public");
@@ -523,7 +737,6 @@ export default function Catalog() {
     },
   });
 
-  // this is now actively used in pricing
   const marginPercent = Number.isFinite(settingsQ.data as any) ? (settingsQ.data as number) : 0;
 
   /* ---------------- UI state ---------------- */
@@ -536,25 +749,91 @@ export default function Catalog() {
   const [query, setQuery] = useState("");
   const [showSuggest, setShowSuggest] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const desktopInputRef = useRef<HTMLInputElement | null>(null);
+  const mobileInputRef = useRef<HTMLInputElement | null>(null);
   const suggestRef = useRef<HTMLDivElement | null>(null);
 
   const [refineOpen, setRefineOpen] = useState(false);
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [inStockOnly, setInStockOnly] = useState(true);
+  const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>({});
+  const [gridCols, setGridCols] = useState(2);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    const apply = () => setGridCols(mq.matches ? 4 : 2);
+
+    apply();
+
+    if ((mq as any).addEventListener) mq.addEventListener("change", apply);
+    else (mq as any).addListener(apply);
+
+    return () => {
+      if ((mq as any).removeEventListener) mq.removeEventListener("change", apply);
+      else (mq as any).removeListener(apply);
+    };
+  }, []);
+
+  function stopCardNav(e: React.SyntheticEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function goToProduct(productId: string) {
+    nav(`/products/${productId}`, {
+      state: {
+        from: location.pathname + location.search,
+        restoreScrollY: window.scrollY,
+      },
+    });
+  }
 
   const closeRefine = () => {
     setRefineOpen(false);
     setShowSuggest(false);
+    setTouchStartX(null);
   };
 
+  /* ---------------- Navigation / overlay stability ---------------- */
+
   useEffect(() => {
-    const prev = document.body.style.overflow;
-    if (refineOpen) document.body.style.overflow = "hidden";
+    setRefineOpen(false);
+    setShowSuggest(false);
+    setTouchStartX(null);
+    document.body.style.overflow = "";
+    (document.activeElement as HTMLElement | null)?.blur?.();
+  }, [location.key]);
+
+  useEffect(() => {
+    document.body.style.overflow = refineOpen ? "hidden" : "";
     return () => {
-      document.body.style.overflow = prev;
+      document.body.style.overflow = "";
     };
   }, [refineOpen]);
+
+  useEffect(() => {
+    const onPageShow = (ev: PageTransitionEvent) => {
+      if (ev.persisted) {
+        setRefineOpen(false);
+        setShowSuggest(false);
+        setTouchStartX(null);
+        document.body.style.overflow = "";
+      }
+    };
+
+    const onPageHide = () => {
+      document.body.style.overflow = "";
+    };
+
+    window.addEventListener("pageshow", onPageShow as any);
+    window.addEventListener("pagehide", onPageHide as any);
+
+    return () => {
+      window.removeEventListener("pageshow", onPageShow as any);
+      window.removeEventListener("pagehide", onPageHide as any);
+    };
+  }, []);
 
   /* ---------------- Cart snapshot + syncing ---------------- */
 
@@ -566,6 +845,46 @@ export default function Catalog() {
     window.addEventListener("cart:updated", onCartUpdated);
     return () => window.removeEventListener("cart:updated", onCartUpdated);
   }, []);
+
+  /* ---------------- Server cart sync ---------------- */
+
+  const serverSyncPendingRef = useRef<Record<string, boolean>>({});
+  const serverSyncQueuedQtyRef = useRef<Record<string, number | null>>({});
+
+  const syncServerQtyCoalesced = (p: Product, qty: number, unitPriceCache: number, primaryImg: string | null) => {
+    if (!isAuthed) return;
+
+    const key = `BASE:${p.id}`;
+    const pending = !!serverSyncPendingRef.current[key];
+    serverSyncQueuedQtyRef.current[key] = qty;
+    if (pending) return;
+
+    const run = async () => {
+      const desired = serverSyncQueuedQtyRef.current[key];
+      serverSyncQueuedQtyRef.current[key] = null;
+      if (desired == null) return;
+
+      serverSyncPendingRef.current[key] = true;
+      try {
+        await setServerCartQty({
+          productId: p.id,
+          variantId: null,
+          kind: "BASE",
+          qty: desired,
+          titleSnapshot: p.title,
+          imageSnapshot: primaryImg,
+          unitPriceCache,
+        });
+      } catch (e: any) {
+        console.error("Cart sync failed:", e?.response?.status, e?.response?.data || e?.message);
+      } finally {
+        serverSyncPendingRef.current[key] = false;
+        if (serverSyncQueuedQtyRef.current[key] != null) void run();
+      }
+    };
+
+    void run();
+  };
 
   /* ---------------- Products query ---------------- */
 
@@ -583,27 +902,28 @@ export default function Catalog() {
         ? (data as any).data
         : [];
 
-      const list: Product[] = (raw || [])
+      return (raw || [])
         .filter((x) => x && x.id != null)
         .map((x) => {
-          const retailPrice = x.retailPrice != null ? decToNumber(x.retailPrice) : null;
-          const computedRetailPrice =
-            x.computedRetailPrice != null ? decToNumber(x.computedRetailPrice) : null;
-
           const variants: Variant[] = Array.isArray(x.variants)
-            ? x.variants.map((v: any) => {
-                const vRetail = v.retailPrice != null ? decToNumber(v.retailPrice) : null;
-
-                const vOffers: SupplierOfferLite[] = Array.isArray(v.offers)
+            ? x.variants.map((v: any) => ({
+                id: String(v.id),
+                sku: v.sku ?? null,
+                retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
+                inStock: v.inStock === true,
+                imagesJson: normalizeImages(v.imagesJson),
+                availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+                offers: Array.isArray(v.offers)
                   ? v.offers.map((o: any) => ({
                       id: String(o.id),
                       supplierId: o.supplierId ?? o.supplier?.id ?? null,
                       isActive: o.isActive === true,
                       inStock: o.inStock === true,
-                      availableQty: Number.isFinite(Number(o.availableQty))
-                        ? Number(o.availableQty)
-                        : null,
+                      availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
                       unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                      basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                      currency: o.currency ?? "NGN",
+                      leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
                       supplierRatingAvg:
                         o.supplierRatingAvg != null
                           ? decToNumber(o.supplierRatingAvg)
@@ -617,20 +937,10 @@ export default function Catalog() {
                           ? Number(o.supplier.ratingCount)
                           : null,
                     }))
-                  : [];
-
-                return {
-                  id: String(v.id),
-                  sku: v.sku ?? null,
-                  retailPrice: vRetail,
-                  inStock: v.inStock === true,
-                  imagesJson: normalizeImages(v.imagesJson),
-                  offers: vOffers,
-                };
-              })
+                  : [],
+              }))
             : [];
 
-          // support both "supplierProductOffers" and "supplierOffers" from the API
           const baseSource =
             (Array.isArray((x as any).supplierProductOffers) && x.supplierProductOffers) ||
             (Array.isArray((x as any).supplierOffers) && (x as any).supplierOffers) ||
@@ -641,10 +951,11 @@ export default function Catalog() {
             supplierId: o.supplierId ?? o.supplier?.id ?? null,
             isActive: o.isActive === true,
             inStock: o.inStock === true,
-            availableQty: Number.isFinite(Number(o.availableQty))
-              ? Number(o.availableQty)
-              : null,
+            availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
             basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+            unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+            currency: o.currency ?? "NGN",
+            leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
             supplierRatingAvg:
               o.supplierRatingAvg != null
                 ? decToNumber(o.supplierRatingAvg)
@@ -660,31 +971,31 @@ export default function Catalog() {
           }));
 
           const catNameRaw = String(x.categoryName ?? x.category?.name ?? "").trim();
-          const categoryName = catNameRaw || null;
 
           return {
             id: String(x.id),
             title: String(x.title ?? ""),
             description: x.description ?? "",
-            retailPrice,
-            computedRetailPrice,
-            commissionPctInt: Number.isFinite(Number(x.commissionPctInt))
-              ? Number(x.commissionPctInt)
-              : null,
+            sku: x.sku ?? null,
+            retailPrice: x.retailPrice != null ? decToNumber(x.retailPrice) : null,
+            computedRetailPrice: x.computedRetailPrice != null ? decToNumber(x.computedRetailPrice) : null,
+            autoPrice: x.autoPrice != null ? decToNumber(x.autoPrice) : null,
+            displayBasePrice: x.displayBasePrice != null ? decToNumber(x.displayBasePrice) : null,
+            offersFrom: x.offersFrom != null ? decToNumber(x.offersFrom) : null,
+            commissionPctInt: Number.isFinite(Number(x.commissionPctInt)) ? Number(x.commissionPctInt) : null,
             inStock: x.inStock === true,
+            availableQty: Number.isFinite(Number(x.availableQty)) ? Number(x.availableQty) : null,
             imagesJson: normalizeImages(x.imagesJson),
             categoryId: x.categoryId ?? x.category?.id ?? null,
-            categoryName,
+            categoryName: catNameRaw || null,
             brand: x.brand ? { id: String(x.brand.id), name: String(x.brand.name) } : null,
             variants,
             supplierProductOffers: baseOffers,
             ratingAvg: x.ratingAvg != null ? decToNumber(x.ratingAvg) : null,
             ratingCount: x.ratingCount != null ? Number(x.ratingCount) : null,
             status: String(x.status ?? ""),
-          };
+          } satisfies Product;
         });
-
-      return list;
     },
   });
 
@@ -692,6 +1003,65 @@ export default function Catalog() {
     const list = productsQ.data ?? [];
     return list.filter((p) => isLive(p));
   }, [productsQ.data]);
+
+  useLayoutEffect(() => {
+    const state = location.state as any;
+    const y = state?.restoreScrollY;
+
+    if (typeof y !== "number") return;
+
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: y, behavior: "auto" });
+
+      try {
+        nav(location.pathname + location.search, {
+          replace: true,
+          state: {
+            ...(state || {}),
+            restoreScrollY: undefined,
+          },
+        });
+      } catch {
+        //
+      }
+    });
+  }, [location.key, location.pathname, location.search, location.state, nav]);
+
+  /* ---------------- Categories ---------------- */
+
+  const categoriesTreeQ = useQuery<CategoryNode[]>({
+    queryKey: ["categories", "tree"],
+    staleTime: 60_000,
+    retry: 0,
+    queryFn: async () => {
+      const attempts = [
+        () => api.get("/api/categories", { params: { include: "children" } }),
+        () => api.get("/api/categories/tree"),
+        () => api.get("/api/categories", { params: { tree: 1 } }),
+        () => api.get("/api/categories"),
+      ];
+
+      for (const fn of attempts) {
+        try {
+          const res = await fn();
+          const payload = (res as any)?.data?.data ?? (res as any)?.data ?? [];
+          const flat = flattenCategoryTree(payload);
+          if (!flat.length) continue;
+          return buildCategoryForest(flat.filter((c) => c.isActive !== false));
+        } catch {
+          //
+        }
+      }
+
+      return [];
+    },
+  });
+
+  const categoryForest = categoriesTreeQ.data ?? [];
+  const catTreeHelpers = useMemo(() => {
+    if (!categoryForest.length) return null;
+    return buildDescendantMap(categoryForest);
+  }, [categoryForest]);
 
   /* ---------------- Favorites ---------------- */
 
@@ -707,14 +1077,10 @@ export default function Catalog() {
       const payload: any = data ?? {};
       let ids: string[] = [];
 
-      if (Array.isArray(payload.productIds)) {
-        ids = payload.productIds;
-      } else if (Array.isArray(payload.data?.productIds)) {
-        ids = payload.data.productIds;
-      } else if (Array.isArray(payload.data)) {
-        ids = payload.data
-          .map((x: any) => x?.productId ?? x?.id ?? null)
-          .filter(Boolean);
+      if (Array.isArray(payload.productIds)) ids = payload.productIds;
+      else if (Array.isArray(payload.data?.productIds)) ids = payload.data.productIds;
+      else if (Array.isArray(payload.data)) {
+        ids = payload.data.map((x: any) => x?.productId ?? x?.id ?? null).filter(Boolean);
       }
 
       return new Set(ids.map(String));
@@ -765,10 +1131,7 @@ export default function Catalog() {
     return prices.length ? Math.max(...prices) : 0;
   }, [products, marginPercent]);
 
-  const PRICE_BUCKETS = useMemo(
-    () => generateDynamicPriceBuckets(maxPriceSeen, 1_000),
-    [maxPriceSeen]
-  );
+  const PRICE_BUCKETS = useMemo(() => generateDynamicPriceBuckets(maxPriceSeen, 1_000), [maxPriceSeen]);
 
   useEffect(() => {
     setSelectedBucketIdxs([]);
@@ -779,6 +1142,7 @@ export default function Catalog() {
   const suggestions = useMemo(() => {
     const q = norm(query.trim());
     if (!q) return [];
+
     const scored = products.map((p) => {
       const title = norm(p.title || "");
       const desc = norm(p.description || "");
@@ -792,15 +1156,31 @@ export default function Catalog() {
       if (brand.includes(q)) score += 2;
       return { p, score };
     });
+
     return scored
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 8)
       .map((x) => x.p);
-  }, [products, query, marginPercent]); // marginPercent added for completeness (prices in suggestions)
+  }, [products, query]);
 
-  const { categories, brands, visiblePriceBuckets, filtered } = useMemo(() => {
+  const selectedCategoryEffective = useMemo(() => {
+    const base = new Set(selectedCategories);
+    if (!catTreeHelpers) return base;
+    for (const id of selectedCategories) {
+      const desc = catTreeHelpers.getAllDesc(id);
+      for (const d of desc) base.add(d);
+    }
+    return base;
+  }, [selectedCategories, catTreeHelpers]);
+
+  const { categories, brands, visiblePriceBuckets, filtered, categoryTreeUi } = useMemo(() => {
     const q = norm(query.trim());
+
+    const categoryQueryMatch =
+      catTreeHelpers && query
+        ? [...catTreeHelpers.byId.values()].filter((c) => norm(c.name).includes(norm(query)))
+        : [];
 
     const baseByQuery = products.filter((p) => {
       if (inStockOnly && !availableNow(p)) return false;
@@ -810,41 +1190,65 @@ export default function Catalog() {
       const desc = norm(p.description || "");
       const cat = norm(p.categoryName || "");
       const brand = norm(p.brand?.name || "");
-      return title.includes(q) || desc.includes(q) || cat.includes(q) || brand.includes(q);
+
+      const categoryHit =
+        categoryQueryMatch.length &&
+        categoryQueryMatch.some((c) => p.categoryId === c.id || catTreeHelpers?.getAllDesc(c.id)?.has(p.categoryId ?? ""));
+
+      return title.includes(q) || desc.includes(q) || cat.includes(q) || brand.includes(q) || categoryHit;
     });
 
-    const activeCats = new Set(selectedCategories);
+    const activeCatsEffective = selectedCategoryEffective;
     const activeBuckets = selectedBucketIdxs.map((i) => PRICE_BUCKETS[i]).filter(Boolean);
     const activeBrands = new Set(selectedBrands);
 
     const baseForCategoryCounts = baseByQuery.filter((p) => {
       const price = priceForFiltering(p, marginPercent);
-      const priceOk =
-        activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const brandOk =
-        activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
+      const brandOk = activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
       return priceOk && brandOk;
     });
 
-    const catMap = new Map<string, { id: string; name: string; count: number }>();
-    for (const p of baseForCategoryCounts) {
-      const id = p.categoryId ?? "uncategorized";
-      const name = p.categoryName?.trim() || "Uncategorized";
-      const prev = catMap.get(id) ?? { id, name, count: 0 };
-      prev.count += 1;
-      catMap.set(id, prev);
-    }
-
-    const categories = Array.from(catMap.values())
+    const catCountsMap = computeCategoryCountsFromProducts(baseForCategoryCounts);
+    const categories = Array.from(catCountsMap.values())
       .filter((c) => c.count > 0)
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 
+    let categoryTreeUi:
+      | Array<{ node: CategoryNode; count: number; depth: number; hasChildren: boolean }>
+      | null = null;
+
+    if (categoryForest.length && catTreeHelpers) {
+      const directCounts = new Map<string, number>();
+      for (const [id, v] of catCountsMap.entries()) {
+        if (id === "uncategorized") continue;
+        directCounts.set(id, v.count);
+      }
+
+      const aggregated = aggregateCountsToParents(categoryForest, directCounts);
+
+      const rows: Array<{ node: CategoryNode; count: number; depth: number; hasChildren: boolean }> = [];
+
+      const walk = (n: CategoryNode, depth: number) => {
+        const count = aggregated.get(n.id) || 0;
+        if (count <= 0) return;
+
+        rows.push({ node: n, count, depth, hasChildren: n.children.length > 0 });
+
+        const isExpanded = !!expandedCats[n.id];
+        if (n.children.length > 0 && isExpanded) {
+          for (const c of n.children) walk(c, depth + 1);
+        }
+      };
+
+      for (const r of categoryForest) walk(r, 0);
+      categoryTreeUi = rows.length ? rows : null;
+    }
+
     const baseForBrandCounts = baseByQuery.filter((p) => {
       const price = priceForFiltering(p, marginPercent);
-      const priceOk =
-        activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const catOk =
-        activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? "uncategorized");
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
+      const catOk = activeCatsEffective.size === 0 ? true : activeCatsEffective.has(p.categoryId ?? "uncategorized");
       return priceOk && catOk;
     });
 
@@ -862,10 +1266,8 @@ export default function Catalog() {
     );
 
     const baseForPriceCounts = baseByQuery.filter((p) => {
-      const catOk =
-        activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? "uncategorized");
-      const brandOk =
-        activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
+      const catOk = activeCatsEffective.size === 0 ? true : activeCatsEffective.has(p.categoryId ?? "uncategorized");
+      const brandOk = activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
       return catOk && brandOk;
     });
 
@@ -873,35 +1275,34 @@ export default function Catalog() {
       (b) => baseForPriceCounts.filter((p) => inBucket(priceForFiltering(p, marginPercent), b)).length
     );
 
-    const visiblePriceBuckets = PRICE_BUCKETS.map((b, i) => ({
-      bucket: b,
-      idx: i,
-      count: priceCounts[i] || 0,
-    })).filter((x) => x.count > 0);
+    const visiblePriceBuckets = PRICE_BUCKETS.map((b, i) => ({ bucket: b, idx: i, count: priceCounts[i] || 0 })).filter(
+      (x) => x.count > 0
+    );
 
     let filteredCore = baseByQuery.filter((p) => {
       const price = priceForFiltering(p, marginPercent);
-      const catOk =
-        activeCats.size === 0 ? true : activeCats.has(p.categoryId ?? "uncategorized");
-      const priceOk =
-        activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const brandOk =
-        activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
+      const catOk = activeCatsEffective.size === 0 ? true : activeCatsEffective.has(p.categoryId ?? "uncategorized");
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
+      const brandOk = activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
       return catOk && priceOk && brandOk;
     });
 
     if (HIDE_OOS) filteredCore = filteredCore.filter((p) => productSellable(p, marginPercent));
 
-    return { categories, brands, visiblePriceBuckets, filtered: filteredCore };
+    return { categories, brands, visiblePriceBuckets, filtered: filteredCore, categoryTreeUi };
   }, [
     products,
     selectedCategories,
+    selectedCategoryEffective,
     selectedBucketIdxs,
     selectedBrands,
     query,
     PRICE_BUCKETS,
     inStockOnly,
     marginPercent,
+    categoryForest,
+    catTreeHelpers,
+    expandedCats,
   ]);
 
   const purchasedQ = usePurchasedCounts(!isSupplier);
@@ -956,10 +1357,8 @@ export default function Catalog() {
       const bv = productSellable(b, marginPercent) ? 1 : 0;
       if (bv !== av) return bv - av;
 
-      if (sortKey === "price-asc")
-        return priceForFiltering(a, marginPercent) - priceForFiltering(b, marginPercent);
-      if (sortKey === "price-desc")
-        return priceForFiltering(b, marginPercent) - priceForFiltering(a, marginPercent);
+      if (sortKey === "price-asc") return priceForFiltering(a, marginPercent) - priceForFiltering(b, marginPercent);
+      if (sortKey === "price-desc") return priceForFiltering(b, marginPercent) - priceForFiltering(a, marginPercent);
       return 0;
     });
   }, [filtered, recScored, sortKey, inStockOnly, marginPercent]);
@@ -981,12 +1380,11 @@ export default function Catalog() {
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
       const t = e.target as Node;
-      if (
-        suggestRef.current &&
-        !suggestRef.current.contains(t) &&
-        inputRef.current &&
-        !inputRef.current.contains(t)
-      ) {
+      const clickedDesktopInput = !!desktopInputRef.current?.contains(t);
+      const clickedMobileInput = !!mobileInputRef.current?.contains(t);
+      const clickedSuggest = !!suggestRef.current?.contains(t);
+
+      if (!clickedSuggest && !clickedDesktopInput && !clickedMobileInput) {
         setShowSuggest(false);
       }
     }
@@ -995,15 +1393,9 @@ export default function Catalog() {
   }, []);
 
   const goTo = (p: number) => {
-    // always clamp – so buttons never truly become "invalid"
     const clamped = Math.min(Math.max(1, p), totalPages);
     if (clamped === currentPage) return;
     setPage(clamped);
-    try {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch {
-      window.scrollTo(0, 0);
-    }
   };
 
   const windowedPages = (current: number, total: number, radius = 2) => {
@@ -1018,21 +1410,16 @@ export default function Catalog() {
 
   const pagesDesktop = windowedPages(currentPage, totalPages, 2);
   const [jumpVal, setJumpVal] = useState<string>("");
+
   useEffect(() => setJumpVal(""), [totalPages]);
 
-  /* ---------------- Broken images guard ---------------- */
-
-  const [brokenImg, setBrokenImg] = useState<Record<string, boolean>>({});
-  const markBroken = (key: string) => setBrokenImg((m) => (m[key] ? m : { ...m, [key]: true }));
-
   /* =========================================================
-     Add to cart — guest + authed, using same price
+     Add to cart
 ========================================================= */
 
   const setCartQty = async (p: Product, nextQty: number) => {
     try {
       const qty = Math.max(0, Math.floor(Number(nextQty) || 0));
-
       const unitPriceCache = getDisplayRetailPrice(p, marginPercent) || 0;
 
       const primaryImg =
@@ -1041,40 +1428,6 @@ export default function Catalog() {
         null;
 
       const optionsKey = "";
-
-      if (isAuthed) {
-        await setServerCartQty({
-          productId: p.id,
-          variantId: null,
-          kind: "BASE",
-          qty,
-          titleSnapshot: p.title,
-          imageSnapshot: primaryImg,
-          unitPriceCache,
-        });
-
-        upsertCartLine({
-          productId: String(p.id),
-          variantId: null,
-          kind: "BASE",
-          optionsKey,
-          qty,
-          selectedOptions: [],
-          titleSnapshot: p.title ?? null,
-          imageSnapshot: primaryImg ?? null,
-          unitPriceCache: Number.isFinite(unitPriceCache) ? unitPriceCache : 0,
-        });
-
-        window.dispatchEvent(new Event("cart:updated"));
-
-        const linesNow = readCartLines();
-        showMiniCartToast(
-          toMiniCartRows(linesNow),
-          { productId: p.id, variantId: null },
-          { mode: qty > 0 ? "add" : "remove" }
-        );
-        return;
-      }
 
       const nextLines = upsertCartLine({
         productId: String(p.id),
@@ -1095,6 +1448,8 @@ export default function Catalog() {
         { productId: p.id, variantId: null },
         { mode: qty > 0 ? "add" : "remove" }
       );
+
+      syncServerQtyCoalesced(p, qty, unitPriceCache, primaryImg);
     } catch (err: any) {
       console.error(err);
       openModal({ title: "Cart", message: err?.message || "Could not update cart." });
@@ -1119,43 +1474,34 @@ export default function Catalog() {
     setInStockOnly(true);
   };
 
-  const Shimmer = () => (
-    <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />
-  );
+  const Shimmer = () => <div className="h-3 w-full rounded bg-gradient-to-r from-zinc-200 via-zinc-100 to-zinc-200 animate-pulse" />;
 
   const anyActiveFilter =
-    selectedCategories.length > 0 ||
-    selectedBucketIdxs.length > 0 ||
-    selectedBrands.length > 0 ||
-    !inStockOnly;
+    selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly;
 
   const hasSearch = !!query.trim();
-
-  const stopTap = (e: React.MouseEvent | React.TouchEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-  };
+  const toggleExpand = (id: string) => setExpandedCats((m) => ({ ...m, [id]: !m[id] }));
 
   /* ---------------- Render guards ---------------- */
 
-  if (productsQ.isLoading)
+  if (productsQ.isLoading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
         <MotionCircleLoader label="Loading products…" />
       </div>
     );
+  }
 
-  if (productsQ.error)
+  if (productsQ.error) {
     return (
       <>
         <div className="flex min-h-[60vh] items-center justify-center">
           <MotionCircleLoader label="Loading products…" />
         </div>
-        <p className="p-6 text-center text-rose-600">
-          We are sorry, we are having technical issues
-        </p>
+        <p className="p-6 text-center text-rose-600">We are sorry, we are having technical issues</p>
       </>
     );
+  }
 
   /* =========================================================
      Main render
@@ -1182,14 +1528,11 @@ export default function Catalog() {
         }}
         onTouchEnd={() => setTouchStartX(null)}
       >
-        {/* Desktop hero */}
         <div className="hidden md:block border-b bg-white">
           <div className="mx-auto max-w-7xl px-4 md:px-8 pt-3 pb-4 md:py-10">
             <div className="flex items-start justify-between gap-6">
               <div className="min-w-0">
-                <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-zinc-900">
-                  Discover Products
-                </h1>
+                <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-zinc-900">Discover Products</h1>
                 <p className="mt-2 text-sm md:text-base text-zinc-600">
                   Fresh picks, smart sorting, and instant search—tailored for you.
                 </p>
@@ -1207,7 +1550,6 @@ export default function Catalog() {
           </div>
         </div>
 
-        {/* Mobile compact title */}
         <div className="md:hidden mb-2 flex items-center justify-between gap-2">
           <div className="min-w-0">
             <h1 className="text-lg font-semibold text-zinc-900">Products</h1>
@@ -1217,40 +1559,35 @@ export default function Catalog() {
           <button
             type="button"
             onClick={() => setRefineOpen(true)}
-            className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-medium bg:white/90 text-zinc-800 shadow-sm active:scale-[0.97] transition border border-zinc-200 hover:border-zinc-300"
+            className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-medium bg-white/90 text-zinc-800 shadow-sm active:scale-[0.97] transition border border-zinc-200 hover:border-zinc-300"
           >
             <SlidersHorizontal size={14} />
             Refine
           </button>
         </div>
 
-        {/* Context chips */}
         {(hasSearch || anyActiveFilter || sortKey !== "relevance" || pageSize !== 12) && (
           <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-700">
             {hasSearch && (
-              <span className="rounded-full border bg:white/80 px-2.5 py-1 border-zinc-200">
+              <span className="rounded-full border bg-white/80 px-2.5 py-1 border-zinc-200">
                 Search: <span className="font-semibold">{query.trim()}</span>
               </span>
             )}
             {anyActiveFilter && (
-              <span className="rounded-full border bg:white/80 px-2.5 py-1 border-zinc-200">
+              <span className="rounded-full border bg-white/80 px-2.5 py-1 border-zinc-200">
                 Filters: <span className="font-semibold">active</span>
               </span>
             )}
             {sortKey !== "relevance" && (
-              <span className="rounded-full border bg:white/80 px-2.5 py-1 border-zinc-200">
+              <span className="rounded-full border bg-white/80 px-2.5 py-1 border-zinc-200">
                 Sort:{" "}
                 <span className="font-semibold">
-                  {sortKey === "price-asc"
-                    ? "Low → High"
-                    : sortKey === "price-desc"
-                    ? "High → Low"
-                    : "Relevance"}
+                  {sortKey === "price-asc" ? "Low → High" : sortKey === "price-desc" ? "High → Low" : "Relevance"}
                 </span>
               </span>
             )}
             {pageSize !== 12 && (
-              <span className="rounded-full border bg:white/80 px-2.5 py-1 border-zinc-200">
+              <span className="rounded-full border bg-white/80 px-2.5 py-1 border-zinc-200">
                 Per page: <span className="font-semibold">{pageSize}</span>
               </span>
             )}
@@ -1265,12 +1602,11 @@ export default function Catalog() {
           </div>
         )}
 
-        {/* Desktop search */}
         <div className="hidden md:block mt-3 mb-4">
           <div className="relative max-w-2xl">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
             <input
-              ref={inputRef}
+              ref={desktopInputRef}
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
@@ -1289,7 +1625,7 @@ export default function Catalog() {
                 } else if (e.key === "Enter") {
                   e.preventDefault();
                   const pick = suggestions[activeIdx];
-                  if (pick) nav(`/product/${pick.id}`);
+                  if (pick) goToProduct(pick.id);
                   setShowSuggest(false);
                 } else if (e.key === "Escape") {
                   setShowSuggest(false);
@@ -1319,7 +1655,7 @@ export default function Catalog() {
                           }`}
                           onClick={() => {
                             setShowSuggest(false);
-                            nav(`/product/${p.id}`);
+                            goToProduct(p.id);
                           }}
                         >
                           {p.imagesJson?.[0] ? (
@@ -1354,9 +1690,7 @@ export default function Catalog() {
           </div>
         </div>
 
-        {/* Body layout */}
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
-          {/* Desktop left filters */}
           <aside className="hidden md:block">
             <div className="sticky top-24 rounded-2xl bg-white/90 p-4 border border-zinc-200">
               <div className="flex items-center justify-between mb-3">
@@ -1376,7 +1710,6 @@ export default function Catalog() {
                 )}
               </div>
 
-              {/* Sort */}
               <div className="mb-3">
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Sort</label>
                 <select
@@ -1390,7 +1723,6 @@ export default function Catalog() {
                 </select>
               </div>
 
-              {/* Per page */}
               <div className="mb-3">
                 <label className="mb-1 block text-xs font-medium text-zinc-700">Per page</label>
                 <select
@@ -1404,7 +1736,6 @@ export default function Catalog() {
                 </select>
               </div>
 
-              {/* In stock */}
               <div className="mb-4">
                 <label className="inline-flex items-center gap-2 text-xs font-medium text-zinc-800">
                   <input
@@ -1417,7 +1748,6 @@ export default function Catalog() {
                 </label>
               </div>
 
-              {/* Categories */}
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-xs font-semibold text-zinc-800">Categories</h4>
@@ -1429,36 +1759,83 @@ export default function Catalog() {
                     Reset
                   </button>
                 </div>
-                <ul className="space-y-1.5 max-h-52 overflow-auto pr-1">
-                  {categories.length === 0 && <Shimmer />}
-                  {categories.map((c) => {
-                    const checked = selectedCategories.includes(c.id);
-                    return (
-                      <li key={c.id}>
-                        <button
-                          onClick={() => toggleCategory(c.id)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                            checked
-                              ? "bg-zinc-900 text-white"
-                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
-                          }`}
-                        >
-                          <span className="truncate">{c.name}</span>
-                          <span
-                            className={`ml-2 text-[11px] ${
-                              checked ? "text-white/90" : "text-zinc-600"
+
+                {categoryTreeUi ? (
+                  <ul className="space-y-1.5 max-h-60 overflow-auto pr-1">
+                    {categoryTreeUi.map(({ node, count, depth, hasChildren }) => {
+                      const checked = selectedCategories.includes(node.id);
+                      const expanded = !!expandedCats[node.id];
+                      const pad = Math.min(24, depth * 10);
+
+                      return (
+                        <li key={node.id}>
+                          <div
+                            className={`w-full flex items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${
+                              checked
+                                ? "bg-zinc-900 text-white border-zinc-900"
+                                : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                            }`}
+                            style={{ paddingLeft: 8 + pad }}
+                          >
+                            {hasChildren ? (
+                              <button
+                                type="button"
+                                onClick={() => toggleExpand(node.id)}
+                                className={`inline-flex items-center justify-center w-6 h-6 rounded-lg ${
+                                  checked ? "text-white/90 hover:bg-white/10" : "text-zinc-600 hover:bg-black/5"
+                                }`}
+                                aria-label={expanded ? "Collapse category" : "Expand category"}
+                              >
+                                {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                              </button>
+                            ) : (
+                              <span className="inline-flex w-6 h-6" />
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => toggleCategory(node.id)}
+                              className="min-w-0 flex-1 text-left"
+                              title={node.name}
+                            >
+                              <span className="truncate">{node.name}</span>
+                            </button>
+
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({count})
+                            </span>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <ul className="space-y-1.5 max-h-52 overflow-auto pr-1">
+                    {categories.length === 0 && <Shimmer />}
+                    {categories.map((c) => {
+                      const checked = selectedCategories.includes(c.id);
+                      return (
+                        <li key={c.id}>
+                          <button
+                            onClick={() => toggleCategory(c.id)}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
+                              checked
+                                ? "bg-zinc-900 text-white"
+                                : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
                             }`}
                           >
-                            ({c.count})
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
+                            <span className="truncate">{c.name}</span>
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({c.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
 
-              {/* Brands */}
               {brands.length > 0 && (
                 <div className="mb-4">
                   <div className="flex items-center justify-between mb-2">
@@ -1481,15 +1858,11 @@ export default function Catalog() {
                             className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
                               checked
                                 ? "bg-zinc-900 text-white"
-                                : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                                : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
                             }`}
                           >
                             <span className="truncate">{b.name}</span>
-                            <span
-                              className={`ml-2 text-[11px] ${
-                                checked ? "text-white/90" : "text-zinc-600"
-                              }`}
-                            >
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
                               ({b.count})
                             </span>
                           </button>
@@ -1500,7 +1873,6 @@ export default function Catalog() {
                 </div>
               )}
 
-              {/* Price */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="text-xs font-semibold text-zinc-800">Price</h4>
@@ -1512,6 +1884,7 @@ export default function Catalog() {
                     Reset
                   </button>
                 </div>
+
                 <ul className="space-y-1.5 max-h-56 overflow-auto pr-1">
                   {visiblePriceBuckets.length === 0 && <Shimmer />}
                   {visiblePriceBuckets.map(({ bucket, idx, count }) => {
@@ -1523,15 +1896,11 @@ export default function Catalog() {
                           className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
                             checked
                               ? "bg-zinc-900 text-white"
-                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
                           }`}
                         >
                           <span>{bucket.label}</span>
-                          <span
-                            className={`ml-2 text-[11px] ${
-                              checked ? "text-white/90" : "text-zinc-600"
-                            }`}
-                          >
+                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
                             ({count})
                           </span>
                         </button>
@@ -1543,7 +1912,6 @@ export default function Catalog() {
             </div>
           </aside>
 
-          {/* Products grid */}
           <section className="mt-0 min-w-0">
             {sorted.length === 0 ? (
               <p className="text-sm text-zinc-600">No products match your filters.</p>
@@ -1553,239 +1921,191 @@ export default function Catalog() {
                   {pageItems.map((p) => {
                     const fav = isFav(p.id);
                     const bestPrice = priceForFiltering(p, marginPercent);
+                    const inStock = availableNow(p);
+
+                    const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;
+                    const baseQtyInCart = qtyInCart(cartSnapshot, String(p.id), null);
 
                     const primaryImgRaw =
                       p.imagesJson?.[0] ||
-                      p.variants?.find(
-                        (v) => Array.isArray(v.imagesJson) && v.imagesJson[0]
-                      )?.imagesJson?.[0] ||
-                      undefined;
-
-                    const hoverImgRaw =
-                      p.imagesJson?.[1] ||
-                      p.variants?.find(
-                        (v) => Array.isArray(v.imagesJson) && v.imagesJson[1]
-                      )?.imagesJson?.[1] ||
-                      undefined;
+                      p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
+                      null;
 
                     const primaryImg = resolveImageUrl(primaryImgRaw);
-                    const hoverImg = resolveImageUrl(hoverImgRaw);
-                    const hasDifferentHover = !!hoverImg && hoverImg !== primaryImg;
-
-                    const needsOptions = Array.isArray(p.variants) && p.variants.length > 0;
-
-                    const allOffers = collectAllOffers(p);
-                    const totalAvail = sumActivePositiveQty(allOffers) || null;
-
-                    const inCart = qtyInCart(cartSnapshot as any, p.id, null);
-                    const remaining = totalAvail == null ? null : Math.max(0, totalAvail - inCart);
-
-                    const allowQuickAdd = productSellable(p, marginPercent) && !needsOptions;
-                    const currentQty = inCart;
-                    const canIncrement = remaining == null ? allowQuickAdd : remaining > 0;
-
-                    const available = availableNow(p);
-                    const live = isLive(p);
-
-                    const badge = !live
-                      ? {
-                          text: "Pending approval",
-                          cls: "bg-amber-600/10 text-amber-700 border border-amber-600/20",
-                        }
-                      : available
-                      ? {
-                          text: "In stock",
-                          cls: "bg-emerald-600/10 text-emerald-700 border border-emerald-600/20",
-                        }
-                      : {
-                          text: "Out of stock",
-                          cls: "bg-rose-600/10 text-rose-700 border border-rose-600/20",
-                        };
 
                     return (
-                      <motion.article
+                      <div
                         key={p.id}
-                        whileHover={{ y: -3 }}
-                        className="group w-full rounded-2xl bg-white/90 backdrop-blur overflow-hidden border border-zinc-200 hover:border-zinc-300"
+                        role="link"
+                        tabIndex={0}
+                        onClick={() => goToProduct(p.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            goToProduct(p.id);
+                          }
+                        }}
+                        onDragStart={(e) => e.preventDefault()}
+                        className="block rounded-2xl bg-white border border-zinc-200 hover:border-zinc-300 shadow-sm overflow-hidden active:scale-[0.99] transition cursor-pointer"
                       >
-                        <Link to={`/product/${p.id}`} className="block">
-                          <div className="relative w-full h-28 sm:h-36 md:h-40 overflow-hidden">
-                            <div className="absolute inset-0 grid place-items-center text-zinc-400 text-xs">
+                        <div className="relative w-full h-28 sm:h-36 md:h-40 overflow-hidden bg-zinc-100">
+                          {primaryImg ? (
+                            <img
+                              src={primaryImg}
+                              alt={p.title}
+                              loading="lazy"
+                              className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                              draggable={false}
+                              onError={(e) => {
+                                (e.currentTarget as HTMLImageElement).style.display = "none";
+                              }}
+                            />
+                          ) : (
+                            <div className="absolute inset-0 grid place-items-center text-zinc-400 text-sm pointer-events-none">
                               No image
                             </div>
+                          )}
 
-                            {primaryImg && !brokenImg[`p:${p.id}:${primaryImg}`] ? (
-                              <>
-                                <img
-                                  key={`primary-${p.id}-${primaryImg}`}
-                                  src={primaryImg}
-                                  alt=""
-                                  loading="lazy"
-                                  onError={() => markBroken(`p:${p.id}:${primaryImg}`)}
-                                  className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${
-                                    hasDifferentHover
-                                      ? "opacity-100 group-hover:opacity-0"
-                                      : "opacity-100"
-                                  }`}
-                                />
-
-                                {hasDifferentHover &&
-                                  hoverImg &&
-                                  !brokenImg[`h:${p.id}:${hoverImg}`] && (
-                                    <img
-                                      key={`hover-${p.id}-${hoverImg}`}
-                                      src={hoverImg}
-                                      alt=""
-                                      loading="lazy"
-                                      onError={() => markBroken(`h:${p.id}:${hoverImg}`)}
-                                      className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300 opacity-0 group-hover:opacity-100"
-                                    />
-                                  )}
-                              </>
-                            ) : null}
-
-                            <div className="absolute left-2 top-2">
-                              <span
-                                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] ${badge.cls}`}
-                              >
-                                {badge.text}
-                              </span>
-                            </div>
-
-                            {/* ❤️ Wishlist overlay */}
-                            {!isSupplier && (
-                              <button
-                                type="button"
-                                aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
-                                className={`absolute right-2 top-2 inline-flex items-center justify-center w-8 h-8 rounded-full text-xs shadow-sm border transition ${
-                                  fav
-                                    ? "bg-rose-600 text-white border-rose-600"
-                                    : "bg-white/90 text-zinc-700 border border-zinc-200 hover:bg-zinc-50"
-                                }`}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  if (!isAuthed) {
-                                    openModal({
-                                      title: "Wishlist",
-                                      message: "Please login to use the wishlist.",
-                                    });
-                                    return;
-                                  }
-                                  toggleFav.mutate({ productId: p.id });
-                                }}
-                              >
-                                {fav ? <Heart size={16} /> : <HeartOff size={16} />}
-                              </button>
-                            )}
-                          </div>
-                        </Link>
-
-                        <div className="p-2.5 md:p-4">
-                          <Link to={`/product/${p.id}`} className="block">
-                            <h3 className="font-semibold text-[12px] md:text-sm leading-tight text-zinc-900 line-clamp-1">
-                              {p.title}
-                            </h3>
-                            <div className="text-[10px] md:text-xs leading-tight text-zinc-500 line-clamp-1">
-                              {p.brand?.name ? `${p.brand.name} • ` : ""}
-                              {p.categoryName?.trim() || "Uncategorized"}
-                            </div>
-
-                            <div className="mt-0.5 flex items-center gap-1.5">
-                              <p className="text-sm md:text-base font-semibold">
-                                {ngn.format(bestPrice || 0)}
-                              </p>
-                            </div>
-                          </Link>
-
-                          {Number(p.ratingCount) > 0 && (
-                            <div className="mt-1 text-[10px] md:text-[12px] leading-tight text-amber-700 inline-flex items-center gap-1">
-                              <Star size={14} />
-                              <span>
-                                {Number(p.ratingAvg).toFixed(1)} ({p.ratingCount})
-                              </span>
-                            </div>
+                          {inStock && (
+                            <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-emerald-500/85 px-2.5 py-1 text-[10px] md:text-[11px] font-semibold text-white shadow-sm">
+                              In stock
+                            </span>
                           )}
 
                           {!isSupplier && (
-                            <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 relative z-20">
-                              {needsOptions ? (
-                                <Link
-                                  to={`/product/${p.id}`}
-                                  className="inline-flex items-center gap-2 rounded-full px-2 py-1 text-[10px] md:text-xs border bg-zinc-500 text-white border-zinc-900 hover:opacity-90"
-                                  onClick={(e) => e.stopPropagation()}
-                                  aria-label="Choose options"
-                                  title="Choose options"
-                                >
-                                  Choose opts.
-                                </Link>
-                              ) : currentQty > 0 ? (
-                                <div className="inline-flex items-center gap-1 ml-auto">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      stopTap(e);
-                                      setCartQty(p, currentQty - 1);
-                                    }}
-                                    className="w-9 h-9 md:w-7 md:h-7 rounded-full bg-white text-[14px] flex items-center justify-center text-zinc-700 active:scale-95 transition border border-zinc-300 hover:border-zinc-500"
-                                    aria-label="Decrease quantity"
-                                  >
-                                    −
-                                  </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
 
-                                  <span className="min-w-[18px] text-center text-[11px] font-semibold text-zinc-800">
-                                    {currentQty}
-                                  </span>
+                                if (!isAuthed) {
+                                  openModal({
+                                    title: "Sign in required",
+                                    message: "Please sign in to save items to your wishlist.",
+                                  });
+                                  return;
+                                }
 
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      stopTap(e);
-                                      if (canIncrement) setCartQty(p, currentQty + 1);
-                                    }}
-                                    disabled={!allowQuickAdd || !canIncrement}
-                                    className="w-9 h-9 md:w-7 md:h-7 rounded-full border border-zinc-900 bg-zinc-900 text-white text-[14px] flex items-center justify-center disabled:opacity-40 active:scale-95 transition"
-                                    aria-label="Increase quantity"
-                                  >
-                                    +
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  type="button"
-                                  disabled={!allowQuickAdd}
-                                  onClick={(e) => {
-                                    stopTap(e);
-                                    setCartQty(p, 1);
-                                  }}
-                                  className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] md:text-xs border transition ${
-                                    allowQuickAdd
-                                      ? "bg-zinc-900 text-white border-zinc-900 hover:opacity-90"
-                                      : "bg-white text-zinc-400 border-zinc-200 cursor-not-allowed"
-                                  } ml-auto`}
-                                  aria-label="Add to cart"
-                                  title={allowQuickAdd ? "Add to cart" : "Not available"}
-                                >
-                                  Add to cart
-                                </button>
-                              )}
-                            </div>
+                                toggleFav.mutate({ productId: p.id });
+                              }}
+                              className={`absolute right-2 top-2 z-10 inline-flex items-center justify-center w-8 h-8 rounded-full border shadow-sm transition ${
+                                fav
+                                  ? "bg-rose-50 border-rose-200 text-rose-600"
+                                  : "bg-white/95 border-zinc-200 text-zinc-400 hover:text-rose-600 hover:border-rose-200"
+                              }`}
+                              aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
+                              title={fav ? "Remove from wishlist" : "Add to wishlist"}
+                            >
+                              <Heart size={16} className={fav ? "fill-current" : ""} />
+                            </button>
                           )}
                         </div>
-                      </motion.article>
+
+                        <div className="p-2.5 md:p-4">
+                          <h3 className="font-semibold text-[12px] md:text-sm text-zinc-900 line-clamp-1">{p.title}</h3>
+
+                          <div className="text-[10px] md:text-xs text-zinc-500 line-clamp-1">
+                            {p.brand?.name ? `${p.brand.name} • ` : ""}
+                            {p.categoryName?.trim() || "Uncategorized"}
+                          </div>
+
+                          <div className="mt-1">
+                            <p className="text-sm md:text-base font-semibold">{ngn.format(bestPrice || 0)}</p>
+                          </div>
+
+                          <div className="mt-2">
+                            {hasVariants ? (
+                              <button
+                                type="button"
+                                className="inline-flex items-center rounded-full bg-black/40 px-3 py-1.5 text-[11px] md:text-xs font-medium text-white hover:bg-black/55 transition"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  goToProduct(p.id);
+                                }}
+                              >
+                                Choose options
+                              </button>
+                            ) : (
+                              <div
+                                onClick={stopCardNav}
+                                onMouseDown={stopCardNav}
+                                onPointerDown={stopCardNav}
+                                onTouchStart={stopCardNav}
+                              >
+                                {baseQtyInCart > 0 ? (
+                                  <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
+                                    <button
+                                      type="button"
+                                      aria-label="Decrease quantity"
+                                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-sm font-semibold"
+                                      onClick={(e) => {
+                                        stopCardNav(e);
+                                        void setCartQty(p, baseQtyInCart - 1);
+                                      }}
+                                      onMouseDown={stopCardNav}
+                                      onPointerDown={stopCardNav}
+                                      onTouchStart={stopCardNav}
+                                    >
+                                      −
+                                    </button>
+
+                                    <span className="min-w-[18px] text-center text-[11px] md:text-xs font-semibold">
+                                      {baseQtyInCart}
+                                    </span>
+
+                                    <button
+                                      type="button"
+                                      aria-label="Increase quantity"
+                                      className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-sm font-semibold"
+                                      onClick={(e) => {
+                                        stopCardNav(e);
+                                        void setCartQty(p, baseQtyInCart + 1);
+                                      }}
+                                      onMouseDown={stopCardNav}
+                                      onPointerDown={stopCardNav}
+                                      onTouchStart={stopCardNav}
+                                    >
+                                      +
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={!inStock}
+                                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] md:text-xs font-medium shadow-sm transition ${
+                                      inStock
+                                        ? "bg-black text-white hover:bg-black/90"
+                                        : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                                    }`}
+                                    onClick={(e) => {
+                                      stopCardNav(e);
+                                      if (!inStock) return;
+                                      void setCartQty(p, 1);
+                                    }}
+                                    onMouseDown={stopCardNav}
+                                    onPointerDown={stopCardNav}
+                                    onTouchStart={stopCardNav}
+                                  >
+                                    Add to cart
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
 
-                {/* Pagination (mobile + desktop) */}
-                {/* Mobile */}
                 <div className="mt-5 md:mt-8">
                   <div className="md:hidden rounded-2xl bg-white/85 backdrop-blur p-3 shadow-sm border border-zinc-200">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-[12px] font-semibold tracking-tight text-zinc-800">
-                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of{" "}
-                          {sorted.length}
+                          Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length}
                         </div>
                         <div className="text-[11px] text-zinc-500">
                           Page {currentPage} / {totalPages}
@@ -1832,9 +2152,7 @@ export default function Catalog() {
                         if (Number.isFinite(n)) goTo(n);
                       }}
                     >
-                      <label className="text-[11px] font-semibold tracking-tight text-zinc-700 shrink-0">
-                        Go to
-                      </label>
+                      <label className="text-[11px] font-semibold tracking-tight text-zinc-700 shrink-0">Go to</label>
                       <input
                         type="number"
                         inputMode="numeric"
@@ -1857,11 +2175,9 @@ export default function Catalog() {
                     </form>
                   </div>
 
-                  {/* Desktop */}
                   <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm text-zinc-600">
-                      Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of{" "}
-                      {sorted.length} products
+                      Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
                     </div>
 
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
@@ -1912,11 +2228,10 @@ export default function Catalog() {
                           {pagesDesktop.map((n, idx) => {
                             const prev = pagesDesktop[idx - 1];
                             const showEllipsis = prev != null && n - prev > 1;
+
                             return (
                               <span key={`d-${n}`} className="inline-flex items-center">
-                                {showEllipsis && (
-                                  <span className="px-1 text-sm text-zinc-500">…</span>
-                                )}
+                                {showEllipsis && <span className="px-1 text-sm text-zinc-500">…</span>}
                                 <button
                                   type="button"
                                   onClick={() => goTo(n)}
@@ -1958,330 +2273,204 @@ export default function Catalog() {
         </div>
       </div>
 
-      {/* Refine Drawer */}
-      {refineOpen && (
-        <motion.div
-          className="fixed inset-0 z-50"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-        >
-          <div className="absolute inset-0 bg-black/40" onClick={closeRefine} />
-
+      <AnimatePresence>
+        {refineOpen && (
           <motion.div
-            className="absolute inset-y-0 right-0 w-[88%] max-w-sm bg-white rounded-tl-3xl rounded-bl-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 border border-zinc-200"
-            initial={{ x: "100%" }}
-            animate={{ x: 0 }}
-            exit={{ x: "100%" }}
-            transition={{ type: "spring", stiffness: 260, damping: 28 }}
+            className="fixed inset-0 z-50 pointer-events-none"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.12 }}
+            aria-modal="true"
+            role="dialog"
           >
-            <div className="flex items-center justify-between">
-              <div className="min-w-0">
-                <h3 className="text-base font-semibold text-zinc-900">Refine</h3>
-                <p className="text-[11px] text-zinc-600">
-                  Search, sort, page size, and filters.
-                </p>
-              </div>
+            <div className="absolute inset-0 bg-black/40 pointer-events-auto" onClick={closeRefine} />
 
-              <button
-                type="button"
-                onClick={closeRefine}
-                className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-zinc-100 text-zinc-700 active:scale-95 transition"
-                aria-label="Close refine panel"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            {/* Search in drawer */}
-            <div className="relative">
-              <div className="relative">
-                <Search
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
-                  size={18}
-                />
-                <input
-                  ref={inputRef}
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value);
-                    setShowSuggest(true);
-                    setActiveIdx(0);
-                  }}
-                  onFocus={() => query && setShowSuggest(true)}
-                  onKeyDown={(e) => {
-                    if (!showSuggest || suggestions.length === 0) return;
-                    if (e.key === "ArrowDown") {
-                      e.preventDefault();
-                      setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                    } else if (e.key === "ArrowUp") {
-                      e.preventDefault();
-                      setActiveIdx((i) => Math.max(i - 1, 0));
-                    } else if (e.key === "Enter") {
-                      e.preventDefault();
-                      const pick = suggestions[activeIdx];
-                      if (pick) {
-                        closeRefine();
-                        nav(`/product/${pick.id}`);
-                      }
-                      setShowSuggest(false);
-                    } else if (e.key === "Escape") {
-                      setShowSuggest(false);
-                    }
-                  }}
-                  placeholder="Search products, brands, or categories…"
-                  className="rounded-2xl pl-9 pr-4 py-2.5 w-full bg-white/90 backdrop-blur transition border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
-                  aria-label="Search products"
-                />
-              </div>
-
-              {showSuggest && query && suggestions.length > 0 && (
-                <div
-                  ref={suggestRef}
-                  className="mt-2 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden border border-zinc-200"
-                >
-                  <ul className="max-h-[45vh] overflow-auto p-2">
-                    {suggestions.map((p, i) => {
-                      const active = i === activeIdx;
-                      const minPrice = priceForFiltering(p, marginPercent);
-
-                      return (
-                        <li key={p.id} className="mb-2 last:mb-0">
-                          <button
-                            type="button"
-                            className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
-                              active ? "bg-black/5" : ""
-                            }`}
-                            onClick={() => {
-                              closeRefine();
-                              nav(`/product/${p.id}`);
-                            }}
-                          >
-                            {p.imagesJson?.[0] ? (
-                              <img
-                                src={resolveImageUrl(p.imagesJson?.[0])}
-                                alt=""
-                                aria-hidden="true"
-                                onError={(e) => e.currentTarget.remove()}
-                                className="w-16 h-16 object-cover rounded-xl border border-zinc-200"
-                              />
-                            ) : (
-                              <div className="w-16 h-16 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
-                                —
-                              </div>
-                            )}
-
-                            <div className="min-w-0">
-                              <div className="text-sm font-semibold truncate">{p.title}</div>
-                              <div className="text-xs opacity-80 truncate">
-                                {ngn.format(minPrice || 0)}
-                                {p.categoryName ? ` • ${p.categoryName}` : ""}
-                                {p.brand?.name ? ` • ${p.brand.name}` : ""}
-                              </div>
-                            </div>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
+            <motion.div
+              className="absolute inset-y-0 right-0 w-[88%] max-w-sm bg-white rounded-tl-3xl rounded-bl-3xl shadow-2xl overflow-y-auto p-4 flex flex-col gap-4 border border-zinc-200 pointer-events-auto"
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ type: "spring", stiffness: 260, damping: 28 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <h3 className="text-base font-semibold text-zinc-900">Refine</h3>
+                  <p className="text-[11px] text-zinc-600">Search, sort, page size, and filters.</p>
                 </div>
-              )}
-            </div>
 
-            {/* Sort + Per page */}
-            <div className="grid grid-cols-1 gap-3">
-              <div className="text-sm inline-flex items-center gap-2">
-                <ArrowUpDown size={16} className="text-zinc-600" />
-                <label className="opacity-70 min-w-[44px]">Sort</label>
-                <select
-                  value={sortKey}
-                  onChange={(e) => setSortKey(e.target.value as any)}
-                  className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 border border-zinc-200"
-                >
-                  <option value="relevance">Relevance</option>
-                  <option value="price-asc">Price: Low → High</option>
-                  <option value="price-desc">Price: High → Low</option>
-                </select>
-              </div>
-
-              <div className="text-sm inline-flex items-center gap-2">
-                <LayoutGrid size={16} className="text-zinc-600" />
-                <label className="opacity-70 min-w-[72px]">Per page</label>
-                <select
-                  value={pageSize}
-                  onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
-                  className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 border border-zinc-200"
-                >
-                  <option value={8}>8</option>
-                  <option value={12}>12</option>
-                  <option value={16}>16</option>
-                </select>
-              </div>
-            </div>
-
-            {/* In-stock + clear */}
-            <div className="flex items-center justify-between gap-3">
-              <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
-                <input
-                  type="checkbox"
-                  checked={inStockOnly}
-                  onChange={(e) => setInStockOnly(e.target.checked)}
-                  className="h-4 w-4 rounded border-zinc-300"
-                />
-                In stock
-              </label>
-
-              {(anyActiveFilter || hasSearch) && (
                 <button
                   type="button"
-                  className="text-[12px] font-medium text-fuchsia-700 hover:underline"
-                  onClick={() => {
-                    setQuery("");
-                    setShowSuggest(false);
-                    clearFilters();
-                  }}
+                  onClick={closeRefine}
+                  className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-zinc-100 text-zinc-700 active:scale-95 transition"
+                  aria-label="Close refine panel"
                 >
-                  Clear all
-                </button>
-              )}
-            </div>
-
-            {/* Categories */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="text-[12px] font-semibold text-zinc-800">Categories</h4>
-                <button
-                  className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                  onClick={() => setSelectedCategories([])}
-                  disabled={selectedCategories.length === 0}
-                >
-                  Reset
+                  <X size={18} />
                 </button>
               </div>
-              <ul className="space-y-1.5">
-                {categories.length === 0 && <Shimmer />}
-                {categories.map((c) => {
-                  const checked = selectedCategories.includes(c.id);
-                  return (
-                    <li key={c.id}>
-                      <button
-                        onClick={() => toggleCategory(c.id)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                          checked
-                            ? "bg-zinc-900 text-white"
-                            : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
-                        }`}
-                      >
-                        <span className="truncate">{c.name}</span>
-                        <span
-                          className={`ml-2 text-[11px] ${
-                            checked ? "text-white/90" : "text-zinc-600"
-                          }`}
-                        >
-                          ({c.count})
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
 
-            {/* Brands */}
-            {brands.length > 0 && (
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-[12px] font-semibold text-zinc-800">Brands</h4>
-                  <button
-                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                    onClick={() => setSelectedBrands([])}
-                    disabled={selectedBrands.length === 0}
-                  >
-                    Reset
-                  </button>
+              <div className="relative">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+                  <input
+                    ref={mobileInputRef}
+                    value={query}
+                    onChange={(e) => {
+                      setQuery(e.target.value);
+                      setShowSuggest(true);
+                      setActiveIdx(0);
+                    }}
+                    onFocus={() => query && setShowSuggest(true)}
+                    onKeyDown={(e) => {
+                      if (!showSuggest || suggestions.length === 0) return;
+                      if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                      } else if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setActiveIdx((i) => Math.max(i - 1, 0));
+                      } else if (e.key === "Enter") {
+                        e.preventDefault();
+                        const pick = suggestions[activeIdx];
+                        if (pick) {
+                          closeRefine();
+                          goToProduct(pick.id);
+                        }
+                        setShowSuggest(false);
+                      } else if (e.key === "Escape") {
+                        setShowSuggest(false);
+                      }
+                    }}
+                    placeholder="Search products, brands, or categories…"
+                    className="rounded-2xl pl-9 pr-4 py-2.5 w-full bg-white/90 backdrop-blur transition border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+                    aria-label="Search products"
+                  />
                 </div>
-                <ul className="space-y-1.5">
-                  {brands.map((b) => {
-                    const checked = selectedBrands.includes(b.name);
-                    return (
-                      <li key={b.name}>
-                        <button
-                          onClick={() => toggleBrand(b.name)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                            checked
-                              ? "bg-zinc-900 text-white"
-                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
-                          }`}
-                        >
-                          <span className="truncate">{b.name}</span>
-                          <span
-                            className={`ml-2 text-[11px] ${
-                              checked ? "text-white/90" : "text-zinc-600"
-                            }`}
-                          >
-                            ({b.count})
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
 
-            {/* Price */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="text-[12px] font-semibold text-zinc-800">Price</h4>
+                {showSuggest && query && suggestions.length > 0 && (
+                  <div
+                    ref={suggestRef}
+                    className="mt-2 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden border border-zinc-200"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <ul className="max-h-[45vh] overflow-auto p-2">
+                      {suggestions.map((p, i) => {
+                        const active = i === activeIdx;
+                        const minPrice = priceForFiltering(p, marginPercent);
+
+                        return (
+                          <li key={p.id} className="mb-2 last:mb-0">
+                            <button
+                              type="button"
+                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
+                                active ? "bg-black/5" : ""
+                              }`}
+                              onClick={() => {
+                                closeRefine();
+                                goToProduct(p.id);
+                              }}
+                            >
+                              {p.imagesJson?.[0] ? (
+                                <img
+                                  src={resolveImageUrl(p.imagesJson?.[0])}
+                                  alt=""
+                                  aria-hidden="true"
+                                  onError={(e) => (e.currentTarget as HTMLImageElement).remove()}
+                                  className="w-16 h-16 object-cover rounded-xl border border-zinc-200"
+                                />
+                              ) : (
+                                <div className="w-16 h-16 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
+                                  —
+                                </div>
+                              )}
+
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold truncate">{p.title}</div>
+                                <div className="text-xs opacity-80 truncate">
+                                  {ngn.format(minPrice || 0)}
+                                  {p.categoryName ? ` • ${p.categoryName}` : ""}
+                                  {p.brand?.name ? ` • ${p.brand.name}` : ""}
+                                </div>
+                              </div>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 gap-3">
+                <div className="text-sm inline-flex items-center gap-2">
+                  <ArrowUpDown size={16} className="text-zinc-600" />
+                  <label className="opacity-70 min-w-[44px]">Sort</label>
+                  <select
+                    value={sortKey}
+                    onChange={(e) => setSortKey(e.target.value as SortKey)}
+                    className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 border border-zinc-200"
+                  >
+                    <option value="relevance">Relevance</option>
+                    <option value="price-asc">Price: Low → High</option>
+                    <option value="price-desc">Price: High → Low</option>
+                  </select>
+                </div>
+
+                <div className="text-sm inline-flex items-center gap-2">
+                  <LayoutGrid size={16} className="text-zinc-600" />
+                  <label className="opacity-70 min-w-[72px]">Per page</label>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
+                    className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 border border-zinc-200"
+                  >
+                    <option value={8}>8</option>
+                    <option value={12}>12</option>
+                    <option value={16}>16</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
+                  <input
+                    type="checkbox"
+                    checked={inStockOnly}
+                    onChange={(e) => setInStockOnly(e.target.checked)}
+                    className="h-4 w-4 rounded border-zinc-300"
+                  />
+                  In stock
+                </label>
+
+                {(anyActiveFilter || hasSearch) && (
+                  <button
+                    type="button"
+                    className="text-[12px] font-medium text-fuchsia-700 hover:underline"
+                    onClick={() => {
+                      setQuery("");
+                      setShowSuggest(false);
+                      clearFilters();
+                    }}
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+
+              <div className="pt-2 flex items-center justify-between gap-3">
                 <button
-                  className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
-                  onClick={() => setSelectedBucketIdxs([])}
-                  disabled={selectedBucketIdxs.length === 0}
+                  type="button"
+                  onClick={closeRefine}
+                  className="w-full rounded-2xl px-4 py-2.5 bg-zinc-900 text-white font-semibold active:scale-[0.98] transition"
                 >
-                  Reset
+                  Done
                 </button>
               </div>
-              <ul className="space-y-1.5">
-                {visiblePriceBuckets.length === 0 && <Shimmer />}
-                {visiblePriceBuckets.map(({ bucket, idx, count }) => {
-                  const checked = selectedBucketIdxs.includes(idx);
-                  return (
-                    <li key={bucket.label}>
-                      <button
-                        onClick={() => toggleBucket(idx)}
-                        className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${
-                          checked
-                            ? "bg-zinc-900 text-white"
-                            : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
-                        }`}
-                      >
-                        <span>{bucket.label}</span>
-                        <span
-                          className={`ml-2 text-[11px] ${
-                            checked ? "text-white/90" : "text-zinc-600"
-                          }`}
-                        >
-                          ({count})
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-
-            <div className="pt-2 flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={closeRefine}
-                className="w-full rounded-2xl px-4 py-2.5 bg-zinc-900 text-white font-semibold active:scale-[0.98] transition"
-              >
-                Done
-              </button>
-            </div>
+            </motion.div>
           </motion.div>
-        </motion.div>
-      )}
+        )}
+      </AnimatePresence>
     </SiteLayout>
   );
 }

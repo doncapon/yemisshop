@@ -1023,7 +1023,6 @@ router.post("/purchase-orders/:poId/delivery-otp/verify", requireAuth, async (re
         },
       });
 
-      await assertSupplierPayoutReadyTx(tx, updatedPo.supplierId);
       const payout = await releasePayoutForPOTx(tx, updatedPo.id);
 
       // ✅ Notifications: customer, supplier, admins on delivery

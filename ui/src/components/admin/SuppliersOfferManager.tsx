@@ -516,11 +516,39 @@ export default function SuppliersOfferManager({
   };
 
   function hasOtherBaseRow(rowKey: string) {
-    const baseRows = rows.filter((r) => !r.isBlank && r.variantId == null);
-    if (baseRows.length === 0) return false;
-    const selfIsBase = baseRows.some((r) => r.rowKey === rowKey);
-    return selfIsBase ? baseRows.length > 1 : baseRows.length > 0;
+    return rows.some(
+      (r) =>
+        r.rowKey !== rowKey &&
+        !r.isBlank &&
+        r.variantId == null
+    );
   }
+
+
+  function getRowComboError(row: Row): string | null {
+    // blank / not chosen yet
+    if (row.isBlank) {
+      return "Pick a base offer or a variant.";
+    }
+
+    // duplicate base
+    if (row.variantId == null && hasOtherBaseRow(row.rowKey)) {
+      return "BASE offer already exists.";
+    }
+
+    // invalid/missing variant
+    if (row.variantId != null) {
+      const vid = sanitizeVariantId(row.variantId);
+      if (!vid) return "Selected variant is invalid for this product.";
+
+      if (isVariantUsedElsewhere(vid, row.rowKey)) {
+        return "This variant already has an offer row.";
+      }
+    }
+
+    return null;
+  }
+
 
   function isVariantUsedElsewhere(variantId: string, rowKey: string) {
     if (!variantId) return false;
@@ -612,7 +640,6 @@ export default function SuppliersOfferManager({
   }
 
   async function load() {
-    console.log("got called");
     if (!productId) return;
 
     abortRef.current?.abort();
@@ -864,7 +891,6 @@ export default function SuppliersOfferManager({
       setSaving(false);
     }
   }
-
   async function saveAll() {
     if (!canEdit) return;
 
@@ -872,7 +898,6 @@ export default function SuppliersOfferManager({
     setError("");
 
     try {
-      // Block saves if any row has not chosen base/variant
       const blankRow = rows.find((r) => r.isBlank);
       if (blankRow) {
         throw new Error("Each row must pick base or a variant before saving.");
@@ -898,9 +923,7 @@ export default function SuppliersOfferManager({
 
       const postOffer = async (payload: any) => {
         return apiFetchJson<any>(
-          `/api/admin/products/${encodeURIComponent(
-            productId
-          )}/supplier-offers`,
+          `/api/admin/products/${encodeURIComponent(productId)}/supplier-offers`,
           {
             method: "POST",
             body: JSON.stringify(payload),
@@ -917,6 +940,7 @@ export default function SuppliersOfferManager({
                 offerId: newOfferId,
                 deleteOfferId: null,
                 isNew: newOfferId ? false : r.isNew,
+                isBlank: false,
               }
               : r
           )
@@ -924,24 +948,33 @@ export default function SuppliersOfferManager({
       };
 
       for (const r of rows) {
+        const comboError = getRowComboError(r);
+        if (comboError) throw new Error(comboError);
+
         const qty = Math.max(0, Math.trunc(Number(r.availableQty) || 0));
         const isActive = !!r.isActive;
-
         const price = Math.max(0, safeNum(r.unitPrice, 0));
-        if (price <= 0) throw new Error("Price must be greater than 0.");
+
+        if (price <= 0) {
+          throw new Error("Price must be greater than 0.");
+        }
 
         const leadDays =
           r.leadDays === "" || r.leadDays == null
             ? null
             : Math.max(0, Math.trunc(Number(r.leadDays) || 0));
 
-        const isVariantOfferId = r.offerId?.startsWith("variant:");
+        const variantId = r.variantId ? String(r.variantId).trim() : null;
+        const offerId = r.offerId ? String(r.offerId) : null;
 
-        if (r.variantId == null) {
-          // BASE in UI
-          if (r.offerId) {
-            // If this row currently points to a VARIANT offer, tell backend to convert it
+        const isExistingBase = !!offerId && offerId.startsWith("base:");
+        const isExistingVariant = !!offerId && offerId.startsWith("variant:");
+
+        // ---------------- BASE ROW ----------------
+        if (variantId == null) {
+          if (offerId) {
             const payload: any = {
+              kind: "BASE" as const,
               price,
               currency: "NGN",
               availableQty: qty,
@@ -949,23 +982,21 @@ export default function SuppliersOfferManager({
               leadDays,
             };
 
-            if (isVariantOfferId) {
-              // ✅ triggers VARIANT -> BASE conversion in the backend
+            // convert variant -> base
+            if (isExistingVariant) {
               payload.variantId = null;
             }
 
-            const res = await patchOffer(r.offerId, payload);
+            const res = await patchOffer(offerId, payload);
 
-            // For conversions, backend responds with { ok, converted: true, from, to, data }
-            const maybeTo =
+            const convertedTo =
               res && typeof res === "object" && "to" in res && (res as any).to
                 ? String((res as any).to)
                 : null;
 
-            setOfferId(r.rowKey, maybeTo ?? r.offerId);
+            setOfferId(r.rowKey, convertedTo ?? offerId);
           } else {
-            // New BASE offer
-            const payload = {
+            const out = await postOffer({
               kind: "BASE" as const,
               variantId: null,
               price,
@@ -973,9 +1004,8 @@ export default function SuppliersOfferManager({
               availableQty: qty,
               isActive,
               leadDays,
-            };
+            });
 
-            const out = await postOffer(payload);
             const dto = unwrap<any>(out);
             const createdId: string | null =
               (dto?.data?.id ? String(dto.data.id) : null) ??
@@ -983,6 +1013,52 @@ export default function SuppliersOfferManager({
 
             setOfferId(r.rowKey, createdId);
           }
+
+          continue;
+        }
+
+        // ---------------- VARIANT ROW ----------------
+        if (offerId) {
+          const payload: any = {
+            kind: "VARIANT" as const,
+            variantId,
+            price,
+            currency: "NGN",
+            availableQty: qty,
+            isActive,
+            leadDays,
+          };
+
+          // base -> variant conversion
+          if (isExistingBase) {
+            payload.variantId = variantId;
+          }
+
+          const res = await patchOffer(offerId, payload);
+
+          const convertedTo =
+            res && typeof res === "object" && "to" in res && (res as any).to
+              ? String((res as any).to)
+              : null;
+
+          setOfferId(r.rowKey, convertedTo ?? offerId);
+        } else {
+          const out = await postOffer({
+            kind: "VARIANT" as const,
+            variantId,
+            price,
+            currency: "NGN",
+            availableQty: qty,
+            isActive,
+            leadDays,
+          });
+
+          const dto = unwrap<any>(out);
+          const createdId: string | null =
+            (dto?.data?.id ? String(dto.data.id) : null) ??
+            (dto?.id ? String(dto.id) : null);
+
+          setOfferId(r.rowKey, createdId);
         }
       }
 
@@ -1133,9 +1209,11 @@ export default function SuppliersOfferManager({
               </tr>
             ) : (
               rows.map((r) => {
-                const baseDisabled = hasOtherBaseRow(r.rowKey);
+                const isCurrentBaseRow = !r.isBlank && r.variantId == null;
+                const baseExistsElsewhere = rows.some(
+                  (x) => x.rowKey !== r.rowKey && !x.isBlank && x.variantId == null
+                );
 
-                // variants that are not already used in other non-blank rows
                 const variantChoices = variants.filter((v) => {
                   if (r.variantId === v.id) return true;
                   return !isVariantUsedElsewhere(v.id, r.rowKey);
@@ -1146,14 +1224,14 @@ export default function SuppliersOfferManager({
                     kind: "BLANK" as const,
                     label: "— Blank (free / temporary) —",
                   },
-                  ...(baseDisabled
-                    ? []
-                    : [
+                  ...(!baseExistsElsewhere || isCurrentBaseRow
+                    ? [
                       {
                         kind: "BASE" as const,
                         label: "— None (base offer) —",
                       },
-                    ]),
+                    ]
+                    : []),
                   ...variantChoices.map((v) => ({
                     kind: "VARIANT" as const,
                     v,
@@ -1162,11 +1240,22 @@ export default function SuppliersOfferManager({
                 ];
 
                 const priceNum = safeNum(r.unitPrice, 0);
-                const priceInputValue: string =
-                  priceNum <= 0 ? "" : String(priceNum);
+                const priceInputValue: string = priceNum <= 0 ? "" : String(priceNum);
 
-                const comboHasError =
-                  canEdit && !!r.isNew && !r.offerId; // 🔴 red border until first successful save
+                const comboError =
+                  r.isBlank
+                    ? "Pick a base offer or a variant."
+                    : r.variantId == null
+                      ? baseExistsElsewhere && !isCurrentBaseRow
+                        ? "BASE offer already exists."
+                        : null
+                      : !sanitizeVariantId(r.variantId)
+                        ? "Selected variant is invalid for this product."
+                        : isVariantUsedElsewhere(r.variantId, r.rowKey)
+                          ? "This variant already has an offer row."
+                          : null;
+
+                const comboHasError = canEdit && !!comboError;
 
                 return (
                   <tr key={r.rowKey} className="border-t border-slate-200">
@@ -1177,18 +1266,17 @@ export default function SuppliersOfferManager({
                         valueVariantId={r.variantId}
                         items={items}
                         onSelectBase={() => {
-                          if (r.variantId == null) return;
+                          if (r.variantId == null && !r.isBlank) return;
 
-                          if (hasOtherBaseRow(r.rowKey)) {
-                            setError(
-                              "A BASE offer already exists. You can’t add another base row."
-                            );
+                          if (baseExistsElsewhere && !isCurrentBaseRow) {
+                            setError("A BASE offer already exists. You can’t add another base row.");
                             return;
                           }
+
                           snapRowToVariant(r.rowKey, null);
                         }}
                         onSelectVariant={(vid) => {
-                          if (r.variantId === vid) return;
+                          if (r.variantId === vid && !r.isBlank) return;
 
                           if (isVariantUsedElsewhere(vid, r.rowKey)) {
                             setError("This variant already has an offer row.");
@@ -1221,16 +1309,15 @@ export default function SuppliersOfferManager({
                         }}
                       />
 
-                      {baseDisabled ? (
-                        <div className="mt-1 text-[11px] text-slate-400">
-                          BASE offer already exists.
+                      {comboError ? (
+                        <div className="mt-1 text-[11px] text-red-600">
+                          {comboError}
                         </div>
                       ) : null}
 
                       {r.hasOrders ? (
                         <div className="mt-1 text-[11px] text-amber-700">
-                          This offer has existing orders. Variant selection is
-                          locked.
+                          This offer has existing orders. Variant selection is locked.
                         </div>
                       ) : null}
 
@@ -1297,14 +1384,8 @@ export default function SuppliersOfferManager({
                         onChange={(e) => {
                           const raw = e.target.value;
                           const n = raw === "" ? 0 : safeNum(raw, 0);
-                          const v = Math.max(
-                            0,
-                            Math.trunc(Number(n) || 0)
-                          );
-                          const nextInStock = deriveInStock(
-                            !!r.isActive,
-                            v
-                          );
+                          const v = Math.max(0, Math.trunc(Number(n) || 0));
+                          const nextInStock = deriveInStock(!!r.isActive, v);
 
                           setRows((prev) =>
                             prev.map((x) =>
@@ -1329,10 +1410,7 @@ export default function SuppliersOfferManager({
                         checked={r.isActive}
                         onChange={(e) => {
                           const checked = e.target.checked;
-                          const nextInStock = deriveInStock(
-                            checked,
-                            r.availableQty
-                          );
+                          const nextInStock = deriveInStock(checked, r.availableQty);
 
                           setRows((prev) =>
                             prev.map((x) =>

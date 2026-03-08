@@ -241,7 +241,7 @@ export default function Wishlist() {
               {rows.map((it) => {
                 const p = it.product;
                 const title = p?.title || "Product";
-                const href = p?.id ? `/product/${p.id}` : "#";
+                const href = p?.id ? `/products/${p.id}` : "#";
 
                 const img =
                   Array.isArray(p?.images)

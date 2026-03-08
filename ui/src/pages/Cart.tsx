@@ -1,12 +1,9 @@
 // src/pages/Cart.tsx
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
 import SiteLayout from "../layouts/SiteLayout";
 import { useAuthStore } from "../store/auth";
-
-// ✅ Shared cart model (single source of truth for guest/local mirror)
 import { readCartLines, writeCartLines, toCartPageItems } from "../utils/cartModel";
 
 /* ---------------- Types ---------------- */
@@ -19,79 +16,28 @@ type SelectedOption = {
 };
 
 type CartItem = {
-  id?: string; // server cart item id (when authed)
+  id?: string;
   kind?: "BASE" | "VARIANT";
   productId: string;
   variantId?: string | null;
-
   title: string;
   qty: number;
-
-  // retail cache for UI only (quote is authoritative)
   unitPrice: number;
   totalPrice: number;
-
   selectedOptions?: SelectedOption[];
   image?: string;
 };
 
-type Availability = {
-  totalAvailable: number;
-  cheapestSupplierUnit?: number | null;
-};
-
-type ProductPools = {
-  hasVariantSpecific: boolean;
-  genericTotal: number;
-  productTotal: number;
-  perVariantTotals: Record<string, number>;
-};
-
-type AvailabilityPayload = {
-  lines: Record<string, Availability>;
-  products: Record<string, ProductPools>;
-};
-
-/* ---------------- Pricing Quote (supplier-split) ---------------- */
-
-type QuoteAllocation = {
-  supplierId: string;
-  supplierName?: string | null;
-  qty: number;
-  unitPrice: number; // supplier unit
-  offerId?: string | null;
-  lineTotal?: number;
-};
-
-type QuoteLine = {
-  key: string;
+type ServerCartItem = {
+  id: string;
   productId: string;
   variantId?: string | null;
-  kind: "BASE" | "VARIANT";
-  qtyRequested: number;
-  qtyPriced: number;
-  allocations: QuoteAllocation[];
-  lineTotal: number; // supplier total
-  minUnit: number;
-  maxUnit: number;
-  averageUnit: number;
-  currency?: string | null;
-  warnings?: string[];
-};
-
-type QuotePayload = {
-  currency?: string | null;
-  subtotal: number;
-  lines: Record<string, QuoteLine>;
-  raw?: any;
-};
-
-/* ---------------- Settings (public) ---------------- */
-
-type PublicSettings = {
-  marginPercent?: number | string | null;
-  commerce?: { marginPercent?: number | string | null } | null;
-  pricing?: { marginPercent?: number | string | null } | null;
+  kind?: "BASE" | "VARIANT";
+  qty: number;
+  selectedOptions?: any;
+  titleSnapshot?: string | null;
+  imageSnapshot?: string | null;
+  unitPriceCache?: any;
 };
 
 const ngn = new Intl.NumberFormat("en-NG", {
@@ -100,12 +46,15 @@ const ngn = new Intl.NumberFormat("en-NG", {
   maximumFractionDigits: 2,
 });
 
-/* ---------------- Helpers: numbers ---------------- */
-
 const API_ORIGIN =
   String((import.meta as any)?.env?.VITE_API_URL || (import.meta as any)?.env?.API_URL || "")
     .trim()
     .replace(/\/+$/, "") || "https://api.dayspringhouse.com";
+
+const AXIOS_COOKIE_CFG = { withCredentials: true as const };
+const CART_BFCACHE_REFRESH_KEY = "__cart_bfcache_refresh_once__";
+
+/* ---------------- Helpers ---------------- */
 
 function resolveImageUrl(input?: string | null): string | undefined {
   const s = String(input ?? "").trim();
@@ -123,69 +72,13 @@ function resolveImageUrl(input?: string | null): string | undefined {
   return `${window.location.origin}/${s}`;
 }
 
-const asInt = (v: any, d = 0) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.trunc(n) : d;
-};
-
-const asMoney = (v: any, d = 0) => {
+function asMoney(v: any, d = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
-};
+}
 
-const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
-
-const clampPct = (p: number) => {
-  if (!Number.isFinite(p)) return 0;
-  if (p < 0) return 0;
-  if (p > 1000) return 1000;
-  return p;
-};
-
-const applyMargin = (supplierUnit: number, marginPercent: number) => {
-  const p = clampPct(marginPercent);
-  return supplierUnit * (1 + p / 100);
-};
-
-const AXIOS_COOKIE_CFG = { withCredentials: true as const };
-
-/* ---------------- Server cart fetch ---------------- */
-
-type ServerCartItem = {
-  id: string;
-  productId: string;
-  variantId?: string | null;
-  kind?: "BASE" | "VARIANT";
-  qty: number;
-  selectedOptions?: any;
-  titleSnapshot?: string | null;
-  imageSnapshot?: string | null;
-  unitPriceCache?: any;
-};
-
-/* ---------------- Shared keys / options ---------------- */
-
-/** Heuristic: detect IDs / codes like `cmm7f4...` so we don't show them as labels */
-function isCodeLike(raw: string | undefined | null): boolean {
-  const s = String(raw ?? "").trim();
-  if (!s) return false;
-
-  // If it has spaces, treat as a normal human label.
-  if (/\s/.test(s)) return false;
-
-  // Explicit DaySpring-style IDs like cmm7f4...
-  if (/^cmm[0-9a-z]{5,}$/i.test(s)) return true;
-
-  // UUID-ish tokens
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) {
-    return true;
-  }
-
-  // Very long pure hex strings
-  if (/^[0-9a-f]{16,}$/i.test(s)) return true;
-
-  // Otherwise, assume it’s a human-readable name (e.g. Black-M, Blue_L)
-  return false;
+function round2(n: number) {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
 function normalizeSelectedOptions(raw: any): SelectedOption[] {
@@ -205,42 +98,6 @@ function normalizeSelectedOptions(raw: any): SelectedOption[] {
   });
 
   return arr;
-}
-
-async function fetchServerCart(): Promise<CartItem[]> {
-  const { data } = await api.get("/api/cart", AXIOS_COOKIE_CFG);
-  const items: ServerCartItem[] = Array.isArray((data as any)?.items) ? (data as any).items : [];
-
-  return items.map((it) => {
-    const qty = Math.max(1, Number(it.qty) || 1);
-    const unit = Number(it.unitPriceCache) || 0;
-    const title = String(it.titleSnapshot ?? "");
-    const img = it.imageSnapshot ? resolveImageUrl(it.imageSnapshot) : undefined;
-
-    return {
-      id: String(it.id),
-      kind: (it.kind as any) || (it.variantId ? "VARIANT" : "BASE"),
-      productId: String(it.productId),
-      variantId: it.variantId == null ? null : String(it.variantId),
-      title,
-      qty,
-      unitPrice: unit,
-      totalPrice: unit * qty,
-      // ✅ normalize to strip empty junk & keep structure
-      selectedOptions: normalizeSelectedOptions(it.selectedOptions),
-      image: img,
-    };
-  });
-}
-
-async function serverSetQty(item: CartItem, qty: number) {
-  if (!item.id) return;
-  const next = Math.max(0, Math.floor(Number(qty) || 0));
-  if (next <= 0) {
-    await api.delete(`/api/cart/items/${item.id}`, AXIOS_COOKIE_CFG);
-  } else {
-    await api.patch(`/api/cart/items/${item.id}`, { qty: next }, AXIOS_COOKIE_CFG);
-  }
 }
 
 function optionsKey(sel?: SelectedOption[]) {
@@ -264,299 +121,118 @@ function lineKeyFor(item: Pick<CartItem, "productId" | "variantId" | "selectedOp
   return `${pid}::base`;
 }
 
-const availKeyFor = (productId: string, variantId?: string | null) => `${productId}::${variantId ?? "null"}`;
+function sameLine(a: CartItem, b: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) {
+  return lineKeyFor(a) === lineKeyFor(b);
+}
 
-const sameLine = (a: CartItem, b: Pick<CartItem, "productId" | "variantId" | "selectedOptions" | "kind">) =>
-  lineKeyFor(a) === lineKeyFor(b);
+function isCodeLike(raw: string | undefined | null): boolean {
+  const s = String(raw ?? "").trim();
+  if (!s) return false;
+  if (/\s/.test(s)) return false;
+  if (/^cmm[0-9a-z]{5,}$/i.test(s)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return true;
+  if (/^[0-9a-f]{16,}$/i.test(s)) return true;
+  return false;
+}
 
-const isBaseLine = (it: CartItem) => {
+function isBaseLine(it: CartItem) {
   if (it.variantId) return false;
   if (it.kind === "VARIANT") return false;
   return true;
-};
+}
 
-/* ---------------- Availability (batched) ---------------- */
+function sameCartItems(a: CartItem[], b: CartItem[]) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
 
-async function fetchAvailabilityForCart(items: CartItem[]): Promise<AvailabilityPayload> {
-  if (!items.length) return { lines: {}, products: {} };
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i];
+    const y = b[i];
+    if (!y) return false;
 
-  const pairs = items.map((i) => ({ productId: i.productId, variantId: i.variantId ?? null }));
-  const uniqPairs: { productId: string; variantId: string | null }[] = [];
-  const seen = new Set<string>();
+    if (lineKeyFor(x) !== lineKeyFor(y)) return false;
+    if (String(x.id ?? "") !== String(y.id ?? "")) return false;
+    if (String(x.title ?? "") !== String(y.title ?? "")) return false;
+    if (String(x.image ?? "") !== String(y.image ?? "")) return false;
+    if (Math.max(1, Number(x.qty) || 1) !== Math.max(1, Number(y.qty) || 1)) return false;
+    if (asMoney(x.unitPrice, 0) !== asMoney(y.unitPrice, 0)) return false;
+    if (asMoney(x.totalPrice, 0) !== asMoney(y.totalPrice, 0)) return false;
 
-  for (const p of pairs) {
-    const k = availKeyFor(p.productId, p.variantId);
-    if (!seen.has(k)) {
-      seen.add(k);
-      uniqPairs.push(p);
-    }
-  }
+    const xs = normalizeSelectedOptions(x.selectedOptions);
+    const ys = normalizeSelectedOptions(y.selectedOptions);
+    if (xs.length !== ys.length) return false;
 
-  const itemsParam = uniqPairs.map((p) => `${p.productId}:${p.variantId ?? ""}`).join(",");
-
-  const attempts = [
-    `/api/catalog/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
-    `/api/products/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
-    `/api/supplier-offers/availability?items=${encodeURIComponent(itemsParam)}&includeBase=1`,
-  ];
-
-  for (const url of attempts) {
-    try {
-      const { data } = await api.get(url);
-      const arr = Array.isArray((data as any)?.data) ? (data as any).data : Array.isArray(data) ? data : [];
-      if (Array.isArray(arr)) {
-        const lines: Record<string, Availability> = {};
-        type Row = {
-          productId: string;
-          variantId?: string | null;
-          totalAvailable?: number;
-          cheapestSupplierUnit?: number | null;
-        };
-
-        const byProduct: Record<string, { generic: number; perVariant: Record<string, number> }> = {};
-
-        for (const r of arr as Row[]) {
-          const pid = String(r.productId);
-          const vid = r.variantId == null ? null : String(r.variantId);
-          const avail = Math.max(0, Number(r.totalAvailable) || 0);
-          const k = availKeyFor(pid, vid);
-
-          lines[k] = {
-            totalAvailable: avail,
-            cheapestSupplierUnit: Number.isFinite(Number(r.cheapestSupplierUnit)) ? Number(r.cheapestSupplierUnit) : null,
-          };
-
-          if (!byProduct[pid]) byProduct[pid] = { generic: 0, perVariant: {} };
-          if (vid == null) byProduct[pid].generic += avail;
-          else byProduct[pid].perVariant[vid] = (byProduct[pid].perVariant[vid] || 0) + avail;
-        }
-
-        const products: Record<string, ProductPools> = {};
-        for (const [pid, agg] of Object.entries(byProduct)) {
-          const hasVariantSpecific = Object.keys(agg.perVariant).length > 0;
-          const variantSum = Object.values(agg.perVariant).reduce((s, n) => s + n, 0);
-          const productTotal = agg.generic + variantSum;
-
-          products[pid] = {
-            hasVariantSpecific,
-            genericTotal: agg.generic,
-            productTotal,
-            perVariantTotals: agg.perVariant,
-          };
-        }
-
-        return { lines, products };
+    for (let j = 0; j < xs.length; j += 1) {
+      if (
+        xs[j].attributeId !== ys[j].attributeId ||
+        xs[j].attribute !== ys[j].attribute ||
+        String(xs[j].valueId ?? "") !== String(ys[j].valueId ?? "") ||
+        xs[j].value !== ys[j].value
+      ) {
+        return false;
       }
-    } catch {
-      /* try next */
     }
   }
 
-  return { lines: {}, products: {} };
+  return true;
 }
 
-/* ---------------- Supplier-split pricing quote ---------------- */
+function cartSignature(items: CartItem[]) {
+  return items
+    .map((x) => {
+      const sel = normalizeSelectedOptions(x.selectedOptions)
+        .map((o) => `${o.attributeId}:${o.valueId ?? ""}:${o.value}`)
+        .join(",");
+      return [
+        lineKeyFor(x),
+        String(x.id ?? ""),
+        Math.max(0, Number(x.qty) || 0),
+        Number.isFinite(Number(x.unitPrice)) ? Number(x.unitPrice) : 0,
+        String(x.title ?? ""),
+        String(x.image ?? ""),
+        sel,
+      ].join("::");
+    })
+    .join("||");
+}
 
-function normalizeQuoteResponse(raw: any, cart: CartItem[]): QuotePayload | null {
-  const root = raw?.data?.data ?? raw?.data ?? raw ?? null;
-  if (!root) return null;
+/* ---------------- Server cart helpers ---------------- */
 
-  const currency = root.currency ?? root?.quote?.currency ?? null;
-  const maybe = root.quote ?? root;
-  const subtotal = asMoney(maybe.subtotal ?? maybe.itemsSubtotal ?? maybe.totalItems ?? maybe.total ?? 0, 0);
+async function fetchServerCart(): Promise<CartItem[]> {
+  const { data } = await api.get("/api/cart", AXIOS_COOKIE_CFG);
+  const items: ServerCartItem[] = Array.isArray((data as any)?.items) ? (data as any).items : [];
 
-  const outLines: Record<string, QuoteLine> = {};
-
-  const ensureKey = (x: any) => {
-    const k = String(x?.key ?? "");
-    if (k) return k;
-
-    const pid = String(x?.productId ?? "");
-    const vid = x?.variantId == null ? null : String(x.variantId);
-    const kind: "BASE" | "VARIANT" = x?.kind === "VARIANT" || (!!vid && x?.kind !== "BASE") ? "VARIANT" : "BASE";
-
-    if (!pid) return "";
-    if (kind === "VARIANT") return vid ? `${pid}::v:${vid}` : `${pid}::v:unknown`;
-    return `${pid}::base`;
-  };
-
-  const normalizeAlloc = (a: any): QuoteAllocation => {
-    const qty = Math.max(0, asInt(a?.qty ?? a?.quantity ?? 0, 0));
-    const unitPrice = asMoney(a?.unitPrice ?? a?.price ?? a?.supplierPrice ?? 0, 0);
-    const lineTotal = asMoney(a?.lineTotal ?? qty * unitPrice, qty * unitPrice);
+  return items.map((it) => {
+    const qty = Math.max(1, Number(it.qty) || 1);
+    const unit = Number(it.unitPriceCache) || 0;
+    const title = String(it.titleSnapshot ?? "");
+    const img = it.imageSnapshot ? resolveImageUrl(it.imageSnapshot) : undefined;
 
     return {
-      supplierId: String(a?.supplierId ?? a?.supplier_id ?? ""),
-      supplierName: a?.supplierName ?? a?.supplier?.name ?? null,
+      id: String(it.id),
+      kind: (it.kind as any) || (it.variantId ? "VARIANT" : "BASE"),
+      productId: String(it.productId),
+      variantId: it.variantId == null ? null : String(it.variantId),
+      title,
       qty,
-      unitPrice,
-      offerId: a?.offerId ?? a?.supplierOfferId ?? null,
-      lineTotal,
+      unitPrice: unit,
+      totalPrice: unit * qty,
+      selectedOptions: normalizeSelectedOptions(it.selectedOptions),
+      image: img,
     };
-  };
-
-  const normalizeLine = (x: any): QuoteLine | null => {
-    const key = ensureKey(x);
-    if (!key) return null;
-
-    const productId = String(x?.productId ?? "");
-    const variantId = x?.variantId == null ? null : String(x.variantId);
-    const kind: "BASE" | "VARIANT" =
-      x?.kind === "BASE" || x?.kind === "VARIANT" ? x.kind : variantId ? "VARIANT" : "BASE";
-
-    const qtyRequested = Math.max(1, asInt(x?.qtyRequested ?? x?.qty ?? x?.requestedQty ?? 1, 1));
-
-    const allocsRaw = (Array.isArray(x?.allocations) ? x.allocations : x?.allocations ? [x.allocations] : []).concat(
-      Array.isArray(x?.splits) ? x.splits : x?.splits ? [x.splits] : []
-    );
-
-    const allocations = allocsRaw.map(normalizeAlloc).filter((a: any) => a.qty > 0 && a.unitPrice >= 0);
-
-    const lineTotal = asMoney(
-      x?.lineTotal ?? x?.total ?? allocations.reduce((s: any, a: any) => s + asMoney(a.lineTotal, 0), 0),
-      0
-    );
-
-    const qtyPriced = Math.max(
-      0,
-      asInt(x?.qtyPriced ?? allocations.reduce((s: any, a: any) => s + asInt(a.qty, 0), 0), 0)
-    );
-
-    const units = allocations.map((a: any) => asMoney(a.unitPrice, NaN)).filter((n: any) => Number.isFinite(n));
-    const minUnit = units.length ? Math.min(...(units as number[])) : 0;
-    const maxUnit = units.length ? Math.max(...(units as number[])) : 0;
-    const averageUnit = qtyRequested > 0 ? lineTotal / qtyRequested : 0;
-
-    const warnings: string[] = [];
-    if (qtyPriced < qtyRequested) warnings.push("Some units could not be priced/allocated.");
-
-    return {
-      key,
-      productId,
-      variantId,
-      kind,
-      qtyRequested,
-      qtyPriced,
-      allocations,
-      lineTotal,
-      minUnit,
-      maxUnit,
-      averageUnit,
-      currency,
-      warnings: warnings.length ? warnings : undefined,
-    };
-  };
-
-  if (Array.isArray(maybe?.lines)) {
-    for (const x of maybe.lines) {
-      const ln = normalizeLine(x);
-      if (ln) outLines[ln.key] = ln;
-    }
-  }
-
-  if (!Object.keys(outLines).length && maybe?.lines && typeof maybe.lines === "object") {
-    for (const [k, v] of Object.entries(maybe.lines)) {
-      const ln = normalizeLine({ ...(v as any), key: k });
-      if (ln) outLines[ln.key] = ln;
-    }
-  }
-
-  const hasAny = Object.keys(outLines).length > 0;
-  if (!hasAny && !(subtotal > 0)) return null;
-
-  for (const it of cart) {
-    const k = lineKeyFor(it);
-    if (!outLines[k]) {
-      outLines[k] = {
-        key: k,
-        productId: it.productId,
-        variantId: it.variantId ?? null,
-        kind: it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE",
-        qtyRequested: Math.max(1, asInt(it.qty, 1)),
-        qtyPriced: 0,
-        allocations: [],
-        lineTotal: 0,
-        minUnit: 0,
-        maxUnit: 0,
-        averageUnit: 0,
-        currency,
-        warnings: ["No quote returned for this line."],
-      };
-    }
-  }
-
-  return { currency, subtotal, lines: outLines, raw };
+  });
 }
 
-async function fetchPricingQuoteForCart(cart: CartItem[]): Promise<QuotePayload | null> {
-  if (!cart.length) return null;
+async function serverSetQty(item: CartItem, qty: number) {
+  if (!item.id) return;
 
-  const items = cart.map((it) => ({
-    key: lineKeyFor(it),
-    kind: it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE",
-    productId: it.productId,
-    variantId: it.variantId ?? null,
-    qty: Math.max(1, asInt(it.qty, 1)),
-    selectedOptions: Array.isArray(it.selectedOptions) ? normalizeSelectedOptions(it.selectedOptions) : undefined,
-    unitPriceCache: asMoney(it.unitPrice, 0),
-  }));
+  const next = Math.max(0, Math.floor(Number(qty) || 0));
 
-  const attempts: Array<{ method: "post" | "get"; url: string; body?: any }> = [
-    { method: "post", url: "/api/catalog/quote", body: { items } },
-    { method: "post", url: "/api/cart/quote", body: { items } },
-    { method: "post", url: "/api/checkout/quote", body: { items } },
-    { method: "post", url: "/api/orders/quote", body: { items } },
-    { method: "post", url: "/api/catalog/pricing", body: { items } },
-    { method: "post", url: "/api/cart/pricing", body: { items } },
-    { method: "post", url: "/api/checkout/pricing", body: { items } },
-  ];
-
-  for (const a of attempts) {
-    try {
-      const res =
-        a.method === "post"
-          ? await api.post(a.url, a.body)
-          : await api.get(a.url, { params: { items: JSON.stringify(items) } });
-      const normalized = normalizeQuoteResponse(res, cart);
-      if (normalized) return normalized;
-    } catch {
-      /* try next */
-    }
+  if (next <= 0) {
+    await api.delete(`/api/cart/items/${item.id}`, AXIOS_COOKIE_CFG);
+  } else {
+    await api.patch(`/api/cart/items/${item.id}`, { qty: next }, AXIOS_COOKIE_CFG);
   }
-
-  return null;
-}
-
-/* ---------------- Public settings fetch ---------------- */
-
-async function fetchPublicSettings(): Promise<PublicSettings | null> {
-  const attempts = ["/api/settings/public", "/api/settings/public?include=pricing", "/api/settings/public?scope=commerce"];
-
-  for (const url of attempts) {
-    try {
-      const { data } = await api.get(url);
-      const root = (data as any)?.data ?? data ?? null;
-      if (root) return root as PublicSettings;
-    } catch {
-      /* try next */
-    }
-  }
-  return null;
-}
-
-function extractMarginPercent(s: PublicSettings | null | undefined): number {
-  if (!s) return 0;
-
-  const direct = asMoney(s.marginPercent, NaN);
-  if (Number.isFinite(direct)) return clampPct(direct);
-
-  const commerce = asMoney(s.commerce?.marginPercent, NaN);
-  if (Number.isFinite(commerce)) return clampPct(commerce);
-
-  const pricing = asMoney(s.pricing?.marginPercent, NaN);
-  if (Number.isFinite(pricing)) return clampPct(pricing);
-
-  return 0;
 }
 
 /* =========================================================
@@ -569,11 +245,61 @@ export default function Cart() {
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
+  const [qtyNote, setQtyNote] = useState<Record<string, string>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [hydrated, setHydrated] = useState(false);
 
-  // prevent loops when we ourselves write local mirror for authed
-  const suppressNextCartEventRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const activeRequestIdRef = useRef(0);
+  const lastMirroredServerSigRef = useRef("");
+  const lastPersistedGuestSigRef = useRef("");
+  const focusedQtyKeyRef = useRef<string | null>(null);
+  const qtyNoteTimersRef = useRef<Record<string, number>>({});
+
+  const safeSetCart = useCallback((next: CartItem[]) => {
+    setCart((prev) => (sameCartItems(prev, next) ? prev : next));
+  }, []);
+
+  const clearAllNotes = useCallback(() => {
+    for (const id of Object.values(qtyNoteTimersRef.current)) {
+      clearTimeout(id);
+    }
+    qtyNoteTimersRef.current = {};
+    setQtyNote({});
+  }, []);
+
+  const clearQtyNote = useCallback((key: string) => {
+    if (qtyNoteTimersRef.current[key]) {
+      clearTimeout(qtyNoteTimersRef.current[key]);
+      delete qtyNoteTimersRef.current[key];
+    }
+    setQtyNote((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const showQtyNote = useCallback(
+    (key: string, message: string) => {
+      if (qtyNoteTimersRef.current[key]) {
+        clearTimeout(qtyNoteTimersRef.current[key]);
+      }
+
+      setQtyNote((prev) => ({ ...prev, [key]: message }));
+
+      qtyNoteTimersRef.current[key] = window.setTimeout(() => {
+        clearQtyNote(key);
+      }, 2200);
+    },
+    [clearQtyNote]
+  );
 
   const mirrorAuthedCartToLocal = useCallback((items: CartItem[]) => {
+    const sig = cartSignature(items);
+    if (lastMirroredServerSigRef.current === sig) return;
+
     const lines = items.map((x) => ({
       productId: String(x.productId),
       variantId: x.variantId == null ? null : String(x.variantId),
@@ -586,90 +312,125 @@ export default function Cart() {
       unitPriceCache: Number.isFinite(Number(x.unitPrice)) ? Number(x.unitPrice) : 0,
     }));
 
-    suppressNextCartEventRef.current = true;
+    lastMirroredServerSigRef.current = sig;
+    writeCartLines(lines as any);
+  }, []);
+
+  const persistGuestCart = useCallback((items: CartItem[]) => {
+    const sig = cartSignature(items);
+    if (lastPersistedGuestSigRef.current === sig) return;
+
+    const lines = items
+      .map((it) => ({
+        productId: String(it.productId),
+        variantId: it.variantId == null ? null : String(it.variantId),
+        kind: (it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE") as "BASE" | "VARIANT",
+        optionsKey: "",
+        qty: Math.max(0, Math.floor(Number(it.qty) || 0)),
+        selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : [],
+        titleSnapshot: it.title ?? null,
+        imageSnapshot: it.image ?? null,
+        unitPriceCache: Number.isFinite(Number(it.unitPrice)) ? Number(it.unitPrice) : 0,
+      }))
+      .filter((x) => x.qty > 0);
+
+    lastPersistedGuestSigRef.current = sig;
     writeCartLines(lines as any);
   }, []);
 
   const loadCart = useCallback(async () => {
+    const requestId = ++activeRequestIdRef.current;
+
     if (isAuthed) {
       try {
         const serverItems = await fetchServerCart();
-        setCart(serverItems);
+        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+        safeSetCart(serverItems);
         mirrorAuthedCartToLocal(serverItems);
+        setHydrated(true);
         return;
       } catch {
-        // server failed: fallback to local mirror
+        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
         const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
-        setCart(localItems);
+        safeSetCart(localItems);
+        setHydrated(true);
         return;
       }
     }
 
-    // guest
     const guestItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
-    setCart(guestItems);
-  }, [isAuthed, mirrorAuthedCartToLocal]);
+    if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+    safeSetCart(guestItems);
+    setHydrated(true);
+  }, [isAuthed, mirrorAuthedCartToLocal, safeSetCart]);
 
-  // initial + when login/logout changes
+  useEffect(() => {
+    isMountedRef.current = true;
+    sessionStorage.removeItem(CART_BFCACHE_REFRESH_KEY);
+
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+
+      const alreadyRefreshed = sessionStorage.getItem(CART_BFCACHE_REFRESH_KEY) === "1";
+      if (!alreadyRefreshed) {
+        sessionStorage.setItem(CART_BFCACHE_REFRESH_KEY, "1");
+        window.location.replace(window.location.href);
+      }
+    };
+
+    const onPageHide = () => {
+      activeRequestIdRef.current += 1;
+      focusedQtyKeyRef.current = null;
+      clearAllNotes();
+    };
+
+    window.addEventListener("pageshow", onPageShow as EventListener);
+    window.addEventListener("pagehide", onPageHide as EventListener);
+
+    return () => {
+      isMountedRef.current = false;
+      activeRequestIdRef.current += 1;
+      focusedQtyKeyRef.current = null;
+      clearAllNotes();
+
+      window.removeEventListener("pageshow", onPageShow as EventListener);
+      window.removeEventListener("pagehide", onPageHide as EventListener);
+    };
+  }, [clearAllNotes]);
+
   useEffect(() => {
     let cancelled = false;
+
     (async () => {
       try {
         await loadCart();
       } catch {
-        if (!cancelled) {
+        if (!cancelled && isMountedRef.current) {
           const fallback = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
-          setCart(fallback);
+          safeSetCart(fallback);
+          setHydrated(true);
         }
       }
     })();
+
     return () => {
       cancelled = true;
     };
-  }, [loadCart, isAuthed]);
+  }, [loadCart, safeSetCart]);
 
-  // cart:updated listener
-  useEffect(() => {
-    const onCartUpdated = () => {
-      // ignore event we triggered via mirror/write
-      if (suppressNextCartEventRef.current) {
-        suppressNextCartEventRef.current = false;
-        return;
-      }
-
-      if (isAuthed) {
-        loadCart().catch(() => { });
-        return;
-      }
-
-      // guest: read storage only, no extra writes
-      const guestItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
-      setCart(guestItems);
-    };
-
-    window.addEventListener("cart:updated", onCartUpdated);
-    return () => window.removeEventListener("cart:updated", onCartUpdated);
-  }, [isAuthed, loadCart]);
-
-  // keep qtyDraft in sync
   useEffect(() => {
     setQtyDraft((prev) => {
       let changed = false;
       const next = { ...prev };
+      const focusedKey = focusedQtyKeyRef.current;
 
       for (const it of cart) {
-        const k = lineKeyFor(it);
-        const existing = prev[k];
+        const key = lineKeyFor(it);
+        if (focusedKey === key) continue;
 
-        if (existing == null) {
-          next[k] = String(Math.max(1, Number(it.qty) || 1));
-          changed = true;
-          continue;
-        }
-
-        const dNum = Number(existing);
-        if (existing !== "" && Number.isFinite(dNum) && Math.trunc(dNum) !== (Number(it.qty) || 1)) {
-          next[k] = String(Math.max(1, Number(it.qty) || 1));
+        const cartQty = String(Math.max(1, Number(it.qty) || 1));
+        if (next[key] !== cartQty) {
+          next[key] = cartQty;
           changed = true;
         }
       }
@@ -685,253 +446,131 @@ export default function Cart() {
     });
   }, [cart]);
 
-  const publicSettingsQ = useQuery({
-    queryKey: ["settings", "public:v1"],
-    staleTime: 5 * 60_000,
-    refetchOnWindowFocus: false,
-    queryFn: fetchPublicSettings,
-  });
+  const setLocalQtyState = useCallback((target: CartItem, qty: number) => {
+    setCart((prev) =>
+      prev.map((it) => {
+        if (!sameLine(it, target)) return it;
 
-  const marginPercent = useMemo(() => extractMarginPercent(publicSettingsQ.data), [publicSettingsQ.data]);
+        const nextQty = Math.max(1, Math.floor(Number(qty) || 1));
+        const unit =
+          Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
+            ? Number(it.unitPrice)
+            : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
 
-  const availabilityQ = useQuery({
-    queryKey: ["catalog", "availability:v3", cart.map((i) => availKeyFor(i.productId, i.variantId ?? null)).sort().join(",")],
-    enabled: cart.length > 0,
-    refetchOnWindowFocus: false,
-    staleTime: 15_000,
-    queryFn: () => fetchAvailabilityForCart(cart),
-  });
+        const safeUnit = Number.isFinite(unit) && unit > 0 ? unit : 0;
 
-  const pricingQ = useQuery({
-    queryKey: ["catalog", "pricing-quote:v1", cart.map((i) => `${lineKeyFor(i)}@${Math.max(1, asInt(i.qty, 1))}`).sort().join(",")],
-    enabled: cart.length > 0,
-    refetchOnWindowFocus: false,
-    staleTime: 10_000,
-    queryFn: () => fetchPricingQuoteForCart(cart),
-  });
-
-  const visibleCart = useMemo(() => {
-    const data = availabilityQ.data as AvailabilityPayload | undefined;
-    if (!data) return cart;
-
-    // NOTE: do NOT hide “0 available” lines permanently; user must still be able to remove them.
-    // So we only hide them for display IF they are OOS, but keep them removable.
-    return cart;
-  }, [cart, availabilityQ.data]);
-
-  const quoteLines = (pricingQ.data as QuotePayload | null)?.lines ?? {};
-
-  const quoteRetail = useMemo(() => {
-    const q = pricingQ.data as QuotePayload | null;
-    if (!q) return null;
-
-    const linesRetail: Record<
-      string,
-      {
-        retailLineTotal: number;
-        retailMinUnit: number;
-        retailMaxUnit: number;
-        retailAverageUnit: number;
-        allocationsRetail: Array<QuoteAllocation & { retailUnitPrice: number; retailLineTotal: number }>;
-      }
-    > = {};
-
-    let subtotalRetail = 0;
-
-    for (const [k, ln] of Object.entries(q.lines || {})) {
-      const allocs = (ln.allocations || []).filter((a) => a.qty > 0);
-
-      const allocationsRetail = allocs.map((a) => {
-        const retailUnitPrice = applyMargin(asMoney(a.unitPrice, 0), marginPercent);
-        const retailLineTotal = retailUnitPrice * Math.max(0, asInt(a.qty, 0));
-        return { ...a, retailUnitPrice, retailLineTotal };
-      });
-
-      const retailLineTotal = allocationsRetail.reduce((s, a) => s + asMoney(a.retailLineTotal, 0), 0);
-
-      const units = allocationsRetail.map((a) => asMoney(a.retailUnitPrice, NaN)).filter((n) => Number.isFinite(n));
-      const retailMinUnit = units.length ? Math.min(...(units as number[])) : 0;
-      const retailMaxUnit = units.length ? Math.max(...(units as number[])) : 0;
-
-      const qtyReq = Math.max(1, asInt(ln.qtyRequested, 1));
-      const retailAverageUnit = qtyReq > 0 ? retailLineTotal / qtyReq : 0;
-
-      linesRetail[k] = { retailLineTotal, retailMinUnit, retailMaxUnit, retailAverageUnit, allocationsRetail };
-      subtotalRetail += retailLineTotal;
-    }
-
-    return { subtotalRetail: round2(subtotalRetail), linesRetail, currency: q.currency ?? null };
-  }, [pricingQ.data, marginPercent]);
-
-  // 🔁 Subtotal shown to shopper now uses cached retail unit prices (Cart/Wishlist/Catalog aligned)
-  const total = useMemo(() => {
-    return visibleCart.reduce((sum, it) => {
-      const qty = Math.max(1, Number(it.qty) || 1);
-      const cachedUnit =
-        asMoney(it.unitPrice, 0) > 0
-          ? asMoney(it.unitPrice, 0)
-          : qty > 0
-            ? asMoney(it.totalPrice, 0) / qty
-            : 0;
-
-      const lineTotal = round2(Math.max(0, cachedUnit) * qty);
-      return sum + lineTotal;
-    }, 0);
-  }, [visibleCart]);
-
-  const computedCapForLine = (item: CartItem): number | undefined => {
-    const data = availabilityQ.data as AvailabilityPayload | undefined;
-    if (!data) return undefined;
-
-    const exactKey = availKeyFor(item.productId, item.variantId ?? null);
-    const exactLine = data.lines?.[exactKey];
-
-    // 1) Exact line availability wins (best for one-supplier-per-product setup)
-    if (exactLine && Number.isFinite(Number(exactLine.totalAvailable))) {
-      return Math.max(0, Math.floor(Number(exactLine.totalAvailable) || 0));
-    }
-
-    // 2) Fallback to product pool if exact line is missing
-    const pool = data.products?.[String(item.productId)];
-    if (!pool) return undefined;
-
-    // Variant line → prefer variant-specific pool
-    if (item.variantId) {
-      const vCap = Number(pool.perVariantTotals?.[String(item.variantId)] ?? NaN);
-      if (Number.isFinite(vCap)) return Math.max(0, Math.floor(vCap));
-
-      // if no explicit variant pool exists, fallback to generic pool
-      if (Number.isFinite(Number(pool.genericTotal))) {
-        return Math.max(0, Math.floor(Number(pool.genericTotal) || 0));
-      }
-
-      return undefined;
-    }
-
-    // Base line (non-variant)
-    // If product has variant-specific offers only, use genericTotal for base line.
-    // If not, productTotal is the best fallback.
-    if (pool.hasVariantSpecific) {
-      return Math.max(0, Math.floor(Number(pool.genericTotal) || 0));
-    }
-
-    return Math.max(0, Math.floor(Number(pool.productTotal) || 0));
-  };
-
-  const clampToMax = (item: CartItem, wantQty: number) => {
-    const desired = Math.max(1, Math.floor(Number(wantQty) || 1));
-    const cap = computedCapForLine(item);
-
-    // no availability known → allow desired
-    if (cap == null || !Number.isFinite(cap)) return desired;
-
-    // If cap is 0, keep qty input at 1 (user can remove via Remove button)
-    if (cap <= 0) return 1;
-
-    // Snap back to max when user enters above it
-    return Math.min(desired, cap);
-  };
-
-  // ✅ helper: write current guest cart state to cartModel storage
-  const persistGuestCartNow = useCallback((nextCart: CartItem[]) => {
-    const lines = (nextCart || [])
-      .map((it) => ({
-        productId: String(it.productId),
-        variantId: it.variantId == null ? null : String(it.variantId),
-        kind: (it.kind === "VARIANT" || it.variantId ? "VARIANT" : "BASE") as "BASE" | "VARIANT",
-        optionsKey: "",
-        qty: Math.max(0, Math.floor(Number(it.qty) || 0)), // ✅ allow 0 (removal)
-        selectedOptions: Array.isArray(it.selectedOptions) ? it.selectedOptions : [],
-        titleSnapshot: it.title ?? null,
-        imageSnapshot: it.image ?? null,
-        unitPriceCache: Number.isFinite(Number(it.unitPrice)) ? Number(it.unitPrice) : 0,
-      }))
-      .filter((x) => x.qty > 0); // ✅ remove zero qty lines
-
-    writeCartLines(lines as any);
-    window.dispatchEvent(new Event("cart:updated"));
+        return {
+          ...it,
+          qty: nextQty,
+          unitPrice: safeUnit,
+          totalPrice: round2(safeUnit * nextQty),
+        };
+      })
+    );
   }, []);
 
-  const updateQty = useCallback(
-    async (target: CartItem, newQtyRaw: number) => {
-      const clamped = clampToMax(target, newQtyRaw);
+  const commitQty = useCallback(
+    async (target: CartItem, rawQty: number, sourceKey?: string) => {
+      const nextQty = Math.max(1, Math.floor(Number(rawQty) || 1));
 
-      // optimistic UI
-      const nextCartFn = (prev: CartItem[]) =>
-        prev.map((it) => {
-          if (!sameLine(it, target)) return it;
+      setLocalQtyState(target, nextQty);
 
-          const unit =
-            Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
-              ? Number(it.unitPrice)
-              : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
+      if (!isAuthed) {
+        setCart((prev) => {
+          const nextCart = prev.map((it) => {
+            if (!sameLine(it, target)) return it;
 
-          return {
-            ...it,
-            qty: clamped,
-            totalPrice: (unit > 0 ? unit : 0) * clamped,
-            unitPrice: unit > 0 ? unit : it.unitPrice,
-          };
+            const unit =
+              Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
+                ? Number(it.unitPrice)
+                : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
+
+            const safeUnit = Number.isFinite(unit) && unit > 0 ? unit : 0;
+
+            return {
+              ...it,
+              qty: nextQty,
+              unitPrice: safeUnit,
+              totalPrice: round2(safeUnit * nextQty),
+            };
+          });
+
+          persistGuestCart(nextCart);
+          return nextCart;
         });
 
-      setCart((prev) => {
-        const updated = nextCartFn(prev);
-        return updated;
-      });
-
-      if (isAuthed) {
-        try {
-          await serverSetQty(target, clamped);
-          await loadCart();
-        } catch {
-          await loadCart().catch(() => { });
-        }
-      } else {
-        // ✅ persist guest immediately (no race)
-        const updated = nextCartFn(cart);
-        persistGuestCartNow(updated);
-        setCart(updated);
+        if (sourceKey) setQtyDraft((prev) => ({ ...prev, [sourceKey]: String(nextQty) }));
+        return;
       }
 
-      return clamped;
+      const requestId = ++activeRequestIdRef.current;
+
+      try {
+        await serverSetQty(target, nextQty);
+        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+        if (sourceKey) setQtyDraft((prev) => ({ ...prev, [sourceKey]: String(nextQty) }));
+      } catch {
+        if (isMountedRef.current && requestId === activeRequestIdRef.current) {
+          showQtyNote(sourceKey ?? lineKeyFor(target), "Could not update quantity. Restoring cart.");
+          await loadCart().catch(() => {});
+        }
+      }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [availabilityQ.data, isAuthed, loadCart, cart, persistGuestCartNow]
+    [isAuthed, loadCart, persistGuestCart, setLocalQtyState, showQtyNote]
   );
 
   const remove = useCallback(
     async (target: CartItem) => {
-      // optimistic
       const next = cart.filter((it) => !sameLine(it, target));
-      setCart(next);
+      safeSetCart(next);
 
-      if (isAuthed) {
-        try {
-          await serverSetQty(target, 0);
-          await loadCart();
-        } catch {
-          await loadCart().catch(() => { });
+      setQtyDraft((prev) => {
+        const key = lineKeyFor(target);
+        if (!(key in prev)) return prev;
+        const copy = { ...prev };
+        delete copy[key];
+        return copy;
+      });
+
+      if (!isAuthed) {
+        persistGuestCart(next);
+        return;
+      }
+
+      const requestId = ++activeRequestIdRef.current;
+
+      try {
+        await serverSetQty(target, 0);
+        if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+      } catch {
+        if (isMountedRef.current && requestId === activeRequestIdRef.current) {
+          await loadCart().catch(() => {});
         }
-      } else {
-        // ✅ persist guest immediately (so last item removal works)
-        persistGuestCartNow(next);
       }
     },
-    [isAuthed, loadCart, cart, persistGuestCartNow]
+    [cart, isAuthed, loadCart, persistGuestCart, safeSetCart]
   );
 
-  const pricingWarning = useMemo(() => {
-    const q = pricingQ.data as QuotePayload | null;
-    if (!q) return null;
+  const visibleCart = useMemo(() => cart, [cart]);
 
-    const unpriced = Object.values(q.lines || {}).filter((l) => l.qtyPriced < l.qtyRequested);
-    if (!unpriced.length) return null;
+  const total = useMemo(() => {
+    return visibleCart.reduce((sum, it) => {
+      const qty = Math.max(1, Number(it.qty) || 1);
+      const cachedUnit =
+        asMoney(it.unitPrice, 0) > 0 ? asMoney(it.unitPrice, 0) : qty > 0 ? asMoney(it.totalPrice, 0) / qty : 0;
+      return sum + round2(Math.max(0, cachedUnit) * qty);
+    }, 0);
+  }, [visibleCart]);
 
-    return "Some items could not be fully allocated across suppliers. Reduce quantities or try again.";
-  }, [pricingQ.data]);
-
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const tap = "touch-manipulation [-webkit-tap-highlight-color:transparent]";
+
+  if (!hydrated) {
+    return (
+      <SiteLayout>
+        <div className="min-h-[60vh] grid place-items-center px-4 text-ink-soft">Loading cart…</div>
+      </SiteLayout>
+    );
+  }
 
   if (visibleCart.length === 0) {
     return (
@@ -949,7 +588,7 @@ export default function Cart() {
             <p className="mt-1 text-ink-soft">Browse our catalogue and add items to your cart. They’ll show up here for checkout.</p>
             <Link
               to="/"
-              className={`${tap} mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200 transition`}
+              className={`${tap} mt-5 inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-5 py-3 font-semibold shadow-sm hover:shadow-md focus:outline-none focus:ring-4 focus:ring-primary-200 transition`}
             >
               Go shopping
             </Link>
@@ -959,16 +598,13 @@ export default function Cart() {
     );
   }
 
-  const topBannerLoading = pricingQ.isLoading || pricingQ.isFetching;
-  const topBannerText = topBannerLoading ? "Calculating best supplier prices…" : pricingWarning ?? "";
-
   return (
     <SiteLayout>
       <div className="bg-gradient-to-b from-primary-50/60 via-bg-soft to-bg-soft relative overflow-hidden isolate">
         <div className="pointer-events-none -z-10 absolute -top-28 -left-24 size-96 rounded-full bg-primary-500/20 blur-3xl animate-pulse" />
         <div className="pointer-events-none -z-10 absolute -bottom-32 -right-28 size-[28rem] rounded-full bg-fuchsia-400/20 blur-3xl animate-[pulse_6s_ease-in-out_infinite]" />
 
-        <div className="relative z-10 max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-5 sm:py-8 max-[360px]:px-2 max-[360px]:py-4">
+        <div className="relative z-10 max-w-[980px] lg:max-w-[980px] xl:max-w-[980px] mx-auto px-3 sm:px-4 md:px-6 py-5 sm:py-8 max-[360px]:px-2 max-[360px]:py-4">
           <div className="mb-4 sm:mb-6 text-center md:text-left">
             <span className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white px-3 py-1 text-[11px] font-semibold shadow-sm">
               <span className="inline-block size-1.5 rounded-full bg-white/90" />
@@ -980,93 +616,26 @@ export default function Cart() {
             </h1>
 
             <p className="text-sm max-[360px]:text-[12px] text-ink-soft">
-              Prices shown are <span className="font-medium">retail</span> (same basis as catalogue &amp; wishlist).
+              Prices shown are based on the saved cart snapshot. Final checks happen at checkout.
             </p>
-
-            {(topBannerLoading || !!pricingWarning) && (
-              <div className="mt-3 inline-flex items-center gap-2 rounded-full border bg-white/70 px-3 py-1 text-[12px] max-[360px]:text-[11px] text-ink-soft">
-                <span className={`inline-block size-2 rounded-full ${topBannerLoading ? "bg-amber-400 animate-pulse" : "bg-rose-400"}`} />
-                {topBannerText}
-              </div>
-            )}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr,360px] gap-4 sm:gap-6">
-            {/* LEFT: Items */}
             <section className="space-y-3 sm:space-y-4">
               {visibleCart.map((it) => {
-                const k = lineKeyFor(it);
-                const ql = quoteLines[k];
-                const rl = quoteRetail?.linesRetail?.[k];
-
+                const key = lineKeyFor(it);
                 const currentQty = Math.max(1, Number(it.qty) || 1);
-                const maxQty = computedCapForLine(it);
 
-                // 💰 Display unit price (aligned with Catalog/Wishlist) from cached retail
                 const cachedUnit =
-                  asMoney(it.unitPrice, 0) > 0
-                    ? asMoney(it.unitPrice, 0)
-                    : currentQty > 0
-                      ? asMoney(it.totalPrice, 0) / currentQty
-                      : 0;
+                  asMoney(it.unitPrice, 0) > 0 ? asMoney(it.unitPrice, 0) : currentQty > 0 ? asMoney(it.totalPrice, 0) / currentQty : 0;
 
                 const displayUnit = Math.max(0, cachedUnit);
                 const displayLineTotal = round2(displayUnit * currentQty);
-
-                const hasQuote = !!ql && (ql.lineTotal > 0 || ql.allocations.length > 0);
-
-                const splitBadge =
-                  hasQuote && ql.allocations.filter((a) => a.qty > 0).length > 1
-                    ? "Split across suppliers"
-                    : hasQuote && ql.allocations.length === 1
-                      ? "Single supplier"
-                      : "";
-
-                const kindLabel = isBaseLine(it)
-                  ? "Base"
-                  : it.variantId
-                    ? "Variant"
-                    : it.selectedOptions?.length
-                      ? "Configured"
-                      : "Item";
-
-                const isExpanded = !!expanded[k];
-
-                const draft = qtyDraft[k];
-                const inputValue = draft == null ? String(currentQty) : draft;
-
-                const commitDraft = async () => {
-                  const raw = qtyDraft[k];
-                  const parsed = raw === "" || raw == null ? 1 : Math.floor(Number(raw));
-                  const desired = Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
-                  const clamped = await updateQty(it, desired);
-                  setQtyDraft((p) => ({ ...p, [k]: String(clamped) }));
-                };
-
-                const effectiveQtyForButtons = () => {
-                  const raw = qtyDraft[k];
-                  if (raw == null || raw === "") return currentQty;
-                  const n = Math.floor(Number(raw));
-                  return Number.isFinite(n) && n > 0 ? n : currentQty;
-                };
-
-                const inc = async () => {
-                  const base = effectiveQtyForButtons();
-                  const clamped = await updateQty(it, base + 1);
-                  setQtyDraft((p) => ({ ...p, [k]: String(clamped) }));
-                };
-
-                const dec = async () => {
-                  const base = effectiveQtyForButtons();
-                  const nextQty = Math.max(1, base - 1);
-                  const clamped = await updateQty(it, nextQty);
-                  setQtyDraft((p) => ({ ...p, [k]: String(clamped) }));
-                };
-
-                const unitText = displayUnit > 0 ? ngn.format(displayUnit) : "—";
-
-                // ✅ Use normalized options, and prefer human names over IDs/codes
+                const kindLabel = isBaseLine(it) ? "Base" : it.variantId ? "Variant" : it.selectedOptions?.length ? "Configured" : "Item";
+                const draft = qtyDraft[key];
+                const inputValue = draft ?? String(currentQty);
                 const displayOptions = normalizeSelectedOptions(it.selectedOptions);
+                const isExpanded = !!expanded[key];
 
                 let optionLabel = displayOptions
                   .map((o) => {
@@ -1074,15 +643,15 @@ export default function Cart() {
                       o.attribute && !isCodeLike(o.attribute)
                         ? o.attribute
                         : o.attributeId && !isCodeLike(o.attributeId)
-                          ? o.attributeId
-                          : "";
+                        ? o.attributeId
+                        : "";
 
                     const val =
                       o.value && !isCodeLike(o.value)
                         ? o.value
                         : o.valueId && !isCodeLike(o.valueId)
-                          ? o.valueId
-                          : "";
+                        ? o.valueId
+                        : "";
 
                     if (!attr && !val) return null;
                     if (!attr) return val;
@@ -1092,21 +661,38 @@ export default function Cart() {
                   .filter(Boolean)
                   .join(" • ");
 
-                // 🔁 Fallbacks if we only had internal IDs / codes
-                if (!optionLabel && !isBaseLine(it)) {
-                  // We know it's a VARIANT line but don't have nice labels
-                  optionLabel = "Variant selected";
-                } else if (!optionLabel && displayOptions.length) {
-                  // Options exist but all looked like codes → don't show raw IDs,
-                  // just a generic hint that configuration is stored.
-                  optionLabel = "Options saved";
-                }
+                if (!optionLabel && !isBaseLine(it)) optionLabel = "Variant selected";
+                else if (!optionLabel && displayOptions.length) optionLabel = "Options saved";
+
+                const commitDraft = () => {
+                  const raw = qtyDraft[key];
+                  const parsed = raw === "" || raw == null ? 1 : Math.floor(Number(raw));
+                  const desired = Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+                  void commitQty(it, desired, key);
+                };
+
+                const inc = () => {
+                  const raw = qtyDraft[key];
+                  const base = raw == null || raw === "" ? currentQty : Math.max(1, Math.floor(Number(raw) || currentQty));
+                  const desired = base + 1;
+                  setQtyDraft((prev) => ({ ...prev, [key]: String(desired) }));
+                  void commitQty(it, desired, key);
+                };
+
+                const dec = () => {
+                  const raw = qtyDraft[key];
+                  const base = raw == null || raw === "" ? currentQty : Math.max(1, Math.floor(Number(raw) || currentQty));
+                  const desired = Math.max(1, base - 1);
+                  setQtyDraft((prev) => ({ ...prev, [key]: String(desired) }));
+                  void commitQty(it, desired, key);
+                };
+
+                const unitText = displayUnit > 0 ? ngn.format(displayUnit) : "—";
 
                 return (
                   <article
-                    key={k}
-                    className="group rounded-2xl border border-white/60 bg-white/75 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)]
-                               p-3 sm:p-5 max-[360px]:p-3 overflow-hidden relative z-10"
+                    key={key}
+                    className="group rounded-2xl border border-white/60 bg-white/75 backdrop-blur shadow-[0_6px_30px_rgba(0,0,0,0.06)] p-3 sm:p-5 max-[360px]:p-3 overflow-hidden relative z-10"
                   >
                     <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4">
                       <div className="shrink-0 w-16 h-16 sm:w-20 sm:h-20 max-[360px]:w-14 max-[360px]:h-14 rounded-xl border overflow-hidden bg-white self-start relative">
@@ -1118,7 +704,9 @@ export default function Cart() {
                             alt=""
                             aria-hidden="true"
                             className="relative w-full h-full object-cover"
-                            onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")}
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).style.opacity = "0";
+                            }}
                           />
                         )}
                       </div>
@@ -1133,7 +721,7 @@ export default function Cart() {
                             <button
                               type="button"
                               className={`${tap} shrink-0 whitespace-nowrap text-[12px] sm:text-sm text-rose-600 hover:underline rounded-lg px-2 py-1 hover:bg-rose-500/10 transition`}
-                              onClick={() => remove(it)}
+                              onClick={() => void remove(it)}
                               aria-label={`Remove ${it.title}`}
                               title="Remove item"
                             >
@@ -1143,8 +731,6 @@ export default function Cart() {
 
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">{kindLabel}</span>
-                            {!!splitBadge && <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">{splitBadge}</span>}
-                            {pricingQ.isFetching && <span className="text-[10px] px-2 py-0.5 rounded-full border bg-white text-ink-soft">Updating…</span>}
                           </div>
 
                           {!!optionLabel && (
@@ -1159,49 +745,33 @@ export default function Cart() {
                             </div>
                           </div>
 
-                          {rl && (rl.allocationsRetail?.length ?? 0) > 0 && (
+                          {displayOptions.length > 0 && (
                             <button
                               className={`${tap} mt-2 text-[11px] text-primary-700 hover:underline`}
-                              onClick={() => setExpanded((p) => ({ ...p, [k]: !p[k] }))}
+                              onClick={() => setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))}
                               type="button"
                             >
-                              {isExpanded ? "Hide supplier breakdown" : "Show supplier breakdown"}
+                              {isExpanded ? "Hide option details" : "Show option details"}
                             </button>
                           )}
                         </div>
 
-                        {rl && isExpanded && (rl.allocationsRetail?.length ?? 0) > 0 && (
-                          <div className="mt-3 rounded-xl border bg-white/70 p-3 text-xs">
-                            <div className="flex items-center justify-between text-ink-soft">
-                              <span>Supplier split (retail)</span>
-                              <span className="font-medium text-ink">{ngn.format(asMoney(rl.retailLineTotal, 0))}</span>
+                        {isExpanded && displayOptions.length > 0 && (
+                          <div className="mt-2 rounded-xl border bg-white/70 px-3 py-2">
+                            <div className="text-[11px] text-ink-soft space-y-1">
+                              {displayOptions.map((o, idx) => (
+                                <div key={`${o.attributeId}-${o.valueId ?? o.value}-${idx}`}>
+                                  <span className="font-medium text-ink">
+                                    {o.attribute || o.attributeId || "Option"}:
+                                  </span>{" "}
+                                  {o.value || o.valueId || "—"}
+                                </div>
+                              ))}
                             </div>
-
-                            <div className="mt-2 space-y-1">
-                              {rl.allocationsRetail
-                                .filter((a) => a.qty > 0)
-                                .map((a, idx) => (
-                                  <div key={`${a.supplierId}-${idx}`} className="flex items-center justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <div className="font-medium text-ink truncate">{a.supplierName || "Supplier"}</div>
-                                      <div className="text-ink-soft">
-                                        {a.qty} × {ngn.format(asMoney(a.retailUnitPrice, 0))}
-                                      </div>
-                                    </div>
-                                    <div className="font-semibold text-ink whitespace-nowrap">
-                                      {ngn.format(asMoney(a.retailLineTotal, 0))}
-                                    </div>
-                                  </div>
-                                ))}
-                            </div>
-
-                            {ql && ql.qtyPriced < ql.qtyRequested && (
-                              <div className="mt-2 text-[11px] text-rose-700">
-                                Only {ql.qtyPriced} out of {ql.qtyRequested} could be allocated.
-                              </div>
-                            )}
                           </div>
                         )}
+
+                        {qtyNote[key] ? <div className="mt-2 text-[12px] font-semibold text-rose-700">{qtyNote[key]}</div> : null}
 
                         <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                           <div className="flex items-center justify-between sm:justify-start gap-3">
@@ -1209,7 +779,7 @@ export default function Cart() {
                               <button
                                 type="button"
                                 aria-label="Decrease quantity"
-                                className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 active:scale-[0.98] transition`}
+                                className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 transition`}
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={dec}
                               >
@@ -1221,27 +791,41 @@ export default function Cart() {
                                 inputMode="numeric"
                                 pattern="[0-9]*"
                                 value={inputValue}
+                                onFocus={() => {
+                                  focusedQtyKeyRef.current = key;
+                                }}
                                 onChange={(e) => {
                                   const v = e.target.value;
+
                                   if (v === "") {
-                                    setQtyDraft((p) => ({ ...p, [k]: "" }));
+                                    setQtyDraft((prev) => ({ ...prev, [key]: "" }));
                                     return;
                                   }
+
                                   if (!/^\d+$/.test(v)) return;
-                                  setQtyDraft((p) => ({ ...p, [k]: v }));
+                                  setQtyDraft((prev) => ({ ...prev, [key]: v }));
                                 }}
-                                onBlur={() => commitDraft()}
+                                onBlur={() => {
+                                  focusedQtyKeyRef.current = null;
+                                  commitDraft();
+                                }}
                                 onKeyDown={(e) => {
-                                  if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                                  if (e.key === "Enter") {
+                                    (e.currentTarget as HTMLInputElement).blur();
+                                  }
+                                  if (e.key === "Escape") {
+                                    setQtyDraft((prev) => ({ ...prev, [key]: String(currentQty) }));
+                                    (e.currentTarget as HTMLInputElement).blur();
+                                  }
                                 }}
-                                className="w-14 sm:w-16 max-[360px]:w-12 text-center outline-none px-2 py-2 max-[360px]:py-1.5 bg-white"
+                                className="w-[64px] text-center outline-none px-2 py-2 max-[360px]:py-1.5 bg-white tabular-nums font-medium leading-[1] text-[14px]"
                                 aria-label="Quantity"
                               />
 
                               <button
                                 type="button"
                                 aria-label="Increase quantity"
-                                className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 active:scale-[0.98] transition`}
+                                className={`${tap} px-3 py-2 max-[360px]:px-2 max-[360px]:py-1.5 hover:bg-black/5 transition`}
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={inc}
                               >
@@ -1251,11 +835,6 @@ export default function Cart() {
 
                             <div className="text-xs max-[360px]:text-[11px] text-ink-soft leading-tight">
                               <div>Qty</div>
-                              {typeof maxQty === "number" && Number.isFinite(maxQty) && (
-                                <div className="text-[10px]">
-                                  Max: <span className="font-medium text-ink">{Math.max(0, maxQty)}</span>
-                                </div>
-                              )}
                             </div>
                           </div>
 
@@ -1273,8 +852,7 @@ export default function Cart() {
               })}
             </section>
 
-            {/* RIGHT: Summary */}
-            <aside className="lg:sticky lg:top-6 h-max relative z-10">
+            <aside className="lg:sticky lg:top-6 cart-summary-stable">
               <div className="rounded-2xl border border-white/60 bg-white/70 backdrop-blur p-4 sm:p-5 max-[360px]:p-3 shadow-[0_6px_30px_rgba(0,0,0,0.06)] overflow-hidden">
                 <h2 className="text-lg max-[360px]:text-base font-semibold text-ink">Order summary</h2>
 
@@ -1285,9 +863,7 @@ export default function Cart() {
                   </div>
 
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
-                    <span className="text-ink-soft leading-tight">
-                      Subtotal <span className="text-[11px]">(retail)</span>
-                    </span>
+                    <span className="text-ink-soft leading-tight">Subtotal</span>
                     <span className="font-semibold text-ink whitespace-nowrap text-right">{ngn.format(total)}</span>
                   </div>
 
@@ -1309,19 +885,9 @@ export default function Cart() {
                     </span>
                   </div>
 
-                  {pricingWarning && <p className="mt-2 text-[12px] text-rose-600">{pricingWarning}</p>}
-
                   <Link
-                    to={!pricingWarning ? "/checkout" : "#"}
-                    onClick={(e) => {
-                      if (!!pricingWarning) e.preventDefault();
-                    }}
-                    className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition
-                      ${!pricingWarning
-                        ? "bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-4 focus:ring-primary-200"
-                        : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
-                      }`}
-                    aria-disabled={!!pricingWarning}
+                    to="/checkout"
+                    className={`${tap} mt-4 w-full inline-flex items-center justify-center rounded-xl px-4 py-3 max-[360px]:py-2.5 font-semibold shadow-sm transition bg-gradient-to-r from-primary-600 to-fuchsia-600 text-white hover:shadow-md focus:outline-none focus:ring-4 focus:ring-primary-200`}
                   >
                     <span className="sm:hidden">Checkout</span>
                     <span className="hidden sm:inline">Proceed to checkout</span>
@@ -1334,7 +900,7 @@ export default function Cart() {
                     Continue shopping
                   </Link>
 
-                  <p className="mt-3 text-[11px] text-ink-soft">Totals above use the same retail basis as the catalogue.</p>
+                  <p className="mt-3 text-[11px] text-ink-soft">Final stock and pricing checks happen at checkout.</p>
                 </div>
               </div>
 

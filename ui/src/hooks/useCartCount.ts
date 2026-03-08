@@ -1,5 +1,5 @@
 // src/hooks/useCartCount.ts
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuthStore } from "../store/auth";
 import api from "../api/client";
 
@@ -43,7 +43,7 @@ function loadRawArrayFromKey(key: string): any[] {
   return [];
 }
 
-// ✅ tolerate qty OR quantity (because different parts of app often differ)
+// ✅ tolerate qty OR quantity
 function readQty(line: any) {
   const q = line?.qty ?? line?.quantity ?? 0;
   return Math.max(0, Math.floor(Number(q) || 0));
@@ -71,74 +71,125 @@ type ServerSummary = { distinct: number; totalQty: number };
  * - Logged-in:
  *    - Try server summary if available
  *    - If endpoint missing / errors => FALL BACK to localStorage user cart
+ *
+ * This version prevents "Maximum update depth exceeded" by:
+ * - NOT tying server fetches to a state "tick" dependency loop
+ * - Refetching server summary only on userId change + cart events
+ * - Rate limiting + in-flight guard
  */
 export function useCartCount() {
-  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const userIdRaw = useAuthStore((s) => s.user?.id ?? null);
+  const userId = userIdRaw == null ? null : String(userIdRaw);
 
-  const [tick, setTick] = useState(0);
+  // Local-only tick (drives localStorage recount)
+  const [localTick, setLocalTick] = useState(0);
+
+  // Server summary state (drives badge when logged in)
   const [server, setServer] = useState<ServerSummary | null>(null);
 
-  const prevUserIdRef = useRef<string | null>(userId);
-
-  // bump tick on user switch (login/logout)
+  const userIdRef = useRef<string | null>(userId);
   useEffect(() => {
-    const prev = prevUserIdRef.current;
-    const next = userId;
-
-    if (prev !== next) setTick((t) => t + 1);
-    prevUserIdRef.current = next;
+    userIdRef.current = userId;
   }, [userId]);
 
-  // listen to cart updates
+  // ---- Server fetch controls (prevents storms/loops) ----
+  const inFlightRef = useRef(false);
+  const lastFetchAtRef = useRef(0);
+  const RATE_LIMIT_MS = 600;
+
+  const refreshServerSummary = useCallback(async () => {
+    const uid = userIdRef.current;
+
+    // not logged in
+    if (!uid) {
+      setServer(null);
+      return;
+    }
+
+    // rate-limit to avoid rapid re-triggers
+    const now = Date.now();
+    if (now - lastFetchAtRef.current < RATE_LIMIT_MS) return;
+    lastFetchAtRef.current = now;
+
+    // in-flight guard
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+
+    try {
+      const res = await api.get("/api/cart/summary", { withCredentials: true });
+      const root = (res as any)?.data?.data ?? (res as any)?.data ?? {};
+
+      const next: ServerSummary = {
+        distinct: Math.max(0, Number(root.distinct ?? 0) || 0),
+        totalQty: Math.max(0, Number(root.totalQty ?? 0) || 0),
+      };
+
+      // ✅ only update state if changed (prevents pointless re-renders)
+      setServer((prev) => {
+        if (!prev) return next;
+        if (prev.distinct === next.distinct && prev.totalQty === next.totalQty) return prev;
+        return next;
+      });
+    } catch (_e) {
+      // endpoint missing/errored => fallback to local user cart
+      setServer(null);
+    } finally {
+      inFlightRef.current = false;
+    }
+  }, []);
+
+  // bump local tick (recount localStorage)
+  const bumpLocal = useCallback(() => {
+    setLocalTick((t) => t + 1);
+  }, []);
+
+  // On login/logout: reset + refresh server once
   useEffect(() => {
-    const bump = () => setTick((t) => t + 1);
+    // reset server summary on user switch
+    setServer(null);
+
+    // recount local cart immediately too (guest->user key changes)
+    bumpLocal();
+
+    // fetch server summary once after auth switch
+    void refreshServerSummary();
+  }, [userId, bumpLocal, refreshServerSummary]);
+
+  // Listen to cart updates + storage changes
+  useEffect(() => {
+    const onCartUpdated = () => {
+      bumpLocal();
+      // also refresh server summary (if logged in)
+      void refreshServerSummary();
+    };
 
     const onStorage = (e: StorageEvent) => {
       const k = e.key || "";
-      if (k === "cart" || k === GUEST_CART_KEY || k.startsWith(USER_CART_KEY_PREFIX)) bump();
+      if (k === "cart" || k === GUEST_CART_KEY || k.startsWith(USER_CART_KEY_PREFIX)) {
+        bumpLocal();
+        void refreshServerSummary();
+      }
     };
 
-    window.addEventListener("cart:updated", bump as EventListener);
+    // NOTE: focus-based bumping can be too aggressive in some apps.
+    // Keep it, but only recount local; server refresh is rate-limited anyway.
+    const onFocus = () => {
+      bumpLocal();
+      void refreshServerSummary();
+    };
+
+    window.addEventListener("cart:updated", onCartUpdated as EventListener);
     window.addEventListener("storage", onStorage);
-    window.addEventListener("focus", bump);
+    window.addEventListener("focus", onFocus);
 
     return () => {
-      window.removeEventListener("cart:updated", bump as EventListener);
+      window.removeEventListener("cart:updated", onCartUpdated as EventListener);
       window.removeEventListener("storage", onStorage);
-      window.removeEventListener("focus", bump);
+      window.removeEventListener("focus", onFocus);
     };
-  }, []);
+  }, [bumpLocal, refreshServerSummary]);
 
-  // ✅ try server summary IF logged in (but do not break badge if endpoint doesn't exist)
-  useEffect(() => {
-    let alive = true;
-
-    async function refreshServer() {
-      if (!userId) {
-        if (alive) setServer(null);
-        return;
-      }
-
-      try {
-        const res = await api.get("/api/cart/summary", { withCredentials: true });
-        const root = (res as any)?.data?.data ?? (res as any)?.data ?? {};
-        const next = {
-          distinct: Math.max(0, Number(root.distinct ?? 0) || 0),
-          totalQty: Math.max(0, Number(root.totalQty ?? 0) || 0),
-        };
-        if (alive) setServer(next);
-      } catch (e: any) {
-        // ✅ if endpoint missing (404) or not implemented, fallback to local cart
-        if (alive) setServer(null);
-      }
-    }
-
-    refreshServer();
-    return () => {
-      alive = false;
-    };
-  }, [userId, tick]);
-
+  // Return counts
   return useMemo(() => {
     // guest
     if (!userId) {
@@ -146,12 +197,13 @@ export function useCartCount() {
       return computeCounts(items);
     }
 
-    // logged-in:
-    // if server summary exists and is non-zero, trust it
+    // logged-in: prefer server if it has anything non-zero
     if (server && (server.totalQty > 0 || server.distinct > 0)) return server;
 
-    // otherwise fallback to local user cart (this matches your Cart.tsx today)
-    const items = loadRawArrayFromKey(userCartKey(String(userId)));
+    // fallback: local user cart
+    const items = loadRawArrayFromKey(userCartKey(userId));
+    // depend on localTick so badge updates instantly on cart:updated
+    void localTick; // explicit usage for clarity
     return computeCounts(items);
-  }, [userId, tick, server?.distinct, server?.totalQty]);
+  }, [userId, server, localTick]);
 }

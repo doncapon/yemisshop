@@ -48,6 +48,7 @@ import publicProductOffers from "./routes/productOffers.js";
 import adminSupplierOffersRouter from "./routes/adminSupplierOffers.js";
 import supplierOrders from "./routes/supplierOrders.js";
 import supplierPayouts from "./routes/supplierPayouts.js";
+import categoriesRouter from "./routes/categories.js";
 import catalogRoutes from "./routes/catalog.js";
 
 import supplierProducts from "./routes/supplierProducts.js";
@@ -71,7 +72,6 @@ import notificationsRouter from "./routes/notifications.js";
 import ridersRouter from "./routes/riders.js";
 import privacyRouter from "./routes/privacy.js";
 import supplierCatalogOffers from "./routes/supplierCatalogOffers.js";
-import adminOfferChangeRequests from "./routes/adminOfferChangeRequests.js";
 import adminUsersRouter from "./routes/adminUsers.js";
 import checkoutShippingRouter from "./routes/checkoutShipping.js";
 import productReviewsRouter from "./routes/productReviews.js";
@@ -88,7 +88,7 @@ import adminNewsletterRouter from "./routes/adminNewsletter.js";
 const app = express();
 app.set("trust proxy", 1);
 
-/* -------------------- SEO helpers (bot HTML for /product/:id) -------------------- */
+/* -------------------- SEO helpers (bot HTML for /products/:id) -------------------- */
 
 const BOT_UA =
   /(googlebot|bingbot|duckduckbot|yandexbot|baiduspider|slurp|facebookexternalhit|twitterbot|linkedinbot|pinterest|whatsapp|telegrambot|discordbot)/i;
@@ -363,7 +363,6 @@ app.use("/api/admin", adminCatalogMeta);
 app.use("/api/admin/catalog-requests", adminCatalogRequests);
 app.use("/api/admin/payouts", adminPayouts);
 app.use("/api/admin/refunds", adminRefundsRouter);
-app.use("/api/admin/offer-change-requests", adminOfferChangeRequests);
 app.use("/api/admin", adminUsersRouter);
 
 /* ---------------- Supplier routes ---------------- */
@@ -398,6 +397,7 @@ app.use("/api/orders", orderOtpRouter);
 app.use("/api/orders", ordersRouter);
 app.use("/api/favorites", favoritesRouter);
 app.use("/api/catalog", catalogRoutes);
+app.use("/api/categories", categoriesRouter);
 
 app.use("/api/integrations/dojah", dojahRouter);
 
@@ -489,7 +489,7 @@ app.get("/sitemap.xml", async (req, res) => {
       `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
       products
         .map((p) => {
-          const loc = `${origin}/product/${encodeURIComponent(String(p.id))}`;
+          const loc = `${origin}/products/${encodeURIComponent(String(p.id))}`;
           const lastmod = p.updatedAt ? new Date(p.updatedAt).toISOString() : "";
           return (
             `  <url>\n` +
@@ -512,13 +512,13 @@ app.get("/sitemap.xml", async (req, res) => {
 });
 
 /**
- * ✅ Bot-friendly /product/:id HTML
+ * ✅ Bot-friendly /products/:id HTML
  * - Bots OR __seo=1 get real title + JSON-LD Product
  * - Humans (no __seo=1) fall through to SPA when UI_DIST_DIR exists
  *
  * ✅ CRITICAL: Vary by User-Agent so caches never mix bot/human HTML
  */
-app.get("/product/:id", async (req, res, next) => {
+app.get("/products/:id", async (req, res, next) => {
   // ✅ prevents CDN/proxy caching the SPA HTML for Googlebot (or vice versa)
   res.setHeader("Vary", "User-Agent");
 
@@ -537,7 +537,7 @@ app.get("/product/:id", async (req, res, next) => {
 
     const origin = getSiteOrigin(req);
     const id = String(req.params.id || "").trim();
-    const canonical = `${origin}/product/${encodeURIComponent(id)}`;
+    const canonical = `${origin}/products/${encodeURIComponent(id)}`;
 
     const row = await prisma.product.findUnique({
       where: { id },
@@ -628,7 +628,7 @@ if (UI_DIST_DIR) {
     if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) return next();
 
     // ✅ protect product routes from cache poisoning (very important with UA-based SEO)
-    if (req.path.startsWith("/product/")) {
+    if (req.path.startsWith("/products/")) {
       res.setHeader("Cache-Control", "no-store");
       res.setHeader("Vary", "User-Agent");
     }
@@ -636,7 +636,7 @@ if (UI_DIST_DIR) {
     return res.sendFile(path.join(UI_DIST_DIR, "index.html"));
   });
 } else {
-  console.warn("UI_DIST_DIR not found (no index.html). SPA routes like /product/:id will 404 unless served elsewhere.");
+  console.warn("UI_DIST_DIR not found (no index.html). SPA routes like /products/:id will 404 unless served elsewhere.");
 }
 
 /* ------------------------------ 404 handler ------------------------------ */

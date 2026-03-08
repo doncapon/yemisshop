@@ -1,6 +1,6 @@
 // src/App.tsx
+import React, { useEffect, useMemo } from "react";
 import { Route, Routes, Navigate, Outlet, useParams, useLocation, useNavigate } from "react-router-dom";
-import { useEffect, useMemo } from "react";
 
 import Footer from "./components/Footer";
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -48,6 +48,8 @@ import RiderAcceptInvite from "./pages/RiderAcceptInvite";
 
 import ModalProvider from "./components/ModalProvider";
 import { Toaster } from "react-hot-toast";
+import toast from "react-hot-toast";
+
 import DataPrivacy from "./pages/DataPrivacy";
 import AuthBootstrap from "./components/AuthBootstrap";
 import AdminOfferChangeRequests from "./pages/admin/AdminOfferChangeRequests";
@@ -72,7 +74,6 @@ import AdminNewsletterPage from "./pages/admin/AdminNewsletter";
 /* -----------------------------
    Role normalization + aliases
 ----------------------------- */
-
 function normRole(role: unknown) {
   let r = String(role ?? "").trim().toUpperCase();
   r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
@@ -81,8 +82,6 @@ function normRole(role: unknown) {
   return r;
 }
 
-/* ----------------------------- */
-
 function AdminLayout() {
   return <Outlet />;
 }
@@ -90,10 +89,7 @@ function SupplierLayoutShell() {
   return <Outlet />;
 }
 
-/**
- * Admin "view as" wrappers.
- * These pass a userId param down so pages can optionally fetch/render for that user.
- */
+/** Admin "view as" wrappers */
 function DashboardAsUser() {
   const { userId } = useParams<{ userId: string }>();
   return <UserDashboard {...({ adminUserId: userId } as any)} />;
@@ -150,8 +146,43 @@ export default function App() {
   useIdleLogout();
 
   /**
-   * If the user is NOT authenticated and tries to access a protected area,
-   * send them to /login and keep where they were trying to go.
+   * ✅ Safe cleanup on navigation:
+   * - dismiss toasts
+   * - unlock scroll
+   * - remove pointer-events locks
+   *
+   * ❌ DO NOT delete portals/backdrops from the DOM here.
+   * That can break Radix/Select/Dialog and cause weird click states.
+   */
+  useEffect(() => {
+    try {
+      toast.dismiss();
+    } catch {}
+
+    const b = document.body;
+    const h = document.documentElement;
+
+    b.style.overflow = "";
+    b.style.position = "";
+    b.style.top = "";
+    b.style.left = "";
+    b.style.right = "";
+    b.style.width = "";
+    b.style.paddingRight = "";
+    b.style.pointerEvents = "";
+
+    h.style.overflow = "";
+    h.style.pointerEvents = "";
+
+    b.classList.remove("overflow-hidden", "modal-open");
+
+    try {
+      (document.activeElement as any)?.blur?.();
+    } catch {}
+  }, [loc.key]);
+
+  /**
+   * If NOT authenticated and they access protected routes, send them to /login.
    */
   useEffect(() => {
     if (!hydrated) return;
@@ -172,10 +203,9 @@ export default function App() {
       p === "/supplier" ||
       p.startsWith("/supplier/") ||
       p === "/rider" ||
-      p.startsWith("/u/"); // admin view-as
+      p.startsWith("/u/");
 
     if (!isProtectedPath) return;
-
     if (p === "/login") return;
 
     const target = `${loc.pathname}${loc.search}`;
@@ -185,11 +215,7 @@ export default function App() {
     } catch {}
 
     const qp = encodeURIComponent(target);
-
-    nav(`/login?from=${qp}`, {
-      replace: true,
-      state: { from: target },
-    });
+    nav(`/login?from=${qp}`, { replace: true, state: { from: target } });
   }, [hydrated, isAuthed, loc.pathname, loc.search, nav]);
 
   return (
@@ -205,7 +231,10 @@ export default function App() {
             <Routes>
               {/* ---------------- Public site ---------------- */}
               <Route path="/" element={<HomeRoute />} />
-              <Route path="/product/:id" element={<ProductDetail />} />
+
+              {/* Product detail is PUBLIC */}
+              <Route path="/products/:id" element={<ProductDetail />} />
+
               <Route path="/cart" element={<Cart />} />
               <Route path="/verify" element={<Verify />} />
               <Route path="/privacy" element={<DataPrivacy />} />
@@ -219,18 +248,12 @@ export default function App() {
               <Route path="/login" element={<Login />} />
               <Route path="/about" element={<About />} />
               <Route path="/contact" element={<Contact />} />
-              {/* ✅ Single shared Help Center for everyone */}
               <Route path="/help" element={<HelpCenter />} />
 
-              <Route
-                path="/register"
-                element={hydrated && isAuthed ? <Navigate to="/" replace /> : <Register />}
-              />
+              <Route path="/register" element={hydrated && isAuthed ? <Navigate to="/" replace /> : <Register />} />
               <Route
                 path="/register-supplier"
-                element={
-                  hydrated && isAuthed ? <Navigate to="/" replace /> : <SupplierRegister />
-                }
+                element={hydrated && isAuthed ? <Navigate to="/" replace /> : <SupplierRegister />}
               />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route
@@ -432,17 +455,20 @@ export default function App() {
                 <Route index element={<AdminDashboard />} />
 
                 <Route path="offer-changes" element={<AdminOfferChangeRequests />} />
-                  <Route path="newsletter" element={<AdminNewsletterPage />} />
+                <Route path="newsletter" element={<AdminNewsletterPage />} />
                 <Route path="dashboard" element={<Navigate to="/admin" replace />} />
-                <Route
-                  path="products"
-                  element={<Navigate to="/admin?tab=products&pTab=manage" replace />}
-                />
-                <Route
-                  path="products/moderation"
-                  element={<Navigate to="/admin?tab=products&pTab=moderation" replace />}
-                />
+                <Route path="products" element={<Navigate to="/admin?tab=products&pTab=manage" replace />} />
+                <Route path="products/moderation" element={<Navigate to="/admin?tab=products&pTab=moderation" replace />} />
                 <Route path="orders" element={<Navigate to="/admin?tab=transactions" replace />} />
+
+                {/* Careers / HR routes */}
+                <Route path="applicants" element={<AdminApplicants />} />
+                <Route path="careers/jobs" element={<AdminCareersJobs />} />
+                <Route path="careers/config" element={<AdminCareersConfig />} />
+                <Route path="employees/:employeeId/documents" element={<AdminEmployeeDocuments />} />
+                <Route path="employees" element={<AdminEmployees />} />
+                <Route path="employees/:employeeId" element={<AdminEmployeeDetails />} />
+
                 <Route
                   path="settings"
                   element={
@@ -457,31 +483,18 @@ export default function App() {
 
               {/* Admin redirect helpers & fallbacks */}
               <Route path="/admin/dashboard" element={<Navigate to="/admin" replace />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
 
-              {/* Careers / HR routes */}
-              <Route path="/admin/applicants" element={<AdminApplicants />} />
-              <Route path="/admin/careers/jobs" element={<AdminCareersJobs />} />
-              <Route path="/admin/careers/config" element={<AdminCareersConfig />} />
-
+              {/* Public careers pages */}
               <Route path="/careers" element={<CareersIndex />} />
               <Route path="/careers/:slug" element={<CareerJobDetail />} />
-
               <Route path="/careers/apply" element={<Careers />} />
-
-              <Route
-                path="/admin/employees/:employeeId/documents"
-                element={<AdminEmployeeDocuments />}
-              />
-              <Route path="/admin/employees" element={<AdminEmployees />} />
-              <Route
-                path="/admin/employees/:employeeId"
-                element={<AdminEmployeeDetails />}
-              />
 
               <Route path="/terms" element={<TermsConditions />} />
               <Route path="/cookies" element={<CookiesPage />} />
               <Route path="/unsubscribe" element={<UnsubscribeNewsletter />} />
+
+              {/* keep wildcard LAST */}
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>
         </main>

@@ -1,6 +1,8 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../../api/client";
+import { Link } from "react-router-dom";
+import { Plus } from "lucide-react";
 
 type RiderRow = {
   id: string;
@@ -23,7 +25,6 @@ export function AssignRiderControl({
   const [sel, setSel] = useState<string>(currentRiderId ?? "");
   const [msg, setMsg] = useState<{ type: "info" | "error"; text: string } | null>(null);
 
-  // keep local select in sync if parent changes currentRiderId after refetch
   useEffect(() => {
     setSel(currentRiderId ?? "");
   }, [currentRiderId]);
@@ -31,16 +32,17 @@ export function AssignRiderControl({
   const ridersQ = useQuery({
     queryKey: ["supplierRiders"],
     queryFn: async () => {
-      const { data } = await api.get("/api/riders");
+      const { data } = await api.get("/api/riders", { withCredentials: true });
       return (data?.data ?? []) as RiderRow[];
     },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 
   const assignM = useMutation({
     mutationFn: async () => {
       const chosen = String(sel ?? "").trim();
 
-      // ✅ block "Unassigned" submit
       if (!chosen) {
         const err: any = new Error("Please select a rider before assigning.");
         err.code = "NO_RIDER_SELECTED";
@@ -49,7 +51,8 @@ export function AssignRiderControl({
 
       const { data } = await api.patch(
         `/api/supplier/orders/purchase-orders/${purchaseOrderId}/assign-rider`,
-        { riderId: chosen }
+        { riderId: chosen },
+        { withCredentials: true }
       );
 
       return data?.data;
@@ -57,7 +60,7 @@ export function AssignRiderControl({
     onSuccess: () => {
       setMsg({ type: "info", text: "Rider assigned." });
       qc.invalidateQueries({ queryKey: ["supplierOrders"] });
-      qc.invalidateQueries({ queryKey: ["supplier", "orders"] }); // in case your list uses this key
+      qc.invalidateQueries({ queryKey: ["supplier", "orders"] });
     },
     onError: (err: any) => {
       const text =
@@ -72,18 +75,18 @@ export function AssignRiderControl({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <select
-          className="rounded-xl border px-3 py-2 text-sm bg-white"
+          className="min-w-[220px] rounded-xl border px-3 py-2 text-sm bg-white"
           value={sel}
           onChange={(e) => {
             setSel(e.target.value);
-            if (msg?.type === "error") setMsg(null); // clear error once user changes selection
+            if (msg?.type === "error") setMsg(null);
           }}
           disabled={disabled || ridersQ.isLoading}
           title="Assign rider"
         >
-          <option value="">Select a rider…</option>
+          <option value="">{ridersQ.isLoading ? "Loading riders…" : "Select a rider…"}</option>
           {riders.map((r) => {
             const label =
               r.name ||
@@ -102,20 +105,31 @@ export function AssignRiderControl({
           type="button"
           onClick={() => {
             setMsg(null);
-
-            // ✅ quick pre-check (so mutation doesn't even start)
             if (!String(sel ?? "").trim()) {
               setMsg({ type: "error", text: "Please select a rider before assigning." });
               return;
             }
-
             assignM.mutate();
           }}
           disabled={disabled || assignM.isPending}
-          className="rounded-xl border px-3 py-2 text-sm font-semibold bg-black text-white disabled:opacity-50"
+          className="rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
         >
           {assignM.isPending ? "Saving…" : "Assign"}
         </button>
+
+        {/* ✅ FIX: make it absolute path + nicer UI */}
+        <Link
+          to="/supplier/riders"
+          className={[
+            "inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold",
+            "hover:bg-black/5 active:scale-[0.99] transition",
+            disabled ? "pointer-events-none opacity-60" : "",
+          ].join(" ")}
+          title="Create a new rider"
+        >
+          <Plus size={16} />
+          Add rider
+        </Link>
       </div>
 
       {msg?.text ? (

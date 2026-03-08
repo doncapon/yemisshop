@@ -117,10 +117,6 @@ function getModelFields(modelName: string): Map<string, any> {
   return MODEL_FIELDS_CACHE.get(modelName)!;
 }
 
-function hasScalar(modelName: string, fieldName: string) {
-  const f = getModelFields(modelName).get(fieldName);
-  return !!f && f.kind === "scalar";
-}
 function hasRelation(modelName: string, fieldName: string) {
   const f = getModelFields(modelName).get(fieldName);
   return !!f && f.kind === "object";
@@ -149,6 +145,416 @@ const PRODUCT_STATUS_VALUES = new Set(
 function isValidProductStatus(s: string) {
   // If schema does not expose enum values (edge), do not hard-block.
   return PRODUCT_STATUS_VALUES.size ? PRODUCT_STATUS_VALUES.has(s) : true;
+}
+
+
+function hasModel(modelName: string) {
+  return Prisma.dmmf.datamodel.models.some((m) => m.name === modelName);
+}
+
+const HAS_PRODUCT_ATTRIBUTE_MODEL = hasModel("ProductAttribute");
+
+type NormalizedAttributeSelection = {
+  attributeId: string;
+  valueId?: string;
+  valueIds?: string[];
+  text?: string;
+};
+
+function normalizeAttributeSelectionsPayload(raw: any): NormalizedAttributeSelection[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  const out: NormalizedAttributeSelection[] = [];
+
+  for (const row of arr) {
+    const attributeId = String(
+      row?.attributeId ??
+      row?.attribute?.id ??
+      ""
+    ).trim();
+
+    if (!attributeId) continue;
+
+    const rawValueId =
+      row?.valueId ??
+      row?.value?.id ??
+      "";
+
+    const singleValueId = String(rawValueId ?? "").trim();
+
+    const csvValueIds =
+      typeof rawValueId === "string" && singleValueId.includes(",")
+        ? singleValueId.split(",").map((v) => String(v).trim()).filter(Boolean)
+        : [];
+
+    const explicitValueIds = Array.isArray(row?.valueIds)
+      ? row.valueIds.map((v: any) => String(v).trim()).filter(Boolean)
+      : [];
+
+    const mergedValueIds = Array.from(new Set([...explicitValueIds, ...csvValueIds]));
+    const text = typeof row?.text === "string" ? row.text.trim() : "";
+
+    const normalized: NormalizedAttributeSelection = { attributeId };
+
+    if (mergedValueIds.length > 0) {
+      normalized.valueIds = mergedValueIds;
+    } else if (singleValueId) {
+      normalized.valueId = singleValueId;
+    }
+
+    if (text) normalized.text = text;
+
+    out.push(normalized);
+  }
+
+  return out;
+}
+
+function assertNoDuplicateAttributeSelections(
+  selections: NormalizedAttributeSelection[]
+) {
+  const seen = new Set<string>();
+
+  for (const row of selections) {
+    const aid = String(row.attributeId || "").trim();
+    if (!aid) continue;
+
+    if (seen.has(aid)) {
+      const err: any = new Error(`Duplicate attribute selection for attributeId=${aid}`);
+      err.statusCode = 409;
+      err.code = "DUPLICATE_PRODUCT_ATTRIBUTE";
+      throw err;
+    }
+
+    seen.add(aid);
+  }
+}
+
+function assertVariantAttributesAreEnabled(args: {
+  variants?: NormalizedVariant[];
+  enabledAttributeIds: Set<string>;
+}) {
+  const { variants, enabledAttributeIds } = args;
+
+  for (const v of variants || []) {
+    for (const o of v.options || []) {
+      const aid = String(o.attributeId || "").trim();
+      if (!aid) continue;
+
+      if (!enabledAttributeIds.has(aid)) {
+        const err: any = new Error(
+          `Variant uses attribute ${aid} which is not enabled for this product`
+        );
+        err.statusCode = 400;
+        err.code = "VARIANT_ATTRIBUTE_NOT_ENABLED";
+        throw err;
+      }
+    }
+  }
+}
+async function writeAttributesAndVariants(
+  tx: Prisma.TransactionClient,
+  productId: string,
+  enabledAttributeIdsInput?: string[],
+  attributeSelections?: Array<{
+    attributeId: string;
+    valueId?: string;
+    valueIds?: string[];
+    text?: string;
+  }>,
+  variants?: NormalizedVariant[],
+  opts?: { skipVariantRewrite?: boolean }
+) {
+  const normalizedSelections = normalizeAttributeSelectionsPayload(attributeSelections ?? []);
+  assertNoDuplicateAttributeSelections(normalizedSelections);
+
+  const enabledFromPayload = new Set(
+    normalizeEnabledAttributeIdsPayload(enabledAttributeIdsInput ?? [])
+  );
+
+  const enabledFromSelections = new Set(
+    normalizedSelections
+      .map((x) => String(x.attributeId || "").trim())
+      .filter(Boolean)
+  );
+
+  const enabledAttributeIds = new Set<string>([
+    ...Array.from(enabledFromPayload),
+    ...Array.from(enabledFromSelections),
+  ]);
+
+  for (const sel of normalizedSelections) {
+    const aid = String(sel.attributeId || "").trim();
+    if (!aid) continue;
+
+    if (!enabledAttributeIds.has(aid)) {
+      const err: any = new Error(
+        `Attribute ${aid} has a base selection but is not enabled for this product.`
+      );
+      err.statusCode = 400;
+      err.code = "ATTRIBUTE_SELECTION_NOT_ENABLED";
+      throw err;
+    }
+  }
+
+  if (variants?.length) {
+    assertVariantAttributesAreEnabled({
+      variants,
+      enabledAttributeIds,
+    });
+  }
+
+  // collect attributeIds that are used by variants
+  const variantAttrIds = new Set<string>();
+  for (const v of variants || []) {
+    for (const o of v.options || []) {
+      const aid = String(o?.attributeId || "").trim();
+      if (aid) variantAttrIds.add(aid);
+    }
+  }
+
+  for (const aid of variantAttrIds) {
+    if (!enabledAttributeIds.has(aid)) {
+      const err: any = new Error(`Variant attribute ${aid} is not enabled for this product.`);
+      err.statusCode = 400;
+      err.code = "VARIANT_ATTRIBUTE_NOT_ENABLED";
+      throw err;
+    }
+  }
+
+  if (HAS_PRODUCT_ATTRIBUTE_MODEL) {
+    await (tx as any).productAttribute.deleteMany({
+      where: { productId },
+    });
+
+    if (enabledAttributeIds.size) {
+      await (tx as any).productAttribute.createMany({
+        data: Array.from(enabledAttributeIds).map((attributeId) => ({
+          productId,
+          attributeId,
+        })),
+        skipDuplicates: true,
+      });
+    }
+  }
+
+  await tx.productAttributeOption.deleteMany({ where: { productId } });
+  await tx.productAttributeText.deleteMany({ where: { productId } });
+
+  /**
+   * IMPORTANT:
+   * If an attribute is used by variants, do NOT write its product-level option row.
+   * Otherwise one of the variants can be mistaken for the "base" combo.
+   */
+  const optionRows: Array<{ productId: string; attributeId: string; valueId: string }> = [];
+
+  for (const sel of normalizedSelections) {
+    const attributeId = String(sel.attributeId || "").trim();
+    if (!attributeId) continue;
+
+    const isVariantDimension = variantAttrIds.has(attributeId);
+
+    // product-level text values are okay only for non-variant attrs
+    if (typeof sel.text === "string" && sel.text.trim()) {
+      if (!isVariantDimension) {
+        await tx.productAttributeText.create({
+          data: {
+            productId,
+            attributeId,
+            value: sel.text.trim(),
+          },
+        });
+      }
+      continue;
+    }
+
+    // For attrs used by variants, DO NOT persist product-level option rows
+    if (isVariantDimension) {
+      continue;
+    }
+
+    if (sel.valueId) {
+      const vid = String(sel.valueId).trim();
+      if (!vid) continue;
+
+      optionRows.push({
+        productId,
+        attributeId,
+        valueId: vid,
+      });
+      continue;
+    }
+
+    if (Array.isArray(sel.valueIds) && sel.valueIds.length) {
+      for (const valueId of sel.valueIds) {
+        const vid = String(valueId || "").trim();
+        if (!vid) continue;
+
+        optionRows.push({
+          productId,
+          attributeId,
+          valueId: vid,
+        });
+      }
+      continue;
+    }
+  }
+
+  if (optionRows.length) {
+    const uniqueValueIds = Array.from(
+      new Set(
+        optionRows
+          .map((r) => String(r.valueId || "").trim())
+          .filter(Boolean)
+      )
+    );
+
+    const existingValues = await (tx as any).attributeValue.findMany({
+      where: { id: { in: uniqueValueIds } },
+      select: { id: true, attributeId: true },
+    });
+
+    const valueToAttributeId = new Map<string, string>();
+    for (const row of existingValues) {
+      valueToAttributeId.set(String(row.id), String(row.attributeId));
+    }
+
+    for (const row of optionRows) {
+      const attributeId = String(row.attributeId || "").trim();
+      const valueId = String(row.valueId || "").trim();
+      const actualAttributeId = valueToAttributeId.get(valueId);
+
+      if (!actualAttributeId) {
+        const err: any = new Error(`Invalid attribute value: ${valueId}`);
+        err.statusCode = 400;
+        err.code = "INVALID_ATTRIBUTE_VALUE_ID";
+        err.meta = { productId, attributeId, valueId };
+        throw err;
+      }
+
+      if (actualAttributeId !== attributeId) {
+        const err: any = new Error(
+          `Attribute value ${valueId} does not belong to attribute ${attributeId}`
+        );
+        err.statusCode = 400;
+        err.code = "ATTRIBUTE_VALUE_ATTRIBUTE_MISMATCH";
+        err.meta = {
+          productId,
+          attributeId,
+          valueId,
+          actualAttributeId,
+        };
+        throw err;
+      }
+    }
+
+    await tx.productAttributeOption.createMany({
+      data: optionRows,
+      skipDuplicates: true,
+    });
+  }
+
+  const base = await tx.product.findUnique({
+    where: { id: productId },
+    select: { retailPrice: true },
+  });
+
+  const basePrice = base?.retailPrice != null ? Number(base.retailPrice) : 0;
+
+  // base combo should only come from TRUE non-variant base rows now
+  const baseComboKey = buildBaseComboKeyFromAttributeSelections({
+    attributeSelections: normalizedSelections.filter((sel) => {
+      const aid = String(sel.attributeId || "").trim();
+      return !!aid && variantAttrIds.has(aid);
+    }),
+    variantAttributeIds: variantAttrIds,
+  });
+
+  assertUniqueVariantCombosAndNoBaseConflict({
+    variants,
+    baseComboKey,
+  });
+
+  if (opts?.skipVariantRewrite) return;
+
+  const existing = await tx.productVariant.findMany({
+    where: { productId },
+    select: { id: true },
+  });
+
+  if (existing.length) {
+    await tx.productVariantOption.deleteMany({
+      where: { variantId: { in: existing.map((v) => v.id) } },
+    });
+
+    await tx.productVariant.deleteMany({
+      where: { id: { in: existing.map((v) => v.id) } },
+    });
+  }
+
+  const seen = new Set<string>();
+
+  const existsInDb = async (sku: string) =>
+    !!(await (tx as any).productVariant.findUnique({
+      where: { sku },
+      select: { id: true },
+    }));
+
+  for (const v of variants || []) {
+    let baseSku = (v.sku || "").trim();
+    if (!baseSku) baseSku = `${productId}-VAR`;
+
+    let candidate = baseSku
+      .replace(/\s+/g, "-")
+      .replace(/[^a-zA-Z0-9-_]/g, "")
+      .toUpperCase();
+
+    if (!candidate) candidate = `${productId}-VAR`;
+
+    let i = 1;
+    while (seen.has(candidate) || (await existsInDb(candidate))) {
+      i += 1;
+      candidate = `${baseSku}-${i}`.toUpperCase();
+      if (i > 1000) {
+        throw new Error("Exceeded SKU uniquifier attempts while generating unique variant SKU");
+      }
+    }
+    seen.add(candidate);
+
+    const derived =
+      v.unitPrice != null && Number.isFinite(Number(v.unitPrice))
+        ? Number(v.unitPrice)
+        : Number.isFinite(basePrice)
+          ? basePrice
+          : 0;
+
+    const created = await tx.productVariant.create({
+      data: {
+        productId,
+        sku: candidate,
+        retailPrice: new Prisma.Decimal(String(derived)),
+        inStock: v.inStock !== false,
+        imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
+      },
+      select: { id: true },
+    });
+
+    if (Array.isArray(v.options) && v.options.length) {
+      const HAS_UNIT_PRICE = hasRelation("ProductVariantOption", "unitPrice");
+
+      await tx.productVariantOption.createMany({
+        data: v.options.map((o) => {
+          const unit = o.unitPrice == null ? null : new Prisma.Decimal(String(o.unitPrice));
+          return {
+            variantId: created.id,
+            attributeId: o.attributeId,
+            valueId: o.valueId,
+            ...(HAS_UNIT_PRICE ? { unitPrice: unit } : {}),
+          };
+        }),
+        skipDuplicates: true,
+      });
+    }
+  }
 }
 
 /* -------------------------------- Types --------------------------------- */
@@ -231,11 +637,6 @@ function skuSafePart(input: any) {
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
   return s;
-}
-
-function buildSkuFromTitle(title: string) {
-  const out = skuSafePart(title);
-  return out || `PRODUCT-${Date.now()}`;
 }
 
 /**
@@ -521,166 +922,9 @@ function normalizeVariantsPayload(body: any): NormalizedVariant[] {
 
 function variantActiveWhere(variantModelName: string) {
   const where: any = {};
-  if (variantModelName && hasScalar(variantModelName, "isActive")) where.isActive = true;
-  if (variantModelName && hasScalar(variantModelName, "isDeleted")) where.isDeleted = false;
+  if (variantModelName && hasRelation(variantModelName, "isActive")) where.isActive = true;
+  if (variantModelName && hasRelation(variantModelName, "isDeleted")) where.isDeleted = false;
   return Object.keys(where).length ? where : undefined;
-}
-
-async function writeAttributesAndVariants(
-  tx: Prisma.TransactionClient,
-  productId: string,
-  attributeSelections?: Array<{
-    attributeId: string;
-    valueId?: string;
-    valueIds?: string[];
-    text?: string;
-  }>,
-  variants?: NormalizedVariant[]
-) {
-  if (attributeSelections && attributeSelections.length) {
-    await tx.productAttributeOption.deleteMany({ where: { productId } });
-    await tx.productAttributeText.deleteMany({ where: { productId } });
-
-    const optionRows: { productId: string; attributeId: string; valueId: string }[] = [];
-
-    for (const sel of attributeSelections) {
-      if (!sel?.attributeId) continue;
-
-      if (sel.valueId) {
-        optionRows.push({ productId, attributeId: sel.attributeId, valueId: sel.valueId });
-        continue;
-      }
-
-      if (Array.isArray(sel.valueIds) && sel.valueIds.length) {
-        for (const vId of sel.valueIds) optionRows.push({ productId, attributeId: sel.attributeId, valueId: vId });
-        continue;
-      }
-
-      if (typeof sel.text === "string" && sel.text.trim()) {
-        await tx.productAttributeText.create({
-          data: { productId, attributeId: sel.attributeId, value: sel.text.trim() },
-        });
-      }
-    }
-
-    if (optionRows.length) {
-      await tx.productAttributeOption.createMany({
-        data: optionRows,
-        skipDuplicates: true,
-      });
-    }
-  }
-
-  const base = await tx.product.findUnique({
-    where: { id: productId },
-    select: { retailPrice: true },
-  });
-  const basePrice = base?.retailPrice != null ? Number(base.retailPrice) : 0;
-
-  if (variants) {
-    // ✅ Determine which attributeIds are used by variants (variant dimensions)
-    const variantAttrIds = new Set<string>();
-    for (const v of variants) {
-      for (const o of v.options || []) {
-        if (o?.attributeId) variantAttrIds.add(String(o.attributeId));
-      }
-    }
-
-    // ✅ Build base combo key from product-level attributeSelections (SELECT only)
-    const baseComboKey = buildBaseComboKeyFromAttributeSelections({
-      attributeSelections,
-      variantAttributeIds: variantAttrIds,
-    });
-
-    // ✅ Enforce: unique variant combos AND base combo != any variant combo
-    assertUniqueVariantCombosAndNoBaseConflict({
-      variants,
-      baseComboKey,
-    });
-
-    const existing = await tx.productVariant.findMany({
-      where: { productId },
-      select: { id: true },
-    });
-
-    if (existing.length) {
-      await tx.productVariantOption.deleteMany({
-        where: { variantId: { in: existing.map((v) => v.id) } },
-      });
-      await tx.productVariant.deleteMany({ where: { id: { in: existing.map((v) => v.id) } } });
-    }
-
-    const seen = new Set<string>();
-
-    const existsInDb = async (sku: string) =>
-      !!(await (tx as any).productVariant.findUnique({
-        where: { sku },
-        select: { id: true },
-      }));
-
-    for (const v of variants) {
-      // generate unique SKU
-      let baseSku = (v.sku || "").trim();
-      if (!baseSku) baseSku = `${productId}-VAR`;
-      let candidate = baseSku.replace(/\s+/g, "-").replace(/[^a-zA-Z0-9-_]/g, "").toUpperCase();
-      if (!candidate) candidate = `${productId}-VAR`;
-
-      let i = 1;
-      while (seen.has(candidate) || (await existsInDb(candidate))) {
-        i += 1;
-        candidate = `${baseSku}-${i}`.toUpperCase();
-        if (i > 1000) throw new Error("Exceeded SKU uniquifier attempts while generating unique variant SKU");
-      }
-      seen.add(candidate);
-
-      // ✅ NO bump logic: variant price stands alone; fallback to product retailPrice (basePrice) if missing.
-      const derived =
-        v.unitPrice != null && Number.isFinite(Number(v.unitPrice)) ? Number(v.unitPrice) : Number.isFinite(basePrice) ? basePrice : 0;
-
-      const created = await tx.productVariant.create({
-        data: {
-          productId,
-          sku: candidate,
-          retailPrice: new Prisma.Decimal(String(derived)),
-          inStock: v.inStock !== false,
-          imagesJson: Array.isArray(v.imagesJson) ? v.imagesJson : [],
-        },
-        select: { id: true },
-      });
-
-      if (Array.isArray(v.options) && v.options.length) {
-        const HAS_UNIT_PRICE = hasScalar("ProductVariantOption", "unitPrice");
-
-        await tx.productVariantOption.createMany({
-          data: v.options.map((o) => {
-            const unit = o.unitPrice == null ? null : new Prisma.Decimal(String(o.unitPrice));
-            return {
-              variantId: created.id,
-              attributeId: o.attributeId,
-              valueId: o.valueId,
-              ...(HAS_UNIT_PRICE ? { unitPrice: unit } : {}),
-            };
-          }),
-          skipDuplicates: true,
-        });
-      }
-    }
-
-    // Seed productAttributeOption from variants
-    const allOptions = await tx.productVariantOption.findMany({
-      where: { variant: { productId } } as any,
-      select: { attributeId: true, valueId: true },
-      distinct: ["attributeId", "valueId"] as any,
-    });
-
-    await tx.productAttributeOption.deleteMany({ where: { productId } });
-    if (allOptions.length) {
-      await tx.productAttributeOption.createMany({
-        data: allOptions.map((o) => ({ productId, attributeId: o.attributeId, valueId: o.valueId })),
-        skipDuplicates: true,
-      });
-    }
-  }
 }
 
 /* ------------------------------- Zod ------------------------------------ */
@@ -699,8 +943,8 @@ export const CreateProductSchema = z.object({
   title: z.string().trim().min(1),
   description: z.string().trim().min(1),
 
-  // NOTE: sku is accepted but will be overridden by supplier+brand+title policy
   sku: z.string().trim().optional(),
+  variants: z.array(z.any()).optional(),
 
   retailPrice: MoneyLike.optional(),
 
@@ -708,17 +952,14 @@ export const CreateProductSchema = z.object({
   inStock: z.boolean().optional(),
   imagesJson: z.array(z.string()).optional(),
 
-  brandId: z.string().trim().min(1), // ✅ required in schema
+  brandId: z.string().trim().min(1),
   categoryId: z.string().trim().min(1).nullable().optional(),
-
-  // ✅ REQUIRED: one supplier per product
   supplierId: z.string().trim().min(1),
 
-  // ✅ NEW
   shippingCost: MoneyLike.optional(),
-
   communicationCost: MoneyLike.nullable().optional(),
 
+  enabledAttributeIds: z.array(z.string().trim().min(1)).optional(),
   attributeSelections: z.array(z.any()).optional(),
 });
 
@@ -754,11 +995,12 @@ const UpdateProductSchema = z
     imagesJson: z.array(z.string()).optional(),
 
     communicationCost: NumLikeNullable,
-
+    variants: z.array(z.any()).optional(),
     // ✅ NEW
     shippingCost: NumLikeOptional,
 
     attributeSelections: z.array(z.any()).optional(),
+    enabledAttributeIds: z.array(z.string().trim().min(1)).optional(),
   })
   .passthrough();
 
@@ -870,6 +1112,18 @@ function normalizeVariantsForApiResponse(product: any, includeOptions = false) {
   return mapped;
 }
 
+
+function normalizeEnabledAttributeIdsPayload(raw: any): string[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  return Array.from(
+    new Set(
+      arr
+        .map((x) => String(x ?? "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
 /**
  * Normalize supplier offers list field name into `supplierOffers` (optional)
  * without breaking existing payloads.
@@ -965,7 +1219,7 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       if (!hasProductRelationField(relName)) return;
       const relModel = String(getProductField(relName)?.type ?? "");
       if (!relModel) return;
-      if (!hasScalar(relModel, "email")) return;
+      if (!hasRelation(relModel, "email")) return;
 
       or.push({
         [relName]: {
@@ -986,9 +1240,9 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       if (!relModel) return;
 
       const innerOr: any[] = [];
-      if (hasScalar(relModel, "name")) innerOr.push({ name: { contains: q, mode: "insensitive" } });
-      if (hasScalar(relModel, "contactEmail")) innerOr.push({ contactEmail: { contains: q, mode: "insensitive" } });
-      if (hasScalar(relModel, "whatsappPhone")) innerOr.push({ whatsappPhone: { contains: q, mode: "insensitive" } });
+      if (hasRelation(relModel, "name")) innerOr.push({ name: { contains: q, mode: "insensitive" } });
+      if (hasRelation(relModel, "contactEmail")) innerOr.push({ contactEmail: { contains: q, mode: "insensitive" } });
+      if (hasRelation(relModel, "whatsappPhone")) innerOr.push({ whatsappPhone: { contains: q, mode: "insensitive" } });
 
       if (!innerOr.length) return;
 
@@ -1006,7 +1260,7 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       if (!hasProductRelationField(relName)) return;
       const relModel = String(getProductField(relName)?.type ?? "");
       if (!relModel) return;
-      if (!hasScalar(relModel, "name")) return;
+      if (!hasRelation(relModel, "name")) return;
 
       or.push({
         [relName]: {
@@ -1061,11 +1315,11 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     const variantSelect: any = { id: true };
 
     if (variantModelName) {
-      if (hasScalar(variantModelName, "sku")) variantSelect.sku = true;
-      if (hasScalar(variantModelName, "inStock")) variantSelect.inStock = true;
-      if (hasScalar(variantModelName, "retailPrice")) variantSelect.retailPrice = true;
-      if (hasScalar(variantModelName, "imagesJson")) variantSelect.imagesJson = true;
-      if (hasScalar(variantModelName, "availableQty")) variantSelect.availableQty = true;
+      if (hasRelation(variantModelName, "sku")) variantSelect.sku = true;
+      if (hasRelation(variantModelName, "inStock")) variantSelect.inStock = true;
+      if (hasRelation(variantModelName, "retailPrice")) variantSelect.retailPrice = true;
+      if (hasRelation(variantModelName, "imagesJson")) variantSelect.imagesJson = true;
+      if (hasRelation(variantModelName, "availableQty")) variantSelect.availableQty = true;
     }
 
     // include variant options if relation exists
@@ -1074,12 +1328,12 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       const optionSelect: any = { id: true };
 
       if (optionModelName) {
-        if (hasScalar(optionModelName, "attributeId")) optionSelect.attributeId = true;
-        if (hasScalar(optionModelName, "valueId")) optionSelect.valueId = true;
-        if (!optionSelect.valueId && hasScalar(optionModelName, "attributeValueId")) optionSelect.attributeValueId = true;
+        if (hasRelation(optionModelName, "attributeId")) optionSelect.attributeId = true;
+        if (hasRelation(optionModelName, "valueId")) optionSelect.valueId = true;
+        if (!optionSelect.valueId && hasRelation(optionModelName, "attributeValueId")) optionSelect.attributeValueId = true;
 
         // NOTE: we can still select unitPrice if you want, but it is NOT used for pricing anymore.
-        if (hasScalar(optionModelName, "unitPrice")) optionSelect.unitPrice = true;
+        if (hasRelation(optionModelName, "unitPrice")) optionSelect.unitPrice = true;
       } else {
         optionSelect.attributeId = true;
         optionSelect.valueId = true;
@@ -1098,7 +1352,7 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
       ...(vWhere ? { where: vWhere } : {}),
       select: variantSelect,
       orderBy:
-        variantModelName && hasScalar(variantModelName, "createdAt")
+        variantModelName && hasRelation(variantModelName, "createdAt")
           ? ({ createdAt: "asc" } as any)
           : undefined,
     };
@@ -1283,6 +1537,24 @@ async function listProductsCore(req: Request, res: Response, forcedStatus?: stri
     return out;
   });
 
+  if (HAS_PRODUCT_ATTRIBUTE_MODEL) {
+    const ids = items.map((p: any) => String(p.id));
+    const rows = await (prisma as any).productAttribute.findMany({
+      where: { productId: { in: ids } },
+      select: { productId: true, attributeId: true },
+    });
+
+    const countByProductId = new Map<string, number>();
+    for (const r of rows) {
+      const pid = String(r.productId);
+      countByProductId.set(pid, (countByProductId.get(pid) ?? 0) + 1);
+    }
+
+    for (const out of mapped) {
+      out.enabledAttributeCount = countByProductId.get(String(out.id)) ?? 0;
+    }
+  }
+
   return res.json({ data: mapped });
 }
 
@@ -1449,6 +1721,76 @@ router.post(
 );
 
 router.post(
+  "/:id/restore",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const id = requiredString(req.params.id);
+
+    const data: any = {};
+    if (hasProductScalarField("isDeleted")) data.isDeleted = false;
+    if (hasProductScalarField("isDelete")) data.isDelete = false;
+    if (hasProductScalarField("deletedAt")) data.deletedAt = null;
+
+    if (hasProductScalarField("status")) {
+      if (isValidProductStatus("PENDING")) data.status = "PENDING";
+    }
+
+    const updated = await prisma.product.update({
+      where: { id },
+      data,
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        retailPrice: true,
+        autoPrice: true,
+        priceMode: true,
+        ...(hasProductScalarField("isDeleted") ? { isDeleted: true } : {}),
+      },
+    });
+
+    return res.json({
+      data: {
+        ...updated,
+        retailPrice: computeDisplayPrice(updated),
+        autoPrice: updated.autoPrice != null ? Number(updated.autoPrice) : null,
+      },
+    });
+  })
+);
+
+
+router.delete(
+  "/:id/soft-delete",
+  requireAdmin,
+  wrap(async (req, res) => {
+    const id = requiredString(req.params.id);
+
+    const data: any = {};
+    if (hasProductScalarField("isDeleted")) data.isDeleted = true;
+    if (hasProductScalarField("isDelete")) data.isDelete = true;
+    if (hasProductScalarField("deletedAt")) data.deletedAt = new Date();
+
+    if (hasProductScalarField("status") && isValidProductStatus("DISABLED")) {
+      data.status = "DISABLED";
+    }
+
+    const updated = await prisma.product.update({
+      where: { id },
+      data,
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        ...(hasProductScalarField("isDeleted") ? { isDeleted: true } : {}),
+      },
+    });
+
+    return res.json({ data: { ...updated, softDeleted: true } });
+  })
+);
+
+router.post(
   "/:productId/reject",
   requireAdmin,
   wrap(async (req, res) => {
@@ -1522,6 +1864,8 @@ export const createProductHandler = wrap(async (req, res) => {
   }
 
   const body = parsed.data;
+
+
 
   const supplierId = String(body.supplierId).trim();
   if (!supplierId) return res.status(400).json({ error: "Supplier is required" });
@@ -1612,33 +1956,52 @@ export const createProductHandler = wrap(async (req, res) => {
         },
       });
 
+      const initialAvailableQty = Number((req.body as any)?.availableQty ?? (req.body as any)?.supplierAvailableQty ?? 0);
+
+      if (
+        initialAvailableQty > 0 &&
+        hasModel("SupplierProductOffer")
+      ) {
+        await (tx as any).supplierProductOffer.create({
+          data: {
+            productId: String(product.id),
+            supplierId: String(supplierId),
+            basePrice: new Prisma.Decimal(String(nextRetail ?? 0)),
+            availableQty: Math.max(0, Math.floor(initialAvailableQty)),
+            isActive: true,
+            inStock: true,
+            currency: "NGN",
+          },
+        });
+      }
+
       // ✅ IMPORTANT: compute the product retail numeric fallback ONCE
       const productRetailNum =
         nextRetail !== undefined ? Number(nextRetail) : product.retailPrice != null ? Number(product.retailPrice) : 0;
+      const normalizedVariants = normalizeVariantsPayload(req.body);
+      const variantsWithDefaultRetail: NormalizedVariant[] = normalizedVariants.map((v) => ({
+        ...v,
+        unitPrice:
+          v.unitPrice != null && Number.isFinite(Number(v.unitPrice))
+            ? Number(v.unitPrice)
+            : (nextRetail !== undefined ? Number(nextRetail) : 0),
+      }));
 
-      // ✅ IMPORTANT: default variant.retailPrice if missing/null/undefined
-      const variantsWithDefaultRetail = Array.isArray((body as any).variants)
-        ? (body as any).variants.map((v: any) => {
-          const raw = v?.retailPrice ?? v?.price;
-          const n = raw == null ? null : Number(raw);
-          const hasValid = n != null && Number.isFinite(n) && n > 0;
+      const normalizedEnabledAttributeIds = normalizeEnabledAttributeIdsPayload(
+        body.enabledAttributeIds ?? []
+      );
 
-          return {
-            ...v,
-            retailPrice: hasValid ? n : productRetailNum,
-          };
-        })
-        : undefined;
+      const normalizedAttributeSelections = normalizeAttributeSelectionsPayload(
+        body.attributeSelections ?? []
+      );
 
-      if (Array.isArray(body.attributeSelections) && body.attributeSelections.length) {
-        // ✅ PASS variants into writer AND ensure missing retailPrice is defaulted
-        await writeAttributesAndVariants(
-          tx as any,
-          String(product.id),
-          body.attributeSelections as any,
-          variantsWithDefaultRetail
-        );
-      }
+      await writeAttributesAndVariants(
+        tx as any,
+        String(product.id),
+        normalizedEnabledAttributeIds,
+        normalizedAttributeSelections,
+        variantsWithDefaultRetail,
+      );
 
       return product;
     });
@@ -1681,7 +2044,16 @@ export const updateProductHandler = wrap(async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues });
   }
+
   const body = parsed.data;
+
+  if (req.body?.variants !== undefined) {
+    return res.status(409).json({
+      error: "Variant updates must use the dedicated variants bulk endpoint.",
+      code: "USE_VARIANTS_BULK_ENDPOINT",
+      userMessage: "Save product details first, then save variants separately.",
+    });
+  }
 
   const supplierIdFromBody = extractSupplierIdFromBody(req.body);
   const supplierIdIncoming = supplierIdFromBody !== undefined ? supplierIdFromBody : body.supplierId;
@@ -1698,7 +2070,6 @@ export const updateProductHandler = wrap(async (req, res) => {
 
   try {
     const updated = await prisma.$transaction(async (tx) => {
-      // ✅ read current row first (needed for supplier+brand+title sku)
       const current = await (tx as any).product.findUnique({
         where: { id },
         select: {
@@ -1731,13 +2102,13 @@ export const updateProductHandler = wrap(async (req, res) => {
             ? String((current as any).supplierId).trim()
             : "";
 
-      // brandId is required in your schema; enforce at API boundary on update too
       if (!nextBrandId) {
         const err: any = new Error("brandId is required");
         err.statusCode = 400;
         err.code = "BRAND_REQUIRED";
         throw err;
       }
+
       if (!nextSupplierId) {
         const err: any = new Error("supplierId is required");
         err.statusCode = 400;
@@ -1786,13 +2157,14 @@ export const updateProductHandler = wrap(async (req, res) => {
         }
       }
 
-      // ✅ SKU policy: ALWAYS recompute from supplier+brand+title when any of these change,
-      // and ALSO if caller attempts to send `sku` (we override it).
       const nextTitle =
         body.title !== undefined ? String(body.title ?? "").trim() : String((current as any).title ?? "").trim();
 
       const mustRecomputeSku =
-        body.title !== undefined || body.brandId !== undefined || supplierIdIncoming !== undefined || body.sku !== undefined;
+        body.title !== undefined ||
+        body.brandId !== undefined ||
+        supplierIdIncoming !== undefined ||
+        body.sku !== undefined;
 
       if (mustRecomputeSku) {
         const computed = makeSkuFromSupplierBrandTitle({
@@ -1839,8 +2211,71 @@ export const updateProductHandler = wrap(async (req, res) => {
         },
       });
 
-      if (Array.isArray(body.attributeSelections)) {
-        await writeAttributesAndVariants(tx as any, String(product.id), body.attributeSelections as any, undefined);
+      const normalizedEnabledAttributeIds =
+        req.body?.enabledAttributeIds !== undefined
+          ? normalizeEnabledAttributeIdsPayload(req.body.enabledAttributeIds)
+          : undefined;
+
+      const normalizedAttributeSelections =
+        req.body?.attributeSelections !== undefined
+          ? normalizeAttributeSelectionsPayload(body.attributeSelections ?? [])
+          : undefined;
+
+      const normalizedVariants =
+        req.body?.variants !== undefined
+          ? normalizeVariantsPayload(req.body)
+          : undefined;
+
+      if (
+        req.body?.enabledAttributeIds !== undefined ||
+        req.body?.attributeSelections !== undefined ||
+        req.body?.variants !== undefined
+      ) {
+        let effectiveEnabledAttributeIds = normalizedEnabledAttributeIds;
+
+        if (effectiveEnabledAttributeIds === undefined && HAS_PRODUCT_ATTRIBUTE_MODEL) {
+          const existingEnabledRows = await (tx as any).productAttribute.findMany({
+            where: { productId: String(product.id) },
+            select: { attributeId: true },
+          });
+
+          effectiveEnabledAttributeIds = existingEnabledRows.map((r: any) => String(r.attributeId));
+        }
+
+        let effectiveAttributeSelections = normalizedAttributeSelections;
+
+        if (effectiveAttributeSelections === undefined) {
+          const [existingOptions, existingTexts] = await Promise.all([
+            tx.productAttributeOption.findMany({
+              where: { productId: String(product.id) },
+              select: { attributeId: true, valueId: true },
+            }),
+            tx.productAttributeText.findMany({
+              where: { productId: String(product.id) },
+              select: { attributeId: true, value: true },
+            }),
+          ]);
+
+          effectiveAttributeSelections = [
+            ...existingOptions.map((o) => ({
+              attributeId: String(o.attributeId),
+              valueId: String(o.valueId),
+            })),
+            ...existingTexts.map((t) => ({
+              attributeId: String(t.attributeId),
+              text: String(t.value),
+            })),
+          ];
+        }
+
+        await writeAttributesAndVariants(
+          tx as any,
+          String(product.id),
+          effectiveEnabledAttributeIds,
+          effectiveAttributeSelections,
+          undefined,
+          { skipVariantRewrite: true }
+        );
       }
 
       return product;
@@ -1860,10 +2295,12 @@ export const updateProductHandler = wrap(async (req, res) => {
       return res.status(409).json({
         error: "A product with this Supplier, Brand and SKU already exists.",
         code: "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU",
-        userMessage: "This supplier already has a product for that brand/title combination. Please change title, brand, or supplier.",
+        userMessage:
+          "This supplier already has a product for that brand/title combination. Please change title, brand, or supplier.",
         meta: (e as any)?.meta ?? undefined,
       });
     }
+
     const status = Number(e?.statusCode) || 500;
     return res.status(status).json({
       error: e?.message || "Internal Server Error",
@@ -1935,11 +2372,12 @@ function buildBaseComboKeyFromAttributeSelections(args: {
     const aid = String(sel?.attributeId ?? "").trim();
     if (!aid) continue;
 
-    // Only consider SELECT-like selections (single valueId)
+    // Only consider SINGLE select-like base selections
     const vid = sel?.valueId != null ? String(sel.valueId).trim() : "";
     if (!vid) continue;
 
-    // Only compare base-vs-variant on attributes that are used by variants
+    // Ignore multi-value rows and anything not used by variants
+    if (Array.isArray(sel?.valueIds) && sel.valueIds.length > 0) continue;
     if (!variantAttributeIds.has(aid)) continue;
 
     basePairs.push({ attributeId: aid, valueId: vid });
@@ -2053,7 +2491,7 @@ router.post(
     if (!optionsRel && hasRelation(variantModelName, "options")) optionsRel = "options";
 
     const OPTION_MODEL = "ProductVariantOption";
-    const HAS_UNIT_PRICE = hasScalar(OPTION_MODEL, "unitPrice");
+    const HAS_UNIT_PRICE = hasRelation(OPTION_MODEL, "unitPrice");
 
     const comboKey = (opts: Array<{ attributeId: string; valueId: string }>) => {
       const parts = (opts || [])
@@ -2063,13 +2501,27 @@ router.post(
       return parts.join("||");
     };
 
-    const canSoftDisable = hasScalar(variantModelName, "isActive") || hasScalar(variantModelName, "isDeleted");
-    const hasIsActive = hasScalar(variantModelName, "isActive");
-    const hasIsDeleted = hasScalar(variantModelName, "isDeleted");
+    const canSoftDisable = hasRelation(variantModelName, "isActive") || hasRelation(variantModelName, "isDeleted");
+    const hasIsActive = hasRelation(variantModelName, "isActive");
+    const hasIsDeleted = hasRelation(variantModelName, "isDeleted");
 
     const result = await prisma.$transaction(async (tx) => {
       const include: any = {};
       if (optionsRel) include[optionsRel] = true;
+
+
+      let enabledAttributeIds = new Set<string>();
+
+      if (HAS_PRODUCT_ATTRIBUTE_MODEL) {
+        const enabledRows = await (tx as any).productAttribute.findMany({
+          where: { productId },
+          select: { attributeId: true },
+        });
+
+        enabledAttributeIds = new Set(
+          enabledRows.map((r: any) => String(r.attributeId)).filter(Boolean)
+        );
+      }
 
       const existing = await tx.productVariant.findMany({
         where: { productId },
@@ -2092,6 +2544,20 @@ router.post(
       for (const v of variants as any[]) {
         for (const o of (v?.options || [])) {
           if (o?.attributeId) incomingVariantAttrIds.add(String(o.attributeId));
+        }
+      }
+
+      for (const v of variants as any[]) {
+        for (const o of v.options || []) {
+          const aid = String(o?.attributeId || "").trim();
+          if (!aid) continue;
+
+          if (enabledAttributeIds.size && !enabledAttributeIds.has(aid)) {
+            const err: any = new Error(`Variant attribute ${aid} is not enabled for this product.`);
+            err.statusCode = 400;
+            err.code = "VARIANT_ATTRIBUTE_NOT_ENABLED";
+            throw err;
+          }
         }
       }
 
@@ -2255,7 +2721,7 @@ router.post(
 
       const fresh = await tx.productVariant.findMany({
         where: whereFresh,
-        orderBy: hasScalar(variantModelName, "createdAt") ? ({ createdAt: "asc" } as any) : ({ id: "asc" } as any),
+        orderBy: hasRelation(variantModelName, "createdAt") ? ({ createdAt: "asc" } as any) : ({ id: "asc" } as any),
         ...(Object.keys(include2).length ? { include: include2 } : {}),
       });
 
@@ -2416,16 +2882,16 @@ router.get(
       const variantSelect: any = { id: true };
 
       if (variantModelName) {
-        if (hasScalar(variantModelName, "sku")) variantSelect.sku = true;
-        if (hasScalar(variantModelName, "inStock")) variantSelect.inStock = true;
-        if (hasScalar(variantModelName, "retailPrice")) variantSelect.retailPrice = true;
-        if (hasScalar(variantModelName, "imagesJson")) variantSelect.imagesJson = true;
-        if (hasScalar(variantModelName, "availableQty")) variantSelect.availableQty = true;
+        if (hasRelation(variantModelName, "sku")) variantSelect.sku = true;
+        if (hasRelation(variantModelName, "inStock")) variantSelect.inStock = true;
+        if (hasRelation(variantModelName, "retailPrice")) variantSelect.retailPrice = true;
+        if (hasRelation(variantModelName, "imagesJson")) variantSelect.imagesJson = true;
+        if (hasRelation(variantModelName, "availableQty")) variantSelect.availableQty = true;
 
-        if (hasScalar(variantModelName, "isActive")) variantSelect.isActive = true;
-        if (hasScalar(variantModelName, "isDeleted")) variantSelect.isDeleted = true;
-        if (hasScalar(variantModelName, "isDelete")) variantSelect.isDelete = true;
-        if (hasScalar(variantModelName, "isArchived")) variantSelect.isArchived = true;
+        if (hasRelation(variantModelName, "isActive")) variantSelect.isActive = true;
+        if (hasRelation(variantModelName, "isDeleted")) variantSelect.isDeleted = true;
+        if (hasRelation(variantModelName, "isDelete")) variantSelect.isDelete = true;
+        if (hasRelation(variantModelName, "isArchived")) variantSelect.isArchived = true;
       }
 
       if (optionsRel) {
@@ -2436,7 +2902,7 @@ router.get(
             id: true,
             attributeId: true,
             valueId: true,
-            ...(hasScalar("ProductVariantOption", "unitPrice") ? { unitPrice: true } : {}),
+            ...(hasRelation("ProductVariantOption", "unitPrice") ? { unitPrice: true } : {}),
           },
           orderBy: { attributeId: "asc" as const },
         };
@@ -2444,16 +2910,16 @@ router.get(
 
       const variantWhere: any = {};
       if (variantModelName) {
-        if (hasScalar(variantModelName, "isActive")) variantWhere.isActive = true;
-        if (hasScalar(variantModelName, "isDeleted")) variantWhere.isDeleted = false;
-        if (hasScalar(variantModelName, "isDelete")) variantWhere.isDelete = false;
-        if (hasScalar(variantModelName, "isArchived")) variantWhere.isArchived = false;
+        if (hasRelation(variantModelName, "isActive")) variantWhere.isActive = true;
+        if (hasRelation(variantModelName, "isDeleted")) variantWhere.isDeleted = false;
+        if (hasRelation(variantModelName, "isDelete")) variantWhere.isDelete = false;
+        if (hasRelation(variantModelName, "isArchived")) variantWhere.isArchived = false;
       }
 
       select[PRODUCT_VARIANTS_REL] = {
         ...(Object.keys(variantWhere).length ? { where: variantWhere } : {}),
         select: variantSelect,
-        orderBy: variantModelName && hasScalar(variantModelName, "createdAt") ? ({ createdAt: "asc" } as any) : undefined,
+        orderBy: variantModelName && hasRelation(variantModelName, "createdAt") ? ({ createdAt: "asc" } as any) : undefined,
       };
     }
 
@@ -2467,17 +2933,36 @@ router.get(
     // attributes (editor needs this when include=attributes)
     let attributes: any = null;
     if (includeSet.has("attributes")) {
+      const enabled = HAS_PRODUCT_ATTRIBUTE_MODEL
+        ? await (prisma as any).productAttribute.findMany({
+          where: { productId: id },
+          include: {
+            attribute: { select: { id: true, name: true, type: true, isActive: true } },
+          },
+          orderBy: [{ attributeId: "asc" }],
+        })
+        : [];
+
+      const enabledIds = enabled.map((r: any) => String(r.attributeId)).filter(Boolean);
+
       const [opts, texts] = await Promise.all([
         prisma.productAttributeOption.findMany({
-          where: { productId: id },
+          where: {
+            productId: id,
+            ...(enabledIds.length ? { attributeId: { in: enabledIds } } : {}),
+          },
           include: {
             attribute: { select: { id: true, name: true, type: true } },
             value: { select: { id: true, name: true, code: true } },
           },
           orderBy: [{ attributeId: "asc" }, { valueId: "asc" }],
         }),
+
         prisma.productAttributeText.findMany({
-          where: { productId: id },
+          where: {
+            productId: id,
+            ...(enabledIds.length ? { attributeId: { in: enabledIds } } : {}),
+          },
           include: {
             attribute: { select: { id: true, name: true, type: true } },
           },
@@ -2485,7 +2970,12 @@ router.get(
         }),
       ]);
 
-      attributes = { options: opts, texts };
+      attributes = {
+        enabled,
+        enabledAttributeIds: enabledIds,
+        options: opts,
+        texts,
+      };
     }
 
     const out: any = {

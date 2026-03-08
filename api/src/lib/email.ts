@@ -175,7 +175,7 @@ export async function sendOtpEmail(to: string, code: string, meta: OtpEmailMeta 
 
   const html = `
     <div style="font-family:system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6;color:#111">
-      <h2 style="margin:0 0 6px 0">${purpose} OTP</h2>
+      <h2 style="margin:0 0 6px 0">${purpose}</h2>
       <p style="margin:0 0 12px 0">Use the code below to complete your ${purpose.toLowerCase()}.</p>
       ${orderLine}
       <div style="margin:14px 0;padding:14px 16px;border:1px solid #e5e7eb;border-radius:12px;background:#fafafa">

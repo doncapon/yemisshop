@@ -85,7 +85,6 @@ type AdminAttribute = any;
 /* =========================
    Catalog Requests (Admin)
 ========================= */
-
 type AdminCatalogRequest = {
   id: string;
 
@@ -101,9 +100,20 @@ type AdminCatalogRequest = {
 };
 
 /* =========================
+   Helpers
+========================= */
+function useDebouncedValue<T>(value: T, delayMs = 150) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(t);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+/* =========================
    Small, typing-safe forms
 ========================= */
-
 function CategoryForm({
   onCreate,
   categories,
@@ -215,7 +225,6 @@ function BrandForm({
 /* =========================
    Supplier Form
 ========================= */
-
 type BankOption = { country: string; code: string; name: string };
 
 const FALLBACK_BANKS: BankOption[] = [
@@ -600,30 +609,326 @@ function SupplierForm({
   );
 }
 
-function normalizeSupplierPayload(values: SupplierFormValues) {
-  const toUndefIfBlank = (v: any) => (typeof v === "string" && v.trim() === "" ? undefined : v);
+/* =========================
+   Suppliers Section (memoized)
+   - IMPORTANT: keeps search/pagination local so typing does NOT re-render the entire page
+========================= */
+const SuppliersSection = React.memo(function SuppliersSection(props: {
+  canEdit: boolean;
+  suppliers: AdminSupplier[];
 
-  return {
-    ...values,
-    contactEmail: toUndefIfBlank(values.contactEmail),
-    whatsappPhone: toUndefIfBlank(values.whatsappPhone),
+  editingSupplier: AdminSupplier | null;
+  setEditingSupplier: (v: AdminSupplier | null) => void;
 
-    apiBaseUrl: toUndefIfBlank(values.apiBaseUrl),
-    apiAuthType: values.apiAuthType === "" ? undefined : values.apiAuthType,
-    apiKey: toUndefIfBlank(values.apiKey),
+  supplierFormKey: number;
+  setSupplierFormKey: React.Dispatch<React.SetStateAction<number>>;
 
-    payoutMethod: values.payoutMethod === "" ? undefined : values.payoutMethod,
-    bankCode: toUndefIfBlank(values.bankCode),
-    bankName: toUndefIfBlank(values.bankName),
-    accountNumber: toUndefIfBlank(values.accountNumber),
-    accountName: toUndefIfBlank(values.accountName),
-  };
-}
+  createSupplier: any;
+  updateSupplier: any;
+  deleteSupplier: any;
+
+  bankVerifyM: any;
+
+  qc: ReturnType<typeof useQueryClient>;
+}) {
+  const {
+    canEdit,
+    suppliers,
+    editingSupplier,
+    setEditingSupplier,
+    supplierFormKey,
+    setSupplierFormKey,
+    createSupplier,
+    updateSupplier,
+    deleteSupplier,
+    bankVerifyM,
+    qc,
+  } = props;
+
+  const [supplierSearch, setSupplierSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(supplierSearch, 150);
+  const normalizedSupplierSearch = (debouncedSearch || "").trim().toLowerCase();
+
+  const filteredSuppliers = useMemo(() => {
+    const items = suppliers ?? [];
+    if (!normalizedSupplierSearch) return items;
+
+    const needle = normalizedSupplierSearch;
+    return items.filter((s) => {
+      const hay = [
+        s.name,
+        s.contactEmail,
+        s.whatsappPhone,
+        s.type,
+        s.status,
+        s.bankName,
+        s.bankCode,
+        s.accountNumber,
+        s.accountName,
+        s.payoutMethod,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [suppliers, normalizedSupplierSearch]);
+
+  const [supplierPage, setSupplierPage] = useState(1);
+  const [supplierPageSize, setSupplierPageSize] = useState(25);
+
+  useEffect(() => setSupplierPage(1), [normalizedSupplierSearch]);
+
+  const totalSuppliers = filteredSuppliers.length;
+  const totalPages = Math.max(1, Math.ceil(totalSuppliers / supplierPageSize));
+
+  useEffect(() => {
+    setSupplierPage((p) => Math.min(Math.max(1, p), totalPages));
+  }, [totalPages]);
+
+  const pagedSuppliers = useMemo(() => {
+    const start = (supplierPage - 1) * supplierPageSize;
+    return filteredSuppliers.slice(start, start + supplierPageSize);
+  }, [filteredSuppliers, supplierPage, supplierPageSize]);
+
+  return (
+    <div style={{ overflowAnchor: "none" } as any}>
+      {canEdit && (
+        <SupplierForm
+          key={supplierFormKey}
+          editing={editingSupplier}
+          onCancelEdit={() => setEditingSupplier(null)}
+          onCreate={(payload) =>
+            createSupplier.mutate(payload, {
+              onSuccess: () => {
+                setEditingSupplier(null);
+                setSupplierFormKey((k) => k + 1);
+                qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
+              },
+            })
+          }
+          onUpdate={(payload: any) =>
+            updateSupplier.mutate(payload, {
+              onSuccess: () => {
+                setEditingSupplier(null);
+                qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
+              },
+            })
+          }
+        />
+      )}
+
+      <div className="mb-3 flex flex-col md:flex-row md:flex-nowrap md:items-center gap-2">
+        <input
+          value={supplierSearch}
+          onChange={(e) => setSupplierSearch(e.target.value)}
+          placeholder="Search suppliers (name, email, phone, bank, acct no...)"
+          className="w-full border rounded-lg px-3 py-2"
+        />
+        <div className="text-xs text-zinc-600 whitespace-nowrap">
+          Showing <span className="font-medium">{filteredSuppliers.length}</span> of{" "}
+          <span className="font-medium">{suppliers.length}</span>
+        </div>
+        <button
+          type="button"
+          onClick={() => setSupplierSearch("")}
+          className="px-3 py-2 rounded-lg border bg-white hover:bg-black/5 md:ml-auto"
+          style={{ visibility: supplierSearch.trim() ? "visible" : "hidden" }}
+        >
+          Clear
+        </button>
+      </div>
+
+      <div className="mb-3 flex flex-col md:flex-row md:flex-nowrap md:items-center gap-2">
+        <div className="text-xs text-zinc-600">
+          Showing{" "}
+          <span className="font-medium">
+            {totalSuppliers === 0 ? 0 : (supplierPage - 1) * supplierPageSize + 1}
+          </span>{" "}
+          to <span className="font-medium">{Math.min(supplierPage * supplierPageSize, totalSuppliers)}</span> of{" "}
+          <span className="font-medium">{totalSuppliers}</span>
+        </div>
+
+        <div className="md:ml-auto flex items-center gap-2">
+          <label className="text-xs text-zinc-600">Per page</label>
+          <select
+            className="border rounded-lg px-2 py-1 text-sm"
+            value={supplierPageSize}
+            onChange={(e) => {
+              setSupplierPageSize(Number(e.target.value) || 25);
+              setSupplierPage(1);
+            }}
+          >
+            {[10, 25, 50, 100].map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            className="px-3 py-2 rounded-lg border bg-white disabled:opacity-50"
+            disabled={supplierPage <= 1}
+            onClick={() => setSupplierPage((p) => Math.max(1, p - 1))}
+          >
+            Prev
+          </button>
+
+          <div className="text-sm text-zinc-700">
+            Page <span className="font-medium">{supplierPage}</span> / <span className="font-medium">{totalPages}</span>
+          </div>
+
+          <button
+            type="button"
+            className="px-3 py-2 rounded-lg border bg-white disabled:opacity-50"
+            disabled={supplierPage >= totalPages}
+            onClick={() => setSupplierPage((p) => Math.min(totalPages, p + 1))}
+          >
+            Next
+          </button>
+        </div>
+      </div>
+
+      <div className="border rounded-xl overflow-auto max-h-[520px]" style={{ overflowAnchor: "none" } as any}>
+        <table className="w-full text-sm">
+          <thead className="bg-zinc-50">
+            <tr>
+              <th className="text-left px-3 py-2">Name</th>
+              <th className="text-left px-3 py-2">Type</th>
+              <th className="text-left px-3 py-2">Status</th>
+              <th className="text-left px-3 py-2">Bank</th>
+              <th className="text-right px-3 py-2">Actions</th>
+            </tr>
+          </thead>
+
+          <tbody className="divide-y">
+            {pagedSuppliers.map((s) => {
+              const status = (s.bankVerificationStatus || "UNVERIFIED") as BankVerificationStatus;
+
+              const hasCoreBank = !!s.bankCode && !!s.accountNumber;
+              const isVerifiableStatus = status !== "VERIFIED";
+              const canVerify = isVerifiableStatus && hasCoreBank && !bankVerifyM.isPending;
+
+              const missingReason = !hasCoreBank
+                ? "Missing bankCode/accountNumber (bankCode often not persisted if supplier /me schema doesn't include it)."
+                : undefined;
+
+              return (
+                <tr key={s.id}>
+                  <td className="px-3 py-2">{s.name}</td>
+                  <td className="px-3 py-2">{s.type}</td>
+                  <td className="px-3 py-2">
+                    <StatusDot label={s.status || "INACTIVE"} />
+                  </td>
+                  <td className="px-3 py-2">
+                    <StatusDot label={(status || "UNVERIFIED") as any} />
+                    {s.bankVerificationNote ? (
+                      <div className="text-[11px] text-zinc-500 mt-1 max-w-[240px] truncate" title={s.bankVerificationNote}>
+                        {s.bankVerificationNote}
+                      </div>
+                    ) : null}
+                    {!hasCoreBank && (
+                      <div className="text-[11px] text-amber-700 mt-1" title={missingReason}>
+                        Missing bankCode/account number
+                      </div>
+                    )}
+                  </td>
+
+                  <td className="px-3 py-2 text-right">
+                    {canEdit && (
+                      <div className="inline-flex flex-wrap gap-2 justify-end">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateSupplier.mutate({
+                              id: s.id,
+                              status: s.status === "ACTIVE" ? "INACTIVE" : "ACTIVE",
+                            })
+                          }
+                          className="px-2 py-1 rounded border"
+                        >
+                          {s.status === "ACTIVE" ? "Disable" : "Enable"}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const { data } = await api.get<{ data: AdminSupplier }>(`/api/admin/suppliers/${s.id}`, {
+                              withCredentials: true,
+                            });
+                            setEditingSupplier(data.data);
+                          }}
+                          className="px-2 py-1 rounded border"
+                          title="Edit supplier"
+                        >
+                          View/Edit
+                        </button>
+
+                        {status !== "VERIFIED" && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                bankVerifyM.mutate({
+                                  id: s.id,
+                                  decision: "VERIFIED",
+                                  note: "Verified by admin",
+                                })
+                              }
+                              className="px-2 py-1 rounded bg-emerald-600 text-white disabled:opacity-50"
+                              disabled={!canVerify}
+                              title={!canVerify ? missingReason || "Cannot verify right now" : "Verify bank details"}
+                            >
+                              Verify bank
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const note = window.prompt("Reason for rejection (optional):") || undefined;
+                                bankVerifyM.mutate({ id: s.id, decision: "REJECTED", note });
+                              }}
+                              className="px-2 py-1 rounded bg-amber-600 text-white disabled:opacity-50"
+                              disabled={!canVerify}
+                              title={!canVerify ? missingReason || "Cannot reject right now" : "Reject bank details"}
+                            >
+                              Reject bank
+                            </button>
+                          </>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => deleteSupplier.mutate(s.id)}
+                          className="px-2 py-1 rounded bg-rose-600 text-white"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+
+            {pagedSuppliers.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-3 py-4 text-center text-zinc-500">
+                  No suppliers match your search
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+});
 
 /* =========================
    Main Section
 ========================= */
-
 export function CatalogSettingsSection(props: {
   token?: string | null; // kept for compatibility; cookie auth doesn't use it
   canEdit: boolean;
@@ -700,14 +1005,21 @@ export function CatalogSettingsSection(props: {
     subtitle,
     right,
     children,
+    className,
+    disableAnchor,
   }: {
     title: string;
     subtitle?: string;
     right?: ReactNode;
     children: ReactNode;
+    className?: string;
+    disableAnchor?: boolean;
   }) {
     return (
-      <div className="rounded-2xl border bg-white shadow-sm overflow-visible">
+      <div
+        className={`rounded-2xl border bg-white shadow-sm overflow-visible ${className ?? ""}`}
+        style={disableAnchor ? ({ overflowAnchor: "none" } as any) : undefined}
+      >
         <div className="px-4 md:px-5 py-3 border-b flex items-center justify-between">
           <div>
             <h3 className="text-ink font-semibold">{title}</h3>
@@ -826,8 +1138,30 @@ export function CatalogSettingsSection(props: {
       onClickCapture={stopHashNav}
       onMouseDownCapture={stopHashNav}
       onKeyDownCapture={stopKeyBubblingFromInputs}
+      style={{ overflowAnchor: "none" } as any}
     >
-      {/* Categories */}
+      {/* Suppliers */}
+      <SectionCard
+        className="xl:col-span-3"
+        disableAnchor
+        title="Suppliers"
+        subtitle="Manage suppliers available to assign to products"
+      >
+        <SuppliersSection
+          canEdit={canEdit}
+          suppliers={(suppliersQ.data ?? []) as AdminSupplier[]}
+          editingSupplier={editingSupplier}
+          setEditingSupplier={setEditingSupplier}
+          supplierFormKey={supplierFormKey}
+          setSupplierFormKey={setSupplierFormKey}
+          createSupplier={createSupplier}
+          updateSupplier={updateSupplier}
+          deleteSupplier={deleteSupplier}
+          bankVerifyM={bankVerifyM}
+          qc={qc}
+        />
+      </SectionCard>
+
       <SectionCard
         title="Categories"
         subtitle="Organize your catalog hierarchy"
@@ -986,169 +1320,6 @@ export function CatalogSettingsSection(props: {
         <AdminCatalogRequestsSection />
       </SectionCard>
 
-      {/* Suppliers */}
-      <SectionCard title="Suppliers" subtitle="Manage suppliers available to assign to products">
-        {canEdit && (
-          <SupplierForm
-            key={supplierFormKey}
-            editing={editingSupplier}
-            onCancelEdit={() => setEditingSupplier(null)}
-            onCreate={(payload) =>
-              createSupplier.mutate(payload, {
-                onSuccess: () => {
-                  setEditingSupplier(null);
-                  setSupplierFormKey((k) => k + 1);
-                  qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
-                },
-              })
-            }
-            onUpdate={(payload: any) =>
-              updateSupplier.mutate(payload, {
-                onSuccess: () => {
-                  setEditingSupplier(null);
-                  qc.invalidateQueries({ queryKey: ["admin", "suppliers"] });
-                },
-              })
-            }
-          />
-        )}
-
-        <div className="border rounded-xl overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-zinc-50">
-              <tr>
-                <th className="text-left px-3 py-2">Name</th>
-                <th className="text-left px-3 py-2">Type</th>
-                <th className="text-left px-3 py-2">Status</th>
-                <th className="text-left px-3 py-2">Bank</th>
-                <th className="text-right px-3 py-2">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {(suppliersQ.data ?? []).map((s: AdminSupplier) => {
-                const status = (s.bankVerificationStatus || "UNVERIFIED") as BankVerificationStatus;
-
-                const hasCoreBank = !!s.bankCode && !!s.accountNumber;
-                const isVerifiableStatus = status !== "VERIFIED";
-                const canVerify = isVerifiableStatus && hasCoreBank && !bankVerifyM.isPending;
-
-                const missingReason = !hasCoreBank
-                  ? "Missing bankCode/accountNumber (bankCode often not persisted if supplier /me schema doesn't include it)."
-                  : undefined;
-
-                return (
-                  <tr key={s.id}>
-                    <td className="px-3 py-2">{s.name}</td>
-                    <td className="px-3 py-2">{s.type}</td>
-                    <td className="px-3 py-2">
-                      <StatusDot label={s.status || "INACTIVE"} />
-                    </td>
-                    <td className="px-3 py-2">
-                      <StatusDot label={(status || "UNVERIFIED") as any} />
-                      {s.bankVerificationNote ? (
-                        <div
-                          className="text-[11px] text-zinc-500 mt-1 max-w-[240px] truncate"
-                          title={s.bankVerificationNote}
-                        >
-                          {s.bankVerificationNote}
-                        </div>
-                      ) : null}
-                      {!hasCoreBank && (
-                        <div className="text-[11px] text-amber-700 mt-1" title={missingReason}>
-                          Missing bankCode/account number
-                        </div>
-                      )}
-                    </td>
-
-                    <td className="px-3 py-2 text-right">
-                      {canEdit && (
-                        <div className="inline-flex flex-wrap gap-2 justify-end">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              updateSupplier.mutate({
-                                id: s.id,
-                                status: s.status === "ACTIVE" ? "INACTIVE" : "ACTIVE",
-                              })
-                            }
-                            className="px-2 py-1 rounded border"
-                          >
-                            {s.status === "ACTIVE" ? "Disable" : "Enable"}
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const { data } = await api.get<{ data: AdminSupplier }>(`/api/admin/suppliers/${s.id}`, {
-                                withCredentials: true,
-                              });
-                              setEditingSupplier(data.data);
-                            }}
-                            className="px-2 py-1 rounded border"
-                            title="Edit supplier"
-                          >
-                            Edit
-                          </button>
-
-                          {status !== "VERIFIED" && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  bankVerifyM.mutate({
-                                    id: s.id,
-                                    decision: "VERIFIED",
-                                    note: "Verified by admin",
-                                  })
-                                }
-                                className="px-2 py-1 rounded bg-emerald-600 text-white disabled:opacity-50"
-                                disabled={!canVerify}
-                                title={!canVerify ? missingReason || "Cannot verify right now" : "Verify bank details"}
-                              >
-                                Verify bank
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const note = window.prompt("Reason for rejection (optional):") || undefined;
-                                  bankVerifyM.mutate({ id: s.id, decision: "REJECTED", note });
-                                }}
-                                className="px-2 py-1 rounded bg-amber-600 text-white disabled:opacity-50"
-                                disabled={!canVerify}
-                                title={!canVerify ? missingReason || "Cannot reject right now" : "Reject bank details"}
-                              >
-                                Reject bank
-                              </button>
-                            </>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={() => deleteSupplier.mutate(s.id)}
-                            className="px-2 py-1 rounded bg-rose-600 text-white"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-
-              {(suppliersQ.data ?? []).length === 0 && (
-                <tr>
-                  <td colSpan={5} className="px-3 py-4 text-center text-zinc-500">
-                    No suppliers
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </SectionCard>
-
       {/* Attributes & Values */}
       <SectionCard title="Attributes" subtitle="Define attribute schema & options">
         {canEdit && <AttributeForm onCreate={(payload) => createAttribute.mutate(payload)} />}
@@ -1208,9 +1379,7 @@ export function CatalogSettingsSection(props: {
                             <button
                               type="button"
                               className="text-xs underline"
-                              onClick={() =>
-                                updateAttrValue.mutate({ attributeId: a.id, id: v.id, isActive: !v.isActive })
-                              }
+                              onClick={() => updateAttrValue.mutate({ attributeId: a.id, id: v.id, isActive: !v.isActive })}
                             >
                               {v.isActive ? "Disable" : "Enable"}
                             </button>

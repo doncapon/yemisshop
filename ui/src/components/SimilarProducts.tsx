@@ -32,7 +32,7 @@ export default function SimilarProducts({ productId }: { productId: string }) {
         {data.map((p) => (
           <Link
             key={p.id}
-            to={`/product/${p.id}`}
+            to={`/products/${p.id}`}
             className="rounded-lg border bg-white hover:shadow-sm transition overflow-hidden"
             title={p.title}
           >

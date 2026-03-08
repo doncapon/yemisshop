@@ -17,7 +17,7 @@ const SUPPLIER_PASS = process.env.SEED_SUPPLIER_PASSWORD || "Supplier123!";
 const SUPPLIER_FIRST = process.env.SEED_SUPPLIER_FIRSTNAME || "Seed";
 const SUPPLIER_LAST = process.env.SEED_SUPPLIER_LASTNAME || "Supplier";
 
-/** ✅ requirements */
+/** requirements */
 const LIVE_PRODUCTS_TOTAL = 30;
 const PENDING_PRODUCTS_TOTAL = 3;
 
@@ -38,7 +38,7 @@ const randInt = (min: number, max: number) =>
   Math.floor(Math.random() * (max - min + 1)) + min;
 const chance = (p: number) => Math.random() < p;
 
-function pics(seed: string | number) {
+function pics(seed: string | number): string[] {
   return [
     `https://picsum.photos/seed/dayspring-${seed}/800/600`,
     `https://picsum.photos/seed/dayspring-${seed}-b/800/600`,
@@ -47,10 +47,6 @@ function pics(seed: string | number) {
 
 function toDec(n: number) {
   return new Prisma.Decimal(Math.round(n * 100) / 100);
-}
-
-function toDec1(n: number) {
-  return new Prisma.Decimal(Math.round(n * 10) / 10);
 }
 
 function toDec2(n: number) {
@@ -75,7 +71,7 @@ function uniqSlugBase(s: string) {
 }
 
 /**
- * ✅ Supplier-level uniqueness for "base products":
+ * Supplier-level uniqueness for "base products":
  * one supplier should not get duplicate occurrences of the same (title + brandId)
  */
 function productKeyForSupplier(title: string, brandId: string) {
@@ -286,7 +282,6 @@ async function ensureSupplierUserAndSuppliers() {
     return { reg, pickup };
   };
 
-  // Main supplier (Lagos)
   const mainName = "Main Household Supplier";
   const mainAddrs = await makeSupplierAddresses(mainName, "Lagos", "Lagos", "Ikeja");
 
@@ -449,7 +444,6 @@ async function ensureSupplierUserAndSuppliers() {
   Categories + brands
 ---------------------------------------------------------------------------- */
 async function ensureCategories() {
-  // ✅ More realistic household categories
   const defs = [
     { name: "Kitchen & Dining", slug: "kitchen-dining", position: 1 },
     { name: "Home & Living", slug: "home-living", position: 2 },
@@ -577,15 +571,16 @@ async function ensureAttributes() {
       });
 
       if (existingVal) {
-        await prisma.attributeValue.update({
+        const updated = await prisma.attributeValue.update({
           where: { id: existingVal.id },
           data: {
             code: v.code ?? existingVal.code ?? null,
             position: pos,
             isActive: true,
           },
+          select: { id: true, name: true, code: true },
         });
-        vals.push(existingVal);
+        vals.push(updated);
       } else {
         const created = await prisma.attributeValue.create({
           data: {
@@ -612,10 +607,21 @@ async function ensureProductAttributeOptions(
   productId: string,
   attrs: Awaited<ReturnType<typeof ensureAttributes>>
 ) {
-  // ✅ Ensure each base product has at least one attribute assigned (and we
-  // seed all the options for simplicity). Per-product uniqueness is enforced
-  // by the @@unique([productId, attributeId, valueId]) constraint.
   for (const a of attrs) {
+    await prisma.productAttribute.upsert({
+      where: {
+        productId_attributeId: {
+          productId,
+          attributeId: a.attributeId,
+        },
+      },
+      update: {},
+      create: {
+        productId,
+        attributeId: a.attributeId,
+      },
+    });
+
     for (const v of a.values) {
       try {
         await prisma.productAttributeOption.create({
@@ -741,8 +747,8 @@ function variantParcelOverride(base: ParcelSeed) {
     shippingClassOverride: (base.isBulky
       ? "BULKY"
       : base.isFragile
-      ? "FRAGILE"
-      : "STANDARD") as string,
+        ? "FRAGILE"
+        : "STANDARD") as string,
   };
 }
 
@@ -759,19 +765,24 @@ async function createVariantsForProduct(args: {
   const { productId, skuBase, retail, attrs } = args;
 
   const attrByName = new Map(attrs.map((a) => [a.name, a]));
-  const color = attrByName.get("Color")!;
-  const size = attrByName.get("Size")!;
+  const color = attrByName.get("Color");
+  const size = attrByName.get("Size");
+
+  if (!color || !size) return [];
 
   const values1 = color.values.slice(0, 3);
   const values2 = size.values.slice(0, 3);
 
   const combos: Array<{ c: string; s: string }> = [];
-  for (const c of values1) for (const s of values2) combos.push({ c: c.id, s: s.id });
+  for (const c of values1) {
+    for (const s of values2) {
+      combos.push({ c: c.id, s: s.id });
+    }
+  }
 
   const want = randInt(3, 6);
   const chosen = pick(combos, want);
 
-  // ✅ ensure attribute combos are unique within the product
   const seen = new Set<string>();
   const chosenUnique = chosen.filter((x) => {
     const k = `${x.c}:${x.s}`;
@@ -791,7 +802,6 @@ async function createVariantsForProduct(args: {
     const vSku = `${skuBase}-V${String(idx).padStart(2, "0")}`;
     idx++;
 
-    // Slightly higher variant price spread for clearer price separation
     const variantRetail = Math.max(900, retail + randInt(-100, 1200));
     const override = variantParcelOverride(args.productParcel);
 
@@ -801,7 +811,6 @@ async function createVariantsForProduct(args: {
         sku: vSku,
         retailPrice: toDec(variantRetail),
 
-        // ✅ Always set complete parcel data on variants
         weightGrams: override.weightGrams,
         lengthCm: override.lengthCm,
         widthCm: override.widthCm,
@@ -811,7 +820,7 @@ async function createVariantsForProduct(args: {
         shippingClassOverride: override.shippingClassOverride,
 
         inStock: true,
-        imagesJson: pics(vSku) as any,
+        imagesJson: pics(vSku),
         isActive: true,
         availableQty: 0,
         options: {
@@ -835,13 +844,13 @@ async function createVariantsForProduct(args: {
 ---------------------------------------------------------------------------- */
 
 function supplierBaseFromRetail(retail: number): Prisma.Decimal {
-  const pct = 0.5 + Math.random() * 0.25; // 50%–75%
+  const pct = 0.5 + Math.random() * 0.25;
   const val = Math.max(300, Math.round(retail * pct));
   return new Prisma.Decimal(val);
 }
 
 function supplierUnitPriceFromVariantRetail(variantRetail: number): Prisma.Decimal {
-  const pct = 0.5 + Math.random() * 0.28; // 50%–78%
+  const pct = 0.5 + Math.random() * 0.28;
   const val = Math.max(300, Math.round(variantRetail * pct));
   return new Prisma.Decimal(val);
 }
@@ -852,36 +861,25 @@ async function ensureBaseOfferForProduct(args: {
   supplierId: string;
 }) {
   const { productId, retail, supplierId } = args;
-
   const availableQty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
 
-  // ✅ One base offer per (productId, supplierId)
-  const existing = await prisma.supplierProductOffer.findFirst({
-    where: { productId, supplierId },
-    select: { id: true, availableQty: true, productId: true },
-  });
-
-  if (!existing) {
-    const created = await prisma.supplierProductOffer.create({
-      data: {
+  return prisma.supplierProductOffer.upsert({
+    where: {
+      supplier_product_offer_unique: {
         productId,
         supplierId,
-        basePrice: supplierBaseFromRetail(retail),
-        availableQty,
-        inStock: availableQty > 0,
-        isActive: true,
-        leadDays: randInt(1, 7),
-        currency: "NGN",
       },
-      select: { id: true, availableQty: true, productId: true },
-    });
-
-    return created;
-  }
-
-  const updated = await prisma.supplierProductOffer.update({
-    where: { id: existing.id },
-    data: {
+    },
+    update: {
+      basePrice: supplierBaseFromRetail(retail),
+      availableQty,
+      inStock: availableQty > 0,
+      isActive: true,
+      leadDays: randInt(1, 7),
+      currency: "NGN",
+    },
+    create: {
+      productId,
       supplierId,
       basePrice: supplierBaseFromRetail(retail),
       availableQty,
@@ -892,8 +890,6 @@ async function ensureBaseOfferForProduct(args: {
     },
     select: { id: true, availableQty: true, productId: true },
   });
-
-  return updated;
 }
 
 async function ensureVariantOffersForVariants(args: {
@@ -912,9 +908,13 @@ async function ensureVariantOffersForVariants(args: {
 
     const qty = randInt(MIN_AVAILABLE, MAX_AVAILABLE);
 
-    // ✅ One variant offer per variant (unique on variantId)
     await prisma.supplierVariantOffer.upsert({
-      where: { variantId: v.id },
+      where: {
+        supplier_variant_offer_unique: {
+          variantId: v.id,
+          supplierId,
+        },
+      },
       update: {
         productId,
         supplierProductOfferId: baseOfferId,
@@ -942,7 +942,6 @@ async function ensureVariantOffersForVariants(args: {
     });
   }
 
-  // ✅ recompute per-variant availability (sum of active offers)
   for (const v of variants) {
     const agg = await prisma.supplierVariantOffer.aggregate({
       _sum: { availableQty: true },
@@ -957,22 +956,18 @@ async function ensureVariantOffersForVariants(args: {
   }
 }
 
-/**
- * ✅ Use first active base + all variant offers to compute product availability
- */
 async function recomputeProductAvailability(productId: string) {
-  const base = await prisma.supplierProductOffer.findFirst({
+  const baseAgg = await prisma.supplierProductOffer.aggregate({
+    _sum: { availableQty: true },
     where: { productId, isActive: true, inStock: true },
-    select: { availableQty: true },
   });
-
-  const baseQty = base ? Number(base.availableQty ?? 0) : 0;
 
   const varAgg = await prisma.supplierVariantOffer.aggregate({
     _sum: { availableQty: true },
     where: { productId, isActive: true, inStock: true },
   });
 
+  const baseQty = Number(baseAgg._sum.availableQty ?? 0);
   const variantQty = Number(varAgg._sum.availableQty ?? 0);
   const total = Math.max(0, Math.trunc(baseQty + variantQty));
 
@@ -988,87 +983,93 @@ async function recomputeProductAvailability(productId: string) {
 async function ensureShippingSetup() {
   log("Ensuring shipping zones + rate cards...");
 
-  const zones = [
-    {
-      code: "LAGOS_LOCAL",
-      name: "Lagos Local",
-      statesJson: ["Lagos"],
-      lgasJson: [
-        "Ikeja",
-        "Eti-Osa",
-        "Surulere",
-        "Kosofe",
-        "Alimosho",
-        "Mushin",
-        "Lagos Island",
-        "Lagos Mainland",
-      ],
-      priority: 10,
-    },
-    {
-      code: "SW_NEAR",
-      name: "South West (Near)",
-      statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
-      lgasJson: null,
-      priority: 20,
-    },
-    {
-      code: "SOUTH_REGIONAL",
-      name: "South (Regional)",
-      statesJson: [
-        "Abia",
-        "Anambra",
-        "Akwa Ibom",
-        "Bayelsa",
-        "Cross River",
-        "Delta",
-        "Edo",
-        "Ebonyi",
-        "Enugu",
-        "Imo",
-        "Rivers",
-      ],
-      lgasJson: null,
-      priority: 30,
-    },
-    {
-      code: "NORTH_REGIONAL",
-      name: "North (Regional)",
-      statesJson: [
-        "FCT",
-        "Abuja",
-        "Federal Capital Territory",
-        "Kaduna",
-        "Kano",
-        "Plateau",
-        "Nasarawa",
-        "Benue",
-        "Niger",
-        "Kwara",
-        "Borno",
-        "Bauchi",
-        "Adamawa",
-        "Sokoto",
-        "Kebbi",
-        "Zamfara",
-        "Katsina",
-        "Jigawa",
-        "Yobe",
-        "Taraba",
-        "Gombe",
-        "Kogi",
-      ],
-      lgasJson: null,
-      priority: 40,
-    },
-    {
-      code: "NIGERIA_FALLBACK",
-      name: "Nigeria Fallback",
-      statesJson: null,
-      lgasJson: null,
-      priority: 999,
-    },
-  ];
+const zones: Array<{
+  code: string;
+  name: string;
+  statesJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
+  lgasJson: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
+  priority: number;
+}> = [
+  {
+    code: "LAGOS_LOCAL",
+    name: "Lagos Local",
+    statesJson: ["Lagos"],
+    lgasJson: [
+      "Ikeja",
+      "Eti-Osa",
+      "Surulere",
+      "Kosofe",
+      "Alimosho",
+      "Mushin",
+      "Lagos Island",
+      "Lagos Mainland",
+    ],
+    priority: 10,
+  },
+  {
+    code: "SW_NEAR",
+    name: "South West (Near)",
+    statesJson: ["Ogun", "Oyo", "Osun", "Ondo", "Ekiti"],
+    lgasJson: Prisma.JsonNull,
+    priority: 20,
+  },
+  {
+    code: "SOUTH_REGIONAL",
+    name: "South (Regional)",
+    statesJson: [
+      "Abia",
+      "Anambra",
+      "Akwa Ibom",
+      "Bayelsa",
+      "Cross River",
+      "Delta",
+      "Edo",
+      "Ebonyi",
+      "Enugu",
+      "Imo",
+      "Rivers",
+    ],
+    lgasJson: Prisma.JsonNull,
+    priority: 30,
+  },
+  {
+    code: "NORTH_REGIONAL",
+    name: "North (Regional)",
+    statesJson: [
+      "FCT",
+      "Abuja",
+      "Federal Capital Territory",
+      "Kaduna",
+      "Kano",
+      "Plateau",
+      "Nasarawa",
+      "Benue",
+      "Niger",
+      "Kwara",
+      "Borno",
+      "Bauchi",
+      "Adamawa",
+      "Sokoto",
+      "Kebbi",
+      "Zamfara",
+      "Katsina",
+      "Jigawa",
+      "Yobe",
+      "Taraba",
+      "Gombe",
+      "Kogi",
+    ],
+    lgasJson: Prisma.JsonNull,
+    priority: 40,
+  },
+  {
+    code: "NIGERIA_FALLBACK",
+    name: "Nigeria Fallback",
+    statesJson: Prisma.JsonNull,
+    lgasJson: Prisma.JsonNull,
+    priority: 999,
+  },
+];
 
   const zoneByCode = new Map<string, string>();
 
@@ -1078,8 +1079,8 @@ async function ensureShippingSetup() {
       update: {
         name: z.name,
         country: "Nigeria",
-        statesJson: z.statesJson as any,
-        lgasJson: z.lgasJson as any,
+        statesJson: z.statesJson,
+        lgasJson: z.lgasJson,
         isActive: true,
         priority: z.priority,
       },
@@ -1087,8 +1088,8 @@ async function ensureShippingSetup() {
         code: z.code,
         name: z.name,
         country: "Nigeria",
-        statesJson: z.statesJson as any,
-        lgasJson: z.lgasJson as any,
+        statesJson: z.statesJson,
+        lgasJson: z.lgasJson,
         isActive: true,
         priority: z.priority,
       },
@@ -1147,18 +1148,18 @@ async function ensureShippingSetup() {
             code === "LAGOS_LOCAL"
               ? 1
               : code === "SW_NEAR"
-              ? 2
-              : code === "NIGERIA_FALLBACK"
-              ? 4
-              : 3,
+                ? 2
+                : code === "NIGERIA_FALLBACK"
+                  ? 4
+                  : 3,
           etaMaxDays:
             code === "LAGOS_LOCAL"
               ? 2
               : code === "SW_NEAR"
-              ? 4
-              : code === "NIGERIA_FALLBACK"
-              ? 8
-              : 6,
+                ? 4
+                : code === "NIGERIA_FALLBACK"
+                  ? 8
+                  : 6,
           isActive: true,
         },
       });
@@ -1181,18 +1182,18 @@ async function ensureShippingSetup() {
             code === "LAGOS_LOCAL"
               ? 1
               : code === "SW_NEAR"
-              ? 2
-              : code === "NIGERIA_FALLBACK"
-              ? 4
-              : 3,
+                ? 2
+                : code === "NIGERIA_FALLBACK"
+                  ? 4
+                  : 3,
           etaMaxDays:
             code === "LAGOS_LOCAL"
               ? 2
               : code === "SW_NEAR"
-              ? 4
-              : code === "NIGERIA_FALLBACK"
-              ? 9
-              : 7,
+                ? 4
+                : code === "NIGERIA_FALLBACK"
+                  ? 9
+                  : 7,
           isActive: true,
         },
       });
@@ -1215,18 +1216,18 @@ async function ensureShippingSetup() {
             code === "LAGOS_LOCAL"
               ? 1
               : code === "SW_NEAR"
-              ? 2
-              : code === "NIGERIA_FALLBACK"
-              ? 5
-              : 4,
+                ? 2
+                : code === "NIGERIA_FALLBACK"
+                  ? 5
+                  : 4,
           etaMaxDays:
             code === "LAGOS_LOCAL"
               ? 3
               : code === "SW_NEAR"
-              ? 5
-              : code === "NIGERIA_FALLBACK"
-              ? 10
-              : 8,
+                ? 5
+                : code === "NIGERIA_FALLBACK"
+                  ? 10
+                  : 8,
           isActive: true,
         },
       });
@@ -1240,7 +1241,6 @@ async function ensureShippingSetup() {
   Product generation
 ---------------------------------------------------------------------------- */
 
-// ✅ Realistic household product titles (no "Seed" prefix)
 function baseTitlesPool() {
   return [
     "Electric Kettle",
@@ -1279,11 +1279,12 @@ async function seedProducts(args: {
   const pendingTargets = PENDING_PRODUCTS_TOTAL;
 
   log(`Seeding ${liveTargets} LIVE products, ${pendingTargets} PENDING products…`);
-  if (brands.length < 4)
+  if (brands.length < 4) {
     throw new Error("Need at least 4 brands to satisfy 2–4 brands per base product.");
+  }
 
   const plan: Array<{
-    status: "LIVE" | "PENDING";
+    status: string;
     title: string;
     brandId: string;
     sku: string;
@@ -1294,7 +1295,6 @@ async function seedProducts(args: {
   let liveCount = 0;
   let globalIndex = 1;
 
-  // LIVE products across a mix of brands (no duplicate base per supplier)
   for (const t of titles) {
     if (liveCount >= liveTargets) break;
 
@@ -1314,7 +1314,6 @@ async function seedProducts(args: {
     }
   }
 
-  // PENDING products — also realistic titles, just flagged pending
   for (let i = 1; i <= pendingTargets; i++) {
     const baseTitle = titles[(i - 1) % titles.length];
     const title = `${baseTitle} (Pending Review)`;
@@ -1324,7 +1323,6 @@ async function seedProducts(args: {
     plan.push({ status: "PENDING", title, brandId: b.id, sku, retail });
   }
 
-  // ✅ used to enforce "no duplicate base (title+brand) per supplier"
   const usedBySupplier = new Map<string, Set<string>>();
 
   for (const item of plan) {
@@ -1337,7 +1335,12 @@ async function seedProducts(args: {
     usedBySupplier.set(supplierId, set);
 
     const existing = await prisma.product.findFirst({
-      where: { brandId: item.brandId, sku: item.sku, isDeleted: false },
+      where: {
+        supplierId,
+        brandId: item.brandId,
+        sku: item.sku,
+        isDeleted: false,
+      },
       select: { id: true },
     });
 
@@ -1355,7 +1358,7 @@ async function seedProducts(args: {
             retailPrice: toDec(item.retail),
             sku: item.sku,
             status: item.status,
-            imagesJson: pics(`${item.sku}-${item.brandId}`) as any,
+            imagesJson: pics(`${item.sku}-${item.brandId}`),
             isDeleted: false,
             availableQty: 0,
             inStock: true,
@@ -1390,7 +1393,7 @@ async function seedProducts(args: {
             retailPrice: toDec(item.retail),
             sku: item.sku,
             status: item.status,
-            imagesJson: pics(`${item.sku}-${item.brandId}`) as any,
+            imagesJson: pics(`${item.sku}-${item.brandId}`),
             isDeleted: false,
             availableQty: 0,
             inStock: true,
@@ -1416,7 +1419,6 @@ async function seedProducts(args: {
           select: { id: true, sku: true },
         });
 
-    // ✅ Ensure EVERY base product has attributes assigned, even if it has no variants
     await ensureProductAttributeOptions(product.id, attrs);
 
     const wantsVariants =
@@ -1424,7 +1426,6 @@ async function seedProducts(args: {
         ? chance(LIVE_VARIANT_FRACTION)
         : chance(PENDING_VARIANT_FRACTION);
 
-    // clear existing offers/variants for this product before re-seeding
     await prisma.supplierVariantOffer.deleteMany({
       where: { productId: product.id },
     });
@@ -1474,11 +1475,11 @@ async function validateSeedShippingReadiness() {
     where: {
       isDeleted: false,
       OR: [
-        { weightGrams: null as any },
-        { lengthCm: null as any },
-        { widthCm: null as any },
-        { heightCm: null as any },
-        { shippingClass: null as any },
+        { weightGrams: null },
+        { lengthCm: null },
+        { widthCm: null },
+        { heightCm: null },
+        { shippingClass: null },
       ],
     },
     select: { id: true, title: true, sku: true },
@@ -1496,11 +1497,11 @@ async function validateSeedShippingReadiness() {
     where: {
       isActive: true,
       OR: [
-        { weightGrams: null as any },
-        { lengthCm: null as any },
-        { widthCm: null as any },
-        { heightCm: null as any },
-        { shippingClassOverride: null as any },
+        { weightGrams: null },
+        { lengthCm: null },
+        { widthCm: null },
+        { heightCm: null },
+        { shippingClassOverride: null },
       ],
     },
     select: { id: true, sku: true },
@@ -1519,8 +1520,8 @@ async function validateSeedShippingReadiness() {
       OR: [
         { shippingEnabled: false },
         { shipsNationwide: false },
-        { registeredAddressId: null as any },
-        { pickupAddressId: null as any },
+        { registeredAddressId: null },
+        { pickupAddressId: null },
       ],
     },
     select: { id: true, name: true },
