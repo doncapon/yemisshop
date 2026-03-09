@@ -1654,7 +1654,7 @@ export default function Catalog() {
   return (
     <SiteLayout>
       <div
-        className="mx-auto max-w-7xl px-1 sm:px-4 md:px-8 pt-0 pb-4 md:py-8 -mt-6 md:mt-0"
+        className="mx-auto max-w-7xl px-1 sm:px-4 md:px-8 pt-0 pb-4 md:py-8 -mt-6 md:mt-0 bg-purple-400"
         onTouchStart={(e) => {
           if (refineOpen) return;
           const x = e.touches[0]?.clientX ?? 0;
