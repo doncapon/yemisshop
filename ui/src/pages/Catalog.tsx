@@ -1654,7 +1654,7 @@ export default function Catalog() {
   return (
     <SiteLayout>
       <div
-        className="mx-auto max-w-7xl px-1 sm:px-4 md:px-8 pt-0 pb-4 md:py-8 -mt-6 md:mt-0 bg-purple-400"
+        className="mx-auto max-w-7xl px-1 sm:px-4 md:px-8 pt-0 pb-4 md:py-8 -mt-6 md:mt-0"
         onTouchStart={(e) => {
           if (refineOpen) return;
           const x = e.touches[0]?.clientX ?? 0;
@@ -2244,7 +2244,7 @@ export default function Catalog() {
                           )}
 
                           {inStock && (
-                            <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-emerald-500/85 px-2.5 py-1 text-[10px] md:text-[11px] font-semibold text-white shadow-sm">
+                            <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-purple-800 px-2.5 py-1 text-[10px] md:text-[11px] font-semibold text-white shadow-sm">
                               In stock
                             </span>
                           )}
