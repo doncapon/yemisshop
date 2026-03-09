@@ -888,7 +888,6 @@ export default function Navbar() {
       </header>
 
       <div className="h-14 md:h-16" />
-      <div className="md:hidden h-2" />
       {!hydrated && <div className="sr-only">Loading session…</div>}
     </>
   );
