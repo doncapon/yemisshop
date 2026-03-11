@@ -7,17 +7,23 @@ import {
   Plus,
   Trash2,
   ArrowLeft,
+  ArrowRight,
   Save,
   Package,
   ChevronDown,
   X,
   Copy,
+  BadgeCheck,
+  ShieldCheck,
+  MapPin,
+  FileText,
 } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import SiteLayout from "../../layouts/SiteLayout";
 import SupplierLayout from "../../layouts/SupplierLayout";
 import api from "../../api/client";
+import { useAuthStore } from "../../store/auth";
 import { useCatalogMeta, type CatalogAttribute } from "../../hooks/useCatalogMeta";
 
 /* =========================
@@ -96,6 +102,46 @@ type ExistingProductDetail = {
       currency?: string;
     } | null;
   }>;
+};
+
+type SupplierDocumentLite = {
+  kind?: string | null;
+  status?: string | null;
+};
+
+type AuthMeLite = {
+  id?: string;
+  role?: string;
+  emailVerified?: boolean;
+  phoneVerified?: boolean;
+};
+
+type SupplierMeLite = {
+  id?: string;
+  supplierId?: string;
+  name?: string | null;
+  businessName?: string | null;
+  legalName?: string | null;
+  registrationType?: string | null;
+  registrationCountryCode?: string | null;
+  status?: string | null;
+  kycStatus?: string | null;
+  registeredAddress?: {
+    houseNumber?: string | null;
+    streetName?: string | null;
+    city?: string | null;
+    state?: string | null;
+    country?: string | null;
+    postCode?: string | null;
+  } | null;
+  pickupAddress?: {
+    houseNumber?: string | null;
+    streetName?: string | null;
+    city?: string | null;
+    state?: string | null;
+    country?: string | null;
+    postCode?: string | null;
+  } | null;
 };
 
 /* =========================
@@ -184,6 +230,38 @@ function pickSourceBasePrice(p: ExistingProductDetail | null | undefined) {
   return toMoneyNumber(raw);
 }
 
+function normRole(role: unknown) {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  return r;
+}
+
+function hasAddress(addr: any) {
+  if (!addr) return false;
+  return Boolean(
+    String(addr.houseNumber ?? "").trim() ||
+      String(addr.streetName ?? "").trim() ||
+      String(addr.city ?? "").trim() ||
+      String(addr.state ?? "").trim() ||
+      String(addr.country ?? "").trim() ||
+      String(addr.postCode ?? "").trim()
+  );
+}
+
+function isRegisteredBusiness(registrationType?: string | null) {
+  return String(registrationType ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
+}
+
+function docSatisfied(docs: SupplierDocumentLite[], kind: string) {
+  return docs.some((d) => {
+    const k = String(d.kind ?? "").trim().toUpperCase();
+    const s = String(d.status ?? "").trim().toUpperCase();
+    return k === kind && (s === "PENDING" || s === "APPROVED");
+  });
+}
+
 /* =========================
    Small UI building blocks
 ========================= */
@@ -224,7 +302,7 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
     <input
       {...props}
       className={[
-        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed",
         "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
         props.className || "",
       ].join(" ")}
@@ -237,7 +315,7 @@ function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
     <select
       {...props}
       className={[
-        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed",
         "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
         props.className || "",
       ].join(" ")}
@@ -250,7 +328,7 @@ function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
     <textarea
       {...props}
       className={[
-        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none",
+        "w-full rounded-xl border px-3 py-2.5 text-sm bg-white outline-none disabled:bg-zinc-100 disabled:text-zinc-500 disabled:cursor-not-allowed",
         "focus:border-violet-400 focus:ring-4 focus:ring-violet-200",
         props.className || "",
       ].join(" ")}
@@ -293,6 +371,11 @@ function AddNewLink({
 export default function SupplierAddProduct() {
   const nav = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
+  const role = useAuthStore((s: any) => s.user?.role) as string | undefined;
+  const roleNorm = normRole(role);
+  const isSupplier = roleNorm === "SUPPLIER";
 
   const copyFromProductId = String(searchParams.get("copyFromProductId") || "").trim();
 
@@ -355,7 +438,108 @@ export default function SupplierAddProduct() {
     return { pathname: CATALOG_REQUESTS_PATH, search: `?${sp.toString()}` };
   }
 
+  const onboardingQ = useQuery({
+    queryKey: ["supplier", "add-product", "onboarding-state"],
+    enabled: hydrated && isSupplier,
+    queryFn: async () => {
+      const [authRes, supplierRes, docsRes] = await Promise.all([
+        api.get("/api/auth/me", { withCredentials: true }),
+        api.get("/api/supplier/me", { withCredentials: true }),
+        api
+          .get("/api/supplier/documents", { withCredentials: true })
+          .catch(() => ({ data: { data: [] } })),
+      ]);
+
+      const authMe = ((authRes.data as any)?.data ??
+        (authRes.data as any)?.user ??
+        authRes.data ??
+        {}) as AuthMeLite;
+
+      const supplierMe = ((supplierRes.data as any)?.data ??
+        supplierRes.data ??
+        {}) as SupplierMeLite;
+
+      const rawDocs = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
+      const docs = Array.isArray(rawDocs) ? (rawDocs as SupplierDocumentLite[]) : [];
+
+      const contactDone = !!authMe?.emailVerified && !!authMe?.phoneVerified;
+
+      const businessDone = Boolean(
+        String(supplierMe?.legalName ?? "").trim() &&
+          String(supplierMe?.registrationType ?? "").trim() &&
+          String(supplierMe?.registrationCountryCode ?? "").trim()
+      );
+
+      const addressDone = hasAddress(supplierMe?.registeredAddress) || hasAddress(supplierMe?.pickupAddress);
+
+      const requiredKinds = [
+        ...(isRegisteredBusiness(supplierMe?.registrationType)
+          ? ["BUSINESS_REGISTRATION_CERTIFICATE"]
+          : []),
+        "GOVERNMENT_ID",
+        "PROOF_OF_ADDRESS",
+      ];
+
+      const docsDone = requiredKinds.every((kind) => docSatisfied(docs, kind));
+
+      const nextPath = !contactDone
+        ? "/supplier/verify-contact"
+        : !businessDone
+          ? "/supplier/onboarding"
+          : !addressDone
+            ? "/supplier/onboarding/address"
+            : !docsDone
+              ? "/supplier/onboarding/documents"
+              : "/supplier";
+
+      const progressItems = [
+        { key: "contact", label: "Contact verified", done: contactDone },
+        { key: "business", label: "Business details", done: businessDone },
+        { key: "address", label: "Address details", done: addressDone },
+        { key: "documents", label: "Documents uploaded", done: docsDone },
+      ];
+
+      return {
+        authMe,
+        supplierMe,
+        docs,
+        contactDone,
+        businessDone,
+        addressDone,
+        docsDone,
+        onboardingDone: contactDone && businessDone && addressDone && docsDone,
+        nextPath,
+        progressItems,
+        supplierStatus: supplierMe?.status ?? "PENDING",
+        kycStatus: supplierMe?.kycStatus ?? "PENDING",
+      };
+    },
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
+
+  const onboardingBlocked = isSupplier && !!onboardingQ.data && !onboardingQ.data.onboardingDone;
+  const onboardingProgressItems = onboardingQ.data?.progressItems ?? [];
+  const onboardingPct = useMemo(() => {
+    if (!onboardingProgressItems.length) return 0;
+    const done = onboardingProgressItems.filter((x: any) => x.done).length;
+    return Math.round((done / onboardingProgressItems.length) * 100);
+  }, [onboardingProgressItems]);
+
+  const nextStepLabel = useMemo(() => {
+    const p = onboardingQ.data?.nextPath;
+    if (p === "/supplier/verify-contact") return "Continue contact verification";
+    if (p === "/supplier/onboarding") return "Continue business onboarding";
+    if (p === "/supplier/onboarding/address") return "Continue address setup";
+    if (p === "/supplier/onboarding/documents") return "Continue document upload";
+    return "Continue onboarding";
+  }, [onboardingQ.data?.nextPath]);
+
+  const lockReason = onboardingBlocked ? "Complete onboarding first" : undefined;
+
   function generateVariantMatrix() {
+    if (onboardingBlocked) return;
     setErr(null);
 
     const pickedAttrs = selectableAttrs
@@ -464,10 +648,6 @@ export default function SupplierAddProduct() {
     };
   }, []);
 
-  /* =========================
-     Supplier identity
-  ========================= */
-
   const supplierMeQ = useQuery<SupplierMe>({
     queryKey: ["supplier", "me"],
     queryFn: async () => {
@@ -493,10 +673,6 @@ export default function SupplierAddProduct() {
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
-
-  /* =========================
-     Catalog meta
-  ========================= */
 
   const { categories, brands, attributes, attributesQ, categoriesQ, brandsQ } = useCatalogMeta({
     enabled: true,
@@ -536,10 +712,6 @@ export default function SupplierAddProduct() {
       })
     );
   }, [selectableAttrs]);
-
-  /* =========================
-     Copy-from-template support
-  ========================= */
 
   const copySourceProductQ = useQuery<{ data: ExistingProductDetail } | ExistingProductDetail | null>({
     queryKey: ["supplier", "copy-source-product", copyFromProductId],
@@ -586,15 +758,7 @@ export default function SupplierAddProduct() {
     setRetailPrice(String(pickSourceBasePrice(p) || ""));
     setCategoryId(String(p.categoryId || ""));
     setBrandId(String(p.brandId || ""));
-    setBaseQuantity(
-      String(
-        toIntNonNeg(
-          p.offer?.availableQty ??
-            p.availableQty ??
-            0
-        )
-      )
-    );
+    setBaseQuantity(String(toIntNonNeg(p.offer?.availableQty ?? p.availableQty ?? 0)));
 
     const sourceImages = limitImages(Array.isArray(p.imagesJson) ? p.imagesJson : [], MAX_IMAGES);
     setImageUrls(sourceImages.join("\n"));
@@ -652,17 +816,9 @@ export default function SupplierAddProduct() {
         selections[String(o.attributeId)] = String(o.valueId);
       });
 
-      const sourceQty = toIntNonNeg(
-        v.supplierVariantOffer?.availableQty ??
-          v.availableQty ??
-          0
-      );
-
+      const sourceQty = toIntNonNeg(v.supplierVariantOffer?.availableQty ?? v.availableQty ?? 0);
       const sourcePrice = toMoneyNumber(
-        v.supplierVariantOffer?.unitPrice ??
-          v.unitPrice ??
-          v.retailPrice ??
-          pickSourceBasePrice(p)
+        v.supplierVariantOffer?.unitPrice ?? v.unitPrice ?? v.retailPrice ?? pickSourceBasePrice(p)
       );
 
       return {
@@ -680,10 +836,6 @@ export default function SupplierAddProduct() {
 
     copiedTemplateAppliedRef.current = copyFromProductId;
   }, [copyFromProductId, copySourceProduct, activeAttrs, selectableAttrs, attributesQ.isLoading]);
-
-  /* =========================
-     Images
-  ========================= */
 
   const UPLOAD_ENDPOINT = "/api/uploads";
 
@@ -710,7 +862,6 @@ export default function SupplierAddProduct() {
     }
 
     bumpPreview((x) => x + 1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files]);
 
   useEffect(() => {
@@ -748,6 +899,7 @@ export default function SupplierAddProduct() {
   );
 
   function onPickFiles(nextPicked: File[]) {
+    if (onboardingBlocked) return;
     setErr(null);
     if (!nextPicked.length) return;
 
@@ -791,6 +943,7 @@ export default function SupplierAddProduct() {
   }
 
   async function uploadLocalFiles(): Promise<string[]> {
+    if (onboardingBlocked) return [];
     if (!files.length) return [];
 
     const already = limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
@@ -831,16 +984,19 @@ export default function SupplierAddProduct() {
   }
 
   function removeUploadedUrl(u: string) {
+    if (onboardingBlocked) return;
     setUploadedUrls((prev) => prev.filter((x) => x !== u));
   }
 
   function removeTextUrl(u: string) {
+    if (onboardingBlocked) return;
     const raw = parseUrlList(imageUrls);
     const next = raw.filter((x) => normalizeImageUrl(x) !== normalizeImageUrl(u));
     setImageUrls(next.join("\n"));
   }
 
   function removeSelectedFile(file: File) {
+    if (onboardingBlocked) return;
     setFiles((prev) => prev.filter((f) => f !== file));
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -849,11 +1005,8 @@ export default function SupplierAddProduct() {
     return limitImages([...urlPreviews, ...uploadedUrls], MAX_IMAGES);
   }, [urlPreviews, uploadedUrls]);
 
-  /* =========================
-     Variant helpers
-  ========================= */
-
   function addVariantRow() {
+    if (onboardingBlocked) return;
     const selections: Record<string, string> = {};
     selectableAttrs.forEach((a) => (selections[a.id] = ""));
 
@@ -870,6 +1023,7 @@ export default function SupplierAddProduct() {
   }
 
   function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
+    if (onboardingBlocked) return;
     setErr(null);
 
     setVariantRows((rows) => {
@@ -905,14 +1059,17 @@ export default function SupplierAddProduct() {
   }
 
   function updateVariantQty(rowId: string, v: string) {
+    if (onboardingBlocked) return;
     setVariantRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, availableQty: v } : r)));
   }
 
   function updateVariantPrice(rowId: string, v: string) {
+    if (onboardingBlocked) return;
     setVariantRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, unitPrice: v } : r)));
   }
 
   function removeVariantRow(rowId: string) {
+    if (onboardingBlocked) return;
     setVariantRows((rows) => rows.filter((r) => r.id !== rowId));
   }
 
@@ -966,6 +1123,7 @@ export default function SupplierAddProduct() {
   }
 
   function saveVariantRow(rowId: string) {
+    if (onboardingBlocked) return;
     const row = variantRows.find((r) => r.id === rowId);
     if (!row) return;
 
@@ -979,10 +1137,6 @@ export default function SupplierAddProduct() {
     setErr(null);
     setEditingVariantRowId(null);
   }
-
-  /* =========================
-     Stock model
-  ========================= */
 
   const baseQtyPreview = useMemo(() => toIntNonNeg(baseQuantity), [baseQuantity]);
   const isRealVariantRow = (r: VariantRow) => rowHasAnySelection(r.selections);
@@ -1055,6 +1209,7 @@ export default function SupplierAddProduct() {
   };
 
   const setBaseSelectAttr = (attributeId: string, valueId: string) => {
+    if (onboardingBlocked) return;
     setErr(null);
 
     setSelectedAttrs((prev) => {
@@ -1081,10 +1236,6 @@ export default function SupplierAddProduct() {
       return next;
     });
   };
-
-  /* =========================
-     Payload builder
-  ========================= */
 
   function buildCreatePayload(imagesJson: string[]) {
     const baseSku = sku.trim() || slugifySku(title);
@@ -1168,7 +1319,7 @@ export default function SupplierAddProduct() {
       }
     }
 
-    const payload = {
+    return {
       title: title.trim(),
       description: description?.trim() || "",
       basePrice: basePriceNum,
@@ -1192,18 +1343,16 @@ export default function SupplierAddProduct() {
       ...(attributeSelections.length ? { attributeSelections } : {}),
       ...(variants.length ? { variants } : {}),
     };
-
-    return payload;
   }
-
-  /* =========================
-     Mutation
-  ========================= */
 
   const createM = useMutation({
     mutationFn: async () => {
       setErr(null);
       setOkMsg(null);
+
+      if (onboardingBlocked) {
+        throw new Error("Complete supplier onboarding before adding products.");
+      }
 
       if (!title.trim()) throw new Error("Title is required");
       if (!brandId) throw new Error("Brand is required");
@@ -1275,6 +1424,11 @@ export default function SupplierAddProduct() {
     setErr(null);
     setOkMsg(null);
 
+    if (onboardingBlocked) {
+      setErr("Complete supplier onboarding before adding products.");
+      return;
+    }
+
     if (hasComboError) {
       setErr(comboErrorMsg);
       triggerConflictFlash(firstComboErrorRowId || undefined);
@@ -1285,7 +1439,7 @@ export default function SupplierAddProduct() {
   };
 
   const isSubmitting = createM.isPending;
-  const submitDisabled = isSubmitting || uploading || hasComboError;
+  const submitDisabled = isSubmitting || uploading || hasComboError || onboardingBlocked;
 
   const imagesCount = allUrlPreviews.length;
   const fileCount = files.length;
@@ -1381,7 +1535,8 @@ export default function SupplierAddProduct() {
     </div>
   ) : null;
 
-  return (
+
+    return (
     <SiteLayout>
       <SupplierLayout>
         <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
@@ -1393,7 +1548,7 @@ export default function SupplierAddProduct() {
               className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
             >
               <Save size={16} />
-              {isSubmitting ? "Submitting…" : "Submit product"}
+              {onboardingBlocked ? "Onboarding required" : isSubmitting ? "Submitting…" : "Submit product"}
             </button>
             <button
               type="button"
@@ -1470,9 +1625,10 @@ export default function SupplierAddProduct() {
                 type="button"
                 disabled={submitDisabled}
                 onClick={handleSubmit}
+                title={lockReason}
                 className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
               >
-                <Save size={16} /> {isSubmitting ? "Submitting…" : "Submit product"}
+                <Save size={16} /> {onboardingBlocked ? "Onboarding required" : isSubmitting ? "Submitting…" : "Submit product"}
               </button>
             </div>
 
@@ -1488,6 +1644,68 @@ export default function SupplierAddProduct() {
 
           {copySourceCard}
 
+          {isSupplier && onboardingQ.isLoading && (
+            <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
+              Checking onboarding status…
+            </div>
+          )}
+
+          {onboardingBlocked && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                  <div className="font-semibold">Onboarding in progress</div>
+                  <div className="mt-1 text-amber-800">
+                    You need to complete supplier onboarding before adding products.
+                    The form is visible for guidance, but editing and submission are locked until onboarding is complete.
+                  </div>
+
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-amber-100">
+                    <div
+                      className="h-full rounded-full bg-amber-500 transition-all"
+                      style={{ width: `${onboardingPct}%` }}
+                    />
+                  </div>
+
+                  <div className="mt-2 text-[12px] text-amber-800">
+                    Progress: <b>{onboardingPct}%</b>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {onboardingProgressItems.map((item: any) => (
+                      <span
+                        key={item.key}
+                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                          item.done
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-amber-100 text-amber-800"
+                        }`}
+                      >
+                        {item.label}: {item.done ? "Done" : "Pending"}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-3 text-[12px] text-amber-800">
+                    Supplier status: <b>{String(onboardingQ.data?.supplierStatus ?? "PENDING")}</b>
+                    {" • "}
+                    KYC: <b>{String(onboardingQ.data?.kycStatus ?? "PENDING")}</b>
+                  </div>
+                </div>
+
+                <div className="shrink-0">
+                  <Link
+                    to={onboardingQ.data?.nextPath || "/supplier/verify-contact"}
+                    className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                  >
+                    {nextStepLabel}
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </Link>
+                </div>
+              </div>
+            </div>
+          )}
+
           {err && (
             <div className="rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 px-4 py-3 text-sm">
               {err}
@@ -1501,12 +1719,27 @@ export default function SupplierAddProduct() {
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2 space-y-4">
-              <Card title="Basic information" subtitle="What customers will see in the catalog">
+              <Card
+                title="Basic information"
+                subtitle="What customers will see in the catalog"
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
+              >
+                {onboardingBlocked && (
+                  <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                    Product details are locked until onboarding is complete.
+                  </div>
+                )}
+
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <Label>Title *</Label>
-                      <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Air Fryer 4L" />
+                      <Input
+                        value={title}
+                        onChange={(e) => setTitle(e.target.value)}
+                        placeholder="e.g. Air Fryer 4L"
+                        disabled={onboardingBlocked}
+                      />
                     </div>
 
                     <div>
@@ -1516,16 +1749,20 @@ export default function SupplierAddProduct() {
                       <Input
                         value={sku}
                         onChange={(e) => {
+                          if (onboardingBlocked) return;
                           skuTouchedRef.current = true;
                           setSku(e.target.value);
                         }}
                         placeholder="e.g. AFRY-4L-BLK"
+                        disabled={onboardingBlocked}
                       />
                       <div className="mt-2 flex items-center justify-between gap-2">
                         <button
                           type="button"
-                          className="text-[11px] text-zinc-600 underline"
+                          className="text-[11px] text-zinc-600 underline disabled:opacity-50"
+                          disabled={onboardingBlocked}
                           onClick={() => {
+                            if (onboardingBlocked) return;
                             skuTouchedRef.current = false;
                             setSku(slugifySku(title));
                           }}
@@ -1545,6 +1782,7 @@ export default function SupplierAddProduct() {
                         onChange={(e) => setRetailPrice(e.target.value)}
                         inputMode="decimal"
                         placeholder="e.g. 25000"
+                        disabled={onboardingBlocked}
                       />
                       {!!retailPrice && (
                         <div className="text-[11px] text-zinc-500 mt-1">
@@ -1563,6 +1801,7 @@ export default function SupplierAddProduct() {
                         onChange={(e) => setBaseQuantity(e.target.value)}
                         inputMode="numeric"
                         placeholder="e.g. 20"
+                        disabled={onboardingBlocked}
                       />
                       <div className="text-[11px] text-zinc-500 mt-1">
                         Total: <b>{baseQtyPreview}</b> + <b>{variantQtyTotal}</b> = <b>{totalQty}</b>
@@ -1582,9 +1821,14 @@ export default function SupplierAddProduct() {
                           label="Add new category"
                           onClick={() => nav(goToCatalogRequests("categories", "category"))}
                           title="Request a new category"
+                          disabled={onboardingBlocked}
                         />
                       </div>
-                      <Select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+                      <Select
+                        value={categoryId}
+                        onChange={(e) => setCategoryId(e.target.value)}
+                        disabled={onboardingBlocked}
+                      >
                         <option value="">{categoriesQ.isLoading ? "Loading…" : "— Select category —"}</option>
                         {categories.map((c) => (
                           <option key={c.id} value={c.id}>
@@ -1601,9 +1845,14 @@ export default function SupplierAddProduct() {
                           label="Add new brand"
                           onClick={() => nav(goToCatalogRequests("brands", "brand"))}
                           title="Request a new brand"
+                          disabled={onboardingBlocked}
                         />
                       </div>
-                      <Select value={brandId} onChange={(e) => setBrandId(e.target.value)}>
+                      <Select
+                        value={brandId}
+                        onChange={(e) => setBrandId(e.target.value)}
+                        disabled={onboardingBlocked}
+                      >
                         <option value="">{brandsQ.isLoading ? "Loading…" : "— Select brand —"}</option>
                         {brands.map((b) => (
                           <option key={b.id} value={b.id}>
@@ -1621,6 +1870,7 @@ export default function SupplierAddProduct() {
                       onChange={(e) => setDescription(e.target.value)}
                       className="min-h-[110px]"
                       placeholder="Write a clear, detailed description…"
+                      disabled={onboardingBlocked}
                     />
                   </div>
                 </div>
@@ -1629,8 +1879,13 @@ export default function SupplierAddProduct() {
               <Card
                 title="Images"
                 subtitle={`Paste URLs or upload images (max ${MAX_IMAGES}).`}
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
                 right={
-                  <label className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer">
+                  <label
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${
+                      onboardingBlocked ? "opacity-60 pointer-events-none" : ""
+                    }`}
+                  >
                     <ImagePlus size={16} /> Add files
                     <input
                       ref={fileInputRef}
@@ -1639,10 +1894,17 @@ export default function SupplierAddProduct() {
                       accept="image/*"
                       className="hidden"
                       onChange={(e) => onPickFiles(Array.from(e.target.files || []))}
+                      disabled={onboardingBlocked}
                     />
                   </label>
                 }
               >
+                {onboardingBlocked && (
+                  <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                    Image changes are locked until onboarding is complete.
+                  </div>
+                )}
+
                 <div className="space-y-3">
                   <div className="flex items-center justify-between text-xs">
                     <div className="text-zinc-600">
@@ -1665,6 +1927,7 @@ export default function SupplierAddProduct() {
                     <Textarea
                       value={imageUrls}
                       onChange={(e) => {
+                        if (onboardingBlocked) return;
                         setErr(null);
                         const raw = parseUrlList(e.target.value);
                         const capped = limitImages(raw, MAX_IMAGES);
@@ -1672,6 +1935,7 @@ export default function SupplierAddProduct() {
                       }}
                       className="min-h-[90px] text-xs"
                       placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
+                      disabled={onboardingBlocked}
                     />
                   </div>
 
@@ -1692,21 +1956,23 @@ export default function SupplierAddProduct() {
                                   e.currentTarget.style.display = "none";
                                 }}
                               />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const inText = parseUrlList(imageUrls).some(
-                                    (x) => normalizeImageUrl(x) === normalizeImageUrl(u)
-                                  );
-                                  if (inText) removeTextUrl(u);
-                                  else removeUploadedUrl(u);
-                                }}
-                                className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
-                                aria-label="Remove image"
-                                title="Remove"
-                              >
-                                <X size={18} className="text-rose-700" />
-                              </button>
+                              {!onboardingBlocked && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const inText = parseUrlList(imageUrls).some(
+                                      (x) => normalizeImageUrl(x) === normalizeImageUrl(u)
+                                    );
+                                    if (inText) removeTextUrl(u);
+                                    else removeUploadedUrl(u);
+                                  }}
+                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                  aria-label="Remove image"
+                                  title="Remove"
+                                >
+                                  <X size={18} className="text-rose-700" />
+                                </button>
+                              )}
                             </div>
                             <div className="p-2 text-[10px] text-zinc-600 truncate">{u}</div>
                           </div>
@@ -1718,15 +1984,17 @@ export default function SupplierAddProduct() {
                             <div key={url} className="rounded-xl border overflow-hidden bg-white">
                               <div className="aspect-[4/3] bg-zinc-100 relative">
                                 <img src={url} alt={file.name} className="w-full h-full object-cover" />
-                                <button
-                                  type="button"
-                                  onClick={() => removeSelectedFile(file)}
-                                  className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
-                                  aria-label="Remove selected file"
-                                  title="Remove"
-                                >
-                                  <X size={18} className="text-rose-700" />
-                                </button>
+                                {!onboardingBlocked && (
+                                  <button
+                                    type="button"
+                                    onClick={() => removeSelectedFile(file)}
+                                    className="absolute top-2 right-2 inline-flex items-center justify-center w-9 h-9 rounded-full bg-white/95 border border-zinc-300 shadow-md hover:bg-zinc-50 active:scale-95"
+                                    aria-label="Remove selected file"
+                                    title="Remove"
+                                  >
+                                    <X size={18} className="text-rose-700" />
+                                  </button>
+                                )}
                               </div>
                               <div className="p-2 text-[10px] text-zinc-600 truncate">{file.name}</div>
                             </div>
@@ -1741,7 +2009,7 @@ export default function SupplierAddProduct() {
                     </div>
                   )}
 
-                  {files.length > 0 && (
+                  {files.length > 0 && !onboardingBlocked && (
                     <div className="rounded-2xl border bg-white p-3">
                       <div className="text-xs font-semibold text-zinc-800">
                         Selected files: <span className="font-mono">{files.length}</span>
@@ -1783,13 +2051,17 @@ export default function SupplierAddProduct() {
               <Card
                 title="Attributes"
                 subtitle="Optional details used for filtering and variant setup."
-                className={baseComboBorder}
+                className={[
+                  baseComboBorder,
+                  onboardingBlocked ? "border-amber-200 bg-amber-50/30" : "",
+                ].join(" ")}
                 right={
                   <div className="flex items-center gap-2 flex-wrap">
                     {!attrsSaved ? (
                       <button
                         type="button"
                         onClick={() => {
+                          if (onboardingBlocked) return;
                           if (!canSaveAttrs) {
                             setErr("Choose at least one attribute value before saving.");
                             return;
@@ -1798,7 +2070,8 @@ export default function SupplierAddProduct() {
                           setEditingAttrs(false);
                         }}
                         className="text-xs font-semibold px-3 py-1.5 rounded-lg border bg-zinc-900 text-white disabled:opacity-50"
-                        disabled={!canSaveAttrs}
+                        disabled={!canSaveAttrs || onboardingBlocked}
+                        title={lockReason}
                       >
                         Save
                       </button>
@@ -1806,10 +2079,13 @@ export default function SupplierAddProduct() {
                       <button
                         type="button"
                         onClick={() => {
+                          if (onboardingBlocked) return;
                           setEditingAttrs(true);
                           setAttrsSaved(false);
                         }}
-                        className="text-xs font-semibold px-3 py-1.5 rounded-lg border bg-white hover:bg-zinc-50"
+                        className="text-xs font-semibold px-3 py-1.5 rounded-lg border bg-white hover:bg-zinc-50 disabled:opacity-50"
+                        disabled={onboardingBlocked}
+                        title={lockReason}
                       >
                         Edit
                       </button>
@@ -1818,10 +2094,17 @@ export default function SupplierAddProduct() {
                     <AddNewLink
                       label="Add new attribute"
                       onClick={() => nav(goToCatalogRequests("attributes", "attribute"))}
+                      disabled={onboardingBlocked}
                     />
                   </div>
                 }
               >
+                {onboardingBlocked && (
+                  <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                    Attribute editing is locked until onboarding is complete.
+                  </div>
+                )}
+
                 {attrsSaved && !editingAttrs ? (
                   <div className="rounded-xl border bg-zinc-50 p-3 space-y-2 text-sm">
                     {savedAttributeSummary.length ? (
@@ -1870,8 +2153,11 @@ export default function SupplierAddProduct() {
                               <Label>{a.name}</Label>
                               <Input
                                 value={v}
-                                onChange={(e) => setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))}
+                                onChange={(e) =>
+                                  !onboardingBlocked && setSelectedAttrs((s) => ({ ...s, [a.id]: e.target.value }))
+                                }
                                 placeholder={a.placeholder || `Enter ${a.name.toLowerCase()}…`}
+                                disabled={onboardingBlocked}
                               />
                             </div>
                           );
@@ -1891,12 +2177,14 @@ export default function SupplierAddProduct() {
                                     nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
                                   }
                                   title={`Request new values for ${a.name}`}
+                                  disabled={onboardingBlocked}
                                 />
                               </div>
                               <Select
                                 value={v}
                                 onChange={(e) => setBaseSelectAttr(a.id, e.target.value)}
                                 className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300" : ""}
+                                disabled={onboardingBlocked}
                               >
                                 <option value="">— Select —</option>
                                 {(a.values || []).map((x) => (
@@ -1922,6 +2210,7 @@ export default function SupplierAddProduct() {
                                   nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
                                 }
                                 title={`Request new values for ${a.name}`}
+                                disabled={onboardingBlocked}
                               />
                             </div>
                             <div className="mt-2 flex flex-wrap gap-2">
@@ -1932,13 +2221,14 @@ export default function SupplierAddProduct() {
                                     key={x.id}
                                     className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
                                       checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-                                    }`}
+                                    } ${onboardingBlocked ? "opacity-60 cursor-not-allowed" : ""}`}
                                   >
                                     <input
                                       type="checkbox"
                                       className="hidden"
                                       checked={checked}
                                       onChange={() => {
+                                        if (onboardingBlocked) return;
                                         setSelectedAttrs((s) => {
                                           const prev = Array.isArray(s[a.id]) ? (s[a.id] as string[]) : [];
                                           const next = checked ? prev.filter((id) => id !== x.id) : [...prev, x.id];
@@ -1962,12 +2252,14 @@ export default function SupplierAddProduct() {
               <Card
                 title="Variant combinations"
                 subtitle="Add combinations of SELECT attributes with qty and price."
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
                 right={
                   <div className="flex gap-2 flex-wrap">
                     <button
                       type="button"
                       onClick={generateVariantMatrix}
-                      disabled={!canGenerateVariants}
+                      disabled={!canGenerateVariants || onboardingBlocked}
+                      title={lockReason}
                       className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
                     >
                       Generate combo
@@ -1976,13 +2268,21 @@ export default function SupplierAddProduct() {
                     <button
                       type="button"
                       onClick={addVariantRow}
-                      className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5"
+                      disabled={onboardingBlocked}
+                      title={lockReason}
+                      className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
                     >
                       <Plus size={16} /> Add row
                     </button>
                   </div>
                 }
               >
+                {onboardingBlocked && (
+                  <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                    Variant quantity and pricing updates are locked until onboarding is complete.
+                  </div>
+                )}
+
                 <div className="space-y-2">
                   {!selectableAttrs.length && (
                     <div className="text-sm text-zinc-500">
@@ -2030,10 +2330,13 @@ export default function SupplierAddProduct() {
                               <button
                                 type="button"
                                 onClick={() => {
+                                  if (onboardingBlocked) return;
                                   setErr(null);
                                   setEditingVariantRowId(row.id);
                                 }}
-                                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50"
+                                disabled={onboardingBlocked}
+                                title={lockReason}
+                                className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-50"
                               >
                                 Edit combo
                               </button>
@@ -2041,7 +2344,9 @@ export default function SupplierAddProduct() {
                               <button
                                 type="button"
                                 onClick={() => removeVariantRow(row.id)}
-                                className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100"
+                                disabled={onboardingBlocked}
+                                title={lockReason}
+                                className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100 disabled:opacity-50"
                               >
                                 <Trash2 size={14} /> Remove
                               </button>
@@ -2066,15 +2371,19 @@ export default function SupplierAddProduct() {
                             <button
                               type="button"
                               onClick={() => saveVariantRow(row.id)}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold"
+                              disabled={onboardingBlocked}
+                              title={lockReason}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
                             >
                               Save combo
                             </button>
 
                             <button
                               type="button"
-                              onClick={() => setEditingVariantRowId(null)}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50"
+                              onClick={() => !onboardingBlocked && setEditingVariantRowId(null)}
+                              disabled={onboardingBlocked}
+                              title={lockReason}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-50"
                             >
                               Done
                             </button>
@@ -2082,7 +2391,9 @@ export default function SupplierAddProduct() {
                             <button
                               type="button"
                               onClick={() => removeVariantRow(row.id)}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100"
+                              disabled={onboardingBlocked}
+                              title={lockReason}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100 disabled:opacity-50"
                             >
                               <Trash2 size={14} /> Remove
                             </button>
@@ -2105,12 +2416,14 @@ export default function SupplierAddProduct() {
                                         nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(attr.id || "") }))
                                       }
                                       title={`Request new values for ${attr.name}`}
+                                      disabled={onboardingBlocked}
                                     />
                                   </div>
                                   <Select
                                     value={valueId}
                                     onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
                                     className={isBaseConflict || isFlashing ? "border-rose-300" : ""}
+                                    disabled={onboardingBlocked}
                                   >
                                     <option value="">Select…</option>
                                     {(attr.values || []).map((v) => (
@@ -2132,6 +2445,7 @@ export default function SupplierAddProduct() {
                                 onChange={(e) => updateVariantQty(row.id, e.target.value)}
                                 inputMode="numeric"
                                 placeholder="e.g. 5"
+                                disabled={onboardingBlocked}
                               />
                             </div>
 
@@ -2142,6 +2456,7 @@ export default function SupplierAddProduct() {
                                 onChange={(e) => updateVariantPrice(row.id, e.target.value)}
                                 inputMode="decimal"
                                 placeholder={retailPrice ? `e.g. ${retailPrice}` : "e.g. 25000"}
+                                disabled={onboardingBlocked}
                               />
                               <div className="text-[11px] text-zinc-500 mt-1">
                                 Preview: <b>{effectiveVariantPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
@@ -2174,9 +2489,10 @@ export default function SupplierAddProduct() {
                   type="button"
                   disabled={submitDisabled}
                   onClick={handleSubmit}
+                  title={lockReason}
                   className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
                 >
-                  <Save size={16} /> {isSubmitting ? "Submitting…" : "Submit product"}
+                  <Save size={16} /> {onboardingBlocked ? "Onboarding required" : isSubmitting ? "Submitting…" : "Submit product"}
                 </button>
               </div>
             </div>
@@ -2238,6 +2554,12 @@ export default function SupplierAddProduct() {
                       Rows with selections: <b>{variantRowsWithSelections.length}</b>
                     </div>
                   )}
+
+                  {onboardingBlocked && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-[11px]">
+                      Onboarding must be completed before this product can be submitted.
+                    </div>
+                  )}
                 </div>
               </Card>
 
@@ -2245,10 +2567,11 @@ export default function SupplierAddProduct() {
                 type="button"
                 disabled={submitDisabled}
                 onClick={handleSubmit}
+                title={lockReason}
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
               >
                 <Save size={16} />
-                {isSubmitting ? "Submitting…" : "Submit product"}
+                {onboardingBlocked ? "Onboarding required" : isSubmitting ? "Submitting…" : "Submit product"}
               </button>
 
               {copyFromProductId && (
@@ -2260,6 +2583,45 @@ export default function SupplierAddProduct() {
                   <div className="mt-2 text-xs">
                     This page was opened from the catalogue template picker. The source product is only a starting point — you can change anything before you submit.
                   </div>
+                </div>
+              )}
+
+              {onboardingBlocked && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <BadgeCheck size={16} />
+                    Onboarding incomplete
+                  </div>
+                  <div className="mt-2 text-xs">
+                    Finish contact verification, business setup, address details, and required documents to unlock product creation.
+                  </div>
+
+                  <div className="mt-3 space-y-2 text-[12px]">
+                    <div className="flex items-center gap-2">
+                      <BadgeCheck size={14} className={onboardingQ.data?.contactDone ? "text-emerald-700" : "text-amber-700"} />
+                      <span>Contact verified</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck size={14} className={onboardingQ.data?.businessDone ? "text-emerald-700" : "text-amber-700"} />
+                      <span>Business details</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <MapPin size={14} className={onboardingQ.data?.addressDone ? "text-emerald-700" : "text-amber-700"} />
+                      <span>Address details</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <FileText size={14} className={onboardingQ.data?.docsDone ? "text-emerald-700" : "text-amber-700"} />
+                      <span>Documents uploaded</span>
+                    </div>
+                  </div>
+
+                  <Link
+                    to={onboardingQ.data?.nextPath || "/supplier/verify-contact"}
+                    className="mt-4 inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                  >
+                    {nextStepLabel}
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </Link>
                 </div>
               )}
             </div>

@@ -230,7 +230,7 @@ export default function Navbar() {
     const target = `${loc.pathname}${loc.search}`;
     try {
       sessionStorage.setItem("auth:returnTo", target);
-    } catch {}
+    } catch { }
 
     const qp = encodeURIComponent(target);
 
@@ -379,8 +379,8 @@ export default function Navbar() {
               ) : (
                 <>
                   <IconNavLink
-                    to="/"
-                    end
+                    to={isSupplier ? "/supplier/catalog-offers" : "/"}
+                    end={!isSupplier}
                     icon={showShopNav ? <LayoutGrid size={18} /> : <Home size={18} />}
                     label="Products"
                   />
@@ -657,8 +657,7 @@ export default function Navbar() {
                   to="/cart"
                   end
                   className={({ isActive }) =>
-                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${
-                      isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
+                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
                     }`
                   }
                   aria-label="Cart"
@@ -725,7 +724,7 @@ export default function Navbar() {
                         label="Products"
                         onClick={() => {
                           setMobileMoreOpen(false);
-                          nav("/");
+                          nav(isSupplier ? "/supplier/catalog-offers" : "/");
                         }}
                       />
 

@@ -669,6 +669,29 @@ router.get("/reset-token/validate", async (req, res, next) => {
   }
 });
 
+function normalizePhoneToE164(input: unknown, defaultCountryCode = "234"): string | null {
+  const raw = String(input ?? "").trim();
+  if (!raw) return null;
+
+  const cleaned = raw.replace(/[^\d+]/g, "");
+
+  if (/^\+\d{8,15}$/.test(cleaned)) return cleaned;
+
+  if (/^00\d{8,15}$/.test(cleaned)) {
+    return `+${cleaned.slice(2)}`;
+  }
+
+  if (/^0\d{7,14}$/.test(cleaned)) {
+    return `+${defaultCountryCode}${cleaned.slice(1)}`;
+  }
+
+  if (/^\d{8,15}$/.test(cleaned)) {
+    return `+${cleaned}`;
+  }
+
+  return null;
+}
+
 // ---------------- OTP Verification (phone) ----------------
 router.post("/verify-otp", requireVerifySession, async (req, res) => {
   const userId = req.user?.id;
@@ -730,79 +753,80 @@ router.post("/verify-otp", requireVerifySession, async (req, res) => {
 });
 
 // ---------------- Resend OTP (phone) ----------------
-router.post(
-  "/resend-otp",
-  requireVerifySession,
-  wrap(async (req, res) => {
-    try {
-      const userId = req.user?.id;
-      if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          phone: true,
-          phoneVerifiedAt: true,
-          phoneOtpLastSentAt: true,
-          phoneOtpSendCountDay: true,
-        } as any,
-      });
-      if (!user) return res.status(404).json({ error: "User not found" });
-      if ((user as any).phoneVerifiedAt) return res.status(400).json({ error: "Phone already verified" });
-
-      const phoneE164 = String((user as any).phone || "").trim();
-      if (!phoneE164.startsWith("+")) {
-        return res.status(400).json({ error: "No phone on file for WhatsApp (e.g., +2348…)" });
-      }
-
-      const now = new Date();
-      const last = (user as any).phoneOtpLastSentAt ? +(user as any).phoneOtpLastSentAt : 0;
-      const since = Math.floor((+now - last) / 1000);
-      if (since < RESEND_COOLDOWN_SEC) {
-        return res.status(429).json({
-          error: "Please wait before resending",
-          retryAfterSec: RESEND_COOLDOWN_SEC - since,
-        });
-      }
-      if (((user as any).phoneOtpSendCountDay ?? 0) >= DAILY_CAP) {
-        return res.status(429).json({ error: "Daily resend limit reached" });
-      }
-
-      await prisma.otp.updateMany({
-        where: { identifier: userId, consumedAt: null, expiresAt: { gt: now } } as any,
-        data: { consumedAt: now } as any,
-      });
-
-      const r = await issueOtp({
-        identifier: userId,
-        userId,
-        phoneE164,
-        channelPref: "whatsapp",
-      });
-
-      if (!r.ok) {
-        return res.status(500).json({ error: r.error || "Could not send OTP" });
-      }
-
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          phoneOtpLastSentAt: now,
-          phoneOtpSendCountDay: ((user as any).phoneOtpSendCountDay ?? 0) + 1,
-        } as any,
-      });
-
-      return res.json({
-        ok: true,
-        nextResendAfterSec: RESEND_COOLDOWN_SEC,
-        expiresInSec: r.ttlMin * 60,
-      });
-    } catch (e: any) {
-      console.error("issueOtp error:", e?.message, e?.stack);
-      res.status(500).json({ error: "Internal error" });
+router.post("/resend-otp", requireAuth, async (req, res) => {
+  try {
+    const userId = String(req.user?.id || "");
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthenticated" });
     }
-  })
-);
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        phone: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const rawPhone = String(user.phone || "").trim();
+    if (!rawPhone) {
+      return res.status(400).json({
+        error: "No phone number is available for OTP delivery.",
+      });
+    }
+
+    const phoneE164 = normalizePhoneToE164(rawPhone);
+    if (!phoneE164) {
+      return res.status(400).json({
+        error: "Phone number must be in a valid international format.",
+      });
+    }
+
+    if (phoneE164 !== rawPhone) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { phone: phoneE164 },
+      });
+    }
+
+    const result = await issueOtp({
+      identifier: user.id,
+      userId: user.id,
+      phoneE164,
+      channelPref: "whatsapp",
+    });
+
+    if (!result.ok) {
+      return res.status(400).json({
+        error: result.error || "Could not send phone verification code.",
+      });
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        phoneOtpLastSentAt: new Date(),
+        phoneOtpSendCountDay: {
+          increment: 1,
+        } as any,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      message: "Verification code sent.",
+    });
+  } catch (err: any) {
+    console.error("[resend-otp] error", err);
+    return res.status(500).json({
+      error: err?.message || "Could not send phone verification code.",
+    });
+  }
+});
 
 const KYC_TICKET_SECRET = process.env.KYC_TICKET_SECRET || 'CHANGE_ME_KYC_TICKET_SECRET';
 
@@ -816,21 +840,27 @@ const CacCompanyTypeEnum = z.enum([
 ]);
 
 const registerSupplierSchema = z.object({
-  role: z.literal('SUPPLIER').optional(),
+  role: z.literal("SUPPLIER").optional(),
 
-  contactFirstName: z.string().min(1),
-  contactLastName: z.string().min(1),
-  contactEmail: z.string().email(),
-  contactPhone: z.string().nullable().optional(),
-  password: z.string().min(8),
+  businessName: z.string().min(1, "Business name is required"),
+  legalName: z.string().nullable().optional(),
 
-  rcNumber: z.string().min(3),
-  companyType: CacCompanyTypeEnum,
+  registrationType: z.enum(["INDIVIDUAL", "REGISTERED_BUSINESS"]).nullable().optional(),
+  registrationCountryCode: z.string().trim().min(2).max(8).nullable().optional(),
 
-  assertedCompanyName: z.string().min(1),
-  assertedRegistrationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
+  supplierType: z.enum(["PHYSICAL", "ONLINE"]),
 
-  verificationTicket: z.string().min(20),
+  contactFirstName: z.string().min(1, "First name is required"),
+  contactLastName: z.string().min(1, "Last name is required"),
+  contactEmail: z.string().email("Valid email is required"),
+  contactPhone: z.string().min(6, "Valid phone number is required"),
+
+  password: z
+    .string()
+    .min(8, "Password must be at least 8 characters")
+    .refine((v) => /[A-Za-z]/.test(v), "Password must include a letter")
+    .refine((v) => /\d/.test(v), "Password must include a number")
+    .refine((v) => /[^A-Za-z0-9]/.test(v), "Password must include a special character"),
 });
 
 // small helpers
@@ -905,161 +935,126 @@ async function pickUniqueSupplierName(desired: string, rc: string) {
 }
 
 // ---------------- REGISTER SUPPLIER ----------------
-router.post('/register-supplier', async (req, res) => {
+router.post("/register-supplier", async (req, res) => {
   try {
-    const parsed = registerSupplierSchema.parse(req.body);
+    const parsed = registerSupplierSchema.parse(req.body ?? {});
 
     const {
+      businessName,
+      legalName,
+      registrationType,
+      registrationCountryCode,
       contactFirstName,
       contactLastName,
       contactEmail,
       contactPhone,
       password,
-      rcNumber,
-      companyType,
-      assertedCompanyName,
-      assertedRegistrationDate,
-      verificationTicket,
     } = parsed;
 
-    // 1) Verify ticket
-    let ticket: any;
-    try {
-      ticket = jwt.verify(verificationTicket, KYC_TICKET_SECRET) as any;
-    } catch {
-      return res
-        .status(400)
-        .json({ error: 'CAC verification expired or invalid. Please verify again.' });
-    }
+    const emailLower = contactEmail.trim().toLowerCase();
+    const phone = String(contactPhone ?? "").trim();
+    const trimmedBusinessName = businessName.trim();
+    const trimmedLegalName = String(legalName ?? "").trim() || null;
 
-    if (ticket?.k !== 'cac-verify') {
-      return res
-        .status(400)
-        .json({ error: 'CAC verification expired or invalid. Please verify again.' });
-    }
-
-    // Ticket must match request
-    if (String(ticket.rcNumber) !== String(rcNumber)) {
-      return res
-        .status(400)
-        .json({ error: 'CAC verification expired or invalid. Please verify again.' });
-    }
-    if (String(ticket.companyType) !== String(companyType)) {
-      return res
-        .status(400)
-        .json({ error: 'CAC verification expired or invalid. Please verify again.' });
-    }
-
-    // 2) Fetch entity from cache (server-side truth)
-    const lookup = await prisma.cacLookup.findUnique({
-      where: { CacLookup_rc_companyType_key: { rcNumber, companyType } },
-      select: { entity: true, outcome: true },
+    // 1) conflicts
+    const existingUser = await prisma.user.findUnique({
+      where: { email: emailLower },
+      select: { id: true },
     });
 
-    if (!lookup?.entity) {
-      return res
-        .status(400)
-        .json({ error: 'CAC verification expired or invalid. Please verify again.' });
+    if (existingUser) {
+      return res.status(409).json({
+        error: "A user with this email already exists.",
+      });
     }
 
-    const entity = lookup.entity as any;
-
-    // 3) Re-check correlation again on server (prevents client tampering)
-    const ok = matchesAllFour(entity, {
-      rcNumber,
-      companyType,
-      companyName: assertedCompanyName,
-      regDate: assertedRegistrationDate,
+    // Supplier.name is unique in your schema, so keep it unique
+    let supplierName = trimmedBusinessName;
+    const existingExactName = await prisma.supplier.findUnique({
+      where: { name: supplierName },
+      select: { id: true },
     });
 
-    if (!ok) {
-      return res
-        .status(400)
-        .json({ error: 'CAC verification expired or invalid. Please verify again.' });
+    if (existingExactName) {
+      let i = 2;
+      while (true) {
+        const candidate = `${trimmedBusinessName} ${i}`;
+        const exists = await prisma.supplier.findUnique({
+          where: { name: candidate },
+          select: { id: true },
+        });
+        if (!exists) {
+          supplierName = candidate;
+          break;
+        }
+        i++;
+      }
     }
 
-    // 4) Conflicts
-    const emailLower = contactEmail.toLowerCase();
-
-    const existingUser = await prisma.user.findUnique({ where: { email: emailLower } });
-    if (existingUser) return res.status(409).json({ error: 'A user with this email already exists.' });
-
-    const existingSupplierByRc = await prisma.supplier.findFirst({ where: { rcNumber } });
-    if (existingSupplierByRc) {
-      return res.status(409).json({ error: 'A supplier with this RC number already exists.' });
-    }
-
-    // 5) Create user (NOT verified yet)
+    // 2) create user
     const passwordHash = await bcrypt.hash(password, 10);
 
     const user = await prisma.user.create({
       data: {
         email: emailLower,
-        firstName: contactFirstName,
-        lastName: contactLastName,
-        phone: contactPhone || undefined,
-        role: 'SUPPLIER',
-        status: 'PENDING', // ✅ wait for email + phone verification
-        password: passwordHash, // ✅ your login checks user.password
-      } as any,
+        password: passwordHash,
+        role: "SUPPLIER",
+        firstName: contactFirstName.trim(),
+        lastName: contactLastName.trim(),
+        phone: phone || null,
+        status: "PENDING",
+      },
+      select: {
+        id: true,
+        role: true,
+        email: true,
+        phone: true,
+      },
     });
 
-    // 6) Optional registered address
-    let registeredAddressId: string | undefined = undefined;
-    if (entity.address || entity.city || entity.state || entity.lga) {
-      const addr = await prisma.address.create({
-        data: {
-          streetName: entity.address || undefined,
-          town: entity.lga || undefined,
-          city: entity.city || undefined,
-          state: entity.state || undefined,
-          country: 'Nigeria',
-        },
-      });
-      registeredAddressId = addr.id;
-    }
-
-    const dateOfReg = entity.date_of_registration ? new Date(entity.date_of_registration) : null;
-    const shareCapitalDecimal =
-      typeof entity.share_capital === 'number' ? new Prisma.Decimal(entity.share_capital) : null;
-
-    const supplierName = await pickUniqueSupplierName(entity.company_name, rcNumber);
-
-    // 7) Create supplier (CAC is approved, but account is not active until contact verification)
+    // 3) create supplier aligned to Prisma schema
     const supplier = await prisma.supplier.create({
       data: {
-        name: supplierName,
-        contactEmail: emailLower,
-        whatsappPhone: contactPhone || null,
-        type: SupplierType.ONLINE,
-        status: 'PENDING_CONTACT_VERIFY', // ✅ not ACTIVE yet
-
         userId: user.id,
 
-        legalName: entity.company_name,
-        rcNumber: rcNumber,
-        companyType: companyType as any,
-        dateOfRegistration: dateOfReg || undefined,
-        natureOfBusiness: entity.nature_of_business || undefined,
-        shareCapital: shareCapitalDecimal || undefined,
-        shareDetails: (entity.share_details as any) ?? undefined,
-        kycRawPayload: entity as any,
+        // canonical public/store name
+        name: supplierName,
 
-        ownerVerified: true,
-        kycStatus: 'APPROVED',
-        kycCheckedAt: new Date(),
-        kycApprovedAt: new Date(),
-        kycProvider: 'DOJAH',
+        // supplier contact
+        contactEmail: emailLower,
+        whatsappPhone: phone || null,
 
-        registeredAddressId,
-      } as any,
+        // supplier type
+        type: SupplierType.PHYSICAL,
+
+        // onboarding / registration identity
+        legalName: trimmedLegalName,
+        registeredBusinessName:
+          registrationType === "REGISTERED_BUSINESS"
+            ? trimmedBusinessName
+            : null,
+        registrationType: registrationType ?? null,
+        registrationCountryCode:
+          String(registrationCountryCode ?? "").trim().toUpperCase() || null,
+
+        // statuses
+        status: "PENDING_VERIFICATION",
+        kycStatus: "PENDING",
+      },
+      select: {
+        id: true,
+      },
     });
 
-    // 8) Send email verification + WhatsApp OTP (best-effort)
+    // 4) send email verification + WhatsApp OTP (best-effort)
     const result = {
-      message: 'Supplier registered. Please verify email and WhatsApp number to activate your account.',
+      message:
+        "Supplier registered. Please verify email and WhatsApp number to continue.",
       supplierId: supplier.id,
-      tempToken: signJwt({ id: user.id, role: user.role, email: user.email }, '1h'),
+      tempToken: signJwt(
+        { id: user.id, role: user.role, email: user.email, k: "verify" },
+        "1h"
+      ),
       emailSent: false,
       phoneOtpSent: false,
     };
@@ -1068,53 +1063,65 @@ router.post('/register-supplier', async (req, res) => {
       await issueAndEmailEmailVerification(user.id, user.email);
       result.emailSent = true;
 
-      // track resend counters if your User model has these fields (you do)
       await prisma.user.update({
         where: { id: user.id },
-        data: { emailVerifyLastSentAt: new Date(), emailVerifySendCountDay: 1 },
+        data: {
+          emailVerifyLastSentAt: new Date(),
+          emailVerifySendCountDay: 1,
+        },
       });
     } catch {
-      // ignore (don’t fail signup)
+      // ignore - do not fail signup
     }
 
     try {
-      const phoneE164 = String(user.phone || '').trim();
-      if (phoneE164 && phoneE164.startsWith('+')) {
+      const phoneE164 = String(user.phone || "").trim();
+      if (phoneE164 && phoneE164.startsWith("+")) {
         const r = await issueOtp({
-          identifier: user.id, // must match verify-otp identifier
+          identifier: user.id,
           userId: user.id,
           phoneE164,
-          channelPref: 'whatsapp',
+          channelPref: "whatsapp",
         });
+
         result.phoneOtpSent = !!r.ok;
 
         if (r.ok) {
           await prisma.user.update({
             where: { id: user.id },
-            data: { phoneOtpLastSentAt: new Date(), phoneOtpSendCountDay: 1 },
+            data: {
+              phoneOtpLastSentAt: new Date(),
+              phoneOtpSendCountDay: 1,
+            },
           });
         }
       }
     } catch {
-      // ignore
+      // ignore - do not fail signup
     }
 
     return res.status(201).json(result);
   } catch (err: any) {
-    console.error('[register-supplier] error', err);
+    console.error("[register-supplier] error", err);
 
-    if (err?.name === 'ZodError') {
-      return res.status(400).json({ error: 'Invalid payload', details: err.errors });
+    if (err?.name === "ZodError") {
+      return res.status(400).json({
+        error: "Invalid payload",
+        details: err.errors,
+      });
     }
 
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
       return res.status(409).json({
-        error: 'A supplier or user already exists with these details.',
+        error: "A supplier or user already exists with these details.",
         meta: err.meta,
       });
     }
 
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

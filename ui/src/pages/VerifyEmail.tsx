@@ -382,7 +382,7 @@ export default function VerifyEmail() {
       <div className="min-h-[80vh]">
         {/* Hero */}
         <div className="relative overflow-hidden border-b">
-          <div className="bg-gradient-to-br from-primary-700 via-primary-600 to-indigo-700 text-white">
+          <div className="bg-gradient-to-br from-primary-300 via-primary-600 to-indigo-300 text-white">
             <div className="max-w-5xl mx-auto px-3 sm:px-4 md:px-8 py-6 md:py-8">
               <motion.h1
                 initial={{ opacity: 0, y: 8 }}

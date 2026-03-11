@@ -1,4 +1,3 @@
-// src/pages/supplier/SupplierProducts.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -13,6 +12,12 @@ import {
   Trash2,
   ChevronsLeft,
   ChevronsRight,
+  BadgeCheck,
+  ShieldCheck,
+  MapPin,
+  FileText,
+  Lock,
+  CheckCircle2,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -70,6 +75,38 @@ type DeleteEligibility = {
   hasOtherSupplierOffers?: boolean;
 };
 
+type SupplierDocumentLite = {
+  kind?: string | null;
+  status?: string | null;
+};
+
+type AuthMeLite = {
+  emailVerified?: boolean;
+  phoneVerified?: boolean;
+};
+
+type SupplierMeLite = {
+  legalName?: string | null;
+  registrationType?: string | null;
+  registrationCountryCode?: string | null;
+  registeredAddress?: {
+    houseNumber?: string | null;
+    streetName?: string | null;
+    city?: string | null;
+    state?: string | null;
+    country?: string | null;
+    postCode?: string | null;
+  } | null;
+  pickupAddress?: {
+    houseNumber?: string | null;
+    streetName?: string | null;
+    city?: string | null;
+    state?: string | null;
+    country?: string | null;
+    postCode?: string | null;
+  } | null;
+};
+
 function Badge({
   children,
   tone = "neutral",
@@ -104,6 +141,51 @@ const PAGE_SIZE_OPTIONS = [12, 24, 48, 96];
 
 function normStr(v: any) {
   return String(v ?? "").trim();
+}
+
+function normRole(role: unknown) {
+  let r = String(role ?? "").trim().toUpperCase();
+  r = r.replace(/[\s\-]+/g, "_").replace(/__+/g, "_");
+  if (r === "SUPERADMIN") r = "SUPER_ADMIN";
+  if (r === "SUPER_ADMINISTRATOR") r = "SUPER_ADMIN";
+  return r;
+}
+
+function hasAddress(addr: any) {
+  if (!addr) return false;
+  return Boolean(
+    String(addr.houseNumber ?? "").trim() ||
+      String(addr.streetName ?? "").trim() ||
+      String(addr.city ?? "").trim() ||
+      String(addr.state ?? "").trim() ||
+      String(addr.country ?? "").trim() ||
+      String(addr.postCode ?? "").trim()
+  );
+}
+
+function isRegisteredBusiness(registrationType?: string | null) {
+  return String(registrationType ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
+}
+
+function docSatisfied(docs: SupplierDocumentLite[], kind: string) {
+  return docs.some((d) => {
+    const k = String(d.kind ?? "").trim().toUpperCase();
+    const s = String(d.status ?? "").trim().toUpperCase();
+    return k === kind && (s === "PENDING" || s === "APPROVED");
+  });
+}
+
+function getSupplierNextPath(stage: {
+  contactDone: boolean;
+  businessDone: boolean;
+  addressDone: boolean;
+  docsDone: boolean;
+}) {
+  if (!stage.contactDone) return "/supplier/verify-contact";
+  if (!stage.businessDone) return "/supplier/onboarding";
+  if (!stage.addressDone) return "/supplier/onboarding/address";
+  if (!stage.docsDone) return "/supplier/onboarding/documents";
+  return "/supplier";
 }
 
 function fmtDateTime(value?: string | null) {
@@ -178,9 +260,7 @@ function ModerationPanel({
     );
   }
 
-  return (
-    <div className="text-[10px] text-zinc-500">—</div>
-  );
+  return <div className="text-[10px] text-zinc-500">—</div>;
 }
 
 function useDebouncedValue<T>(value: T, delay = 300) {
@@ -314,8 +394,10 @@ function SortButton({
 
 export default function SupplierProductsPage() {
   const hydrated = useAuthStore((s: any) => s.hydrated) as boolean;
-  const role = useAuthStore((s: any) => s.user?.role);
+  const roleRaw = useAuthStore((s: any) => s.user?.role);
+  const role = normRole(roleRaw);
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
+  const isSupplier = role === "SUPPLIER";
 
   const nav = useNavigate();
   const qc = useQueryClient();
@@ -366,6 +448,75 @@ export default function SupplierProductsPage() {
     return `${to}${sep}supplierId=${encodeURIComponent(adminSupplierId)}`;
   };
 
+  const onboardingQ = useQuery({
+    queryKey: ["supplier", "products", "onboarding-state"],
+    enabled: hydrated && isSupplier,
+    queryFn: async () => {
+      const [authRes, supplierRes, docsRes] = await Promise.all([
+        api.get("/api/auth/me", { withCredentials: true }),
+        api.get("/api/supplier/me", { withCredentials: true }),
+        api
+          .get("/api/supplier/documents", { withCredentials: true })
+          .catch(() => ({ data: { data: [] } })),
+      ]);
+
+      const authMe = ((authRes.data as any)?.data ??
+        (authRes.data as any)?.user ??
+        authRes.data ??
+        {}) as AuthMeLite;
+
+      const supplierMe = ((supplierRes.data as any)?.data ??
+        supplierRes.data ??
+        {}) as SupplierMeLite;
+
+      const docsRaw = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
+      const docs = Array.isArray(docsRaw) ? (docsRaw as SupplierDocumentLite[]) : [];
+
+      const contactDone = !!authMe?.emailVerified && !!authMe?.phoneVerified;
+
+      const businessDone = Boolean(
+        String(supplierMe?.legalName ?? "").trim() &&
+          String(supplierMe?.registrationType ?? "").trim() &&
+          String(supplierMe?.registrationCountryCode ?? "").trim()
+      );
+
+      const addressDone =
+        hasAddress(supplierMe?.registeredAddress) || hasAddress(supplierMe?.pickupAddress);
+
+      const requiredKinds = [
+        ...(isRegisteredBusiness(supplierMe?.registrationType)
+          ? ["BUSINESS_REGISTRATION_CERTIFICATE"]
+          : []),
+        "GOVERNMENT_ID",
+        "PROOF_OF_ADDRESS",
+      ];
+
+      const docsDone = requiredKinds.every((kind) => docSatisfied(docs, kind));
+
+      const nextPath = getSupplierNextPath({
+        contactDone,
+        businessDone,
+        addressDone,
+        docsDone,
+      });
+
+      return {
+        contactDone,
+        businessDone,
+        addressDone,
+        docsDone,
+        onboardingDone: contactDone && businessDone && addressDone && docsDone,
+        nextPath,
+      };
+    },
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
+
+  const onboarding = onboardingQ.data;
+  const supplierLocked = isSupplier && !!onboarding && !onboarding.onboardingDone;
+
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<
     "ANY" | "PENDING" | "LIVE" | "APPROVED" | "REJECTED" | "PUBLISHED"
@@ -377,7 +528,7 @@ export default function SupplierProductsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(24);
 
-  const { categories, brands } = useCatalogMeta({ enabled: hydrated });
+  const { categories, brands } = useCatalogMeta({ enabled: hydrated && !supplierLocked });
   const debouncedQ = useDebouncedValue(q, 300);
 
   useEffect(() => {
@@ -403,7 +554,10 @@ export default function SupplierProductsPage() {
         pageSize,
       },
     ],
-    enabled: hydrated && (!isAdmin || !!adminSupplierId),
+    enabled:
+      hydrated &&
+      !supplierLocked &&
+      (!isAdmin || !!adminSupplierId),
     queryFn: async () => {
       const skip = (page - 1) * pageSize;
       const { data } = await api.get<{
@@ -478,7 +632,11 @@ export default function SupplierProductsPage() {
       "delete-eligibility",
       { ids: items.map((x) => x.id), supplierId: adminSupplierId, page, pageSize },
     ],
-    enabled: hydrated && items.length > 0 && (!isAdmin || !!adminSupplierId),
+    enabled:
+      hydrated &&
+      !supplierLocked &&
+      items.length > 0 &&
+      (!isAdmin || !!adminSupplierId),
     queryFn: async () => {
       const ids = items.map((x) => x.id).join(",");
       const { data } = await api.get("/api/supplier/products/delete-eligibility", {
@@ -615,6 +773,40 @@ export default function SupplierProductsPage() {
     setSortDir(field === "status" || field === "title" ? "asc" : "desc");
   };
 
+  const onboardingItems = useMemo(
+    () => [
+      {
+        key: "contact",
+        label: "Contact verification",
+        done: !!onboarding?.contactDone,
+        path: "/supplier/verify-contact",
+        icon: <BadgeCheck size={16} />,
+      },
+      {
+        key: "business",
+        label: "Business details",
+        done: !!onboarding?.businessDone,
+        path: "/supplier/onboarding",
+        icon: <ShieldCheck size={16} />,
+      },
+      {
+        key: "address",
+        label: "Address details",
+        done: !!onboarding?.addressDone,
+        path: "/supplier/onboarding/address",
+        icon: <MapPin size={16} />,
+      },
+      {
+        key: "documents",
+        label: "Documents",
+        done: !!onboarding?.docsDone,
+        path: "/supplier/onboarding/documents",
+        icon: <FileText size={16} />,
+      },
+    ],
+    [onboarding]
+  );
+
   return (
     <SiteLayout>
       <SupplierLayout>
@@ -628,466 +820,422 @@ export default function SupplierProductsPage() {
           </div>
         )}
 
-        <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
-          <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
-          <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
-          <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
-            <motion.h1
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-[20px] sm:text-2xl md:text-3xl font-bold tracking-tight leading-tight"
-            >
-              Products
-            </motion.h1>
-
-            <p className="mt-1 text-[13px] sm:text-sm text-white/80 leading-snug">
-              Manage listings, stock, pricing and visibility.
-            </p>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Badge tone="info">{total} listing(s)</Badge>
-              {pendingCount > 0 && <Badge tone="warning">{pendingCount} pending review</Badge>}
-              {rejectedCount > 0 && <Badge tone="danger">{rejectedCount} rejected</Badge>}
-            </div>
-
-            <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-              <Link
-                to={withSupplierCtx("/supplier/products/add")}
-                className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:opacity-95"
-              >
-                <Plus size={14} /> Add
-              </Link>
-              <Link
-                to={withSupplierCtx("/supplier")}
-                className="inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:bg-white/15"
-              >
-                Dashboard <ArrowRight size={14} />
-              </Link>
-            </div>
-
-            {!hydrated ? (
-              <div className="mt-3 text-[12px] text-white/80">Loading session…</div>
-            ) : productsQ.isFetching && !productsQ.data ? (
-              <div className="mt-3 text-[12px] text-white/80">Loading products…</div>
-            ) : productsQ.isError ? (
-              <div className="mt-3 text-[12px] text-white/90">
-                Failed to load products.{" "}
-                <button className="underline" onClick={() => productsQ.refetch()}>
-                  Retry
-                </button>
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
-          <Card className="lg:col-span-2">
-            <div className="p-3 sm:p-5 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-              <div className="relative w-full">
-                <Search
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
-                  size={16}
-                />
-                <input
-                  placeholder="Search name, SKU…"
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  className="w-full rounded-2xl border bg-white pl-9 pr-4 py-2.5 sm:py-3 text-[13px] sm:text-sm outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
-                />
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setShowFilters((v) => !v)}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm hover:bg-black/5"
-              >
-                <SlidersHorizontal size={16} />{" "}
-                {showFilters ? "Hide filters" : "Filters"}
-              </button>
-            </div>
-
-            {(showFilters ||
-              typeof window === "undefined" ||
-              window.matchMedia("(min-width: 640px)").matches) && (
-              <div className="px-3 sm:px-5 pb-4 sm:pb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
-                <select
-                  value={status}
-                  onChange={(e) => setStatus(e.target.value as any)}
-                  className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+        {supplierLocked ? (
+          <>
+            <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
+              <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
+              <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
+              <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
+                <motion.h1
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-[20px] sm:text-2xl md:text-3xl font-bold tracking-tight leading-tight"
                 >
-                  <option value="ANY">Any status</option>
-                  <option value="PENDING">PENDING</option>
-                  <option value="LIVE">LIVE</option>
-                  <option value="APPROVED">APPROVED</option>
-                  <option value="PUBLISHED">PUBLISHED</option>
-                  <option value="REJECTED">REJECTED</option>
-                </select>
+                  Products locked until onboarding is complete
+                </motion.h1>
 
-                <select
-                  value={categoryId}
-                  onChange={(e) => setCategoryId(e.target.value)}
-                  className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
-                >
-                  <option value="">All categories</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+                <p className="mt-1 text-[13px] sm:text-sm text-white/80 leading-snug">
+                  Finish the remaining supplier onboarding steps before you can add, edit or manage products.
+                </p>
 
-                <select
-                  value={brandId}
-                  onChange={(e) => setBrandId(e.target.value)}
-                  className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
-                >
-                  <option value="">All brands</option>
-                  {brands.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </Card>
-
-          <Card>
-            <div className="p-4 sm:p-5 flex items-center gap-3">
-              <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
-                <Package size={18} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-[11px] sm:text-xs text-zinc-500">Review visibility</div>
-                <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
-                  Rejections now show here
-                </div>
-                <div className="text-[11px] text-zinc-500">
-                  Suppliers can see why a product or change was rejected.
-                </div>
-              </div>
-            </div>
-          </Card>
-        </div>
-
-        <div className="mt-4">
-          <Card>
-            <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
-              <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
-                Your listings
-              </div>
-              <div className="mt-2">
-                <PaginationBar
-                  page={page}
-                  pageCount={pageCount}
-                  total={total}
-                  pageSize={pageSize}
-                  onPageChange={(next) => setPage(Math.max(1, Math.min(pageCount, next)))}
-                  onPageSizeChange={(next) => {
-                    setPageSize(next);
-                    setPage(1);
-                  }}
-                />
-              </div>
-            </div>
-
-            <div className="p-3 sm:hidden">
-              {productsQ.isLoading ? (
-                <div className="text-sm text-zinc-600 p-3">Loading…</div>
-              ) : productsQ.isError ? (
-                <div className="text-sm text-rose-700 p-3">
-                  Failed to load products.{" "}
-                  <button className="underline" onClick={() => productsQ.refetch()}>
-                    Retry
-                  </button>
-                </div>
-              ) : items.length === 0 ? (
-                <div className="py-10 text-center text-zinc-500 text-sm">
-                  No products yet.{" "}
-                  <Link className="underline" to={withSupplierCtx("/supplier/products/add")}>
-                    Add one
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link
+                    to={onboarding?.nextPath || "/supplier/verify-contact"}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:opacity-95"
+                  >
+                    Continue onboarding <ArrowRight size={14} />
                   </Link>
-                  .
+
+                  <Link
+                    to="/supplier"
+                    className="inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:bg-white/15"
+                  >
+                    Back to overview <ArrowLeft size={14} />
+                  </Link>
                 </div>
-              ) : (
-                <div className="grid gap-3">
-                  {sortedItems.map((p) => {
-                    const img = (p.imagesJson || [])[0] || "/placeholder.svg";
-                    const cat = p.categoryId
-                      ? categoryNameById.get(p.categoryId) ?? "—"
-                      : "—";
-                    const br = p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—";
-                    const low =
-                      typeof p.availableQty === "number" &&
-                      p.availableQty <= lowStockThreshold;
-                    const del = canDeleteOf(p.id);
-                    const modifiedAt = p.updatedAt ?? p.createdAt;
 
-                    return (
-                      <div key={p.id} className="rounded-2xl border bg-white p-3">
-                        <div className="flex gap-3">
-                          <div className="w-16 h-16 rounded-2xl border bg-zinc-50 overflow-hidden shrink-0">
-                            <img
-                              src={img}
-                              alt={p.title}
-                              className="w-full h-full object-cover"
-                              onError={(e) => (e.currentTarget.style.opacity = "0.25")}
-                            />
-                          </div>
+                {onboardingQ.isFetching ? (
+                  <div className="mt-3 text-[12px] text-white/80">Checking onboarding status…</div>
+                ) : (
+                  <div className="mt-3 text-[12px] text-white/90">
+                    Product access unlocks after contact, business, address and documents are completed.
+                  </div>
+                )}
+              </div>
+            </div>
 
-                          <div className="min-w-0 flex-1">
-                            <div className="font-semibold text-[13px] text-zinc-900 line-clamp-2">
-                              {p.title}
-                            </div>
-                            <div className="mt-1 text-[11px] text-zinc-500 break-words">
-                              SKU: <span className="font-medium">{p.sku || "—"}</span>
-                            </div>
+            <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
+              <Card className="lg:col-span-2">
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                  <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
+                    Required steps before product access
+                  </div>
+                  <div className="text-[11px] sm:text-xs text-zinc-500">
+                    Complete each step to unlock product management
+                  </div>
+                </div>
 
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              <Badge>{p.status}</Badge>
-                              <Badge tone={p.inStock ? "neutral" : "warning"}>
-                                {p.inStock ? "In stock" : "Out"}
-                              </Badge>
-                              {low && <Badge tone="warning">Low stock</Badge>}
-                              {p.moderationStatus === "REJECTED" && (
-                                <Badge tone="danger">Rejected</Badge>
-                              )}
-                              {(p.moderationStatus === "PENDING" ||
-                                p.hasPendingChanges) && (
-                                <Badge tone="warning">Pending review</Badge>
-                              )}
-                            </div>
-                          </div>
+                <div className="p-4 sm:p-5 space-y-3">
+                  {onboardingItems.map((item) => (
+                    <div
+                      key={item.key}
+                      className="flex flex-col gap-3 rounded-2xl border bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`inline-flex h-9 w-9 items-center justify-center rounded-full ${
+                            item.done
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-amber-100 text-amber-700"
+                          }`}
+                        >
+                          {item.done ? <CheckCircle2 size={17} /> : item.icon}
                         </div>
 
-                        <div className="mt-3">
-                          <ModerationPanel item={p} compact />
-                        </div>
-
-                        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-zinc-600">
-                          <div className="rounded-xl border bg-zinc-50 px-3 py-2">
-                            <div className="opacity-70">Category</div>
-                            <div className="font-medium text-zinc-900 truncate">{cat}</div>
-                          </div>
-                          <div className="rounded-xl border bg-zinc-50 px-3 py-2">
-                            <div className="opacity-70">Brand</div>
-                            <div className="font-medium text-zinc-900 truncate">{br}</div>
-                          </div>
-                          <div className="rounded-xl border bg-zinc-50 px-3 py-2">
-                            <div className="opacity-70">Modified</div>
-                            <div className="font-medium text-zinc-900">{fmtDateShort(modifiedAt)}</div>
-                          </div>
-                          <div className="rounded-xl border bg-zinc-50 px-3 py-2">
-                            <div className="opacity-70">Price</div>
-                            <div className="font-medium text-zinc-900">₦{fmtPrice(p.basePrice)}</div>
+                        <div>
+                          <div className="text-sm font-semibold text-zinc-900">{item.label}</div>
+                          <div className="text-[12px] text-zinc-500">
+                            {item.done ? "Completed" : "Still required"}
                           </div>
                         </div>
+                      </div>
 
-                        <div className="mt-3 flex items-center justify-between gap-3">
-                          {typeof p.availableQty === "number" ? (
-                            <div className="text-[11px] text-zinc-500">
-                              Qty:{" "}
-                              <span className="font-medium text-zinc-800">
-                                {p.availableQty}
-                              </span>
-                            </div>
-                          ) : (
-                            <div />
-                          )}
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            item.done
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-amber-100 text-amber-700"
+                          }`}
+                        >
+                          {item.done ? "Done" : "Pending"}
+                        </span>
 
-                          <div className="text-[11px] text-zinc-500">
-                            {fmtDateTime(modifiedAt)}
-                          </div>
-                        </div>
-
-                        <div className="mt-3 grid grid-cols-2 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => goEdit(p.id)}
-                            className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-3 py-2.5 text-[12px] font-semibold hover:bg-black/5"
+                        {!item.done && (
+                          <Link
+                            to={item.path}
+                            className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-[12px] font-semibold hover:bg-black/5"
                           >
-                            <Pencil size={14} /> Edit
-                          </button>
-
-                          <button
-                            type="button"
-                            disabled={!del.canDelete || deleteM.isPending}
-                            title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
-                            onClick={() => confirmAndDelete(p)}
-                            className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold transition
-                              ${
-                                del.canDelete && !deleteM.isPending
-                                  ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
-                                  : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
-                              }`}
-                          >
-                            <Trash2 size={14} /> Delete
-                          </button>
-                        </div>
-
-                        {!del.canDelete && del.reason && (
-                          <div className="mt-2 text-[11px] text-zinc-500 leading-snug">
-                            {del.reason}
-                          </div>
+                            Open step <ArrowRight size={14} />
+                          </Link>
                         )}
                       </div>
-                    );
-                  })}
+                    </div>
+                  ))}
                 </div>
-              )}
+              </Card>
+
+              <Card>
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                  <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
+                    Locked on this page
+                  </div>
+                  <div className="text-[11px] sm:text-xs text-zinc-500">
+                    These product actions are unavailable for now
+                  </div>
+                </div>
+
+                <div className="p-4 sm:p-5 space-y-3">
+                  {[
+                    "Add products",
+                    "Edit listings",
+                    "Delete listings",
+                    "Manage stock",
+                    "Manage pricing",
+                  ].map((label) => (
+                    <div
+                      key={label}
+                      className="flex items-center gap-3 rounded-xl border bg-zinc-50 px-3 py-3 text-sm text-zinc-700"
+                    >
+                      <Lock size={15} className="shrink-0 text-zinc-500" />
+                      <span>{label}</span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="relative overflow-hidden rounded-3xl mt-4 sm:mt-6 border">
+              <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
+              <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
+              <div className="relative px-4 sm:px-6 md:px-8 py-6 sm:py-8 text-white">
+                <motion.h1
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-[20px] sm:text-2xl md:text-3xl font-bold tracking-tight leading-tight"
+                >
+                  Products
+                </motion.h1>
+
+                <p className="mt-1 text-[13px] sm:text-sm text-white/80 leading-snug">
+                  Manage listings, stock, pricing and visibility.
+                </p>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Badge tone="info">{total} listing(s)</Badge>
+                  {pendingCount > 0 && <Badge tone="warning">{pendingCount} pending review</Badge>}
+                  {rejectedCount > 0 && <Badge tone="danger">{rejectedCount} rejected</Badge>}
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
+                  <Link
+                    to={withSupplierCtx("/supplier/products/add")}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-white text-zinc-900 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:opacity-95"
+                  >
+                    <Plus size={14} /> Add
+                  </Link>
+                  <Link
+                    to={withSupplierCtx("/supplier")}
+                    className="inline-flex items-center justify-center gap-2 rounded-full border border-white/30 bg-white/10 px-3 py-2 text-[12px] sm:px-4 sm:py-2 sm:text-sm font-semibold hover:bg-white/15"
+                  >
+                    Dashboard <ArrowRight size={14} />
+                  </Link>
+                </div>
+
+                {!hydrated ? (
+                  <div className="mt-3 text-[12px] text-white/80">Loading session…</div>
+                ) : productsQ.isFetching && !productsQ.data ? (
+                  <div className="mt-3 text-[12px] text-white/80">Loading products…</div>
+                ) : productsQ.isError ? (
+                  <div className="mt-3 text-[12px] text-white/90">
+                    Failed to load products.{" "}
+                    <button className="underline" onClick={() => productsQ.refetch()}>
+                      Retry
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
 
-            <div className="hidden sm:block p-4 lg:p-5">
-              <table className="w-full table-fixed text-[12px] lg:text-[13px]">
-                <colgroup>
-                  <col className="w-[17%]" />
-                  <col className="w-[14%]" />
-                  <col className="w-[10%]" />
-                  <col className="w-[10%]" />
-                  <col className="w-[8%]" />
-                  <col className="w-[17%]" />
-                  <col className="w-[7%]" />
-                  <col className="w-[7%]" />
-                  <col className="w-[10%]" />
-                </colgroup>
+            <div className="mt-4 sm:mt-6 grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4">
+              <Card className="lg:col-span-2">
+                <div className="p-3 sm:p-5 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+                  <div className="relative w-full">
+                    <Search
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+                      size={16}
+                    />
+                    <input
+                      placeholder="Search name, SKU…"
+                      value={q}
+                      onChange={(e) => setQ(e.target.value)}
+                      className="w-full rounded-2xl border bg-white pl-9 pr-4 py-2.5 sm:py-3 text-[13px] sm:text-sm outline-none focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400 transition"
+                    />
+                  </div>
 
-                <thead>
-                  <tr className="text-[11px] text-zinc-500 border-b">
-                    <th className="text-left font-semibold py-2 pr-3">
-                      <SortButton
-                        label="Product"
-                        active={sortBy === "title"}
-                        dir={sortDir}
-                        onClick={() => toggleSort("title")}
-                      />
-                    </th>
-                    <th className="text-left font-semibold py-2 pr-3">SKU</th>
-                    <th className="text-left font-semibold py-2 pr-3">Category</th>
-                    <th className="text-left font-semibold py-2 pr-3">Brand</th>
-                    <th className="text-left font-semibold py-2 pr-3">
-                      <SortButton
-                        label="Status"
-                        active={sortBy === "status"}
-                        dir={sortDir}
-                        onClick={() => toggleSort("status")}
-                      />
-                    </th>
-                    <th className="text-left font-semibold py-2 pr-3">Review</th>
-                    <th className="text-left font-semibold py-2 pr-3">Stock</th>
-                    <th className="text-left font-semibold py-2 pr-3">
-                      <SortButton
-                        label="Price"
-                        active={sortBy === "basePrice"}
-                        dir={sortDir}
-                        onClick={() => toggleSort("basePrice")}
-                      />
-                    </th>
-                    <th className="text-left font-semibold py-2">
-                      <SortButton
-                        label="Modified"
-                        active={sortBy === "updatedAt"}
-                        dir={sortDir}
-                        onClick={() => toggleSort("updatedAt")}
-                      />
-                    </th>
-                  </tr>
-                </thead>
+                  <button
+                    type="button"
+                    onClick={() => setShowFilters((v) => !v)}
+                    className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm hover:bg-black/5"
+                  >
+                    <SlidersHorizontal size={16} />{" "}
+                    {showFilters ? "Hide filters" : "Filters"}
+                  </button>
+                </div>
 
-                <tbody className="text-zinc-800">
-                  {sortedItems.map((p) => {
-                    const del = canDeleteOf(p.id);
-                    const modifiedAt = p.updatedAt ?? p.createdAt;
-                    const low =
-                      typeof p.availableQty === "number" &&
-                      p.availableQty <= lowStockThreshold;
+                {(showFilters ||
+                  typeof window === "undefined" ||
+                  window.matchMedia("(min-width: 640px)").matches) && (
+                  <div className="px-3 sm:px-5 pb-4 sm:pb-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <select
+                      value={status}
+                      onChange={(e) => setStatus(e.target.value as any)}
+                      className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+                    >
+                      <option value="ANY">Any status</option>
+                      <option value="PENDING">PENDING</option>
+                      <option value="LIVE">LIVE</option>
+                      <option value="APPROVED">APPROVED</option>
+                      <option value="PUBLISHED">PUBLISHED</option>
+                      <option value="REJECTED">REJECTED</option>
+                    </select>
 
-                    return (
-                      <tr key={p.id} className="border-b last:border-b-0 align-top">
-                        <td className="py-3 pr-3">
-                          <div className="min-w-0">
-                            <div className="flex items-start gap-2 min-w-0">
-                              <div className="font-semibold text-[13px] text-zinc-900 leading-5 line-clamp-2 break-words">
-                                {p.title}
+                    <select
+                      value={categoryId}
+                      onChange={(e) => setCategoryId(e.target.value)}
+                      className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+                    >
+                      <option value="">All categories</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+
+                    <select
+                      value={brandId}
+                      onChange={(e) => setBrandId(e.target.value)}
+                      className="w-full rounded-2xl border bg-white px-4 py-2.5 sm:py-3 text-[13px] sm:text-sm"
+                    >
+                      <option value="">All brands</option>
+                      {brands.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </Card>
+
+              <Card>
+                <div className="p-4 sm:p-5 flex items-center gap-3">
+                  <div className="inline-grid place-items-center w-10 h-10 rounded-2xl bg-zinc-900/5 text-zinc-800">
+                    <Package size={18} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[11px] sm:text-xs text-zinc-500">Review visibility</div>
+                    <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
+                      Rejections now show here
+                    </div>
+                    <div className="text-[11px] text-zinc-500">
+                      Suppliers can see why a product or change was rejected.
+                    </div>
+                  </div>
+                </div>
+              </Card>
+            </div>
+
+            <div className="mt-4">
+              <Card>
+                <div className="px-4 sm:px-5 py-3 sm:py-4 border-b bg-white/70">
+                  <div className="text-[13px] sm:text-sm font-semibold text-zinc-900">
+                    Your listings
+                  </div>
+                  <div className="mt-2">
+                    <PaginationBar
+                      page={page}
+                      pageCount={pageCount}
+                      total={total}
+                      pageSize={pageSize}
+                      onPageChange={(next) => setPage(Math.max(1, Math.min(pageCount, next)))}
+                      onPageSizeChange={(next) => {
+                        setPageSize(next);
+                        setPage(1);
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="p-3 sm:hidden">
+                  {productsQ.isLoading ? (
+                    <div className="text-sm text-zinc-600 p-3">Loading…</div>
+                  ) : productsQ.isError ? (
+                    <div className="text-sm text-rose-700 p-3">
+                      Failed to load products.{" "}
+                      <button className="underline" onClick={() => productsQ.refetch()}>
+                        Retry
+                      </button>
+                    </div>
+                  ) : items.length === 0 ? (
+                    <div className="py-10 text-center text-zinc-500 text-sm">
+                      No products yet.{" "}
+                      <Link className="underline" to={withSupplierCtx("/supplier/products/add")}>
+                        Add one
+                      </Link>
+                      .
+                    </div>
+                  ) : (
+                    <div className="grid gap-3">
+                      {sortedItems.map((p) => {
+                        const img = (p.imagesJson || [])[0] || "/placeholder.svg";
+                        const cat = p.categoryId
+                          ? categoryNameById.get(p.categoryId) ?? "—"
+                          : "—";
+                        const br = p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—";
+                        const low =
+                          typeof p.availableQty === "number" &&
+                          p.availableQty <= lowStockThreshold;
+                        const del = canDeleteOf(p.id);
+                        const modifiedAt = p.updatedAt ?? p.createdAt;
+
+                        return (
+                          <div key={p.id} className="rounded-2xl border bg-white p-3">
+                            <div className="flex gap-3">
+                              <div className="w-16 h-16 rounded-2xl border bg-zinc-50 overflow-hidden shrink-0">
+                                <img
+                                  src={img}
+                                  alt={p.title}
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => (e.currentTarget.style.opacity = "0.25")}
+                                />
+                              </div>
+
+                              <div className="min-w-0 flex-1">
+                                <div className="font-semibold text-[13px] text-zinc-900 line-clamp-2">
+                                  {p.title}
+                                </div>
+                                <div className="mt-1 text-[11px] text-zinc-500 break-words">
+                                  SKU: <span className="font-medium">{p.sku || "—"}</span>
+                                </div>
+
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <Badge>{p.status}</Badge>
+                                  <Badge tone={p.inStock ? "neutral" : "warning"}>
+                                    {p.inStock ? "In stock" : "Out"}
+                                  </Badge>
+                                  {low && <Badge tone="warning">Low stock</Badge>}
+                                  {p.moderationStatus === "REJECTED" && (
+                                    <Badge tone="danger">Rejected</Badge>
+                                  )}
+                                  {(p.moderationStatus === "PENDING" ||
+                                    p.hasPendingChanges) && (
+                                    <Badge tone="warning">Pending review</Badge>
+                                  )}
+                                </div>
                               </div>
                             </div>
 
-                            <div className="mt-1 flex flex-wrap gap-1.5">
-                              {low && <Badge tone="warning">Low stock</Badge>}
-                              {p.isDerived && <Badge tone="info">Derived</Badge>}
+                            <div className="mt-3">
+                              <ModerationPanel item={p} compact />
                             </div>
-                          </div>
-                        </td>
 
-                        <td className="py-3 pr-3">
-                          <div className="text-[11px] text-zinc-700 leading-5 break-words line-clamp-3">
-                            {p.sku || "—"}
-                          </div>
-                        </td>
-
-                        <td className="py-3 pr-3">
-                          <div className="text-[12px] text-zinc-700 leading-5 line-clamp-2 break-words">
-                            {p.categoryId ? categoryNameById.get(p.categoryId) ?? "—" : "—"}
-                          </div>
-                        </td>
-
-                        <td className="py-3 pr-3">
-                          <div className="text-[12px] text-zinc-700 leading-5 line-clamp-2 break-words">
-                            {p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—"}
-                          </div>
-                        </td>
-
-                        <td className="py-3 pr-3">
-                          <div className="flex flex-col gap-1.5">
-                            <Badge className="w-fit">{p.status}</Badge>
-                            {p.moderationStatus === "REJECTED" && (
-                              <Badge tone="danger" className="w-fit">
-                                Rejected
-                              </Badge>
-                            )}
-                            {(p.moderationStatus === "PENDING" || p.hasPendingChanges) && (
-                              <Badge tone="warning" className="w-fit">
-                                Pending
-                              </Badge>
-                            )}
-                          </div>
-                        </td>
-
-                        <td className="py-3 pr-3">
-                          <ModerationPanel item={p} compact />
-                        </td>
-
-                        <td className="py-3 pr-3">
-                          <div className="text-[12px] leading-5">
-                            <div className={p.inStock ? "text-zinc-900" : "text-zinc-500"}>
-                              {p.inStock ? "In stock" : "Out"}
+                            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-zinc-600">
+                              <div className="rounded-xl border bg-zinc-50 px-3 py-2">
+                                <div className="opacity-70">Category</div>
+                                <div className="font-medium text-zinc-900 truncate">{cat}</div>
+                              </div>
+                              <div className="rounded-xl border bg-zinc-50 px-3 py-2">
+                                <div className="opacity-70">Brand</div>
+                                <div className="font-medium text-zinc-900 truncate">{br}</div>
+                              </div>
+                              <div className="rounded-xl border bg-zinc-50 px-3 py-2">
+                                <div className="opacity-70">Modified</div>
+                                <div className="font-medium text-zinc-900">{fmtDateShort(modifiedAt)}</div>
+                              </div>
+                              <div className="rounded-xl border bg-zinc-50 px-3 py-2">
+                                <div className="opacity-70">Price</div>
+                                <div className="font-medium text-zinc-900">₦{fmtPrice(p.basePrice)}</div>
+                              </div>
                             </div>
-                            {typeof p.availableQty === "number" && (
+
+                            <div className="mt-3 flex items-center justify-between gap-3">
+                              {typeof p.availableQty === "number" ? (
+                                <div className="text-[11px] text-zinc-500">
+                                  Qty:{" "}
+                                  <span className="font-medium text-zinc-800">
+                                    {p.availableQty}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div />
+                              )}
+
                               <div className="text-[11px] text-zinc-500">
-                                Qty: {p.availableQty}
+                                {fmtDateTime(modifiedAt)}
                               </div>
-                            )}
-                          </div>
-                        </td>
-
-                        <td className="py-3 pr-3">
-                          <div className="text-[12px] font-semibold text-zinc-900 whitespace-nowrap">
-                            ₦{fmtPrice(p.basePrice)}
-                          </div>
-                        </td>
-
-                        <td className="py-3">
-                          <div className="space-y-2">
-                            <div className="text-[11px] text-zinc-600 leading-5">
-                              {fmtDateShort(modifiedAt)}
                             </div>
 
-                            <div className="flex flex-wrap gap-1.5">
+                            <div className="mt-3 grid grid-cols-2 gap-2">
                               <button
                                 type="button"
                                 onClick={() => goEdit(p.id)}
-                                className="inline-flex items-center gap-1 rounded-lg border bg-white px-2 py-1.5 text-[11px] hover:bg-black/5"
+                                className="inline-flex items-center justify-center gap-2 rounded-2xl border bg-white px-3 py-2.5 text-[12px] font-semibold hover:bg-black/5"
                               >
-                                <Pencil size={12} /> Edit
+                                <Pencil size={14} /> Edit
                               </button>
 
                               <button
@@ -1095,66 +1243,249 @@ export default function SupplierProductsPage() {
                                 disabled={!del.canDelete || deleteM.isPending}
                                 title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
                                 onClick={() => confirmAndDelete(p)}
-                                className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] transition
+                                className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-3 py-2.5 text-[12px] font-semibold transition
                                   ${
                                     del.canDelete && !deleteM.isPending
                                       ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
                                       : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
                                   }`}
                               >
-                                <Trash2 size={12} /> Delete
+                                <Trash2 size={14} /> Delete
                               </button>
                             </div>
 
                             {!del.canDelete && del.reason && (
-                              <div className="text-[10px] text-zinc-500 leading-snug break-words">
+                              <div className="mt-2 text-[11px] text-zinc-500 leading-snug">
                                 {del.reason}
                               </div>
                             )}
                           </div>
-                        </td>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="hidden sm:block p-4 lg:p-5">
+                  <table className="w-full table-fixed text-[12px] lg:text-[13px]">
+                    <colgroup>
+                      <col className="w-[17%]" />
+                      <col className="w-[14%]" />
+                      <col className="w-[10%]" />
+                      <col className="w-[10%]" />
+                      <col className="w-[8%]" />
+                      <col className="w-[17%]" />
+                      <col className="w-[7%]" />
+                      <col className="w-[7%]" />
+                      <col className="w-[10%]" />
+                    </colgroup>
+
+                    <thead>
+                      <tr className="text-[11px] text-zinc-500 border-b">
+                        <th className="text-left font-semibold py-2 pr-3">
+                          <SortButton
+                            label="Product"
+                            active={sortBy === "title"}
+                            dir={sortDir}
+                            onClick={() => toggleSort("title")}
+                          />
+                        </th>
+                        <th className="text-left font-semibold py-2 pr-3">SKU</th>
+                        <th className="text-left font-semibold py-2 pr-3">Category</th>
+                        <th className="text-left font-semibold py-2 pr-3">Brand</th>
+                        <th className="text-left font-semibold py-2 pr-3">
+                          <SortButton
+                            label="Status"
+                            active={sortBy === "status"}
+                            dir={sortDir}
+                            onClick={() => toggleSort("status")}
+                          />
+                        </th>
+                        <th className="text-left font-semibold py-2 pr-3">Review</th>
+                        <th className="text-left font-semibold py-2 pr-3">Stock</th>
+                        <th className="text-left font-semibold py-2 pr-3">
+                          <SortButton
+                            label="Price"
+                            active={sortBy === "basePrice"}
+                            dir={sortDir}
+                            onClick={() => toggleSort("basePrice")}
+                          />
+                        </th>
+                        <th className="text-left font-semibold py-2">
+                          <SortButton
+                            label="Modified"
+                            active={sortBy === "updatedAt"}
+                            dir={sortDir}
+                            onClick={() => toggleSort("updatedAt")}
+                          />
+                        </th>
                       </tr>
-                    );
-                  })}
+                    </thead>
 
-                  {!productsQ.isLoading && items.length === 0 && (
-                    <tr>
-                      <td colSpan={9} className="py-8 text-center text-zinc-500">
-                        No products yet.{" "}
-                        <Link className="underline" to={withSupplierCtx("/supplier/products/add")}>
-                          Add one
-                        </Link>
-                        .
-                      </td>
-                    </tr>
-                  )}
+                    <tbody className="text-zinc-800">
+                      {sortedItems.map((p) => {
+                        const del = canDeleteOf(p.id);
+                        const modifiedAt = p.updatedAt ?? p.createdAt;
+                        const low =
+                          typeof p.availableQty === "number" &&
+                          p.availableQty <= lowStockThreshold;
 
-                  {productsQ.isError && (
-                    <tr>
-                      <td colSpan={9} className="py-8 text-center text-rose-700">
-                        Failed to load products.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                        return (
+                          <tr key={p.id} className="border-b last:border-b-0 align-top">
+                            <td className="py-3 pr-3">
+                              <div className="min-w-0">
+                                <div className="flex items-start gap-2 min-w-0">
+                                  <div className="font-semibold text-[13px] text-zinc-900 leading-5 line-clamp-2 break-words">
+                                    {p.title}
+                                  </div>
+                                </div>
+
+                                <div className="mt-1 flex flex-wrap gap-1.5">
+                                  {low && <Badge tone="warning">Low stock</Badge>}
+                                  {p.isDerived && <Badge tone="info">Derived</Badge>}
+                                </div>
+                              </div>
+                            </td>
+
+                            <td className="py-3 pr-3">
+                              <div className="text-[11px] text-zinc-700 leading-5 break-words line-clamp-3">
+                                {p.sku || "—"}
+                              </div>
+                            </td>
+
+                            <td className="py-3 pr-3">
+                              <div className="text-[12px] text-zinc-700 leading-5 line-clamp-2 break-words">
+                                {p.categoryId ? categoryNameById.get(p.categoryId) ?? "—" : "—"}
+                              </div>
+                            </td>
+
+                            <td className="py-3 pr-3">
+                              <div className="text-[12px] text-zinc-700 leading-5 line-clamp-2 break-words">
+                                {p.brandId ? brandNameById.get(p.brandId) ?? "—" : "—"}
+                              </div>
+                            </td>
+
+                            <td className="py-3 pr-3">
+                              <div className="flex flex-col gap-1.5">
+                                <Badge className="w-fit">{p.status}</Badge>
+                                {p.moderationStatus === "REJECTED" && (
+                                  <Badge tone="danger" className="w-fit">
+                                    Rejected
+                                  </Badge>
+                                )}
+                                {(p.moderationStatus === "PENDING" || p.hasPendingChanges) && (
+                                  <Badge tone="warning" className="w-fit">
+                                    Pending
+                                  </Badge>
+                                )}
+                              </div>
+                            </td>
+
+                            <td className="py-3 pr-3">
+                              <ModerationPanel item={p} compact />
+                            </td>
+
+                            <td className="py-3 pr-3">
+                              <div className="text-[12px] leading-5">
+                                <div className={p.inStock ? "text-zinc-900" : "text-zinc-500"}>
+                                  {p.inStock ? "In stock" : "Out"}
+                                </div>
+                                {typeof p.availableQty === "number" && (
+                                  <div className="text-[11px] text-zinc-500">
+                                    Qty: {p.availableQty}
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+
+                            <td className="py-3 pr-3">
+                              <div className="text-[12px] font-semibold text-zinc-900 whitespace-nowrap">
+                                ₦{fmtPrice(p.basePrice)}
+                              </div>
+                            </td>
+
+                            <td className="py-3">
+                              <div className="space-y-2">
+                                <div className="text-[11px] text-zinc-600 leading-5">
+                                  {fmtDateShort(modifiedAt)}
+                                </div>
+
+                                <div className="flex flex-wrap gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => goEdit(p.id)}
+                                    className="inline-flex items-center gap-1 rounded-lg border bg-white px-2 py-1.5 text-[11px] hover:bg-black/5"
+                                  >
+                                    <Pencil size={12} /> Edit
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    disabled={!del.canDelete || deleteM.isPending}
+                                    title={!del.canDelete ? del.reason || "Not deletable" : "Delete"}
+                                    onClick={() => confirmAndDelete(p)}
+                                    className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] transition
+                                      ${
+                                        del.canDelete && !deleteM.isPending
+                                          ? "bg-white hover:bg-rose-50 border-rose-200 text-rose-700"
+                                          : "bg-zinc-50 border-zinc-200 text-zinc-400 cursor-not-allowed"
+                                      }`}
+                                  >
+                                    <Trash2 size={12} /> Delete
+                                  </button>
+                                </div>
+
+                                {!del.canDelete && del.reason && (
+                                  <div className="text-[10px] text-zinc-500 leading-snug break-words">
+                                    {del.reason}
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                      {!productsQ.isLoading && items.length === 0 && (
+                        <tr>
+                          <td colSpan={9} className="py-8 text-center text-zinc-500">
+                            No products yet.{" "}
+                            <Link className="underline" to={withSupplierCtx("/supplier/products/add")}>
+                              Add one
+                            </Link>
+                            .
+                          </td>
+                        </tr>
+                      )}
+
+                      {productsQ.isError && (
+                        <tr>
+                          <td colSpan={9} className="py-8 text-center text-rose-700">
+                            Failed to load products.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="border-t bg-white/70 px-4 sm:px-5 py-3 sm:py-4">
+                  <PaginationBar
+                    page={page}
+                    pageCount={pageCount}
+                    total={total}
+                    pageSize={pageSize}
+                    onPageChange={(next) => setPage(Math.max(1, Math.min(pageCount, next)))}
+                    onPageSizeChange={(next) => {
+                      setPageSize(next);
+                      setPage(1);
+                    }}
+                  />
+                </div>
+              </Card>
             </div>
-
-            <div className="border-t bg-white/70 px-4 sm:px-5 py-3 sm:py-4">
-              <PaginationBar
-                page={page}
-                pageCount={pageCount}
-                total={total}
-                pageSize={pageSize}
-                onPageChange={(next) => setPage(Math.max(1, Math.min(pageCount, next)))}
-                onPageSizeChange={(next) => {
-                  setPageSize(next);
-                  setPage(1);
-                }}
-              />
-            </div>
-          </Card>
-        </div>
+          </>
+        )}
       </SupplierLayout>
     </SiteLayout>
   );

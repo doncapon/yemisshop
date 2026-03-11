@@ -16,6 +16,7 @@ import {
   Search,
   Undo2,
   Mail,
+  FileBadge2,
 } from "lucide-react";
 
 import api from "../../api/client.js";
@@ -30,6 +31,7 @@ import { CatalogSettingsSection } from "../../components/admin/CatalogSettingSec
 import SiteLayout from "../../layouts/SiteLayout.js";
 import AdminPayoutsPanel from "../../components/admin/AdminPayoutsPanel.js";
 import AdminLedgerPanel from "../../components/admin/AdminLedgerPanel.js";
+import AdminSupplierDocuments from "./AdminSupplierDocuments";
 
 const staleTimeMs = 300_000;
 
@@ -192,6 +194,7 @@ type TabKey =
   | "overview"
   | "users"
   | "products"
+  | "supplierDocs"
   | "transactions"
   | "refunds"
   | "catalog"
@@ -286,6 +289,7 @@ export default function AdminDashboard() {
     "overview",
     "users",
     "products",
+    "supplierDocs",
     "transactions",
     "refunds",
     "catalog",
@@ -882,8 +886,8 @@ export default function AdminDashboard() {
           const arr: any[] = Array.isArray(data?.data)
             ? data.data
             : Array.isArray(data)
-            ? data
-            : [];
+              ? data
+              : [];
           const categories: Record<string, number> = {};
           const attributes: Record<string, number> = {};
           const brands: Record<string, number> = {};
@@ -1099,11 +1103,10 @@ export default function AdminDashboard() {
       <button
         type="button"
         onClick={onClick}
-        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${
-          emphasis
-            ? "bg-emerald-600 text-white border-emerald-600 hover:opacity-90"
-            : "bg-white hover:bg-black/5"
-        }`}
+        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${emphasis
+          ? "bg-emerald-600 text-white border-emerald-600 hover:opacity-90"
+          : "bg-white hover:bg-black/5"
+          }`}
         title={label}
       >
         <span className="font-medium">{value.toLocaleString()}</span>
@@ -1584,8 +1587,8 @@ export default function AdminDashboard() {
                   {me.isLoading
                     ? "Loading…"
                     : role === "SUPER_ADMIN"
-                    ? "Super Admin Dashboard"
-                    : "Admin Dashboard"}
+                      ? "Super Admin Dashboard"
+                      : "Admin Dashboard"}
                 </motion.h1>
                 <p className="text-white/80 text-sm mt-1">
                   Full control & oversight — users, products, transactions,
@@ -1642,28 +1645,22 @@ export default function AdminDashboard() {
               value={(
                 overview.data?.users.totalUsers ?? 0
               ).toLocaleString()}
-              hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${
-                overview.data?.users.totalSuppliers ?? 0
-              } Suppliers • ${
-                overview.data?.users.totalSupplierRiders ?? 0
-              } Riders • ${overview.data?.users.totalAdmins ?? 0} Admins • ${
-                overview.data?.users.totalSuperAdmins ?? 0
-              } Super Admins`}
+              hint={`${overview.data?.users.totalCustomers ?? 0} Customers • ${overview.data?.users.totalSuppliers ?? 0
+                } Suppliers • ${overview.data?.users.totalSupplierRiders ?? 0
+                } Riders • ${overview.data?.users.totalAdmins ?? 0} Admins • ${overview.data?.users.totalSuperAdmins ?? 0
+                } Super Admins`}
               Icon={Users}
             />
 
             <KpiCardOverview
               title="Products"
               total={`${overview.data?.products.total ?? 0} total`}
-              value={`${overview.data?.products.published ?? 0} Published • ${
-                overview.data?.products.live ?? 0
-              } Live`}
-              hint={`${overview.data?.products.pending ?? 0} Pending • ${
-                overview.data?.products.rejected ?? 0
-              } Rejected`}
-              res={`${
-                overview.data?.products.availability.publishedAvailable ?? 0
-              } Published available`}
+              value={`${overview.data?.products.published ?? 0} Published • ${overview.data?.products.live ?? 0
+                } Live`}
+              hint={`${overview.data?.products.pending ?? 0} Pending • ${overview.data?.products.rejected ?? 0
+                } Rejected`}
+              res={`${overview.data?.products.availability.publishedAvailable ?? 0
+                } Published available`}
               Icon={PackageCheck}
             />
 
@@ -1728,6 +1725,13 @@ export default function AdminDashboard() {
                 label="Catalog Settings"
                 mobileLabel="Catalog"
                 Icon={Settings}
+              />
+
+              <TabButton
+                k="supplierDocs"
+                label="Supplier Documents"
+                mobileLabel="Supplier Docs"
+                Icon={FileBadge2}
               />
               <TabButton k="refunds" label="Refunds" Icon={Undo2} />
               <TabButton
@@ -2031,11 +2035,10 @@ export default function AdminDashboard() {
                       s.set("pTab", "moderation");
                       nav(`/admin?${s.toString()}`, { replace: false });
                     }}
-                    className={`flex-1 sm:flex-none px-3 py-2 text-sm ${
-                      pTab === "moderation"
-                        ? "bg-zinc-900 text-white"
-                        : "bg-white hover:bg-black/5"
-                    }`}
+                    className={`flex-1 sm:flex-none px-3 py-2 text-sm ${pTab === "moderation"
+                      ? "bg-zinc-900 text-white"
+                      : "bg-white hover:bg-black/5"
+                      }`}
                   >
                     Moderation
                   </button>
@@ -2047,11 +2050,10 @@ export default function AdminDashboard() {
                       s.set("pTab", "manage");
                       nav(`/admin?${s.toString()}`, { replace: false });
                     }}
-                    className={`flex-1 sm:flex-none px-3 py-2 text-sm ${
-                      pTab === "manage"
-                        ? "bg-zinc-900 text-white"
-                        : "bg-white hover:bg-black/5"
-                    }`}
+                    className={`flex-1 sm:flex-none px-3 py-2 text-sm ${pTab === "manage"
+                      ? "bg-zinc-900 text-white"
+                      : "bg-white hover:bg-black/5"
+                      }`}
                   >
                     Manage
                   </button>
@@ -2121,6 +2123,7 @@ export default function AdminDashboard() {
               deleteSupplier={deleteSupplier}
             />
           )}
+          {tab === "supplierDocs" && <AdminSupplierDocuments />}
 
           {tab === "careers" && (
             <SectionCard
@@ -2147,6 +2150,18 @@ export default function AdminDashboard() {
                   desc="Configure careers site behaviour"
                 />
               </div>
+
+              <QuickAction
+                toAction={() => {
+                  setTab("supplierDocs");
+                  const s = new URLSearchParams(location.search);
+                  s.set("tab", "supplierDocs");
+                  nav(`/admin?${s.toString()}`, { replace: false });
+                }}
+                icon={FileBadge2}
+                label="Supplier documents"
+                desc="Review supplier KYC documents and approve or reject them"
+              />
 
               <QuickAction
                 toAction={() => nav("/admin/employees")}
@@ -2643,13 +2658,13 @@ function RefundsSection({ canAdmin }: { canAdmin: boolean }) {
           {refundsQ.isFetching
             ? "Loading…"
             : refundsQ.isError
-            ? "Failed to load."
-            : typeof total === "number"
-            ? `Showing ${Math.min(
-                skip + 1,
-                total
-              )}–${Math.min(skip + rows.length, total)} of ${total}`
-            : `Showing ${rows.length} item(s)`}
+              ? "Failed to load."
+              : typeof total === "number"
+                ? `Showing ${Math.min(
+                  skip + 1,
+                  total
+                )}–${Math.min(skip + rows.length, total)} of ${total}`
+                : `Showing ${rows.length} item(s)`}
         </div>
 
         <div className="inline-flex items-center gap-2">
@@ -3110,21 +3125,19 @@ function FinanceSection({ canAdmin }: { canAdmin: boolean }) {
         <div className="inline-flex rounded-xl border overflow-hidden w-full sm:w-auto">
           <button
             onClick={() => setSubTab("payouts")}
-            className={`flex-1 sm:flex-none px-3 py-2 text-sm ${
-              subTab === "payouts"
-                ? "bg-zinc-900 text-white"
-                : "bg-white hover:bg-black/5"
-            }`}
+            className={`flex-1 sm:flex-none px-3 py-2 text-sm ${subTab === "payouts"
+              ? "bg-zinc-900 text-white"
+              : "bg-white hover:bg-black/5"
+              }`}
           >
             Payouts
           </button>
           <button
             onClick={() => setSubTab("ledger")}
-            className={`flex-1 sm:flex-none px-3 py-2 text-sm ${
-              subTab === "ledger"
-                ? "bg-zinc-900 text-white"
-                : "bg-white hover:bg-black/5"
-            }`}
+            className={`flex-1 sm:flex-none px-3 py-2 text-sm ${subTab === "ledger"
+              ? "bg-zinc-900 text-white"
+              : "bg-white hover:bg-black/5"
+              }`}
           >
             Ledger
           </button>
@@ -3217,17 +3230,17 @@ function StatusDot({ label }: { label?: string | null }) {
     s === "VERIFIED" || s === "PUBLISHED" || s === "PAID"
       ? "bg-emerald-600/10 text-emerald-700 border-emerald-600/20"
       : s === "PENDING"
-      ? "bg-amber-500/10 text-amber-700 border-amber-600/20"
-      : s === "FAILED" ||
-        s === "CANCELED" ||
-        s === "REJECTED" ||
-        s === "REFUNDED"
-      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
-      : s === "SUSPENDED" ||
-        s === "DEACTIVATED" ||
-        s === "DISABLED"
-      ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
-      : "bg-zinc-500/10 text-zinc-700 border-zinc-600/20";
+        ? "bg-amber-500/10 text-amber-700 border-amber-600/20"
+        : s === "FAILED" ||
+          s === "CANCELED" ||
+          s === "REJECTED" ||
+          s === "REFUNDED"
+          ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+          : s === "SUSPENDED" ||
+            s === "DEACTIVATED" ||
+            s === "DISABLED"
+            ? "bg-rose-500/10 text-rose-700 border-rose-600/20"
+            : "bg-zinc-500/10 text-zinc-700 border-zinc-600/20";
 
   return (
     <span
@@ -3252,9 +3265,8 @@ function RoleSelect({
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className={`border rounded-lg px-2 py-1 text-sm bg-white ${
-        disabled ? "opacity-60 cursor-not-allowed" : ""
-      }`}
+      className={`border rounded-lg px-2 py-1 text-sm bg-white ${disabled ? "opacity-60 cursor-not-allowed" : ""
+        }`}
     >
       <option value="SHOPPER">SHOPPER</option>
       <option value="ADMIN">ADMIN</option>
