@@ -8,8 +8,6 @@ import { useModal } from "../components/ModalProvider";
 import {
   Search,
   SlidersHorizontal,
-  LayoutGrid,
-  ArrowUpDown,
   X,
   ChevronRight,
   ChevronDown,
@@ -86,6 +84,19 @@ type Product = {
   ratingCount?: number | null;
 
   status?: string;
+};
+
+type ProductView = Product & {
+  _displayPrice: number;
+  _availableNow: boolean;
+  _sellable: boolean;
+  _primaryImg?: string;
+  _brandName: string;
+  _categoryLabel: string;
+  _searchTitle: string;
+  _searchDesc: string;
+  _searchCat: string;
+  _searchBrand: string;
 };
 
 type PublicSettings = {
@@ -182,7 +193,11 @@ function normalizeImages(val: any): string[] {
   return out.filter(Boolean);
 }
 
-const isLive = (x?: { status?: string | null }) => String(x?.status ?? "").trim().toUpperCase() === "LIVE";
+const isLive = (x?: { status?: string | null }) =>
+  String(x?.status ?? "").trim().toUpperCase() === "LIVE";
+
+const norm = (s: string) =>
+  s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
 /* =========================================================
    Stock + offers helpers
@@ -789,36 +804,8 @@ function TruncatedTitle({
   text: string;
   className?: string;
 }) {
-  const ref = React.useRef<HTMLHeadingElement | null>(null);
-  const [isTruncated, setIsTruncated] = React.useState(false);
-
-  React.useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-
-    const check = () => {
-      const truncated = el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight;
-      setIsTruncated(truncated);
-    };
-
-    check();
-
-    if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(check);
-      ro.observe(el);
-      return () => ro.disconnect();
-    }
-
-    window.addEventListener("resize", check);
-    return () => window.removeEventListener("resize", check);
-  }, [text]);
-
   return (
-    <h3
-      ref={ref}
-      className={className}
-      title={isTruncated ? text : undefined}
-    >
+    <h3 className={className} title={text}>
       {text}
     </h3>
   );
@@ -866,7 +853,7 @@ export default function Catalog() {
   const [sortKey, setSortKey] = useState<SortKey>("relevance");
 
   const [query, setQuery] = useState("");
-  const [showSuggest, setShowSuggest] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
 
   const [refineOpen, setRefineOpen] = useState(false);
@@ -878,11 +865,17 @@ export default function Catalog() {
   const mobileInputRef = useRef<HTMLInputElement | null>(null);
   const desktopSuggestRef = useRef<HTMLDivElement | null>(null);
   const mobileSuggestRef = useRef<HTMLDivElement | null>(null);
-  const restoredScrollKeyRef = useRef<string | null>(null);
-
-  const navigatingRef = useRef(false);
+  const desktopSearchWrapRef = useRef<HTMLFormElement | null>(null);
+  const mobileSearchWrapRef = useRef<HTMLFormElement | null>(null);
   const productClicksRef = useRef<Record<string, number>>({});
+
   const deferredQuery = useDeferredValue(query);
+  const normalizedDeferredQuery = useMemo(() => norm(deferredQuery.trim()), [deferredQuery]);
+  const normalizedQuery = useMemo(() => norm(query.trim()), [query]);
+
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<8 | 12 | 16>(12);
+  const [jumpVal, setJumpVal] = useState<string>("");
 
   function isFromCardAction(target: EventTarget | null) {
     const el = target as HTMLElement | null;
@@ -890,30 +883,20 @@ export default function Catalog() {
   }
 
   const goToProduct = useCallback((productId: string) => {
-    if (navigatingRef.current) return;
-    navigatingRef.current = true;
-
     setRefineOpen(false);
-    setShowSuggest(false);
+    setSearchFocused(false);
     setTouchStartX(null);
 
-    window.requestAnimationFrame(() => {
-      nav(`/products/${productId}`, {
-        state: {
-          from: location.pathname + location.search,
-          restoreScrollY: window.scrollY,
-        },
-      });
-
-      window.setTimeout(() => {
-        navigatingRef.current = false;
-      }, 250);
+    nav(`/products/${productId}`, {
+      state: {
+        from: location.pathname + location.search,
+      },
     });
   }, [location.pathname, location.search, nav]);
 
   const closeRefine = () => {
     setRefineOpen(false);
-    setShowSuggest(false);
+    setSearchFocused(false);
     setTouchStartX(null);
   };
 
@@ -929,13 +912,11 @@ export default function Catalog() {
   }, []);
 
   useEffect(() => {
-    navigatingRef.current = false;
     setRefineOpen(false);
-    setShowSuggest(false);
+    setSearchFocused(false);
     setTouchStartX(null);
     document.body.style.overflow = "";
     document.documentElement.style.overflow = "";
-    (document.activeElement as HTMLElement | null)?.blur?.();
   }, [location.key]);
 
   useEffect(() => {
@@ -959,7 +940,7 @@ export default function Catalog() {
   useEffect(() => {
     const resetUi = () => {
       setRefineOpen(false);
-      setShowSuggest(false);
+      setSearchFocused(false);
       setTouchStartX(null);
       document.body.style.overflow = "";
       document.documentElement.style.overflow = "";
@@ -1035,9 +1016,11 @@ export default function Catalog() {
 
   const productsQ = useQuery<Product[]>({
     queryKey: ["products", { include: includeStr, status: "LIVE" }],
-    staleTime: 30_000,
+    staleTime: 5 * 60_000,
+    gcTime: 15 * 60_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
+    refetchOnMount: false,
     queryFn: async () => {
       const { data } = await api.get("/api/products", {
         params: { include: includeStr, status: "LIVE" },
@@ -1151,19 +1134,32 @@ export default function Catalog() {
     return list.filter((p) => isLive(p));
   }, [productsQ.data]);
 
-  useEffect(() => {
-    const state = location.state as any;
-    const y = state?.restoreScrollY;
+  const productViews = useMemo<ProductView[]>(() => {
+    return products.map((p) => {
+      const primaryImgRaw =
+        p.imagesJson?.[0] ||
+        p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
+        null;
 
-    if (typeof y !== "number") return;
-    if (restoredScrollKeyRef.current === location.key) return;
+      const displayPrice = priceForFiltering(p, marginPercent);
+      const available = availableNow(p);
+      const sellable = productSellable(p, marginPercent);
 
-    restoredScrollKeyRef.current = location.key;
-
-    window.requestAnimationFrame(() => {
-      window.scrollTo({ top: y, behavior: "auto" });
+      return {
+        ...p,
+        _displayPrice: displayPrice,
+        _availableNow: available,
+        _sellable: sellable,
+        _primaryImg: resolveImageUrl(primaryImgRaw),
+        _brandName: (p.brand?.name || "").trim(),
+        _categoryLabel: p.categoryName?.trim() || "Uncategorized",
+        _searchTitle: norm(p.title || ""),
+        _searchDesc: norm(p.description || ""),
+        _searchCat: norm(p.categoryName || ""),
+        _searchBrand: norm(p.brand?.name || ""),
+      };
     });
-  }, [location.key, location.state]);
+  }, [products, marginPercent]);
 
   /* ---------------- Categories ---------------- */
 
@@ -1263,14 +1259,14 @@ export default function Catalog() {
 
   /* ---------------- Filters/sort ---------------- */
 
-  const stockRank = (p: Product) => (availableNow(p) ? 0 : 1);
+  const stockRank = (p: ProductView) => (p._availableNow ? 0 : 1);
 
   const maxPriceSeen = useMemo(() => {
-    const prices = (products ?? [])
-      .map((p) => priceForFiltering(p, marginPercent))
+    const prices = (productViews ?? [])
+      .map((p) => p._displayPrice)
       .filter((n) => Number.isFinite(n) && n > 0) as number[];
     return prices.length ? Math.max(...prices) : 0;
-  }, [products, marginPercent]);
+  }, [productViews]);
 
   const PRICE_BUCKETS = useMemo(() => generateDynamicPriceBuckets(maxPriceSeen, 1_000), [maxPriceSeen]);
 
@@ -1278,23 +1274,17 @@ export default function Catalog() {
     setSelectedBucketIdxs([]);
   }, [PRICE_BUCKETS.length]);
 
-  const norm = (s: string) => s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-
   const suggestions = useMemo(() => {
-    const q = norm(deferredQuery.trim());
+    const q = normalizedQuery;
     if (!q) return [];
 
-    const scored = products.map((p) => {
-      const title = norm(p.title || "");
-      const desc = norm(p.description || "");
-      const cat = norm(p.categoryName || "");
-      const brand = norm(p.brand?.name || "");
+    const scored = productViews.map((p) => {
       let score = 0;
-      if (title.startsWith(q)) score += 4;
-      else if (title.includes(q)) score += 3;
-      if (desc.includes(q)) score += 1;
-      if (cat.includes(q)) score += 2;
-      if (brand.includes(q)) score += 2;
+      if (p._searchTitle.startsWith(q)) score += 4;
+      else if (p._searchTitle.includes(q)) score += 3;
+      if (p._searchDesc.includes(q)) score += 1;
+      if (p._searchCat.includes(q)) score += 2;
+      if (p._searchBrand.includes(q)) score += 2;
       return { p, score };
     });
 
@@ -1303,7 +1293,7 @@ export default function Catalog() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 8)
       .map((x) => x.p);
-  }, [products, deferredQuery]);
+  }, [productViews, normalizedQuery]);
 
   const selectedCategoryEffective = useMemo(() => {
     const base = new Set(selectedCategories);
@@ -1316,27 +1306,30 @@ export default function Catalog() {
   }, [selectedCategories, catTreeHelpers]);
 
   const { categories, brands, visiblePriceBuckets, filtered, categoryTreeUi } = useMemo(() => {
-    const q = norm(deferredQuery.trim());
+    const q = normalizedDeferredQuery;
 
     const categoryQueryMatch =
-      catTreeHelpers && deferredQuery
-        ? [...catTreeHelpers.byId.values()].filter((c) => norm(c.name).includes(norm(query)))
+      catTreeHelpers && q
+        ? [...catTreeHelpers.byId.values()].filter((c) => norm(c.name).includes(q))
         : [];
 
-    const baseByQuery = products.filter((p) => {
-      if (inStockOnly && !availableNow(p)) return false;
+    const baseByQuery = productViews.filter((p) => {
+      if (inStockOnly && !p._availableNow) return false;
       if (!q) return true;
 
-      const title = norm(p.title || "");
-      const desc = norm(p.description || "");
-      const cat = norm(p.categoryName || "");
-      const brand = norm(p.brand?.name || "");
-
       const categoryHit =
-        categoryQueryMatch.length &&
-        categoryQueryMatch.some((c) => p.categoryId === c.id || catTreeHelpers?.getAllDesc(c.id)?.has(p.categoryId ?? ""));
+        categoryQueryMatch.length > 0 &&
+        categoryQueryMatch.some(
+          (c) => p.categoryId === c.id || catTreeHelpers?.getAllDesc(c.id)?.has(p.categoryId ?? "")
+        );
 
-      return title.includes(q) || desc.includes(q) || cat.includes(q) || brand.includes(q) || categoryHit;
+      return (
+        p._searchTitle.includes(q) ||
+        p._searchDesc.includes(q) ||
+        p._searchCat.includes(q) ||
+        p._searchBrand.includes(q) ||
+        categoryHit
+      );
     });
 
     const activeCatsEffective = selectedCategoryEffective;
@@ -1344,9 +1337,8 @@ export default function Catalog() {
     const activeBrands = new Set(selectedBrands);
 
     const baseForCategoryCounts = baseByQuery.filter((p) => {
-      const price = priceForFiltering(p, marginPercent);
-      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const brandOk = activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(p._displayPrice, b));
+      const brandOk = activeBrands.size === 0 ? true : activeBrands.has(p._brandName);
       return priceOk && brandOk;
     });
 
@@ -1387,15 +1379,14 @@ export default function Catalog() {
     }
 
     const baseForBrandCounts = baseByQuery.filter((p) => {
-      const price = priceForFiltering(p, marginPercent);
-      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(p._displayPrice, b));
       const catOk = activeCatsEffective.size === 0 ? true : activeCatsEffective.has(p.categoryId ?? "uncategorized");
       return priceOk && catOk;
     });
 
     const brandMap = new Map<string, { name: string; count: number }>();
     for (const p of baseForBrandCounts) {
-      const name = (p.brand?.name || "").trim();
+      const name = p._brandName;
       if (!name) continue;
       const prev = brandMap.get(name) ?? { name, count: 0 };
       prev.count += 1;
@@ -1408,40 +1399,37 @@ export default function Catalog() {
 
     const baseForPriceCounts = baseByQuery.filter((p) => {
       const catOk = activeCatsEffective.size === 0 ? true : activeCatsEffective.has(p.categoryId ?? "uncategorized");
-      const brandOk = activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
+      const brandOk = activeBrands.size === 0 ? true : activeBrands.has(p._brandName);
       return catOk && brandOk;
     });
 
     const priceCounts = PRICE_BUCKETS.map(
-      (b) => baseForPriceCounts.filter((p) => inBucket(priceForFiltering(p, marginPercent), b)).length
+      (b) => baseForPriceCounts.filter((p) => inBucket(p._displayPrice, b)).length
     );
 
-    const visiblePriceBuckets = PRICE_BUCKETS.map((b, i) => ({ bucket: b, idx: i, count: priceCounts[i] || 0 })).filter(
-      (x) => x.count > 0
-    );
+    const visiblePriceBuckets = PRICE_BUCKETS
+      .map((b, i) => ({ bucket: b, idx: i, count: priceCounts[i] || 0 }))
+      .filter((x) => x.count > 0);
 
     let filteredCore = baseByQuery.filter((p) => {
-      const price = priceForFiltering(p, marginPercent);
       const catOk = activeCatsEffective.size === 0 ? true : activeCatsEffective.has(p.categoryId ?? "uncategorized");
-      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(price, b));
-      const brandOk = activeBrands.size === 0 ? true : activeBrands.has((p.brand?.name || "").trim());
+      const priceOk = activeBuckets.length === 0 ? true : activeBuckets.some((b) => inBucket(p._displayPrice, b));
+      const brandOk = activeBrands.size === 0 ? true : activeBrands.has(p._brandName);
       return catOk && priceOk && brandOk;
     });
 
-    if (HIDE_OOS) filteredCore = filteredCore.filter((p) => productSellable(p, marginPercent));
+    if (HIDE_OOS) filteredCore = filteredCore.filter((p) => p._sellable);
 
     return { categories, brands, visiblePriceBuckets, filtered: filteredCore, categoryTreeUi };
   }, [
-    products,
+    productViews,
     selectedCategories,
     selectedCategoryEffective,
     selectedBucketIdxs,
     selectedBrands,
-    deferredQuery,
-    query,
+    normalizedDeferredQuery,
     PRICE_BUCKETS,
     inStockOnly,
-    marginPercent,
     categoryForest,
     catTreeHelpers,
     expandedCats,
@@ -1466,8 +1454,8 @@ export default function Catalog() {
         const sr = stockRank(a.p) - stockRank(b.p);
         if (!inStockOnly && sr !== 0) return sr;
 
-        const av = productSellable(a.p, marginPercent) ? 1 : 0;
-        const bv = productSellable(b.p, marginPercent) ? 1 : 0;
+        const av = a.p._sellable ? 1 : 0;
+        const bv = b.p._sellable ? 1 : 0;
         if (bv !== av) return bv - av;
 
         if (b.score !== a.score) return b.score - a.score;
@@ -1476,10 +1464,10 @@ export default function Catalog() {
         const br = bestSupplierRatingScore(b.p);
         if (br !== ar) return br - ar;
 
-        return priceForFiltering(a.p, marginPercent) - priceForFiltering(b.p, marginPercent);
+        return a.p._displayPrice - b.p._displayPrice;
       })
       .map((x) => x.p);
-  }, [filtered, sortKey, purchasedQ.data, inStockOnly, marginPercent]);
+  }, [filtered, sortKey, purchasedQ.data, inStockOnly]);
 
   const sorted = useMemo(() => {
     if (sortKey === "relevance") return recScored;
@@ -1488,20 +1476,17 @@ export default function Catalog() {
       const sr = stockRank(a) - stockRank(b);
       if (!inStockOnly && sr !== 0) return sr;
 
-      const av = productSellable(a, marginPercent) ? 1 : 0;
-      const bv = productSellable(b, marginPercent) ? 1 : 0;
+      const av = a._sellable ? 1 : 0;
+      const bv = b._sellable ? 1 : 0;
       if (bv !== av) return bv - av;
 
-      if (sortKey === "price-asc") return priceForFiltering(a, marginPercent) - priceForFiltering(b, marginPercent);
-      if (sortKey === "price-desc") return priceForFiltering(b, marginPercent) - priceForFiltering(a, marginPercent);
+      if (sortKey === "price-asc") return a._displayPrice - b._displayPrice;
+      if (sortKey === "price-desc") return b._displayPrice - a._displayPrice;
       return 0;
     });
-  }, [filtered, recScored, sortKey, inStockOnly, marginPercent]);
+  }, [filtered, recScored, sortKey, inStockOnly]);
 
   /* ---------------- Pagination ---------------- */
-
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<8 | 12 | 16>(12);
 
   useEffect(() => {
     setPage(1);
@@ -1526,9 +1511,10 @@ export default function Catalog() {
         !clickedDesktopSuggest &&
         !clickedMobileSuggest
       ) {
-        setShowSuggest(false);
+        setSearchFocused(false);
       }
     }
+
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
@@ -1537,6 +1523,7 @@ export default function Catalog() {
     const clamped = Math.min(Math.max(1, p), totalPages);
     if (clamped === currentPage) return;
     setPage(clamped);
+    window.scrollTo({ top: 0, behavior: "auto" });
   };
 
   const windowedPages = (current: number, total: number, radius = 2) => {
@@ -1550,26 +1537,16 @@ export default function Catalog() {
   };
 
   const pagesDesktop = windowedPages(currentPage, totalPages, 2);
-  const [jumpVal, setJumpVal] = useState<string>("");
-
-  useEffect(() => setJumpVal(""), [totalPages]);
 
   /* =========================================================
      Add to cart
 ========================================================= */
 
-  const setCartQty = async (p: Product, nextQty: number) => {
+  const setCartQty = async (p: ProductView, nextQty: number) => {
     try {
       const qty = Math.max(0, Math.floor(Number(nextQty) || 0));
-      const unitPriceCache = getDisplayRetailPrice(p, marginPercent) || 0;
-
-      const primaryImgRaw =
-        p.imagesJson?.[0] ||
-        p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
-        null;
-
-      const primaryImg = resolveImageUrl(primaryImgRaw) ?? null;
-
+      const unitPriceCache = p._displayPrice || 0;
+      const primaryImg = p._primaryImg ?? null;
       const optionsKey = "";
 
       const nextLines = upsertCartLine({
@@ -1583,6 +1560,7 @@ export default function Catalog() {
         imageSnapshot: primaryImg ?? null,
         unitPriceCache: Number.isFinite(unitPriceCache) ? unitPriceCache : 0,
       });
+
       window.dispatchEvent(new Event("cart:updated"));
 
       window.setTimeout(() => {
@@ -1601,6 +1579,25 @@ export default function Catalog() {
   };
 
   /* ---------------- UI helpers ---------------- */
+
+  const submitSearch = useCallback(() => {
+    setSearchFocused(false);
+    setActiveIdx(0);
+    setPage(1);
+
+    window.scrollTo({
+      top: 0,
+      behavior: "auto",
+    });
+  }, []);
+
+  const applySuggestionToFilter = useCallback((title: string) => {
+    setQuery(title);
+    setSearchFocused(false);
+    setActiveIdx(0);
+    setPage(1);
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }, []);
 
   const toggleCategory = (id: string) =>
     setSelectedCategories((curr) => (curr.includes(id) ? curr.filter((x) => x !== id) : [...curr, id]));
@@ -1623,7 +1620,10 @@ export default function Catalog() {
   const anyActiveFilter =
     selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly;
 
-  const hasSearch = !!deferredQuery.trim();
+  const hasSearch = !!normalizedDeferredQuery;
+  const hasTypedQuery = !!normalizedQuery;
+  const shouldShowSuggest = searchFocused && hasTypedQuery;
+  const hasSuggestionResults = suggestions.length > 0;
   const toggleExpand = (id: string) => setExpandedCats((m) => ({ ...m, [id]: !m[id] }));
 
   /* ---------------- Render guards ---------------- */
@@ -1711,7 +1711,7 @@ export default function Catalog() {
         </div>
 
         {(hasSearch || anyActiveFilter || sortKey !== "relevance" || pageSize !== 12) && (
-          <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-700">
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-700 md:hidden">
             {hasSearch && (
               <span className="rounded-full border bg-white/80 px-2.5 py-1 border-zinc-200">
                 Search: <span className="font-semibold">{query.trim()}</span>
@@ -1746,177 +1746,112 @@ export default function Catalog() {
           </div>
         )}
 
-        <div className="hidden md:block mt-3 mb-4">
-          <div className="relative max-w-2xl">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
-            <input
-              ref={desktopInputRef}
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setShowSuggest(true);
-                setActiveIdx(0);
-              }}
-              onFocus={() => query && setShowSuggest(true)}
-              onKeyDown={(e) => {
-                if (!showSuggest || suggestions.length === 0) return;
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                } else if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  setActiveIdx((i) => Math.max(i - 1, 0));
-                } else if (e.key === "Enter") {
-                  e.preventDefault();
-                  const pick = suggestions[activeIdx];
-                  if (pick) goToProduct(pick.id);
-                  setShowSuggest(false);
-                } else if (e.key === "Escape") {
-                  setShowSuggest(false);
-                }
-              }}
-              placeholder="Search products, brands, or categories…"
-              className="w-full rounded-2xl pl-10 pr-4 py-2.5 bg-white/90 backdrop-blur border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
-              aria-label="Search products"
-            />
-
-            {showSuggest && query && suggestions.length > 0 && (
-              <div
-                ref={desktopSuggestRef}
-                className="absolute left-0 right-0 mt-2 bg-white rounded-2xl shadow-2xl z-30 overflow-hidden border border-zinc-200"
-              >
-                <ul className="max-h-[45vh] overflow-auto p-2">
-                  {suggestions.map((p, i) => {
-                    const active = i === activeIdx;
-                    const minPrice = priceForFiltering(p, marginPercent);
-
-                    return (
-                      <li key={p.id} className="mb-2 last:mb-0">
-                        <button
-                          type="button"
-                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""}`}
-                          onClick={() => {
-                            setShowSuggest(false);
-                            goToProduct(p.id);
-                          }}
-                        >
-                          {p.imagesJson?.[0] ? (
-                            <img
-                              src={resolveImageUrl(p.imagesJson?.[0])}
-                              alt=""
-                              aria-hidden="true"
-                              onError={(e) => e.currentTarget.remove()}
-                              className="w-14 h-14 object-cover rounded-xl border border-zinc-200"
-                            />
-                          ) : (
-                            <div className="w-14 h-14 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
-                              —
-                            </div>
-                          )}
-
-                          <div className="min-w-0">
-                            <div className="text-sm font-semibold truncate">{p.title}</div>
-                            <div className="text-xs opacity-80 truncate">
-                              {ngn.format(minPrice || 0)}
-                              {p.categoryName ? ` • ${p.categoryName}` : ""}
-                              {p.brand?.name ? ` • ${p.brand.name}` : ""}
-                            </div>
-                          </div>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Mobile-only controls moved above product tiles */}
         <div className="md:hidden mb-3 rounded-2xl border border-zinc-200 bg-white/90 p-3 shadow-sm">
-          <div className="relative">
+          <form
+            ref={mobileSearchWrapRef}
+            className="relative"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitSearch();
+            }}
+          >
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
             <input
               ref={mobileInputRef}
               value={query}
               onChange={(e) => {
-                setQuery(e.target.value);
-                setShowSuggest(true);
+                const value = e.target.value;
+                setQuery(value);
+                setSearchFocused(true);
                 setActiveIdx(0);
               }}
-              onFocus={() => query && setShowSuggest(true)}
+              onFocus={() => setSearchFocused(true)}
               onKeyDown={(e) => {
-                if (!showSuggest || suggestions.length === 0) return;
-                if (e.key === "ArrowDown") {
+                if (e.key === "ArrowDown" && shouldShowSuggest && hasSuggestionResults) {
                   e.preventDefault();
                   setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                } else if (e.key === "ArrowUp") {
+                  return;
+                }
+
+                if (e.key === "ArrowUp" && shouldShowSuggest && hasSuggestionResults) {
                   e.preventDefault();
                   setActiveIdx((i) => Math.max(i - 1, 0));
-                } else if (e.key === "Enter") {
+                  return;
+                }
+
+                if (e.key === "Enter") {
                   e.preventDefault();
-                  const pick = suggestions[activeIdx];
-                  if (pick) goToProduct(pick.id);
-                  setShowSuggest(false);
-                } else if (e.key === "Escape") {
-                  setShowSuggest(false);
+                  submitSearch();
+                  return;
+                }
+
+                if (e.key === "Escape") {
+                  setSearchFocused(false);
+                  return;
                 }
               }}
               placeholder="Search products, brands, or categories…"
-              className="w-full rounded-2xl pl-10 pr-4 py-2.5 bg-white border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+              className="w-full rounded-2xl pl-10 pr-24 py-2.5 bg-white border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
               aria-label="Search products"
             />
 
-            {showSuggest && query && suggestions.length > 0 && (
+            <button
+              type="submit"
+              className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center rounded-full px-3 py-1.5 text-[11px] font-medium bg-zinc-900 text-white hover:bg-zinc-800 transition"
+            >
+              Search
+            </button>
+
+            {shouldShowSuggest && (
               <div
                 ref={mobileSuggestRef}
-                className="absolute left-0 right-0 mt-2 bg-white rounded-2xl shadow-2xl z-30 overflow-hidden border border-zinc-200"
+                className="relative mt-2 bg-white rounded-2xl shadow-xl z-10 overflow-hidden border border-zinc-200"
               >
-                <ul className="max-h-[45vh] overflow-auto p-2">
-                  {suggestions.map((p, i) => {
-                    const active = i === activeIdx;
-                    const minPrice = priceForFiltering(p, marginPercent);
+                {hasSuggestionResults ? (
+                  <ul className="max-h-[45vh] overflow-auto p-2">
+                    {suggestions.map((p, i) => {
+                      const active = i === activeIdx;
 
-                    return (
-                      <li key={p.id} className="mb-2 last:mb-0">
-                        <button
-                          type="button"
-                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""}`}
-                          onClick={() => {
-                            setShowSuggest(false);
-                            goToProduct(p.id);
-                          }}
-                        >
-                          {p.imagesJson?.[0] ? (
-                            <img
-                              src={resolveImageUrl(p.imagesJson?.[0])}
-                              alt=""
-                              aria-hidden="true"
-                              onError={(e) => (e.currentTarget as HTMLImageElement).remove()}
-                              className="w-16 h-16 object-cover rounded-xl border border-zinc-200"
-                            />
-                          ) : (
-                            <div className="w-16 h-16 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
-                              —
-                            </div>
-                          )}
+                      return (
+                        <li key={p.id} className="mb-2 last:mb-0">
+                          <button
+                            type="button"
+                            className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""}`}
+                            onClick={() => applySuggestionToFilter(p.title)}
+                          >
+                            {p._primaryImg ? (
+                              <img
+                                src={p._primaryImg}
+                                alt=""
+                                aria-hidden="true"
+                                onError={(e) => (e.currentTarget as HTMLImageElement).remove()}
+                                className="w-16 h-16 object-cover rounded-xl border border-zinc-200"
+                              />
+                            ) : (
+                              <div className="w-16 h-16 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
+                                —
+                              </div>
+                            )}
 
-                          <div className="min-w-0">
-                            <div className="text-sm font-semibold truncate">{p.title}</div>
-                            <div className="text-xs opacity-80 truncate">
-                              {ngn.format(minPrice || 0)}
-                              {p.categoryName ? ` • ${p.categoryName}` : ""}
-                              {p.brand?.name ? ` • ${p.brand.name}` : ""}
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold truncate">{p.title}</div>
+                              <div className="text-xs opacity-80 truncate">
+                                {ngn.format(p._displayPrice || 0)}
+                                {p.categoryName ? ` • ${p.categoryName}` : ""}
+                                {p.brand?.name ? ` • ${p.brand.name}` : ""}
+                              </div>
                             </div>
-                          </div>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <div className="p-3 text-sm text-zinc-500">No matching products found.</div>
+                )}
               </div>
             )}
-          </div>
+          </form>
 
           <div className="mt-3 grid grid-cols-2 gap-2">
             <div className="min-w-0">
@@ -1979,7 +1914,9 @@ export default function Catalog() {
                     className="text-xs font-medium text-fuchsia-700 hover:underline"
                     onClick={() => {
                       setQuery("");
-                      setShowSuggest(false);
+                      setSearchFocused(false);
+                      setActiveIdx(0);
+                      setPage(1);
                       clearFilters();
                     }}
                   >
@@ -2186,6 +2123,114 @@ export default function Catalog() {
           </aside>
 
           <section className="mt-0 min-w-0">
+            <div className="hidden md:flex items-start justify-end mb-4">
+              <form
+                ref={desktopSearchWrapRef}
+                className="relative w-full max-w-2xl ml-auto"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  submitSearch();
+                }}
+              >
+                {shouldShowSuggest && (
+                  <div
+                    ref={desktopSuggestRef}
+                    className="absolute left-0 right-0 bottom-[calc(100%+0.5rem)] bg-white rounded-2xl shadow-2xl z-30 overflow-hidden border border-zinc-200"
+                  >
+                    {hasSuggestionResults ? (
+                      <ul className="max-h-[45vh] overflow-auto p-2">
+                        {suggestions.map((p, i) => {
+                          const active = i === activeIdx;
+
+                          return (
+                            <li key={p.id} className="mb-2 last:mb-0">
+                              <button
+                                type="button"
+                                className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""}`}
+                                onClick={() => applySuggestionToFilter(p.title)}
+                              >
+                                {p._primaryImg ? (
+                                  <img
+                                    src={p._primaryImg}
+                                    alt=""
+                                    aria-hidden="true"
+                                    onError={(e) => (e.currentTarget as HTMLImageElement).remove()}
+                                    className="w-16 h-16 object-cover rounded-xl border border-zinc-200"
+                                  />
+                                ) : (
+                                  <div className="w-16 h-16 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
+                                    —
+                                  </div>
+                                )}
+
+                                <div className="min-w-0">
+                                  <div className="text-sm font-semibold truncate">{p.title}</div>
+                                  <div className="text-xs opacity-80 truncate">
+                                    {ngn.format(p._displayPrice || 0)}
+                                    {p.categoryName ? ` • ${p.categoryName}` : ""}
+                                    {p.brand?.name ? ` • ${p.brand.name}` : ""}
+                                  </div>
+                                </div>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <div className="p-3 text-sm text-zinc-500">No matching products found.</div>
+                    )}
+                  </div>
+                )}
+
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+                <input
+                  ref={desktopInputRef}
+                  value={query}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setQuery(value);
+                    setSearchFocused(true);
+                    setActiveIdx(0);
+                  }}
+                  onFocus={() => setSearchFocused(true)}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowDown" && shouldShowSuggest && hasSuggestionResults) {
+                      e.preventDefault();
+                      setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                      return;
+                    }
+
+                    if (e.key === "ArrowUp" && shouldShowSuggest && hasSuggestionResults) {
+                      e.preventDefault();
+                      setActiveIdx((i) => Math.max(i - 1, 0));
+                      return;
+                    }
+
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      submitSearch();
+                      return;
+                    }
+
+                    if (e.key === "Escape") {
+                      setSearchFocused(false);
+                      return;
+                    }
+                  }}
+                  placeholder="Search products, brands, or categories…"
+                  className="w-full rounded-2xl pl-10 pr-28 py-2.5 bg-white/90 backdrop-blur border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+                  aria-label="Search products"
+                />
+
+                <button
+                  type="submit"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex items-center rounded-full px-4 py-1.5 text-sm font-medium bg-zinc-900 text-white hover:bg-zinc-800 transition"
+                >
+                  Search
+                </button>
+              </form>
+            </div>
+
             {sorted.length === 0 ? (
               <p className="text-sm text-zinc-600">No products match your filters.</p>
             ) : (
@@ -2193,18 +2238,11 @@ export default function Catalog() {
                 <div className="-mx-2 sm:mx-0 grid gap-1.5 sm:gap-3 md:gap-4 grid-cols-2 md:grid-cols-4">
                   {pageItems.map((p) => {
                     const fav = isFav(p.id);
-                    const bestPrice = priceForFiltering(p, marginPercent);
-                    const inStock = availableNow(p);
+                    const bestPrice = p._displayPrice;
+                    const inStock = p._availableNow;
 
                     const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;
                     const baseQtyInCart = qtyInCart(cartSnapshot, String(p.id), null);
-
-                    const primaryImgRaw =
-                      p.imagesJson?.[0] ||
-                      p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
-                      null;
-
-                    const primaryImg = resolveImageUrl(primaryImgRaw);
 
                     return (
                       <div
@@ -2226,9 +2264,9 @@ export default function Catalog() {
                         className="block rounded-2xl bg-white border border-zinc-200 hover:border-zinc-300 shadow-sm overflow-hidden active:scale-[0.99] transition cursor-pointer"
                       >
                         <div className="relative w-full h-28 sm:h-36 md:h-40 overflow-hidden bg-zinc-100">
-                          {primaryImg ? (
+                          {p._primaryImg ? (
                             <img
-                              src={primaryImg}
+                              src={p._primaryImg}
                               alt={p.title}
                               loading="lazy"
                               className="absolute inset-0 w-full h-full object-cover pointer-events-none"
@@ -2285,8 +2323,8 @@ export default function Catalog() {
                             className="font-semibold text-[12px] md:text-sm text-zinc-900 line-clamp-1"
                           />
                           <div className="text-[10px] md:text-xs text-zinc-500 line-clamp-1">
-                            {p.brand?.name ? `${p.brand.name} • ` : ""}
-                            {p.categoryName?.trim() || "Uncategorized"}
+                            {p._brandName ? `${p._brandName} • ` : ""}
+                            {p._categoryLabel}
                           </div>
 
                           <div className="mt-1">
@@ -2446,7 +2484,6 @@ export default function Catalog() {
                     </form>
                   </div>
 
-
                   <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm text-zinc-600">
                       Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
@@ -2588,7 +2625,9 @@ export default function Catalog() {
                     className="text-[12px] font-medium text-fuchsia-700 hover:underline"
                     onClick={() => {
                       setQuery("");
-                      setShowSuggest(false);
+                      setSearchFocused(false);
+                      setActiveIdx(0);
+                      setPage(1);
                       clearFilters();
                     }}
                   >
