@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "NotificationType" ADD VALUE 'SUPPLIER_DOCUMENT_UPLOADED';

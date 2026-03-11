@@ -149,26 +149,56 @@ function forbidden(res: Response) {
 
 export const requireAuth: RequestHandler = async (req, res, next) => {
   // dev escape hatch if you use it
-  if (globalThis.__auth_ignore) return next();
+  if ((globalThis as any).__auth_ignore) return next();
 
-  const token = readToken(req);
-  if (!token) return unauthorized(res, "Missing auth cookie");
+  let token = readToken(req);
+
+  // Fallback to Bearer token for verification flow
+  if (!token) {
+    const authHeader = String(req.headers.authorization || "").trim();
+    if (authHeader.toLowerCase().startsWith("bearer ")) {
+      token = authHeader.slice(7).trim();
+    }
+  }
+
+  if (!token) return unauthorized(res, "Missing auth token");
 
   const decoded = verifyToken(token);
   const userId = String(decoded?.id ?? decoded?.sub ?? "");
   if (!decoded || !userId) return unauthorized(res, "Invalid token");
 
-  // Only "access" tokens should be allowed here (unless token has no k, then allow)
-  const k = String(decoded.k ?? "");
-  if (k && k !== "access") return unauthorized(res, "Wrong token type");
+  /**
+   * Allowed token kinds:
+   * - access  => normal authenticated app usage
+   * - verify  => temporary verification flow token
+   * - empty   => backward compatibility for older tokens without `k`
+   */
+  const k = String(decoded?.k ?? "").trim();
+  const isAccessToken = !k || k === "access";
+  const isVerifyToken = k === "verify";
 
-  try {
-    await assertSessionIfPresent(decoded);
-  } catch (e: any) {
-    return unauthorized(res, e?.message || "Session invalid");
+  if (!isAccessToken && !isVerifyToken) {
+    return unauthorized(res, "Wrong token type");
+  }
+
+  /**
+   * Session checks should only run for real access tokens.
+   * Verify tokens are short-lived onboarding tokens and may not have a session row.
+   */
+  if (isAccessToken) {
+    try {
+      await assertSessionIfPresent(decoded);
+    } catch (e: any) {
+      return unauthorized(res, e?.message || "Session invalid");
+    }
   }
 
   attachReqUser(req, decoded);
+
+  // helpful for downstream handlers that need to know auth mode
+  (req as any).auth = decoded;
+  (req as any).authTokenKind = isVerifyToken ? "verify" : "access";
+
   return next();
 };
 
@@ -183,7 +213,13 @@ export const requireVerifySession: RequestHandler = async (req, res, next) => {
   if (!decoded || !userId) return unauthorized(res);
 
   const k = String(decoded.k ?? "");
-  if (k !== "verify") return unauthorized(res);
+
+  // ✅ Option A:
+  // allow either a normal logged-in access session
+  // or a temporary verify session
+  if (k !== "verify" && k !== "access" && k !== "") {
+    return unauthorized(res);
+  }
 
   try {
     await assertSessionIfPresent(decoded);

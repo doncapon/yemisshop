@@ -41,8 +41,12 @@ export default function SiteLayout({ children }: Props) {
       {/* Global overlays */}
       <ConsentBanner />
 
-      <main className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8 flex-1">
-        <div className="max-w-6xl mx-auto py-4 md:py-8">{children}</div>
+      <main className="w-full flex-1 pt-3 md:pt-0 bg-purple-400">
+        <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="max-w-6xl mx-auto py-4 md:py-8 md">
+            {children}
+          </div>
+        </div>
       </main>
     </div>
   );

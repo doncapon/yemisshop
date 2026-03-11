@@ -134,6 +134,11 @@ export default function Footer() {
                       Your account
                     </Link>
                   </li>
+                            <li>
+                    <Link to="/account/sessions" className="hover:text-ink">
+                      Sessions
+                    </Link>
+                  </li>
                 </ul>
               </div>
 

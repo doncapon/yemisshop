@@ -125,17 +125,17 @@ type OtpPurpose = "PAY_ORDER" | "CANCEL_ORDER" | "REFUND_ORDER";
 type OtpState =
   | { open: false }
   | {
-    open: true;
-    orderId: string;
-    purpose: OtpPurpose;
-    requestId: string;
-    expiresAt: number;
-    channelHint?: string | null;
-    otp: string;
-    busy: boolean;
-    error?: string | null;
-    onSuccess: (otpToken: string) => Promise<void> | void;
-  };
+      open: true;
+      orderId: string;
+      purpose: OtpPurpose;
+      requestId: string;
+      expiresAt: number;
+      channelHint?: string | null;
+      otp: string;
+      busy: boolean;
+      error?: string | null;
+      onSuccess: (otpToken: string) => Promise<void> | void;
+    };
 
 type RefundReason =
   | "NOT_RECEIVED"
@@ -206,31 +206,31 @@ function normalizeRefund(r: any): RefundRow {
     supplier: r?.supplier ? { id: String(r.supplier.id ?? ""), name: r.supplier.name ?? null } : null,
     purchaseOrder: r?.purchaseOrder
       ? {
-        id: String(r.purchaseOrder.id ?? ""),
-        status: r.purchaseOrder.status ?? null,
-        payoutStatus: r.purchaseOrder.payoutStatus ?? null,
-      }
+          id: String(r.purchaseOrder.id ?? ""),
+          status: r.purchaseOrder.status ?? null,
+          payoutStatus: r.purchaseOrder.payoutStatus ?? null,
+        }
       : null,
     events: Array.isArray(r?.events)
       ? r.events.map((e: any) => ({
-        id: String(e?.id ?? ""),
-        type: e?.type ?? null,
-        message: e?.message ?? null,
-        createdAt: e?.createdAt ?? null,
-      }))
+          id: String(e?.id ?? ""),
+          type: e?.type ?? null,
+          message: e?.message ?? null,
+          createdAt: e?.createdAt ?? null,
+        }))
       : [],
     items: Array.isArray(r?.items)
       ? r.items.map((it: any) => ({
-        id: String(it?.id ?? ""),
-        orderItem: it?.orderItem
-          ? {
-            id: String(it.orderItem.id ?? ""),
-            title: it.orderItem.title ?? null,
-            quantity: it.orderItem.quantity ?? null,
-            unitPrice: it.orderItem.unitPrice ?? null,
-          }
-          : null,
-      }))
+          id: String(it?.id ?? ""),
+          orderItem: it?.orderItem
+            ? {
+                id: String(it.orderItem.id ?? ""),
+                title: it.orderItem.title ?? null,
+                quantity: it.orderItem.quantity ?? null,
+                unitPrice: it.orderItem.unitPrice ?? null,
+              }
+            : null,
+        }))
       : [],
   };
 }
@@ -264,12 +264,12 @@ const fmtDate = (s?: string | null) => {
   return Number.isNaN(+d)
     ? String(s)
     : d.toLocaleString(undefined, {
-      month: "short",
-      day: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
 };
 
 const todayYMD = () => {
@@ -377,10 +377,10 @@ function normalizeItem(it: any): OrderItem {
     selectedOptions,
     variant: variant
       ? {
-        id: String(variant?.id ?? ""),
-        sku: variant?.sku ?? null,
-        imagesJson: variant?.imagesJson ?? variant?.images ?? null,
-      }
+          id: String(variant?.id ?? ""),
+          sku: variant?.sku ?? null,
+          imagesJson: variant?.imagesJson ?? variant?.images ?? null,
+        }
       : null,
   };
 }
@@ -434,33 +434,33 @@ function normalizeOrder(raw: any): OrderRow {
     items,
     payments: payments.length
       ? payments.map((p) => ({
-        id: String(p?.id ?? ""),
-        status: String(p?.status ?? ""),
-        provider: p?.provider ?? null,
-        reference: p?.reference ?? p?.ref ?? null,
-        amount: p?.amount ?? null,
-        createdAt: p?.createdAt ?? p?.created_at ?? null,
-        allocations: Array.isArray(p?.allocations)
-          ? p.allocations.map((a: any) => ({
-            id: String(a?.id ?? ""),
-            supplierId: String(a?.supplierId ?? ""),
-            supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
-            amount: a?.amount ?? null,
-            status: a?.status ?? null,
-            purchaseOrderId: a?.purchaseOrderId ?? null,
-          }))
-          : [],
-      }))
+          id: String(p?.id ?? ""),
+          status: String(p?.status ?? ""),
+          provider: p?.provider ?? null,
+          reference: p?.reference ?? p?.ref ?? null,
+          amount: p?.amount ?? null,
+          createdAt: p?.createdAt ?? p?.created_at ?? null,
+          allocations: Array.isArray(p?.allocations)
+            ? p.allocations.map((a: any) => ({
+                id: String(a?.id ?? ""),
+                supplierId: String(a?.supplierId ?? ""),
+                supplierName: a?.supplier?.name ?? a?.supplierNameSnapshot ?? null,
+                amount: a?.amount ?? null,
+                status: a?.status ?? null,
+                purchaseOrderId: a?.purchaseOrderId ?? null,
+              }))
+            : [],
+        }))
       : undefined,
     payment: payment
       ? {
-        id: String(payment?.id ?? ""),
-        status: String(payment?.status ?? ""),
-        provider: payment?.provider ?? null,
-        reference: payment?.reference ?? payment?.ref ?? null,
-        amount: payment?.amount ?? null,
-        createdAt: payment?.createdAt ?? payment?.created_at ?? null,
-      }
+          id: String(payment?.id ?? ""),
+          status: String(payment?.status ?? ""),
+          provider: payment?.provider ?? null,
+          reference: payment?.reference ?? payment?.ref ?? null,
+          amount: payment?.amount ?? null,
+          createdAt: payment?.createdAt ?? payment?.created_at ?? null,
+        }
       : null,
     paidAmount: raw?.paidAmount ?? raw?.paid_amount ?? null,
     metrics: raw?.metrics ?? null,
@@ -507,7 +507,6 @@ function orderServiceFee(o: OrderRow): number {
   return 0;
 }
 
-
 function canRequestRefundAsCustomer(details: OrderRow, latestPayment: PaymentRow | null): boolean {
   const st = String(details.status || "").toUpperCase();
   if (["REFUNDED", "CANCELED", "CANCELLED"].includes(st)) return false;
@@ -516,6 +515,43 @@ function canRequestRefundAsCustomer(details: OrderRow, latestPayment: PaymentRow
   if (!isPaidEffective) return false;
 
   return true;
+}
+
+function normalizeSelectedOptionsForDisplay(input: any): Array<{ attribute: string; value: string }> {
+  let raw = input;
+
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+
+  const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
+
+  return arr
+    .map((opt: any) => {
+      const attribute =
+        opt?.attribute ??
+        opt?.attributeName ??
+        opt?.name ??
+        opt?.label ??
+        opt?.key ??
+        "";
+      const value =
+        opt?.value ??
+        opt?.valueName ??
+        opt?.option ??
+        opt?.text ??
+        opt?.labelValue ??
+        "";
+      return {
+        attribute: String(attribute || "").trim(),
+        value: String(value || "").trim(),
+      };
+    })
+    .filter((x) => x.attribute || x.value);
 }
 
 /* ---------------- Pagination UI ---------------- */
@@ -558,8 +594,9 @@ function Pagination({
         <>
           <button
             onClick={() => go(1)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-              }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
+              page === 1 ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+            }`}
           >
             1
           </button>
@@ -571,8 +608,9 @@ function Pagination({
         <button
           key={p}
           onClick={() => go(p)}
-          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-            }`}
+          className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
+            p === page ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
+          }`}
         >
           {p}
         </button>
@@ -583,8 +621,9 @@ function Pagination({
           {end < totalPages - 1 && <span className={`px-1 ${T_XS} text-ink-soft`}>…</span>}
           <button
             onClick={() => go(totalPages)}
-            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
-              }`}
+            className={`px-2 py-1.5 sm:px-3 sm:py-1.5 ${BTN_XS} rounded-lg ${SILVER_BORDER} ${
+              page === totalPages ? "bg-zinc-900 text-white border-zinc-900" : "bg-white"
+            }`}
           >
             {totalPages}
           </button>
@@ -1014,8 +1053,9 @@ export default function OrdersPage() {
           type="button"
           aria-pressed={isTodayActive}
           onClick={toggleToday}
-          className={`rounded-lg px-3 py-2 ${BTN} border transition ${isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER} hover:bg-black/5`
-            }`}
+          className={`rounded-lg px-3 py-2 ${BTN} border transition ${
+            isTodayActive ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER} hover:bg-black/5`
+          }`}
         >
           Today
         </button>
@@ -1093,7 +1133,6 @@ export default function OrdersPage() {
       const safe = fmtN(apiRes.grossProfitSafe);
       const apiVal = raw !== 0 ? raw : safe !== 0 ? safe : 0;
       if (apiVal !== 0) return apiVal;
-      // else: fall through to client-side calculation
     }
 
     // ✅ Client-side fallback: try multiple ways to infer profit
@@ -1129,7 +1168,6 @@ export default function OrdersPage() {
       // 4) If you have purchaseOrders supplier amounts, estimate profit = total - supplierAmounts
       const total = fmtN(o.total);
       const supplierTotals = (o.purchaseOrders || []).reduce((s, po) => {
-        // supplierAmount is best; else subtotal
         return s + fmtN((po as any).supplierAmount ?? (po as any).subtotal);
       }, 0);
 
@@ -1334,7 +1372,6 @@ export default function OrdersPage() {
 
   // ---------------- Customer Refund (SHOPPER) ----------------
   const submitCustomerRefund = async (draft: RefundDraft) => {
-    // payload: keep it flexible for your API
     const payload: any = {
       orderId: draft.orderId,
       reason: draft.reason,
@@ -1346,7 +1383,6 @@ export default function OrdersPage() {
       payload.itemIds = Object.keys(draft.selectedItemIds || {}).filter((id) => draft.selectedItemIds[id]);
     }
 
-    // Try a couple of common endpoints (keeps your UI resilient)
     const tryUrls = ["/api/refunds", "/api/refunds/request", "/api/orders/refund-request"];
 
     let lastErr: any = null;
@@ -1365,13 +1401,11 @@ export default function OrdersPage() {
   };
 
   const onCustomerRefund = (details: OrderRow) => {
-    // Guard: only customers
     if (isAdmin) return;
 
     const orderId = String(details.id || "");
     if (!orderId) return;
 
-    // Build an initial draft (ALL by default)
     const initial: RefundDraft = {
       orderId,
       reason: "NOT_RECEIVED",
@@ -1382,7 +1416,6 @@ export default function OrdersPage() {
       error: null,
     };
 
-    // Simple modal UI (no extra component files needed)
     const RefundModal = () => {
       const [draft, setDraft] = useState<RefundDraft>(initial);
 
@@ -1438,16 +1471,18 @@ export default function OrdersPage() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                    }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
+                    draft.mode === "ALL" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                  }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "ALL" }))}
                 >
                   All items
                 </button>
                 <button
                   type="button"
-                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
-                    }`}
+                  className={`rounded-lg px-3 py-2 ${BTN_XS} border ${
+                    draft.mode === "SOME" ? "bg-zinc-900 text-white border-zinc-900" : `bg-white ${SILVER_BORDER}`
+                  }`}
                   onClick={() => setDraft((s) => ({ ...s, mode: "SOME" }))}
                 >
                   Select items
@@ -1535,7 +1570,6 @@ export default function OrdersPage() {
     });
   };
 
-
   const viewReceipt = (key: string) => nav(`/receipt/${encodeURIComponent(key)}`);
 
   const downloadReceipt = async (key: string) => {
@@ -1578,7 +1612,7 @@ export default function OrdersPage() {
           try {
             w.focus();
             w.print();
-          } catch { }
+          } catch {}
         };
         w.addEventListener("load", onLoad, { once: true });
       }
@@ -1589,9 +1623,6 @@ export default function OrdersPage() {
       else alert(e?.response?.data?.error || "Could not open receipt for print.");
     }
   };
-
-  /* ---------------- Refund modals (your existing logic continues...) ---------------- */
-  // NOTE: I’m leaving your refund modal logic intact — only styling below gets smaller/tighter on mobile.
 
   /* ---------------- Redirects (AFTER hooks) ---------------- */
   if (mustLogin || mustLoginFromData) {
@@ -1604,7 +1635,6 @@ export default function OrdersPage() {
   /* ---------------- Render ---------------- */
   return (
     <SiteLayout>
-      {/* Slightly tighter padding on mobile + consistent smaller base text */}
       <div className={`max-w-6xl mx-auto px-3 sm:px-4 md:px-6 py-5 md:py-6 ${T_BASE}`}>
         <div className="mb-3 flex items-start justify-between gap-2">
           <div className="min-w-0">
@@ -1636,8 +1666,8 @@ export default function OrdersPage() {
         <div className={`mb-4 p-4 hidden min-[768px]:block ${CARD_2XL}`}>{FilterContent}</div>
 
         {!isAdmin && (
-
-          <button className={`hidden min-[768px]:inline-flexitems-center gap-2 rounded-lg ${SILVER_BORDER} bg-white hover:bg-black/5 px-3 py-2 ${BTN} ${SILVER_SHADOW_SM}`}
+          <button
+            className={`hidden min-[768px]:inline-flexitems-center gap-2 rounded-lg ${SILVER_BORDER} bg-white hover:bg-black/5 px-3 py-2 ${BTN} ${SILVER_SHADOW_SM}`}
             onClick={() => openModal({ title: "Refunds", message: "Open refunds modal here." })}
             disabled={!queriesEnabled}
           >
@@ -1679,7 +1709,6 @@ export default function OrdersPage() {
           </div>
         )}
 
-        {/* Desktop Orders table (unchanged sizing since md+) */}
         {/* Desktop Orders table */}
         <div className={`overflow-hidden mt-4 hidden md:block ${CARD_2XL}`}>
           <div className="px-4 md:px-5 py-3 border-b border-zinc-200/70 flex items-center justify-between">
@@ -1798,12 +1827,13 @@ export default function OrdersPage() {
 
                           <td className="px-3 py-3">
                             <button
-                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${isPaidEffective
-                                ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
-                                : isPendingOrCreated
-                                  ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
-                                  : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
-                                }`}
+                              className={`inline-flex items-center justify-center rounded-full border px-3 py-1.5 text-xs ${
+                                isPaidEffective
+                                  ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                                  : isPendingOrCreated
+                                    ? "bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
+                                    : "bg-white border-zinc-200/80 hover:bg-black/5 text-ink-soft"
+                              }`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onToggle(o.id);
@@ -1930,7 +1960,83 @@ export default function OrdersPage() {
                                 </div>
 
                                 <div className={`mt-4 overflow-hidden ${CARD_XL}`}>
-                                  {/* ... keep your existing expanded content ... */}
+                                  <div className="px-4 py-3 border-b border-zinc-200/70 flex items-center justify-between">
+                                    <div className="text-sm font-semibold text-ink">Order items</div>
+                                    <div className="text-xs text-ink-soft">
+                                      {Array.isArray(details.items) ? details.items.length : 0} item(s)
+                                    </div>
+                                  </div>
+
+                                  <div className="divide-y divide-zinc-200/70">
+                                    {orderDetailQ.isFetching && (!details.items || details.items.length === 0) && (
+                                      <div className="px-4 py-4 text-sm text-ink-soft">Loading order items…</div>
+                                    )}
+
+                                    {(!details.items || details.items.length === 0) && !orderDetailQ.isFetching && (
+                                      <div className="px-4 py-4 text-sm text-ink-soft">No items found for this order.</div>
+                                    )}
+
+                                    {(details.items || []).map((it) => {
+                                      const itemTitle = (it.title || it.product?.title || "—").toString();
+                                      const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
+                                      const unit = fmtN(it.unitPrice ?? it.price);
+                                      const total =
+                                        it.lineTotal != null || it.total != null || it.subtotal != null
+                                          ? fmtN(it.lineTotal ?? it.total ?? it.subtotal)
+                                          : unit * qty;
+                                      const options = normalizeSelectedOptionsForDisplay(
+                                        it.selectedOptions ?? it.options ?? it.selectedOptionsJson
+                                      );
+
+                                      return (
+                                        <div key={it.id} className="px-4 py-4">
+                                          <div className="flex items-start justify-between gap-4">
+                                            <div className="min-w-0">
+                                              <div className="font-medium text-ink break-words">{itemTitle}</div>
+
+                                              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+                                                <span>Qty: {qty}</span>
+                                                <span>•</span>
+                                                <span>Unit: {ngn.format(unit)}</span>
+                                                {it.status ? (
+                                                  <>
+                                                    <span>•</span>
+                                                    <span>Status: {it.status}</span>
+                                                  </>
+                                                ) : null}
+                                                {it.variant?.sku ? (
+                                                  <>
+                                                    <span>•</span>
+                                                    <span>SKU: {it.variant.sku}</span>
+                                                  </>
+                                                ) : null}
+                                              </div>
+
+                                              {options.length > 0 && (
+                                                <div className="mt-2 flex flex-wrap gap-2">
+                                                  {options.map((opt, idx) => (
+                                                    <span
+                                                      key={`${it.id}-opt-${idx}`}
+                                                      className="inline-flex items-center rounded-full border border-zinc-200/80 bg-zinc-50 px-2.5 py-1 text-[11px] text-zinc-700"
+                                                    >
+                                                      {opt.attribute && opt.value
+                                                        ? `${opt.attribute}: ${opt.value}`
+                                                        : opt.attribute || opt.value}
+                                                    </span>
+                                                  ))}
+                                                </div>
+                                              )}
+                                            </div>
+
+                                            <div className="shrink-0 text-right">
+                                              <div className="text-xs text-ink-soft">Line total</div>
+                                              <div className="font-semibold text-ink">{ngn.format(total)}</div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
                                 </div>
                               </div>
                             </td>
@@ -2006,7 +2112,7 @@ export default function OrdersPage() {
                       <div className={`${T_SM} text-ink-soft truncate`}>
                         {firstItemTitle
                           ? firstItemTitle.toString().slice(0, 44) +
-                          (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
+                            (details.items && details.items.length > 1 ? ` +${details.items.length - 1}` : "")
                           : isOpen && orderDetailQ.isFetching
                             ? "Loading items…"
                             : `${details.items?.length || 0} item(s)`}
@@ -2057,23 +2163,50 @@ export default function OrdersPage() {
                   </div>
 
                   {isOpen && (
-                    <div className="mt-1.5 border-t border-zinc-200/70 pt-2 space-y-1">
-                      {(details.items || []).slice(0, 6).map((it) => (
-                        <div key={it.id} className={`flex justify-between gap-2 ${T_XS} text-ink-soft`}>
-                          <span className="min-w-0 truncate">
-                            {(it.title || it.product?.title || "—").toString()}
-                            {it.quantity && <span>{` • ${it.quantity} pcs`}</span>}
-                          </span>
-                          <span className="shrink-0">
-                            {ngn.format(
-                              it.lineTotal != null ? fmtN(it.lineTotal) : fmtN(it.unitPrice) * Number(it.quantity ?? 1)
+                    <div className="mt-1.5 border-t border-zinc-200/70 pt-2 space-y-1.5">
+                      {(details.items || []).map((it) => {
+                        const itemTitle = (it.title || it.product?.title || "—").toString();
+                        const qty = Math.max(1, Number(it.quantity ?? it.qty ?? 1) || 1);
+                        const total =
+                          it.lineTotal != null || it.total != null || it.subtotal != null
+                            ? fmtN(it.lineTotal ?? it.total ?? it.subtotal)
+                            : fmtN(it.unitPrice ?? it.price) * qty;
+                        const options = normalizeSelectedOptionsForDisplay(
+                          it.selectedOptions ?? it.options ?? it.selectedOptionsJson
+                        );
+
+                        return (
+                          <div key={it.id} className="rounded-xl border border-zinc-200/70 bg-zinc-50/60 px-3 py-2">
+                            <div className="flex justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="font-medium text-ink text-[11px] sm:text-xs break-words">{itemTitle}</div>
+                                <div className={`${T_XS} text-ink-soft mt-0.5`}>
+                                  Qty {qty} • {ngn.format(fmtN(it.unitPrice ?? it.price))}
+                                </div>
+                              </div>
+                              <div className="shrink-0 text-right">
+                                <div className={`${T_XS} text-ink-soft`}>Total</div>
+                                <div className="font-semibold text-[11px] sm:text-xs">{ngn.format(total)}</div>
+                              </div>
+                            </div>
+
+                            {options.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {options.map((opt, idx) => (
+                                  <span
+                                    key={`${it.id}-mobile-opt-${idx}`}
+                                    className="inline-flex items-center rounded-full border border-zinc-200/80 bg-white px-2 py-0.5 text-[10px] text-zinc-700"
+                                  >
+                                    {opt.attribute && opt.value
+                                      ? `${opt.attribute}: ${opt.value}`
+                                      : opt.attribute || opt.value}
+                                  </span>
+                                ))}
+                              </div>
                             )}
-                          </span>
-                        </div>
-                      ))}
-                      {details.items && details.items.length > 6 && (
-                        <div className={`${T_XS} text-ink-soft`}>+ {details.items.length - 6} more items</div>
-                      )}
+                          </div>
+                        );
+                      })}
 
                       {(!details.items || details.items.length === 0) && (
                         <div className={`${T_XS} text-ink-soft`}>
@@ -2151,10 +2284,10 @@ export default function OrdersPage() {
                         !s.open
                           ? s
                           : {
-                            ...s,
-                            busy: false,
-                            error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
-                          }
+                              ...s,
+                              busy: false,
+                              error: e?.response?.data?.error || e?.message || "Invalid or expired OTP",
+                            }
                       );
                     }
                   }}
@@ -2175,13 +2308,13 @@ export default function OrdersPage() {
                         !s.open
                           ? s
                           : {
-                            ...s,
-                            busy: false,
-                            requestId: r.requestId,
-                            expiresAt: r.expiresAt,
-                            channelHint: r.channelHint,
-                            otp: "",
-                          }
+                              ...s,
+                              busy: false,
+                              requestId: r.requestId,
+                              expiresAt: r.expiresAt,
+                              channelHint: r.channelHint,
+                              otp: "",
+                            }
                       );
                     } catch (e: any) {
                       setOtpModal((s) =>

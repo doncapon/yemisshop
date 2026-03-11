@@ -17,15 +17,11 @@ function getUserId(req: any) {
   return req.user?.id || req.auth?.userId;
 }
 
-// ✅ IMPORTANT: middleware sets req.user.sid (not sessionId)
+// middleware sets req.user.sid
 function getSessionId(req: any) {
   return req.user?.sid || req.auth?.sessionId || null;
 }
 
-/**
- * Normalize whatever we have into a "me" shape the UI expects.
- * (Avoids throwing if some fields don't exist in schema.)
- */
 function normalizeMe(raw: any) {
   if (!raw) return null;
 
@@ -49,12 +45,10 @@ function normalizeMe(raw: any) {
 }
 
 /**
- * ✅ GET /api/auth/session
+ * GET /api/auth/session
  * Always 200:
- * - { user: null } if not logged in
+ * - { user: null, sid: null } if anonymous
  * - { user: {...}, sid } if logged in
- *
- * This is the "console-noise-free" bootstrap endpoint.
  */
 router.get(
   "/session",
@@ -66,13 +60,11 @@ router.get(
       return res.json({ user: null, sid: null });
     }
 
-    // Best effort: read fresh profile from DB (falls back to req.user if select fails)
     let profile: any = null;
 
     try {
       profile = await prisma.user.findUnique({
         where: { id: String(userId) },
-        // ⚠️ Use a permissive select; if some fields don't exist, catch handles it.
         select: {
           id: true,
           email: true,
@@ -88,7 +80,6 @@ router.get(
         } as any,
       });
     } catch {
-      // fallback to whatever auth middleware put on req.user
       profile = (req as any).user ?? null;
     }
 
@@ -100,9 +91,8 @@ router.get(
 );
 
 /**
- * ✅ GET /api/auth/me (soft)
- * Keeps your frontend working if it's already calling /me,
- * but avoids red 401 noise by returning 200 with { user: null } when anonymous.
+ * GET /api/auth/me (soft)
+ * Returns 200 with { user: null, sid: null } when anonymous.
  */
 router.get(
   "/me",
@@ -137,7 +127,7 @@ router.get(
     const me = normalizeMe(profile);
     if (!me?.id) return res.json({ user: null, sid: null });
 
-    return res.json(me); // if your UI expects bare profile for /me
+    return res.json(me);
   })
 );
 
@@ -166,7 +156,7 @@ router.get("/sessions", requireAuth, async (req, res) => {
   res.json({ data: sessions, currentSessionId: currentSessionId ?? null });
 });
 
-// DELETE /api/auth/sessions/:id  (revoke one session)
+// DELETE /api/auth/sessions/:id
 router.delete("/sessions/:id", requireAuth, async (req, res) => {
   const userId = getUserId(req);
   const id = requiredString(req.params.id);
@@ -210,7 +200,7 @@ router.post("/sessions/revoke-others", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// PATCH /api/auth/sessions/:id (optional: rename device)
+// PATCH /api/auth/sessions/:id
 router.patch("/sessions/:id", requireAuth, async (req, res) => {
   const userId = getUserId(req);
   const id = requiredString(req.params.id);
@@ -232,11 +222,10 @@ router.patch("/sessions/:id", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/auth/logout  ✅ ALWAYS clears cookie, even if auth is broken
+// POST /api/auth/logout
 router.post(
   "/logout",
   wrap(async (req, res) => {
-    // Best-effort revoke current session if present (optional)
     try {
       const sid = (req as any)?.user?.sid as string | undefined;
       if (sid) {
@@ -246,7 +235,7 @@ router.post(
         });
       }
     } catch {
-      // ignore
+      //
     }
 
     clearAccessTokenCookie(res);

@@ -1,5 +1,5 @@
 // src/pages/Catalog.tsx
-import React, { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client.js";
 import { useNavigate, useLocation } from "react-router-dom";
@@ -127,28 +127,59 @@ function decToNumber(v: any): number {
 
 function normalizeImages(val: any): string[] {
   if (!val) return [];
-  if (Array.isArray(val)) return val.map(String).map((s) => s.trim()).filter(Boolean);
 
-  if (typeof val === "string") {
-    const s = val.trim();
-    if (!s) return [];
+  const out: string[] = [];
 
-    try {
-      if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith('"') && s.endsWith('"'))) {
-        const parsed = JSON.parse(s);
-        return normalizeImages(parsed);
-      }
-    } catch {
-      //
+  const pushOne = (input: any) => {
+    if (input == null) return;
+
+    if (Array.isArray(input)) {
+      for (const item of input) pushOne(item);
+      return;
     }
 
-    return s
-      .split(/[\n,]/g)
-      .map((t) => t.trim())
-      .filter(Boolean);
-  }
+    if (typeof input === "object") {
+      const candidate =
+        input.url ??
+        input.src ??
+        input.image ??
+        input.imageUrl ??
+        input.absoluteUrl ??
+        null;
 
-  return [];
+      if (candidate != null) pushOne(candidate);
+      return;
+    }
+
+    if (typeof input === "string") {
+      const s = input.trim();
+      if (!s) return;
+
+      if (
+        (s.startsWith("[") && s.endsWith("]")) ||
+        (s.startsWith("{") && s.endsWith("}"))
+      ) {
+        try {
+          pushOne(JSON.parse(s));
+          return;
+        } catch {
+          //
+        }
+      }
+
+      const parts = s.split(/[\n,]/g).map((t) => t.trim()).filter(Boolean);
+      if (parts.length > 1) {
+        for (const p of parts) pushOne(p);
+        return;
+      }
+
+      out.push(s);
+    }
+  };
+
+  pushOne(val);
+
+  return out.filter(Boolean);
 }
 
 const isLive = (x?: { status?: string | null }) => String(x?.status ?? "").trim().toUpperCase() === "LIVE";
@@ -289,10 +320,10 @@ function getDisplayRetailPrice(p: Product, marginPercent: number): number {
     Number(p.retailPrice) > 0
       ? Number(p.retailPrice)
       : Number(p.autoPrice) > 0
-      ? Number(p.autoPrice)
-      : Number(p.displayBasePrice) > 0
-      ? Number(p.displayBasePrice)
-      : 0;
+        ? Number(p.autoPrice)
+        : Number(p.displayBasePrice) > 0
+          ? Number(p.displayBasePrice)
+          : 0;
 
   return Number.isFinite(raw) && raw > 0 ? raw : 0;
 }
@@ -343,21 +374,56 @@ function getApiOrigin(): string {
 
 const API_ORIGIN = getApiOrigin();
 
-function resolveImageUrl(input?: string | null): string | undefined {
+function resolveImageUrl(input?: any): string | undefined {
+  if (input == null) return undefined;
+
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const resolved = resolveImageUrl(item);
+      if (resolved) return resolved;
+    }
+    return undefined;
+  }
+
+  if (typeof input === "object") {
+    const candidate =
+      input.url ??
+      input.src ??
+      input.image ??
+      input.imageUrl ??
+      input.absoluteUrl ??
+      null;
+
+    return candidate ? resolveImageUrl(candidate) : undefined;
+  }
+
   const s = String(input ?? "").trim();
   if (!s) return undefined;
+
+  if (
+    (s.startsWith("[") && s.endsWith("]")) ||
+    (s.startsWith("{") && s.endsWith("}"))
+  ) {
+    try {
+      return resolveImageUrl(JSON.parse(s));
+    } catch {
+      //
+    }
+  }
 
   if (/^(https?:\/\/|data:|blob:)/i.test(s)) return s;
   if (s.startsWith("//")) return `${window.location.protocol}${s}`;
 
   if (s.startsWith("/")) {
-    if (s.startsWith("/uploads/")) return `${API_ORIGIN}${s}`;
-    if (s.startsWith("/api/uploads/")) return `${API_ORIGIN}${s}`;
+    if (s.startsWith("/uploads/") || s.startsWith("/api/uploads/")) return `${API_ORIGIN}${s}`;
     return `${window.location.origin}${s}`;
   }
 
-  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) return `${API_ORIGIN}/${s}`;
-  return `${window.location.origin}/${s}`;
+  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) {
+    return `${API_ORIGIN}/${s.replace(/^\/+/, "")}`;
+  }
+
+  return `${window.location.origin}/${s.replace(/^\/+/, "")}`;
 }
 
 /* =========================================================
@@ -372,6 +438,8 @@ function usePurchasedCounts(enabledOverride = true) {
     enabled: !!user && enabledOverride,
     retry: 0,
     staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     queryFn: async () => {
       try {
         const { data } = await api.get("/api/orders/mine", {
@@ -382,8 +450,8 @@ function usePurchasedCounts(enabledOverride = true) {
         const orders: any[] = Array.isArray((data as any)?.data)
           ? (data as any).data
           : Array.isArray(data)
-          ? (data as any)
-          : [];
+            ? (data as any)
+            : [];
 
         const map: Record<string, number> = {};
         for (const o of orders) {
@@ -702,7 +770,58 @@ async function setServerCartQty(input: {
     return;
   }
 
-  await api.patch(`/api/cart/items/${found.id}`, { qty: input.qty }, AXIOS_COOKIE_CFG);
+  await api.patch(
+    `/api/cart/items/${found.id}`,
+    {
+      qty: input.qty,
+      titleSnapshot: input.titleSnapshot ?? null,
+      imageSnapshot: input.imageSnapshot ?? null,
+      unitPriceCache: input.unitPriceCache ?? null,
+    },
+    AXIOS_COOKIE_CFG
+  );
+}
+
+function TruncatedTitle({
+  text,
+  className = "",
+}: {
+  text: string;
+  className?: string;
+}) {
+  const ref = React.useRef<HTMLHeadingElement | null>(null);
+  const [isTruncated, setIsTruncated] = React.useState(false);
+
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const check = () => {
+      const truncated = el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight;
+      setIsTruncated(truncated);
+    };
+
+    check();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(check);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, [text]);
+
+  return (
+    <h3
+      ref={ref}
+      className={className}
+      title={isTruncated ? text : undefined}
+    >
+      {text}
+    </h3>
+  );
 }
 
 /* =========================================================
@@ -724,11 +843,11 @@ export default function Catalog() {
   const includeStr = "brand,category,variants,attributes,offers" as const;
 
   /* ---------------- Settings ---------------- */
-
   const settingsQ = useQuery<number>({
     queryKey: ["settings", "public", "marginPercent"],
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: 0,
     queryFn: async () => {
       const { data } = await api.get<PublicSettings>("/api/settings/public");
@@ -750,44 +869,47 @@ export default function Catalog() {
   const [showSuggest, setShowSuggest] = useState(false);
   const [activeIdx, setActiveIdx] = useState(0);
 
-  const desktopInputRef = useRef<HTMLInputElement | null>(null);
-  const mobileInputRef = useRef<HTMLInputElement | null>(null);
-  const suggestRef = useRef<HTMLDivElement | null>(null);
-
   const [refineOpen, setRefineOpen] = useState(false);
   const [touchStartX, setTouchStartX] = useState<number | null>(null);
   const [inStockOnly, setInStockOnly] = useState(true);
   const [expandedCats, setExpandedCats] = useState<Record<string, boolean>>({});
-  const [gridCols, setGridCols] = useState(2);
 
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 768px)");
-    const apply = () => setGridCols(mq.matches ? 4 : 2);
+  const desktopInputRef = useRef<HTMLInputElement | null>(null);
+  const mobileInputRef = useRef<HTMLInputElement | null>(null);
+  const desktopSuggestRef = useRef<HTMLDivElement | null>(null);
+  const mobileSuggestRef = useRef<HTMLDivElement | null>(null);
+  const restoredScrollKeyRef = useRef<string | null>(null);
 
-    apply();
+  const navigatingRef = useRef(false);
+  const productClicksRef = useRef<Record<string, number>>({});
+  const deferredQuery = useDeferredValue(query);
 
-    if ((mq as any).addEventListener) mq.addEventListener("change", apply);
-    else (mq as any).addListener(apply);
-
-    return () => {
-      if ((mq as any).removeEventListener) mq.removeEventListener("change", apply);
-      else (mq as any).removeListener(apply);
-    };
-  }, []);
-
-  function stopCardNav(e: React.SyntheticEvent) {
-    e.preventDefault();
-    e.stopPropagation();
+  function isFromCardAction(target: EventTarget | null) {
+    const el = target as HTMLElement | null;
+    return !!el?.closest('[data-stop-card-nav="true"]');
   }
 
-  function goToProduct(productId: string) {
-    nav(`/products/${productId}`, {
-      state: {
-        from: location.pathname + location.search,
-        restoreScrollY: window.scrollY,
-      },
+  const goToProduct = useCallback((productId: string) => {
+    if (navigatingRef.current) return;
+    navigatingRef.current = true;
+
+    setRefineOpen(false);
+    setShowSuggest(false);
+    setTouchStartX(null);
+
+    window.requestAnimationFrame(() => {
+      nav(`/products/${productId}`, {
+        state: {
+          from: location.pathname + location.search,
+          restoreScrollY: window.scrollY,
+        },
+      });
+
+      window.setTimeout(() => {
+        navigatingRef.current = false;
+      }, 250);
     });
-  }
+  }, [location.pathname, location.search, nav]);
 
   const closeRefine = () => {
     setRefineOpen(false);
@@ -798,33 +920,56 @@ export default function Catalog() {
   /* ---------------- Navigation / overlay stability ---------------- */
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem("productClicks:v1");
+      productClicksRef.current = raw ? JSON.parse(raw) || {} : {};
+    } catch {
+      productClicksRef.current = {};
+    }
+  }, []);
+
+  useEffect(() => {
+    navigatingRef.current = false;
     setRefineOpen(false);
     setShowSuggest(false);
     setTouchStartX(null);
     document.body.style.overflow = "";
+    document.documentElement.style.overflow = "";
     (document.activeElement as HTMLElement | null)?.blur?.();
   }, [location.key]);
 
   useEffect(() => {
-    document.body.style.overflow = refineOpen ? "hidden" : "";
-    return () => {
+    const prevBodyOverflow = document.body.style.overflow;
+    const prevHtmlOverflow = document.documentElement.style.overflow;
+
+    if (refineOpen) {
+      document.body.style.overflow = "hidden";
+      document.documentElement.style.overflow = "hidden";
+    } else {
       document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
+    }
+
+    return () => {
+      document.body.style.overflow = prevBodyOverflow;
+      document.documentElement.style.overflow = prevHtmlOverflow;
     };
   }, [refineOpen]);
 
   useEffect(() => {
-    const onPageShow = (ev: PageTransitionEvent) => {
-      if (ev.persisted) {
-        setRefineOpen(false);
-        setShowSuggest(false);
-        setTouchStartX(null);
-        document.body.style.overflow = "";
-      }
+    const resetUi = () => {
+      setRefineOpen(false);
+      setShowSuggest(false);
+      setTouchStartX(null);
+      document.body.style.overflow = "";
+      document.documentElement.style.overflow = "";
     };
 
-    const onPageHide = () => {
-      document.body.style.overflow = "";
+    const onPageShow = (ev: PageTransitionEvent) => {
+      if (ev.persisted) resetUi();
     };
+
+    const onPageHide = () => resetUi();
 
     window.addEventListener("pageshow", onPageShow as any);
     window.addEventListener("pagehide", onPageHide as any);
@@ -891,6 +1036,8 @@ export default function Catalog() {
   const productsQ = useQuery<Product[]>({
     queryKey: ["products", { include: includeStr, status: "LIVE" }],
     staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     queryFn: async () => {
       const { data } = await api.get("/api/products", {
         params: { include: includeStr, status: "LIVE" },
@@ -899,46 +1046,46 @@ export default function Catalog() {
       const raw: any[] = Array.isArray(data)
         ? data
         : Array.isArray((data as any)?.data)
-        ? (data as any).data
-        : [];
+          ? (data as any).data
+          : [];
 
       return (raw || [])
         .filter((x) => x && x.id != null)
         .map((x) => {
           const variants: Variant[] = Array.isArray(x.variants)
             ? x.variants.map((v: any) => ({
-                id: String(v.id),
-                sku: v.sku ?? null,
-                retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
-                inStock: v.inStock === true,
-                imagesJson: normalizeImages(v.imagesJson),
-                availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
-                offers: Array.isArray(v.offers)
-                  ? v.offers.map((o: any) => ({
-                      id: String(o.id),
-                      supplierId: o.supplierId ?? o.supplier?.id ?? null,
-                      isActive: o.isActive === true,
-                      inStock: o.inStock === true,
-                      availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
-                      unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
-                      basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
-                      currency: o.currency ?? "NGN",
-                      leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
-                      supplierRatingAvg:
-                        o.supplierRatingAvg != null
-                          ? decToNumber(o.supplierRatingAvg)
-                          : o.supplier?.ratingAvg != null
-                          ? decToNumber(o.supplier.ratingAvg)
-                          : null,
-                      supplierRatingCount:
-                        o.supplierRatingCount != null
-                          ? Number(o.supplierRatingCount)
-                          : o.supplier?.ratingCount != null
-                          ? Number(o.supplier.ratingCount)
-                          : null,
-                    }))
-                  : [],
-              }))
+              id: String(v.id),
+              sku: v.sku ?? null,
+              retailPrice: v.retailPrice != null ? decToNumber(v.retailPrice) : null,
+              inStock: v.inStock === true,
+              imagesJson: normalizeImages(v.imagesJson),
+              availableQty: Number.isFinite(Number(v.availableQty)) ? Number(v.availableQty) : null,
+              offers: Array.isArray(v.offers)
+                ? v.offers.map((o: any) => ({
+                  id: String(o.id),
+                  supplierId: o.supplierId ?? o.supplier?.id ?? null,
+                  isActive: o.isActive === true,
+                  inStock: o.inStock === true,
+                  availableQty: Number.isFinite(Number(o.availableQty)) ? Number(o.availableQty) : null,
+                  unitPrice: o.unitPrice != null ? decToNumber(o.unitPrice) : null,
+                  basePrice: o.basePrice != null ? decToNumber(o.basePrice) : null,
+                  currency: o.currency ?? "NGN",
+                  leadDays: Number.isFinite(Number(o.leadDays)) ? Number(o.leadDays) : null,
+                  supplierRatingAvg:
+                    o.supplierRatingAvg != null
+                      ? decToNumber(o.supplierRatingAvg)
+                      : o.supplier?.ratingAvg != null
+                        ? decToNumber(o.supplier.ratingAvg)
+                        : null,
+                  supplierRatingCount:
+                    o.supplierRatingCount != null
+                      ? Number(o.supplierRatingCount)
+                      : o.supplier?.ratingCount != null
+                        ? Number(o.supplier.ratingCount)
+                        : null,
+                }))
+                : [],
+            }))
             : [];
 
           const baseSource =
@@ -960,14 +1107,14 @@ export default function Catalog() {
               o.supplierRatingAvg != null
                 ? decToNumber(o.supplierRatingAvg)
                 : o.supplier?.ratingAvg != null
-                ? decToNumber(o.supplier.ratingAvg)
-                : null,
+                  ? decToNumber(o.supplier.ratingAvg)
+                  : null,
             supplierRatingCount:
               o.supplierRatingCount != null
                 ? Number(o.supplierRatingCount)
                 : o.supplier?.ratingCount != null
-                ? Number(o.supplier.ratingCount)
-                : null,
+                  ? Number(o.supplier.ratingCount)
+                  : null,
           }));
 
           const catNameRaw = String(x.categoryName ?? x.category?.name ?? "").trim();
@@ -1004,34 +1151,27 @@ export default function Catalog() {
     return list.filter((p) => isLive(p));
   }, [productsQ.data]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const state = location.state as any;
     const y = state?.restoreScrollY;
 
     if (typeof y !== "number") return;
+    if (restoredScrollKeyRef.current === location.key) return;
 
-    requestAnimationFrame(() => {
+    restoredScrollKeyRef.current = location.key;
+
+    window.requestAnimationFrame(() => {
       window.scrollTo({ top: y, behavior: "auto" });
-
-      try {
-        nav(location.pathname + location.search, {
-          replace: true,
-          state: {
-            ...(state || {}),
-            restoreScrollY: undefined,
-          },
-        });
-      } catch {
-        //
-      }
     });
-  }, [location.key, location.pathname, location.search, location.state, nav]);
+  }, [location.key, location.state]);
 
   /* ---------------- Categories ---------------- */
 
   const categoriesTreeQ = useQuery<CategoryNode[]>({
     queryKey: ["categories", "tree"],
     staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: 0,
     queryFn: async () => {
       const attempts = [
@@ -1069,8 +1209,9 @@ export default function Catalog() {
     queryKey: ["favorites", "mine"],
     enabled: !isSupplier && isAuthed,
     retry: (count, e: any) => (Number(e?.response?.status) === 401 ? false : count < 2),
-    refetchOnWindowFocus: true,
-    staleTime: 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: 30_000,
     queryFn: async () => {
       const { data } = await api.get("/api/favorites/mine", { withCredentials: true });
 
@@ -1140,7 +1281,7 @@ export default function Catalog() {
   const norm = (s: string) => s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
   const suggestions = useMemo(() => {
-    const q = norm(query.trim());
+    const q = norm(deferredQuery.trim());
     if (!q) return [];
 
     const scored = products.map((p) => {
@@ -1162,7 +1303,7 @@ export default function Catalog() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 8)
       .map((x) => x.p);
-  }, [products, query]);
+  }, [products, deferredQuery]);
 
   const selectedCategoryEffective = useMemo(() => {
     const base = new Set(selectedCategories);
@@ -1175,10 +1316,10 @@ export default function Catalog() {
   }, [selectedCategories, catTreeHelpers]);
 
   const { categories, brands, visiblePriceBuckets, filtered, categoryTreeUi } = useMemo(() => {
-    const q = norm(query.trim());
+    const q = norm(deferredQuery.trim());
 
     const categoryQueryMatch =
-      catTreeHelpers && query
+      catTreeHelpers && deferredQuery
         ? [...catTreeHelpers.byId.values()].filter((c) => norm(c.name).includes(norm(query)))
         : [];
 
@@ -1296,6 +1437,7 @@ export default function Catalog() {
     selectedCategoryEffective,
     selectedBucketIdxs,
     selectedBrands,
+    deferredQuery,
     query,
     PRICE_BUCKETS,
     inStockOnly,
@@ -1311,14 +1453,7 @@ export default function Catalog() {
     if (sortKey !== "relevance") return filtered;
 
     const purchased = purchasedQ.data ?? {};
-    const clicks = (() => {
-      try {
-        const raw = localStorage.getItem("productClicks:v1");
-        return raw ? JSON.parse(raw) || {} : {};
-      } catch {
-        return {};
-      }
-    })();
+    const clicks = productClicksRef.current;
 
     return filtered
       .map((p) => {
@@ -1382,9 +1517,15 @@ export default function Catalog() {
       const t = e.target as Node;
       const clickedDesktopInput = !!desktopInputRef.current?.contains(t);
       const clickedMobileInput = !!mobileInputRef.current?.contains(t);
-      const clickedSuggest = !!suggestRef.current?.contains(t);
+      const clickedDesktopSuggest = !!desktopSuggestRef.current?.contains(t);
+      const clickedMobileSuggest = !!mobileSuggestRef.current?.contains(t);
 
-      if (!clickedSuggest && !clickedDesktopInput && !clickedMobileInput) {
+      if (
+        !clickedDesktopInput &&
+        !clickedMobileInput &&
+        !clickedDesktopSuggest &&
+        !clickedMobileSuggest
+      ) {
         setShowSuggest(false);
       }
     }
@@ -1422,10 +1563,12 @@ export default function Catalog() {
       const qty = Math.max(0, Math.floor(Number(nextQty) || 0));
       const unitPriceCache = getDisplayRetailPrice(p, marginPercent) || 0;
 
-      const primaryImg =
+      const primaryImgRaw =
         p.imagesJson?.[0] ||
         p.variants?.find((v) => Array.isArray(v.imagesJson) && v.imagesJson[0])?.imagesJson?.[0] ||
         null;
+
+      const primaryImg = resolveImageUrl(primaryImgRaw) ?? null;
 
       const optionsKey = "";
 
@@ -1440,14 +1583,15 @@ export default function Catalog() {
         imageSnapshot: primaryImg ?? null,
         unitPriceCache: Number.isFinite(unitPriceCache) ? unitPriceCache : 0,
       });
-
       window.dispatchEvent(new Event("cart:updated"));
 
-      showMiniCartToast(
-        toMiniCartRows(nextLines),
-        { productId: p.id, variantId: null },
-        { mode: qty > 0 ? "add" : "remove" }
-      );
+      window.setTimeout(() => {
+        showMiniCartToast(
+          toMiniCartRows(nextLines),
+          { productId: p.id, variantId: null },
+          { mode: qty > 0 ? "add" : "remove" }
+        );
+      }, 0);
 
       syncServerQtyCoalesced(p, qty, unitPriceCache, primaryImg);
     } catch (err: any) {
@@ -1479,7 +1623,7 @@ export default function Catalog() {
   const anyActiveFilter =
     selectedCategories.length > 0 || selectedBucketIdxs.length > 0 || selectedBrands.length > 0 || !inStockOnly;
 
-  const hasSearch = !!query.trim();
+  const hasSearch = !!deferredQuery.trim();
   const toggleExpand = (id: string) => setExpandedCats((m) => ({ ...m, [id]: !m[id] }));
 
   /* ---------------- Render guards ---------------- */
@@ -1544,7 +1688,7 @@ export default function Catalog() {
                 className="hidden md:inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium bg-white/90 text-zinc-800 shadow-sm active:scale-[0.98] transition border border-zinc-200 hover:border-zinc-300"
               >
                 <SlidersHorizontal size={18} />
-                Refine
+                Filter categories & brands
               </button>
             </div>
           </div>
@@ -1562,7 +1706,7 @@ export default function Catalog() {
             className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-medium bg-white/90 text-zinc-800 shadow-sm active:scale-[0.97] transition border border-zinc-200 hover:border-zinc-300"
           >
             <SlidersHorizontal size={14} />
-            Refine
+            Filter categories & brands
           </button>
         </div>
 
@@ -1597,7 +1741,7 @@ export default function Catalog() {
               onClick={() => setRefineOpen(true)}
             >
               <SlidersHorizontal size={14} />
-              Edit
+              Edit filters
             </button>
           </div>
         )}
@@ -1638,7 +1782,7 @@ export default function Catalog() {
 
             {showSuggest && query && suggestions.length > 0 && (
               <div
-                ref={suggestRef}
+                ref={desktopSuggestRef}
                 className="absolute left-0 right-0 mt-2 bg-white rounded-2xl shadow-2xl z-30 overflow-hidden border border-zinc-200"
               >
                 <ul className="max-h-[45vh] overflow-auto p-2">
@@ -1650,9 +1794,7 @@ export default function Catalog() {
                       <li key={p.id} className="mb-2 last:mb-0">
                         <button
                           type="button"
-                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
-                            active ? "bg-black/5" : ""
-                          }`}
+                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""}`}
                           onClick={() => {
                             setShowSuggest(false);
                             goToProduct(p.id);
@@ -1690,11 +1832,147 @@ export default function Catalog() {
           </div>
         </div>
 
+        {/* Mobile-only controls moved above product tiles */}
+        <div className="md:hidden mb-3 rounded-2xl border border-zinc-200 bg-white/90 p-3 shadow-sm">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
+            <input
+              ref={mobileInputRef}
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setShowSuggest(true);
+                setActiveIdx(0);
+              }}
+              onFocus={() => query && setShowSuggest(true)}
+              onKeyDown={(e) => {
+                if (!showSuggest || suggestions.length === 0) return;
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setActiveIdx((i) => Math.max(i - 1, 0));
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  const pick = suggestions[activeIdx];
+                  if (pick) goToProduct(pick.id);
+                  setShowSuggest(false);
+                } else if (e.key === "Escape") {
+                  setShowSuggest(false);
+                }
+              }}
+              placeholder="Search products, brands, or categories…"
+              className="w-full rounded-2xl pl-10 pr-4 py-2.5 bg-white border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
+              aria-label="Search products"
+            />
+
+            {showSuggest && query && suggestions.length > 0 && (
+              <div
+                ref={mobileSuggestRef}
+                className="absolute left-0 right-0 mt-2 bg-white rounded-2xl shadow-2xl z-30 overflow-hidden border border-zinc-200"
+              >
+                <ul className="max-h-[45vh] overflow-auto p-2">
+                  {suggestions.map((p, i) => {
+                    const active = i === activeIdx;
+                    const minPrice = priceForFiltering(p, marginPercent);
+
+                    return (
+                      <li key={p.id} className="mb-2 last:mb-0">
+                        <button
+                          type="button"
+                          className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${active ? "bg-black/5" : ""}`}
+                          onClick={() => {
+                            setShowSuggest(false);
+                            goToProduct(p.id);
+                          }}
+                        >
+                          {p.imagesJson?.[0] ? (
+                            <img
+                              src={resolveImageUrl(p.imagesJson?.[0])}
+                              alt=""
+                              aria-hidden="true"
+                              onError={(e) => (e.currentTarget as HTMLImageElement).remove()}
+                              className="w-16 h-16 object-cover rounded-xl border border-zinc-200"
+                            />
+                          ) : (
+                            <div className="w-16 h-16 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
+                              —
+                            </div>
+                          )}
+
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold truncate">{p.title}</div>
+                            <div className="text-xs opacity-80 truncate">
+                              {ngn.format(minPrice || 0)}
+                              {p.categoryName ? ` • ${p.categoryName}` : ""}
+                              {p.brand?.name ? ` • ${p.brand.name}` : ""}
+                            </div>
+                          </div>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="min-w-0">
+              <label className="mb-1 block text-[11px] font-medium text-zinc-700">Sort</label>
+              <select
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value as SortKey)}
+                className="w-full rounded-xl px-3 py-2 text-[12px] bg-white border border-zinc-200"
+              >
+                <option value="relevance">Relevance</option>
+                <option value="price-asc">Price: Low → High</option>
+                <option value="price-desc">Price: High → Low</option>
+              </select>
+            </div>
+
+            <div className="min-w-0">
+              <label className="mb-1 block text-[11px] font-medium text-zinc-700">Per page</label>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
+                className="w-full rounded-xl px-3 py-2 text-[12px] bg-white border border-zinc-200"
+              >
+                <option value={8}>8</option>
+                <option value={12}>12</option>
+                <option value={16}>16</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
+              <input
+                type="checkbox"
+                checked={inStockOnly}
+                onChange={(e) => setInStockOnly(e.target.checked)}
+                className="h-4 w-4 rounded border-zinc-300"
+              />
+              In stock
+            </label>
+
+            <button
+              type="button"
+              onClick={() => setRefineOpen(true)}
+              className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-medium bg-white text-zinc-800 shadow-sm border border-zinc-200 hover:border-zinc-300"
+            >
+              <SlidersHorizontal size={14} />
+              Filter categories & brands
+            </button>
+          </div>
+        </div>
+
         <div className="mt-2 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:gap-6">
           <aside className="hidden md:block">
             <div className="sticky top-24 rounded-2xl bg-white/90 p-4 border border-zinc-200">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-zinc-900">Refine</h3>
+                <h3 className="text-sm font-semibold text-zinc-900">Filter categories & brands</h3>
                 {(anyActiveFilter || hasSearch) && (
                   <button
                     type="button"
@@ -1770,20 +2048,18 @@ export default function Catalog() {
                       return (
                         <li key={node.id}>
                           <div
-                            className={`w-full flex items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white border-zinc-900"
-                                : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
-                            }`}
+                            className={`w-full flex items-center gap-1.5 rounded-xl border px-2 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white border-zinc-900"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              }`}
                             style={{ paddingLeft: 8 + pad }}
                           >
                             {hasChildren ? (
                               <button
                                 type="button"
                                 onClick={() => toggleExpand(node.id)}
-                                className={`inline-flex items-center justify-center w-6 h-6 rounded-lg ${
-                                  checked ? "text-white/90 hover:bg-white/10" : "text-zinc-600 hover:bg-black/5"
-                                }`}
+                                className={`inline-flex items-center justify-center w-6 h-6 rounded-lg ${checked ? "text-white/90 hover:bg-white/10" : "text-zinc-600 hover:bg-black/5"
+                                  }`}
                                 aria-label={expanded ? "Collapse category" : "Expand category"}
                               >
                                 {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
@@ -1818,11 +2094,10 @@ export default function Catalog() {
                         <li key={c.id}>
                           <button
                             onClick={() => toggleCategory(c.id)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
-                            }`}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              }`}
                           >
                             <span className="truncate">{c.name}</span>
                             <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -1855,11 +2130,10 @@ export default function Catalog() {
                         <li key={b.name}>
                           <button
                             onClick={() => toggleBrand(b.name)}
-                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                              checked
-                                ? "bg-zinc-900 text-white"
-                                : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
-                            }`}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
+                              }`}
                           >
                             <span className="truncate">{b.name}</span>
                             <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -1893,11 +2167,10 @@ export default function Catalog() {
                       <li key={bucket.label}>
                         <button
                           onClick={() => toggleBucket(idx)}
-                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${
-                            checked
-                              ? "bg-zinc-900 text-white"
-                              : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
-                          }`}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-xs transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "bg-white hover:bg-black/5 text-zinc-800 border border-zinc-200 hover:border-zinc-300"
+                            }`}
                         >
                           <span>{bucket.label}</span>
                           <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
@@ -1938,8 +2211,12 @@ export default function Catalog() {
                         key={p.id}
                         role="link"
                         tabIndex={0}
-                        onClick={() => goToProduct(p.id)}
+                        onClick={(e) => {
+                          if (isFromCardAction(e.target)) return;
+                          goToProduct(p.id);
+                        }}
                         onKeyDown={(e) => {
+                          if (isFromCardAction(e.target)) return;
                           if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();
                             goToProduct(p.id);
@@ -1967,7 +2244,7 @@ export default function Catalog() {
                           )}
 
                           {inStock && (
-                            <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-emerald-500/85 px-2.5 py-1 text-[10px] md:text-[11px] font-semibold text-white shadow-sm">
+                            <span className="absolute left-2 top-2 z-10 inline-flex items-center rounded-full bg-purple-800 px-2.5 py-1 text-[10px] md:text-[11px] font-semibold text-white shadow-sm">
                               In stock
                             </span>
                           )}
@@ -1975,6 +2252,7 @@ export default function Catalog() {
                           {!isSupplier && (
                             <button
                               type="button"
+                              data-stop-card-nav="true"
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
@@ -1989,11 +2267,10 @@ export default function Catalog() {
 
                                 toggleFav.mutate({ productId: p.id });
                               }}
-                              className={`absolute right-2 top-2 z-10 inline-flex items-center justify-center w-8 h-8 rounded-full border shadow-sm transition ${
-                                fav
-                                  ? "bg-rose-50 border-rose-200 text-rose-600"
-                                  : "bg-white/95 border-zinc-200 text-zinc-400 hover:text-rose-600 hover:border-rose-200"
-                              }`}
+                              className={`absolute right-2 top-2 z-10 inline-flex items-center justify-center w-8 h-8 rounded-full border shadow-sm transition ${fav
+                                ? "bg-rose-50 border-rose-200 text-rose-600"
+                                : "bg-white/95 border-zinc-200 text-zinc-400 hover:text-rose-600 hover:border-rose-200"
+                                }`}
                               aria-label={fav ? "Remove from wishlist" : "Add to wishlist"}
                               title={fav ? "Remove from wishlist" : "Add to wishlist"}
                             >
@@ -2003,8 +2280,10 @@ export default function Catalog() {
                         </div>
 
                         <div className="p-2.5 md:p-4">
-                          <h3 className="font-semibold text-[12px] md:text-sm text-zinc-900 line-clamp-1">{p.title}</h3>
-
+                          <TruncatedTitle
+                            text={p.title}
+                            className="font-semibold text-[12px] md:text-sm text-zinc-900 line-clamp-1"
+                          />
                           <div className="text-[10px] md:text-xs text-zinc-500 line-clamp-1">
                             {p.brand?.name ? `${p.brand.name} • ` : ""}
                             {p.categoryName?.trim() || "Uncategorized"}
@@ -2018,6 +2297,7 @@ export default function Catalog() {
                             {hasVariants ? (
                               <button
                                 type="button"
+                                data-stop-card-nav="true"
                                 className="inline-flex items-center rounded-full bg-black/40 px-3 py-1.5 text-[11px] md:text-xs font-medium text-white hover:bg-black/55 transition"
                                 onClick={(e) => {
                                   e.preventDefault();
@@ -2028,25 +2308,19 @@ export default function Catalog() {
                                 Choose options
                               </button>
                             ) : (
-                              <div
-                                onClick={stopCardNav}
-                                onMouseDown={stopCardNav}
-                                onPointerDown={stopCardNav}
-                                onTouchStart={stopCardNav}
-                              >
+                              <div data-stop-card-nav="true">
                                 {baseQtyInCart > 0 ? (
                                   <div className="inline-flex items-center gap-2 rounded-full bg-black/75 px-2 py-1.5 text-white shadow-sm">
                                     <button
                                       type="button"
+                                      data-stop-card-nav="true"
                                       aria-label="Decrease quantity"
                                       className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-sm font-semibold"
                                       onClick={(e) => {
-                                        stopCardNav(e);
+                                        e.preventDefault();
+                                        e.stopPropagation();
                                         void setCartQty(p, baseQtyInCart - 1);
                                       }}
-                                      onMouseDown={stopCardNav}
-                                      onPointerDown={stopCardNav}
-                                      onTouchStart={stopCardNav}
                                     >
                                       −
                                     </button>
@@ -2057,15 +2331,14 @@ export default function Catalog() {
 
                                     <button
                                       type="button"
+                                      data-stop-card-nav="true"
                                       aria-label="Increase quantity"
                                       className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/15 hover:bg-white/25 text-sm font-semibold"
                                       onClick={(e) => {
-                                        stopCardNav(e);
+                                        e.preventDefault();
+                                        e.stopPropagation();
                                         void setCartQty(p, baseQtyInCart + 1);
                                       }}
-                                      onMouseDown={stopCardNav}
-                                      onPointerDown={stopCardNav}
-                                      onTouchStart={stopCardNav}
                                     >
                                       +
                                     </button>
@@ -2073,20 +2346,18 @@ export default function Catalog() {
                                 ) : (
                                   <button
                                     type="button"
+                                    data-stop-card-nav="true"
                                     disabled={!inStock}
-                                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] md:text-xs font-medium shadow-sm transition ${
-                                      inStock
-                                        ? "bg-black text-white hover:bg-black/90"
-                                        : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
-                                    }`}
+                                    className={`inline-flex items-center rounded-full px-3 py-1.5 text-[11px] md:text-xs font-medium shadow-sm transition ${inStock
+                                      ? "bg-black text-white hover:bg-black/90"
+                                      : "bg-zinc-200 text-zinc-500 cursor-not-allowed"
+                                      }`}
                                     onClick={(e) => {
-                                      stopCardNav(e);
+                                      e.preventDefault();
+                                      e.stopPropagation();
                                       if (!inStock) return;
                                       void setCartQty(p, 1);
                                     }}
-                                    onMouseDown={stopCardNav}
-                                    onPointerDown={stopCardNav}
-                                    onTouchStart={stopCardNav}
                                   >
                                     Add to cart
                                   </button>
@@ -2175,6 +2446,7 @@ export default function Catalog() {
                     </form>
                   </div>
 
+
                   <div className="hidden md:flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm text-zinc-600">
                       Showing {start + 1}-{Math.min(start + pageSize, sorted.length)} of {sorted.length} products
@@ -2235,11 +2507,10 @@ export default function Catalog() {
                                 <button
                                   type="button"
                                   onClick={() => goTo(n)}
-                                  className={`px-3 py-1.5 text-xs rounded-xl ${
-                                    n === currentPage
-                                      ? "bg-zinc-900 text-white border border-zinc-900"
-                                      : "bg-white hover:bg-zinc-50 border border-zinc-200 hover:border-zinc-300"
-                                  }`}
+                                  className={`px-3 py-1.5 text-xs rounded-xl ${n === currentPage
+                                    ? "bg-zinc-900 text-white border border-zinc-900"
+                                    : "bg-white hover:bg-zinc-50 border border-zinc-200 hover:border-zinc-300"
+                                    }`}
                                   aria-current={n === currentPage ? "page" : undefined}
                                 >
                                   {n}
@@ -2296,154 +2567,22 @@ export default function Catalog() {
             >
               <div className="flex items-center justify-between">
                 <div className="min-w-0">
-                  <h3 className="text-base font-semibold text-zinc-900">Refine</h3>
-                  <p className="text-[11px] text-zinc-600">Search, sort, page size, and filters.</p>
+                  <h3 className="text-base font-semibold text-zinc-900">Filter categories & brands</h3>
+                  <p className="text-[11px] text-zinc-600">Choose categories, brands, and price ranges.</p>
                 </div>
 
                 <button
                   type="button"
                   onClick={closeRefine}
                   className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-zinc-100 text-zinc-700 active:scale-95 transition"
-                  aria-label="Close refine panel"
+                  aria-label="Close filters panel"
                 >
                   <X size={18} />
                 </button>
               </div>
 
-              <div className="relative">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
-                  <input
-                    ref={mobileInputRef}
-                    value={query}
-                    onChange={(e) => {
-                      setQuery(e.target.value);
-                      setShowSuggest(true);
-                      setActiveIdx(0);
-                    }}
-                    onFocus={() => query && setShowSuggest(true)}
-                    onKeyDown={(e) => {
-                      if (!showSuggest || suggestions.length === 0) return;
-                      if (e.key === "ArrowDown") {
-                        e.preventDefault();
-                        setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
-                      } else if (e.key === "ArrowUp") {
-                        e.preventDefault();
-                        setActiveIdx((i) => Math.max(i - 1, 0));
-                      } else if (e.key === "Enter") {
-                        e.preventDefault();
-                        const pick = suggestions[activeIdx];
-                        if (pick) {
-                          closeRefine();
-                          goToProduct(pick.id);
-                        }
-                        setShowSuggest(false);
-                      } else if (e.key === "Escape") {
-                        setShowSuggest(false);
-                      }
-                    }}
-                    placeholder="Search products, brands, or categories…"
-                    className="rounded-2xl pl-9 pr-4 py-2.5 w-full bg-white/90 backdrop-blur transition border border-zinc-200 focus:ring-4 focus:ring-fuchsia-100 focus:border-fuchsia-400"
-                    aria-label="Search products"
-                  />
-                </div>
-
-                {showSuggest && query && suggestions.length > 0 && (
-                  <div
-                    ref={suggestRef}
-                    className="mt-2 bg-white rounded-2xl shadow-2xl z-20 overflow-hidden border border-zinc-200"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <ul className="max-h-[45vh] overflow-auto p-2">
-                      {suggestions.map((p, i) => {
-                        const active = i === activeIdx;
-                        const minPrice = priceForFiltering(p, marginPercent);
-
-                        return (
-                          <li key={p.id} className="mb-2 last:mb-0">
-                            <button
-                              type="button"
-                              className={`w-full text-left flex items-center gap-3 px-2.5 py-2.5 rounded-xl hover:bg-black/5 ${
-                                active ? "bg-black/5" : ""
-                              }`}
-                              onClick={() => {
-                                closeRefine();
-                                goToProduct(p.id);
-                              }}
-                            >
-                              {p.imagesJson?.[0] ? (
-                                <img
-                                  src={resolveImageUrl(p.imagesJson?.[0])}
-                                  alt=""
-                                  aria-hidden="true"
-                                  onError={(e) => (e.currentTarget as HTMLImageElement).remove()}
-                                  className="w-16 h-16 object-cover rounded-xl border border-zinc-200"
-                                />
-                              ) : (
-                                <div className="w-16 h-16 rounded-xl border border-zinc-200 grid place-items-center text-base text-gray-500">
-                                  —
-                                </div>
-                              )}
-
-                              <div className="min-w-0">
-                                <div className="text-sm font-semibold truncate">{p.title}</div>
-                                <div className="text-xs opacity-80 truncate">
-                                  {ngn.format(minPrice || 0)}
-                                  {p.categoryName ? ` • ${p.categoryName}` : ""}
-                                  {p.brand?.name ? ` • ${p.brand.name}` : ""}
-                                </div>
-                              </div>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </div>
-                )}
-              </div>
-
-              <div className="grid grid-cols-1 gap-3">
-                <div className="text-sm inline-flex items-center gap-2">
-                  <ArrowUpDown size={16} className="text-zinc-600" />
-                  <label className="opacity-70 min-w-[44px]">Sort</label>
-                  <select
-                    value={sortKey}
-                    onChange={(e) => setSortKey(e.target.value as SortKey)}
-                    className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 border border-zinc-200"
-                  >
-                    <option value="relevance">Relevance</option>
-                    <option value="price-asc">Price: Low → High</option>
-                    <option value="price-desc">Price: High → Low</option>
-                  </select>
-                </div>
-
-                <div className="text-sm inline-flex items-center gap-2">
-                  <LayoutGrid size={16} className="text-zinc-600" />
-                  <label className="opacity-70 min-w-[72px]">Per page</label>
-                  <select
-                    value={pageSize}
-                    onChange={(e) => setPageSize(Number(e.target.value) as 8 | 12 | 16)}
-                    className="ml-auto w-full rounded-xl px-3 py-2 bg-white/90 border border-zinc-200"
-                  >
-                    <option value={8}>8</option>
-                    <option value={12}>12</option>
-                    <option value={16}>16</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <label className="inline-flex items-center gap-2 text-[12px] font-medium text-zinc-800 select-none">
-                  <input
-                    type="checkbox"
-                    checked={inStockOnly}
-                    onChange={(e) => setInStockOnly(e.target.checked)}
-                    className="h-4 w-4 rounded border-zinc-300"
-                  />
-                  In stock
-                </label>
-
-                {(anyActiveFilter || hasSearch) && (
+              {(anyActiveFilter || hasSearch) && (
+                <div className="flex items-center justify-end">
                   <button
                     type="button"
                     className="text-[12px] font-medium text-fuchsia-700 hover:underline"
@@ -2455,7 +2594,165 @@ export default function Catalog() {
                   >
                     Clear all
                   </button>
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-[12px] font-semibold text-zinc-900">Categories</h4>
+                  <button
+                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    onClick={() => setSelectedCategories([])}
+                    disabled={selectedCategories.length === 0}
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                {categoryTreeUi ? (
+                  <ul className="space-y-1.5 max-h-56 overflow-auto pr-1">
+                    {categoryTreeUi.map(({ node, count, depth, hasChildren }) => {
+                      const checked = selectedCategories.includes(node.id);
+                      const expanded = !!expandedCats[node.id];
+                      const pad = Math.min(20, depth * 10);
+
+                      return (
+                        <li key={node.id}>
+                          <div
+                            className={`w-full flex items-center gap-1.5 rounded-xl border px-2 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white border-zinc-900"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              }`}
+                            style={{ paddingLeft: 8 + pad }}
+                          >
+                            {hasChildren ? (
+                              <button
+                                type="button"
+                                onClick={() => toggleExpand(node.id)}
+                                className={`inline-flex items-center justify-center w-6 h-6 rounded-lg ${checked ? "text-white/90 hover:bg-white/10" : "text-zinc-600 hover:bg-black/5"
+                                  }`}
+                                aria-label={expanded ? "Collapse category" : "Expand category"}
+                              >
+                                {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                              </button>
+                            ) : (
+                              <span className="inline-flex w-6 h-6" />
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => toggleCategory(node.id)}
+                              className="min-w-0 flex-1 text-left"
+                              title={node.name}
+                            >
+                              <span className="truncate">{node.name}</span>
+                            </button>
+
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({count})
+                            </span>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <ul className="space-y-1.5 max-h-56 overflow-auto pr-1">
+                    {categories.length === 0 && <Shimmer />}
+                    {categories.map((c) => {
+                      const checked = selectedCategories.includes(c.id);
+                      return (
+                        <li key={c.id}>
+                          <button
+                            onClick={() => toggleCategory(c.id)}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              }`}
+                          >
+                            <span className="truncate">{c.name}</span>
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({c.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 )}
+              </div>
+
+              {brands.length > 0 && (
+                <div className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-[12px] font-semibold text-zinc-900">Brands</h4>
+                    <button
+                      className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                      onClick={() => setSelectedBrands([])}
+                      disabled={selectedBrands.length === 0}
+                    >
+                      Reset
+                    </button>
+                  </div>
+
+                  <ul className="space-y-1.5 max-h-44 overflow-auto pr-1">
+                    {brands.map((b) => {
+                      const checked = selectedBrands.includes(b.name);
+                      return (
+                        <li key={b.name}>
+                          <button
+                            onClick={() => toggleBrand(b.name)}
+                            className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                              ? "bg-zinc-900 text-white"
+                              : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                              }`}
+                          >
+                            <span className="truncate">{b.name}</span>
+                            <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                              ({b.count})
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              <div className="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-[12px] font-semibold text-zinc-900">Price</h4>
+                  <button
+                    className="text-[11px] text-zinc-600 hover:underline disabled:opacity-40"
+                    onClick={() => setSelectedBucketIdxs([])}
+                    disabled={selectedBucketIdxs.length === 0}
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                <ul className="space-y-1.5 max-h-52 overflow-auto pr-1">
+                  {visiblePriceBuckets.length === 0 && <Shimmer />}
+                  {visiblePriceBuckets.map(({ bucket, idx, count }) => {
+                    const checked = selectedBucketIdxs.includes(idx);
+                    return (
+                      <li key={bucket.label}>
+                        <button
+                          onClick={() => toggleBucket(idx)}
+                          className={`w-full flex items-center justify-between rounded-xl border px-3 py-1.5 text-[12px] transition ${checked
+                            ? "bg-zinc-900 text-white"
+                            : "bg-white hover:bg-black/5 text-zinc-800 border-zinc-200 hover:border-zinc-300"
+                            }`}
+                        >
+                          <span>{bucket.label}</span>
+                          <span className={`ml-2 text-[11px] ${checked ? "text-white/90" : "text-zinc-600"}`}>
+                            ({count})
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
               </div>
 
               <div className="pt-2 flex items-center justify-between gap-3">

@@ -17,6 +17,11 @@ import {
   AlertTriangle,
   Clock,
   Hash,
+  CheckCircle2,
+  XCircle,
+  FileBadge2,
+  IdCard,
+  Landmark,
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -27,6 +32,10 @@ import { useModal } from "../../components/ModalProvider";
 import api from "../../api/client";
 import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import type { AxiosError } from "axios";
+
+/**
+ * Adjust this import path if your countries config lives elsewhere.
+ */
 
 type BankOption = { country: string; code: string; name: string };
 
@@ -41,6 +50,37 @@ const FALLBACK_BANKS: BankOption[] = [
 ];
 
 type BankVerificationStatus = "UNVERIFIED" | "PENDING" | "VERIFIED" | "REJECTED";
+
+type CountryConfig = {
+  code: string;
+  name: string;
+  phoneCode: string;
+  allowSupplierRegistration: boolean;
+};
+
+type SupplierDocumentKind =
+  | "BUSINESS_REGISTRATION_CERTIFICATE"
+  | "GOVERNMENT_ID"
+  | "PROOF_OF_ADDRESS"
+  | "TAX_DOCUMENT"
+  | "BANK_PROOF"
+  | "OTHER";
+
+type SupplierDocStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+type SupplierDocumentDto = {
+  id: string;
+  supplierId: string;
+  kind: SupplierDocumentKind;
+  storageKey: string;
+  originalFilename: string;
+  mimeType?: string | null;
+  size?: number | null;
+  status?: SupplierDocStatus | null;
+  note?: string | null;
+  uploadedAt?: string | null;
+  reviewedAt?: string | null;
+};
 
 type SupplierSettingsDraft = {
   businessName: string;
@@ -62,8 +102,6 @@ type SupplierSettingsDraft = {
   notifyNewOrders: boolean;
   notifyLowStock: boolean;
   notifyPayouts: boolean;
-
-  docsID: string;
 };
 
 type SupplierMeDto = {
@@ -71,6 +109,8 @@ type SupplierMeDto = {
   name: string;
 
   rcNumber?: string | null;
+  registrationType?: string | null;
+  registrationCountryCode?: string | null;
 
   contactEmail?: string | null;
   whatsappPhone?: string | null;
@@ -104,10 +144,9 @@ type AuthMeDto = {
 const ADMIN_SUPPLIER_KEY = "adminSupplierId";
 const LS_KEY = "supplierSettings:v3";
 
-const norm = (v: any) => String(v ?? "").trim();
-const normCode = (v: any) => norm(v).padStart(3, "0");
+const norm = (v: unknown) => String(v ?? "").trim();
+const normCode = (v: unknown) => norm(v).padStart(3, "0");
 
-/** cookie-auth config (replace Bearer token header usage) */
 const cookieCfg = { withCredentials: true } as const;
 
 function Card({
@@ -135,7 +174,6 @@ function Card({
       className={`scroll-mt-24 rounded-2xl border bg-white/90 backdrop-blur shadow-sm overflow-hidden transition ${highlight ? "ring-2 ring-violet-300" : ""
         } ${className}`}
     >
-      {/* mobile-neater header: stack on small screens */}
       <div className="px-4 md:px-5 py-3 border-b bg-white/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div className="flex items-start gap-3 min-w-0">
           {icon && <div className="mt-[2px] text-zinc-700 shrink-0">{icon}</div>}
@@ -257,6 +295,139 @@ function Toggle({
   );
 }
 
+function humanFileSize(size?: number | null) {
+  if (!size || size <= 0) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = size;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  return `${value.toFixed(value >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "—";
+  const t = new Date(value).getTime();
+  if (Number.isNaN(t)) return "—";
+  return new Date(value).toLocaleString();
+}
+
+function getLatestDoc(docs: SupplierDocumentDto[], kind: SupplierDocumentKind) {
+  return docs
+    .filter((d) => d.kind === kind)
+    .sort(
+      (a, b) =>
+        new Date(b.uploadedAt || 0).getTime() - new Date(a.uploadedAt || 0).getTime()
+    )[0];
+}
+
+function isRegisteredBusiness(registrationType?: string | null) {
+  return String(registrationType ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
+}
+
+function docLabel(kind: SupplierDocumentKind) {
+  switch (kind) {
+    case "BUSINESS_REGISTRATION_CERTIFICATE":
+      return "Business registration certificate";
+    case "GOVERNMENT_ID":
+      return "Government ID";
+    case "PROOF_OF_ADDRESS":
+      return "Proof of address";
+    case "TAX_DOCUMENT":
+      return "Tax document";
+    case "BANK_PROOF":
+      return "Bank proof";
+    case "OTHER":
+      return "Other document";
+    default:
+      return kind;
+  }
+}
+
+function docKindIcon(kind: SupplierDocumentKind) {
+  switch (kind) {
+    case "BUSINESS_REGISTRATION_CERTIFICATE":
+      return <FileBadge2 size={16} />;
+    case "GOVERNMENT_ID":
+      return <IdCard size={16} />;
+    case "PROOF_OF_ADDRESS":
+      return <Landmark size={16} />;
+    default:
+      return <FileText size={16} />;
+  }
+}
+
+function normalizeDocumentsResponse(raw: unknown): SupplierDocumentDto[] {
+  const source = raw as
+    | {
+      data?: {
+        data?: SupplierDocumentDto[];
+        documents?: SupplierDocumentDto[];
+      } | SupplierDocumentDto[];
+      documents?: SupplierDocumentDto[];
+    }
+    | SupplierDocumentDto[]
+    | null;
+
+  const candidates: unknown[] = [
+    source && typeof source === "object" && "data" in source
+      ? (source as { data?: { data?: SupplierDocumentDto[] } }).data?.data
+      : undefined,
+    source && typeof source === "object" && "data" in source
+      ? (source as { data?: { documents?: SupplierDocumentDto[] } }).data?.documents
+      : undefined,
+    source && typeof source === "object" && "data" in source
+      ? (source as { data?: unknown }).data
+      : undefined,
+    source && typeof source === "object" && "documents" in source
+      ? (source as { documents?: SupplierDocumentDto[] }).documents
+      : undefined,
+    source,
+  ];
+
+  for (const item of candidates) {
+    if (Array.isArray(item)) return item as SupplierDocumentDto[];
+  }
+
+  return [];
+}
+
+function docStatusChip(status?: SupplierDocStatus | null) {
+  const s = String(status ?? "").toUpperCase();
+
+  if (s === "APPROVED") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 px-2.5 py-1 border border-emerald-200 text-[11px]">
+        <CheckCircle2 size={14} /> Approved
+      </span>
+    );
+  }
+
+  if (s === "PENDING") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 text-amber-700 px-2.5 py-1 border border-amber-200 text-[11px]">
+        <Clock size={14} /> Pending
+      </span>
+    );
+  }
+
+  if (s === "REJECTED") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 text-rose-700 px-2.5 py-1 border border-rose-200 text-[11px]">
+        <XCircle size={14} /> Rejected
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-50 text-zinc-700 px-2.5 py-1 border border-zinc-200 text-[11px]">
+      <FileText size={14} /> Not uploaded
+    </span>
+  );
+}
+
 export default function SupplierSettings() {
   const { openModal } = useModal();
   const qc = useQueryClient();
@@ -267,7 +438,6 @@ export default function SupplierSettings() {
 
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // ✅ highlight + deep-link support
   const [highlightPayout, setHighlightPayout] = useState(false);
   const [didAutoOpenBankEdit, setDidAutoOpenBankEdit] = useState(false);
 
@@ -281,8 +451,7 @@ export default function SupplierSettings() {
     return v || undefined;
   }, []);
 
-  // ✅ robust admin detection: prefer /auth/me role once loaded, fallback to store
-  const roleFromStore = (userFromStore as any)?.role;
+  const roleFromStore = (userFromStore as { role?: string } | null)?.role;
   const [roleOverride, setRoleOverride] = useState<string | null>(null);
   const role = roleOverride ?? roleFromStore ?? "";
   const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
@@ -316,7 +485,7 @@ export default function SupplierSettings() {
     () => ({
       businessName: "",
       rcNumber: "",
-      supportEmail: (userFromStore?.email || "").toString(),
+      supportEmail: String(userFromStore?.email || ""),
       supportPhone: "",
       pickupAddressLine1: "",
       pickupCity: "",
@@ -329,7 +498,6 @@ export default function SupplierSettings() {
       notifyNewOrders: true,
       notifyLowStock: true,
       notifyPayouts: true,
-      docsID: "",
     }),
     [userFromStore?.email]
   );
@@ -347,7 +515,6 @@ export default function SupplierSettings() {
     retry: 1,
   });
 
-  // keep role aligned even if store is stale
   useEffect(() => {
     const roleFromMe = meQ.data?.role;
     if (roleFromMe && roleFromMe !== roleOverride) {
@@ -355,7 +522,6 @@ export default function SupplierSettings() {
     }
   }, [meQ.data?.role, roleOverride]);
 
-  // handle 401s
   useEffect(() => {
     const status = meQ.error?.response?.status;
     if (status === 401) {
@@ -373,9 +539,23 @@ export default function SupplierSettings() {
     queryFn: async () => {
       const { data } = await api.get<{ data: SupplierMeDto }>("/api/supplier/me", {
         ...cookieCfg,
-        params: { supplierId: adminSupplierId }, // ✅ admin view-as supplier
+        params: { supplierId: adminSupplierId },
       });
       return data.data;
+    },
+    staleTime: 60_000,
+    retry: 1,
+  });
+
+  const docsQ = useQuery({
+    queryKey: ["supplier", "documents", { supplierId: adminSupplierId }],
+    enabled: !isAdmin || !!adminSupplierId,
+    queryFn: async () => {
+      const { data } = await api.get("/api/supplier/documents", {
+        ...cookieCfg,
+        params: { supplierId: adminSupplierId },
+      });
+      return normalizeDocumentsResponse(data);
     },
     staleTime: 60_000,
     retry: 1,
@@ -392,6 +572,37 @@ export default function SupplierSettings() {
   });
 
   const banks = banksQ.data ?? FALLBACK_BANKS;
+  const countriesQ = useQuery({
+    queryKey: ["supplier-registration-countries"],
+    queryFn: async () => {
+      const { data } = await api.get<{ data: CountryConfig[] }>(
+        "/api/supplier-registration-countries",
+        cookieCfg
+      );
+
+      return Array.isArray(data?.data) ? data.data : [];
+    },
+    staleTime: 10 * 60 * 1000,
+    retry: 1,
+  });
+
+  const availableCountries = useMemo<CountryConfig[]>(() => {
+    if (Array.isArray(countriesQ.data) && countriesQ.data.length > 0) {
+      return countriesQ.data;
+    }
+
+    return [
+      { code: "NG", name: "Nigeria", phoneCode: "234", allowSupplierRegistration: true },
+      { code: "KE", name: "Kenya", phoneCode: "254", allowSupplierRegistration: true },
+      { code: "RW", name: "Rwanda", phoneCode: "250", allowSupplierRegistration: true },
+      { code: "GH", name: "Ghana", phoneCode: "233", allowSupplierRegistration: true },
+      { code: "CM", name: "Cameroon", phoneCode: "237", allowSupplierRegistration: true },
+      { code: "BJ", name: "Benin Republic", phoneCode: "229", allowSupplierRegistration: true },
+      { code: "TG", name: "Togo", phoneCode: "228", allowSupplierRegistration: true },
+      { code: "BF", name: "Burkina Faso", phoneCode: "226", allowSupplierRegistration: true },
+      { code: "CD", name: "Congo", phoneCode: "243", allowSupplierRegistration: true },
+    ];
+  }, [countriesQ.data]);
 
   const countryBanks = useMemo(() => {
     const country = draft.bankCountry || "NG";
@@ -418,7 +629,7 @@ export default function SupplierSettings() {
       if (d.bankCode !== code) return { ...d, bankCode: code };
       return d;
     });
-  }, [draft.bankCountry, countryBanks.length]); // avoid loops
+  }, [draft.bankCountry, countryBanks.length]);
 
   function setBankByName(name: string) {
     const match = countryBanks.find((b) => b.name === name);
@@ -428,6 +639,7 @@ export default function SupplierSettings() {
       bankCode: match?.code || "",
     }));
   }
+
   function setBankByCode(code: string) {
     const c = normCode(code);
     const match = countryBanks.find((b) => normCode(b.code) === c);
@@ -442,14 +654,14 @@ export default function SupplierSettings() {
     try {
       const raw = localStorage.getItem(LS_KEY);
       if (!raw) return;
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw) as Partial<SupplierSettingsDraft> | null;
       if (parsed && typeof parsed === "object") {
         setDraft((d) => ({
           ...d,
           ...parsed,
           businessName: d.businessName,
           rcNumber: d.rcNumber,
-          supportEmail: (parsed.supportEmail || d.supportEmail || "").toString(),
+          supportEmail: String(parsed.supportEmail || d.supportEmail || ""),
         }));
       }
     } catch { }
@@ -464,28 +676,33 @@ export default function SupplierSettings() {
       const addr = sup?.registeredAddress;
       return {
         ...d,
-        businessName: (sup?.name ?? d.businessName ?? "").toString(),
-        rcNumber: (sup?.rcNumber ?? d.rcNumber ?? "").toString(),
+        businessName: String(sup?.name ?? d.businessName ?? ""),
+        rcNumber: String(sup?.rcNumber ?? d.rcNumber ?? ""),
 
-        supportEmail: (sup?.contactEmail ?? me?.email ?? d.supportEmail ?? "").toString(),
-        supportPhone: (sup?.whatsappPhone ?? me?.phone ?? d.supportPhone ?? "").toString(),
+        supportEmail: String(sup?.contactEmail ?? me?.email ?? d.supportEmail ?? ""),
+        supportPhone: String(sup?.whatsappPhone ?? me?.phone ?? d.supportPhone ?? ""),
 
-        pickupAddressLine1: (addr?.streetName ?? d.pickupAddressLine1 ?? "").toString(),
-        pickupCity: (addr?.city ?? addr?.town ?? d.pickupCity ?? "").toString(),
-        pickupState: (addr?.state ?? d.pickupState ?? "").toString(),
+        pickupAddressLine1: String(addr?.streetName ?? d.pickupAddressLine1 ?? ""),
+        pickupCity: String(addr?.city ?? addr?.town ?? d.pickupCity ?? ""),
+        pickupState: String(addr?.state ?? d.pickupState ?? ""),
 
-        bankCountry: (sup?.bankCountry ?? d.bankCountry ?? "NG").toString(),
-        bankCode: (sup?.bankCode ?? d.bankCode ?? "").toString(),
-        bankName: (sup?.bankName ?? d.bankName ?? "").toString(),
-        accountNumber: (sup?.accountNumber ?? d.accountNumber ?? "").toString(),
-        accountName: (sup?.accountName ?? d.accountName ?? "").toString(),
+        bankCountry: String(
+          sup?.bankCountry ??
+          sup?.registrationCountryCode ??
+          d.bankCountry ??
+          "NG"
+        ),
+        bankCode: String(sup?.bankCode ?? d.bankCode ?? ""),
+        bankName: String(sup?.bankName ?? d.bankName ?? ""),
+        accountNumber: String(sup?.accountNumber ?? d.accountNumber ?? ""),
+        accountName: String(sup?.accountName ?? d.accountName ?? ""),
       };
     });
 
     if ((supplierQ.data?.bankVerificationStatus ?? "UNVERIFIED") === "VERIFIED") {
       setBankEditUnlocked(false);
     }
-  }, [supplierQ.data, meQ.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [supplierQ.data, meQ.data]);
 
   const bankStatus: BankVerificationStatus = (supplierQ.data?.bankVerificationStatus ??
     "UNVERIFIED") as BankVerificationStatus;
@@ -494,7 +711,6 @@ export default function SupplierSettings() {
   const bankEditable = !bankLockedByStatus || bankEditUnlocked;
 
   useEffect(() => {
-    // wait until supplier data is loaded
     if (!supplierQ.data) return;
 
     const focus = String(searchParams.get("focus") ?? "").trim();
@@ -531,7 +747,7 @@ export default function SupplierSettings() {
       }
     }, 50);
   }, [
-    supplierQ.data,   // 🔴 important
+    supplierQ.data,
     searchParams,
     location.hash,
     bankStatus,
@@ -542,10 +758,10 @@ export default function SupplierSettings() {
   ]);
 
   const saveM = useMutation({
-    mutationFn: async (payload: any) => {
+    mutationFn: async (payload: Record<string, unknown>) => {
       const { data } = await api.put<{ data: SupplierMeDto }>("/api/supplier/me", payload, {
         ...cookieCfg,
-        params: { supplierId: adminSupplierId }, // backend can still enforce role
+        params: { supplierId: adminSupplierId },
       });
       return data.data;
     },
@@ -555,7 +771,7 @@ export default function SupplierSettings() {
       setBankEditUnlocked(false);
       openModal({ title: "Settings saved", message: "Supplier settings have been saved." });
     },
-    onError: (e: any) => {
+    onError: (e: AxiosError<{ error?: string }>) => {
       openModal({
         title: "Could not save",
         message: e?.response?.data?.error || "Please try again.",
@@ -573,7 +789,7 @@ export default function SupplierSettings() {
       return;
     }
 
-    const payload: any = {
+    const payload: Record<string, unknown> = {
       contactEmail: draft.supportEmail?.trim() ? draft.supportEmail.trim() : null,
       whatsappPhone: draft.supportPhone?.trim() ? draft.supportPhone.trim() : null,
     };
@@ -629,13 +845,36 @@ export default function SupplierSettings() {
 
   const bankFieldsDisabled = isAdmin || !bankEditable;
   const generalFieldsDisabled = isAdmin;
-
   const showAdminNeedSupplier = isAdmin && !adminSupplierId;
+
+  const docs = docsQ.data ?? [];
+  const requiredDocKinds = useMemo<SupplierDocumentKind[]>(() => {
+    const kinds: SupplierDocumentKind[] = ["GOVERNMENT_ID", "PROOF_OF_ADDRESS"];
+    if (isRegisteredBusiness(supplierQ.data?.registrationType)) {
+      kinds.unshift("BUSINESS_REGISTRATION_CERTIFICATE");
+    }
+    return kinds;
+  }, [supplierQ.data?.registrationType]);
+
+  const requiredDocRows = useMemo(() => {
+    return requiredDocKinds.map((kind) => ({
+      kind,
+      doc: getLatestDoc(docs, kind),
+    }));
+  }, [docs, requiredDocKinds]);
+
+  const optionalDocs = useMemo(() => {
+    return docs
+      .filter((d) => !requiredDocKinds.includes(d.kind))
+      .sort(
+        (a, b) =>
+          new Date(b.uploadedAt || 0).getTime() - new Date(a.uploadedAt || 0).getTime()
+      );
+  }, [docs, requiredDocKinds]);
 
   return (
     <SiteLayout>
       <SupplierLayout>
-        {/* Sticky mobile save bar */}
         {!isAdmin && (
           <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
             <div className="px-4 py-3 flex items-center gap-3">
@@ -652,7 +891,6 @@ export default function SupplierSettings() {
           </div>
         )}
 
-        {/* Hero */}
         <div className="relative overflow-hidden rounded-3xl mt-6 border">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-700 via-blue-600 to-indigo-700" />
           <div className="absolute inset-0 opacity-40 bg-[radial-gradient(closest-side,rgba(255,0,167,0.25),transparent_60%),radial-gradient(closest-side,rgba(0,204,255,0.25),transparent_60%)]" />
@@ -664,7 +902,9 @@ export default function SupplierSettings() {
             >
               Supplier Settings <Sparkles className="inline ml-1" size={22} />
             </motion.h1>
-            <p className="mt-1 text-sm text-white/80">Configure store profile, pickup details, payouts, notifications and security.</p>
+            <p className="mt-1 text-sm text-white/80">
+              Configure store profile, pickup details, payouts, notifications and security.
+            </p>
 
             <div className="mt-4 grid grid-cols-1 sm:flex sm:flex-wrap gap-2">
               <button
@@ -690,7 +930,6 @@ export default function SupplierSettings() {
           </div>
         </div>
 
-        {/* Content */}
         <div className="mt-6 space-y-4 pb-28 sm:pb-10">
           <Card
             title="Store profile"
@@ -812,9 +1051,19 @@ export default function SupplierSettings() {
                     }))
                   }
                 >
-                  <option value="NG">Nigeria (NG)</option>
+                  {availableCountries.map((country) => (
+                    <option key={country.code} value={country.code}>
+                      {country.name} ({country.code})
+                    </option>
+                  ))}
                 </select>
-                <div className="mt-1 text-[11px] text-zinc-500">{banksQ.isFetching ? "Loading banks…" : ""}</div>
+                <div className="mt-1 text-[11px] text-zinc-500">
+                  {countriesQ.isFetching
+                    ? "Loading countries…"
+                    : banksQ.isFetching
+                      ? "Loading banks…"
+                      : ""}
+                </div>
               </div>
 
               <div className="md:col-span-1">
@@ -883,7 +1132,11 @@ export default function SupplierSettings() {
             </div>
           </Card>
 
-          <Card title="Notifications" subtitle="Control which alerts you receive. (Not yet wired to backend)" icon={<Bell size={18} />}>
+          <Card
+            title="Notifications"
+            subtitle="Control which alerts you receive. (Not yet wired to backend)"
+            icon={<Bell size={18} />}
+          >
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <Toggle
                 label="New orders"
@@ -909,16 +1162,111 @@ export default function SupplierSettings() {
             </div>
           </Card>
 
-          <Card title="Verification documents" subtitle="Placeholder UI (not wired)." icon={<FileText size={18} />}>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <ReadOnlyField label="CAC RC number" value={draft.rcNumber} icon={<Hash size={16} />} placeholder="Not available yet" />
-              <Field
-                label="Owner ID (or file ref)"
-                value={draft.docsID}
-                onChange={(v) => setDraft((d) => ({ ...d, docsID: v }))}
-                placeholder="e.g. NIN / Passport ref"
-                disabled={isAdmin}
-              />
+          <Card
+            title="Verification documents"
+            subtitle="Live document status from supplier documents."
+            icon={<FileText size={18} />}
+            right={
+              <span className="inline-flex items-center gap-2 text-[11px] rounded-full border bg-white px-3 py-1.5 text-zinc-700">
+                {docsQ.isFetching ? "Refreshing…" : `${docs.length} file${docs.length === 1 ? "" : "s"}`}
+              </span>
+            }
+          >
+            <div className="space-y-4">
+              {requiredDocRows.map(({ kind, doc }) => (
+                <div key={kind} className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900">
+                        {docKindIcon(kind)}
+                        <span>{docLabel(kind)}</span>
+                      </div>
+
+                      <div className="mt-2 space-y-1 text-xs text-zinc-600">
+                        <div>
+                          <span className="font-medium text-zinc-700">Filename:</span>{" "}
+                          {doc?.originalFilename || "Not uploaded"}
+                        </div>
+                        <div>
+                          <span className="font-medium text-zinc-700">Uploaded:</span>{" "}
+                          {formatDateTime(doc?.uploadedAt)}
+                        </div>
+                        <div>
+                          <span className="font-medium text-zinc-700">Reviewed:</span>{" "}
+                          {formatDateTime(doc?.reviewedAt)}
+                        </div>
+                        <div>
+                          <span className="font-medium text-zinc-700">Size:</span>{" "}
+                          {humanFileSize(doc?.size)}
+                        </div>
+                        {doc?.note ? (
+                          <div className="text-rose-700">
+                            <span className="font-medium">Admin note:</span> {doc.note}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="shrink-0">{docStatusChip(doc?.status)}</div>
+                  </div>
+                </div>
+              ))}
+
+              {optionalDocs.length > 0 && (
+                <div className="space-y-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                    Other uploaded documents
+                  </div>
+
+                  {optionalDocs.map((doc) => (
+                    <div
+                      key={doc.id}
+                      className="rounded-2xl border border-zinc-200 bg-white px-4 py-3"
+                    >
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900">
+                            {docKindIcon(doc.kind)}
+                            <span>{docLabel(doc.kind)}</span>
+                          </div>
+
+                          <div className="mt-2 space-y-1 text-xs text-zinc-600">
+                            <div>
+                              <span className="font-medium text-zinc-700">Filename:</span>{" "}
+                              {doc.originalFilename || "—"}
+                            </div>
+                            <div>
+                              <span className="font-medium text-zinc-700">Uploaded:</span>{" "}
+                              {formatDateTime(doc.uploadedAt)}
+                            </div>
+                            <div>
+                              <span className="font-medium text-zinc-700">Reviewed:</span>{" "}
+                              {formatDateTime(doc.reviewedAt)}
+                            </div>
+                            <div>
+                              <span className="font-medium text-zinc-700">Size:</span>{" "}
+                              {humanFileSize(doc.size)}
+                            </div>
+                            {doc.note ? (
+                              <div className="text-rose-700">
+                                <span className="font-medium">Admin note:</span> {doc.note}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="shrink-0">{docStatusChip(doc.status)}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!docsQ.isFetching && docs.length === 0 && (
+                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
+                  No verification documents found yet.
+                </div>
+              )}
             </div>
           </Card>
 
@@ -944,7 +1292,6 @@ export default function SupplierSettings() {
             </div>
           </Card>
 
-          {/* Desktop footer actions (mobile uses sticky bar) */}
           <div className="hidden sm:flex flex-wrap items-center gap-2">
             <button
               onClick={save}
@@ -956,7 +1303,8 @@ export default function SupplierSettings() {
             </button>
 
             <div className="text-[11px] text-zinc-500">
-              Bank changes require admin verification. Fields lock when status is <span className="font-mono">PENDING</span> or{" "}
+              Bank changes require admin verification. Fields lock when status is{" "}
+              <span className="font-mono">PENDING</span> or{" "}
               <span className="font-mono">VERIFIED</span>.
             </div>
           </div>

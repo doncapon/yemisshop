@@ -151,58 +151,6 @@ model RefundItem {
   @@index([refundId])
 }
 
-model CacRegistrationCache {
-  id          String              @id @default(cuid())
-  rcNumber    String
-  companyType SupplierCompanyType
-  entity      Json
-  status      CacStatus           @default(CHECKED)
-  checkedAt   DateTime            @default(now())
-  approvedAt  DateTime?
-  updatedAt   DateTime            @updatedAt
-
-  @@unique([rcNumber, companyType])
-}
-
-model CacLookup {
-  id          String              @id @default(cuid())
-  rcNumber    String
-  companyType SupplierCompanyType
-  outcome     CacOutcome
-  entity      Json?
-  checkedAt   DateTime            @default(now())
-  retryAt     DateTime?
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
-
-  @@unique([rcNumber, companyType], name: "CacLookup_rc_companyType_key")
-}
-
-model CacVerificationTicket {
-  id              String              @id @default(cuid())
-  tokenHash       String              @unique
-  rcNumber        String
-  companyType     SupplierCompanyType
-  companyNameNorm String
-  regDateYMD      String
-  createdAt       DateTime            @default(now())
-  expiresAt       DateTime
-  usedAt          DateTime?
-
-  @@index([rcNumber, companyType])
-}
-
-model CacVerifyAttempt {
-  id          String              @id @default(cuid())
-  ipHash      String
-  day         String
-  rcNumber    String
-  companyType SupplierCompanyType
-  createdAt   DateTime            @default(now())
-
-  @@unique([ipHash, day, rcNumber, companyType], name: "CacVerifyAttempt_ip_day_rc_type_key")
-  @@index([ipHash, day])
-}
 
 model UserSession {
   id            String    @id @default(cuid())
@@ -631,17 +579,19 @@ model AnalyticsEvent {
   @@index([orderId, createdAt])
 }
 
+
 model Supplier {
-  id                          String                       @id @default(cuid())
-  name                        String                       @unique
+  id                          String                 @id @default(cuid())
+  name                        String                 @unique
   contactEmail                String?
   whatsappPhone               String?
   type                        SupplierType
-  status                      String                       @default("ACTIVE")
+  status                      String                 @default("PENDING_VERIFICATION")
   apiBaseUrl                  String?
   apiAuthType                 String?
   apiKey                      String?
-  userId                      String?                      @unique
+  userId                      String?                @unique
+
   payoutMethod                String?
   bankCountry                 String?
   bankCode                    String?
@@ -650,43 +600,57 @@ model Supplier {
   accountName                 String?
   paystackRecipientCode       String?
   paystackSubaccountCode      String?
-  isPayoutEnabled             Boolean                      @default(false)
-  createdAt                   DateTime                     @default(now())
-  updatedAt                   DateTime                     @updatedAt
-  companyType                 SupplierCompanyType?
-  dateOfRegistration          DateTime?
-  kycRawPayload               Json?
+  isPayoutEnabled             Boolean                @default(false)
+
+  createdAt                   DateTime               @default(now())
+  updatedAt                   DateTime               @updatedAt
+
   legalName                   String?
+
+  registrationNumber          String?
+  registeredBusinessName      String?
+  registrationType            String?
+  registrationDate            DateTime?
+  registrationCountryCode     String?
+  registryAuthorityId String?
+  registryAuthority   RegistryAuthority? @relation(fields: [registryAuthorityId], references: [id])
+
   natureOfBusiness            String?
-  ownerVerified               Boolean                      @default(false)
-  proprietorBvnMasked         String?
-  rcNumber                    String?                      @unique
+
   registeredAddressId         String?
-  shareCapital                Decimal?
-  shareDetails                Json?
+  pickupAddressId             String?
+
+  kycStatus                   String                 @default("PENDING")
   kycApprovedAt               DateTime?
   kycCheckedAt                DateTime?
-  kycProvider                 String?
-  kycStatus                   String                       @default("NONE")
-  kycRegistrationStatus       CacStatus                    @default(NONE)
+  kycRejectedAt               DateTime?
+  kycRejectionReason          String?
+
   bankVerificationNote        String?
   bankVerificationRequestedAt DateTime?
-  bankVerificationStatus      BankVerificationStatus       @default(UNVERIFIED)
+  bankVerificationStatus      BankVerificationStatus @default(UNVERIFIED)
   bankVerifiedAt              DateTime?
   bankVerifiedById            String?
-  ratingAvg                   Decimal?                     @default(0) @db.Decimal(3, 2)
-  ratingCount                 Int                          @default(0)
+
+  ratingAvg                   Decimal?               @default(0) @db.Decimal(3, 2)
+  ratingCount                 Int                    @default(0)
   defaultLeadDays             Int?
-  handlingFee                 Decimal?                     @db.Decimal(10, 2)
-  pickupAddressId             String?
+  handlingFee                 Decimal?               @db.Decimal(10, 2)
+
   pickupContactName           String?
   pickupContactPhone          String?
   pickupInstructions          String?
   sameDayCutoffHour           Int?
-  shippingEnabled             Boolean                      @default(true)
-  shipsNationwide             Boolean                      @default(true)
-  supportsDoorDelivery        Boolean                      @default(true)
-  supportsPickupPoint         Boolean                      @default(false)
+  shippingEnabled             Boolean                @default(true)
+  shipsNationwide             Boolean                @default(true)
+  supportsDoorDelivery        Boolean                @default(true)
+  supportsPickupPoint         Boolean                @default(false)
+
+  registeredAddress           Address?               @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
+  pickupAddress               Address?               @relation("SupplierPickupAddress", fields: [pickupAddressId], references: [id])
+  user                        User?                  @relation(fields: [userId], references: [id])
+
+  documents                   SupplierDocument[]
   catalogRequests             CatalogRequest[]
   disputeCases                DisputeCase[]
   comms                       OrderComms[]                 @relation("SupplierToComms")
@@ -698,9 +662,6 @@ model Supplier {
   refunds                     Refund[]
   refundRequests              RefundRequest[]
   shippingQuotes              ShippingQuote[]
-  pickupAddress               Address?                     @relation("SupplierPickupAddress", fields: [pickupAddressId], references: [id])
-  registeredAddress           Address?                     @relation("SupplierRegisteredAddress", fields: [registeredAddressId], references: [id])
-  user                        User?                        @relation(fields: [userId], references: [id])
   ledgerEntries               SupplierLedgerEntry[]        @relation("SupplierToLedger")
   offerChangeRequests         SupplierOfferChangeRequest[] @relation("Supplier_OfferChangeRequests")
   allocations                 SupplierPaymentAllocation[]
@@ -713,6 +674,60 @@ model Supplier {
   @@index([isPayoutEnabled])
   @@index([bankVerificationStatus])
   @@index([pickupAddressId])
+  @@index([registeredAddressId])
+  @@index([registrationNumber])
+  @@index([registrationCountryCode])
+}
+
+model SupplierDocument {
+  id               String               @id @default(cuid())
+  supplierId       String
+  kind             SupplierDocumentKind
+  storageKey       String
+  originalFilename String
+  mimeType         String?
+  size             Int?
+  status           SupplierDocStatus    @default(PENDING)
+  note             String?
+  uploadedAt       DateTime             @default(now())
+  reviewedAt       DateTime?
+  reviewedByUserId String?
+
+  supplier         Supplier             @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId, kind])
+  @@index([supplierId, status])
+}
+
+enum SupplierDocumentKind {
+  BUSINESS_REGISTRATION_CERTIFICATE
+  GOVERNMENT_ID
+  PROOF_OF_ADDRESS
+  TAX_DOCUMENT
+  BANK_PROOF
+  OTHER
+}
+
+enum SupplierDocStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model RegistryAuthority {
+  id          String     @id @default(cuid())
+  countryCode String
+  code        String
+  name        String
+  websiteUrl  String?
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  suppliers   Supplier[]
+
+  @@unique([countryCode, code])
+  @@index([countryCode, isActive])
 }
 
 model ShippingZone {
@@ -1572,6 +1587,7 @@ enum NotificationType {
   PRODUCT_CHANGE_SUBMITTED
   PRODUCT_CHANGE_APPROVED
   PRODUCT_CHANGE_REJECTED
+  SUPPLIER_DOCUMENT_UPLOADED
   GENERIC
 }
 
@@ -1676,27 +1692,6 @@ enum SupplierType {
   ONLINE
 }
 
-enum SupplierCompanyType {
-  BUSINESS_NAME
-  COMPANY
-  INCORPORATED_TRUSTEES
-  LIMITED_PARTNERSHIP
-  LIMITED_LIABILITY_PARTNERSHIP
-}
-
-enum CacStatus {
-  NONE
-  CHECKED
-  APPROVED
-  REJECTED
-  PENDING
-}
-
-enum CacOutcome {
-  OK
-  NOT_FOUND
-  ERROR
-}
 
 enum PaymentStatus {
   PENDING

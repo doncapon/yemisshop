@@ -58,7 +58,6 @@ import supplierDashboardRouter from "./routes/supplierDashboard.js";
 import adminCatalogRequests from "./routes/adminCatalogRequests.js";
 import adminCatalogMeta from "./routes/adminCatalogMeta.js";
 
-import dojahRouter from "./routes/dojahProxy.js";
 import deliveryOtpRouter from "./routes/deliveryOtp.js";
 
 import supplierPayoutsAction from "./routes/supplierPayoutsAction.js";
@@ -84,6 +83,9 @@ import adminCareersJobsRouter from "./routes/adminCareersJobs.js";
 import adminCareersSettingsRouter from "./routes/adminCareersSettings.js";
 import newsletterRouter from "./routes/newsletter.js";
 import adminNewsletterRouter from "./routes/adminNewsletter.js";
+import supplierDocumentsRouter from "./routes/supplierDocuments.js";
+import publicCountriesRouter from "./routes/publicCountries.js";
+import adminSupplierDocumentsRouter from "./routes/adminSupplierDocuments.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -376,6 +378,7 @@ app.use("/api/supplier/orders", supplierOrders);
 app.use("/api/supplier/catalog-requests", supplierCatalogRequests);
 app.use("/api/supplier/refunds", supplierRefundsRouter);
 app.use("/api/supplier/catalog", supplierCatalogOffers);
+app.use("/api/supplier/documents", supplierDocumentsRouter);
 
 /* ---------------- Payments + public offers ---------------- */
 app.use("/api", publicProductOffers);
@@ -399,8 +402,6 @@ app.use("/api/favorites", favoritesRouter);
 app.use("/api/catalog", catalogRoutes);
 app.use("/api/categories", categoriesRouter);
 
-app.use("/api/integrations/dojah", dojahRouter);
-
 app.use("/api/refunds", refundsRouter);
 app.use("/api/disputes", disputesRouter);
 app.use("/api/notifications", notificationsRouter);
@@ -423,6 +424,8 @@ app.use("/api/admin/careers/settings", adminCareersSettingsRouter);
 app.use("/api/newsletter", newsletterRouter);
 app.use("/api/newsletter", newsletterRouter);
 app.use("/api/admin/newsletter", adminNewsletterRouter);
+app.use("/api/public", publicCountriesRouter);
+app.use("/api/admin/supplier-documents", adminSupplierDocumentsRouter);
 /* ------------------------------ Serve Frontend (SPA) + SEO endpoints ------------------------------ */
 
 const pickFirstExistingDir = (dirs: Array<string | undefined | null>) => {

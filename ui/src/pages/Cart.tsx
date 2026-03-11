@@ -17,6 +17,7 @@ type SelectedOption = {
 
 type CartItem = {
   id?: string;
+  sourceIds?: string[];
   kind?: "BASE" | "VARIANT";
   productId: string;
   variantId?: string | null;
@@ -52,24 +53,62 @@ const API_ORIGIN =
     .replace(/\/+$/, "") || "https://api.dayspringhouse.com";
 
 const AXIOS_COOKIE_CFG = { withCredentials: true as const };
-const CART_BFCACHE_REFRESH_KEY = "__cart_bfcache_refresh_once__";
 
 /* ---------------- Helpers ---------------- */
 
-function resolveImageUrl(input?: string | null): string | undefined {
+function resolveImageUrl(input?: any): string | undefined {
+  if (input == null) return undefined;
+
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const resolved = resolveImageUrl(item);
+      if (resolved) return resolved;
+    }
+    return undefined;
+  }
+
+  if (typeof input === "object") {
+    const candidate =
+      input.url ??
+      input.src ??
+      input.image ??
+      input.imageUrl ??
+      input.absoluteUrl ??
+      null;
+
+    return candidate ? resolveImageUrl(candidate) : undefined;
+  }
+
   const s = String(input ?? "").trim();
   if (!s) return undefined;
+
+  if (
+    (s.startsWith("[") && s.endsWith("]")) ||
+    (s.startsWith("{") && s.endsWith("}"))
+  ) {
+    try {
+      const parsed = JSON.parse(s);
+      return resolveImageUrl(parsed);
+    } catch {
+      //
+    }
+  }
 
   if (/^(https?:\/\/|data:|blob:)/i.test(s)) return s;
   if (s.startsWith("//")) return `${window.location.protocol}${s}`;
 
   if (s.startsWith("/")) {
-    if (s.startsWith("/uploads/") || s.startsWith("/api/uploads/")) return `${API_ORIGIN}${s}`;
+    if (s.startsWith("/uploads/") || s.startsWith("/api/uploads/")) {
+      return `${API_ORIGIN}${s}`;
+    }
     return `${window.location.origin}${s}`;
   }
 
-  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) return `${API_ORIGIN}/${s}`;
-  return `${window.location.origin}/${s}`;
+  if (s.startsWith("uploads/") || s.startsWith("api/uploads/")) {
+    return `${API_ORIGIN}/${s.replace(/^\/+/, "")}`;
+  }
+
+  return `${window.location.origin}/${s.replace(/^\/+/, "")}`;
 }
 
 function asMoney(v: any, d = 0) {
@@ -196,13 +235,58 @@ function cartSignature(items: CartItem[]) {
     .join("||");
 }
 
+function mergeCartItemsByLine(items: CartItem[]): CartItem[] {
+  const map = new Map<string, CartItem>();
+
+  for (const item of items) {
+    const key = lineKeyFor(item);
+    const existing = map.get(key);
+
+    if (!existing) {
+      map.set(key, {
+        ...item,
+        sourceIds: item.id ? [String(item.id)] : [],
+      });
+      continue;
+    }
+
+    const existingQty = Math.max(1, Number(existing.qty) || 1);
+    const nextQty = Math.max(1, Number(item.qty) || 1);
+
+    const chosenUnit =
+      asMoney(existing.unitPrice, 0) > 0
+        ? asMoney(existing.unitPrice, 0)
+        : asMoney(item.unitPrice, 0);
+
+    const merged: CartItem = {
+      ...existing,
+      id: existing.id || item.id,
+      sourceIds: [
+        ...(existing.sourceIds ?? []),
+        ...(item.id ? [String(item.id)] : []),
+      ].filter(Boolean),
+      title: String(existing.title || item.title || ""),
+      image: existing.image || item.image,
+      qty: existingQty + nextQty,
+      unitPrice: chosenUnit,
+      totalPrice: round2(chosenUnit * (existingQty + nextQty)),
+      selectedOptions:
+        (existing.selectedOptions?.length ? existing.selectedOptions : item.selectedOptions) ?? [],
+    };
+
+    map.set(key, merged);
+  }
+
+  return Array.from(map.values());
+}
+
 /* ---------------- Server cart helpers ---------------- */
 
 async function fetchServerCart(): Promise<CartItem[]> {
   const { data } = await api.get("/api/cart", AXIOS_COOKIE_CFG);
   const items: ServerCartItem[] = Array.isArray((data as any)?.items) ? (data as any).items : [];
 
-  return items.map((it) => {
+  const mapped = items.map((it) => {
     const qty = Math.max(1, Number(it.qty) || 1);
     const unit = Number(it.unitPriceCache) || 0;
     const title = String(it.titleSnapshot ?? "");
@@ -210,6 +294,7 @@ async function fetchServerCart(): Promise<CartItem[]> {
 
     return {
       id: String(it.id),
+      sourceIds: [String(it.id)],
       kind: (it.kind as any) || (it.variantId ? "VARIANT" : "BASE"),
       productId: String(it.productId),
       variantId: it.variantId == null ? null : String(it.variantId),
@@ -219,19 +304,29 @@ async function fetchServerCart(): Promise<CartItem[]> {
       totalPrice: unit * qty,
       selectedOptions: normalizeSelectedOptions(it.selectedOptions),
       image: img,
-    };
+    } as CartItem;
   });
+
+  return mergeCartItemsByLine(mapped);
 }
 
 async function serverSetQty(item: CartItem, qty: number) {
-  if (!item.id) return;
+  const ids = Array.from(new Set((item.sourceIds?.length ? item.sourceIds : item.id ? [item.id] : []).map(String)));
+  if (!ids.length) return;
 
   const next = Math.max(0, Math.floor(Number(qty) || 0));
 
   if (next <= 0) {
-    await api.delete(`/api/cart/items/${item.id}`, AXIOS_COOKIE_CFG);
-  } else {
-    await api.patch(`/api/cart/items/${item.id}`, { qty: next }, AXIOS_COOKIE_CFG);
+    await Promise.all(ids.map((id) => api.delete(`/api/cart/items/${id}`, AXIOS_COOKIE_CFG)));
+    return;
+  }
+
+  const [keepId, ...extraIds] = ids;
+
+  await api.patch(`/api/cart/items/${keepId}`, { qty: next }, AXIOS_COOKIE_CFG);
+
+  if (extraIds.length) {
+    await Promise.all(extraIds.map((id) => api.delete(`/api/cart/items/${id}`, AXIOS_COOKIE_CFG)));
   }
 }
 
@@ -349,8 +444,27 @@ export default function Cart() {
         mirrorAuthedCartToLocal(serverItems);
         setHydrated(true);
         return;
-      } catch {
+      } catch (err: any) {
         if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+
+        const status = Number(err?.response?.status || 0);
+
+        // Session expired / invalid auth
+        if (status === 401) {
+          try {
+            writeCartLines([]);
+          } catch {
+            //
+          }
+
+          safeSetCart([]);
+          setHydrated(true);
+          window.dispatchEvent(new Event("cart:updated"));
+          window.dispatchEvent(new Event("auth:expired"));
+          return;
+        }
+
+        // Non-auth failure: keep local fallback if you really want resilience
         const localItems = toCartPageItems(readCartLines(), resolveImageUrl) as any as CartItem[];
         safeSetCart(localItems);
         setHydrated(true);
@@ -366,16 +480,14 @@ export default function Cart() {
 
   useEffect(() => {
     isMountedRef.current = true;
-    sessionStorage.removeItem(CART_BFCACHE_REFRESH_KEY);
 
     const onPageShow = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
 
-      const alreadyRefreshed = sessionStorage.getItem(CART_BFCACHE_REFRESH_KEY) === "1";
-      if (!alreadyRefreshed) {
-        sessionStorage.setItem(CART_BFCACHE_REFRESH_KEY, "1");
-        window.location.replace(window.location.href);
-      }
+      activeRequestIdRef.current += 1;
+      focusedQtyKeyRef.current = null;
+      clearAllNotes();
+      void loadCart();
     };
 
     const onPageHide = () => {
@@ -384,8 +496,13 @@ export default function Cart() {
       clearAllNotes();
     };
 
+    const onCartUpdated = () => {
+      void loadCart();
+    };
+
     window.addEventListener("pageshow", onPageShow as EventListener);
     window.addEventListener("pagehide", onPageHide as EventListener);
+    window.addEventListener("cart:updated", onCartUpdated);
 
     return () => {
       isMountedRef.current = false;
@@ -395,8 +512,9 @@ export default function Cart() {
 
       window.removeEventListener("pageshow", onPageShow as EventListener);
       window.removeEventListener("pagehide", onPageHide as EventListener);
+      window.removeEventListener("cart:updated", onCartUpdated);
     };
-  }, [clearAllNotes]);
+  }, [clearAllNotes, loadCart]);
 
   useEffect(() => {
     let cancelled = false;
@@ -499,6 +617,8 @@ export default function Cart() {
           return nextCart;
         });
 
+        window.dispatchEvent(new Event("cart:updated"));
+
         if (sourceKey) setQtyDraft((prev) => ({ ...prev, [sourceKey]: String(nextQty) }));
         return;
       }
@@ -508,15 +628,41 @@ export default function Cart() {
       try {
         await serverSetQty(target, nextQty);
         if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+
+        setCart((prev) => {
+          const mirrored = prev.map((it) => {
+            if (!sameLine(it, target)) return it;
+
+            const unit =
+              Number.isFinite(Number(it.unitPrice)) && Number(it.unitPrice) > 0
+                ? Number(it.unitPrice)
+                : (Number(it.totalPrice) || 0) / Math.max(1, Number(it.qty) || 1);
+
+            const safeUnit = Number.isFinite(unit) && unit > 0 ? unit : 0;
+
+            return {
+              ...it,
+              qty: nextQty,
+              unitPrice: safeUnit,
+              totalPrice: round2(safeUnit * nextQty),
+            };
+          });
+
+          mirrorAuthedCartToLocal(mirrored);
+          return mirrored;
+        });
+
+        window.dispatchEvent(new Event("cart:updated"));
+
         if (sourceKey) setQtyDraft((prev) => ({ ...prev, [sourceKey]: String(nextQty) }));
       } catch {
         if (isMountedRef.current && requestId === activeRequestIdRef.current) {
           showQtyNote(sourceKey ?? lineKeyFor(target), "Could not update quantity. Restoring cart.");
-          await loadCart().catch(() => {});
+          await loadCart().catch(() => { });
         }
       }
     },
-    [isAuthed, loadCart, persistGuestCart, setLocalQtyState, showQtyNote]
+    [isAuthed, loadCart, mirrorAuthedCartToLocal, persistGuestCart, setLocalQtyState, showQtyNote]
   );
 
   const remove = useCallback(
@@ -534,6 +680,7 @@ export default function Cart() {
 
       if (!isAuthed) {
         persistGuestCart(next);
+        window.dispatchEvent(new Event("cart:updated"));
         return;
       }
 
@@ -542,13 +689,16 @@ export default function Cart() {
       try {
         await serverSetQty(target, 0);
         if (!isMountedRef.current || requestId !== activeRequestIdRef.current) return;
+
+        mirrorAuthedCartToLocal(next);
+        window.dispatchEvent(new Event("cart:updated"));
       } catch {
         if (isMountedRef.current && requestId === activeRequestIdRef.current) {
-          await loadCart().catch(() => {});
+          await loadCart().catch(() => { });
         }
       }
     },
-    [cart, isAuthed, loadCart, persistGuestCart, safeSetCart]
+    [cart, isAuthed, loadCart, mirrorAuthedCartToLocal, persistGuestCart, safeSetCart]
   );
 
   const visibleCart = useMemo(() => cart, [cart]);
@@ -643,15 +793,15 @@ export default function Cart() {
                       o.attribute && !isCodeLike(o.attribute)
                         ? o.attribute
                         : o.attributeId && !isCodeLike(o.attributeId)
-                        ? o.attributeId
-                        : "";
+                          ? o.attributeId
+                          : "";
 
                     const val =
                       o.value && !isCodeLike(o.value)
                         ? o.value
                         : o.valueId && !isCodeLike(o.valueId)
-                        ? o.valueId
-                        : "";
+                          ? o.valueId
+                          : "";
 
                     if (!attr && !val) return null;
                     if (!attr) return val;
@@ -696,18 +846,22 @@ export default function Cart() {
                   >
                     <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4">
                       <div className="shrink-0 w-16 h-16 sm:w-20 sm:h-20 max-[360px]:w-14 max-[360px]:h-14 rounded-xl border overflow-hidden bg-white self-start relative">
-                        <div className="absolute inset-0 grid place-items-center text-[11px] text-ink-soft">No image</div>
-
-                        {resolveImageUrl(it.image) && (
+                        {resolveImageUrl(it.image) ? (
                           <img
                             src={resolveImageUrl(it.image)}
-                            alt=""
-                            aria-hidden="true"
-                            className="relative w-full h-full object-cover"
+                            alt={it.title || "Cart item"}
+                            className="w-full h-full object-cover"
                             onError={(e) => {
-                              (e.currentTarget as HTMLImageElement).style.opacity = "0";
+                              const box = e.currentTarget.parentElement;
+                              if (box) {
+                                box.innerHTML = `<div class="w-full h-full grid place-items-center text-[11px] text-slate-500">No image</div>`;
+                              }
                             }}
                           />
+                        ) : (
+                          <div className="w-full h-full grid place-items-center text-[11px] text-ink-soft">
+                            No image
+                          </div>
                         )}
                       </div>
 

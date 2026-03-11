@@ -1,19 +1,25 @@
 // src/utils/resetApp.ts
 import { useAuthStore } from "../store/auth.js";
-import api from "../api/client"; // ✅ cookie auth logout endpoint
+import api from "../api/client";
+import { writeCartLines } from "./cartModel";
+import { markJustLoggedOut } from "./logout";
 
 type ResetMode = "hard" | "soft";
 
-const PRESERVE_LOCALSTORAGE_KEYS = ["consent"]; // keep cookie consent across logout/reset
+const PRESERVE_LOCALSTORAGE_KEYS = ["consent"];
 
-// Keys we intentionally wipe on reset (cookie-auth friendly)
 const WIPE_LOCALSTORAGE_KEYS = [
-  "auth", // zustand persist (keep if you persist user/session state)
+  "auth",
+  "auth_store_v1",
   "cart",
+  "cart:guest:v2",
   "verifyEmail",
   "verifyToken",
   "verify_token",
 ];
+
+const USER_CART_KEY_PREFIX = "cart:user:";
+const CART_KEY_SUFFIX = ":v2";
 
 function safeGet(k: string) {
   try {
@@ -27,7 +33,7 @@ function safeSet(k: string, v: string) {
   try {
     localStorage.setItem(k, v);
   } catch {
-    /* ignore */
+    //
   }
 }
 
@@ -35,7 +41,7 @@ function safeRemove(k: string) {
   try {
     localStorage.removeItem(k);
   } catch {
-    /* ignore */
+    //
   }
 }
 
@@ -54,73 +60,91 @@ function restoreSelectedKeys(preserved: Record<string, string>) {
   }
 }
 
-/**
- * Reset app state after logout or auth failure.
- *
- * Cookie auth notes:
- * - Browser sends cookies automatically; no token to wipe.
- * - To clear the session cookie, call POST /api/auth/logout (server clears cookie).
- */
+function wipeUserCartKeys() {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (key.startsWith(USER_CART_KEY_PREFIX) && key.endsWith(CART_KEY_SUFFIX)) {
+        keys.push(key);
+      }
+    }
+    for (const key of keys) localStorage.removeItem(key);
+  } catch {
+    //
+  }
+}
+
+function clearBrowserCartEverywhere() {
+  try {
+    writeCartLines([]);
+  } catch {
+    //
+  }
+
+  for (const k of WIPE_LOCALSTORAGE_KEYS) safeRemove(k);
+  wipeUserCartKeys();
+
+  try {
+    window.dispatchEvent(new Event("cart:updated"));
+  } catch {
+    //
+  }
+}
+
 export function hardResetApp(redirectTo: string = "/", opts?: { mode?: ResetMode }) {
   const mode: ResetMode = opts?.mode ?? "hard";
-  console.trace("hardResetApp CALLED");
 
-  // 1) preserve consent (and anything else you add)
   const preserved = preserveSelectedKeys();
 
-  // 2) clear zustand auth store (in-memory)
   try {
     useAuthStore.getState().clear?.();
   } catch {
-    /* ignore */
+    //
   }
 
-  // 3) wipe only the keys we care about (NOT localStorage.clear())
-  for (const k of WIPE_LOCALSTORAGE_KEYS) safeRemove(k);
+  try {
+    useAuthStore.setState({ user: null } as any);
+  } catch {
+    //
+  }
 
-  // 4) sessionStorage can still be wiped (usually safe)
+  clearBrowserCartEverywhere();
+
   try {
     sessionStorage.clear();
   } catch {
-    /* ignore */
+    //
   }
 
-  // 5) restore preserved keys
   restoreSelectedKeys(preserved);
 
-  // 6) redirect
   if (mode === "soft") {
-    // SPA-friendly: no full reload
     if (window.location.pathname !== redirectTo) {
       window.history.replaceState(null, "", redirectTo);
     }
-    // fire a popstate so routers listening can react (best-effort)
     try {
       window.dispatchEvent(new PopStateEvent("popstate"));
     } catch {
-      /* ignore */
+      //
     }
     return;
   }
 
-  // Hard reload (your existing behavior)
   window.location.replace(redirectTo);
 }
 
-/**
- * Cookie-auth logout helper:
- * - calls server to clear HttpOnly session cookie
- * - then resets client state
- */
 export async function logoutAndReset(
   redirectTo: string = "/login",
   opts?: { mode?: ResetMode }
 ) {
+  markJustLoggedOut();
+
   try {
-    // ✅ server should clear cookie (Set-Cookie session=; Max-Age=0)
-    await api.post("/api/auth/logout");
+    await api.post("/api/auth/logout", {}, { withCredentials: true });
   } catch {
-    // ignore network failure; still clear client state
+    //
   }
 
   hardResetApp(redirectTo, opts);

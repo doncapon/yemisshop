@@ -1209,16 +1209,16 @@ router.get("/", requireAuth, async (req, res) => {
       ...(brandId ? { brandId } : {}),
       ...(q
         ? {
-            AND: [
-              {
-                OR: [
-                  { title: { contains: q, mode: "insensitive" } },
-                  { sku: { contains: q, mode: "insensitive" } },
-                  { description: { contains: q, mode: "insensitive" } },
-                ],
-              },
-            ],
-          }
+          AND: [
+            {
+              OR: [
+                { title: { contains: q, mode: "insensitive" } },
+                { sku: { contains: q, mode: "insensitive" } },
+                { description: { contains: q, mode: "insensitive" } },
+              ],
+            },
+          ],
+        }
         : {}),
       ...(status !== "ANY" && status !== "PENDING" && status !== "REJECTED"
         ? { status: status as any }
@@ -1270,43 +1270,43 @@ router.get("/", requireAuth, async (req, res) => {
 
       productIds.length
         ? prisma.supplierVariantOffer.groupBy({
-            by: ["productId"],
-            where: {
-              productId: { in: productIds },
-              supplierId: s.id,
-              isActive: true,
-              inStock: true,
-              availableQty: { gt: 0 },
-              unitPrice: { gt: new Prisma.Decimal("0") },
-            } as any,
-            _min: { unitPrice: true },
-          })
+          by: ["productId"],
+          where: {
+            productId: { in: productIds },
+            supplierId: s.id,
+            isActive: true,
+            inStock: true,
+            availableQty: { gt: 0 },
+            unitPrice: { gt: new Prisma.Decimal("0") },
+          } as any,
+          _min: { unitPrice: true },
+        })
         : Promise.resolve([] as any[]),
 
       productIds.length
         ? prisma.supplierProductOffer.groupBy({
-            by: ["productId"],
-            where: {
-              productId: { in: productIds },
-              supplierId: s.id,
-              isActive: true,
-              inStock: true,
-            } as any,
-            _sum: { availableQty: true },
-          })
+          by: ["productId"],
+          where: {
+            productId: { in: productIds },
+            supplierId: s.id,
+            isActive: true,
+            inStock: true,
+          } as any,
+          _sum: { availableQty: true },
+        })
         : Promise.resolve([] as any[]),
 
       productIds.length
         ? prisma.supplierVariantOffer.groupBy({
-            by: ["productId"],
-            where: {
-              productId: { in: productIds },
-              supplierId: s.id,
-              isActive: true,
-              inStock: true,
-            } as any,
-            _sum: { availableQty: true },
-          })
+          by: ["productId"],
+          where: {
+            productId: { in: productIds },
+            supplierId: s.id,
+            isActive: true,
+            inStock: true,
+          } as any,
+          _sum: { availableQty: true },
+        })
         : Promise.resolve([] as any[]),
     ]);
 
@@ -1415,6 +1415,380 @@ router.get("/", requireAuth, async (req, res) => {
     console.error("GET /api/supplier/products failed:", e);
     return res.status(500).json({
       error: e?.message || "Failed to load supplier products",
+    });
+  }
+});
+
+/* ------------------------------- CREATE ---------------------------------- */
+router.post("/", requireAuth, requireSupplier, async (req, res) => {
+  try {
+    const s = await getSupplierForUser(req.user!.id);
+    if (!s) {
+      return res.status(403).json({ error: "Supplier profile not found for this user" });
+    }
+
+    const incoming: any = req.body ?? {};
+    const base: any = incoming?.data ?? incoming?.product ?? incoming;
+    const payload = CreateSchema.parse(base ?? {});
+
+    if (payload.imagesJson) assertMaxImages(payload.imagesJson);
+
+    assertMoneyWithinDbLimit(payload.basePrice, "Base price");
+    if (payload.communicationCost != null) {
+      assertMoneyWithinDbLimit(payload.communicationCost, "Communication cost");
+    }
+    for (const v of payload.variants ?? []) {
+      assertMoneyWithinDbLimit((v as any)?.unitPrice, "Variant price");
+    }
+
+    const title = String(payload.title ?? "").trim();
+    const description = String(payload.description ?? "").trim();
+    const brandId = String(payload.brandId ?? "").trim();
+    const categoryId = String(payload.categoryId ?? "").trim() || null;
+
+    if (!title) {
+      return res.status(400).json({
+        error: "Title is required",
+        code: "TITLE_REQUIRED",
+        userMessage: "Please enter a product title.",
+      });
+    }
+
+    if (!description) {
+      return res.status(400).json({
+        error: "Description is required",
+        code: "DESCRIPTION_REQUIRED",
+        userMessage: "Please enter a product description.",
+      });
+    }
+
+    if (!brandId) {
+      return res.status(400).json({
+        error: "Brand is required",
+        code: "BRAND_REQUIRED",
+        userMessage: "Please select a brand.",
+      });
+    }
+
+    const warnings: string[] = [];
+
+    const created = await prisma.$transaction(async (tx) => {
+      const brand = await tx.brand.findFirst({
+        where: { id: brandId, isActive: true } as any,
+        select: { id: true, name: true },
+      });
+      if (!brand) {
+        const err: any = new Error("Invalid brand");
+        err.statusCode = 400;
+        err.code = "INVALID_BRAND";
+        err.userMessage = "Selected brand was not found.";
+        throw err;
+      }
+
+      if (categoryId) {
+        const category = await tx.category.findFirst({
+          where: { id: categoryId, isActive: true } as any,
+          select: { id: true, name: true },
+        });
+        if (!category) {
+          const err: any = new Error("Invalid category");
+          err.statusCode = 400;
+          err.code = "INVALID_CATEGORY";
+          err.userMessage = "Selected category was not found.";
+          throw err;
+        }
+      }
+
+      const normalizedImages = normalizeImagesJson(payload.imagesJson ?? []);
+
+      const baseQty =
+        pickQty(payload.availableQty, (payload as any).qty, (payload as any).quantity) ?? 0;
+
+      const basePriceNum = Number(asNumber(payload.basePrice) ?? 0);
+      if (!Number.isFinite(basePriceNum) || basePriceNum <= 0) {
+        const err: any = new Error("Base price must be greater than 0");
+        err.statusCode = 400;
+        err.code = "INVALID_BASE_PRICE";
+        err.userMessage = "Base price must be greater than 0.";
+        throw err;
+      }
+
+      let attributeSelections = Array.isArray(payload.attributeSelections)
+        ? [...payload.attributeSelections]
+        : [];
+
+      const collapsed = collapseVariantsIntoBaseCombo(payload.variants ?? []);
+      if (collapsed.isBaseCombo) {
+        attributeSelections = mergeBaseComboIntoAttributeSelections(
+          attributeSelections,
+          collapsed.options
+        );
+      }
+
+      const baseComboKey = baseComboKeyFromAttributeSelections(attributeSelections as any);
+
+      if (!collapsed.isBaseCombo) {
+        assertNoDuplicateVariantCombosAndNoBaseCollision({
+          variants: payload.variants ?? [],
+          baseComboKey,
+        });
+      }
+
+      const computedSku = makeSkuFromSupplierBrandTitle({
+        supplierId: s.id,
+        brandId,
+        title,
+      });
+
+      const uniqueSku = await ensureUniqueProductSku(tx as any, computedSku, {
+        supplierId: s.id,
+        brandId,
+      });
+
+      await assertNoDuplicateSupplierBrandSkuTx(tx as any, {
+        supplierId: s.id,
+        brandId,
+        sku: uniqueSku,
+      });
+
+      const product = await tx.product.create({
+        data: {
+          title,
+          description,
+          sku: uniqueSku,
+          retailPrice: toDecimal(basePriceNum),
+          inStock: baseQty > 0,
+          status: "PENDING",
+          imagesJson: normalizedImages,
+          brandId,
+          ...(categoryId ? { categoryId } : {}),
+          ...(categoryId ? { categoryName: undefined } : {}),
+          ...(payload.communicationCost != null
+            ? { communicationCost: toDecimal(payload.communicationCost) }
+            : {}),
+          availableQty: baseQty,
+          supplierId: s.id,
+          ownerId: req.user!.id,
+          userId: req.user!.id,
+          createdById: req.user!.id,
+          updatedById: req.user!.id,
+          hasPendingChanges: false,
+        } as any,
+        select: {
+          id: true,
+          title: true,
+          sku: true,
+          status: true,
+          brandId: true,
+          categoryId: true,
+        },
+      });
+
+      await writeProductAttributes(tx, product.id, attributeSelections as any);
+
+      const baseOfferInput = {
+        basePrice: payload.offer?.basePrice ?? basePriceNum,
+        currency: payload.offer?.currency ?? "NGN",
+        inStock: payload.offer?.inStock ?? baseQty > 0,
+        isActive: payload.offer?.isActive ?? true,
+        leadDays: payload.offer?.leadDays ?? null,
+        availableQty:
+          pickQty(
+            payload.offer?.availableQty,
+            (payload.offer as any)?.qty,
+            (payload.offer as any)?.quantity,
+            payload.availableQty,
+            (payload as any)?.qty,
+            (payload as any)?.quantity
+          ) ?? baseQty,
+      };
+
+      const baseOffer = await upsertSupplierProductOffer(
+        tx,
+        s.id,
+        product.id,
+        baseOfferInput,
+        warnings
+      );
+
+      const seenVariantSkus = new Set<string>();
+      const rows = Array.isArray(payload.variants) ? payload.variants : [];
+
+      for (const raw of rows) {
+        const directId = String((raw as any)?.variantId ?? "").trim();
+
+        const opts = normalizeOptions(
+          (raw as any)?.options ??
+            (raw as any)?.optionSelections ??
+            (raw as any)?.attributes ??
+            (raw as any)?.attributeSelections ??
+            (raw as any)?.variantOptions ??
+            (raw as any)?.VariantOptions ??
+            []
+        );
+
+        if (directId) {
+          const err: any = new Error("variantId is not allowed when creating a new product");
+          err.statusCode = 400;
+          err.code = "CREATE_VARIANT_ID_NOT_ALLOWED";
+          err.userMessage = "New products cannot reference an existing variantId.";
+          throw err;
+        }
+
+        if (!opts.length) continue;
+
+        const vQty =
+          pickQty((raw as any)?.availableQty, (raw as any)?.qty, (raw as any)?.quantity) ?? 0;
+
+        const unitPriceNum =
+          Number(asNumber((raw as any)?.unitPrice) ?? basePriceNum);
+
+        const desiredSku = prefixVariantSkuWithProductName(
+          title,
+          String((raw as any)?.sku ?? "").trim() || null
+        );
+
+        const fallbackBase = `${slugSkuBase(title).toUpperCase() || "PRODUCT"}-VAR`;
+        const uniqueVariantSku = await makeUniqueVariantSku(
+          tx as any,
+          desiredSku,
+          seenVariantSkus,
+          fallbackBase
+        );
+
+        const variant = await tx.productVariant.create({
+          data: {
+            productId: product.id,
+            sku: uniqueVariantSku,
+            retailPrice: Number.isFinite(unitPriceNum) && unitPriceNum > 0 ? toDecimal(unitPriceNum) : null,
+            inStock: vQty > 0,
+            imagesJson: normalizeImagesJson((raw as any)?.imagesJson ?? []),
+            availableQty: vQty,
+            isActive: true,
+          } as any,
+          select: { id: true, sku: true },
+        });
+
+        await tx.productVariantOption.createMany({
+          data: opts.map((o) => ({
+            variantId: variant.id,
+            attributeId: o.attributeId,
+            valueId: o.valueId,
+            unitPrice: null,
+          })),
+          skipDuplicates: true,
+        });
+
+        const guardedVar = await maybeDeactivateIfPayoutNotReadyTx(
+          tx as any,
+          s.id,
+          {
+            isActive: (raw as any)?.isActive ?? true,
+            inStock: (raw as any)?.inStock ?? vQty > 0,
+            availableQty: vQty,
+            basePrice: unitPriceNum,
+          },
+          "Variant offer",
+          warnings
+        );
+
+        await tx.supplierVariantOffer.create({
+          data: {
+            supplierId: s.id,
+            productId: product.id,
+            variantId: variant.id,
+            supplierProductOfferId: baseOffer.id,
+            unitPrice: toDecimal(unitPriceNum),
+            currency: payload.offer?.currency ?? "NGN",
+            availableQty: vQty,
+            inStock: guardedVar.inStock !== false,
+            isActive: guardedVar.isActive !== false,
+            leadDays: (raw as any)?.leadDays ?? payload.offer?.leadDays ?? null,
+          } as any,
+        });
+      }
+
+      await recomputeProductStockTx(tx, product.id);
+      await refreshProductAutoPriceIfAutoMode(tx, product.id);
+
+      return tx.product.findUnique({
+        where: { id: product.id },
+        include: {
+          brand: { select: { id: true, name: true } },
+          supplierProductOffers: {
+            where: { supplierId: s.id },
+            take: 1,
+            ...(supplierOfferOrderBy() ? { orderBy: supplierOfferOrderBy() as any } : {}),
+          },
+          ProductVariant: {
+            include: {
+              options: {
+                include: {
+                  attribute: { select: { id: true, name: true, type: true } },
+                  value: { select: { id: true, name: true, code: true } },
+                },
+              },
+              supplierVariantOffers: {
+                where: { supplierId: s.id },
+                take: 1,
+              },
+            },
+            orderBy: { createdAt: "asc" },
+          },
+        },
+      });
+    });
+
+    await safeNotifyAdmins({
+      type: NotificationType.PRODUCT_SUBMITTED,
+      title: "Supplier product submitted",
+      body: `${s.name ?? "A supplier"} submitted a new product: ${created?.title ?? title} (${created?.sku ?? "no-sku"}).`,
+      data: {
+        supplierId: s.id,
+        supplierName: s.name ?? null,
+        productId: (created as any)?.id ?? null,
+        productSku: (created as any)?.sku ?? null,
+      },
+    });
+
+    return res.status(201).json({
+      data: created,
+      warnings,
+    });
+  } catch (e: any) {
+    if (isPrismaUniqueErr(e) || e?.code === "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU") {
+      return res.status(409).json({
+        error: "A product with this Supplier, Brand and SKU already exists.",
+        code: "DUPLICATE_PRODUCT_SUPPLIER_BRAND_SKU",
+        userMessage:
+          "You already have a product for that brand/title. Please change title or brand.",
+        meta: e?.meta,
+      });
+    }
+
+    if (
+      isNumericOverflowError(e) ||
+      e?.code === "NUMERIC_FIELD_OVERFLOW" ||
+      e?.code === "MONEY_LIMIT_EXCEEDED"
+    ) {
+      return res.status(400).json({
+        error: "One or more money values are too large.",
+        code: e?.code ?? "NUMERIC_FIELD_OVERFLOW",
+        userMessage:
+          e?.userMessage ??
+          "The amount entered is too large for the current database limit. Please enter a smaller value.",
+      });
+    }
+
+    const status = Number(e?.statusCode) || 500;
+    console.error("[supplier.products CREATE] error:", e);
+
+    return res.status(status).json({
+      error: status >= 500 ? "Failed to create product" : e?.message || "Request failed",
+      code: e?.code,
+      userMessage:
+        e?.userMessage ??
+        "We couldn’t create the product. Please review the form and try again.",
     });
   }
 });
@@ -2984,7 +3358,7 @@ router.get("/:id", requireAuth, async (req, res) => {
           ...(s.userId
             ? ([{ ownerId: s.userId } as any, { userId: s.userId } as any] as any[])
             : []),
-          { status: "LIVE" as any },
+          { status: { in: ["LIVE", "ACTIVE", "PUBLISHED"] as any } } as any,
         ],
       },
       include,
@@ -3029,22 +3403,22 @@ router.get("/:id", requireAuth, async (req, res) => {
     const [attrs, vals] = await Promise.all([
       attrIds.length
         ? (prisma as any).attribute.findMany({
-            where: { id: { in: attrIds } },
-            select: { id: true, name: true, type: true, isActive: true },
-          })
+          where: { id: { in: attrIds } },
+          select: { id: true, name: true, type: true, isActive: true },
+        })
         : Promise.resolve([]),
       valIds.length
         ? (prisma as any).attributeValue.findMany({
-            where: { id: { in: valIds } },
-            select: {
-              id: true,
-              name: true,
-              code: true,
-              attributeId: true,
-              isActive: true,
-              position: true,
-            },
-          })
+          where: { id: { in: valIds } },
+          select: {
+            id: true,
+            name: true,
+            code: true,
+            attributeId: true,
+            isActive: true,
+            position: true,
+          },
+        })
         : Promise.resolve([]),
     ]);
 
@@ -3090,34 +3464,34 @@ router.get("/:id", requireAuth, async (req, res) => {
     const variantsRelData = (p as any)[productVariantsRel] ?? [];
     const variants = Array.isArray(variantsRelData)
       ? variantsRelData.map((v: any) => {
-          const vo = v?.[variantSupplierOffersRel]?.[0] ?? null;
-          return {
-            id: v.id,
-            sku: v.sku,
-            unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
-            availableQty: vo?.availableQty ?? v.availableQty ?? 0,
-            inStock: vo?.inStock ?? v.inStock,
-            isActive: vo?.isActive ?? true,
-            supplierVariantOffer: vo
-              ? {
-                  id: vo.id,
-                  unitPrice: Number(vo.unitPrice ?? 0),
-                  availableQty: vo.availableQty ?? 0,
-                  inStock: vo.inStock ?? true,
-                  isActive: vo.isActive ?? true,
-                  leadDays: vo.leadDays ?? null,
-                  currency: vo.currency ?? "NGN",
-                  variantId: vo.variantId ?? v.id,
-                }
-              : null,
-            options: Array.isArray(v?.[variantOptionsRel])
-              ? v[variantOptionsRel].map((o: any) => ({
-                  attributeId: o.attributeId,
-                  valueId: o.valueId,
-                }))
-              : [],
-          };
-        })
+        const vo = v?.[variantSupplierOffersRel]?.[0] ?? null;
+        return {
+          id: v.id,
+          sku: v.sku,
+          unitPrice: vo?.unitPrice != null ? Number(vo.unitPrice) : 0,
+          availableQty: vo?.availableQty ?? v.availableQty ?? 0,
+          inStock: vo?.inStock ?? v.inStock,
+          isActive: vo?.isActive ?? true,
+          supplierVariantOffer: vo
+            ? {
+              id: vo.id,
+              unitPrice: Number(vo.unitPrice ?? 0),
+              availableQty: vo.availableQty ?? 0,
+              inStock: vo.inStock ?? true,
+              isActive: vo.isActive ?? true,
+              leadDays: vo.leadDays ?? null,
+              currency: vo.currency ?? "NGN",
+              variantId: vo.variantId ?? v.id,
+            }
+            : null,
+          options: Array.isArray(v?.[variantOptionsRel])
+            ? v[variantOptionsRel].map((o: any) => ({
+              attributeId: o.attributeId,
+              valueId: o.valueId,
+            }))
+            : [],
+        };
+      })
       : [];
 
     const moderationByProduct = await getLatestModerationByProduct(String(s.id), [id]);
@@ -3240,16 +3614,16 @@ router.get("/:id", requireAuth, async (req, res) => {
 
         offer: myOffer
           ? {
-              id: myOffer.id,
-              basePrice,
-              currency: myOffer.currency,
-              inStock: myOffer.inStock,
-              isActive: myOffer.isActive,
-              leadDays: myOffer.leadDays ?? null,
-              availableQty: myOffer.availableQty ?? 0,
-              ...(myOffer.updatedAt != null ? { updatedAt: myOffer.updatedAt } : {}),
-              ...(myOffer.createdAt != null ? { createdAt: myOffer.createdAt } : {}),
-            }
+            id: myOffer.id,
+            basePrice,
+            currency: myOffer.currency,
+            inStock: myOffer.inStock,
+            isActive: myOffer.isActive,
+            leadDays: myOffer.leadDays ?? null,
+            availableQty: myOffer.availableQty ?? 0,
+            ...(myOffer.updatedAt != null ? { updatedAt: myOffer.updatedAt } : {}),
+            ...(myOffer.createdAt != null ? { createdAt: myOffer.createdAt } : {}),
+          }
           : null,
 
         variants,

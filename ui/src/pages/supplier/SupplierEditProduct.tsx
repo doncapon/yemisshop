@@ -583,6 +583,46 @@ type DupInfo = {
   explain: string | null;
 };
 
+type SupplierDocumentLite = {
+  kind?: string | null;
+  status?: string | null;
+};
+
+type AuthMeLite = {
+  id?: string;
+  role?: string;
+  emailVerified?: boolean;
+  phoneVerified?: boolean;
+};
+
+type SupplierMeLite = {
+  id?: string;
+  supplierId?: string;
+  name?: string | null;
+  businessName?: string | null;
+  legalName?: string | null;
+  registrationType?: string | null;
+  registrationCountryCode?: string | null;
+  status?: string | null;
+  kycStatus?: string | null;
+  registeredAddress?: {
+    houseNumber?: string | null;
+    streetName?: string | null;
+    city?: string | null;
+    state?: string | null;
+    country?: string | null;
+    postCode?: string | null;
+  } | null;
+  pickupAddress?: {
+    houseNumber?: string | null;
+    streetName?: string | null;
+    city?: string | null;
+    state?: string | null;
+    country?: string | null;
+    postCode?: string | null;
+  } | null;
+};
+
 function getPendingBasePatchFromDetail(p: any) {
   const pending: any[] =
     (Array.isArray(p?.pendingOfferChanges) && p.pendingOfferChanges) ||
@@ -680,6 +720,107 @@ export default function SupplierEditProduct() {
   const hydratedAttrsForIdRef = useRef<string | null>(null);
 
   const isSupplier = role === "SUPPLIER";
+
+  const onboardingQ = useQuery({
+    queryKey: ["supplier", "edit-product", "onboarding-state"],
+    enabled: hydrated && isSupplier,
+    queryFn: async () => {
+      const [authRes, supplierRes, docsRes] = await Promise.all([
+        api.get("/api/auth/me", { withCredentials: true }),
+        api.get("/api/supplier/me", { withCredentials: true }),
+        api
+          .get("/api/supplier/documents", { withCredentials: true })
+          .catch(() => ({ data: { data: [] } })),
+      ]);
+
+      const authMe = ((authRes.data as any)?.data ??
+        (authRes.data as any)?.user ??
+        authRes.data ??
+        {}) as AuthMeLite;
+
+      const supplierMe = ((supplierRes.data as any)?.data ??
+        supplierRes.data ??
+        {}) as SupplierMeLite;
+
+      const rawDocs = (docsRes as any)?.data?.data ?? (docsRes as any)?.data ?? [];
+      const docs = Array.isArray(rawDocs) ? (rawDocs as SupplierDocumentLite[]) : [];
+
+      const contactDone = !!authMe?.emailVerified && !!authMe?.phoneVerified;
+
+      const businessDone = Boolean(
+        String(supplierMe?.legalName ?? "").trim() &&
+        String(supplierMe?.registrationType ?? "").trim() &&
+        String(supplierMe?.registrationCountryCode ?? "").trim()
+      );
+
+      const addressDone =
+        hasAddress(supplierMe?.registeredAddress) || hasAddress(supplierMe?.pickupAddress);
+
+      const requiredKinds = [
+        ...(isRegisteredBusiness(supplierMe?.registrationType)
+          ? ["BUSINESS_REGISTRATION_CERTIFICATE"]
+          : []),
+        "GOVERNMENT_ID",
+        "PROOF_OF_ADDRESS",
+      ];
+
+      const docsDone = requiredKinds.every((kind) => docSatisfied(docs, kind));
+
+      const onboardingDone = contactDone && businessDone && addressDone && docsDone;
+
+      const nextPath = !contactDone
+        ? "/supplier/verify-contact"
+        : !businessDone
+          ? "/supplier/onboarding"
+          : !addressDone
+            ? "/supplier/onboarding/address"
+            : !docsDone
+              ? "/supplier/onboarding/documents"
+              : "/supplier";
+
+      return {
+        contactDone,
+        businessDone,
+        addressDone,
+        docsDone,
+        onboardingDone,
+        nextPath,
+        supplierStatus: supplierMe?.status ?? null,
+        kycStatus: supplierMe?.kycStatus ?? null,
+      };
+    },
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
+
+  const onboardingBlocked = isSupplier && !!onboardingQ.data && !onboardingQ.data.onboardingDone;
+
+  const nextStepLabel = useMemo(() => {
+    const p = onboardingQ.data?.nextPath;
+    if (p === "/supplier/verify-contact") return "Continue contact verification";
+    if (p === "/supplier/onboarding") return "Continue business onboarding";
+    if (p === "/supplier/onboarding/address") return "Continue address setup";
+    if (p === "/supplier/onboarding/documents") return "Continue document upload";
+    return "Continue onboarding";
+  }, [onboardingQ.data?.nextPath]);
+
+  const onboardingProgressItems = useMemo(() => {
+    const d = onboardingQ.data;
+    if (!d) return [];
+    return [
+      { key: "contact", label: "Contact verified", done: d.contactDone },
+      { key: "business", label: "Business details", done: d.businessDone },
+      { key: "address", label: "Address details", done: d.addressDone },
+      { key: "documents", label: "Documents uploaded", done: d.docsDone },
+    ];
+  }, [onboardingQ.data]);
+
+  const onboardingPct = useMemo(() => {
+    if (!onboardingProgressItems.length) return 0;
+    const done = onboardingProgressItems.filter((x) => x.done).length;
+    return Math.round((done / onboardingProgressItems.length) * 100);
+  }, [onboardingProgressItems]);
 
   const ngn = useMemo(
     () =>
@@ -963,16 +1104,16 @@ export default function SupplierEditProduct() {
     return "Your BaseCombo (Attributes) matches one or more VariantCombo rows. Change the base selection or update/remove the variant row(s).";
   }, [hasBaseComboConflict]);
 
-  const canEditCore = !offersOnly;
-  const canEditAttributes = !offersOnly;
-  const canEditTitleSku = !offersOnly && !titleSkuLocked;
+  const canEditCore = !offersOnly && !onboardingBlocked;
+  const canEditAttributes = !offersOnly && !onboardingBlocked;
+  const canEditTitleSku = !offersOnly && !titleSkuLocked && !onboardingBlocked;
 
   /**
    * Keep current variant-row creation rule conservative:
    * existing LIVE / ACTIVE / PENDING / REJECTED review-managed products
    * should not let supplier think they can freely create local combos.
    */
-  const canAddNewCombos = !offersOnly && !isReviewManaged;
+  const canAddNewCombos = !offersOnly && !isReviewManaged && !onboardingBlocked;
 
   useEffect(() => {
     const p = detailQ.data as any;
@@ -1505,6 +1646,30 @@ export default function SupplierEditProduct() {
 
     setVariantRows((prev) => [...prev, nextRow]);
     setEditingVariantRowId(nextRow.id);
+  }
+
+  function hasAddress(addr: any) {
+    if (!addr) return false;
+    return Boolean(
+      String(addr.houseNumber ?? "").trim() ||
+      String(addr.streetName ?? "").trim() ||
+      String(addr.city ?? "").trim() ||
+      String(addr.state ?? "").trim() ||
+      String(addr.country ?? "").trim() ||
+      String(addr.postCode ?? "").trim()
+    );
+  }
+
+  function isRegisteredBusiness(registrationType?: string | null) {
+    return String(registrationType ?? "").trim().toUpperCase() === "REGISTERED_BUSINESS";
+  }
+
+  function docSatisfied(docs: SupplierDocumentLite[], kind: string) {
+    return docs.some((d) => {
+      const k = String(d.kind ?? "").trim().toUpperCase();
+      const s = String(d.status ?? "").trim().toUpperCase();
+      return k === kind && (s === "PENDING" || s === "APPROVED");
+    });
   }
 
   function updateVariantSelection(rowId: string, attributeId: string, valueId: string) {
@@ -2097,11 +2262,18 @@ export default function SupplierEditProduct() {
     isSubmitting ||
     uploading ||
     detailQ.isLoading ||
+    onboardingQ.isLoading ||
     !hydrated ||
     !isSupplier ||
+    onboardingBlocked ||
     hasBlockingError;
 
   const doSave = () => {
+    if (onboardingBlocked) {
+      setErr("Complete supplier onboarding first before editing products.");
+      return;
+    }
+
     if (hasBlockingError) {
       setErr(
         imageOverLimit
@@ -2171,7 +2343,8 @@ export default function SupplierEditProduct() {
     return current > 0 && current === pendingBaseValue;
   }, [hasPendingBaseForUi, pendingBaseValue, retailPrice]);
 
-  return (
+
+    return (
     <SiteLayout>
       <SupplierLayout>
         <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-white/90 backdrop-blur">
@@ -2183,8 +2356,9 @@ export default function SupplierEditProduct() {
               className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-zinc-900 text-white px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
             >
               <Save size={16} />
-              {saveButtonLabel}
+              {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
             </button>
+
             <button
               type="button"
               onClick={() => setSummaryOpen((v) => !v)}
@@ -2192,7 +2366,10 @@ export default function SupplierEditProduct() {
               aria-expanded={summaryOpen}
             >
               <Package size={16} />
-              <ChevronDown size={16} className={summaryOpen ? "rotate-180 transition" : "transition"} />
+              <ChevronDown
+                size={16}
+                className={summaryOpen ? "rotate-180 transition" : "transition"}
+              />
             </button>
           </div>
 
@@ -2218,13 +2395,16 @@ export default function SupplierEditProduct() {
                           : isReviewManaged
                             ? "Review-managed product"
                             : "Create new"}
-                  </b>                </div>
+                  </b>
+                </div>
 
                 {!offersOnly ? (
                   <>
                     <div className="flex items-center justify-between">
                       <span className="text-zinc-500">Base price</span>
-                      <b className="text-zinc-900">{retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}</b>
+                      <b className="text-zinc-900">
+                        {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                      </b>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-zinc-500">Stock</span>
@@ -2237,7 +2417,9 @@ export default function SupplierEditProduct() {
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-zinc-500">Images</span>
-                      <b className="text-zinc-900">{imagesCount}/{MAX_IMAGES}</b>
+                      <b className="text-zinc-900">
+                        {imagesCount}/{MAX_IMAGES}
+                      </b>
                     </div>
                   </>
                 ) : (
@@ -2298,14 +2480,16 @@ export default function SupplierEditProduct() {
               >
                 <ArrowLeft size={16} /> Back
               </Link>
+
               <button
                 type="button"
                 disabled={submitDisabled}
                 onClick={doSave}
                 className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 text-white px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                title={onboardingBlocked ? "Complete onboarding first" : undefined}
               >
                 {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
-                {saveButtonLabel}
+                {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
               </button>
             </div>
 
@@ -2322,6 +2506,68 @@ export default function SupplierEditProduct() {
           {guardMsg && (
             <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
               {guardMsg}
+            </div>
+          )}
+
+          {isSupplier && onboardingQ.isLoading && (
+            <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-700">
+              Checking onboarding status…
+            </div>
+          )}
+
+          {onboardingBlocked && (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="min-w-0">
+                  <div className="font-semibold">Onboarding in progress</div>
+                  <div className="mt-1 text-amber-800">
+                    You need to complete supplier onboarding before editing products.
+                    Your product form is visible for context, but editing and saving are locked until onboarding is complete.
+                  </div>
+
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-amber-100">
+                    <div
+                      className="h-full rounded-full bg-amber-500 transition-all"
+                      style={{ width: `${onboardingPct}%` }}
+                    />
+                  </div>
+
+                  <div className="mt-2 text-[12px] text-amber-800">
+                    Progress: <b>{onboardingPct}%</b>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {onboardingProgressItems.map((item) => (
+                      <span
+                        key={item.key}
+                        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                          item.done
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-amber-100 text-amber-800"
+                        }`}
+                      >
+                        {item.label}: {item.done ? "Done" : "Pending"}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-3 text-[12px] text-amber-800">
+                    Supplier status: <b>{String(onboardingQ.data?.supplierStatus ?? "PENDING")}</b>
+                    {" • "}
+                    KYC: <b>{String(onboardingQ.data?.kycStatus ?? "PENDING")}</b>
+                  </div>
+                </div>
+
+                <div className="shrink-0">
+                  <Link
+                    to={onboardingQ.data?.nextPath || "/supplier/verify-contact"}
+                    className="inline-flex items-center justify-center rounded-xl bg-amber-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-950"
+                  >
+                    {nextStepLabel}
+                    <ArrowLeft className="ml-2 h-4 w-4 rotate-180" />
+                  </Link>
+                </div>
+              </div>
             </div>
           )}
 
@@ -2373,6 +2619,7 @@ export default function SupplierEditProduct() {
               {err}
             </div>
           )}
+
           {okMsg && (
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-4 py-3 text-sm">
               {okMsg}
@@ -2389,6 +2636,7 @@ export default function SupplierEditProduct() {
             <div className="lg:col-span-2 space-y-4">
               <Card
                 title="Basic information"
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
                 subtitle={
                   offersOnly
                     ? "Catalog product details are read-only. Update your supplier offer values below."
@@ -2396,6 +2644,12 @@ export default function SupplierEditProduct() {
                 }
               >
                 <div className="space-y-3">
+                  {onboardingBlocked && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                      Editing is temporarily locked until supplier onboarding is complete.
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <Label>
@@ -2462,6 +2716,7 @@ export default function SupplierEditProduct() {
                         onChange={onChangeBasePrice}
                         inputMode="decimal"
                         placeholder="e.g. 25000"
+                        disabled={onboardingBlocked}
                       />
 
                       {!offersOnly && isReviewManaged && (
@@ -2469,6 +2724,7 @@ export default function SupplierEditProduct() {
                           Approved: <b>{ngn.format(Number(activeBasePriceForDisplay ?? 0))}</b>
                         </div>
                       )}
+
                       {hasPendingBaseForUi && pendingBaseValue != null && (
                         <div className="text-[11px] text-amber-700 mt-1">
                           Pending approval price: <b>{ngn.format(pendingBaseValue)}</b>
@@ -2477,7 +2733,7 @@ export default function SupplierEditProduct() {
                             : " — change the amount if you want to replace the pending request."}
                         </div>
                       )}
-                      
+
                       {pendingBaseMatchesForm && (
                         <div className="text-[11px] text-amber-700 mt-1">
                           This price is already pending approval. Saving again will not change the pending price unless you enter a different amount.
@@ -2492,21 +2748,25 @@ export default function SupplierEditProduct() {
                             Pending: <b>{ngn.format(Number(pendingBasePatch.basePrice ?? 0))}</b>
                           </div>
                         )}
+
                       {!!retailPrice && (
                         <div className="text-[11px] text-zinc-500 mt-1">
                           Preview: <b>{ngn.format(basePriceForPreview)}</b>
                         </div>
                       )}
+
                       {offersOnly && (
                         <div className="text-[11px] text-zinc-600 mt-1">
                           Active (approved): <b>{ngn.format(activeBasePriceForDisplay)}</b>
                         </div>
                       )}
+
                       {offersOnly && hasPendingBase && (
                         <div className="text-[11px] text-amber-700 mt-1">
                           Pending: <b>{ngn.format(Number(pendingBasePatch?.basePrice ?? 0))}</b>
                         </div>
                       )}
+
                       {offersOnly && showRequestedButNotPending && (
                         <div className="text-[11px] text-zinc-500 mt-1">
                           Will submit for approval: <b>{ngn.format(requestedBasePriceForDisplay)}</b>
@@ -2515,12 +2775,13 @@ export default function SupplierEditProduct() {
                     </div>
 
                     <div>
-                      <Label>{offersOnly ? "Base quantity" : "Base quantity"}</Label>
+                      <Label>Base quantity</Label>
                       <Input
                         value={availableQty}
                         onChange={(e) => setAvailableQty(e.target.value)}
                         inputMode="numeric"
                         placeholder="e.g. 20"
+                        disabled={onboardingBlocked}
                       />
                       <div className="text-[11px] text-zinc-500 mt-1">
                         Total: <b>{baseQtyPreview}</b> + <b>{variantQtyTotal}</b> = <b>{totalQty}</b>
@@ -2615,17 +2876,19 @@ export default function SupplierEditProduct() {
 
               <Card
                 title="Images"
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
                 subtitle={
                   offersOnly
-                    ? `Catalog images are read-only here.`
+                    ? "Catalog images are read-only here."
                     : isReviewManaged
                       ? `Paste URLs or upload images (max ${MAX_IMAGES}). Image changes will update the pending submission.`
                       : `Paste URLs or upload images (max ${MAX_IMAGES}).`
                 }
                 right={
                   <label
-                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${offersOnly ? "opacity-60 pointer-events-none" : ""
-                      }`}
+                    className={`inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 cursor-pointer ${
+                      offersOnly || onboardingBlocked ? "opacity-60 pointer-events-none" : ""
+                    }`}
                   >
                     <ImagePlus size={16} /> Add files
                     <input
@@ -2635,12 +2898,18 @@ export default function SupplierEditProduct() {
                       accept="image/*"
                       className="hidden"
                       onChange={(e) => onPickFiles(Array.from(e.target.files || []))}
-                      disabled={offersOnly}
+                      disabled={offersOnly || onboardingBlocked}
                     />
                   </label>
                 }
               >
                 <div className="space-y-3">
+                  {onboardingBlocked && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                      Image changes are locked until onboarding is complete.
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between text-xs">
                     <div className="text-zinc-600">
                       Images used: <b>{imagesCount}</b> / {MAX_IMAGES}
@@ -2651,6 +2920,7 @@ export default function SupplierEditProduct() {
                         </>
                       )}
                     </div>
+
                     {!offersOnly && (
                       <div className="text-zinc-500">
                         Remaining slots: <b>{remainingSlots}</b>
@@ -2663,14 +2933,14 @@ export default function SupplierEditProduct() {
                     <Textarea
                       value={imageUrls}
                       onChange={(e) => {
-                        if (offersOnly) return;
+                        if (offersOnly || onboardingBlocked) return;
                         setErr(null);
                         const raw = parseUrlList(e.target.value);
                         const capped = limitImages(raw, MAX_IMAGES);
                         setImageUrls(capped.join("\n"));
                       }}
                       className="min-h-[90px] text-xs"
-                      disabled={offersOnly}
+                      disabled={offersOnly || onboardingBlocked}
                       placeholder={"https://.../image1.jpg\nhttps://.../image2.png"}
                     />
                   </div>
@@ -2705,7 +2975,8 @@ export default function SupplierEditProduct() {
                                   img.style.display = "none";
                                 }}
                               />
-                              {!offersOnly && (
+
+                              {!offersOnly && !onboardingBlocked && (
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -2728,6 +2999,7 @@ export default function SupplierEditProduct() {
                         ))}
 
                         {!offersOnly &&
+                          !onboardingBlocked &&
                           filePreviews
                             .slice(0, Math.max(0, MAX_IMAGES - allUrlPreviews.length))
                             .map(({ file, url }) => (
@@ -2751,7 +3023,7 @@ export default function SupplierEditProduct() {
                     </div>
                   )}
 
-                  {!offersOnly && files.length > 0 && (
+                  {!offersOnly && !onboardingBlocked && files.length > 0 && (
                     <div className="rounded-2xl border bg-white p-3">
                       <div className="text-xs font-semibold text-zinc-800">
                         Selected files: <span className="font-mono">{files.length}</span>
@@ -2799,8 +3071,10 @@ export default function SupplierEditProduct() {
                       ? "Optional details used for filtering and variant setup. Attribute changes will update the pending submission."
                       : "Optional details used for filtering and variant setup."
                 }
-
-                className={hasBaseComboConflict || flashBaseCombo ? "border-rose-300 ring-2 ring-rose-100" : ""}
+                className={[
+                  hasBaseComboConflict || flashBaseCombo ? "border-rose-300 ring-2 ring-rose-100" : "",
+                  onboardingBlocked ? "border-amber-200 bg-amber-50/30" : "",
+                ].join(" ")}
                 right={
                   <div className="flex items-center gap-2 flex-wrap">
                     <AddNewLink
@@ -2811,7 +3085,14 @@ export default function SupplierEditProduct() {
                 }
               >
                 <div className="space-y-3">
+                  {onboardingBlocked && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                      Attribute editing is locked until onboarding is complete.
+                    </div>
+                  )}
+
                   {attributesQ.isLoading && <div className="text-sm text-zinc-500">Loading attributes…</div>}
+
                   {!attributesQ.isLoading && activeAttrs.length === 0 && (
                     <div className="text-sm text-zinc-500">No active attributes configured.</div>
                   )}
@@ -2863,11 +3144,16 @@ export default function SupplierEditProduct() {
                               <AddNewLink
                                 label={label}
                                 onClick={() =>
-                                  nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
+                                  nav(
+                                    goToCatalogRequests("attribute-values", "value", {
+                                      attributeId: String(a.id || ""),
+                                    })
+                                  )
                                 }
                                 title={`Request new values for ${a.name}`}
                               />
                             </div>
+
                             <Select
                               value={v}
                               onChange={(e) => setAttr(a.id, e.target.value)}
@@ -2895,19 +3181,27 @@ export default function SupplierEditProduct() {
                             <AddNewLink
                               label={label}
                               onClick={() =>
-                                nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(a.id || "") }))
+                                nav(
+                                  goToCatalogRequests("attribute-values", "value", {
+                                    attributeId: String(a.id || ""),
+                                  })
+                                )
                               }
                               title={`Request new values for ${a.name}`}
                             />
                           </div>
+
                           <div className="mt-2 flex flex-wrap gap-2">
                             {(a.values || []).map((x) => {
                               const checked = arr.includes(x.id);
                               return (
                                 <label
                                   key={x.id}
-                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${checked ? "bg-zinc-900 text-white border-zinc-900" : "bg-white hover:bg-black/5"
-                                    }`}
+                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs cursor-pointer ${
+                                    checked
+                                      ? "bg-zinc-900 text-white border-zinc-900"
+                                      : "bg-white hover:bg-black/5"
+                                  }`}
                                 >
                                   <input
                                     type="checkbox"
@@ -2936,6 +3230,7 @@ export default function SupplierEditProduct() {
 
               <Card
                 title="Variant combinations"
+                className={onboardingBlocked ? "border-amber-200 bg-amber-50/30" : ""}
                 subtitle={
                   offersOnly
                     ? "Set supplier-specific stock and price for each existing variant."
@@ -2950,7 +3245,10 @@ export default function SupplierEditProduct() {
                         <button
                           type="button"
                           onClick={generateVariantMatrix}
-                          disabled={!selectableAttrs.some((a) => String(selectedAttrs[a.id] ?? "").trim() !== "")}
+                          disabled={
+                            onboardingBlocked ||
+                            !selectableAttrs.some((a) => String(selectedAttrs[a.id] ?? "").trim() !== "")
+                          }
                           className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-50"
                         >
                           Generate combo
@@ -2959,7 +3257,7 @@ export default function SupplierEditProduct() {
                         <button
                           type="button"
                           onClick={addVariantRow}
-                          disabled={!selectableAttrs.length || !canAddNewCombos}
+                          disabled={onboardingBlocked || !selectableAttrs.length || !canAddNewCombos}
                           className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-black/5 disabled:opacity-60"
                         >
                           <Plus size={16} /> Add row
@@ -2976,6 +3274,12 @@ export default function SupplierEditProduct() {
                 }
               >
                 <div className="space-y-2">
+                  {onboardingBlocked && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800">
+                      Variant quantity and pricing updates are locked until onboarding is complete.
+                    </div>
+                  )}
+
                   {!selectableAttrs.length && (
                     <div className="text-sm text-zinc-500">
                       No SELECT attributes available. Create SELECT attributes to enable variants.
@@ -2992,22 +3296,30 @@ export default function SupplierEditProduct() {
                     const isDup = duplicateRowIds.has(row.id);
                     const isBaseConflict = baseComboConflictRowIds.has(row.id);
                     const isFlashing = flashVariantRowId === row.id;
-                    const isEditing = editingVariantRowId === row.id && !offersOnly && !isReviewManaged && !row.isExisting;
+                    const isEditing =
+                      editingVariantRowId === row.id &&
+                      !offersOnly &&
+                      !isReviewManaged &&
+                      !row.isExisting &&
+                      !onboardingBlocked;
 
                     const variantPriceNum = toMoneyNumber(row.unitPrice);
-                    const effectiveVariantPrice =
-                      offersOnly
-                        ? Number(row.activeUnitPrice ?? activeBasePriceForDisplay)
-                        : variantPriceNum > 0
-                          ? variantPriceNum
-                          : toMoneyNumber(retailPrice);
+                    const effectiveVariantPrice = offersOnly
+                      ? Number(row.activeUnitPrice ?? activeBasePriceForDisplay)
+                      : variantPriceNum > 0
+                        ? variantPriceNum
+                        : toMoneyNumber(retailPrice);
 
                     const label = row.comboLabel || getVariantRowLabel(row);
                     const rowQty = toIntNonNeg(row.availableQty);
 
-                    const pendingVar = row.variantId ? pendingVariantPatchByVariantId.get(String(row.variantId)) : null;
+                    const pendingVar = row.variantId
+                      ? pendingVariantPatchByVariantId.get(String(row.variantId))
+                      : null;
+
                     const pendingPatch = pendingVar?.proposedPatch ?? pendingVar?.patchJson ?? null;
                     const pendingVarUnitPrice = Number(pendingPatch?.unitPrice ?? NaN);
+
                     const hasPendingVarPrice =
                       offersOnly &&
                       Number.isFinite(pendingVarUnitPrice) &&
@@ -3035,14 +3347,16 @@ export default function SupplierEditProduct() {
                                 isLive &&
                                 row.variantId &&
                                 pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice != null &&
-                                Number(pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice) !==
-                                Number(row.activeUnitPrice ?? effectiveVariantPrice) && (
+                                Number(
+                                  pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice
+                                ) !== Number(row.activeUnitPrice ?? effectiveVariantPrice) && (
                                   <div className="text-[11px] text-amber-700 mt-1">
                                     Pending variant:{" "}
                                     <b>
                                       {ngn.format(
                                         Number(
-                                          pendingProductVariantPatchByVariantId.get(String(row.variantId))?.unitPrice ?? 0
+                                          pendingProductVariantPatchByVariantId.get(String(row.variantId))
+                                            ?.unitPrice ?? 0
                                         )
                                       )}
                                     </b>
@@ -3074,7 +3388,9 @@ export default function SupplierEditProduct() {
                                     inputMode="decimal"
                                     className="w-28 text-xs"
                                     placeholder="e.g. 25000"
+                                    disabled={onboardingBlocked}
                                   />
+
                                   <span className="text-xs text-zinc-500">Qty</span>
                                   <Input
                                     value={row.availableQty}
@@ -3082,6 +3398,7 @@ export default function SupplierEditProduct() {
                                     inputMode="numeric"
                                     className="w-24 text-xs"
                                     placeholder="e.g. 5"
+                                    disabled={onboardingBlocked}
                                   />
                                 </>
                               ) : (
@@ -3091,7 +3408,8 @@ export default function SupplierEditProduct() {
                                     setErr(null);
                                     setEditingVariantRowId(row.id);
                                   }}
-                                  className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50"
+                                  disabled={onboardingBlocked}
+                                  className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-60"
                                 >
                                   Edit combo
                                 </button>
@@ -3100,7 +3418,8 @@ export default function SupplierEditProduct() {
                               <button
                                 type="button"
                                 onClick={() => removeVariantRow(row.id)}
-                                className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100"
+                                disabled={onboardingBlocked}
+                                className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100 disabled:opacity-60"
                               >
                                 <Trash2 size={14} /> {offersOnly ? "Remove offer" : "Remove"}
                               </button>
@@ -3125,7 +3444,8 @@ export default function SupplierEditProduct() {
                             <button
                               type="button"
                               onClick={() => saveVariantRow(row.id)}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold"
+                              disabled={onboardingBlocked}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-zinc-900 text-white px-3 py-2 text-sm font-semibold disabled:opacity-60"
                             >
                               Save combo
                             </button>
@@ -3133,7 +3453,8 @@ export default function SupplierEditProduct() {
                             <button
                               type="button"
                               onClick={() => setEditingVariantRowId(null)}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50"
+                              disabled={onboardingBlocked}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-60"
                             >
                               Done
                             </button>
@@ -3141,7 +3462,8 @@ export default function SupplierEditProduct() {
                             <button
                               type="button"
                               onClick={() => removeVariantRow(row.id)}
-                              className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100"
+                              disabled={onboardingBlocked}
+                              className="inline-flex items-center gap-2 rounded-xl border bg-rose-50 text-rose-700 px-3 py-2 text-sm font-semibold hover:bg-rose-100 disabled:opacity-60"
                             >
                               <Trash2 size={14} /> Remove
                             </button>
@@ -3161,14 +3483,20 @@ export default function SupplierEditProduct() {
                                     <AddNewLink
                                       label={label}
                                       onClick={() =>
-                                        nav(goToCatalogRequests("attribute-values", "value", { attributeId: String(attr.id || "") }))
+                                        nav(
+                                          goToCatalogRequests("attribute-values", "value", {
+                                            attributeId: String(attr.id || ""),
+                                          })
+                                        )
                                       }
                                       title={`Request new values for ${attr.name}`}
                                     />
                                   </div>
+
                                   <Select
                                     value={valueId}
                                     onChange={(e) => updateVariantSelection(row.id, attr.id, e.target.value)}
+                                    disabled={onboardingBlocked}
                                     className={isBaseConflict || isFlashing ? "border-rose-300" : ""}
                                   >
                                     <option value="">Select…</option>
@@ -3191,16 +3519,20 @@ export default function SupplierEditProduct() {
                                 onChange={(e) => updateVariantQty(row.id, e.target.value)}
                                 inputMode="numeric"
                                 placeholder="e.g. 5"
+                                disabled={onboardingBlocked}
                               />
                             </div>
 
                             <div>
-                              <div className="text-[11px] font-semibold text-zinc-600 mb-1">Variant price (NGN)</div>
+                              <div className="text-[11px] font-semibold text-zinc-600 mb-1">
+                                Variant price (NGN)
+                              </div>
                               <Input
                                 value={row.unitPrice}
                                 onChange={(e) => updateVariantPrice(row.id, e.target.value)}
                                 inputMode="decimal"
                                 placeholder={retailPrice ? `e.g. ${retailPrice}` : "e.g. 25000"}
+                                disabled={onboardingBlocked}
                               />
                               <div className="text-[11px] text-zinc-500 mt-1">
                                 Preview: <b>{effectiveVariantPrice ? ngn.format(effectiveVariantPrice) : "—"}</b>
@@ -3221,9 +3553,7 @@ export default function SupplierEditProduct() {
                   })}
 
                   {variantRows.length === 0 && (
-                    <div className="text-sm text-zinc-500">
-                      No variant rows found for this product.
-                    </div>
+                    <div className="text-sm text-zinc-500">No variant rows found for this product.</div>
                   )}
                 </div>
               </Card>
@@ -3236,7 +3566,7 @@ export default function SupplierEditProduct() {
                   className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
                 >
                   {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
-                  {saveButtonLabel}
+                  {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
                 </button>
               </div>
             </div>
@@ -3268,7 +3598,9 @@ export default function SupplierEditProduct() {
 
                       <div className="flex items-center justify-between">
                         <span className="text-zinc-500">Base price</span>
-                        <b className="text-zinc-900">{retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}</b>
+                        <b className="text-zinc-900">
+                          {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                        </b>
                       </div>
 
                       {!offersOnly && isLive && (
@@ -3306,7 +3638,9 @@ export default function SupplierEditProduct() {
 
                       <div className="flex items-center justify-between">
                         <span className="text-zinc-500">Images</span>
-                        <b className="text-zinc-900">{imagesCount}/{MAX_IMAGES}</b>
+                        <b className="text-zinc-900">
+                          {imagesCount}/{MAX_IMAGES}
+                        </b>
                       </div>
 
                       <div className="flex items-center justify-between">
@@ -3328,7 +3662,9 @@ export default function SupplierEditProduct() {
 
                       <div className="flex items-center justify-between">
                         <span className="text-zinc-500">Base offer</span>
-                        <b className="text-zinc-900">{retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}</b>
+                        <b className="text-zinc-900">
+                          {retailPrice ? ngn.format(toMoneyNumber(retailPrice)) : "—"}
+                        </b>
                       </div>
 
                       <div className="flex items-center justify-between">
@@ -3362,7 +3698,7 @@ export default function SupplierEditProduct() {
                 className="w-full inline-flex items-center justify-center gap-2 rounded-2xl bg-zinc-900 text-white px-4 py-3 text-sm font-semibold disabled:opacity-60"
               >
                 {offersOnly ? <Link2 size={16} /> : <Save size={16} />}
-                {saveButtonLabel}
+                {onboardingBlocked ? "Onboarding required" : saveButtonLabel}
               </button>
 
               {offersOnly && detailQ.data && (
@@ -3374,6 +3710,12 @@ export default function SupplierEditProduct() {
                   <div className="mt-2 text-xs">
                     Core product details stay read-only here. You are only updating supplier-specific offer and stock.
                   </div>
+                </div>
+              )}
+
+              {onboardingBlocked && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  Complete onboarding first to unlock editing on this page.
                 </div>
               )}
             </div>

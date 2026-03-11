@@ -1,142 +1,11 @@
-// api/src/routes/suppliers.ts
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { z } from "zod";
-import jwt from "jsonwebtoken";
-import {
-  fetchCacBasic,
-  type CacCompanyType as DojahCompanyType,
-} from "../lib/dojahClient.js";
 import { requireAuth, requireSupplier } from "../middleware/auth.js";
 
 const router = Router();
 
-const CacCompanyTypeEnum = z.enum([
-  "BUSINESS_NAME",
-  "COMPANY",
-  "INCORPORATED_TRUSTEES",
-  "LIMITED_PARTNERSHIP",
-  "LIMITED_LIABILITY_PARTNERSHIP",
-]);
-
-type CacCompanyType = z.infer<typeof CacCompanyTypeEnum>;
-
-type CacEntity = {
-  company_name: string;
-  rc_number: string;
-  address?: string | null;
-  state?: string | null;
-  city?: string | null;
-  lga?: string | null;
-  email?: string | null;
-  type_of_company: CacCompanyType;
-  date_of_registration?: string | null;
-  nature_of_business?: string | null;
-  share_capital?: number | null;
-  share_details?: unknown;
-};
-
-const KYC_TICKET_SECRET =
-  process.env.KYC_TICKET_SECRET || "CHANGE_ME_KYC_TICKET_SECRET";
-const TICKET_TTL_SEC = 10 * 60; // 10 minutes
-const MISMATCH_COOLDOWN_SEC = 60; // slow brute-force guessing
-const NOTFOUND_COOLDOWN_HOURS = 24;
-
-/* ------------------------------ helpers -------------------------------- */
-
-const norm = (s: any) => String(s ?? "").trim().toLowerCase();
-const digits = (s: any) => String(s ?? "").replace(/\D/g, "");
-
-function pad2(n: number) {
-  return String(n).padStart(2, "0");
-}
-function ymdFromParts(y: number, m: number, d: number) {
-  return `${y}-${pad2(m)}-${pad2(d)}`;
-}
-
-function normalizeDateToYMD(raw?: string | null): string | null {
-  const s = String(raw ?? "").trim();
-  if (!s) return null;
-
-  // already ISO-ish
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-
-  // dd/mm/yyyy or mm/dd/yyyy
-  const slash = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (slash) {
-    const a = Number(slash[1]);
-    const b = Number(slash[2]);
-    const y = Number(slash[3]);
-    if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(y))
-      return null;
-
-    // heuristic: if first part > 12, it's day/month
-    let day = b;
-    let month = a;
-    if (a > 12 && b <= 12) {
-      day = a;
-      month = b;
-    }
-
-    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-    return ymdFromParts(y, month, day);
-  }
-
-  // fallback parse
-  try {
-    const dt = new Date(s);
-    if (Number.isNaN(dt.getTime())) return null;
-    return ymdFromParts(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
-  } catch {
-    return null;
-  }
-}
-
-function matchesAllFour(
-  entity: CacEntity,
-  input: {
-    rcNumber: string;
-    companyType: string;
-    companyName: string;
-    regDate: string;
-  }
-) {
-  const rcOk =
-    digits(input.rcNumber) !== "" &&
-    digits(input.rcNumber) === digits(entity.rc_number);
-
-  const typeOk =
-    String(input.companyType).trim().toUpperCase() ===
-    String(entity.type_of_company).trim().toUpperCase();
-
-  const nameOk =
-    norm(input.companyName) !== "" &&
-    norm(input.companyName) === norm(entity.company_name);
-
-  const entryDate = normalizeDateToYMD(entity.date_of_registration);
-  const uiDate = String(input.regDate || "").trim();
-  const dateOk = !!uiDate && !!entryDate && entryDate === uiDate;
-
-  return rcOk && typeOk && nameOk && dateOk;
-}
-
-function signTicket(payload: {
-  rcNumber: string;
-  companyType: CacCompanyType;
-  companyNameNorm: string;
-  regDateYmd: string;
-}) {
-  return jwt.sign({ k: "cac-verify", ...payload }, KYC_TICKET_SECRET, {
-    expiresIn: TICKET_TTL_SEC,
-  });
-}
-
-/* ---------------- Supplier identity endpoints ----------------
-   Frontend tries:
-   /api/supplier/me
-   /api/supplier/profile
-   /api/supplier/dashboard
---------------------------------------------------------------- */
+/* ---------------- Supplier identity endpoints ---------------- */
 
 async function getSupplierForUser(userId: string) {
   return prisma.supplier.findFirst({
@@ -153,6 +22,7 @@ function supplierPayload(s: { id: string; name: string; status: any }) {
     supplier: { id: s.id, name: s.name, status: s.status },
     id: s.id,
     name: s.name,
+    businessName: s.name,
   };
 }
 
@@ -160,16 +30,231 @@ function getUserId(req: any): string | null {
   return req?.user?.id || req?.auth?.userId || req?.userId || null;
 }
 
-// What the frontend expects (SupplierMeDto)
-// ✅ FIX: include bankCountry/bankCode + verification fields
+function toIsoDateOnly(v: any): string | null {
+  if (!v) return null;
+  try {
+    const d = v instanceof Date ? v : new Date(v);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 10);
+  } catch {
+    return null;
+  }
+}
+
+function cleanString(v: any): string | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === null) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
+function cleanBool(v: any): boolean | undefined {
+  if (v === undefined) return undefined;
+  return !!v;
+}
+
+function norm(v: any) {
+  return String(v ?? "").trim();
+}
+
+function sameDate(a: any, b: any) {
+  const aa = a ? new Date(a) : null;
+  const bb = b ? new Date(b) : null;
+  const av = aa && !Number.isNaN(+aa) ? aa.toISOString().slice(0, 10) : "";
+  const bv = bb && !Number.isNaN(+bb) ? bb.toISOString().slice(0, 10) : "";
+  return av === bv;
+}
+
+const AddressInputSchema = z
+  .object({
+    houseNumber: z.string().nullable().optional(),
+    streetName: z.string().nullable().optional(),
+    postCode: z.string().nullable().optional(),
+    town: z.string().nullable().optional(),
+    city: z.string().nullable().optional(),
+    state: z.string().nullable().optional(),
+    country: z.string().nullable().optional(),
+    lga: z.string().nullable().optional(),
+    directionsNote: z.string().nullable().optional(),
+    landmark: z.string().nullable().optional(),
+  })
+  .strict();
+
+type NormalizedAddressInput = {
+  houseNumber?: string | null;
+  streetName?: string | null;
+  postCode?: string | null;
+  town?: string | null;
+  city?: string | null;
+  state?: string | null;
+  country?: string | null;
+  lga?: string | null;
+  directionsNote?: string | null;
+  landmark?: string | null;
+};
+
+function normalizeAddressInput(
+  input?: z.infer<typeof AddressInputSchema> | null
+): NormalizedAddressInput | undefined {
+  if (input === undefined || input === null) return undefined;
+
+  return {
+    houseNumber: cleanString(input.houseNumber),
+    streetName: cleanString(input.streetName),
+    postCode: cleanString(input.postCode),
+    town: cleanString(input.town),
+    city: cleanString(input.city),
+    state: cleanString(input.state),
+    country: cleanString(input.country),
+    lga: cleanString(input.lga),
+    directionsNote: cleanString(input.directionsNote),
+    landmark: cleanString(input.landmark),
+  };
+}
+
+function addressHasAnyValue(addr: NormalizedAddressInput | undefined) {
+  if (!addr) return false;
+  return Boolean(
+    addr.houseNumber ||
+      addr.streetName ||
+      addr.postCode ||
+      addr.town ||
+      addr.city ||
+      addr.state ||
+      addr.country ||
+      addr.lga ||
+      addr.directionsNote ||
+      addr.landmark
+  );
+}
+
+function addressSnapshot(addr: any) {
+  return {
+    houseNumber: norm(addr?.houseNumber),
+    streetName: norm(addr?.streetName),
+    postCode: norm(addr?.postCode),
+    town: norm(addr?.town),
+    city: norm(addr?.city),
+    state: norm(addr?.state),
+    country: norm(addr?.country),
+    lga: norm(addr?.lga),
+    landmark: norm(addr?.landmark),
+    directionsNote: norm(addr?.directionsNote),
+  };
+}
+
+function sameAddress(a: any, b: any) {
+  const aa = addressSnapshot(a);
+  const bb = addressSnapshot(b);
+  return (
+    aa.houseNumber === bb.houseNumber &&
+    aa.streetName === bb.streetName &&
+    aa.postCode === bb.postCode &&
+    aa.town === bb.town &&
+    aa.city === bb.city &&
+    aa.state === bb.state &&
+    aa.country === bb.country &&
+    aa.lga === bb.lga &&
+    aa.landmark === bb.landmark &&
+    aa.directionsNote === bb.directionsNote
+  );
+}
+
+function collectSensitiveSupplierChanges(existing: any, incoming: any) {
+  const changed: string[] = [];
+
+  if (norm(existing?.legalName) !== norm(incoming?.legalName)) changed.push("legalName");
+  if (norm(existing?.registeredBusinessName) !== norm(incoming?.registeredBusinessName)) {
+    changed.push("registeredBusinessName");
+  }
+  if (norm(existing?.registrationNumber) !== norm(incoming?.registrationNumber)) {
+    changed.push("registrationNumber");
+  }
+  if (norm(existing?.registrationType) !== norm(incoming?.registrationType)) {
+    changed.push("registrationType");
+  }
+  if (!sameDate(existing?.registrationDate, incoming?.registrationDate)) {
+    changed.push("registrationDate");
+  }
+  if (norm(existing?.registrationCountryCode) !== norm(incoming?.registrationCountryCode)) {
+    changed.push("registrationCountryCode");
+  }
+  if (norm(existing?.registryAuthorityId) !== norm(incoming?.registryAuthorityId)) {
+    changed.push("registryAuthorityId");
+  }
+  if (norm(existing?.natureOfBusiness) !== norm(incoming?.natureOfBusiness)) {
+    changed.push("natureOfBusiness");
+  }
+
+  if (!sameAddress(existing?.registeredAddress, incoming?.registeredAddress)) {
+    changed.push("registeredAddress");
+  }
+  if (!sameAddress(existing?.pickupAddress, incoming?.pickupAddress)) {
+    changed.push("pickupAddress");
+  }
+
+  if (norm(existing?.bankCountry) !== norm(incoming?.bankCountry)) changed.push("bankCountry");
+  if (norm(existing?.bankCode) !== norm(incoming?.bankCode)) changed.push("bankCode");
+  if (norm(existing?.bankName) !== norm(incoming?.bankName)) changed.push("bankName");
+  if (norm(existing?.accountNumber) !== norm(incoming?.accountNumber)) changed.push("accountNumber");
+  if (norm(existing?.accountName) !== norm(incoming?.accountName)) changed.push("accountName");
+
+  return changed;
+}
+
+function hasBankSensitiveChange(changed: string[]) {
+  return changed.some((k) =>
+    ["bankCountry", "bankCode", "bankName", "accountNumber", "accountName"].includes(k)
+  );
+}
+
+/* ---------------- Supplier DTO ---------------- */
+
 function toSupplierMeDto(s: any) {
   return {
     id: s.id,
-    name: s.name,
+    supplierId: s.id,
 
-    contactEmail: s.contactEmail ?? null,
-    whatsappPhone: s.whatsappPhone ?? null,
-    rcNumber: s.rcNumber ?? null,
+    name: s.name,
+    businessName: s.name,
+
+    type: s.type ?? null,
+    supplierType: s.type ?? null,
+
+    contactEmail: s.contactEmail ?? s.user?.email ?? null,
+    email: s.contactEmail ?? s.user?.email ?? null,
+
+    whatsappPhone: s.whatsappPhone ?? s.user?.phone ?? null,
+    contactPhone: s.whatsappPhone ?? s.user?.phone ?? null,
+
+    legalName: s.legalName ?? null,
+    registeredBusinessName: s.registeredBusinessName ?? null,
+    registrationNumber: s.registrationNumber ?? null,
+    registrationType: s.registrationType ?? null,
+    registrationDate: toIsoDateOnly(s.registrationDate),
+    registrationCountryCode: s.registrationCountryCode ?? null,
+
+    registryAuthorityId: s.registryAuthorityId ?? null,
+
+    registryAuthority: s.registryAuthority
+      ? {
+          id: s.registryAuthority.id,
+          countryCode: s.registryAuthority.countryCode ?? null,
+          code: s.registryAuthority.code ?? null,
+          name: s.registryAuthority.name ?? null,
+          websiteUrl: s.registryAuthority.websiteUrl ?? null,
+          isActive: s.registryAuthority.isActive ?? null,
+        }
+      : null,
+
+    natureOfBusiness: s.natureOfBusiness ?? null,
+
+    status: s.status ?? null,
+    kycStatus: s.kycStatus ?? null,
+    kycApprovedAt: s.kycApprovedAt ?? null,
+    kycCheckedAt: s.kycCheckedAt ?? null,
+    kycRejectedAt: s.kycRejectedAt ?? null,
+    kycRejectionReason: s.kycRejectionReason ?? null,
 
     bankCountry: s.bankCountry ?? null,
     bankCode: s.bankCode ?? null,
@@ -179,575 +264,658 @@ function toSupplierMeDto(s: any) {
 
     bankVerificationStatus: s.bankVerificationStatus ?? null,
     bankVerificationNote: s.bankVerificationNote ?? null,
-    bankVerificationRequestedAt:
-      s.bankVerificationRequestedAt?.toISOString?.() ??
-      s.bankVerificationRequestedAt ??
-      null,
-    bankVerifiedAt:
-      s.bankVerifiedAt?.toISOString?.() ?? s.bankVerifiedAt ?? null,
+    bankVerificationRequestedAt: s.bankVerificationRequestedAt ?? null,
+    bankVerifiedAt: s.bankVerifiedAt ?? null,
 
-    registeredAddress: s.registeredAddress
+    pickupContactName: s.pickupContactName ?? null,
+    pickupContactPhone: s.pickupContactPhone ?? null,
+    pickupInstructions: s.pickupInstructions ?? null,
+    shippingEnabled: s.shippingEnabled ?? null,
+    shipsNationwide: s.shipsNationwide ?? null,
+    supportsDoorDelivery: s.supportsDoorDelivery ?? null,
+    supportsPickupPoint: s.supportsPickupPoint ?? null,
+
+    registeredAddress: s.registeredAddress ?? null,
+    pickupAddress: s.pickupAddress ?? null,
+
+    user: s.user
       ? {
-          streetName: s.registeredAddress.streetName ?? null,
-          town: s.registeredAddress.town ?? null,
-          city: s.registeredAddress.city ?? null,
-          state: s.registeredAddress.state ?? null,
-          country: s.registeredAddress.country ?? null,
+          id: s.user.id,
+          firstName: s.user.firstName ?? null,
+          lastName: s.user.lastName ?? null,
+          contactFirstName: s.user.firstName ?? null,
+          contactLastName: s.user.lastName ?? null,
+          email: s.user.email ?? null,
+          phone: s.user.phone ?? null,
+          contactPhone: s.user.phone ?? s.whatsappPhone ?? null,
         }
       : null,
+
+    firstName: s.user?.firstName ?? null,
+    lastName: s.user?.lastName ?? null,
+    contactFirstName: s.user?.firstName ?? null,
+    contactLastName: s.user?.lastName ?? null,
   };
 }
 
-/**
- * GET /api/supplier/me
- * Returns supplier profile for the authenticated supplier user
- */
-router.get("/me", requireAuth, async (req, res) => {
+/* ---------------- Shared select ---------------- */
 
-  const role = req.user?.role;
-  const userId = req.user?.id;
-  const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
+const supplierMeSelect = {
+  id: true,
+  name: true,
+  type: true,
 
-  let supplierId: string | null = null;
-  if (isAdmin) supplierId = String(req.query?.supplierId ?? "").trim() || null;
-  else supplierId = (await prisma.supplier.findFirst({ where: { userId }, select: { id: true } }))?.id ?? null;
+  contactEmail: true,
+  whatsappPhone: true,
 
-  if (!supplierId) return res.status(403).json({ error: "Supplier access required" });
-  const supplier = await prisma.supplier.findFirst({
-  where: { id: supplierId }, 
+  legalName: true,
+  registeredBusinessName: true,
+  registrationNumber: true,
+  registrationType: true,
+  registrationDate: true,
+  registrationCountryCode: true,
+  registryAuthorityId: true,
+
+  registryAuthority: {
     select: {
       id: true,
+      countryCode: true,
+      code: true,
       name: true,
-      contactEmail: true,
-      whatsappPhone: true,
-      rcNumber: true,
-
-      bankCountry: true,
-      bankCode: true,
-      bankName: true,
-      accountNumber: true,
-      accountName: true,
-
-      bankVerificationStatus: true,
-      bankVerificationNote: true,
-      bankVerificationRequestedAt: true,
-      bankVerifiedAt: true,
-
-      registeredAddress: {
-        select: {
-          streetName: true,
-          town: true,
-          city: true,
-          state: true,
-          country: true,
-        },
-      },
+      websiteUrl: true,
+      isActive: true,
     },
-  });
+  },
 
-  return res.json({ data: toSupplierMeDto(supplier) });
+  natureOfBusiness: true,
+
+  status: true,
+  kycStatus: true,
+  kycApprovedAt: true,
+  kycCheckedAt: true,
+  kycRejectedAt: true,
+  kycRejectionReason: true,
+
+  bankCountry: true,
+  bankCode: true,
+  bankName: true,
+  accountNumber: true,
+  accountName: true,
+
+  bankVerificationStatus: true,
+  bankVerificationNote: true,
+  bankVerificationRequestedAt: true,
+  bankVerifiedAt: true,
+
+  pickupContactName: true,
+  pickupContactPhone: true,
+  pickupInstructions: true,
+  shippingEnabled: true,
+  shipsNationwide: true,
+  supportsDoorDelivery: true,
+  supportsPickupPoint: true,
+
+  registeredAddressId: true,
+  pickupAddressId: true,
+  registeredAddress: true,
+  pickupAddress: true,
+
+  user: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+    },
+  },
+} as const;
+
+/* ---------------- GET /api/supplier/me ---------------- */
+
+router.get("/me", requireAuth, async (req, res) => {
+  try {
+    const role = req.user?.role;
+    const userId = req.user?.id;
+
+    const isAdmin = role === "ADMIN" || role === "SUPER_ADMIN";
+
+    let supplierId: string | null = null;
+
+    if (isAdmin) {
+      supplierId = String(req.query?.supplierId ?? "").trim() || null;
+    } else {
+      const s = await prisma.supplier.findFirst({
+        where: { userId },
+        select: { id: true },
+      });
+
+      supplierId = s?.id ?? null;
+    }
+
+    if (!supplierId) {
+      return res.status(403).json({ error: "Supplier access required" });
+    }
+
+    const supplier = await prisma.supplier.findFirst({
+      where: { id: supplierId },
+      select: supplierMeSelect,
+    });
+
+    if (!supplier) {
+      return res.status(404).json({ error: "Supplier not found" });
+    }
+
+    return res.json({ data: toSupplierMeDto(supplier) });
+  } catch (e: any) {
+    console.error("[GET /api/supplier/me] failed:", e);
+    return res.status(500).json({
+      error: e?.message || "Could not load supplier profile.",
+    });
+  }
 });
+
+/* ---------------- PUT /api/supplier/me ---------------- */
+
+const yyyyMmDd = /^\d{4}-\d{2}-\d{2}$/;
 
 const UpdateSupplierMeSchema = z
   .object({
+    /* frontend aliases */
+    businessName: z.string().nullable().optional(),
+    supplierType: z.string().nullable().optional(),
+    contactPhone: z.string().nullable().optional(),
+    email: z.string().email().nullable().optional(),
+    firstName: z.string().nullable().optional(),
+    lastName: z.string().nullable().optional(),
+    contactFirstName: z.string().nullable().optional(),
+    contactLastName: z.string().nullable().optional(),
+
+    /* backend/original names */
+    name: z.string().nullable().optional(),
+    type: z.string().nullable().optional(),
     contactEmail: z.string().email().nullable().optional(),
     whatsappPhone: z.string().nullable().optional(),
 
+    legalName: z.string().nullable().optional(),
+    registeredBusinessName: z.string().nullable().optional(),
+    registrationNumber: z.string().nullable().optional(),
+    registrationType: z.string().nullable().optional(),
+
+    registrationDate: z.string().regex(yyyyMmDd).nullable().optional(),
+    registrationCountryCode: z.string().nullable().optional(),
+    registryAuthorityId: z.string().nullable().optional(),
+
+    natureOfBusiness: z.string().nullable().optional(),
+
     bankCountry: z.string().nullable().optional(),
     bankName: z.string().nullable().optional(),
-    bankCode: z.string().nullable().optional(), // ✅ IMPORTANT
+    bankCode: z.string().nullable().optional(),
     accountNumber: z.string().nullable().optional(),
     accountName: z.string().nullable().optional(),
+
+    /* address + shipping onboarding */
+    registeredAddress: AddressInputSchema.nullable().optional(),
+    pickupAddress: AddressInputSchema.nullable().optional(),
+    pickupContactName: z.string().nullable().optional(),
+    pickupContactPhone: z.string().nullable().optional(),
+    pickupInstructions: z.string().nullable().optional(),
+    shippingEnabled: z.boolean().optional(),
+    shipsNationwide: z.boolean().optional(),
+    supportsDoorDelivery: z.boolean().optional(),
+    supportsPickupPoint: z.boolean().optional(),
   })
-  .partial();
+  .strict();
 
-/**
- * PUT /api/supplier/me
- * Updates ONLY editable supplier settings (support + payout)
- * Does NOT allow business name / CAC address edits.
- */
 router.put("/me", requireAuth, requireSupplier, async (req, res) => {
-  const uid = getUserId(req);
-  if (!uid) return res.status(401).json({ error: "Unauthenticated" });
-
-  let parsed: z.infer<typeof UpdateSupplierMeSchema>;
   try {
-    parsed = UpdateSupplierMeSchema.parse(req.body ?? {});
-  } catch (e: any) {
-    return res
-      .status(400)
-      .json({ error: "Invalid payload", details: e?.errors ?? e });
-  }
-
-  const supplier = await prisma.supplier.findFirst({
-    where: { userId: uid },
-    select: {
-      id: true,
-
-      // current bank snapshot (needed to detect changes)
-      bankCountry: true,
-      bankCode: true,
-      bankName: true,
-      accountNumber: true,
-      accountName: true,
-
-      bankVerificationStatus: true,
-      bankVerificationRequestedAt: true,
-      bankVerifiedAt: true,
-      bankVerifiedById: true,
-      bankVerificationNote: true,
-    },
-  });
-
-  if (!supplier) return res.status(404).json({ error: "Supplier not found" });
-
-  // Build update payload (only allow fields that are present)
-  const data: any = {};
-
-  // contact fields
-  if ("contactEmail" in parsed) data.contactEmail = parsed.contactEmail ?? null;
-  if ("whatsappPhone" in parsed) data.whatsappPhone = parsed.whatsappPhone ?? null;
-
-  // --- Bank fields supplier can submit (admin must verify) ---
-  // Compute "next" bank snapshot = (incoming if present) else (current)
-  const nextBankCountry =
-    "bankCountry" in parsed ? (parsed as any).bankCountry ?? null : supplier.bankCountry ?? null;
-
-  const nextBankCode =
-    "bankCode" in parsed ? (parsed as any).bankCode ?? null : supplier.bankCode ?? null;
-
-  const nextBankName =
-    "bankName" in parsed ? (parsed as any).bankName ?? null : supplier.bankName ?? null;
-
-  const nextAccountNumber =
-    "accountNumber" in parsed ? (parsed as any).accountNumber ?? null : supplier.accountNumber ?? null;
-
-  const nextAccountName =
-    "accountName" in parsed ? (parsed as any).accountName ?? null : supplier.accountName ?? null;
-
-  // Apply bank changes only if field was included in payload
-  if ("bankCountry" in parsed) data.bankCountry = nextBankCountry;
-  if ("bankCode" in parsed) data.bankCode = nextBankCode; // ✅ ensure it persists
-  if ("bankName" in parsed) data.bankName = nextBankName;
-  if ("accountNumber" in parsed) data.accountNumber = nextAccountNumber;
-  if ("accountName" in parsed) data.accountName = nextAccountName;
-
-  // Detect whether any bank detail changed (only for fields included)
-  const bankChanged =
-    ("bankCountry" in parsed && (supplier.bankCountry ?? null) !== (nextBankCountry ?? null)) ||
-    ("bankCode" in parsed && (supplier.bankCode ?? null) !== (nextBankCode ?? null)) ||
-    ("bankName" in parsed && (supplier.bankName ?? null) !== (nextBankName ?? null)) ||
-    ("accountNumber" in parsed && (supplier.accountNumber ?? null) !== (nextAccountNumber ?? null)) ||
-    ("accountName" in parsed && (supplier.accountName ?? null) !== (nextAccountName ?? null));
-
-  // Core fields required to verify
-  const hasCoreBankDetails =
-    !!(nextBankCode && String(nextBankCode).trim()) &&
-    !!(nextAccountNumber && String(nextAccountNumber).trim());
-
-  // If bank changed:
-  // - If they now have bank details -> request verification (PENDING)
-  // - If they cleared core details -> revert to UNVERIFIED
-  if (bankChanged) {
-    if (hasCoreBankDetails) {
-      data.bankVerificationStatus = "PENDING";
-      data.bankVerificationRequestedAt = new Date();
-
-      // clear previous verification result so admin must decide again
-      data.bankVerifiedAt = null;
-      data.bankVerifiedById = null;
-      data.bankVerificationNote = null;
-    } else {
-      data.bankVerificationStatus = "UNVERIFIED";
-      data.bankVerificationRequestedAt = null;
-      data.bankVerifiedAt = null;
-      data.bankVerifiedById = null;
-      data.bankVerificationNote = null;
+    const uid = getUserId(req);
+    if (!uid) {
+      return res.status(401).json({ error: "Unauthenticated" });
     }
-  }
 
-  const updated = await prisma.supplier.update({
-    where: { id: supplier.id },
-    data,
-    select: {
-      id: true,
-      name: true,
-      contactEmail: true,
-      whatsappPhone: true,
-      rcNumber: true,
+    let parsed: z.infer<typeof UpdateSupplierMeSchema>;
 
-      bankCountry: true,
-      bankCode: true,
-      bankName: true,
-      accountNumber: true,
-      accountName: true,
+    try {
+      parsed = UpdateSupplierMeSchema.parse(req.body ?? {});
+    } catch (e: any) {
+      return res.status(400).json({ error: "Invalid payload", details: e.errors });
+    }
 
-      bankVerificationStatus: true,
-      bankVerificationNote: true,
-      bankVerificationRequestedAt: true,
-      bankVerifiedAt: true,
+    const supplier = await prisma.supplier.findFirst({
+      where: { userId: uid },
+      select: {
+        id: true,
+        userId: true,
+        name: true,
+        legalName: true,
+        registeredBusinessName: true,
+        registrationNumber: true,
+        registrationType: true,
+        registrationDate: true,
+        registrationCountryCode: true,
+        registryAuthorityId: true,
+        natureOfBusiness: true,
 
-      registeredAddress: {
-        select: {
-          streetName: true,
-          town: true,
-          city: true,
-          state: true,
-          country: true,
-        },
+        bankCountry: true,
+        bankCode: true,
+        bankName: true,
+        accountNumber: true,
+        accountName: true,
+        bankVerificationStatus: true,
+
+        status: true,
+        kycStatus: true,
+        kycApprovedAt: true,
+        kycCheckedAt: true,
+        kycRejectedAt: true,
+        kycRejectionReason: true,
+
+        registeredAddressId: true,
+        pickupAddressId: true,
+        registeredAddress: true,
+        pickupAddress: true,
       },
-    },
-  });
-
-  return res.json({ data: toSupplierMeDto(updated) });
-});
-
-router.get("/profile", requireAuth, requireSupplier, async (req, res) => {
-  const uid = getUserId(req);
-  if (!uid) return res.status(401).json({ error: "Unauthenticated" });
-
-  const s = await getSupplierForUser(uid);
-  if (!s) return res.status(404).json({ error: "Supplier not found" });
-
-  return res.json({ data: supplierPayload(s) });
-});
-
-router.get("/dashboard", requireAuth, requireSupplier, async (req, res) => {
-  const uid = getUserId(req);
-  if (!uid) return res.status(401).json({ error: "Unauthenticated" });
-
-  const s = await getSupplierForUser(uid);
-  if (!s) return res.status(404).json({ error: "Supplier not found" });
-
-  return res.json({ data: supplierPayload(s) });
-});
-
-/* --------------------------- GET /cac-status --------------------------- */
-/**
- * Safe status endpoint (NO entity leakage)
- * GET /api/suppliers/cac-status?rc_number=...&company_type=...
- */
-router.get("/cac-status", async (req, res, next) => {
-  try {
-    const q = z
-      .object({
-        rc_number: z.string().min(1),
-        company_type: CacCompanyTypeEnum,
-      })
-      .parse(req.query);
-
-    const row = await prisma.cacLookup.findUnique({
-      where: {
-        CacLookup_rc_companyType_key: {
-          rcNumber: q.rc_number,
-          companyType: q.company_type,
-        },
-      },
-      select: { outcome: true, retryAt: true, checkedAt: true },
     });
 
-    if (!row) return res.json({ status: "NONE" as const });
+    if (!supplier) {
+      return res.status(404).json({ error: "Supplier not found" });
+    }
 
-    const now = new Date();
-    if (row.retryAt && row.retryAt > now) {
-      return res.json({
-        status: "COOLDOWN" as const,
-        retryAt: row.retryAt.toISOString(),
-        checkedAt: row.checkedAt?.toISOString?.() ?? null,
-      });
+    const supplierData: any = {};
+    const userData: any = {};
+
+    /* ---------- supplier core identity ---------- */
+
+    const nextStoreName =
+      cleanString(parsed.businessName) !== undefined
+        ? cleanString(parsed.businessName)
+        : cleanString(parsed.name);
+
+    if (nextStoreName !== undefined) {
+      supplierData.name = nextStoreName;
+    }
+
+    const nextType =
+      cleanString(parsed.supplierType) !== undefined
+        ? cleanString(parsed.supplierType)
+        : cleanString(parsed.type);
+
+    if (nextType !== undefined) {
+      supplierData.type = nextType;
+    }
+
+    const nextContactEmail =
+      cleanString(parsed.contactEmail) !== undefined
+        ? cleanString(parsed.contactEmail)
+        : cleanString(parsed.email);
+
+    if (nextContactEmail !== undefined) {
+      supplierData.contactEmail = nextContactEmail;
+      userData.email = nextContactEmail;
+    }
+
+    const nextPhone =
+      cleanString(parsed.contactPhone) !== undefined
+        ? cleanString(parsed.contactPhone)
+        : cleanString(parsed.whatsappPhone);
+
+    if (nextPhone !== undefined) {
+      supplierData.whatsappPhone = nextPhone;
+      userData.phone = nextPhone;
+    }
+
+    /* ---------- legal / registration ---------- */
+
+    if ("legalName" in parsed) {
+      supplierData.legalName = cleanString(parsed.legalName);
+    }
+
+    if ("registeredBusinessName" in parsed) {
+      supplierData.registeredBusinessName = cleanString(parsed.registeredBusinessName);
+    }
+
+    if ("registrationNumber" in parsed) {
+      supplierData.registrationNumber = cleanString(parsed.registrationNumber);
+    }
+
+    if ("registrationType" in parsed) {
+      supplierData.registrationType = cleanString(parsed.registrationType);
+    }
+
+    if ("registrationDate" in parsed) {
+      supplierData.registrationDate = parsed.registrationDate
+        ? new Date(parsed.registrationDate)
+        : null;
+    }
+
+    if ("registrationCountryCode" in parsed) {
+      supplierData.registrationCountryCode = cleanString(parsed.registrationCountryCode);
+    }
+
+    if ("registryAuthorityId" in parsed) {
+      supplierData.registryAuthorityId = cleanString(parsed.registryAuthorityId);
+    }
+
+    if ("natureOfBusiness" in parsed) {
+      supplierData.natureOfBusiness = cleanString(parsed.natureOfBusiness);
+    }
+
+    /* ---------- bank ---------- */
+
+    if ("bankCountry" in parsed) {
+      supplierData.bankCountry = cleanString(parsed.bankCountry);
+    }
+
+    if ("bankCode" in parsed) {
+      supplierData.bankCode = cleanString(parsed.bankCode);
+    }
+
+    if ("bankName" in parsed) {
+      supplierData.bankName = cleanString(parsed.bankName);
+    }
+
+    if ("accountNumber" in parsed) {
+      supplierData.accountNumber = cleanString(parsed.accountNumber);
+    }
+
+    if ("accountName" in parsed) {
+      supplierData.accountName = cleanString(parsed.accountName);
+    }
+
+    /* ---------- pickup / shipping ---------- */
+
+    if ("pickupContactName" in parsed) {
+      supplierData.pickupContactName = cleanString(parsed.pickupContactName);
+    }
+
+    if ("pickupContactPhone" in parsed) {
+      supplierData.pickupContactPhone = cleanString(parsed.pickupContactPhone);
+    }
+
+    if ("pickupInstructions" in parsed) {
+      supplierData.pickupInstructions = cleanString(parsed.pickupInstructions);
+    }
+
+    if ("shippingEnabled" in parsed) {
+      supplierData.shippingEnabled = cleanBool(parsed.shippingEnabled);
+    }
+
+    if ("shipsNationwide" in parsed) {
+      supplierData.shipsNationwide = cleanBool(parsed.shipsNationwide);
+    }
+
+    if ("supportsDoorDelivery" in parsed) {
+      supplierData.supportsDoorDelivery = cleanBool(parsed.supportsDoorDelivery);
+    }
+
+    if ("supportsPickupPoint" in parsed) {
+      supplierData.supportsPickupPoint = cleanBool(parsed.supportsPickupPoint);
+    }
+
+    /* ---------- linked user contact names ---------- */
+
+    const nextFirstName =
+      cleanString(parsed.contactFirstName) !== undefined
+        ? cleanString(parsed.contactFirstName)
+        : cleanString(parsed.firstName);
+
+    const nextLastName =
+      cleanString(parsed.contactLastName) !== undefined
+        ? cleanString(parsed.contactLastName)
+        : cleanString(parsed.lastName);
+
+    if (nextFirstName !== undefined) {
+      userData.firstName = nextFirstName;
+    }
+
+    if (nextLastName !== undefined) {
+      userData.lastName = nextLastName;
+    }
+
+    const registeredAddressInput = normalizeAddressInput(parsed.registeredAddress);
+    const pickupAddressInput = normalizeAddressInput(parsed.pickupAddress);
+
+    const incomingSnapshot = {
+      legalName:
+        "legalName" in parsed ? cleanString(parsed.legalName) : supplier.legalName,
+      registeredBusinessName:
+        "registeredBusinessName" in parsed
+          ? cleanString(parsed.registeredBusinessName)
+          : supplier.registeredBusinessName,
+      registrationNumber:
+        "registrationNumber" in parsed
+          ? cleanString(parsed.registrationNumber)
+          : supplier.registrationNumber,
+      registrationType:
+        "registrationType" in parsed
+          ? cleanString(parsed.registrationType)
+          : supplier.registrationType,
+      registrationDate:
+        "registrationDate" in parsed
+          ? parsed.registrationDate || null
+          : supplier.registrationDate,
+      registrationCountryCode:
+        "registrationCountryCode" in parsed
+          ? cleanString(parsed.registrationCountryCode)
+          : supplier.registrationCountryCode,
+      registryAuthorityId:
+        "registryAuthorityId" in parsed
+          ? cleanString(parsed.registryAuthorityId)
+          : supplier.registryAuthorityId,
+      natureOfBusiness:
+        "natureOfBusiness" in parsed
+          ? cleanString(parsed.natureOfBusiness)
+          : supplier.natureOfBusiness,
+
+      bankCountry:
+        "bankCountry" in parsed ? cleanString(parsed.bankCountry) : supplier.bankCountry,
+      bankCode:
+        "bankCode" in parsed ? cleanString(parsed.bankCode) : supplier.bankCode,
+      bankName:
+        "bankName" in parsed ? cleanString(parsed.bankName) : supplier.bankName,
+      accountNumber:
+        "accountNumber" in parsed
+          ? cleanString(parsed.accountNumber)
+          : supplier.accountNumber,
+      accountName:
+        "accountName" in parsed ? cleanString(parsed.accountName) : supplier.accountName,
+
+      registeredAddress:
+        registeredAddressInput !== undefined
+          ? registeredAddressInput
+          : supplier.registeredAddress,
+      pickupAddress:
+        pickupAddressInput !== undefined ? pickupAddressInput : supplier.pickupAddress,
+    };
+
+    const sensitiveChanged = collectSensitiveSupplierChanges(supplier, incomingSnapshot);
+    const shouldResetKyc = sensitiveChanged.length > 0;
+    const shouldResetBankVerification = hasBankSensitiveChange(sensitiveChanged);
+
+    await prisma.$transaction(async (tx) => {
+      let nextRegisteredAddressId = supplier.registeredAddressId ?? null;
+      let nextPickupAddressId = supplier.pickupAddressId ?? null;
+
+      if (registeredAddressInput !== undefined) {
+        if (addressHasAnyValue(registeredAddressInput)) {
+          if (nextRegisteredAddressId) {
+            await tx.address.update({
+              where: { id: nextRegisteredAddressId },
+              data: registeredAddressInput,
+            });
+          } else {
+            const created = await tx.address.create({
+              data: registeredAddressInput,
+              select: { id: true },
+            });
+            nextRegisteredAddressId = created.id;
+          }
+        } else {
+          nextRegisteredAddressId = null;
+        }
+      }
+
+      if (pickupAddressInput !== undefined) {
+        if (addressHasAnyValue(pickupAddressInput)) {
+          if (nextPickupAddressId) {
+            await tx.address.update({
+              where: { id: nextPickupAddressId },
+              data: pickupAddressInput,
+            });
+          } else {
+            const created = await tx.address.create({
+              data: pickupAddressInput,
+              select: { id: true },
+            });
+            nextPickupAddressId = created.id;
+          }
+        } else {
+          nextPickupAddressId = null;
+        }
+      }
+
+      if (registeredAddressInput !== undefined) {
+        supplierData.registeredAddressId = nextRegisteredAddressId;
+      }
+
+      if (pickupAddressInput !== undefined) {
+        supplierData.pickupAddressId = nextPickupAddressId;
+      }
+
+      if (shouldResetKyc) {
+        supplierData.kycStatus = "PENDING";
+        supplierData.status = "PENDING_VERIFICATION";
+        supplierData.kycApprovedAt = null;
+        supplierData.kycRejectedAt = null;
+        supplierData.kycRejectionReason = null;
+        supplierData.kycCheckedAt = new Date();
+      }
+
+      if (shouldResetBankVerification) {
+        supplierData.bankVerificationStatus = "PENDING";
+        supplierData.bankVerifiedAt = null;
+        supplierData.bankVerifiedById = null;
+        supplierData.bankVerificationRequestedAt = new Date();
+      }
+
+      if (Object.keys(supplierData).length) {
+        await tx.supplier.update({
+          where: { id: supplier.id },
+          data: supplierData,
+        });
+      }
+
+      if (supplier.userId && Object.keys(userData).length) {
+        await tx.user.update({
+          where: { id: supplier.userId },
+          data: userData,
+        });
+      }
+
+      if (shouldResetKyc) {
+        const updatedSupplier = await tx.supplier.findUnique({
+          where: { id: supplier.id },
+          select: {
+            id: true,
+            name: true,
+            legalName: true,
+            registeredBusinessName: true,
+          },
+        });
+
+        const admins = await tx.user.findMany({
+          where: {
+            role: { in: ["ADMIN", "SUPER_ADMIN"] },
+          },
+          select: { id: true },
+        });
+
+        const supplierDisplayName =
+          updatedSupplier?.registeredBusinessName ||
+          updatedSupplier?.legalName ||
+          updatedSupplier?.name ||
+          "A supplier";
+
+        if (admins.length > 0) {
+          try {
+            await tx.notification.createMany({
+              data: admins.map((admin) => ({
+                userId: admin.id,
+                type: "SUPPLIER_DOCUMENT_UPLOADED" as any,
+                title: "Supplier details changed",
+                body: `${supplierDisplayName} updated verification-sensitive details and requires re-review. Supplier ID: ${supplier.id}`,
+                isRead: false,
+              })),
+            });
+          } catch (notificationError) {
+            console.error(
+              "[PUT /api/supplier/me] notification createMany failed:",
+              notificationError
+            );
+          }
+        }
+      }
+    });
+
+    const updated = await prisma.supplier.findFirst({
+      where: { id: supplier.id },
+      select: supplierMeSelect,
+    });
+
+    if (!updated) {
+      return res.status(404).json({ error: "Supplier not found after update" });
     }
 
     return res.json({
-      status: row.outcome ?? "NONE",
-      checkedAt: row.checkedAt?.toISOString?.() ?? null,
+      data: toSupplierMeDto(updated),
+      meta: {
+        sensitiveChanged,
+        kycReset: shouldResetKyc,
+        bankVerificationReset: shouldResetBankVerification,
+      },
     });
-  } catch (e) {
-    next(e);
+  } catch (e: any) {
+    console.error("[PUT /api/supplier/me] failed:", e);
+    return res.status(500).json({
+      error: e?.message || "Could not update supplier profile.",
+    });
   }
 });
 
-/* --------------------------- POST /cac-verify --------------------------- */
-/**
- * POST /api/suppliers/cac-verify
- * body: { rc_number, company_type, assertedCompanyName, assertedRegistrationDate }
- */
-router.post("/cac-verify", async (req, res, next) => {
-  try {
-    const body = z
-      .object({
-        rc_number: z.string().min(1),
-        company_type: CacCompanyTypeEnum,
-        assertedCompanyName: z.string().min(1),
-        assertedRegistrationDate: z
-          .string()
-          .regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD"),
-      })
-      .parse(req.body);
+/* ---------------- Supplier profile ---------------- */
 
-    const rcNumber = body.rc_number.trim();
-    const companyType = body.company_type;
-    const assertedCompanyName = body.assertedCompanyName.trim();
-    const assertedRegistrationDate = body.assertedRegistrationDate.trim();
-
-    const now = new Date();
-
-    const cached = await prisma.cacLookup.findUnique({
-      where: {
-        CacLookup_rc_companyType_key: { rcNumber, companyType },
-      },
-      select: { outcome: true, retryAt: true, checkedAt: true, entity: true },
-    });
-
-    // cooldown
-    if (cached?.retryAt && cached.retryAt > now) {
-      return res.json({
-        status: "COOLDOWN" as const,
-        retryAt: cached.retryAt.toISOString(),
-      });
-    }
-
-    // cache hit (entity present) => no Dojah call
-    if (cached?.entity) {
-      const entity = cached.entity as any as CacEntity;
-
-      const ok = matchesAllFour(entity, {
-        rcNumber,
-        companyType,
-        companyName: assertedCompanyName,
-        regDate: assertedRegistrationDate,
-      });
-
-      if (!ok) {
-        const retryAt = new Date(Date.now() + MISMATCH_COOLDOWN_SEC * 1000);
-
-        await prisma.cacLookup.update({
-          where: { CacLookup_rc_companyType_key: { rcNumber, companyType } },
-          data: { retryAt, checkedAt: now },
-        });
-
-        return res.json({
-          status: "MISMATCH" as const,
-          retryAt: retryAt.toISOString(),
-        });
-      }
-
-      // ✅ CAC matches – check if a supplier already exists for this RC/companyType
-      const existingSupplier = await prisma.supplier.findFirst({
-        where: {
-          rcNumber,
-          companyType, // assumes supplier.companyType uses same enum
-        },
-        select: { id: true, status: true },
-      });
-
-      if (existingSupplier) {
-        return res.json({
-          status: "SUPPLIER_EXISTS" as const,
-          supplierId: existingSupplier.id,
-          entity,
-          message:
-            "A supplier with this RC number is already registered on DaySpring. Please sign in instead.",
-        });
-      }
-
-      const ticket = signTicket({
-        rcNumber,
-        companyType,
-        companyNameNorm: norm(assertedCompanyName),
-        regDateYmd: assertedRegistrationDate,
-      });
-
-      return res.json({
-        status: "VERIFIED" as const,
-        verificationTicket: ticket,
-        entity,
-      });
-    }
-
-    // no cache -> call Dojah once
-    try {
-      const r = await fetchCacBasic({
-        rc_number: rcNumber,
-        company_type: companyType as unknown as DojahCompanyType,
-      });
-
-      const entity = r?.entity as any as CacEntity | undefined;
-
-      if (!entity) {
-        const retryAt = new Date(
-          Date.now() + NOTFOUND_COOLDOWN_HOURS * 3600 * 1000
-        );
-
-        await prisma.cacLookup.upsert({
-          where: { CacLookup_rc_companyType_key: { rcNumber, companyType } },
-          update: {
-            outcome: "NOT_FOUND",
-            checkedAt: now,
-            retryAt,
-            entity: null as any,
-          },
-          create: {
-            rcNumber,
-            companyType,
-            outcome: "NOT_FOUND",
-            checkedAt: now,
-            retryAt,
-            entity: null as any,
-          },
-        });
-
-        return res.json({
-          status: "NOT_FOUND" as const,
-          retryAt: retryAt.toISOString(),
-        });
-      }
-
-      // cache entity
-      await prisma.cacLookup.upsert({
-        where: { CacLookup_rc_companyType_key: { rcNumber, companyType } },
-        update: {
-          outcome: "OK",
-          entity: entity as any,
-          checkedAt: now,
-          retryAt: null,
-        },
-        create: {
-          rcNumber,
-          companyType,
-          outcome: "OK",
-          entity: entity as any,
-          checkedAt: now,
-          retryAt: null,
-        },
-      });
-
-      const ok = matchesAllFour(entity, {
-        rcNumber,
-        companyType,
-        companyName: assertedCompanyName,
-        regDate: assertedRegistrationDate,
-      });
-
-      if (!ok) {
-        const retryAt = new Date(Date.now() + MISMATCH_COOLDOWN_SEC * 1000);
-
-        await prisma.cacLookup.update({
-          where: { CacLookup_rc_companyType_key: { rcNumber, companyType } },
-          data: { retryAt, checkedAt: now },
-        });
-
-        return res.json({
-          status: "MISMATCH" as const,
-          retryAt: retryAt.toISOString(),
-        });
-      }
-
-      // ✅ CAC matches – check if supplier already exists
-      const existingSupplier = await prisma.supplier.findFirst({
-        where: {
-          rcNumber,
-          companyType,
-        },
-        select: { id: true, status: true },
-      });
-
-      if (existingSupplier) {
-        return res.json({
-          status: "SUPPLIER_EXISTS" as const,
-          supplierId: existingSupplier.id,
-          entity,
-          message:
-            "A supplier with this RC number is already registered on DaySpring. Please sign in instead.",
-        });
-      }
-
-      const ticket = signTicket({
-        rcNumber,
-        companyType,
-        companyNameNorm: norm(assertedCompanyName),
-        regDateYmd: assertedRegistrationDate,
-      });
-
-      return res.json({
-        status: "VERIFIED" as const,
-        verificationTicket: ticket,
-        entity,
-      });
-    } catch (e: any) {
-      const status = e?.response?.status;
-
-      if (status === 404 || status === 422) {
-        const retryAt = new Date(
-          Date.now() + NOTFOUND_COOLDOWN_HOURS * 3600 * 1000
-        );
-
-        await prisma.cacLookup.upsert({
-          where: { CacLookup_rc_companyType_key: { rcNumber, companyType } },
-          update: {
-            outcome: "NOT_FOUND",
-            checkedAt: now,
-            retryAt,
-            entity: null as any,
-          },
-          create: {
-            rcNumber,
-            companyType,
-            outcome: "NOT_FOUND",
-            checkedAt: now,
-            retryAt,
-            entity: null as any,
-          },
-        });
-
-        return res.json({
-          status: "NOT_FOUND" as const,
-          retryAt: retryAt.toISOString(),
-        });
-      }
-
-      return res.json({
-        status: "PROVIDER_ERROR" as const,
-        message: "CAC provider failed. Please try again.",
-      });
-    }
-  } catch (e) {
-    next(e);
+router.get("/profile", requireAuth, requireSupplier, async (req, res) => {
+  const uid = getUserId(req);
+  if (!uid) {
+    return res.status(401).json({ error: "Unauthenticated" });
   }
+
+  const s = await getSupplierForUser(uid);
+
+  if (!s) {
+    return res.status(404).json({ error: "Supplier not found" });
+  }
+
+  return res.json({ data: supplierPayload(s) });
 });
 
+/* ---------------- Supplier dashboard ---------------- */
 
-/* --------------------------- POST /cac-cache --------------------------- */
-/**
- * Compatibility endpoint: store lookup cache only.
- */
-router.post("/cac-cache", async (req, res, next) => {
-  try {
-    const body = z
-      .object({
-        rcNumber: z.string().min(1),
-        companyType: CacCompanyTypeEnum,
-        entity: z.any(),
-        provider: z.string().default("DOJAH").optional(),
-      })
-      .parse(req.body);
+router.get("/dashboard", requireAuth, requireSupplier, async (req, res) => {
+  const uid = getUserId(req);
 
-    const now = new Date();
-
-    await prisma.cacLookup.upsert({
-      where: {
-        CacLookup_rc_companyType_key: {
-          rcNumber: body.rcNumber,
-          companyType: body.companyType,
-        },
-      },
-      update: { outcome: "OK", entity: body.entity as any, checkedAt: now, retryAt: null },
-      create: { rcNumber: body.rcNumber, companyType: body.companyType, outcome: "OK", entity: body.entity as any, checkedAt: now, retryAt: null },
-    });
-
-    return res.status(201).json({ ok: true });
-  } catch (e) {
-    next(e);
+  if (!uid) {
+    return res.status(401).json({ error: "Unauthenticated" });
   }
+
+  const s = await getSupplierForUser(uid);
+
+  if (!s) {
+    return res.status(404).json({ error: "Supplier not found" });
+  }
+
+  return res.json({ data: supplierPayload(s) });
 });
 
 export default router;

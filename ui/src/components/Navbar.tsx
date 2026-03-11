@@ -160,8 +160,8 @@ function MobileMenuButton({
     variant === "primary"
       ? "bg-zinc-900 text-white border-zinc-900 hover:opacity-95"
       : variant === "danger"
-      ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
-      : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50";
+        ? "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100"
+        : "bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50";
 
   const iconColor = variant === "primary" ? "text-white" : "text-zinc-700";
 
@@ -230,7 +230,7 @@ export default function Navbar() {
     const target = `${loc.pathname}${loc.search}`;
     try {
       sessionStorage.setItem("auth:returnTo", target);
-    } catch {}
+    } catch { }
 
     const qp = encodeURIComponent(target);
 
@@ -375,14 +375,14 @@ export default function Navbar() {
 
             <nav className="hidden md:flex items-center gap-2 ml-2">
               {showRiderNav ? (
-                <IconNavLink to="/supplier/orders" icon={<Truck size={18} />} label="Orders" />
+                <IconNavLink to="/supplier/orders" end icon={<Truck size={18} />} label="Orders" />
               ) : (
                 <>
                   <IconNavLink
-                    to="/"
-                    end
+                    to={isSupplier ? "/supplier/catalog-offers" : "/"}
+                    end={!isSupplier}
                     icon={showShopNav ? <LayoutGrid size={18} /> : <Home size={18} />}
-                    label="Catalogue"
+                    label="Products"
                   />
 
                   {showSupplierNav && (
@@ -404,6 +404,7 @@ export default function Navbar() {
                   {!showRiderNav && showCartDesktop && (
                     <IconNavLink
                       to="/cart"
+                      end
                       icon={<ShoppingCart size={18} />}
                       label="Cart"
                       badgeCount={cartCount.totalQty}
@@ -421,19 +422,20 @@ export default function Navbar() {
                         onPrefetch={prefetchWishlist}
                       />
                       <IconNavLink to="/orders" end icon={<Package size={18} />} label="Orders" />
-                      {/* ✅ Returns & refunds (customers + admins) */}
                       <IconNavLink
                         to={returnsHref}
+                        end
                         icon={<RotateCcw size={18} />}
                         label="Returns"
                       />
                     </>
                   )}
 
-                  {isAdmin && <IconNavLink to="/admin" icon={<Shield size={18} />} label="Admin" />}
+                  {isAdmin && <IconNavLink to="/admin" end icon={<Shield size={18} />} label="Admin" />}
                   {isAdmin && (
                     <IconNavLink
                       to="/admin/offer-changes"
+                      end
                       icon={<ClipboardList size={18} />}
                       label="Offer approvals"
                     />
@@ -653,9 +655,9 @@ export default function Navbar() {
               {showCartMobile && (
                 <NavLink
                   to="/cart"
+                  end
                   className={({ isActive }) =>
-                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${
-                      isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
+                    `relative inline-flex items-center justify-center w-10 h-10 rounded-2xl border border-zinc-200 bg-white transition ${isActive ? "text-zinc-900" : "text-zinc-700 hover:bg-zinc-50"
                     }`
                   }
                   aria-label="Cart"
@@ -719,10 +721,10 @@ export default function Navbar() {
                     <>
                       <MobileMenuButton
                         icon={<LayoutGrid size={18} />}
-                        label="Catalogue"
+                        label="Products"
                         onClick={() => {
                           setMobileMoreOpen(false);
-                          nav("/");
+                          nav(isSupplier ? "/supplier/catalog-offers" : "/");
                         }}
                       />
 
@@ -885,7 +887,6 @@ export default function Navbar() {
       </header>
 
       <div className="h-14 md:h-16" />
-      <div className="md:hidden h-2" />
       {!hydrated && <div className="sr-only">Loading session…</div>}
     </>
   );
